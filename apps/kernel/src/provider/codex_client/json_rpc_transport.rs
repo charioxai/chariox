@@ -107,7 +107,9 @@ impl CodexClient {
             }
             if message.id.as_ref() == Some(&json!(request_id)) {
                 if let Some(error) = rpc_error_message(&message) {
-                    return Err(self.protocol_error(method, error));
+                    return Err(self
+                        .protocol_error(method, error)
+                        .steer_not_submitted(method == "turn/steer"));
                 }
                 let result = message.result.ok_or_else(|| {
                     self.protocol_error(method, "Codex returned no response payload".to_string())

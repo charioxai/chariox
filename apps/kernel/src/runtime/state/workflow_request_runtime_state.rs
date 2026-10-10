@@ -11,12 +11,29 @@ impl KernelRuntimeState {
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
+        self.with_room_request_origin(caller_metaagent_id.as_deref(), &request)
+            .execute_admitted_workflow_request(request, caller_user_id, caller_metaagent_id)
+            .await
+    }
+
+    async fn execute_admitted_workflow_request(
+        &self,
+        request: LocalDaemonRequest,
+        caller_user_id: String,
+        caller_metaagent_id: Option<String>,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
         if let Err(error) = self.authorize_current_external_command() {
             return (Err(error), None);
         }
         let owned = &self.owned;
 
         if let Some(metaagent_id) = caller_metaagent_id.as_deref() {
+            if let Err(error) = self.authorize_room_agent_request(metaagent_id, &request) {
+                return (Err(error), None);
+            }
             if let Err(error) =
                 owned.ensure_workflow_request_controlled_by_metaagent(&request, metaagent_id)
             {
@@ -25,6 +42,14 @@ impl KernelRuntimeState {
         }
 
         let outcome = match request {
+            request @ (LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
+            | LocalDaemonRequest::AttachWorkflowNotification(_)
+            | LocalDaemonRequest::DetachWorkflowNotification(_)
+            | LocalDaemonRequest::ListWorkflowNotifications(_)) => (
+                self.execute_workflow_notification_command(request, &caller_user_id)
+                    .await,
+                None,
+            ),
             LocalDaemonRequest::CreateWorkflow(request) => {
                 let result =
                     owned.workflow_create_workflow(request, caller_metaagent_id.as_deref());
@@ -85,12 +110,16 @@ impl KernelRuntimeState {
                 None,
             ),
             LocalDaemonRequest::AddWorkflowRegistryEntry(request) => (
-                self.execute_workflow_registry_add_request(request).await,
+                self.execute_workflow_registry_add_request(request, caller_metaagent_id.as_deref())
+                    .await,
                 None,
             ),
             LocalDaemonRequest::AddWorkflowRegistryEntryFromWorkflow(request) => (
-                self.execute_workflow_registry_add_from_workflow_request(request)
-                    .await,
+                self.execute_workflow_registry_add_from_workflow_request(
+                    request,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await,
                 None,
             ),
             LocalDaemonRequest::DeleteWorkflowRegistryEntry(request) => (
@@ -480,8 +509,12 @@ impl KernelRuntimeState {
                 (result, session)
             }
             LocalDaemonRequest::InvokeWorkflowEndpoint(request) => {
-                self.execute_workflow_invoke_endpoint_request(request, &caller_user_id)
-                    .await
+                self.execute_workflow_invoke_endpoint_request(
+                    request,
+                    &caller_user_id,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await
             }
             LocalDaemonRequest::CancelWorkflowRun(request) => {
                 self.execute_workflow_cancel_run_request(request).await

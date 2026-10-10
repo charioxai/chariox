@@ -5,7 +5,7 @@ use crate::transport::kernel_protocol::KernelEvent;
 
 #[test]
 fn sudo_protocol_415_attributes_one_turn_to_its_human_entry() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
     let turn = crate::local::KernelSudoTurn {
         entry_id: "sudo:one".into(),
         session_id: "s".into(),
@@ -15,21 +15,44 @@ fn sudo_protocol_415_attributes_one_turn_to_its_human_entry() {
         requester: None,
         prompt_id: Some("turn-one".into()),
         provider_run_id: Some("run-one".into()),
+        task_id: Some("sudo:one".into()),
+        duration_minutes: 120,
+        expires_at_ms: Some(7_200_000),
+        revision: 2,
+        warning_sent: false,
+        deadline: Some(std::time::Instant::now()),
     };
-    let snapshot = serde_json::json!({"kind": PasskeyPromptKind::Sudo, "turn":turn,
-        "receipt":crate::runtime::state::sudo_approval_receipt(&turn, "other", "critical", "approve")});
+    let extend = LocalDaemonRequest::ExtendKernelSudo(crate::local::ExtendKernelSudoRequest {
+        session_id: "s".into(),
+        attachment_id: "terminal".into(),
+        entry_id: "sudo:one".into(),
+        revision: 2,
+    });
+    let mut session = crate::session::RuntimeSession::new(
+        "s",
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "daemon",
+    );
+    session.set_sudo_windows(vec![turn.clone()]);
+    let snapshot = serde_json::json!({"kind": PasskeyPromptKind::Sudo, "turn": turn, "extend": extend,
+        "extended": LocalDaemonResponse::KernelSudoExtended { turn: turn.clone() },
+        "sudo_windows": serde_json::to_value(&session).unwrap()["sudo_windows"]});
+    // The monotonic deadline is kernel memory only and never serialized.
+    assert!(snapshot["turn"].get("deadline").is_none());
+    assert!(snapshot["turn"].get("token").is_none());
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "8f52a7b4c7bdf054826de5653268cf097b60b1ce0ed8aee9da0ee4aec664d83d"
+        "256bc3e160c1813a1255ad56fbf2ab952598b25e81d9e7db13933eaec552f956"
     );
-    assert!(snapshot["turn"].get("expires_at_ms").is_none());
-    assert!(snapshot["turn"].get("token").is_none());
 }
 
 #[test]
 fn kernel_access_lifetime_config_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
     let response = LocalDaemonResponse::UserConfig {
         path: "/state/config.toml".into(),
         config: crate::config::CharioxUserConfig::default(),
@@ -66,7 +89,7 @@ fn wire_name(class: KernelConnectionClass) -> &'static str {
 
 #[test]
 fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
     let classes = [
         KernelConnectionClass::Terminal,
         KernelConnectionClass::ExternalAgent,
@@ -122,7 +145,7 @@ fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
 
 #[test]
 fn passkey_prompts_and_their_popup_event_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
     let prompt = |session_alias: Option<&str>, interaction_id: &str| PasskeyPrompt {
         kind: PasskeyPromptKind::CriticalApproval,
         requester: None,
@@ -204,7 +227,7 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
         KernelAccessGrant, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
         RevokeKernelAccessGrantRequest,
     };
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
     let grant = KernelAccessGrant {
         grant_id: "g".into(),
         owner_user_id: "local".into(),
@@ -277,7 +300,7 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
 
 #[test]
 fn external_sudo_protocol_415_is_versioned_and_accepts_no_credentials() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
     let request = LocalDaemonRequest::RequestKernelSudo(crate::local::RequestKernelSudoRequest {
         agent_id: "a".into(),
         prompt: "full\nprompt".into(),
@@ -302,14 +325,14 @@ fn external_sudo_protocol_415_is_versioned_and_accepts_no_credentials() {
 
 #[test]
 fn external_sudo_requester_and_host_terminal_attribution_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
     let turn: crate::local::KernelSudoTurn = serde_json::from_value(serde_json::json!({"entry_id":"sudo:external","session_id":"s","agent_id":"a","owner_user_id":"local","terminal_id":"host-terminal","prompt_id":"prompt","provider_run_id":"run","requester":{"grant_id":"grant","owner_user_id":"local","holder_pid":123,"holder_executable":"/fixture/external","lifetime_minutes":30,"expires_at_ms":123456}})).unwrap();
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&serde_json::to_value(&turn).unwrap()).unwrap())
         ),
-        "1cd52d9eafdcad1f6c0e3becedbf9654e87fc4bb3805149b9f9eca72b83a25e7"
+        "50fc270c940c3ed289e977949ad9e2c009ddc00771a6cb6d8484eca224b9af7a"
     );
 }
 
@@ -317,7 +340,7 @@ fn external_sudo_requester_and_host_terminal_attribution_are_versioned() {
 #[test]
 fn access_requester_protocol_470_shape_and_hash() {
     use crate::local::{KernelAccessProviderHarness, KernelAccessRequester};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
     let requester: KernelAccessRequester = serde_json::from_value(serde_json::json!({"executable": "/opt/codex", "pid": 42, "process_start_id": "18446744073709551615", "process_exec_version": 7, "provider_harness": "codex"})).unwrap();
     let interaction: crate::session::RuntimeInteraction = serde_json::from_value(serde_json::json!({"id": "g-grant", "kernel_operation_id": "access-grant:g", "kind": "permission", "level": "warning", "title": "Grant external agent access", "message": "Display only", "choices": [{"id": "refuse", "label": "Refuse", "reply": "refuse"}, {"id": "approve", "label": "Approve", "reply": "approve", "requires_passkey": true}], "timeout_sec": 300, "requested_at_ms": 1000, "requester": {"executable": "/opt/codex", "pid": 42, "process_start_id": "18446744073709551615", "process_exec_version": 7, "provider_harness": "codex"}})).unwrap();
     assert_eq!(interaction.requester(), Some(&requester));

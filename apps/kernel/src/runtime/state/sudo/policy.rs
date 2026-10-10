@@ -1,39 +1,128 @@
 use super::*;
 
+impl KernelRuntimeOwnedState {
+    /// Why a started window is no longer live, or `None` while it is. Pending
+    /// authorizations (no prompt yet) only depend on the session and requester.
+    pub(super) fn sudo_end_reason(&self, turn: &KernelSudoTurn) -> Option<&'static str> {
+        let session = match self.session_store.get_session(&turn.session_id) {
+            Ok(session) if session.status() != SessionStatus::Ended => session,
+            _ => return Some("session_ended"),
+        };
+        if !requester_grant_live(
+            turn,
+            &self.kernel_access.lock().expect("access state poisoned"),
+        ) {
+            return Some("requester_ended");
+        }
+        if turn
+            .deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            return Some("expired");
+        }
+        let prompt_id = turn.prompt_id.as_deref()?;
+        if turn.deadline.is_none() {
+            return Some("expired");
+        }
+        if self
+            .agent_store
+            .get_agent(&turn.agent_id)
+            .ok()
+            .is_none_or(|agent| {
+                agent.session_id() != turn.session_id || agent.remote_execution().is_some()
+            })
+        {
+            return Some("placement_changed");
+        }
+        let task = turn.task_id.as_deref().and_then(|id| {
+            self.durable_state_store
+                .agent_tasks(Some(&turn.session_id), Some(&turn.agent_id))
+                .ok()?
+                .into_iter()
+                .find(|task| task.task_id == id)
+        });
+        let work_open = match task {
+            Some(task) => !matches!(
+                task.state,
+                crate::durable_state::agent_lifecycle::ExecutionState::Done
+                    | crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
+            ),
+            // Without durable tasks the authorized work is the first turn.
+            None => self
+                .prompt_state_owner
+                .sudo_bound_prompt(&session, &turn.agent_id)
+                .is_some_and(|(entry, prompt)| entry == turn.entry_id && prompt == prompt_id),
+        };
+        (!work_open).then_some("work_ended")
+    }
+}
+
 impl KernelRuntimeState {
     pub(super) fn sudo_live(&self, turn: &KernelSudoTurn) -> bool {
-        let Ok(session) = self.owned.session_store.get_session(&turn.session_id) else {
-            return false;
-        };
-        if session.status() == SessionStatus::Ended {
-            return false;
-        }
-        let Some(prompt_id) = turn.prompt_id.as_deref() else {
-            return self.external_sudo_grant_live(turn);
-        };
-        self.owned.prompt_state_owner.sudo_turn_live(
-            &session,
-            &turn.agent_id,
-            prompt_id,
-            &turn.entry_id,
-        ) && turn.provider_run_id.as_deref().is_some_and(|id| {
-            self.owned.provider_store.get_run(id).is_ok_and(|run| {
-                run.agent_instance_id() == Some(turn.agent_id.as_str())
-                    && run.state() == crate::provider::ProviderRunState::Running
-            })
-        })
+        self.owned.sudo_end_reason(turn).is_none()
     }
 
-    // No session or prompt locks: safe at the final sudo-store admission boundary.
-    pub(super) fn external_sudo_grant_live(&self, turn: &KernelSudoTurn) -> bool {
-        requester_grant_live(
-            turn,
-            &self
+    /// The live window bound to `run`'s current turn. The provider bearer never
+    /// changes: each use resolves the exact agent, running turn and window.
+    fn sudo_for_run(&self, run_id: &str) -> Result<KernelSudoTurn, DaemonError> {
+        self.sudo_for_run_checked(run_id, true)
+    }
+
+    fn sudo_for_run_checked(
+        &self,
+        run_id: &str,
+        sweep: bool,
+    ) -> Result<KernelSudoTurn, DaemonError> {
+        let denied = || error("this provider turn has no sudo authority");
+        let run = self
+            .owned
+            .provider_store
+            .get_run(run_id)
+            .map_err(|_| denied())?;
+        let agent = run.agent_instance_id().ok_or_else(denied)?;
+        if run.state() != crate::provider::ProviderRunState::Running
+            || self
                 .owned
-                .kernel_access
-                .lock()
-                .expect("access state poisoned"),
-        )
+                .provider_store
+                .get_run_for_agent(run.session_id(), agent)
+                .is_none_or(|current| current.id() != run_id)
+        {
+            return Err(denied());
+        }
+        if sweep {
+            self.sweep_sudo();
+        }
+        let session = self.owned.session_store.get_session(run.session_id())?;
+        let (entry, prompt) = self
+            .owned
+            .prompt_state_owner
+            .sudo_bound_prompt(&session, agent)
+            .ok_or_else(denied)?;
+        let mut turn = self
+            .owned
+            .sudo_turns
+            .lock()
+            .expect("access state poisoned")
+            .get(&entry)
+            .cloned()
+            .filter(|turn| turn.agent_id == agent && turn.session_id == run.session_id())
+            .ok_or_else(denied)?;
+        if !self.sudo_live(&turn) {
+            return Err(denied());
+        }
+        turn.prompt_id = Some(prompt);
+        turn.provider_run_id = Some(run_id.into());
+        Ok(turn)
+    }
+
+    /// MP-11: recheck the original turn without sweeping inside browser input authority.
+    pub(crate) fn sudo_turn_live(&self, original: &KernelSudoTurn) -> bool {
+        let (Some(run), Some(prompt)) = (&original.provider_run_id, &original.prompt_id) else {
+            return false;
+        };
+        self.sudo_for_run_checked(run, false).is_ok_and(|current| {
+            current.entry_id == original.entry_id && current.prompt_id.as_ref() == Some(prompt)
+        })
     }
 
     pub(crate) fn sudo_for_auth_token(&self, token: &str) -> Result<KernelSudoTurn, DaemonError> {
@@ -44,22 +133,48 @@ impl KernelRuntimeState {
         let [run] = runs.as_slice() else {
             return Err(error("sudo requires one active provider run"));
         };
-        self.sweep_sudo();
-        let turns = self
-            .owned
-            .sudo_turns
-            .lock()
-            .expect("access state poisoned")
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        turns
-            .into_iter()
-            .find(|turn| turn.provider_run_id.as_deref() == Some(run.id()) && self.sudo_live(turn))
-            .ok_or_else(|| error("this provider turn has no sudo authority"))
+        self.sudo_for_run(run.id())
     }
 
+    /// Lists the sudo tool for the whole live window, so waits and wakes do
+    /// not churn the provider catalog; each call still needs a bound turn.
+    pub(crate) fn sudo_window_open_for_auth_token(&self, token: &str) -> bool {
+        let runs = self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(token);
+        let [run] = runs.as_slice() else {
+            return false;
+        };
+        let Some(agent) = run.agent_instance_id() else {
+            return false;
+        };
+        let windows = self.owned.sudo_windows_for_session(run.session_id());
+        windows
+            .iter()
+            .any(|turn| turn.agent_id == agent && self.sudo_live(turn))
+    }
+
+    pub(in crate::runtime::state) fn sudo_for_provider_run(
+        &self,
+        run_id: &str,
+    ) -> Result<KernelSudoTurn, DaemonError> {
+        self.sudo_for_run(run_id)
+    }
+
+    /// Privileged admission and the pre-effect recheck: the same live window
+    /// must still be bound to a running turn of its owner-authorized work.
     pub(crate) fn authorize_sudo_request(
+        &self,
+        id: &str,
+        request: &LocalDaemonRequest,
+    ) -> Result<String, DaemonError> {
+        let session = self.check_sudo_request(id, request)?;
+        self.require_sudo_scope(id, request)?;
+        Ok(session)
+    }
+
+    pub(super) fn check_sudo_request(
         &self,
         id: &str,
         request: &LocalDaemonRequest,
@@ -72,40 +187,42 @@ impl KernelRuntimeState {
             .get(id)
             .cloned()
             .filter(|turn| turn.prompt_id.is_some())
-            .ok_or_else(|| error("sudo turn ended or was revoked"))?;
-        if !self.sudo_live(&turn) {
-            return Err(error("sudo turn ended or was revoked"));
+            .ok_or_else(|| error("sudo window ended or was revoked"))?;
+        let session = self.owned.session_store.get_session(&turn.session_id)?;
+        if !self.sudo_live(&turn)
+            || self
+                .owned
+                .prompt_state_owner
+                .sudo_bound_prompt(&session, &turn.agent_id)
+                .is_none_or(|(entry, _)| entry != turn.entry_id)
+        {
+            return Err(error("sudo window ended or was revoked"));
         }
         if sudo_request_forbidden(request) {
-            return Err(error("sudo cannot grant authority, read secrets, change the passkey or access configuration"));
+            return Err(error("sudo cannot answer approvals, grant authority, read secrets, change the passkey or access configuration"));
         }
-        if let LocalDaemonRequest::RespondToInteraction(answer) = request {
-            let pending = self.owned.pending_interactions.write();
-            if pending.get(&answer.interaction_id).is_none_or(|pending| {
-                pending.terminal_credential_owner.is_some()
-                    || pending
-                        .passkey_prompt
-                        .as_ref()
-                        .is_some_and(|prompt| prompt.kind != PasskeyPromptKind::CriticalApproval)
-            }) {
-                return Err(error(
-                    "sudo cannot answer access, sudo or credential prompts",
-                ));
-            }
-        }
+        self.check_sudo_creator_scope(&turn, request)?;
         Ok(turn.session_id.clone())
     }
 }
 
-fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
+pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
     matches!(
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
+        | LocalDaemonRequest::ExtendKernelSudo(_)
+        // Approvals belong to the user, including for elevated agents.
+        | LocalDaemonRequest::RespondToInteraction(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
             | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
             | LocalDaemonRequest::ManageCredentialVault(_)
             | LocalDaemonRequest::GetCredential(_)
+            | LocalDaemonRequest::SetCredentialSecret(_)
+            | LocalDaemonRequest::GetUserConfig(_)
+            | LocalDaemonRequest::EndSession(_)
+            | LocalDaemonRequest::DeleteSession(_)
+            | LocalDaemonRequest::DeleteKernel(_)
             | LocalDaemonRequest::ListCredentials(_)
             // Sudo must not serialize literal MCP env/header credentials either.
             | LocalDaemonRequest::GetMcpServer(_)
@@ -134,23 +251,53 @@ fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::IssueCloudRelayClientToken(_)
             | LocalDaemonRequest::ResolveKernelClientConnection(_)
             | LocalDaemonRequest::ExportDebugBundle(_)
+            // MP-08/MP-10/MP-11 F6: credential enrollment remains owner input.
+            | LocalDaemonRequest::StartProviderLogin(_)
+            | LocalDaemonRequest::SendProviderLoginInput(_)
+            | LocalDaemonRequest::StartSliceProviderLogin(_)
+            | LocalDaemonRequest::ImportSliceProviderAuth(_)
+            | LocalDaemonRequest::RequestCredentialEnrollmentInteraction(_)
+            | LocalDaemonRequest::ArmDeploymentCredentialEnrollment(_)
+            | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
             | LocalDaemonRequest::SetProviderAccountCredential(_)
             | LocalDaemonRequest::GetProviderAccountProfile(_)
             | LocalDaemonRequest::ImportNativeProviderAccountProfile(_)
     ) || matches!(request, LocalDaemonRequest::SetUserConfigValue(config) if sudo_config_forbidden(&config.path))
         || matches!(request, LocalDaemonRequest::UnsetUserConfigValue(config) if sudo_config_forbidden(&config.path))
-        || matches!(request, LocalDaemonRequest::RespondToInteraction(answer) if answer.passkey.is_some() || answer.passkey_remember_minutes.is_some())
-        || matches!(request, LocalDaemonRequest::SubmitPrompt(prompt) if is_sudo_prompt(&prompt.prompt))
-        || matches!(request, LocalDaemonRequest::SubmitPrompts(prompts) if prompts.prompts.iter().any(|prompt| is_sudo_prompt(&prompt.prompt)))
+        || matches!(request, LocalDaemonRequest::SubmitPrompt(prompt) if is_sudo_prompt(&prompt.prompt) || is_sudo_control(&prompt.prompt))
+        || matches!(request, LocalDaemonRequest::SubmitPrompts(prompts) if prompts.prompts.iter().any(|prompt| is_sudo_prompt(&prompt.prompt) || is_sudo_control(&prompt.prompt)))
+}
+
+fn sudo_arguments(prompt: &str) -> Option<&str> {
+    prompt
+        .trim_start()
+        .strip_prefix("/sudo")
+        .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+}
+
+pub(crate) fn is_sudo_control(prompt: &str) -> bool {
+    let Some(arguments) = sudo_arguments(prompt) else {
+        return false;
+    };
+    let mut words = arguments.split_whitespace();
+    if !matches!(words.next(), Some("status" | "extend" | "revoke")) {
+        return false;
+    }
+    // MP-08/MP-10/MP-11 P2: match the terminal's complete control grammar.
+    // A control verb followed by ordinary task text is an elevation prompt.
+    let valid_target = words.next().is_none_or(|target| {
+        target.strip_prefix("sudo:").is_some_and(|id| {
+            !id.is_empty()
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+    });
+    valid_target && words.next().is_none()
 }
 
 pub(crate) fn is_sudo_prompt(prompt: &str) -> bool {
-    parse_sudo_prompt(prompt).is_some()
-}
-
-pub(super) fn parse_sudo_prompt(prompt: &str) -> Option<&str> {
-    let rest = prompt.trim_start().strip_prefix("/sudo")?;
-    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
+    sudo_arguments(prompt).is_some() && !is_sudo_control(prompt)
 }
 
 fn sudo_config_forbidden(path: &str) -> bool {
@@ -171,6 +318,11 @@ pub(super) fn requester_grant_live(
                 && grant.holder.alive()
         })
     })
+}
+
+// MP-08/MP-10/MP-11: main uses the same complete sudo-window grammar.
+pub(super) fn parse_sudo_prompt(prompt: &str) -> Option<&str> {
+    is_sudo_prompt(prompt).then(|| sudo_arguments(prompt).expect("sudo prefix").trim())
 }
 
 #[cfg(test)]

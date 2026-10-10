@@ -61,6 +61,7 @@ pub(crate) async fn execute_grant_agent_extension_request(
                 environment: request.environment,
                 credential: request.credential,
                 max_safety: request.max_safety,
+                app_grant: None,
             };
             grant.validate_app_binding()?;
             let agent = runtime_state

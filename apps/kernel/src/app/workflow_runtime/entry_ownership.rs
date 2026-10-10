@@ -36,9 +36,12 @@ pub(super) fn workflow_queue_scheduler_owner(
 ) -> Result<WorkflowSchedulerOwner, DaemonError> {
     store.require_writer_healthy()?;
     let has_app_queue = session.workflow_queued_prompts().iter().any(|queued| {
-        queued
-            .publication_invocation()
-            .is_some_and(|invocation| invocation.transport == "app_event")
+        queued.publication_invocation().is_some_and(|invocation| {
+            matches!(
+                invocation.transport.as_str(),
+                "app_event" | "workflow_notification"
+            )
+        })
     });
     Ok(
         if has_app_queue

@@ -240,6 +240,7 @@ impl KernelRuntimeState {
                         &owner,
                         catalog,
                         ConfigureAppAutomation {
+                            delivery_mode: request.delivery_mode,
                             automation_id: request.automation_id,
                             expected_revision: request.expected_revision,
                             event_name: request.event_name,
@@ -672,6 +673,7 @@ fn budget() -> AppOperationBudget {
 
 fn summary(value: &AutomationConfiguration) -> AppAutomationSummary {
     AppAutomationSummary {
+        delivery_mode: value.delivery_mode,
         automation_id: value.automation_id.clone(),
         revision: value.revision,
         event_name: value.event_name.clone(),

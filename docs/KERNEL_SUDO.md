@@ -1,58 +1,98 @@
-# One sudo turn (protocol 415)
+# Sudo windows (protocol 460)
 
-In a Chariox terminal, focus a local regular agent and enter `/sudo <prompt>`.
-The session host authorizes that entry in the kernel's passkey popup. Every
-connected host terminal receives the same popup; guests cannot authorize it.
-The critical-approval remember window does not satisfy sudo. Never type a
-passkey into an agent transcript, provider prompt or shell command.
+MP-08 / MP-10 / MP-11 A04. In a Chariox terminal, focus a local regular agent
+and enter `/sudo <prompt>`. Every connected host terminal receives one passkey
+popup naming the agent, the full prompt and the window; guests cannot answer
+it. Press Tab to choose 1 hour (default), 2, 4 or 8 hours, then enter the
+passkey. The critical-approval remember window never satisfies sudo. Never type
+a passkey into an agent transcript, provider prompt or shell command.
 
-If the agent is busy, the authorized prompt waits in kernel memory for a fresh
-turn. It never joins the durable prompt queue or steers the running turn.
-`/kernel access list` shows pending and running sudo entries. Use
-`/kernel access revoke <entry-id>` or `/kernel access revoke all` to revoke them.
-Rotation revokes queued entries and interrupts running sudo turns. Restart
-drops the authorization and records a notice; enter `/sudo` again to retry.
-The submitting client waits for the popup and for an idle agent without a
-response timeout or automatic replay. A lost connection fails the submission;
-check the access list and revoke any remaining entry before retrying.
+The window starts at that fresh verification and covers only the work the
+owner authorized. With `CHARIOX_ROOM_AGENT_TOOLS=1` this is the prompt's durable
+task: the agent keeps `chariox_kernel_request` across its yields, waits and
+kernel-correlated continuations (delegate, workflow or watcher results, owner
+resume, corrections, the expiry re-evaluation). Without durable tasks the
+window covers the first turn only. Each privileged call still needs a running
+turn of that work bound to the live window; the kernel rechecks before effects.
 
-`chariox access list` now prints a JSON object with `grants` and `sudo_turns`
-arrays. Scripts that previously consumed the grants array should select
-`.grants`. The terminal `/kernel access list` includes both kinds of entry.
+While the work is open the agent is held for it (the causal fence). Unrelated
+prompts, peer messages and other inbox events never steer or enter the
+elevated context: they stay queued with a visible "Deferred" notice and run as
+distinct regular turns once the work ends, the window expires or it is revoked.
+Spawned, forked and workflow agents never inherit the window.
 
-MP-08 / MP-10 / MP-11: provider discovery advertises `chariox_kernel_request`
-through the existing runtime MCP before the first turn, so official harnesses
-can cache its interface. Ordinary turns cannot call it. A sudo turn activates
-its authority while keeping ordinary provider tools. Its `request` argument
-is one serialized
+If a warm provider must relaunch to discover the sudo tool, it has 60 seconds
+from reload to become ready, including its launch delay. A failed or stalled
+relaunch returns a typed kernel-access error saying "provider relaunch failed",
+ends the window as `refused_or_cancelled` and releases the held work. Retry
+`/sudo` after the provider is available; the failed request leaves no elevation.
+
+A native provider may be idle while its catalog operation lane is still busy.
+The first sudo turn waits for the refresh to complete, keeping its work hold.
+The 60-second budget counts only idle refresh attempts, including deferred
+retries. Ordinary work resets it. A locked Chariox vault is unlocked before
+the budget starts, so its passphrase and duration popups never count; they
+keep their own expiry, and a window revoked meanwhile closes them. Each retry
+re-checks the vault, so a relock between retries prompts again and pauses
+the budget until answered. Budget
+exhaustion, a refresh failure or an unanswered vault popup returns a typed
+kernel-access error saying "provider catalog refresh failed", ends the window
+as `refused_or_cancelled` and releases the held work.
+
+The initial window permits owner session inventory. Additional typed operations
+require a fresh owner passkey in an operation-scope popup showing their exact
+parameters. That approval binds a digest to the original work and window;
+changed parameters or targets require a new approval. Scope is not inferred
+from natural-language similarity or a delegate's result. Extend renews only
+time. Destructive agent/workflow operations retain the immutable direct-creator
+fences even under sudo. Raw credential values and full kernel configuration
+are unavailable to this bridge.
+
+Every attached terminal shows a sudo row with the remaining time, the absolute
+expiry and `[Extend]` / `[Revoke]`; the row reads the kernel's deadline from the
+session snapshot, so reconnecting terminals show the same window.
+
+- `/sudo status` lists live windows; `/sudo extend [sudo:<id>]` opens one fresh
+  passkey popup for the same work and sets the expiry to the verification time plus the chosen
+  duration (never banked time); `/sudo revoke [sudo:<id>]` ends it and
+  interrupts its running turn. `/kernel access list|revoke` still work.
+- At 10 minutes left the kernel warns every terminal once per window revision;
+  an extension resets the warning.
+- On expiry the window ends, its running turn continues as regular work, a
+  waiting task receives a regular re-evaluation event through the wake inbox,
+  and the deferred work runs. Enter `/sudo` again to re-elevate.
+- Restart, passkey rotation, revoke, session end, agent removal or a placement
+  change end the window (fail closed). After a restart a notice says so and
+  open work continues regularly until the owner reauthorizes.
+
+Each window's timer proves it is live: the scheduled task records its own
+revision, and the kernel pump (the dead-man) enforces any warning or expiry the
+timer misses and alerts every terminal instead of staying silent. Failed warning receipts and waiting-work expiry wakes are retried; restart replay restores an undelivered expiry wake without restoring elevation. Authority
+never depends on a timer: every use compares the monotonic deadline, so neither
+a late timer nor a wall-clock change can extend a window.
+
+Sudo never answers approvals: `RespondToInteraction` is refused to
+`chariox_kernel_request` and to every kernel-agent caller, and the legacy
+`chariox.meta.resolve_runtime_interaction` tool is removed. Owners answer
+approvals in their terminal. Sudo also cannot mint access or sudo, answer
+credential-entry prompts, export secret values, change the passkey or
+configure kernel access, pairing, relay or Cloud identity.
+
+`chariox access list` prints a JSON object with `grants` and `sudo_turns`
+arrays (each sudo entry is a window). `kernel_access.sudo` records requested,
+authorized, started, timer_armed, warning, extension_requested, extended and the
+end reason (expired, work_ended, explicit_revoke, restart_dropped, …). Receipts
+contain no passkey.
+
+A sudo turn's `chariox_kernel_request` takes one serialized
 `LocalDaemonRequest`, for example:
 
 ```json
 {"request":{"ListSessions":null}}
 ```
 
-Critical replies use the shared interaction path, without supplying a passkey:
-
-```json
-{"request":{"RespondToInteraction":{"session_id":"target-session","interaction_id":"decision","choice_id":"approve"}}}
-```
-
-The kernel checks the live provider run, exact prompt and ephemeral sudo
-binding on each call. Authority covers the host's kernel, including other
-sessions and any number of critical approvals. It ends at yield or interruption;
-there is no time or payment cap. Spawned and forked agents receive no sudo.
-Sudo cannot mint access or sudo, answer credential-entry prompts, export secret
-values, change the passkey or configure kernel access. Pairing, session invites,
-relay configuration and Cloud identity operations remain host-terminal-only. Existing vault-entry
-flows remain available through the ordinary runtime tools.
-
-`kernel_access.sudo` records transitions. Each resolved sudo decision appends
-`kernel_access.sudo_approval`, naming the authorizing entry, terminal, agent,
-provider run, exact prompt, target interaction and choice. Command correlation
-and causation also point to that turn and entry. Receipts contain no passkey.
-
-External agents holding a process-bound local-kernel grant can request a turn over
-that kernel's Unix socket:
+External agents holding a process-bound local-kernel grant can request a window
+over that kernel's Unix socket:
 
 ```sh
 chariox sudo request --agent <agent-id> --prompt "<full prompt>" [--socket /absolute/kernel.sock]
@@ -60,28 +100,44 @@ chariox sudo request --agent <agent-id> --prompt "<full prompt>" [--socket /abso
 
 The host's popup names the grant holder's OS executable and PID, the target
 agent and session, and the full requester-supplied prompt. Only the host's
-terminals can answer it. The external client receives the submission outcome;
-it never receives or sends the passkey. TCP, relay and ungranted peers are refused. Any local session’s agent may be targeted; each request needs a fresh host passkey. One requester can have one pending
-sudo request, which expires with a clear error if no terminal answers.
-Grant expiry, process exit or revocation cancels a pending or queued external
-request. The final dispatch boundary checks that the grant is still live.
-Once the host-authorized turn starts, it follows the same one-turn lifetime as
-terminal sudo. Rotation, revoke all and session end remove authorizations;
-rotation and revoke all interrupt running turns. External request attribution
-and the winning host terminal appear in sudo audit entries and receipts.
+terminals can answer it; the external client never sends or receives the
+passkey. TCP, relay and ungranted peers are refused, and the window ends when the requester's grant ends. Shell CLI
+calls use the tracked provider's OS process tree. For a spawn launcher, the
+kernel also records the unique OS-verified endpoint server in that tree before
+prompt dispatch. Only descendants born after the current elevated turn binds
+are admitted below that server; other pre-turn children receive no exemption.
+A descendant retained from an
+earlier turn has no authority in a later turn. Unix terminal subscriptions are
+limited to the window session and owner attachments. Leased sudo execution
+remains a separate leg.
 
-For one release `/meta` continues to run delegation-only tasks without a
-passkey and displays a notice pointing to `/sudo`. Existing Meta tasks finish
-in Meta mode; they must finish before sudo entry. Shell CLI calls use the tracked provider’s OS process tree for this sudo turn;
-pre-existing descendant processes are excluded. Leased sudo execution remains a separate leg.
-Cloud/native consumers must support the protocol-413 `sudo` popup kind before
-advertising sudo entry. Owner passkey and real-client acceptance remain later
-validation legs; the builder drill uses private test vaults and synthetic runs.
+## Vault generation and protected login (A06)
 
-Run `scripts/kernel-access-sudo-drill.sh` on the Linux builder. It uses Rust
-1.88.0 and the existing slot-run admission helper, covering queued revocation,
-rotation, session end, yield, interrupt, restart, critical receipts, external
-Unix requests, the Meta notice and protocol snapshots.
+MP-08 / MP-10 / MP-11 A06. During a live window the agent also sees
+`chariox.vault.generate`: it supplies a `request_id`, the site `origin`
+(`https`, or `http` on loopback) and an optional description, length (16-128,
+default 24) and symbol choice. The kernel CSPRNG creates a password and writes
+it straight into the owner's Vault, bound to that site's `host[:port]` and to
+browser input only. The result is `{credential_id, origin, created}`; the value
+never enters the tool call, result, transcript, events or logs. Retrying the same
+`request_id` returns the same committed handle (`created: false`), never a new
+value, and cannot rebind it to another site. Ordinary agents cannot generate
+credentials; the former `chariox.create_generated_credential` tool is removed.
+
+To log in, the elevated agent uses `chariox.kernel_browser_paste_secret` on a
+tab of its retained browser grant without needing focus, then clicks the
+observed submit button with ordinary input. The kernel fills the field; the
+model never types a password. Before inserting, the kernel rechecks after
+the Vault unlock wait: the same window is still live, the target document and
+password field are unchanged, the credential is allowed for the document's
+host, a generated handle belongs to this session, and the observation
+protection did not change meanwhile. An elevated fill also requires a
+credential bound to its site. Ending the window withdraws a pending unlock
+prompt. Focused (human-approved) fills keep working without sudo.
+
+Run `scripts/kernel-access-sudo-drill.sh` on the Linux builder for the source
+regression drill; real acceptance uses the built TUI, kernel and an official
+provider (see the lane evidence).
 
 MP-08 / MP-10 / MP-11: the shared router also filters every response to a
 local grant or sudo MCP caller. Credential read and mutation replies redact

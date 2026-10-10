@@ -14,7 +14,8 @@ impl KernelRuntimeState {
                 self.owned.kernel_browser_host.revoke_agent(&id);
                 continue;
             };
-            if session.status() == crate::session::SessionStatus::Ended
+            if agent.remote_execution().is_some()
+                || session.status() == crate::session::SessionStatus::Ended
                 || self.provider_account_authority_owner_user_id(agent.owner_user_id()) != owner
             {
                 self.owned.kernel_browser_host.revoke_agent(&id);
@@ -73,6 +74,22 @@ impl KernelRuntimeState {
         &self,
         run: &crate::provider::RuntimeProviderRun,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.user_domain_agent_placement(run)?;
+        let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        if !self.owned.kernel_browser_host.has_grant(&owner, agent.id()) {
+            return Err(host_error(
+                "MP-08: not_granted: user-domain access expired or revoked; ask the user to focus this agent"
+                    .into(),
+            ));
+        }
+        Ok(agent)
+    }
+    /// MP-08/MP-11: the run's agent executes here, in its live room. Grant
+    /// presence is checked separately so an owner-requested turn can acquire one.
+    pub(super) fn user_domain_agent_placement(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
         if run.state() == crate::provider::ProviderRunState::Ended {
             return Err(host_error(
                 "MP-11: not_granted: provider run ended; user-domain authority revoked".into(),
@@ -82,26 +99,32 @@ impl KernelRuntimeState {
             .agent_instance_id()
             .ok_or_else(|| host_error("MP-08: admitted provider agent required".into()))?;
         let agent = self.owned.agent_store.get_agent(id)?;
-        let kernel = self.owned.config_projection.snapshot().daemon_id;
-        let execution_kernel = agent
-            .remote_execution()
-            .map(|binding| binding.worker_kernel_id.as_str())
-            .unwrap_or(&kernel);
-        if execution_kernel != kernel
+        if self.owned.provider_store.get_run(run.id())?.state()
+            == crate::provider::ProviderRunState::Ended
+            || self
+                .owned
+                .provider_store
+                .get_run_for_agent(run.session_id(), id)
+                .is_none_or(|current| current.id() != run.id())
+        {
+            return Err(host_error(
+                "MP-11: not_granted: provider run was replaced or ended".into(),
+            ));
+        }
+
+        if agent.remote_execution().is_some()
             || self.slice_kernel_id().is_some()
             || self
                 .owned
                 .provider_run_projection
                 .is_leased_provider_run(run.id())
         {
-            return Err(host_error(format!("MP-08: focused agent executes on kernel {execution_kernel}; this user-domain window is on kernel {kernel}. Ask the user to focus an agent on the window's kernel {kernel}; cross-kernel control is unavailable.")));
+            return Err(host_error("MP-08: leased or remote agents use their Room Browser/Computer route; user-domain control is unavailable".into()));
         }
-        let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         let session = self.owned.session_snapshot(run.session_id())?;
         if agent.session_id() != run.session_id()
             || !session.has_member(agent.owner_user_id())
             || session.status() == crate::session::SessionStatus::Ended
-            || !self.owned.kernel_browser_host.has_grant(&owner, id)
         {
             return Err(host_error(
                 "MP-08: not_granted: user-domain access expired or revoked; ask the user to focus this agent"
@@ -114,6 +137,14 @@ impl KernelRuntimeState {
         &self,
         run: &crate::provider::RuntimeProviderRun,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.refuse_leased_user_domain_run(run).await?;
+        self.user_domain_agent(run)
+    }
+    /// MP-08: leased agents use only their Room Browser/Computer route.
+    pub(super) async fn refuse_leased_user_domain_run(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
         if self
             .owned
             .provider_run_projection
@@ -130,7 +161,7 @@ impl KernelRuntimeState {
                 return Err(host_error(format!("MP-08: this agent executes on kernel {execution}; the user-domain window is on kernel {}. Ask the user to focus an agent on the window's kernel {}; cross-kernel control is unavailable.", context.home_kernel_id, context.home_kernel_id)));
             }
         }
-        self.user_domain_agent(run)
+        Ok(())
     }
     pub(super) fn user_domain_owner_aliases(&self, owner: &str) -> Vec<String> {
         let canonical = self.provider_account_authority_owner_user_id(owner);

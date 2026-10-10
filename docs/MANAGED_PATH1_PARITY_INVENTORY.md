@@ -10,6 +10,87 @@ padding. Password fields show dots and are not masked; show-password toggles
 are checked each capture. Removal, navigation/generation change or user
 clearing/replacement retires tracking. No other page/desktop content is masked.
 Source regressions alone do not establish MP-10 real live acceptance.
+## MP-11 room security corrections, am1 (2026-10-08)
+
+Agent allocation uses random 128-bit identities independent of the live-agent
+snapshot, so deletion and kernel restart do not restore a retired counter value.
+Current and legacy ID forms are reserved from aliases; message resolution rejects
+ambiguous references already present in restored state. Workflow execution bindings
+require the caller or an immutable direct child, including code-built definitions
+and persisted definitions at endpoint invocation. Resume also checks saved run
+agents, runtime bindings, and graph nodes the run has not reached yet.
+
+Current-session recall rejects an explicit session ID different from the
+authenticated provider run's room. The shared check covers keyword, semantic,
+agent-assisted, and structured recall. Provider instructions describe regular
+agent spawning and workflows when the room tools are exposed, with the same
+self/direct-child execution policy. MP-08 / MP-10 / MP-11 obligation settlement
+cells require the PR2 lifecycle implementation; PR1 dispatch registration alone
+does not establish completion settlement.
+
+The workflow lane retains each command's provider epoch and forwarded peer binding
+and rechecks authority before execution and result delivery. Compiler work, including
+registry compilation and summary generation, runs outside the global app mutex with
+bounded admission; authorization and target validation are repeated after the wait.
+MP-11 R1: registry additions reserve the scope/name with a nonblocking filesystem
+lock throughout compilation and atomic publication. Each job atomically creates
+its own random staging directory; failure cleans up only that job's directory.
+Concurrent same-name callers receive a clear conflict. Hidden staging directories
+and lock files are excluded from registry discovery. Empty per-name lock files
+remain on disk so their inode cannot be replaced while a writer holds the lock.
+Linux adds `workflow_code/compiler_seccomp.rs`: Node threads remain allowed, process
+and namespace creation are refused, and root-launched compilers drop host UID/GID and supplementary groups before
+exec so a process-count limit of 64 is effective. Nonroot kernels retain the
+operator user's inherited process limit; seccomp, memory, time and concurrency
+bounds apply to both. An unreadable private Node path fails closed after the
+privilege drop, with no root fallback. The private scratch mount is non-writable; no generated executable can be
+placed there. Trusted runtime mounts remain read-only. These are shared kernel
+policies, with no managed provider launch restriction or client-specific behavior.
+
+These corrections change no serialized protocol shape (local450/peer73). This entry
+records source policy only. Focused RED/GREEN checks, real relay/TUI/Codex evidence,
+current semantic review, and hosted/fresh-machine acceptance are separate gates;
+no acceptance result is inferred from this inventory.
+
+## MP-08 / MP-10 / MP-11 room workflow compilation boundary, am1 (2026-10-07)
+
+The shared compiler selects Node from kernel operator configuration and ignores
+caller-selected executable paths, including direct IPC compilation requests.
+The builder, console and promise callbacks are created inside the source realm;
+only serialized JSON crosses into or out of it. The Linux compiler process has
+a read-only root containing its executable, libraries and exactly identified
+Node runtime data files (including distribution-packaged built-ins), a size-limited private
+scratch mount, isolated network/PID/IPC namespaces, no inherited environment or
+non-stdio file handles, and heap/address-space, CPU and wall-time bounds.
+Only requested approved schema data is bounded and opened beneath a held root
+without following symlinks before serialization. Declarative evaluation replays
+with that data under one total deadline; unrelated workspace JSON is never read. These controls live in
+`workflow_code/compiler_isolation.rs` and `compiler_runtime.rs`, below clients.
+Provider launch paths are unchanged; compiler isolation adds no provider fence.
+The private compiler envelope changes no shared client shape (local450/peer73).
+
+MP-11 F14: root compiler jobs use one randomized high host UID/GID per kernel
+process, so their 64-task budget does not collide with ordinary UID 65534 services.
+The namespace UID remains 65534; private operator runtime paths still fail closed.
+
+MP-11 F7 / review R1: all source-compiling request paths, including Room artifact
+create/update and stored-source rebuild/update, use the shared two-job compiler
+lane without holding the app mutex. Caller authority and current artifact/workflow
+snapshots are checked again before persistence. The authenticated Room timeout
+regressions cover another room's app-dependent artifact listing during both create
+and update; live evidence retains separate source identities and acceptance limits.
+
+Linux requires Bubblewrap, runtime-file discovery and the isolation syscalls.
+Shared libnode and ICU data libraries are discovered through linked dependencies;
+external built-in/ICU file paths are read from bounded read-only Node/libnode ELF
+data and mounted individually, never as package directories. macOS uses the
+Seatbelt backend described in `WORKFLOW_COMPILER_ISOLATION.md`; unsupported hosts
+fail closed. These shared compiler backends are not ordinary/managed parity
+acceptance. Current security-anchor semantic review and the real hosted/fresh
+managed comparison remain coordinator gates. No non-security exact-blob review
+is required by this correction. Focused and real-provider results are recorded
+in the lane handoff after completion; no MP item is closed by this inventory.
+
 
 ## MP-08 / MP-10 / MP-11 fatal Computer child settlement, b204 (2026-10-04)
 

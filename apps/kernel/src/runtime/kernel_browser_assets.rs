@@ -195,6 +195,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-controller-artifacts.mjs"),
     ),
     (
+        "browser-controller-image.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-controller-image.mjs"),
+    ),
+    (
         "browser-controller-bar.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller-bar.mjs"),
     ),
@@ -261,6 +265,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "browser-controller.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller.mjs"),
+    ),
+    (
+        "kernel-browser-popup-evidence.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-popup-evidence.mjs"),
     ),
     (
         "kernel-browser-input.mjs",
@@ -342,5 +350,26 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
         cleanup.unwrap();
         assert_eq!(result.unwrap().state, BrowserControllerProcessState::Ready);
+    }
+
+    /// MP-08/MP-11: the materialized host must load; every relative module
+    /// an embedded asset imports is embedded too.
+    #[test]
+    fn embedded_assets_include_every_relative_import() {
+        let names = super::ASSETS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>();
+        for (name, bytes) in super::ASSETS {
+            let text = String::from_utf8_lossy(bytes);
+            for quote in ['"', '\''] {
+                for part in text.split(&format!("{quote}./")).skip(1) {
+                    let import = part.split(quote).next().unwrap_or_default();
+                    if import.ends_with(".mjs") {
+                        assert!(names.contains(&import), "{name} imports missing {import}");
+                    }
+                }
+            }
+        }
     }
 }

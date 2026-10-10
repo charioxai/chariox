@@ -1,0 +1,1 @@
+{"KernelBrowser":{"result":{"agent_activity":{"actor":{"actor_id":"agent:a","display_label":"Mara","kind":"agent"},"sequence":1,"tab_id":"host-tab-t"},"generation":2,"state":"ready","tabs":[{"document_id":"d","opened_by":{"actor_id":"agent:a","display_label":"Mara","kind":"agent"},"tab_id":"host-tab-t","title":"Example","url":"https://example.com/"}]}}}

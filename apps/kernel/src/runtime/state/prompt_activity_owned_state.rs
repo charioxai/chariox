@@ -65,6 +65,46 @@ impl KernelRuntimeOwnedState {
             .provider_store
             .drain_finished_structured_prompt_submit_jobs()
         {
+            match crate::durable_state::agent_lifecycle::finish_provider_event_submit(
+                &self.durable_state_store,
+                self.provider_store.structured_submit_epoch(),
+                &finished,
+            ) {
+                Ok(Some(receipt)) => {
+                    if let Some(notice) = receipt.notice {
+                        let recipients = self
+                            .attachment_store
+                            .list_session_attachment_ids(&finished.session_id);
+                        self.record_notice(
+                            &finished.session_id,
+                            Some(&finished.provider_run_id),
+                            recipients,
+                            notice,
+                        );
+                    }
+                    if receipt.steered || receipt.stale {
+                        continue;
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    self.provider_store
+                        .schedule_finished_structured_prompt_submit_retry(finished);
+                    continue;
+                }
+            }
+            match crate::runtime::state::notification_delivery::finish_structured_notification_submit(
+                &self.durable_state_store,
+                &self.session_store,
+                &finished,
+            ) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(_) => {
+                    self.provider_store.schedule_finished_structured_prompt_submit_retry(finished);
+                    continue;
+                }
+            }
             let settlement_retry_attempt = finished.settlement_retry_attempt;
             match finished.result {
                 Ok(acknowledgement) => {

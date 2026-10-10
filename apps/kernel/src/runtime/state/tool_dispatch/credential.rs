@@ -29,53 +29,6 @@ impl KernelRuntimeState {
                     }),
                 })
             }
-            crate::transport::runtime_tools::CREATE_GENERATED_CREDENTIAL_TOOL => {
-                self.ensure_agent_can_manage_user_vault(provider_run)?;
-                let _vault_unlock = self
-                    .ensure_vault_unlocked_for_provider_run(
-                        provider_run,
-                        "runtime_tool_create_generated_credential",
-                    )
-                    .await?;
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::CreateGeneratedCredentialArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_create_generated_credential",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let generator = args.generator.unwrap_or(
-                    crate::transport::runtime_tools::GeneratedCredentialSecretGeneratorArgs {
-                        kind: "password".to_string(),
-                        length: 32,
-                        symbols: true,
-                        avoid_ambiguous: false,
-                    },
-                );
-                let secret = zeroize::Zeroizing::new(generate_credential_secret(&generator)?);
-                let credential = stamp_runtime_credential_metadata(
-                    credential_from_runtime_input(args.credential)?,
-                    provider_run,
-                );
-                let registry = crate::credential::CharioxCredentialRegistry::user()?;
-                let result = self
-                    .upsert_observed_vault_credential(
-                        &service,
-                        &registry,
-                        credential,
-                        secret.as_str(),
-                        args.overwrite,
-                    )
-                    .await?;
-                Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: true,
-                    payload: serde_json::json!({
-                        "credential_id": result.credential_id,
-                        "stored": result.stored,
-                        "generated": true,
-                    }),
-                })
-            }
             crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL => {
                 self.ensure_agent_can_manage_user_vault(provider_run)?;
                 let _vault_unlock = self
@@ -643,60 +596,6 @@ impl KernelRuntimeState {
                     ok: true,
                     payload: serde_json::json!({
                         "credentials": service.list_handles()
-                    }),
-                })
-            }
-            crate::transport::runtime_tools::CREATE_GENERATED_CREDENTIAL_TOOL => {
-                self.ensure_agent_can_manage_user_vault_for_agent(
-                    &context.home_session_id,
-                    &agent,
-                )?;
-                let _vault_unlock = self
-                    .ensure_vault_unlocked_for_agent(
-                        &context.home_session_id,
-                        agent.id(),
-                        "runtime_tool_create_generated_credential",
-                    )
-                    .await?;
-                self.authorize_home_credential_context(&context)?;
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::CreateGeneratedCredentialArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_create_generated_credential",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let generator = args.generator.unwrap_or(
-                    crate::transport::runtime_tools::GeneratedCredentialSecretGeneratorArgs {
-                        kind: "password".to_string(),
-                        length: 32,
-                        symbols: true,
-                        avoid_ambiguous: false,
-                    },
-                );
-                let secret = zeroize::Zeroizing::new(generate_credential_secret(&generator)?);
-                let service = self.home_runtime_secret_service()?;
-                let credential = stamp_runtime_credential_metadata_for_agent(
-                    credential_from_runtime_input(args.credential)?,
-                    Some(agent.id()),
-                    &context.home_session_id,
-                    agent.provider(),
-                    Some(&context.worker_provider_run_id),
-                );
-                let registry = crate::credential::CharioxCredentialRegistry::user()?;
-                let result = self.upsert_observed_vault_credential(
-                    &service,
-                    &registry,
-                    credential,
-                    secret.as_str(),
-                    args.overwrite,
-                ).await?;
-                Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: true,
-                    payload: serde_json::json!({
-                        "credential_id": result.credential_id,
-                        "stored": result.stored,
-                        "generated": true,
                     }),
                 })
             }

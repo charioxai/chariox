@@ -15,9 +15,9 @@ use crate::terminal::{
     AssistantMessageCompletionRecord, RuntimeNoticeRecord, TerminalOutputRecord,
 };
 use crate::transport::kernel_protocol::{
-    agent_activity_changed_event, event_is_relevant_to_attachment, event_session_id,
-    event_stream_id_for_event, kernel_event_trace_payload, provider_run_changed_event,
-    runtime_interactions_changed_event, session_metadata_changed_event,
+    agent_activity_changed_event, can_skip_session_snapshot, event_is_relevant_to_attachment,
+    event_session_id, event_stream_id_for_event, kernel_event_trace_payload,
+    provider_run_changed_event, runtime_interactions_changed_event, session_metadata_changed_event,
     subscription_event_stream_id, workflow_run_only_changed, workflow_run_updated_events,
     KernelEvent, KernelOutgoingFrame, KernelSubscriptionScope, WaitingRoomInventoryEventProjection,
     WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
@@ -292,8 +292,13 @@ pub(super) async fn run_subscription_loop(
                             return;
                         }
                     }
+                    let skip_snapshot = can_skip_session_snapshot(
+                        &snapshot,
+                        previous_snapshot_ref,
+                        emitted_projection_delta || workflow_run_only,
+                    );
                     previous_snapshot = Some(snapshot.clone());
-                    if emitted_projection_delta || workflow_run_only {
+                    if skip_snapshot {
                         continue;
                     }
                     if !emit_kernel_event(

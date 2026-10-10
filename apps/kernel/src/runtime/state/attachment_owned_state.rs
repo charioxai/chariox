@@ -161,3 +161,74 @@ impl KernelRuntimeOwnedState {
         Ok(attachment)
     }
 }
+
+impl KernelRuntimeState {
+    /// MP-11 SB-01: public automation cannot borrow a human attachment to
+    /// turn its prompt into an owner-authored capability request.
+    pub(crate) fn authorize_prompt_attachment_role(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        request: &LocalDaemonRequest,
+    ) -> Result<(), DaemonError> {
+        if !self.room_agent_tools_enabled()
+            || command.is_terminal_caller()
+            || (command.caller.connection_class.is_none() && command.caller.metaagent_id.is_none())
+        {
+            // No connection class denotes a kernel-owned command, never an
+            // admitted public connection (local and relay transports set it).
+            return Ok(());
+        }
+        let check = |session: &str, id: &str| {
+            let attachment = self.owned.ensure_attachment_in_session(session, id)?;
+            if matches!(
+                attachment.capability_level(),
+                crate::attachment::ClientCapabilityLevel::FullTerminal
+                    | crate::attachment::ClientCapabilityLevel::InteractiveStructured
+            ) {
+                return Err(crate::runtime::room_tool_admission::denied(
+                    "automated prompts require an automated attachment",
+                ));
+            }
+            Ok(())
+        };
+        match request {
+            LocalDaemonRequest::SubmitPrompt(prompt) => {
+                check(&prompt.session_id, &prompt.attachment_id)
+            }
+            LocalDaemonRequest::UpdateQueuedPrompt(prompt) => {
+                check(&prompt.session_id, &prompt.attachment_id)
+            }
+            LocalDaemonRequest::SubmitPrompts(batch) => {
+                for item in &batch.prompts {
+                    check(
+                        item.session_id.as_deref().unwrap_or(&batch.session_id),
+                        item.attachment_id
+                            .as_deref()
+                            .unwrap_or(&batch.attachment_id),
+                    )?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// MP-08/MP-11 SB-01: admission assigns the human/automation attachment
+    /// role; a caller-selected terminal capability never establishes provenance.
+    pub(crate) async fn attach_for_caller(
+        &self,
+        mut request: crate::attachment::AttachRequest,
+        terminal_caller: bool,
+    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        if !terminal_caller
+            && matches!(
+                request.capability_level,
+                crate::attachment::ClientCapabilityLevel::FullTerminal
+                    | crate::attachment::ClientCapabilityLevel::InteractiveStructured
+            )
+        {
+            request.capability_level = crate::attachment::ClientCapabilityLevel::AutomationOnly;
+        }
+        self.attach(request, terminal_caller).await
+    }
+}

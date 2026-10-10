@@ -36,6 +36,8 @@ impl KernelRuntimeOwnedState {
             .session_store
             .read()
             .list_workflows(&request.session_id)?;
+        let controlled_by_metaagent_id = controlled_by_metaagent_id
+            .filter(|_| !self.config_projection.snapshot().room_agent_tools);
         let workflows = match controlled_by_metaagent_id {
             Some(metaagent_id) => workflows
                 .into_iter()
@@ -138,6 +140,8 @@ impl KernelRuntimeOwnedState {
         } else {
             None
         };
+        let controlled_by_metaagent_id = controlled_by_metaagent_id
+            .filter(|_| !self.config_projection.snapshot().room_agent_tools);
         let workflow_runs = match controlled_by_metaagent_id {
             Some(metaagent_id) => {
                 let sessions = self.session_store.read();

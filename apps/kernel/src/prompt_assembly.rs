@@ -1304,6 +1304,33 @@ mod tests {
         )
     }
 
+    // MP-08 / MP-10 / MP-11 S01: provider context agrees with the exposed room tools.
+    #[test]
+    fn mp11_review_runtime_instructions_describe_regular_room_creation() {
+        let root = temp_prompt_root("room-creation-instructions");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry.materialize_bundled_defaults().unwrap();
+        let envelope = PromptAssemblyService::new(registry)
+            .assemble_provider_turn(
+                &test_run(false),
+                "Create my team",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .unwrap();
+        assert!(
+            envelope
+                .hidden_system_context
+                .contains("regular agents may spawn"),
+            "MP-11 S01: ordinary providers must receive room creation instructions"
+        );
+        assert!(!envelope
+            .hidden_system_context
+            .contains("but only a Meta agent may create agents"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn prompt_registry_materializes_bundled_defaults_on_first_run() {
         let root = temp_prompt_root("materializes");

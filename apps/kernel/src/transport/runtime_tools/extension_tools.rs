@@ -12,6 +12,7 @@ pub struct ListExtensionsArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequestExtensionArgs {
     pub kind: String,
     pub name: String,

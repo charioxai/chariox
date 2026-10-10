@@ -49,6 +49,7 @@ mod slice_logs;
 mod user_app_views;
 mod user_domain_access;
 mod workflow_code;
+mod workflow_notifications;
 mod workspace_history_external;
 
 fn history_page_entry(
@@ -88,4 +89,5 @@ fn history_page_entry(
     }
 }
 
+mod agent_lifecycle;
 mod screenshot;

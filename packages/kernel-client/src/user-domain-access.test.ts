@@ -60,6 +60,8 @@ test("expiry projection follows focus, activity and kernel idle duration", () =>
   assert.match(userDomainGrantExpiry({ ...grant, focused: true }), /pending wake/)
   assert.equal(userDomainGrantExpiry({ ...grant, focused: true, idle_since_ms: 1000 }), "1970-01-01T00:30:01.000Z")
   assert.match(userDomainGrantExpiry(grant), /pending wake/)
+  assert.equal(userDomainGrantExpiry({ ...grant, expires_at_ms: 28_800_001 }), "1970-01-01T08:00:00.001Z")
+  assert.equal(userDomainGrantExpiry({ ...grant, idle_since_ms: 1000, expires_at_ms: 5000 }), "1970-01-01T00:00:05.000Z")
   assert.equal(userDomainGrantExpiry({ ...grant, idle_since_ms: 1000 }), "1970-01-01T00:30:01.000Z")
 })
 test("failure stops the feed, exposes error, and refresh rebinds", async () => {

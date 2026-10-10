@@ -22,18 +22,6 @@ impl Drop for TestMetaRuntimeEnv {
     }
 }
 
-fn node_supports_workflow_code_typescript(node: &std::path::Path) -> bool {
-    std::process::Command::new(node)
-        .arg("--no-warnings")
-        .arg("--input-type=module")
-        .arg("-e")
-        .arg(
-            "const mod = await import('node:module'); if (typeof mod.stripTypeScriptTypes !== 'function') process.exit(1)",
-        )
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
 fn mark_test_agent_controlled_by_metaagent(
     app: &mut DaemonApp,
     agent_id: &str,
@@ -294,3 +282,5 @@ mod task_scope;
 mod trace_projection;
 mod workflow_code_crud;
 mod workflow_code_patterns;
+
+mod room_admission;

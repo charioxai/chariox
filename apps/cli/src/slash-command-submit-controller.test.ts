@@ -324,3 +324,21 @@ test("attachment commands clear their command text before intake inserts image t
   await createSlashCommandSubmitController(harness.deps).submit("/attach region tab t 0 0 1 1",{allowSlashCommandSubmission:true})
   assert.deepEqual(events,["clear","image-token"])
 })
+
+// MP-08/MP-10/MP-11: routing must reach the real shared executor, not alias handling.
+test("slash command submit sends workflow notification settings to shared shell", async () => {
+  const harness = createHarness({
+    attached: true,
+    handleSharedShellCommand: async (command) => {
+      harness.sharedCommands().push(command)
+      return true
+    },
+  })
+  const controller = createSlashCommandSubmitController(harness.deps)
+  await controller.submit("/workflow notifications on retained-source", {
+    allowSlashCommandSubmission: true,
+  })
+  assert.deepEqual(harness.sharedCommands(), ["/workflow notifications on retained-source"])
+  assert.deepEqual(harness.calls(), [])
+  assert.equal(harness.clearPromptCount(), 1)
+})

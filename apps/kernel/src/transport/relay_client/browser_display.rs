@@ -74,7 +74,7 @@ pub(super) async fn handle_subscribe(
             pump.stop();
         }
     }
-    // MP-08/MP-10: protocol 475 push pump, dormant until the first ack.
+    // MP-08/MP-10: protocol 491 push pump, dormant until the first ack.
     let generation = generation.parse::<u64>().unwrap_or_default();
     let pump = super::display_pump::DisplayPump::new(generation);
     guard.insert(
@@ -88,13 +88,14 @@ pub(super) async fn handle_subscribe(
         },
     );
     drop(guard);
-    let request = crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
-        command: crate::local::KernelBrowserCommand::DisplayNext {
-            subscription_id: display_id.clone(),
-            generation,
-            after_sequence: 0,
-        },
-    });
+    let request =
+        crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+            command: crate::local::KernelBrowserCommand::DisplayNext {
+                subscription_id: display_id.clone(),
+                generation,
+                after_sequence: 0,
+            },
+        });
     let pump_caller = KernelCommand::from_local_request_with_caller(
         format!("{request_id}-push"),
         KernelCommandSource::RelayClient,
@@ -148,7 +149,7 @@ pub(super) async fn browser_display_delivery_id(
     Some(task.relay_subscription_id.clone())
 }
 
-/// MP-08/MP-10: protocol 475 acknowledgement from the subscription's own
+/// MP-08/MP-10: protocol 491 acknowledgement from the subscription's own
 /// sender key; renews its delivery lease and reports the pump state.
 pub(super) async fn acknowledge(
     tasks: &RelaySubscriptionTasks,

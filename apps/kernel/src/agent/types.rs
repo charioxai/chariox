@@ -204,6 +204,9 @@ pub struct AgentInstance {
     owner_user_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     controlled_by_metaagent_id: Option<String>,
+    /// Immutable home-kernel spawn receipt. Unknown legacy lineage fails closed.
+    #[serde(default)]
+    spawned_by_agent_id: Option<String>,
     #[serde(default)]
     role: AgentRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -271,6 +274,7 @@ impl AgentInstance {
             agent_ref: agent_ref.into(),
             session_id: session_id.into(),
             owner_user_id: default_agent_owner_user_id(),
+            spawned_by_agent_id: None,
             controlled_by_metaagent_id: None,
             role: AgentRole::Standard,
             meta_mode: None,
@@ -315,6 +319,18 @@ impl AgentInstance {
 
     pub fn owner_user_id(&self) -> &str {
         &self.owner_user_id
+    }
+
+    pub fn spawned_by_agent_id(&self) -> Option<&str> {
+        self.spawned_by_agent_id.as_deref()
+    }
+
+    pub(crate) fn record_spawn_creator(&mut self, creator: Option<String>) {
+        assert!(
+            self.spawned_by_agent_id.is_none(),
+            "spawn creator is immutable"
+        );
+        self.spawned_by_agent_id = creator;
     }
 
     pub fn controlled_by_metaagent_id(&self) -> Option<&str> {
@@ -438,9 +454,14 @@ impl AgentInstance {
     }
 
     pub fn has_extension_grant(&self, kind: ExtensionKind, name: &str) -> bool {
-        self.extension_grants
-            .iter()
-            .any(|grant| grant.kind == kind && grant.name == name)
+        self.extension_grants.iter().any(|grant| {
+            grant.kind == kind
+                && grant.name == name
+                && grant
+                    .app_grant
+                    .as_ref()
+                    .is_none_or(|cause| crate::session::unix_epoch_ms() < cause.expires_at_ms)
+        })
     }
 
     pub fn substitutes(&self) -> &[AgentSubstituteProfile] {
@@ -606,6 +627,7 @@ impl AgentInstance {
         self.workspace_id = Some(workspace_id.to_string());
         self.worktree_id = Some(workspace_id.to_string());
         self.clear_publication_runtime_state();
+        self.spawned_by_agent_id = None;
         self.last_activity_at_ms = self.created_at_ms;
         self
     }
@@ -620,6 +642,7 @@ impl AgentInstance {
         self.agent_ref = agent_ref.into();
         self.session_id = session_id.into();
         self.clear_publication_runtime_state();
+        self.spawned_by_agent_id = None;
         self.created_at_ms = crate::session::unix_epoch_ms();
         self.last_activity_at_ms = self.created_at_ms;
         self
@@ -637,6 +660,7 @@ impl AgentInstance {
         self.session_id = session_id.into();
         self.worktree_id = Some(worktree_id.into());
         self.clear_publication_runtime_state();
+        self.spawned_by_agent_id = None;
         self.controlled_by_metaagent_id = None;
         self.meta_mode = None;
         self.visible_in_freeform = false;
@@ -847,6 +871,8 @@ pub struct CreateAgentRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controlled_by_metaagent_id: Option<String>,
     #[serde(default)]
+    pub(crate) spawned_by_agent_id: Option<String>,
+    #[serde(default)]
     pub role: AgentRole,
     pub alias: Option<String>,
     pub provider: String,
@@ -866,6 +892,7 @@ impl CreateAgentRequest {
         Self {
             session_id: session_id.into(),
             owner_user_id: default_agent_owner_user_id(),
+            spawned_by_agent_id: None,
             controlled_by_metaagent_id: None,
             role: AgentRole::Standard,
             alias: None,
@@ -888,6 +915,11 @@ impl CreateAgentRequest {
 
     pub fn with_owner_user_id(mut self, owner_user_id: impl Into<String>) -> Self {
         self.owner_user_id = owner_user_id.into();
+        self
+    }
+
+    pub(crate) fn with_spawned_by_agent_id(mut self, creator: impl Into<String>) -> Self {
+        self.spawned_by_agent_id = Some(creator.into());
         self
     }
 

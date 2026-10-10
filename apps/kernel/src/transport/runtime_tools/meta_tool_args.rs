@@ -157,15 +157,6 @@ pub struct MetaUnsubscribeEventsArgs {
     pub subscription_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MetaResolveRuntimeInteractionArgs {
-    pub interaction_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub choice_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MetaReadTaskArgs {}
 

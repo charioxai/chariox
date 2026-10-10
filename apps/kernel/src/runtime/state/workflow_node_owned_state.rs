@@ -31,7 +31,13 @@ impl KernelRuntimeOwnedState {
             });
         }
         if let Some(metaagent_id) = caller_metaagent_id {
-            if agent.controlled_by_metaagent_id() != Some(metaagent_id) {
+            if self.config_projection.snapshot().room_agent_tools {
+                let actor = self.agent_store.get_agent(metaagent_id)?;
+                crate::runtime::room_tool_admission::workflow_node(&actor, &agent)?;
+            }
+            if !self.config_projection.snapshot().room_agent_tools
+                && agent.controlled_by_metaagent_id() != Some(metaagent_id)
+            {
                 return Err(DaemonError::LocalTransport {
                     operation: "workflow.node.add",
                     message: format!(

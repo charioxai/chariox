@@ -209,6 +209,7 @@ impl KernelRuntimeState {
         Ok(rx)
     }
 
+    #[cfg(test)]
     pub(crate) async fn resolve_runtime_interaction(
         &self,
         session_id: &str,
@@ -309,6 +310,20 @@ impl KernelRuntimeState {
         passkey_remember_minutes: Option<u32>,
         connection_class: Option<crate::local::KernelConnectionClass>,
     ) -> Result<(), DaemonError> {
+        if connection_class
+            .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
+            && interaction_id.starts_with("capability-request-")
+            && self
+                .owned
+                .pending_interactions
+                .write()
+                .get(interaction_id)
+                .is_some_and(|pending| pending.kernel_operation_owner.is_some())
+        {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "Only the owner's Chariox terminal can authorize resource acquisition",
+            ));
+        }
         if connection_class
             .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
             && self

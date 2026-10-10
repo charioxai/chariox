@@ -244,14 +244,15 @@ pub(super) async fn handle_incoming_envelope(
             tokio::spawn(async move {
                 #[cfg(test)]
                 let response_kind = test_peer_response_kind(&router, &encrypted_request);
-                let relay_response = handle_daemon_peer_request(
+                // Keep the large peer request future off the worker stack.
+                let relay_response = Box::pin(handle_daemon_peer_request(
                     &router,
                     &state,
                     &outgoing_tx,
                     &from_daemon_id,
                     caller_identity,
                     encrypted_request,
-                )
+                ))
                 .await;
                 #[cfg(test)]
                 let relay_response = {

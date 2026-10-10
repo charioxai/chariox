@@ -510,6 +510,15 @@ fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() 
         )
         .unwrap();
     }
+    // MP-08/MP-11 SB-02: Stop is global even with a scoped tab parameter.
+    assert!(host
+        .scope_browser_request(
+            Some(&admission),
+            "host.browser",
+            &json!({"op":"stop","tab_id":"tab"})
+        )
+        .unwrap_err()
+        .contains("not_focused_agent"));
     assert!(host
         .scope_browser_request(
             Some(&admission),
@@ -960,7 +969,12 @@ done
     let host = KernelBrowserHost::new(root.clone());
     host.install_fixture_backend("alice", &script, &root);
     // MP-11: observations cannot implicitly start a stopped controller.
-    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
     let policy = json!({"values":[],"targets":[],"unknown":false});
     let (tx, rx) = std::sync::mpsc::channel();
     let early = std::thread::scope(|scope| {
@@ -1020,7 +1034,12 @@ done
     let host = KernelBrowserHost::new(root.clone());
     host.install_fixture_backend("alice", &script, &root);
     // MP-11: observations cannot implicitly start a stopped controller.
-    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
     let policy = json!({"values":[],"targets":[],"unknown":false});
     let (tx, rx) = std::sync::mpsc::channel();
     let early = std::thread::scope(|scope| {
@@ -1038,7 +1057,16 @@ done
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(root.join("capture").exists());
-        let input=scope.spawn(|| { let result=host.protected_request("alice",None,"host.browser",json!({"op":"screenshot","display_subscription_id":"s"}),policy.clone());tx.send(result).unwrap();});
+        let input = scope.spawn(|| {
+            let result = host.protected_request(
+                "alice",
+                None,
+                "host.browser",
+                json!({"op":"screenshot","display_subscription_id":"s"}),
+                policy.clone(),
+            );
+            tx.send(result).unwrap();
+        });
         let early = rx.recv_timeout(Duration::from_millis(100));
         std::fs::write(root.join("release"), b"release").unwrap();
         assert_eq!(capture.join().unwrap().unwrap()["input_completed"], true);

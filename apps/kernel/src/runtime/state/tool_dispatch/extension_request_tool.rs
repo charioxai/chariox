@@ -57,8 +57,17 @@ impl KernelRuntimeState {
                     environment: args.environment.clone(),
                     credential: args.credential.clone(),
                     max_safety: args.allow.clone(),
+                    app_grant: None,
                 };
                 grant.validate_app_binding()?;
+                if self.room_agent_tools_enabled()
+                    && (agent.remote_execution().is_some() || self.slice_kernel_id().is_some())
+                {
+                    return Err(crate::runtime::room_tool_admission::denied(
+                        "leased agents use their Room Browser/Computer route",
+                    ));
+                }
+
                 // Nothing to change for an App already bound to this agent: no
                 // grant, no provider reload and no resumed request. Arming the
                 // reload again replayed the request after each reload, so an
@@ -85,10 +94,10 @@ impl KernelRuntimeState {
                         None,
                     ));
                 }
-                if !self
+                let Some(permit) = self
                     .authorize_agent_app_binding(session_id, agent.id(), agent.id(), &args.name)
                     .await?
-                {
+                else {
                     return Ok((
                         crate::transport::runtime_tools::RuntimeToolResult {
                             ok: false,
@@ -99,9 +108,14 @@ impl KernelRuntimeState {
                         },
                         None,
                     ));
-                }
+                };
                 let granted_agent = self
-                    .grant_agent_app_for_tool(agent.id(), grant, agent.owner_user_id())
+                    .grant_agent_app_for_tool(
+                        agent.id(),
+                        grant,
+                        agent.owner_user_id(),
+                        Some(permit),
+                    )
                     .await?;
                 // Listed when it runs or may start on demand (the grant seeded it).
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]

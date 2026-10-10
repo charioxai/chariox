@@ -166,21 +166,33 @@ impl DisplayPackets {
                 [row] => row,
                 _ => return Err("MP-11: native video count".into()),
             };
-            if row["row"] != 0 || row["y"] != 0 || row["height"] != object["height"]
-                || row["codec"] != "avc1.420033" || row["codec"] != object["codec"]
-                || !row["key"].is_boolean() || row["key"] != object["key"]
+            if row["row"] != 0
+                || row["y"] != 0
+                || row["height"] != object["height"]
+                || row["codec"] != "avc1.420033"
+                || row["codec"] != object["codec"]
+                || !row["key"].is_boolean()
+                || row["key"] != object["key"]
             {
                 return Err("MP-11: native video binding".into());
             }
             object.insert("data_base64".into(), segments.pop().unwrap().into());
             return Ok(());
         }
-        let key = if object["kind"] == "tiles" { "tiles" } else { "stripes" };
+        let key = if object["kind"] == "tiles" {
+            "tiles"
+        } else {
+            "stripes"
+        };
         let list = object
             .get_mut(key)
             .and_then(Value::as_array_mut)
             .ok_or("MP-11: native segment headers")?;
-        if list.is_empty() || list.len() > 256 || list.len() != headers.len() || (key == "stripes" && list.len() > 8) {
+        if list.is_empty()
+            || list.len() > 256
+            || list.len() != headers.len()
+            || (key == "stripes" && list.len() > 8)
+        {
             return Err("MP-11: native segment count".into());
         }
         for ((record, header), data) in list.iter_mut().zip(&headers).zip(segments) {
@@ -533,18 +545,25 @@ mod tests {
         for case in ["ok", "trailing", "short", "header"] {
             let spool = DisplayPackets::create().unwrap();
             let (path, mut reply) = packet(&spool);
-            let tiles = [json!({"x":0,"y":0,"width":4,"height":2,"format":"webp","length":3}),
-                json!({"x":4,"y":0,"width":4,"height":2,"format":"webp","length":2})];
+            let tiles = [
+                json!({"x":0,"y":0,"width":4,"height":2,"format":"webp","length":3}),
+                json!({"x":4,"y":0,"width":4,"height":2,"format":"webp","length":2}),
+            ];
             let mut bytes = encode(&tiles, &[&[1, 2, 3], &[4, 5]]);
             match case {
                 "trailing" => bytes.push(9),
-                "short" => { bytes.pop(); }
+                "short" => {
+                    bytes.pop();
+                }
                 _ => {}
             }
             std::fs::write(&path, &bytes).unwrap();
             let mut frame_tiles = tiles.to_vec();
-            if case == "header" { frame_tiles[1]["x"] = json!(8); }
-            let descriptor = json!({"name":path.file_name().unwrap().to_str().unwrap(),"length":bytes.len()});
+            if case == "header" {
+                frame_tiles[1]["x"] = json!(8);
+            }
+            let descriptor =
+                json!({"name":path.file_name().unwrap().to_str().unwrap(),"length":bytes.len()});
             reply["display_frame"] = json!({"kind":"tiles","tiles":frame_tiles,"moves":[[0,2,8,6,2]],"native_packet":descriptor});
             let result = spool.hydrate(&mut reply);
             assert!(!path.exists(), "{case}");
@@ -552,22 +571,29 @@ mod tests {
             if case == "ok" {
                 assert_eq!(reply["display_frame"]["tiles"][0]["data_base64"], "AQID");
                 assert_eq!(reply["display_frame"]["tiles"][1]["data_base64"], "BAU=");
-                assert_eq!(reply["display_frame"]["moves"], json!([[0,2,8,6,2]]));
+                assert_eq!(reply["display_frame"]["moves"], json!([[0, 2, 8, 6, 2]]));
             }
         }
     }
     #[test]
     fn mp11_native_whole_video_packets_bind_geometry_codec_and_key_before_consumption() {
-        for mismatch in [false,true] {
-            let spool=DisplayPackets::create().unwrap();
-            let (path,mut reply)=packet(&spool);
-            let row=json!({"row":0,"y":0,"height":800,"codec":"avc1.420033","key":true,"length":1});
-            let bytes=encode(&[row],&[&[0]]);std::fs::write(&path,&bytes).unwrap();
-            let descriptor=json!({"name":path.file_name().unwrap().to_str().unwrap(),"length":bytes.len()});
-            reply["display_frame"]=json!({"kind":"video","width":1280,"height":800,"codec":"avc1.420033","key":!mismatch,"native_packet":descriptor});
-            let result=spool.hydrate(&mut reply);
-            assert_eq!(result.is_err(),mismatch);assert!(!path.exists());
-            if !mismatch {assert!(reply["display_frame"].get("native_packet").is_none());assert_eq!(reply["display_frame"]["data_base64"],"AA==");}
+        for mismatch in [false, true] {
+            let spool = DisplayPackets::create().unwrap();
+            let (path, mut reply) = packet(&spool);
+            let row =
+                json!({"row":0,"y":0,"height":800,"codec":"avc1.420033","key":true,"length":1});
+            let bytes = encode(&[row], &[&[0]]);
+            std::fs::write(&path, &bytes).unwrap();
+            let descriptor =
+                json!({"name":path.file_name().unwrap().to_str().unwrap(),"length":bytes.len()});
+            reply["display_frame"] = json!({"kind":"video","width":1280,"height":800,"codec":"avc1.420033","key":!mismatch,"native_packet":descriptor});
+            let result = spool.hydrate(&mut reply);
+            assert_eq!(result.is_err(), mismatch);
+            assert!(!path.exists());
+            if !mismatch {
+                assert!(reply["display_frame"].get("native_packet").is_none());
+                assert_eq!(reply["display_frame"]["data_base64"], "AA==");
+            }
         }
     }
     #[test]

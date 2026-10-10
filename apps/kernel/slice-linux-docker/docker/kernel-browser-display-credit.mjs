@@ -1,5 +1,5 @@
 // MP-08/MP-10/MP-11: one display frame credit over the protected host seam.
-// Credit-mode clients (display_next) and the kernel push pump (protocol 475)
+// Credit-mode clients (display_next) and the kernel push pump (protocol 491)
 // share this body; every frame keeps the same document/region/policy fences.
 import { timestamp } from './kernel-browser-timing.mjs';
 import { displayGeometry as geometry } from './kernel-browser-geometry.mjs';

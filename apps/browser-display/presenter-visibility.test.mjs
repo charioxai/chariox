@@ -5,7 +5,7 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function fixture(hidden=false,hold=false,leaseMs=Infinity){
  const document=new EventTarget();document.hidden=hidden;
  const canvas={width:1280,height:800,ownerDocument:document};const ops=[],replies=[];let expires=performance.now()+leaseMs;
- const transport={kernelProtocolVersion:475,displayEventEncoding:'CXD1',onEvent:()=>()=>{},subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},request:async({KernelBrowser:{command}})=>{
+ const transport={kernelProtocolVersion:491,displayEventEncoding:'CXD1',onEvent:()=>()=>{},subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},request:async({KernelBrowser:{command}})=>{
   ops.push(command);if(command.op==='display_ack'){const now=performance.now();if(now>expires)return {KernelBrowser:{result:{push:'display_subscription_required'}}};expires=now+leaseMs;}if(command.op==='display_ack'&&hold)return new Promise(resolve=>replies.push(()=>resolve({KernelBrowser:{result:{push:'running'}}})));
   return {KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s',generation:1}:{push:'running'}}};
  }};

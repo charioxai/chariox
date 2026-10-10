@@ -337,7 +337,9 @@ impl BrowserControllerProcessStdioBackend {
             // separately built production ELF because libtest owns their entry.
             let executable = if cfg!(test) {
                 std::env::var_os("CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER").map(PathBuf::from)
-            } else { std::env::current_exe().ok() };
+            } else {
+                std::env::current_exe().ok()
+            };
             if let Some(executable) = executable {
                 command.env("CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER", executable);
             }
@@ -345,7 +347,9 @@ impl BrowserControllerProcessStdioBackend {
         // MP-08/MP-10/MP-11: a kernel-created descriptor root, never an ambient path.
         let display_packets = if self.host && cfg!(unix) {
             Some(Arc::new(display_packets::DisplayPackets::create()?))
-        } else { None };
+        } else {
+            None
+        };
         if let Some(packets) = &display_packets {
             command.env("CHARIOX_BROWSER_DISPLAY_PACKET_ROOT", packets.root());
         }
@@ -493,13 +497,23 @@ impl BrowserControllerProcessStdioBackend {
 
     // Cache only successfully applied policy on this exact supervised child.
     // A changed policy remains an RPC barrier; respawn cannot inherit the cache.
-    pub(crate) fn protect_host(&mut self, policy: serde_json::Value) -> Result<(), crate::error::HostFailure> {
-        self.take_exited_process().map_err(crate::error::HostFailure::Other)?;
-        if self.process.as_ref().is_some_and(|p|p.host_policy.as_ref()==Some(&policy)) {
+    pub(crate) fn protect_host(
+        &mut self,
+        policy: serde_json::Value,
+    ) -> Result<(), crate::error::HostFailure> {
+        self.take_exited_process()
+            .map_err(crate::error::HostFailure::Other)?;
+        if self
+            .process
+            .as_ref()
+            .is_some_and(|p| p.host_policy.as_ref() == Some(&policy))
+        {
             return Ok(());
         }
-        self.host_request_classified("host.protect",policy.clone())?;
-        if let Some(process)=self.process.as_mut() {process.host_policy=Some(policy);}
+        self.host_request_classified("host.protect", policy.clone())?;
+        if let Some(process) = self.process.as_mut() {
+            process.host_policy = Some(policy);
+        }
         Ok(())
     }
 
@@ -788,13 +802,21 @@ pub(crate) fn controller_error_marker(code: &str) -> String {
 }
 
 impl BrowserControllerRpcResponse {
-    pub(crate) fn into_host_result(self, method: &str) -> Result<serde_json::Value, crate::error::HostFailure> {
+    pub(crate) fn into_host_result(
+        self,
+        method: &str,
+    ) -> Result<serde_json::Value, crate::error::HostFailure> {
         if !self.ok {
-            if let Some(reason) = self.error.as_ref().and_then(|error| crate::error::UserDomainRefusalReason::from_code(&error.code)) {
+            if let Some(reason) = self
+                .error
+                .as_ref()
+                .and_then(|error| crate::error::UserDomainRefusalReason::from_code(&error.code))
+            {
                 return Err(crate::error::HostFailure::Refused(reason));
             }
         }
-        self.into_result(method).map_err(crate::error::HostFailure::Other)
+        self.into_result(method)
+            .map_err(crate::error::HostFailure::Other)
     }
     pub(crate) fn into_result<T: DeserializeOwned>(self, method: &str) -> Result<T, String> {
         if !self.ok {
@@ -1299,8 +1321,9 @@ fn read_controller_responses(
                     .map_err(|error| format!("browser controller returned invalid JSON: {error}"))
                     .and_then(|mut response| {
                         if let Some(result) = &mut response.result {
-                            if let Some(packets) = &display_packets { packets.hydrate(result)?; }
-                            else if result.pointer("/display_frame/native_packet").is_some() {
+                            if let Some(packets) = &display_packets {
+                                packets.hydrate(result)?;
+                            } else if result.pointer("/display_frame/native_packet").is_some() {
                                 return Err("MP-11: native packet without kernel ownership".into());
                             }
                         }
@@ -3160,21 +3183,34 @@ done
     fn mp10_host_encoder_environment_crosses_the_real_spawn_boundary() {
         // MP-08/MP-10/MP-11: isolate environment changes in a test subprocess.
         if std::env::var("CHARIOX_TEST_DISPLAY_ENV_CHILD").as_deref() != Ok("1") {
-            let name = format!("{}::mp10_host_encoder_environment_crosses_the_real_spawn_boundary",
-                module_path!().split_once("::").unwrap().1);
+            let name = format!(
+                "{}::mp10_host_encoder_environment_crosses_the_real_spawn_boundary",
+                module_path!().split_once("::").unwrap().1
+            );
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", &name, "--nocapture"])
                 .env("CHARIOX_TEST_DISPLAY_ENV_CHILD", "1")
                 .env("CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER", "libopenh264")
-                .env("CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER", "/fixture/openh264.so")
-                .env("CHARIOX_BROWSER_DISPLAY_OPENH264", "/fixture/libopenh264.so.8")
+                .env(
+                    "CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER",
+                    "/fixture/openh264.so",
+                )
+                .env(
+                    "CHARIOX_BROWSER_DISPLAY_OPENH264",
+                    "/fixture/libopenh264.so.8",
+                )
                 .env("CHARIOX_BROWSER_DISPLAY_LIBYUV", "/fixture/libyuv.so")
                 .env("CHARIOX_TEST_CONTROL_SECRET", "synthetic")
-                .status().unwrap();
-            assert!(status.success(), "MP-10: host discarded explicit encoder/converter configuration");
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "MP-10: host discarded explicit encoder/converter configuration"
+            );
             return;
         }
-        let tool = TestTool::new(r#"#!/bin/sh
+        let tool = TestTool::new(
+            r#"#!/bin/sh
 set -eu
 while IFS= read -r request; do
  id=${request#*:}; id=${id%%,*}
@@ -3184,15 +3220,23 @@ while IFS= read -r request; do
  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
  esac
 done
-"#);
+"#,
+        );
         let mut backend = BrowserControllerProcessStdioBackend::new(
-            tool.path(), Vec::new(), Duration::from_secs(2)).for_host();
+            tool.path(),
+            Vec::new(),
+            Duration::from_secs(2),
+        )
+        .for_host();
         backend.start().unwrap();
         let result = backend.host_request("host.browser", serde_json::json!({"op":"probe"}));
         backend.stop().unwrap();
-        assert_eq!(result.unwrap(), serde_json::json!({
-            "encoder":"libopenh264", "adapter":"/fixture/openh264.so",
-            "converter":"/fixture/libyuv.so", "native_encoder":"/fixture/libopenh264.so.8", "control_secret_present":false
-        }));
+        assert_eq!(
+            result.unwrap(),
+            serde_json::json!({
+                "encoder":"libopenh264", "adapter":"/fixture/openh264.so",
+                "converter":"/fixture/libyuv.so", "native_encoder":"/fixture/libopenh264.so.8", "control_secret_present":false
+            })
+        );
     }
 }

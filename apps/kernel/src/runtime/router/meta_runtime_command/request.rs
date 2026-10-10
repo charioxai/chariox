@@ -11,6 +11,7 @@ pub(super) fn meta_agent_request(
     metaagent: &crate::agent::AgentInstance,
     args: &[String],
     agents: &[crate::agent::AgentInstance],
+    room_tools: bool,
 ) -> Result<LocalDaemonRequest, DaemonError> {
     match args.first().map(String::as_str) {
         Some("list" | "ls") => Ok(LocalDaemonRequest::ListAgents(ListAgentsRequest {
@@ -54,7 +55,7 @@ pub(super) fn meta_agent_request(
             if args.len() > 2 {
                 return Err(meta_command_error("usage: agent focus <owned-agent-ref>"));
             }
-            let agent = meta_owned_regular_agent_from_session(agents, metaagent, reference)?;
+            let agent = room_command_agent(agents, metaagent, reference, room_tools)?;
             Ok(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
                 session_id: session.id().to_string(),
                 agent_id: agent.id().to_string(),
@@ -66,7 +67,8 @@ pub(super) fn meta_agent_request(
                     "usage: agent alias <owned-agent-ref> <alias|clear>",
                 ));
             }
-            let agent = meta_owned_regular_agent_from_session(agents, metaagent, &args[1])?;
+            let agent = room_command_agent(agents, metaagent, &args[1], room_tools)?;
+            crate::runtime::room_tool_admission::direct_child(metaagent, &agent)?;
             let alias = args[2..].join(" ");
             let alias = if matches!(alias.as_str(), "clear" | "none" | "-") {
                 String::new()
@@ -86,7 +88,8 @@ pub(super) fn meta_agent_request(
             if args.len() > 2 {
                 return Err(meta_command_error("usage: agent delete <owned-agent-ref>"));
             }
-            let agent = meta_owned_regular_agent_from_session(agents, metaagent, reference)?;
+            let agent = room_command_agent(agents, metaagent, reference, room_tools)?;
+            crate::runtime::room_tool_admission::direct_child(metaagent, &agent)?;
             Ok(LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
                 session_id: session.id().to_string(),
                 agent_id: agent.id().to_string(),
@@ -248,11 +251,28 @@ fn meta_owned_regular_agent_from_session(
         })
 }
 
+// MP-08 / MP-11: ordinary room admission is transitional; retain legacy
+// discovery while disabled, but never use controller links for destruction.
+fn room_command_agent(
+    agents: &[crate::agent::AgentInstance],
+    actor: &crate::agent::AgentInstance,
+    reference: &str,
+    room_tools: bool,
+) -> Result<crate::agent::AgentInstance, DaemonError> {
+    if room_tools {
+        crate::runtime::room_tool_admission::resolve_agent(agents, actor.session_id(), reference)
+            .cloned()
+    } else {
+        meta_owned_regular_agent_from_session(agents, actor, reference)
+    }
+}
+
 pub(super) fn meta_workflow_request(
     session: &crate::session::RuntimeSession,
     metaagent: &crate::agent::AgentInstance,
     args: &[String],
     agents: &[crate::agent::AgentInstance],
+    room_tools: bool,
 ) -> Result<LocalDaemonRequest, DaemonError> {
     match args.first().map(String::as_str) {
         Some("list" | "ls") | None => Ok(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
@@ -304,7 +324,7 @@ pub(super) fn meta_workflow_request(
                         "usage: workflow node add <workflow-ref> <owned-agent-ref>",
                     ));
                 }
-                let agent = meta_owned_regular_agent_from_session(agents, metaagent, &args[3])?;
+                let agent = room_command_agent(agents, metaagent, &args[3], room_tools)?;
                 Ok(LocalDaemonRequest::AddWorkflowNode(
                     AddWorkflowNodeRequest {
                         session_id: session.id().to_string(),

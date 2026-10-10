@@ -13,6 +13,7 @@ import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
+import { BrowserPopupEvidence } from "./kernel-browser-popup-evidence.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
 import { captureProtectionFence, captureProtectedDisplay, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage } from "./kernel-browser-pixels.mjs";
@@ -63,6 +64,7 @@ export class KernelBrowserHost {
     this.browser = null;
     this.generation = 0;
     this.tabs = new Map();
+    this.popupEvidence = new BrowserPopupEvidence(TAB_LIMIT);
     this.streams = new Map();
     this.displays = new Map();
     this.scales = new Map();
@@ -122,6 +124,7 @@ export class KernelBrowserHost {
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
     this.streams.clear();
     this.tabs.clear();
+    this.popupEvidence.clear();
     this.observedDocuments.clear();
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     let saved = { generation: 0, tabs: [] };
@@ -207,6 +210,7 @@ export class KernelBrowserHost {
   async stop() {
     await this.closeCompositors();
     this.sampleLanes.clear();
+    this.popupEvidence.clear();
     await this.chromium.stop(this.browser?.connection);
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
@@ -246,8 +250,10 @@ export class KernelBrowserHost {
     for (const [id, tab] of this.tabs) tab.tab_id = id;
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
     if (!this.restoring) await this.save();
-    return redactObservation({ state: "ready", generation: this.generation,
-      tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport }, this.protection.values);
+    // MP-08: private creation evidence for the kernel, stripped before client projection.
+    const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
+    return redactObservation({ state: "ready", generation: this.generation, _tab_creation_actions,
+      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport }, this.protection.values);
   }
   async open(url, tabId = `host-tab-${randomUUID()}`, { signal } = {}) {
     await this.closeCompositors();this.foreground.reset();
@@ -514,7 +520,7 @@ export class KernelBrowserHost {
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
         const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>viewerActive()&&owned.click(x,y):null;
         const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;
-        const deferred=await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+        const deferred=await this.sampleLane(tab).run("input", () => this.popupEvidence.capture(this.browser, tab, command._action_id, beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) })));
         // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
         // fenced, ledgered dispatch is ordered by CDP; the renderer's
         // frame-aligned ack would otherwise serialize kernel input admission.

@@ -37,6 +37,15 @@ pub(super) fn workflow_code_registry_for_session(
     session_id: &str,
 ) -> Result<crate::workflow_code::WorkflowCodeArtifactRegistry, DaemonError> {
     let session = app.sessions().get_session(session_id)?;
+    if app.config().room_agent_tools {
+        return Ok(crate::workflow_code::WorkflowCodeArtifactRegistry::new(
+            vec![app
+                .config()
+                .workflow_code_artifact_root()
+                .join("rooms")
+                .join(session.id())],
+        ));
+    }
     let mut roots = vec![app.config().workflow_code_artifact_root()];
     if let Some(root) = crate::workflow_code::WorkflowCodeArtifactRegistry::user_root() {
         if !roots.contains(&root) {
@@ -144,6 +153,17 @@ pub(super) fn workflow_registry_for_session(
     session_id: &str,
 ) -> Result<crate::workflow_code::WorkflowRegistry, DaemonError> {
     let session = app.sessions().get_session(session_id)?;
+    if app.config().room_agent_tools {
+        return Ok(crate::workflow_code::WorkflowRegistry::new(
+            None,
+            Some(
+                app.config()
+                    .workflow_registry_root()
+                    .join("rooms")
+                    .join(session.id()),
+            ),
+        ));
+    }
     let workspace_root = if !session.workspace_id().trim().is_empty() {
         Some(crate::workflow_code::WorkflowRegistry::workspace_root(
             session.workspace_id(),
@@ -162,6 +182,13 @@ pub(super) fn workflow_registry_write_scope(
     session_id: &str,
     requested: Option<crate::workflow_code::WorkflowRegistrySourceScope>,
 ) -> Result<crate::workflow_code::WorkflowRegistrySourceScope, DaemonError> {
+    if app.config().room_agent_tools
+        && requested == Some(crate::workflow_code::WorkflowRegistrySourceScope::Workspace)
+    {
+        return Err(crate::runtime::room_tool_admission::denied(
+            "room agents cannot administer workspace or owner-wide registry entries",
+        ));
+    }
     if let Some(scope) = requested {
         if scope == crate::workflow_code::WorkflowRegistrySourceScope::Builtin {
             return Err(DaemonError::LocalTransport {
@@ -190,7 +217,8 @@ pub(super) struct WorkflowApplyContext<'a> {
 pub(super) fn workflow_registry_apply_result(
     app: &mut crate::app::DaemonApp,
     name: &str,
-    parameters: &std::collections::BTreeMap<String, serde_json::Value>,
+    entry: crate::workflow_code::WorkflowRegistryResolvedEntry,
+    compile: crate::workflow_code::WorkflowCodeCompileResult,
     context: WorkflowApplyContext<'_>,
 ) -> Result<
     (
@@ -212,18 +240,14 @@ pub(super) fn workflow_registry_apply_result(
     } = context;
 
     authorize()?;
-    let entry = workflow_registry_for_session(app, session_id)?.resolve(name)?;
+    let current = workflow_registry_for_session(app, session_id)?.resolve(name)?;
+    if current.source != entry.source || current.metadata != entry.metadata {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: "workflow registry entry changed during compilation; retry".into(),
+        });
+    }
     let limits = app.config().workflow_code_limits();
-    let node_path = crate::workflow_code::discover_workflow_code_node_path()?;
-    let compile =
-        crate::workflow_code::compile_workflow_code_source_with_parameters_and_schema_import_root(
-            &node_path,
-            &entry.source,
-            crate::workflow_code::WorkflowCodeLanguage::JavaScript,
-            &limits,
-            parameters,
-            entry.schema_import_root.as_deref(),
-        )?;
     reject_invalid_workflow_code_run_compile(operation, &compile.validation)?;
     let metaagent_id = controlled_by_metaagent_id.as_deref();
     let (definition, validation) =
@@ -333,12 +357,35 @@ pub(super) fn workflow_code_artifact_apply_result(
     let actor =
         workflow_code_artifact_actor(&caller_user_id, controlled_by_metaagent_id.as_deref());
     authorize()?;
-    workflow_code_registry_for_session(app, session_id)?.record_apply_history(
-        artifact_name,
-        actor,
-        history_action,
-        &apply,
-    )?;
+    let registry = workflow_code_registry_for_session(app, session_id)?;
+    let may_record_history = match metaagent_id {
+        Some(id)
+            if app.config().room_agent_tools
+                && history_action
+                    == crate::workflow_code::WorkflowCodeArtifactHistoryAction::Run =>
+        {
+            let caller = app.agents().get_agent(id)?;
+            // Public source can create a caller-owned definition/run, without editing
+            // peer source provenance. Recheck the current object at the history fence.
+            registry.get(artifact_name)?.is_some_and(|current| {
+                current.metadata == artifact.metadata
+                    && crate::runtime::room_tool_admission::owns_object(
+                        &caller,
+                        current
+                            .metadata
+                            .provenance
+                            .created_by
+                            .metaagent_id
+                            .as_deref(),
+                        &app.agents().get_session_agents(session_id),
+                    )
+            })
+        }
+        _ => true,
+    };
+    if may_record_history {
+        registry.record_apply_history(artifact_name, actor, history_action, &apply)?;
+    }
     Ok(crate::workflow_code::WorkflowCodeCompileAndApplyResult {
         compile: crate::workflow_code::WorkflowCodeCompileResult {
             definition,
@@ -348,19 +395,6 @@ pub(super) fn workflow_code_artifact_apply_result(
         },
         apply,
     })
-}
-
-pub(super) fn workflow_code_schema_import_root_for_session(
-    app: &crate::app::DaemonApp,
-    session_id: &str,
-) -> Result<Option<std::path::PathBuf>, DaemonError> {
-    let session = app.sessions().get_session(session_id)?;
-    let workspace = std::path::PathBuf::from(session.workspace_id());
-    if workspace.is_absolute() {
-        Ok(Some(workspace))
-    } else {
-        Ok(None)
-    }
 }
 
 pub(super) fn workflow_code_artifact_actor(

@@ -14,6 +14,8 @@ use super::workflow_turns::WorkflowRunStatus;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowRun {
     id: String,
+    #[serde(default)]
+    created_by_agent_id: Option<String>,
     workflow_id: String,
     #[serde(default)]
     workflow_revision: u64,
@@ -58,6 +60,15 @@ pub struct WorkflowRun {
 }
 
 impl WorkflowRun {
+    pub fn created_by_agent_id(&self) -> Option<&str> {
+        self.created_by_agent_id.as_deref()
+    }
+    pub(crate) fn with_creator(mut self, creator: Option<String>) -> Self {
+        assert!(self.created_by_agent_id.is_none());
+        self.created_by_agent_id = creator;
+        self
+    }
+
     pub fn new(
         id: impl Into<String>,
         workflow_id: impl Into<String>,
@@ -75,6 +86,7 @@ impl WorkflowRun {
             .and_then(|invocation| invocation.queue_ref.clone());
         Self {
             id: id.into(),
+            created_by_agent_id: None,
             workflow_id: workflow_id.into(),
             workflow_revision: 0,
             endpoint_id: endpoint_id.into(),

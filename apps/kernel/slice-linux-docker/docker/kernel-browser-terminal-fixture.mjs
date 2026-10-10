@@ -17,6 +17,8 @@ const chromium = {
   async stop() { this.child = null; },
 };
 const connection = {
+  // MP-08: this fixture has no popup events; expose the real CDP subscription contract.
+  subscribe() { return () => {}; },
   async send(method, params = {}, session) {
     if (method === 'Target.getTargets') return { targetInfos: [...pages].map(([targetId, tab]) => ({ targetId, type: 'page', ...tab })) };
     if (method === 'Target.createTarget') {

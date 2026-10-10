@@ -9,6 +9,10 @@ use super::provider_liveness::clear_active_provider_run_session_pointer;
 
 impl DaemonApp {
     pub(crate) fn project_session_runtime_view(&self, session: &mut RuntimeSession) {
+        session.set_sudo_windows(
+            self.sudo_window_projection
+                .windows_for_session(session.id()),
+        );
         let prompt_session = session.clone();
         let active_prompt_agent_id = self.prompt_state_owner.active_prompt_agent_id(session);
         let projected_run_id = projected_active_provider_run_id(

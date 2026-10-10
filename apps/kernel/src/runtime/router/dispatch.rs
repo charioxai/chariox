@@ -19,11 +19,13 @@ impl CommandRouter {
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.authorize_external_request(&command, &request)?;
-        let grant_id = command.external_grant_id();
         let mut router = self.clone();
         router.runtime_state = self
             .runtime_state
-            .with_external_command_authority(grant_id.as_deref().map(|id| (id, &request)));
+            .with_kernel_command_authority(&command, &request);
+        if command.is_sudo_command() {
+            router.runtime_state.authorize_current_external_command()?;
+        }
         router.capability_runtime =
             crate::runtime::capability_executor::CapabilityRuntimeStore::new(
                 router.runtime_state.clone(),
@@ -133,18 +135,37 @@ impl CommandRouter {
                 }
             }
         }
+        // MP-08 / MP-10 / MP-11 A04: approvals belong to the user, including
+        // when the requesting agent is elevated.
         if command.caller.connection_class == Some(crate::local::KernelConnectionClass::KernelAgent)
-            && command.caller.caller_id.starts_with("sudo:")
+            && matches!(&request, LocalDaemonRequest::RespondToInteraction(_))
         {
-            if let LocalDaemonRequest::RespondToInteraction(answer) = &request {
-                return Box::pin(
-                    self.runtime_state
-                        .answer_sudo_interaction(&command.caller.caller_id, answer.clone()),
+            return Err(crate::runtime::kernel_access::error(
+                "agents cannot answer approvals; the user answers in a Chariox terminal",
+            ));
+        }
+        if let LocalDaemonRequest::ExtendKernelSudo(extend) = &request {
+            if command.caller.connection_class
+                != Some(crate::local::KernelConnectionClass::Terminal)
+            {
+                return Err(crate::runtime::kernel_access::error(
+                    "only a Chariox terminal can extend sudo",
+                ));
+            }
+            return self
+                .runtime_state
+                .extend_sudo_window(
+                    extend.clone(),
+                    &crate::runtime::command::command_caller_user_id(&command),
                 )
                 .await;
-            }
         }
         if let LocalDaemonRequest::SubmitPrompt(prompt) = &request {
+            if crate::runtime::state::is_sudo_control(&prompt.prompt) {
+                return Err(crate::runtime::kernel_access::error(
+                    "use the terminal's sudo controls for status, extend or revoke",
+                ));
+            }
             if crate::runtime::state::is_sudo_prompt(&prompt.prompt) {
                 if command.caller.connection_class
                     == Some(crate::local::KernelConnectionClass::ExternalAgent)
@@ -169,7 +190,7 @@ impl CommandRouter {
                 .await;
             }
         }
-        if matches!(&request, LocalDaemonRequest::SubmitPrompts(batch) if batch.prompts.iter().any(|prompt| crate::runtime::state::is_sudo_prompt(&prompt.prompt)))
+        if matches!(&request, LocalDaemonRequest::SubmitPrompts(batch) if batch.prompts.iter().any(|prompt| crate::runtime::state::is_sudo_prompt(&prompt.prompt) || crate::runtime::state::is_sudo_control(&prompt.prompt)))
         {
             return Err(crate::runtime::kernel_access::error(
                 "submit /sudo individually so each entry has its own popup",

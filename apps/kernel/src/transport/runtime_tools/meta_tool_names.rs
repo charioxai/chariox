@@ -1,6 +1,13 @@
 use super::*;
 
 pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
+    if let Some(name) = super::room_tool_names::canonical_room_tool_name(tool_name) {
+        return Some(name);
+    }
+    canonical_legacy_meta_tool_name(tool_name)
+}
+
+pub(super) fn canonical_legacy_meta_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
         META_SESSION_OVERVIEW_TOOL
         | "chariox_meta_session_overview"
@@ -223,12 +230,6 @@ pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
         | "mcp__chariox__meta_workflow_registry_run"
         | "mcp__chariox__chariox_meta_workflow_registry_run" => {
             Some(META_WORKFLOW_REGISTRY_RUN_TOOL)
-        }
-        META_RESOLVE_RUNTIME_INTERACTION_TOOL
-        | "chariox_meta_resolve_runtime_interaction"
-        | "mcp__chariox__meta_resolve_runtime_interaction"
-        | "mcp__chariox__chariox_meta_resolve_runtime_interaction" => {
-            Some(META_RESOLVE_RUNTIME_INTERACTION_TOOL)
         }
         _ => None,
     }

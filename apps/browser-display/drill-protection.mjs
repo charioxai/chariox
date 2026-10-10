@@ -15,7 +15,7 @@ export async function stressProtection({page,pair,pause,resource,repetitions}) {
   const settled=await verifyContinuousSettled(()=>pair(`mask-${iteration}-settle`));
   await page.evaluate(()=>mdStream.stop());
   const recovery=await page.evaluate(async()=>{
-   // MP-08/MP-10 (475): a pushed stream recovers by an ACKed key request.
+   // MP-08/MP-10 (491): a pushed stream recovers by an ACKed key request.
    const previous=mdStream.presenter.sequence;if(mdStream.push)mdStream.requestKey();else mdStream.presenter.sequence=0;
    const deadline=performance.now()+10000;let frame;
    const isIndependent=frame=>frame.kind==='png'||frame.kind==='video'&&frame.key||frame.kind==='stripes'&&frame.stripes.length===8&&frame.stripes.every(r=>r.key);

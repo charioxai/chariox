@@ -491,12 +491,10 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == PASTE_SECRET_TO_COMPUTER_TOOL_ALIAS));
-        assert!(specs
+        // MP-08/MP-10/MP-11 A06: generation is sudo-only (`chariox.vault.generate`).
+        assert!(!specs
             .iter()
-            .any(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL_ALIAS));
+            .any(|spec| spec.name.contains("generated_credential")));
         assert!(specs
             .iter()
             .any(|spec| spec.name == REQUEST_CREDENTIAL_SECRET_TOOL));
@@ -505,8 +503,8 @@ mod workspace_live_sync_tests {
             .any(|spec| spec.name == REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS));
         let create = specs
             .iter()
-            .find(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL)
-            .expect("generated credential tool spec");
+            .find(|spec| spec.name == REQUEST_CREDENTIAL_SECRET_TOOL)
+            .expect("requested credential tool spec");
         assert!(
             create.input_schema["properties"]["credential"]["properties"]["allowed_uses"]["items"]
                 ["enum"]
@@ -673,7 +671,7 @@ mod workspace_live_sync_tests {
     fn canonical_credential_tool_name_accepts_browser_paste_aliases() {
         assert_eq!(
             canonical_credential_tool_name("mcp__chariox__chariox_create_generated_credential"),
-            Some(CREATE_GENERATED_CREDENTIAL_TOOL)
+            None
         );
         assert_eq!(
             canonical_credential_tool_name("request_credential_secret"),
@@ -920,4 +918,21 @@ fn popup_notice_schema_accepts_one_fixed_choice() {
         let spec = specs.iter().find(|spec| spec.name == name).unwrap();
         assert_eq!(spec.input_schema["properties"]["choices"]["minItems"], 1);
     }
+}
+
+// MP-08 / MP-10 / MP-11 A02 S02–S03: ordinary messages never silently steer.
+#[test]
+fn a02_agent_message_defaults_are_nonurgent_and_no_reply() {
+    let args: SendAgentMessageArgs = serde_json::from_value(serde_json::json!({
+        "agent": "peer", "message": "review result", "origin_prompt_id": "turn-1"
+    }))
+    .unwrap();
+    let value = serde_json::to_value(args).unwrap();
+    assert_eq!(value["urgent"], false);
+    assert_eq!(value["reply_requested"], false);
+    let spec = agent_messaging_runtime_tool_specs()
+        .into_iter()
+        .find(|s| s.name == SEND_AGENT_MESSAGE_TOOL)
+        .unwrap();
+    assert_eq!(spec.input_schema["properties"]["urgent"]["type"], "boolean");
 }

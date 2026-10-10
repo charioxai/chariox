@@ -20,6 +20,11 @@ export function userDomainUseNotice(notice: UserDomainGrantEvent["notice"]): str
   return notice ? `Agent ${notice.agent_id} used retained access to ${userDomainResourceLabel(notice.resource)} while not focused.` : null
 }
 export function userDomainGrantExpiry(grant: UserDomainGrant): string {
+  if (grant.expires_at_ms !== undefined && grant.expires_at_ms !== null) {
+    const deadline = grant.idle_since_ms === null ? grant.expires_at_ms
+      : Math.min(grant.expires_at_ms, grant.idle_since_ms + grant.idle_timeout_seconds * 1000)
+    return new Date(deadline).toISOString()
+  }
   return grant.idle_since_ms === null ? "Retained during work or pending wake"
     : new Date(grant.idle_since_ms + grant.idle_timeout_seconds * 1000).toISOString()
 }

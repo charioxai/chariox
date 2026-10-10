@@ -3,6 +3,7 @@ import type {
   AgentInstance,
   AgentPromptState,
   AgentRuntimeActivity,
+  KernelSudoTurn,
   PromptQueueItem,
   RuntimeInteraction,
   SessionInvite,
@@ -47,6 +48,9 @@ export type RuntimeSession = {
   agent_activity?: Record<string, AgentRuntimeActivity>
   agent_activity_revision?: number
   active_interactions?: RuntimeInteraction[]
+  agent_tasks?: AgentTaskExecution[]
+  // Protocol 460: live sudo windows for every client's status row.
+  sudo_windows?: KernelSudoTurn[]
   metaagent_tasks?: MetaagentTask[]
   queued_metaagent_tasks?: QueuedMetaagentTask[]
   agent_prompt_schedules?: AgentPromptSchedule[]
@@ -349,4 +353,16 @@ export type WorkspaceLiveSyncStatus = {
   targets: WorkspaceLiveSyncTargetStatus[]
   conflicts: WorkspaceLiveSyncConflictSummary[]
   ignore: WorkspaceLiveSyncIgnoreStatus
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A02, protocol 452.
+export type AgentTaskExecution = {
+  task_id: string; room_id: string; owner_user_id: string; agent_id: string; prompt_id: string
+  provider_run_id: string | null; revision: number; blocked_revision: number
+  state: "working" | "waiting" | "blocked" | "done" | "cancelled"
+  reason: string
+  obligations: { id: string; kind: string; resource_id: string | null; completion_task_id: string | null; status: string; dispatch_state: string }[]
+  wait: { registration_ids: string[]; deadline_ms: number; started_at_ms: number; inbox_cursor: number; long_wait_notified: boolean; last_checked_at_ms: number } | null
+  last_progress_at_ms: number; progress_sequence: number; no_progress_wakes: number
+  correction_used: boolean; pending_prompt_id: string | null
 }

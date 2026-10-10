@@ -286,6 +286,39 @@ pub(crate) struct KernelPreparedPromptSubmission {
     pub(crate) refresh_projection: bool,
 }
 
+impl KernelPreparedPromptSubmission {
+    pub(crate) fn prepare_task_prompt_identity(
+        &mut self,
+        allocate: impl FnOnce() -> String,
+    ) -> Result<(), DaemonError> {
+        use sha2::{Digest, Sha256};
+        if self.prompt.id().starts_with("pending-draft:") {
+            self.prompt = self.prompt.clone().with_id(allocate());
+        }
+        // Durable task admission and provider receipts must identify the same
+        // prompt through queueing, promotion and replay. Reuse the existing
+        // durable-operation contract, including its collision check.
+        if self.prompt.durable_operation_id().is_none() {
+            let request = serde_json::to_vec(&(
+                &self.session_id,
+                self.prompt.target_agent_id(),
+                self.prompt.prompt(),
+                self.prompt.attachments(),
+                self.prompt.hidden_system_context(),
+            ))
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "prepare task prompt identity",
+                message: error.to_string(),
+            })?;
+            self.prompt = self
+                .prompt
+                .clone()
+                .with_durable_operation(self.prompt.id(), format!("{:x}", Sha256::digest(request)));
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct KernelPromptAdmission {
     pub(crate) session_id: String,
     pub(crate) attachment_id: String,
@@ -663,6 +696,44 @@ impl DaemonApp {
             .providers
             .drain_finished_structured_prompt_submit_jobs();
         for finished in finished_jobs {
+            match crate::durable_state::agent_lifecycle::finish_provider_event_submit(
+                &self.durable_state,
+                self.providers.structured_submit_epoch(),
+                &finished,
+            ) {
+                Ok(Some(receipt)) => {
+                    if let Some(notice) = receipt.notice {
+                        self.record_notice(
+                            &finished.session_id,
+                            Some(&finished.provider_run_id),
+                            self.attachments
+                                .list_session_attachment_ids(&finished.session_id),
+                            notice,
+                        );
+                    }
+                    if receipt.steered || receipt.stale {
+                        continue;
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    self.providers
+                        .schedule_finished_structured_prompt_submit_retry(finished);
+                    continue;
+                }
+            }
+            match crate::runtime::state::notification_delivery::finish_structured_notification_submit(
+                &self.durable_state,
+                &self.sessions,
+                &finished,
+            ) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(_) => {
+                    self.providers.schedule_finished_structured_prompt_submit_retry(finished);
+                    continue;
+                }
+            }
             let settlement_retry_attempt = finished.settlement_retry_attempt;
             let retry_acknowledgement = finished.result.as_ref().ok().cloned();
             let retry_session_id = finished.session_id.clone();

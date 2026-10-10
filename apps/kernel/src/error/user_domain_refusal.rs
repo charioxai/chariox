@@ -9,6 +9,7 @@ pub enum UserDomainRefusalReason {
     StaleReference,
     NotGranted,
     SensitiveRequiresFocus,
+    NotRequested,
 }
 impl UserDomainRefusalReason {
     pub(crate) fn code(self) -> &'static str {
@@ -19,6 +20,7 @@ impl UserDomainRefusalReason {
             Self::StaleReference => "user_domain_stale_reference",
             Self::NotGranted => "user_domain_not_granted",
             Self::SensitiveRequiresFocus => "user_domain_sensitive_requires_focus",
+            Self::NotRequested => "user_domain_not_requested",
         }
     }
     pub(crate) fn from_code(code: &str) -> Option<Self> {
@@ -29,6 +31,7 @@ impl UserDomainRefusalReason {
             Self::StaleReference,
             Self::NotGranted,
             Self::SensitiveRequiresFocus,
+            Self::NotRequested,
         ]
         .into_iter()
         .find(|r| r.code() == code)
@@ -39,6 +42,7 @@ impl UserDomainRefusalReason {
         match message {
             "MD-3: current local focus required"
             | "MD-N4: current focused agent required"
+            | "MD-3: not_focused_agent: browser stop requires live owner focus"
             | "MP-08: not_focused_agent: new user-domain resource requires focus; focus this agent"
             | "MP-08: not_focused_agent: user-domain browser access requires current local agent focus; ask the user to focus this agent"
             | "MD-3: user-domain browser access follows current local agent focus" => {
@@ -75,11 +79,19 @@ impl UserDomainRefusalReason {
             | "MP-11: not_granted: provider run ended; user-domain authority revoked"
             | "MP-08: not_granted: user-domain access expired or revoked; focus this agent again"
             | "MP-08: not_granted: user-domain access expired or revoked; ask the user to focus this agent"
+            | "MP-08: leased or remote agents use their Room Browser/Computer route; user-domain control is unavailable"
             | "MP-08: not_granted: user-domain grant revoked"
             | "MP-08: not_granted: revoked subscription"
+            | "MP-08: not_granted: transfer must name resources the caller holds"
+            | "MP-11: not_granted: grant state changed while acquisition was pending"
             | "MD-N4: note grant changed" => Some(Self::NotGranted),
             "MP-11: sensitive_requires_focus: sensitive user-domain action requires focus or human approval; focus this agent"
             | "MP-11: sensitive_requires_focus: Vault fill requires focus or human approval; ask the user to focus this agent" => Some(Self::SensitiveRequiresFocus),
+            crate::runtime::user_domain_access::NOT_REQUESTED_OPEN
+            | crate::runtime::user_domain_access::NOT_REQUESTED_LOAD
+            | "MP-08: not_requested: child already holds its own user-domain grant" => {
+                Some(Self::NotRequested)
+            }
             _ => None,
         }
     }

@@ -42,7 +42,7 @@ for (const kind of ["access_grant", "access_extension"] as const) {
           return createCliKernelApprovalComposition({
             client: client as never, renderer: h.renderer,
             session: () => ({ id: sessionId, agents: [] }) as unknown as RuntimeSession,
-            connected: () => true, attached: () => true, kernelConnected: () => true,
+            connected: () => true, attached: () => true, kernelConnected: () => true, attachmentId: () => null,
             flashFooter() {}, dimensions: () => ({ width: 100, height: 36 }), themeRevision: () => 0,
             currentFocus: () => null, promptFocus: () => null, closeOtherDialog() {}, applySession() {},
             notify(message) { notices.push(message) },
@@ -319,7 +319,7 @@ test("shared approval command opener handles waiting room, empty session and pen
     return createCliKernelApprovalComposition({
       client: { onKernelEvent: () => () => {} } as never, renderer: h.renderer,
       session: () => ({ id: "session", agents: [], active_interactions: interactions }) as unknown as RuntimeSession,
-      connected: () => true, attached: () => attached, kernelConnected: () => true, notify() {},
+      connected: () => true, attached: () => attached, kernelConnected: () => true, notify() {}, attachmentId: () => null,
       flashFooter: (message, tone) => flashes.push(`${tone}:${message}`),
       dimensions: () => ({ width: 80, height: 24 }), themeRevision: () => 0,
       currentFocus: () => prompt, promptFocus: () => prompt,

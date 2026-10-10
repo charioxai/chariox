@@ -1,5 +1,6 @@
 //! MP-08/MP-11: host wiring for grants, scope checks and subscription retirement.
 use super::*;
+use crate::runtime::user_domain_access::{DEFAULT_GRANT_LIFETIME, MAX_GRANT_LIFETIME};
 use std::time::Instant;
 
 impl KernelBrowserHost {
@@ -22,13 +23,228 @@ impl KernelBrowserHost {
         Ok(())
     }
 
+    // MP-11: a replacement must close the old epoch's subscriptions, including
+    // delegated descendants. Cleanup retains exact scope IDs across refocus.
+    fn update_grant<T>(
+        &self,
+        user: &str,
+        agent: Option<&str>,
+        update: impl FnOnce(&mut HostState) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| "MD-3: grant lock unavailable")?;
+        let retired = agent
+            .map(|id| state.access.retirement_snapshot(user, id))
+            .unwrap_or_default();
+        let result = update(&mut state);
+        let retired: Vec<_> = retired
+            .into_iter()
+            .filter(|old| old.epoch.requested())
+            .collect();
+        for old in &retired {
+            if state.access.grant(user, &old.agent).is_err() {
+                state
+                    .loaded
+                    .retain(|(owner, id, _)| owner != user || id != &old.agent);
+            }
+        }
+        let model = state.actors.get(user).cloned();
+        let backend = state.browsers.get(user).cloned();
+        drop(state);
+        let agents = retired
+            .iter()
+            .map(|old| old.agent.clone())
+            .collect::<Vec<_>>();
+        let subscriptions = retired
+            .iter()
+            .flat_map(|old| old.subscriptions.iter().cloned())
+            .collect();
+        let scopes = retired.into_iter().map(|old| old.scope).collect();
+        self.retire_actors(user, &agents, model);
+        Self::cancel_subscriptions(backend, subscriptions, scopes);
+        result
+    }
+
     pub(crate) fn set_focus(&self, user: &str, agent: Option<&str>) {
+        let _ = self.update_grant(user, agent, |state| {
+            state.access.focus(user, agent);
+            Ok(())
+        });
+        self.arm_expiry();
+        crate::transport::mcp_server::catalog_changed();
+    }
+    /// MP-08/MP-11: lifetime of a new grant; an operator override is bounded
+    /// by the 24-hour maximum.
+    pub(crate) fn grant_lifetime(requested_hours: Option<u64>) -> Result<Duration, String> {
+        if let Some(hours) = requested_hours {
+            if !(1..=24).contains(&hours) {
+                return Err("MP-08: grant lifetime must be 1 to 24 hours".into());
+            }
+            return Ok(Duration::from_secs(hours * 3600));
+        }
+        Ok(std::env::var("CHARIOX_USER_DOMAIN_GRANT_LIFETIME_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(DEFAULT_GRANT_LIFETIME)
+            .min(MAX_GRANT_LIFETIME))
+    }
+    /// MP-08/MP-11: an owner-requested turn grants and loads browser tools
+    /// without focus. Returns whether a new grant was created.
+    pub(crate) fn request_grant(
+        &self,
+        user: &str,
+        agent: &str,
+        prompt_id: &str,
+        lifetime: Duration,
+        expected_fence: Option<u64>,
+        session: &str,
+    ) -> Result<bool, String> {
+        tokio::runtime::Handle::try_current()
+            .map_err(|_| "MP-11: a live runtime is required for grant expiry")?;
+        let created = self.update_grant(user, Some(agent), |state| {
+            if state.stopped
+                || expected_fence
+                    .is_some_and(|fence| state.access.acquisition_fence(user, agent) != fence)
+            {
+                return Err(
+                    "MP-11: not_granted: grant state changed while acquisition was pending".into(),
+                );
+            }
+            let created = state.access.request(user, agent, prompt_id, lifetime);
+            state.access.bind(
+                user,
+                agent,
+                session,
+                true,
+                (Instant::now(), crate::session::unix_epoch_ms()),
+                Self::idle_window(),
+            );
+            state
+                .loaded
+                .insert((user.into(), agent.into(), KernelBrowserCapability::Browser));
+            Ok(created)
+        })?;
+        self.arm_expiry();
+        crate::transport::mcp_server::catalog_changed();
+        Ok(created)
+    }
+    /// MP-08/MP-11: explicit subset transfer to a direct child (checked by the caller).
+    pub(crate) fn transfer_grant(
+        &self,
+        admission: &KernelBrowserAdmission,
+        child: &str,
+        resources: &[UserDomainResource],
+    ) -> Result<(), String> {
+        self.check_admission(Some(admission))?;
+        let parent = admission
+            .agent
+            .as_deref()
+            .ok_or("MP-08: admitted agent required")?;
+        self.update_grant(&admission.user, Some(child), |state| {
+            Self::check_admission_epoch(state, admission)?;
+            state
+                .access
+                .transfer(&admission.user, parent, child, resources)?;
+            let user = admission.user.clone();
+            state
+                .loaded
+                .insert((user.clone(), child.into(), KernelBrowserCapability::Browser));
+            if resources
+                .iter()
+                .any(|resource| matches!(resource, UserDomainResource::Note { .. }))
+            {
+                state
+                    .loaded
+                    .insert((user, child.into(), KernelBrowserCapability::Notes));
+            }
+            Ok(())
+        })?;
+        self.arm_expiry();
+        crate::transport::mcp_server::catalog_changed();
+        Ok(())
+    }
+    /// MP-08/MP-11: one live wake per host revokes grants at their absolute
+    /// expiry, including idle subscribers and in-flight calls (epoch cancel).
+    pub(super) fn arm_expiry(&self) {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(wake) = state.expiry_wake.as_ref() {
+            wake.notify_one();
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let wake = Arc::new(tokio::sync::Notify::new());
+        state.expiry_wake = Some(wake.clone());
+        drop(state);
+        let inner = Arc::downgrade(&self.inner);
+        let root = self.root.clone();
+        handle.spawn(async move {
+            loop {
+                let Some(inner) = inner.upgrade() else {
+                    return;
+                };
+                let host = KernelBrowserHost {
+                    inner,
+                    root: root.clone(),
+                };
+                if host.inner.lock().unwrap_or_else(|e| e.into_inner()).stopped {
+                    return;
+                }
+                let next = host.expire_due();
+                drop(host);
+                match next {
+                    Some(deadline) => {
+                        tokio::select! {
+                            _ = tokio::time::sleep_until(deadline.into()) => {}
+                            _ = wake.notified() => {}
+                        }
+                    }
+                    None => wake.notified().await,
+                }
+            }
+        });
+    }
+    /// Revokes every expired grant; returns the next expiry still pending.
+    pub(crate) fn expire_due(&self) -> Option<Instant> {
+        let due = {
+            let state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            state
+                .access
+                .due_retention(Instant::now(), Self::idle_window())
+                .into_iter()
+                .filter_map(|(user, agent)| {
+                    state
+                        .access
+                        .raw_epoch(&user, &agent)
+                        .map(|epoch| (user, agent, epoch))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (user, agent, epoch) in due {
+            self.revoke_grants_at_epoch(&user, Some(&agent), Some(epoch));
+        }
+        let expired = {
+            let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            state
+                .access
+                .expired_subscriptions(Instant::now())
+                .into_iter()
+                .map(|(user, ids)| (state.browsers.get(&user).cloned(), ids))
+                .collect::<Vec<_>>()
+        };
+        for (backend, ids) in expired {
+            Self::cancel_subscriptions(backend, ids, Vec::new());
+        }
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .access
-            .focus(user, agent);
-        crate::transport::mcp_server::catalog_changed();
+            .next_expiry(Self::idle_window())
     }
     pub(crate) fn focused_agent(&self, user: &str) -> Option<String> {
         self.inner
@@ -64,16 +280,21 @@ impl KernelBrowserHost {
     }
     pub(crate) fn bind_activity(&self, user: &str, agent: &str, session: &str, busy: bool) {
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let subscriptions = state
-            .access
-            .grant(user, agent)
-            .map(|g| g.subscriptions.keys().cloned().collect::<Vec<_>>())
-            .unwrap_or_default();
-        let scopes = state
-            .access
-            .grant(user, agent)
-            .map(|g| vec![g.subscription_owner.clone()])
-            .unwrap_or_default();
+        let holders = state.access.revocation_set(user, Some(agent));
+        let subscriptions = holders
+            .iter()
+            .flat_map(|(owner, id)| {
+                state
+                    .access
+                    .grant(owner, id)
+                    .map(|grant| grant.subscriptions.keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let scopes = holders
+            .iter()
+            .filter_map(|(owner, id)| state.access.subscription_owner(owner, id))
+            .collect();
         if state.access.bind(
             user,
             agent,
@@ -82,16 +303,30 @@ impl KernelBrowserHost {
             (Instant::now(), crate::session::unix_epoch_ms()),
             Self::idle_window(),
         ) {
-            state
-                .loaded
-                .retain(|(owner, id, _)| owner != user || id != agent);
+            state.loaded.retain(|(owner, id, _)| {
+                owner != user || !holders.iter().any(|(_, held)| held == id)
+            });
             let model = state.actors.get(user).cloned();
             let backend = state.browsers.get(user).cloned();
             drop(state);
-            self.retire_actors(user, &[agent.to_string()], model);
+            self.retire_actors(
+                user,
+                &holders.into_iter().map(|(_, id)| id).collect::<Vec<_>>(),
+                model,
+            );
             Self::cancel_subscriptions(backend, subscriptions, scopes);
             crate::transport::mcp_server::catalog_changed();
+        } else {
+            drop(state);
         }
+        self.arm_expiry();
+    }
+    pub(crate) fn acquisition_fence(&self, user: &str, agent: &str) -> u64 {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .access
+            .acquisition_fence(user, agent)
     }
     pub(crate) fn grant_snapshot(&self, user: &str, kernel: &str) -> Value {
         self.inner
@@ -101,30 +336,40 @@ impl KernelBrowserHost {
             .snapshot(user, kernel, Self::idle_window())
     }
     pub(crate) fn revoke_grants(&self, user: &str, agent: Option<&str>) {
+        self.revoke_grants_at_epoch(user, agent, None);
+    }
+    fn revoke_grants_at_epoch(
+        &self,
+        user: &str,
+        agent: Option<&str>,
+        expected: Option<Arc<BrowserCancellation>>,
+    ) {
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let holders = state.access.holders();
+        if expected.is_some_and(|epoch| {
+            agent
+                .and_then(|agent| state.access.raw_epoch(user, agent))
+                .is_none_or(|current| !Arc::ptr_eq(&epoch, &current))
+                || !state
+                    .access
+                    .due_retention(Instant::now(), Self::idle_window())
+                    .iter()
+                    .any(|(owner, id)| owner == user && Some(id.as_str()) == agent)
+        }) {
+            return;
+        }
+        // Delegated child grants are revoked with their parent.
+        let holders = state.access.revocation_set(user, agent);
         let scopes = holders
             .iter()
-            .filter(|(owner, id)| owner == user && agent.is_none_or(|agent| id == agent))
-            .filter_map(|(owner, id)| {
-                state
-                    .access
-                    .grant(owner, id)
-                    .ok()
-                    .map(|grant| grant.subscription_owner.clone())
-            })
+            .filter_map(|(owner, id)| state.access.subscription_owner(owner, id))
             .collect();
         let subscriptions = state.access.revoke(user, agent);
         state
             .loaded
-            .retain(|(owner, id, _)| owner != user || agent.is_some_and(|agent| id != agent));
+            .retain(|(owner, id, _)| owner != user || !holders.iter().any(|(_, held)| held == id));
         let model = state.actors.get(user).cloned();
         let backend = state.browsers.get(user).cloned();
-        let retired = holders
-            .into_iter()
-            .filter(|(owner, id)| owner == user && agent.is_none_or(|agent| id == agent))
-            .map(|(_, id)| id)
-            .collect::<Vec<_>>();
+        let retired = holders.into_iter().map(|(_, id)| id).collect::<Vec<_>>();
         drop(state);
         self.retire_actors(user, &retired, model);
         Self::cancel_subscriptions(backend, subscriptions, scopes);
@@ -262,6 +507,20 @@ impl KernelBrowserHost {
         state
             .access
             .prune_subscriptions(&admission.user, agent, Instant::now());
+        // MP-08/MP-11 SB-02: Stop shuts down the owner's entire browser,
+        // including unrelated tabs/displays. New-tabs approval cannot grant it.
+        if params["op"] == "stop" && state.access.focused(&admission.user) != Some(agent) {
+            return Err("MD-3: not_focused_agent: browser stop requires live owner focus".into());
+        }
+        // MP-08/MP-11: a delegated subset never widens: no new tabs or lifecycle.
+        if matches!(
+            state.access.grant(&admission.user, agent)?.cause,
+            crate::runtime::user_domain_access::GrantCause::Delegated(_)
+        ) && state.access.focused(&admission.user) != Some(agent)
+            && matches!(params["op"].as_str(), Some("open" | "start" | "stop"))
+        {
+            return Err(crate::runtime::user_domain_access::NOT_REQUESTED_OPEN.into());
+        }
         if params["op"] == "open"
             && state.access.grant(&admission.user, agent)?.resources.len() >= 1024
         {
@@ -296,7 +555,7 @@ impl KernelBrowserHost {
                 &admission.user,
                 agent,
                 UserDomainResource::BrowserTab { tab_id: tab.into() },
-                method == "host.secret",
+                method == "host.secret" && !admission.elevated,
             )?;
         } else if !matches!(
             params["op"].as_str(),

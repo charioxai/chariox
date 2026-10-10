@@ -98,8 +98,17 @@ async fn kernel_access_external_holder_cannot_manage_vault_or_choose_new_passkey
         holder.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}))["error"]
             .is_null()
     );
+    // MP-08/MP-11: main permits routine answers under the user grant; only
+    // critical and credential interactions remain terminal-only.
     kernel.control("agent-question").await;
     assert!(holder.request(answer("routine-access-question", "continue", None))["error"].is_null());
+    assert!(
+        kernel
+            .request(answer("routine-access-question", "continue", None))
+            .await["error"]
+            .is_object(),
+        "the first routine answer closes the shared interaction"
+    );
 }
 
 #[tokio::test]

@@ -144,7 +144,7 @@ pub mod terminal_output_executor;
 pub(crate) mod terminal_pairings;
 pub(crate) mod user_config_executor;
 pub(crate) mod user_config_policy;
-mod user_domain_access;
+pub(crate) mod user_domain_access;
 pub(crate) mod waiting_room_activity;
 pub(crate) mod waiting_room_control;
 pub(crate) mod waiting_room_public_projection;
@@ -165,4 +165,8 @@ pub(crate) mod workspace_worktrees;
 pub(crate) mod kernel_access;
 
 pub(crate) mod relay_peer_authority;
+
+pub(crate) mod room_tool_admission;
+
+pub(crate) mod room_dispatch_registration;
 mod user_app_views;

@@ -1,6 +1,7 @@
 //! MD-5: user-domain scope over the Room Vault/observation implementation.
 use super::kernel_browser_runtime::{host_error, PASTE};
 use super::*;
+use crate::local::KernelSudoTurn;
 use crate::runtime::browser_controller_action::BrowserLocatorAction;
 use crate::runtime::kernel_browser_host::{KernelBrowserAdmission, KernelBrowserHost};
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
@@ -143,47 +144,76 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         arguments: Value,
         admission: KernelBrowserAdmission,
+        sudo_turn: Option<&KernelSudoTurn>,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let args: PasteArgs = serde_json::from_value(arguments)
             .map_err(|_| host_error("MD-5: invalid Vault input arguments".into()))?;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         let user = user.as_str();
         require_vault_owner(user)?;
-        self.owned
-            .kernel_browser_host
-            .check_admission(Some(&admission))
-            .map_err(host_error)?;
+        let check_authority = || {
+            self.owned
+                .kernel_browser_host
+                .check_admission(Some(&admission))
+                .map_err(host_error)
+        };
+        check_authority()?;
         // Validate the observed document before prompting for unlock. Recheck
         // metadata, focus and target afterward, under the actual input barrier.
         let url = self
             .kernel_browser_secret_target_url(user, &admission, &args)
             .await?;
-        self.home_runtime_secret_service()?
-            .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?;
+        check_authority()?;
+        crate::runtime::state::sudo::require_login_handle_scope(
+            self.home_runtime_secret_service()?
+                .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
+            session,
+            sudo_turn.is_some(),
+        )?;
+        let protection = &self.owned.kernel_browser_secret_observations;
+        let scope = KernelBrowserHost::profile_key(user);
+        // MP-11 A06: discovery fixes the protection epoch the fill relies on.
+        let epoch = protection.revision(&scope)?;
         let _unlock = self
             .ensure_vault_unlocked_for_agent(session, agent.id(), "kernel_browser_paste_secret")
             .await?;
-        let protection = &self.owned.kernel_browser_secret_observations;
-        let scope = KernelBrowserHost::profile_key(user);
+        check_authority()?;
         let (service, _vault_guard) = self
             .scoped_secret_input_service(protection, &scope, &args.credential_id)
             .await?;
+        check_authority()?;
         let _barrier = protection.barrier(&scope)?.write_owned().await;
+        check_authority()?;
         let current = self.owned.agent_store.get_agent(agent.id())?;
+        let authorized = match sudo_turn {
+            Some(turn) => self.sudo_turn_live(turn),
+            None => self.owned.session_snapshot(session)?.focused_agent_id() == Some(agent.id()),
+        };
         if current.session_id() != session
             || current.owner_user_id() != agent.owner_user_id()
-            || self.owned.session_snapshot(session)?.focused_agent_id() != Some(agent.id())
+            || !authorized
         {
             return Err(host_error(
-                "MD-3: current local focus required after Vault wait".into(),
+                "MD-3: current local focus or sudo window required after Vault wait".into(),
             ));
         }
         require_vault_owner(
             &self.provider_account_authority_owner_user_id(current.owner_user_id()),
         )?;
+        if protection.revision(&scope)? != epoch {
+            return Err(host_error(
+                "MP-11: observation protection changed during the Vault wait; observe the page again".into(),
+            ));
+        }
         let url = self
             .kernel_browser_secret_target_url_bound(user, &admission, &args)
             .await?;
+        check_authority()?;
+        crate::runtime::state::sudo::require_login_handle_scope(
+            service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
+            session,
+            sudo_turn.is_some(),
+        )?;
         let secret = zeroize::Zeroizing::new(
             service.browser_secret_input_for_target_url(&args.credential_id, &url)?,
         );
@@ -197,6 +227,7 @@ impl KernelRuntimeState {
                 true,
             )
             .await?;
+        check_authority()?;
         let target = snapshot["snapshot"]["target_id"]
             .as_str()
             .ok_or_else(|| host_error("MD-5: missing target identity".into()))?;
@@ -216,6 +247,7 @@ impl KernelRuntimeState {
                 timeout_ms: 10_000,
             };
         protection.register_command(&scope, &command)?;
+        check_authority()?;
         self.kernel_browser_bound_operation(user, Some(&admission), "host.secret", json!({"tab_id":args.tab_id,"generation":args.generation,"document_id":args.document_id,"node_ref":args.node_ref,"action":action}), true).await?;
         Ok(RuntimeToolResult {
             ok: true,

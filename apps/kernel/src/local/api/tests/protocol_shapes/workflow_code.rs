@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_code_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
 
     let validate_request =
         LocalDaemonRequest::ValidateWorkflowCode(crate::local::ValidateWorkflowCodeRequest {
@@ -516,6 +516,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         },
     };
     let registry_entry = crate::workflow_code::WorkflowRegistryEntryMetadata {
+        created_by_agent_id: None,
         name: "toy-flow".to_string(),
         source_scope: crate::workflow_code::WorkflowRegistrySourceScope::Workspace,
         source_kind: crate::workflow_code::WorkflowRegistrySourceKind::SourceDirectory,

@@ -13,9 +13,9 @@ impl VaultUnlockGuard {
         }
     }
 
-    fn unlocked_until_expiry() -> Self {
+    fn unlocked_until_expiry(path: std::path::PathBuf) -> Self {
         Self {
-            path: None,
+            path: Some(path),
             lock_on_drop: false,
         }
     }
@@ -25,6 +25,14 @@ impl VaultUnlockGuard {
             path: None,
             lock_on_drop: false,
         }
+    }
+
+    /// No guard keeps the vault open: a lease can expire and another
+    /// operation's guard locks it for everyone. Re-check before reuse.
+    pub(crate) fn still_unlocked(&self) -> bool {
+        self.path.as_ref().is_none_or(|path| {
+            crate::secret::chariox_encrypted_vault_status(path).is_ok_and(|status| status.unlocked)
+        })
     }
 }
 
@@ -40,6 +48,22 @@ impl Drop for VaultUnlockGuard {
     }
 }
 
+struct CloseInteractionOnDrop {
+    state: KernelRuntimeState,
+    session_id: String,
+    interaction_id: String,
+}
+
+impl Drop for CloseInteractionOnDrop {
+    fn drop(&mut self) {
+        // No-op once the interaction was answered or timed out.
+        let _ = self
+            .state
+            .owned
+            .timeout_runtime_interaction(&self.session_id, &self.interaction_id);
+    }
+}
+
 impl KernelRuntimeState {
     pub(super) async fn prepare_provider_launch_request_with_vault(
         &self,
@@ -52,6 +76,29 @@ impl KernelRuntimeState {
         let config = self.owned.config_projection.snapshot();
         self.owned
             .prepare_provider_launch_request(request, config.runtime_mcp_url())
+    }
+
+    /// The human part of an idle provider reload: hold the returned guard
+    /// across `reload_agent_provider_if_idle` so the reload never prompts.
+    pub(super) async fn unlock_vault_for_agent_reload(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<VaultUnlockGuard, DaemonError> {
+        let Some(run) = self
+            .owned
+            .provider_store
+            .get_run_for_agent(session_id, agent_id)
+        else {
+            return Ok(VaultUnlockGuard::not_required());
+        };
+        let request = super::provider_reload::policy_reload_launch_request(
+            &run,
+            agent_id,
+            Default::default(),
+        );
+        self.ensure_provider_account_vault_unlocked_for_launch(&request, "reload provider run")
+            .await
     }
 
     async fn ensure_provider_account_vault_unlocked_for_launch(
@@ -215,6 +262,13 @@ impl KernelRuntimeState {
         let interaction_id = interaction.id().to_string();
         let timeout_sec = interaction.timeout_sec();
         let resolution_rx = self.create_terminal_credential_interaction(session_id, interaction)?;
+        // A cancelled waiter closes its popup instead of leaving it open to
+        // silently discard a passphrase.
+        let _close = CloseInteractionOnDrop {
+            state: self.clone(),
+            session_id: session_id.to_string(),
+            interaction_id: interaction_id.clone(),
+        };
         if let Some(timeout_sec) = timeout_sec {
             let state = self.clone();
             let timeout_session_id = session_id.to_string();
@@ -254,7 +308,7 @@ impl KernelRuntimeState {
             != crate::config::CredentialVaultUnlockPolicy::Always
             && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked
         {
-            return Ok(VaultUnlockGuard::unlocked_until_expiry());
+            return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path));
         }
         let session_id = session_id
             .or(command.session_id.as_deref())
@@ -328,12 +382,12 @@ impl KernelRuntimeState {
             crate::config::CredentialVaultUnlockPolicy::Always
         );
         if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
-            return Ok(VaultUnlockGuard::unlocked_until_expiry());
+            return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path));
         }
         let unlock_request_lock = vault_unlock_request_lock(&vault_path);
         let _dedupe_guard = unlock_request_lock.lock().await;
         if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
-            return Ok(VaultUnlockGuard::unlocked_until_expiry());
+            return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path));
         }
 
         let resolution = self
@@ -391,7 +445,7 @@ impl KernelRuntimeState {
         if lock_after_operation {
             Ok(VaultUnlockGuard::unlocked_for_operation(vault_path))
         } else {
-            Ok(VaultUnlockGuard::unlocked_until_expiry())
+            Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path))
         }
     }
 

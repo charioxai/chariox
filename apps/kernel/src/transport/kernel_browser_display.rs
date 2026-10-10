@@ -44,7 +44,10 @@ pub(crate) fn encode_display_event(event: KernelEvent) -> Result<Vec<u8>, String
             return Ok(());
         };
         let bytes = STANDARD
-            .decode(data.as_str().ok_or("MD-DISPLAY: display segment encoding")?)
+            .decode(
+                data.as_str()
+                    .ok_or("MD-DISPLAY: display segment encoding")?,
+            )
             .map_err(|_| "MD-DISPLAY: display segment encoding")?;
         object.insert(
             "data".into(),
@@ -126,8 +129,14 @@ mod tests {
         let length = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
         let header: Value = serde_json::from_slice(&bytes[8..8 + length]).unwrap();
         assert_eq!(header["event"], "kernel_browser_frame");
-        assert_eq!(header["frame"]["tiles"][0]["data"], serde_json::json!([0, 3]));
-        assert_eq!(header["frame"]["tiles"][1]["data"], serde_json::json!([3, 1]));
+        assert_eq!(
+            header["frame"]["tiles"][0]["data"],
+            serde_json::json!([0, 3])
+        );
+        assert_eq!(
+            header["frame"]["tiles"][1]["data"],
+            serde_json::json!([3, 1])
+        );
         assert!(header.to_string().find("data_base64").is_none());
         assert_eq!(&bytes[8 + length..], &[0, 1, 2, 255]);
         let bad = KernelEvent::KernelBrowserFrame {

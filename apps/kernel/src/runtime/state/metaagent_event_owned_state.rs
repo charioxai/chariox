@@ -144,6 +144,18 @@ impl KernelRuntimeState {
         completed_agent_id: &str,
         completion: &crate::session::PromptCompletion,
     ) -> Result<(), DaemonError> {
+        if self.owned.config_projection.snapshot().room_agent_tools {
+            let tasks = self
+                .owned
+                .durable_state_store
+                .agent_tasks(Some(session_id), Some(completed_agent_id))?;
+            if tasks.iter().any(|t| {
+                t.prompt_id == completion.completed.id()
+                    && t.state != crate::durable_state::agent_lifecycle::ExecutionState::Done
+            }) {
+                return Ok(());
+            }
+        }
         let completed_agent = self.owned.agent_store.get_agent(completed_agent_id)?;
         if completed_agent.is_metaagent() {
             return Ok(());
@@ -317,6 +329,7 @@ impl KernelRuntimeState {
         allow_steer: bool,
         force_queue: bool,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.authorize_current_external_command()?;
         let prompt_id = self.owned.session_store.reserve_prompt_id();
         let prompt = crate::session::PromptQueueItem::new(
             prompt_id.clone(),
@@ -328,12 +341,13 @@ impl KernelRuntimeState {
         .with_hidden_system_context(hidden_system_context);
         self.owned
             .ensure_metaagent_prompt_target_not_workflow_busy(session_id, target_agent_id)?;
+        let obligation =
+            self.register_room_dispatch_obligation(metaagent, "message", Some(target_agent_id))?;
         if allow_steer {
             if let Some(dispatches) = self
                 .owned
                 .steer_active_metaagent_prompt(session_id, &prompt)?
             {
-                self.spawn_workflow_prompt_dispatches(dispatches);
                 self.persist_metaagent_prompt_submission(
                     session_id,
                     metaagent,
@@ -342,6 +356,9 @@ impl KernelRuntimeState {
                     "steered",
                     None,
                 );
+                self.finish_room_dispatch(obligation.as_deref(), Some(&prompt_id), || {
+                    self.spawn_workflow_prompt_dispatches(dispatches);
+                })?;
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
@@ -359,7 +376,15 @@ impl KernelRuntimeState {
                 force_queue,
                 refresh_projection: true,
             })
-            .await?;
+            .await
+            .map_err(|error| {
+                crate::runtime::room_dispatch_registration::dispatch_error(
+                    obligation.as_deref(),
+                    None,
+                    Some(&prompt_id),
+                    error,
+                )
+            })?;
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
             (&submission.outcome, submission.dispatch.as_ref())
         {
@@ -388,12 +413,14 @@ impl KernelRuntimeState {
             audit_provider_run_id.as_deref(),
         );
         let agent_activity = self.agent_activity_for_session(&submission.session);
-        if let Some(dispatch) = submission.dispatch.take() {
-            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
-        }
-        if let Some(dispatch) = submission.remote_dispatch.take() {
-            self.spawn_remote_prompt_dispatch(dispatch);
-        }
+        self.finish_room_dispatch(obligation.as_deref(), Some(&prompt_id), || {
+            if let Some(dispatch) = submission.dispatch.take() {
+                self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
+            }
+            if let Some(dispatch) = submission.remote_dispatch.take() {
+                self.spawn_remote_prompt_dispatch(dispatch);
+            }
+        })?;
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({

@@ -4,6 +4,7 @@ pub(super) fn summarize_meta_agent(agent: &crate::agent::AgentInstance) -> serde
         "agent_ref": agent.agent_ref(),
         "alias": agent.alias(),
         "role": agent.role(),
+        "spawned_by_agent_id": agent.spawned_by_agent_id(),
         "provider": agent.provider(),
         "model": agent.model(),
     })
@@ -14,6 +15,7 @@ pub(super) fn summarize_meta_workflow(
 ) -> serde_json::Value {
     serde_json::json!({
         "id": workflow.id(),
+        "created_by_agent_id": workflow.created_by_agent_id(),
         "alias": workflow.alias(),
         "revision": workflow.revision(),
         "nodes": workflow
@@ -95,6 +97,7 @@ pub(super) fn summarize_meta_workflow_run(run: &crate::session::WorkflowRun) -> 
         .map(summarize_meta_workflow_intermediate_output);
     serde_json::json!({
         "id": run.id(),
+        "created_by_agent_id": run.created_by_agent_id(),
         "workflow_id": run.workflow_id(),
         "endpoint_id": run.endpoint_id(),
         "entry_node_id": run.entry_node_id(),

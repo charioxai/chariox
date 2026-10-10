@@ -54,7 +54,8 @@ fn mdaccess_cross_kernel_tool_names_both_kernels_and_badges_window() {
                 .install_kernel_browser_fixture(agent.owner_user_id(), &root);
             let state = human(&router, KernelBrowserCommand::State).await;
             assert_eq!(state["kernel_id"], window_kernel);
-            assert_eq!(state["focused_agent_kernel_id"], "execution-kernel");
+            // MP-08: a leased agent cannot retain owning-kernel browser focus.
+            assert!(state["focused_agent_kernel_id"].is_null());
             assert_eq!(state["reachable_by_focused_agent"], false);
             let error = tool(
                 &router,
@@ -63,10 +64,13 @@ fn mdaccess_cross_kernel_tool_names_both_kernels_and_badges_window() {
                 json!({}),
             )
             .await
-            .unwrap_err()
-            .to_string();
-            assert!(error.contains("execution-kernel") && error.contains(&window_kernel));
-            assert!(error.contains("Ask the user to focus"));
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                crate::DaemonError::UserDomainRefused {
+                    reason: crate::error::UserDomainRefusalReason::NotGranted
+                }
+            ));
             router.runtime_state().shutdown_cleanup().await.unwrap();
             std::fs::remove_dir_all(root).unwrap();
         })

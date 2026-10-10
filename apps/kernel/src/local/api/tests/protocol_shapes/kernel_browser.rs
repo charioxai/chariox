@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn kernel_browser_protocol_443_request_snapshots() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
     let cases = [
         (Command::Start, serde_json::json!({"op":"start"})),
         (Command::State, serde_json::json!({"op":"state"})),
@@ -130,8 +130,12 @@ fn kernel_browser_protocol_443_request_snapshots() {
 
 #[test]
 fn kernel_browser_protocol_443_response_snapshot() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
-    let result = serde_json::json!({"generation":2,"state":"ready","tabs":[{"tab_id":"host-tab-t","document_id":"d","url":"https://example.com/","title":"Example"}]});
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    let result = serde_json::from_str::<serde_json::Value>(include_str!(
+        "kernel-browser-agent-tabs-491.json"
+    ))
+    .unwrap()["KernelBrowser"]["result"]
+        .clone();
     let response = LocalDaemonResponse::KernelBrowser {
         result: result.clone(),
     };
@@ -143,12 +147,16 @@ fn kernel_browser_protocol_443_response_snapshot() {
 
 #[test]
 fn kernel_browser_display_protocol_475_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
     let commands = [
         Command::DisplaySubscribe {
             tab_id: "t".into(),
             generation: 2,
-            codecs: vec!["avc1.420033".into(), "png".into(), "chariox-stripes-v1".into()],
+            codecs: vec![
+                "avc1.420033".into(),
+                "png".into(),
+                "chariox-stripes-v1".into(),
+            ],
             bitrate: 2_000_000,
             device_scale_factor: 2,
         },
@@ -213,12 +221,30 @@ fn kernel_browser_display_protocol_475_shapes_and_hash() {
             crate::transport::kernel_browser_display::encode_display_event(event.clone()).unwrap(),
         )
     };
-    let snapshot = serde_json::json!({"requests":values,"event":binary(&event),"scroll":binary(&scroll)});
+    let snapshot =
+        serde_json::json!({"requests":values,"event":binary(&event),"scroll":binary(&scroll)});
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
         "422dea57f036781e882a57634a1a3bba953505038853725eb2b2aa0768f4d7ed"
+    );
+}
+
+#[test]
+fn mp08_agent_tabs_protocol_491_snapshot_and_hash() {
+    // MP-08/MP-11: allocated491 combines provenance/activity with the native display union.
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    let snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("kernel-browser-agent-tabs-491.json")).unwrap();
+    let response: LocalDaemonResponse = serde_json::from_value(snapshot.clone()).unwrap();
+    assert_eq!(serde_json::to_value(response).unwrap(), snapshot);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "cf8e119de5af3e428663bdd2795f6f75e68ac8aa2d3d76291f7c95795b259b55"
     );
 }

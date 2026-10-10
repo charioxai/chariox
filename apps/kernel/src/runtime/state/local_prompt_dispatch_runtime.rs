@@ -75,7 +75,7 @@ fn current_starting_workflow_provider_run(
 }
 
 impl KernelRuntimeOwnedState {
-    fn prompt_dispatch_matches_active_prompt(
+    pub(super) fn prompt_dispatch_matches_active_prompt(
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
     ) -> Result<bool, DaemonError> {
@@ -135,7 +135,8 @@ impl KernelRuntimeOwnedState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::runtime::state) mod tests {
+    mod inbox_recovery;
     use super::*;
     use crate::agent::CreateAgentRequest;
     use crate::app::KernelSessionService;
@@ -1257,7 +1258,7 @@ mod tests {
         );
     }
 
-    async fn runtime_with_active_prompt() -> (
+    pub(in crate::runtime::state) async fn runtime_with_active_prompt() -> (
         crate::test_support::TestWorktree,
         KernelRuntimeState,
         String,
@@ -1531,6 +1532,7 @@ mod tests {
                     process_id: "managed:claude:test-process".to_string(),
                     pid: None,
                     identity: None,
+                    endpoint_identity: None,
                     endpoint_mode: provider_run.endpoint_mode(),
                     process_label: provider_run.process_label().to_string(),
                     started_at_ms: provider_run.started_at_ms(),
@@ -3474,6 +3476,7 @@ impl KernelRuntimeState {
                     None,
                 );
             }
+            self.record_agent_event_dispatch_result(dispatch, &result)?;
             result
         }
     }
@@ -3574,10 +3577,36 @@ impl KernelRuntimeState {
                 operation: "submit prompt",
             });
         }
-        let hidden_system_context = owned.hidden_context_with_failed_requests(
+        let mut hidden_system_context = owned.hidden_context_with_failed_requests(
             &dispatch.agent_id,
             &dispatch.hidden_system_context,
         );
+        if owned.config_projection.snapshot().room_agent_tools {
+            if !dispatch.steering {
+                owned.durable_state_store.agent_lifecycle(
+                    crate::durable_state::agent_lifecycle::Operation::Begin {
+                        owner: owned
+                            .session_store
+                            .get_session(&dispatch.session_id)?
+                            .owner_user_id()
+                            .into(),
+                        room: dispatch.session_id.clone(),
+                        agent: dispatch.agent_id.clone(),
+                        prompt: dispatch.prompt_id.clone(),
+                        run: Some(dispatch.provider_run_id.clone()),
+                        now: crate::session::unix_epoch_ms(),
+                    },
+                )?;
+            }
+            if let Some(task) = owned
+                .durable_state_store
+                .agent_tasks(Some(&dispatch.session_id), Some(&dispatch.agent_id))?
+                .into_iter()
+                .find(|t| t.prompt_id == dispatch.prompt_id)
+            {
+                hidden_system_context = join_hidden_context(&hidden_system_context, &format!("<chariox-task-context>For chariox.events tools use task_id `{}` and origin_prompt_id `{}`. Final answers are done candidates; finish tracked obligations or yield on live sources with a future deadline. If owner action is required call chariox.events.blocked. Message events request no courtesy reply unless explicitly opted in.</chariox-task-context>", task.task_id, dispatch.prompt_id));
+            }
+        }
         if owned
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)
@@ -3617,6 +3646,7 @@ impl KernelRuntimeState {
             if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
                 return Ok(false);
             }
+            owned.bind_agent_event_submission(dispatch)?;
             let result = owned.provider_store.enqueue_structured_prompt_submit(
                 dispatch.session_id.clone(),
                 dispatch.provider_run_id.clone(),
@@ -3742,6 +3772,7 @@ impl KernelRuntimeState {
                 )?;
                 owned.consume_failed_requests(&dispatch.agent_id, &dispatch.prompt_id);
             }
+            owned.bind_agent_event_submission(dispatch)?;
             return Ok(true);
         }
         if uses_claude_native_bridge {
@@ -3785,6 +3816,7 @@ impl KernelRuntimeState {
                                 message: "prompt changed before native dispatch".into(),
                             });
                         }
+                        owned.bind_agent_event_submission(dispatch)?;
                         app.process_claude_native_prompt_dispatch_attempt_for_runtime(
                             &dispatch.session_id,
                             &dispatch.provider_run_id,
@@ -3864,6 +3896,7 @@ impl KernelRuntimeState {
                     message: "prompt changed before PTY dispatch".into(),
                 });
             }
+            owned_for_write.bind_agent_event_submission(&dispatch_for_write)?;
             writer.write_input(&provider_pty_input)
         });
         match tokio::time::timeout(std::time::Duration::from_secs(15), write_task).await {

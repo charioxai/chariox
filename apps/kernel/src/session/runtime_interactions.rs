@@ -402,6 +402,11 @@ impl RuntimeInteraction {
         self.title.as_deref()
     }
 
+    pub(crate) fn with_message(mut self, message: String) -> Self {
+        self.message = message;
+        self
+    }
+
     pub fn message(&self) -> &str {
         &self.message
     }

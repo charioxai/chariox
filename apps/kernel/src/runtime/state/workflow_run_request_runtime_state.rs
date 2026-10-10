@@ -12,6 +12,7 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::InvokeWorkflowEndpointRequest,
         caller_user_id: &str,
+        caller_agent_id: Option<&str>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
@@ -28,14 +29,31 @@ impl KernelRuntimeState {
             "invoke workflow endpoint",
         ) {
             Ok(()) => {
-                let (outcome, dispatches) = match owned.workflow_enqueue_prompt_and_maybe_start(
-                    &request.session_id,
-                    &request.workflow_ref,
-                    &request.endpoint_ref,
-                    request.prompt.clone(),
-                    request.queue_ref.as_deref(),
-                    request.publication_invocation.clone(),
-                ) {
+                let obligation = match caller_agent_id
+                    .map(|id| {
+                        let actor = self.owned.agent_store.get_agent(id)?;
+                        self.register_room_dispatch_obligation(
+                            &actor,
+                            "workflow_run",
+                            Some(&request.workflow_ref),
+                        )
+                    })
+                    .transpose()
+                {
+                    Ok(id) => id.flatten(),
+                    Err(error) => return (Err(error), None),
+                };
+                let (outcome, dispatches) = match owned
+                    .workflow_enqueue_prompt_by_agent_and_maybe_start(
+                        &request.session_id,
+                        &request.workflow_ref,
+                        &request.endpoint_ref,
+                        request.prompt.clone(),
+                        request.queue_ref.as_deref(),
+                        request.publication_invocation.clone(),
+                        caller_agent_id,
+                        obligation.as_deref(),
+                    ) {
                     Ok(outcome) => outcome,
                     Err(error) => return (Err(error), None),
                 };
@@ -48,7 +66,24 @@ impl KernelRuntimeState {
                     }
                     _ => None,
                 };
-                self.spawn_workflow_prompt_dispatches(dispatches);
+                let resource_id = match &outcome {
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                        workflow_run,
+                        ..
+                    } => workflow_run.id(),
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
+                        queued_prompt,
+                        ..
+                    } => queued_prompt.id(),
+                };
+                // Admission already committed: receipt failure must not discard dispatches.
+                if let Err(error) =
+                    self.finish_room_dispatch(obligation.as_deref(), Some(resource_id), || {
+                        self.spawn_workflow_prompt_dispatches(dispatches)
+                    })
+                {
+                    return (Err(error), None);
+                }
                 let refreshed_workflow_run = match dev_stub_workflow_run_id.as_deref() {
                     Some(workflow_run_id) => {
                         self.wait_for_dev_stub_workflow_run_start(

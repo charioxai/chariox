@@ -18,6 +18,12 @@ pub(super) struct Fixture {
 }
 impl Fixture {
     pub(super) fn new() -> Self {
+        Self::with_event(
+            "changed",
+            json!({"type":"object","additionalProperties":false,"properties":{}}),
+        )
+    }
+    pub(super) fn with_event(event_name: &str, payload_schema: serde_json::Value) -> Self {
         let root =
             std::env::temp_dir().join(format!("chariox-app-event-{:016x}", rand::random::<u64>()));
         std::fs::create_dir(&root).unwrap();
@@ -57,7 +63,7 @@ impl Fixture {
         let files=BTreeMap::from([
             ("runtime/main.js".into(),b"export default function register() {}".to_vec()),
             ("ui/index.html".into(),b"<!doctype html><title>Automation</title>".to_vec()),
-            ("schemas/events.json".into(),serde_json::to_vec(&json!({"events":[{"name":"changed","schemaVersion":1,"direction":"outgoing","payloadSchema":{"type":"object","additionalProperties":false,"properties":{}}}]})).unwrap()),
+            ("schemas/events.json".into(),serde_json::to_vec(&json!({"events":[{"name":event_name,"schemaVersion":1,"direction":"outgoing","payloadSchema":payload_schema}]})).unwrap()),
         ]);
         let bytes = pack(&manifest, &files, &key, &Limits::default()).unwrap();
         let verified = verify(&bytes, &VerificationPolicy::new(292, vec![publisher])).unwrap();

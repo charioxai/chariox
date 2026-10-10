@@ -8,12 +8,12 @@ test('MP-08/MP-10 recovery frees decoders while retaining the painted canvas',()
  p.close();assert.deepEqual([canvas.width,canvas.height],[1,1]);
 });
 test('MP-08/MP-10 subscription recovery forwards preserveFrame to actual presenter',async()=>{
- const canvas={width:1280,height:800};const transport={kernelProtocolVersion:475,displayEventEncoding:'CXD1',subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},onEvent:()=>()=>{},request:async({KernelBrowser:{command}})=>({KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s',generation:1}:{push:'running'}}})};
+ const canvas={width:1280,height:800};const transport={kernelProtocolVersion:491,displayEventEncoding:'CXD1',subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},onEvent:()=>()=>{},request:async({KernelBrowser:{command}})=>({KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s',generation:1}:{push:'running'}}})};
  const stream=await attachBrowserDisplay(canvas,transport,{tab_id:'t',generation:1});
  await stream.close({preserveFrame:true});assert.deepEqual([canvas.width,canvas.height],[1280,800]);
 });
 test('MP-08/MP-10 failed replacement registration preserves previous paint',async()=>{
- const canvas={width:1280,height:800};const transport={kernelProtocolVersion:475,displayEventEncoding:'CXD1',subscribeDisplay:async()=>{throw Error('relay disconnected')},onEvent:()=>()=>{},request:async({KernelBrowser:{command}})=>({KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s',generation:1}:{}}})};
+ const canvas={width:1280,height:800};const transport={kernelProtocolVersion:491,displayEventEncoding:'CXD1',subscribeDisplay:async()=>{throw Error('relay disconnected')},onEvent:()=>()=>{},request:async({KernelBrowser:{command}})=>({KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s',generation:1}:{}}})};
  await assert.rejects(attachBrowserDisplay(canvas,transport,{tab_id:'t',generation:1}),/relay disconnected/);
  assert.deepEqual([canvas.width,canvas.height],[1280,800]);
 });

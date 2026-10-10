@@ -181,11 +181,11 @@ test('MP-08/MP-10 lossless scroll frame copies a snapshot then draws WebP residu
  }finally{presenter.close();Object.assign(globalThis,prior)}
 });
 
-// MP-08/MP-10: protocol 475 push. No credits; one ack per presented frame,
+// MP-08/MP-10: protocol 491 push. No credits; one ack per presented frame,
 // reordered events decode in sequence, lost frames request a key.
 test('MP-08/MP-10 push display acknowledges each presented frame in sequence without credits',async()=>{
  let listener;const ops=[];
- const transport={kernelProtocolVersion:475,displayEventEncoding:'CXD1',onEvent:fn=>{listener=fn;return()=>{}},subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},
+ const transport={kernelProtocolVersion:491,displayEventEncoding:'CXD1',onEvent:fn=>{listener=fn;return()=>{}},subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},
   request:async({KernelBrowser:{command}})=>{ops.push(command);return {KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s',generation:1}:command.op==='display_ack'?{acknowledged:true,push:'running'}:{}}}}};
  const stream=await attachBrowserDisplay({width:1,height:1},transport,{tab_id:'t',generation:1},{idleMs:20});
  const presented=[];stream.presenter.present=async frame=>{presented.push(frame.sequence);stream.presenter.sequence=frame.sequence;return true};
@@ -201,20 +201,20 @@ test('MP-08/MP-10 push display acknowledges each presented frame in sequence wit
  }finally{await stream.close()}
 });
 test('MP-08/MP-10 push display reports a stopped kernel pump as a stream error',async()=>{
- const transport={kernelProtocolVersion:475,displayEventEncoding:'CXD1',onEvent:()=>()=>{},subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},
+ const transport={kernelProtocolVersion:491,displayEventEncoding:'CXD1',onEvent:()=>()=>{},subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},
   request:async({KernelBrowser:{command}})=>({KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s',generation:1}:command.op==='display_ack'?{acknowledged:true,push:'failed'}:{}}})};
  const stream=await attachBrowserDisplay({width:1,height:1},transport,{tab_id:'t',generation:1},{idleMs:20});
  try{await new Promise(r=>setTimeout(r,5));await assert.rejects(stream.next(),/push pump failed/);}finally{await stream.close()}
 });
 test('MP-08/MP-10 credit transports without a display subscription keep display_next',async()=>{
- const ops=[];const transport={kernelProtocolVersion:475,displayEventEncoding:'CXD1',onEvent:()=>()=>{},request:async({KernelBrowser:{command}})=>{ops.push(command.op);return {KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s'}:{frame_sent:false}}}}};
+ const ops=[];const transport={kernelProtocolVersion:491,displayEventEncoding:'CXD1',onEvent:()=>()=>{},request:async({KernelBrowser:{command}})=>{ops.push(command.op);return {KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s'}:{frame_sent:false}}}}};
  const stream=await attachBrowserDisplay({width:1,height:1},transport,{tab_id:'t',generation:1});
  try{assert.equal(stream.push,undefined);assert.equal(await stream.next(),null);assert.deepEqual(ops,['display_subscribe','display_next'])}finally{await stream.close()}
 });
 // MP-08/MP-10 (1.5): recover in place; never fall back to images.
 function pushFixture(){
  let listener;const ops=[];
- const transport={kernelProtocolVersion:475,displayEventEncoding:'CXD1',onEvent:fn=>{listener=fn;return()=>{}},subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},
+ const transport={kernelProtocolVersion:491,displayEventEncoding:'CXD1',onEvent:fn=>{listener=fn;return()=>{}},subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},
   request:async({KernelBrowser:{command}})=>{ops.push(command);return {KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s',generation:1}:command.op==='display_ack'?{acknowledged:true,push:'running'}:{}}}}};
  return {transport,ops,emit:frame=>listener({event:'kernel_browser_frame',subscription_id:'s',frame})};
 }

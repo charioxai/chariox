@@ -106,7 +106,7 @@ pub(super) async fn handle_prepared_daemon_request(
                     error: Some(error),
                 };
             }
-            // MP-08/MP-10: protocol 475 acknowledgements stay in the relay
+            // MP-08/MP-10: protocol 491 acknowledgements stay in the relay
             // layer: they only gate this sender's own push pump and renew
             // its delivery lease; the pump's frames take the admitted path.
             if let LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {

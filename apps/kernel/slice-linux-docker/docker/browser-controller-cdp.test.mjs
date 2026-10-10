@@ -1624,3 +1624,16 @@ test("MP-08/MP-10 a focus poll racing a navigation reports a stale document", as
   await assert.rejects(browser.readFocus(connection, "s", "t", { id: "f", loaderId: "d" }), error => error.code === "stale_document_reference");
   assert.equal(browser.focusWorldsByTarget.has("t"), false);
 });
+
+test("MP-08 CDP reconciliation retains Chromium popup creation origins", async () => {
+  const connection = new FakeConnection(), send = connection.send.bind(connection)
+  connection.send = async (method, ...args) => {
+    const result = await send(method, ...args)
+    if (method === "Target.getTargets") result.targetInfos.find(target => target.targetId === "target-b").openerId = "target-a"
+    return result
+  }
+  const browser = new BrowserCdpClient({connectionFactory: async () => connection})
+  const state = await browser.reconcile(viewport)
+  assert.equal(state.tabs.find(tab => tab.target_id === "target-b").opener_target_id, "target-a")
+  assert(!Object.hasOwn(state.tabs.find(tab => tab.target_id === "target-a"), "opener_target_id"))
+})

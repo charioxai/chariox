@@ -243,17 +243,17 @@ impl<'a> KernelAgentService<'a> {
 
     fn prepare_prompt_admission(
         &mut self,
-        prepared: KernelPreparedPromptSubmission,
+        mut prepared: KernelPreparedPromptSubmission,
     ) -> Result<KernelPromptAdmission, DaemonError> {
+        if self.app.config().room_agent_tools {
+            prepared.prepare_task_prompt_identity(|| self.app.sessions().reserve_prompt_id())?;
+        }
         let session_id = prepared.session_id;
         let attachment_id = prepared.prompt.source_attachment_id().to_string();
         let target_agent_id = prepared.prompt.target_agent_id().to_string();
         let source_attachment = crate::app::KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(&session_id, &attachment_id)?;
-        let prompt = prepared.prompt.with_source_attribution(
-            source_attachment.client_id(),
-            source_attachment.owner_user_id(),
-        );
+        let prompt = prepared.prompt.with_source_attachment(&source_attachment);
 
         let target_agent = self.app.agents.get_agent(&target_agent_id)?;
         if target_agent.session_id() != session_id {

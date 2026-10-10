@@ -8,7 +8,141 @@ impl KernelRuntimeOwnedState {
         request: &LocalDaemonRequest,
         metaagent_id: &str,
     ) -> Result<(), DaemonError> {
+        if self.config_projection.snapshot().room_agent_tools {
+            let actor = self.agent_store.get_agent(metaagent_id)?;
+            if let Some(
+                crate::runtime::session_membership::scope::SessionMembershipScope::SessionId(room),
+            ) = crate::runtime::session_membership::scope::request_session_scope(request)
+            {
+                if room != actor.session_id() {
+                    return Err(crate::runtime::room_tool_admission::denied(
+                        "workflow target is outside the caller room",
+                    ));
+                }
+            }
+            match request {
+                LocalDaemonRequest::BindWorkflowCodeSource(r) => self
+                    .ensure_workflow_controlled_by_metaagent(
+                        &r.session_id,
+                        &r.workflow_ref,
+                        metaagent_id,
+                        "bind workflow source",
+                    )?,
+                LocalDaemonRequest::RebuildWorkflowCodeSource(r) => self
+                    .ensure_workflow_controlled_by_metaagent(
+                        &r.session_id,
+                        &r.workflow_ref,
+                        metaagent_id,
+                        "rebuild workflow source",
+                    )?,
+                LocalDaemonRequest::UpdateWorkflowCodeSourceFromWorkflow(r) => self
+                    .ensure_workflow_controlled_by_metaagent(
+                        &r.session_id,
+                        &r.workflow_ref,
+                        metaagent_id,
+                        "update workflow source",
+                    )?,
+                _ => (),
+            }
+            let creator = match request {
+                LocalDaemonRequest::BindWorkflowCodeSource(r) => {
+                    Some(self.room_artifact_creator(&r.session_id, &r.artifact_name)?)
+                }
+                LocalDaemonRequest::UpdateWorkflowCodeSourceFromWorkflow(r) => {
+                    let workflow = self
+                        .session_store
+                        .read()
+                        .resolve_workflow_ref(&r.session_id, &r.workflow_ref)?;
+                    workflow
+                        .code_source()
+                        .map(|source| {
+                            self.room_artifact_creator(&r.session_id, source.artifact_name())
+                        })
+                        .transpose()?
+                }
+                LocalDaemonRequest::UpdateWorkflowCodeArtifact(r) => {
+                    Some(self.room_artifact_creator(&r.session_id, &r.name)?)
+                }
+                LocalDaemonRequest::DeleteWorkflowCodeArtifact(r) => {
+                    Some(self.room_artifact_creator(&r.session_id, &r.name)?)
+                }
+                LocalDaemonRequest::ApplyWorkflowCodeArtifact(r) => {
+                    Some(self.room_artifact_creator(&r.session_id, &r.name)?)
+                }
+                LocalDaemonRequest::ImportWorkflowCodeArtifact(r)
+                | LocalDaemonRequest::ImportWorkflowCodePackage(r)
+                    if r.overwrite =>
+                {
+                    let name = r.name.as_deref().unwrap_or(&r.package.name);
+                    let registry =
+                        crate::workflow_code::WorkflowCodeArtifactRegistry::new(vec![self
+                            .config_projection
+                            .snapshot()
+                            .workflow_code_artifact_root()
+                            .join("rooms")
+                            .join(&r.session_id)]);
+                    registry
+                        .get(name)?
+                        .map(|artifact| artifact.metadata.provenance.created_by.metaagent_id)
+                }
+                LocalDaemonRequest::DeleteWorkflowRegistryEntry(r) => {
+                    let registry = crate::workflow_code::WorkflowRegistry::new(
+                        None,
+                        Some(
+                            self.config_projection
+                                .snapshot()
+                                .workflow_registry_root()
+                                .join("rooms")
+                                .join(&r.session_id),
+                        ),
+                    );
+                    Some(registry.resolve(&r.name)?.metadata.created_by_agent_id)
+                }
+                _ => None,
+            };
+            if let Some(creator) = creator {
+                if !crate::runtime::room_tool_admission::owns_object(
+                    &actor,
+                    creator.as_deref(),
+                    &self.agent_store.get_session_agents(actor.session_id()),
+                ) {
+                    return Err(crate::runtime::room_tool_admission::denied(
+                        "workflow object mutation requires self or immutable direct-child creator",
+                    ));
+                }
+            }
+            // Recheck persisted definitions too: restored workflows may predate
+            // the binding fence. Do this before enqueue or provider preflight.
+            if let LocalDaemonRequest::InvokeWorkflowEndpoint(r) = request {
+                let workflow = self
+                    .session_store
+                    .read()
+                    .resolve_workflow_ref(&r.session_id, &r.workflow_ref)?;
+                for node in workflow.nodes() {
+                    let target = self.agent_store.get_agent(node.agent_id())?;
+                    crate::runtime::room_tool_admission::workflow_node(&actor, &target)?;
+                }
+            }
+            if matches!(
+                request,
+                LocalDaemonRequest::ListWorkflowRuns(_)
+                    | LocalDaemonRequest::GetWorkflowRun(_)
+                    | LocalDaemonRequest::ResolveWorkflow(_)
+                    | LocalDaemonRequest::InvokeWorkflowEndpoint(_)
+            ) {
+                return Ok(());
+            }
+        }
         match request {
+            LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
+            | LocalDaemonRequest::AttachWorkflowNotification(_)
+            | LocalDaemonRequest::DetachWorkflowNotification(_)
+            | LocalDaemonRequest::ListWorkflowNotifications(_) => {
+                Err(DaemonError::LocalTransport {
+                    operation: "workflow.notifications",
+                    message: "workflow notifications require the owning user's command".into(),
+                })
+            }
             LocalDaemonRequest::CreateWorkflow(_) | LocalDaemonRequest::ListWorkflows(_) => Ok(()),
             // A generated workflow belongs to a person's own agent.
             LocalDaemonRequest::CreateAgentWorkflow(_) => Err(DaemonError::LocalTransport {
@@ -192,6 +326,19 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    fn room_artifact_creator(&self, room: &str, name: &str) -> Result<Option<String>, DaemonError> {
+        let registry = crate::workflow_code::WorkflowCodeArtifactRegistry::new(vec![self
+            .config_projection
+            .snapshot()
+            .workflow_code_artifact_root()
+            .join("rooms")
+            .join(room)]);
+        let artifact = registry.get(name)?.ok_or_else(|| {
+            crate::runtime::room_tool_admission::denied("artifact is unavailable in this room")
+        })?;
+        Ok(artifact.metadata.provenance.created_by.metaagent_id)
+    }
+
     pub(super) fn ensure_workflow_controlled_by_metaagent(
         &self,
         session_id: &str,
@@ -203,7 +350,18 @@ impl KernelRuntimeOwnedState {
             .session_store
             .read()
             .resolve_workflow_ref(session_id, workflow_ref)?;
-        if workflow.controlled_by_metaagent_id() == Some(metaagent_id) {
+        let admitted = if self.config_projection.snapshot().room_agent_tools {
+            let actor = self.agent_store.get_agent(metaagent_id)?;
+            actor.session_id() == session_id
+                && crate::runtime::room_tool_admission::owns_object(
+                    &actor,
+                    workflow.created_by_agent_id(),
+                    &self.agent_store.get_session_agents(session_id),
+                )
+        } else {
+            workflow.controlled_by_metaagent_id() == Some(metaagent_id)
+        };
+        if admitted {
             Ok(())
         } else {
             Err(DaemonError::LocalTransport {
@@ -237,7 +395,40 @@ impl KernelRuntimeOwnedState {
                 workflow_run_id: workflow_run_ref.to_string(),
             })?;
         let workflow = sessions.resolve_workflow_ref(session_id, workflow_run.workflow_id())?;
-        if workflow.controlled_by_metaagent_id() == Some(metaagent_id) {
+        let admitted = if self.config_projection.snapshot().room_agent_tools {
+            let actor = self.agent_store.get_agent(metaagent_id)?;
+            actor.session_id() == session_id
+                && crate::runtime::room_tool_admission::owns_object(
+                    &actor,
+                    workflow_run.created_by_agent_id(),
+                    &self.agent_store.get_session_agents(session_id),
+                )
+        } else {
+            workflow.controlled_by_metaagent_id() == Some(metaagent_id)
+        };
+        if admitted {
+            if self.config_projection.snapshot().room_agent_tools
+                && operation == "resume workflow run"
+            {
+                let actor = self.agent_store.get_agent(metaagent_id)?;
+                // A saved run can retain old bindings; its remaining graph can
+                // also contain nodes it has not reached yet.
+                let targets = workflow
+                    .nodes()
+                    .iter()
+                    .map(|node| node.agent_id())
+                    .chain(workflow_run.node_runs().iter().map(|node| node.agent_id()))
+                    .chain(
+                        workflow_run
+                            .runtime_agent_ids_by_node()
+                            .values()
+                            .map(String::as_str),
+                    );
+                for target_id in targets {
+                    let target = self.agent_store.get_agent(target_id)?;
+                    crate::runtime::room_tool_admission::workflow_node(&actor, &target)?;
+                }
+            }
             Ok(())
         } else {
             Err(DaemonError::LocalTransport {

@@ -1,3 +1,4 @@
+mod binary_event;
 mod client_renewal;
 mod daemon;
 mod display;
@@ -8,7 +9,6 @@ mod routing;
 mod runtime_client;
 mod slice_identity;
 mod subscription;
-mod binary_event;
 
 use super::*;
 

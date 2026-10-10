@@ -53,8 +53,6 @@ pub const SEARCH_RECALL_TOOL: &str = "chariox.search_recall";
 pub const QUERY_RECALL_TOOL: &str = "chariox.query_recall";
 pub const LIST_CREDENTIAL_HANDLES_TOOL: &str = "chariox.list_credential_handles";
 pub const LIST_CREDENTIAL_HANDLES_TOOL_ALIAS: &str = "list_credential_handles";
-pub const CREATE_GENERATED_CREDENTIAL_TOOL: &str = "chariox.create_generated_credential";
-pub const CREATE_GENERATED_CREDENTIAL_TOOL_ALIAS: &str = "create_generated_credential";
 pub const REQUEST_CREDENTIAL_SECRET_TOOL: &str = "chariox.request_credential_secret";
 pub const REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS: &str = "request_credential_secret";
 pub const HTTP_REQUEST_WITH_CREDENTIAL_TOOL: &str = "chariox.http_request_with_credential";
@@ -143,7 +141,6 @@ pub const META_UNSUBSCRIBE_TRACE_TOOL: &str = "chariox.meta.unsubscribe_trace";
 pub const META_SUBSCRIBE_EVENTS_TOOL: &str = "chariox.meta.subscribe_events";
 pub const META_UNSUBSCRIBE_EVENTS_TOOL: &str = "chariox.meta.unsubscribe_events";
 pub const META_LIST_SUBSCRIPTIONS_TOOL: &str = "chariox.meta.list_subscriptions";
-pub const META_RESOLVE_RUNTIME_INTERACTION_TOOL: &str = "chariox.meta.resolve_runtime_interaction";
 pub const META_READ_TASK_TOOL: &str = "chariox.meta.read_task";
 pub const META_UPDATE_TASK_TOOL: &str = "chariox.meta.update_task";
 pub const META_READ_PLAN_TOOL: &str = "chariox.meta.read_plan";
@@ -235,3 +232,9 @@ pub struct RuntimeToolResult {
     pub ok: bool,
     pub payload: Value,
 }
+
+mod room_tool_names;
+pub(crate) use room_tool_names::{canonical_room_tool_name, room_name, room_runtime_tool_specs};
+
+mod agent_events;
+pub(crate) use agent_events::{agent_event_tool_specs, canonical_agent_event_tool_name};

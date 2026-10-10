@@ -368,6 +368,8 @@ export type UserConfigMutationEffect = {
 }
 
 export type AgentInstance = {
+  /** Unknown legacy lineage is never inferred from controller links. */
+  spawned_by_agent_id?: string | null
   id: string
   agent_ref: string
   session_id: string
@@ -464,7 +466,14 @@ export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { gra
 export type KernelAccessDecisionRespondedResponse = { KernelAccessDecisionResponded: { interaction_id: string } }
 export type KernelAccessRevokedResponse = { KernelAccessRevoked: { revoked: number } }
 
-export type KernelSudoTurn = { entry_id: string; session_id: string; agent_id: string; owner_user_id: string; terminal_id: string; requester?: KernelAccessGrant; prompt_id: string | null; provider_run_id: string | null }
+export type KernelSudoTurn = {
+  entry_id: string; session_id: string; agent_id: string; owner_user_id: string; terminal_id: string
+  requester?: KernelAccessGrant; prompt_id: string | null; provider_run_id: string | null
+  // Protocol 460: an hour-scale window bound to one owner-authorized task.
+  task_id?: string | null; duration_minutes?: number; expires_at_ms?: number | null; revision?: number; warning_sent?: boolean
+}
+export type ExtendKernelSudoRequest = { session_id: string; attachment_id: string; entry_id: string; revision: number }
+export type KernelSudoExtendedResponse = { KernelSudoExtended: { turn: KernelSudoTurn } }
 
 export type RequestKernelSudoRequest = { agent_id: string; prompt: string }
 export type KernelSudoRequestedResponse = { KernelSudoRequested: { agent_id: string } }

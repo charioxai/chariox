@@ -3,6 +3,7 @@ import type { InteractionPasskeyProof } from "./ipc-requests.js"
 
 /** Optional remember window after a verified passkey: off, 5 or 15 minutes. */
 export const PASSKEY_REMEMBER_MINUTES = [0, 5, 15] as const
+export const SUDO_WINDOW_MINUTES = [60, 120, 240, 480] as const
 const PASSKEY_MAX_LENGTH = 512
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/
 const PASSKEY_PASTE_REFUSED = `Paste not added: a passkey is one line of at most ${PASSKEY_MAX_LENGTH} characters, without control characters.`
@@ -192,7 +193,7 @@ export function createPasskeyPopupController(deps: {
     const minutes = prompt.kind === "critical_approval" ? remember : 0
     value = ""
     await send(prompt, prompt.approve_choice_id,
-      typed ? { passkey: typed, rememberMinutes: minutes || null, ...(["access_grant", "access_extension"].includes(prompt.kind) ? { accessLifetimeMinutes: accessLifetime ?? prompt.lifetime_minutes } : {}) } : undefined)
+      typed ? { passkey: typed, rememberMinutes: minutes || null, ...(["access_grant", "access_extension", "sudo"].includes(prompt.kind) ? { accessLifetimeMinutes: accessLifetime ?? prompt.lifetime_minutes } : {}) } : undefined)
   }
   const refuse = async () => {
     const prompt = current()
@@ -206,7 +207,9 @@ export function createPasskeyPopupController(deps: {
     if (prompt && prompt.kind !== "critical_approval") {
       const max = prompt.max_lifetime_minutes
       if (!max || !prompt.lifetime_minutes) return
-      const options = [...new Set([prompt.lifetime_minutes, 5, 15, 30, 60, 120, max])].filter(m => m <= max).sort((a,b) => a-b)
+      // Sudo windows: one hour by default, 2, 4 or 8 hours per fresh passkey.
+      const offered = prompt.kind === "sudo" ? SUDO_WINDOW_MINUTES : [prompt.lifetime_minutes, 5, 15, 30, 60, 120, max]
+      const options = [...new Set(offered)].filter(m => m <= max).sort((a,b) => a-b)
       accessLifetime = options[(options.indexOf(accessLifetime ?? prompt.lifetime_minutes) + 1) % options.length]!
       render()
       return

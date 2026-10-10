@@ -168,6 +168,13 @@ impl KernelRuntimeOwnedState {
             }
         }
         drop(access);
+        for prompt in &mut prompts {
+            if prompt.kind == PasskeyPromptKind::Sudo && !prompt.interaction_id.contains(":scope:")
+            {
+                prompt.lifetime_minutes = Some(super::sudo::SUDO_DEFAULT_MINUTES);
+                prompt.max_lifetime_minutes = super::sudo::SUDO_WINDOW_MINUTES.last().copied();
+            }
+        }
         prompts.sort_by(|a, b| {
             (a.requested_at_ms, &a.interaction_id).cmp(&(b.requested_at_ms, &b.interaction_id))
         });
