@@ -575,9 +575,14 @@ async fn room_boundaries() {
             Some(a.id().into()),
         )
         .await;
+    // This restored fixture has no rendered stopped turn to resume. Admission
+    // must reach the run-state check rather than reject its public peer graph.
     assert!(
-        resumed.is_ok(),
-        "MP-08 / MP-10 / MP-11 A01-S04: caller-owned saved public peer graph may resume: {resumed:?}"
+        matches!(
+            resumed,
+            Err(crate::local::DaemonError::InvalidWorkflowRunState { .. })
+        ),
+        "MP-08 / MP-10 / MP-11 A01-S04: public peer graph passes admission: {resumed:?}"
     );
     let peer_alias = room_command(&router, &auth_a, "agent alias peer stolen").await;
     assert!(!peer_alias.ok);
