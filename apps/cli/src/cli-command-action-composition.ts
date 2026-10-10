@@ -102,6 +102,7 @@ import {
   saveUiPreferences,
 } from "./preferences.js"
 import type { CloudClient } from "./cloud-client.js"
+import { hasLocalKernel, startLocalKernelSetup } from "./local-kernel-setup.js"
 import { createCloudClientCommands } from "./cloud-client-command.js"
 import {
   getProviderAuthStatus,
@@ -583,6 +584,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     sendDeploymentSetupKernelRequest: (request) => client.send(request),
     configureRelay: (relayUrl, relayToken) => configureRelay(client, relayUrl, relayToken),
     ...(deps.cloudClient ? { handleClientCloudCommand: createCloudClientCommands({
+      offerSetup: async () => { if (!await hasLocalKernel()) appendCloudNotice("Set up a Chariox kernel on this machine? Run /cloud setup to continue.") },
+      setup: profile => startLocalKernelSetup(profile, appendCloudNotice),
       client: deps.cloudClient,
       isKernelConnected: () => deps.kernelConnected?.() ?? true,
       apiUrl: () => resolveConfiguredCloudRelayApiUrl(preferencesState()) ?? "https://staging.chariox.com",

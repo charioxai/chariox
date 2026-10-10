@@ -174,6 +174,10 @@ const ASSETS: &[(&str, &str)] = &[
         include_str!("../../ssh-machine/transport.mjs"),
     ),
     (
+        "apps/kernel/ssh-machine/upgrade.mjs",
+        include_str!("../../ssh-machine/upgrade.mjs"),
+    ),
+    (
         "apps/kernel/ssh-machine/remote.mjs",
         include_str!("../../ssh-machine/remote.mjs"),
     ),

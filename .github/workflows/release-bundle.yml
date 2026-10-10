@@ -117,6 +117,12 @@ jobs:
           bun apps/cli/scripts/compile.mjs --target ${{ matrix.platform }} --outfile unsigned/bin/chariox --version "$VERSION"
           # --version, --help and native-Claude hooks with neither Node nor Bun on PATH.
           node apps/cli/scripts/release-smoke.mjs unsigned/bin/chariox "$VERSION"
+      - name: Compile generic Chariox Setup (MP-07 / MP-08 / MP-11)
+        env:
+          SETUP_PUBLIC_KEY: ${{ vars.CHARIOX_RELEASE_PUBLIC_KEY }}
+        run: |
+          node scripts/build-chariox-setup.mjs --version "$VERSION" --public-key "$SETUP_PUBLIC_KEY" --target ${{ matrix.platform }} --output "$RUNNER_TEMP/setup"
+          cp "$RUNNER_TEMP/setup/chariox-setup" unsigned/bin/
       # A tarball keeps the executable modes that an artifact upload drops.
       - run: tar -czf unsigned-${{ matrix.platform }}.tar.gz -C unsigned .
       - uses: actions/upload-artifact@v4
@@ -246,6 +252,8 @@ jobs:
             > "$RUNNER_TEMP/macos-signing-receipt.json"
           # Bun's JIT must still run under the hardened runtime.
           test "$("$RUNNER_TEMP/signed/bin/chariox" --version)" = "chariox $VERSION"
+          # MP-07 / MP-11: exercise Setup's JavaScriptCore after signing too.
+          test "$("$RUNNER_TEMP/signed/bin/chariox-setup" --version)" = "Chariox Setup $VERSION"
           # The runtime installer must carry macOS enrollment (#431); without it, it answers platform_unsupported.
           answer=$("$RUNNER_TEMP/signed/libexec/chariox-app-runtime-install" 2>&1 || true)
           [[ "$answer" == *app_runtime_installer_requires_root* ]] || { echo "the runtime installer has no macOS enrollment: $answer"; exit 1; }

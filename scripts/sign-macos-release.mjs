@@ -14,8 +14,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const WORKER_ENTITLEMENTS = join(dirname(fileURLToPath(import.meta.url)), 'macos-app-worker.entitlements');
 const JIT_ENTITLEMENT = 'com.apple.security.cs.allow-jit';
-// V8 in the App worker is the only JIT. Every other artifact runs without entitlements.
-const JIT_EXECUTABLES = new Set(['chariox-app-worker']);
+// MP-07 / MP-11: V8 in the App worker and JavaScriptCore in Bun Setup require JIT.
+// Other artifacts run without entitlements.
+const JIT_EXECUTABLES = new Set(['chariox-app-worker', 'chariox-setup']);
 // A Chariox inventory signed before platform signing describes the wrong bytes.
 const STALE = new Set(['runtime-inventory.json', 'runtime-inventory.sig', '.runtime-lease']);
 const MACH_O = new Set(['feedface', 'feedfacf', 'cefaedfe', 'cffaedfe', 'cafebabe', 'bebafeca']);
@@ -177,7 +178,8 @@ function describe(result, step, { identity, teamId }) {
 function entitlements(result, step) {
   const jit = step.file.role === 'jit-executable';
   const keys = [...result.stdout.matchAll(/<key>([^<]+)<\/key>/gu)].map(match => match[1]);
-  if (jit ? keys.length !== 1 || keys[0] !== JIT_ENTITLEMENT : keys.length)
+  const enabled = /<key>com\.apple\.security\.cs\.allow-jit<\/key>\s*<true\s*\/>/u.test(result.stdout);
+  if (jit ? keys.length !== 1 || keys[0] !== JIT_ENTITLEMENT || !enabled : keys.length)
     throw new Error(`${step.file.path} has unexpected entitlements: ${keys.join(', ') || 'none'}`);
 }
 

@@ -23,6 +23,8 @@ fn kernel_rejects_unknown_and_malformed_arguments_before_startup() {
         vec!["--print-local-daemon-protocol-version", "extra"],
         vec!["--owner-managed-enroll-stdin", "unexpected"],
         vec!["--owner-managed-ready", "unexpected"],
+        vec!["--owner-managed-self-enroll-stdin", "unexpected"],
+        vec!["--owner-managed-device-enroll-stdin", "unexpected"],
         vec!["--prepare-protected-slice-identity"],
         vec!["--prepare-protected-slice-identity", "0"],
         vec!["--prepare-protected-slice-identity", "12345", "extra"],
