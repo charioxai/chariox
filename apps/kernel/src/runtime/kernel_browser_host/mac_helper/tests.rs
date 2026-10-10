@@ -7,6 +7,7 @@ enum Fake {
     Honest,
     OwnedReleaseFailure,
     ScopeRefused,
+    NoPressRefusal,
     WrongToken,
     StaleReply,
     StaleGeneration,
@@ -67,6 +68,10 @@ fn helper(dir: &Path, fake: Fake, seen: &Mutex<Vec<String>>) {
         } else {
             epoch.clone()
         };
+        if fake == Fake::NoPressRefusal && request["params"]["op"] == "input" {
+            writeln!(stream,"{}",json!({"id":request["id"],"epoch":epoch,"ok":false,"input_released":true,"error":{"code":"unsupported"}})).unwrap();
+            continue;
+        }
         if method != "heartbeat" && matches!(fake, Fake::OwnedReleaseFailure | Fake::ScopeRefused) {
             let code = if fake == Fake::OwnedReleaseFailure {
                 "owner_reset_required"
@@ -510,4 +515,28 @@ fn m1_lost_release_confirmation_after_key_down_latches_across_stop_and_start() {
         passed,
         "lost owned-release confirmation admitted a new pairing"
     );
+}
+
+#[test]
+fn m1_authenticated_no_press_refusal_leaves_the_seat_usable() {
+    let (mut seat, root, _) = seat("always", Fake::NoPressRefusal);
+    seat.start().unwrap();
+    for input in [
+        json!({"kind":"text","text":"xxxxxxxxxxxxxxxxxxxxx"}),
+        json!({"kind":"key","key":"Right"}),
+    ] {
+        let error = seat
+            .request("host.computer", json!({"op":"input","input":input}), None)
+            .unwrap_err();
+        assert!(
+            !error.to_string().contains("owner-reset-required"),
+            "no-effect refusal poisoned the seat: {error}"
+        );
+        assert!(state(&mut seat).is_ok());
+    }
+    seat.stop().unwrap();
+    seat.start().unwrap();
+    assert!(state(&mut seat).is_ok());
+    seat.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }
