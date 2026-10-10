@@ -31,7 +31,9 @@ pub(super) fn validate_region(r: &ScreenshotRegion) -> Result<(), DaemonError> {
         || r.frame_height == 0
         || u64::from(r.frame_width) * u64::from(r.frame_height) > MAX_PIXELS
     {
-        return Err(capture_error("Region must fit the visible painted surface [capture:kernel-raster-1]"));
+        return Err(capture_error(
+            "Region must fit the visible painted surface [capture:kernel-raster-1]",
+        ));
     }
     Ok(())
 }
@@ -42,7 +44,9 @@ pub(super) fn crop_png(
 ) -> Result<Cropped, DaemonError> {
     validate_region(r)?;
     if bytes.len() > MAX_PNG || masks.len() > 1024 {
-        return Err(capture_error("Capture exceeds limit [capture:kernel-raster-2]"));
+        return Err(capture_error(
+            "Capture exceeds limit [capture:kernel-raster-2]",
+        ));
     }
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     decoder.set_limits(png::Limits {
@@ -69,7 +73,11 @@ pub(super) fn crop_png(
         png::ColorType::Rgba => 4,
         png::ColorType::Grayscale => 1,
         png::ColorType::GrayscaleAlpha => 2,
-        _ => return Err(capture_error("Unsupported PNG pixels [capture:kernel-raster-6]")),
+        _ => {
+            return Err(capture_error(
+                "Unsupported PNG pixels [capture:kernel-raster-6]",
+            ))
+        }
     };
     // Mask full source before cropping: neither crop nor scaling can reveal
     // protected edge pixels. Never store the unmasked host image.
@@ -78,7 +86,9 @@ pub(super) fn crop_png(
             || m.width < 0.0
             || m.height < 0.0
         {
-            return Err(capture_error("Invalid protection region [capture:kernel-raster-7]"));
+            return Err(capture_error(
+                "Invalid protection region [capture:kernel-raster-7]",
+            ));
         }
         let x0 = m.x.floor().max(0.0).min(r.frame_width as f64) as usize;
         let y0 = m.y.floor().max(0.0).min(r.frame_height as f64) as usize;
