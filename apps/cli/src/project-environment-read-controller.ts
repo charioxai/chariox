@@ -1,7 +1,7 @@
 // MP-08 / MP-10 / MP-11: Detect uses shared request builders.
 import { projectEnvironmentOperationRequest, relayStatusRequest, cloudRelayStatusRequest } from "@chariox/kernel-client/ipc-requests"
 // MP-08 / MP-10: Project read-only navigation, independent of session selection.
-import { createEnvironmentViewCache, getProjectEnvironmentRequest, projectEnvironmentLines, environmentOriginLabel, environmentRevisionDraft, saveEnvironmentRevisionRequest, environmentDiffLines, environmentSnapshotDiff, type EnvironmentRevisionDiff, type ProjectEnvironment, checkEnvironmentRequest } from "@chariox/kernel-client"
+import { createEnvironmentViewCache, getProjectEnvironmentRequest, projectEnvironmentLines, environmentOriginLabel, environmentRevisionDraft, saveEnvironmentRevisionRequest, environmentDiffLines, environmentSnapshotDiff, type EnvironmentRevisionDiff, type ProjectEnvironment, checkEnvironmentRequest, environmentObservationExpiry } from "@chariox/kernel-client"
 
 export function projectEnvironmentPageSize(height: number) {
   return Math.max(1, height - Math.max(1, Math.floor(height / 5)) - 4)
@@ -29,10 +29,11 @@ export function createProjectEnvironmentReadController(deps: {
   let savingGeneration: number | null = null
   let detectionGeneration: number | null = null
   let checkingGeneration: number | null = null
+  let expiryTimer: ReturnType<typeof setTimeout> | undefined
   const controller = {
     isOpen: () => open,
     visibleLines: () => lines.slice(offset, offset + Math.max(1, deps.pageSize())),
-    close() { open = false; generation++; deps.render() },
+    close() { clearTimeout(expiryTimer); open = false; generation++; deps.render() },
     async open(projectId: string) {
       const requestGeneration = ++generation
       const prior = cache.peek(scope, projectId)
@@ -167,6 +168,16 @@ export function createProjectEnvironmentReadController(deps: {
     },
   }
   function viewLines(environment: ProjectEnvironment): string[] {
+    clearTimeout(expiryTimer)
+    const deadline = environmentObservationExpiry(environment)
+    if (deadline != null) {
+      expiryTimer = setTimeout(() => {
+        if (open && current === environment && !refreshing && !showingDiff && savingGeneration !== generation && detectionGeneration !== generation && checkingGeneration !== generation) {
+          lines = viewLines(environment); deps.render()
+        }
+      }, Math.max(0, deadline - Date.now()))
+      expiryTimer.unref?.()
+    }
     const selected = environment.proposals[proposalIndex]
     return [`Revision ${environment.revision ?? 0} · r Refresh`, ...(environment.delivered_capabilities.enabled_environment_operations.includes("check") ? ["c · Check this machine (read-only)", ...environment.operations.filter(o=>o.kind==="check").slice(-1).map(o=>`Check · ${o.phase} · ${o.operation_id}`)] : ["Check is unavailable on this kernel"]), ...(environment.delivered_capabilities.enabled_environment_operations.includes("save") ? ["n/p · Next/previous proposal; a · Accept; x · Exclude", ...(environment.proposals[proposalIndex] ? [`Review ${proposalIndex + 1}/${environment.proposals.length} · ${selected!.requirement.title}`, selected!.requirement.spec.kind === "software" ? `Version constraint: ${selected!.requirement.spec.version_constraint ?? "Not specified"}` : `Kind: ${selected!.requirement.spec.kind}`, ...selected!.requirement.origins.map(environmentOriginLabel), "Field editing is available in the Project’s Web Environment."] : ["No pending proposals"])] : []), ...(environment.delivered_capabilities.enabled_environment_operations.includes("detect") ? ["d · Detect requirements (read-only)", "File names and types from code-manifest folders are sent to your provider.", "Other folders use deterministic detection; model opt-in is available in Web."] : []), "←/→ · Project/folder navigation; v · Revision diff", "Typed field editing is temporarily Web-first · w · Copy Web Environment link", ...(webLink ? [webLink] : []), `Content · ${environment.content_digest ?? "Initial"} · Parent · ${environment.parent_revision_digest ?? "Initial revision"}`, ...projectEnvironmentLines(environment)]
   }
