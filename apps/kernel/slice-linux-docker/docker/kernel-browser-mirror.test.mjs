@@ -341,6 +341,7 @@ test('MP-10 canonical mirror geometry survives attachment and full fallback',asy
  }finally{service.clear();clearInterval(service.expiry)}
 });
 test('MP-10 canonical mirror geometry at 1920x1080',()=>{
- const run=spawnSync(process.execPath,['--test','--test-name-pattern=^MP-10 canonical mirror geometry survives',import.meta.filename],{env:{...process.env,CHARIOX_BROWSER_DISPLAY_GEOMETRY:'1920x1080',CHARIOX_KERNEL_BROWSER_DISPLAY:'1'},encoding:'utf8'});
+ const run=spawnSync(process.execPath,['--test','--test-name-pattern=^MP-10 canonical mirror geometry survives',import.meta.filename],{env:{...process.env,NODE_TEST_CONTEXT:undefined,CHARIOX_BROWSER_DISPLAY_GEOMETRY:'1920x1080',CHARIOX_KERNEL_BROWSER_DISPLAY:'1'},encoding:'utf8'});
+ assert.match(run.stdout,/ok 1 - MP-10 canonical mirror geometry survives/);
  assert.equal(run.status,0,run.stdout+run.stderr);
 });

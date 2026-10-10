@@ -18,14 +18,15 @@ const { measureBrowserProtection, recordBrowserFill } = regions;
 import { captureProtectedPage, decodePng } from './kernel-browser-pixels.mjs';
 import { MAX_BROWSER_ARTIFACT_BYTES } from './browser-controller-artifacts.mjs';
 import { MirrorService } from './kernel-browser-mirror.mjs';
+import { hostViewport } from './kernel-browser-geometry.mjs';
 import { mirrorHash } from './kernel-browser-mirror-resources.mjs';
-async function videoPixels(png,dpr,label,required=false,masks=[]) {
+async function videoPixels(png,dpr,label,required=false,masks=[],requestedCodec='avc1.420033') {
   if(!required&&process.env.CHARIOX_FILL_VIDEO!=='1')return null;
   const encoder=new PortableEncoder();
   try {
-    const packet=await encoder.encode(png,8000000,true,'avc1.420033',masks);
+    const packet=await encoder.encode(png,8000000,true,requestedCodec,masks);
     if(packet.dropped===true)return null; // MP-11: refused lossy output keeps the exact masked image.
-    const data=typeof packet==='string'?packet:packet.data_base64,codec=typeof packet==='string'?'vp9':'h264';
+    const data=typeof packet==='string'?packet:packet.data_base64,codec=requestedCodec.startsWith('vp09')?'vp9':'h264';
     if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`fill-dpr${dpr}-${label}.${codec}`),Buffer.from(data,'base64'));
     return await decodeVideo(data,codec);
   }finally{await encoder.close();}
@@ -250,7 +251,12 @@ for(const dpr of [1,2]) {
    }finally{clearInterval(service.expiry);service.clear();}
  }));
  for(const effect of ['shadow','field filter','ancestor filter','descendant filter','field reflection','ancestor reflection','descendant reflection']) {
- test(`MP-08/MP-11 DPR${dpr}: filled editor ${effect} refuses production artifacts and video`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,fill,evaluate,policy})=>{
+ const viewerDpr=dpr;
+ // MP-08/MP-10: native video has the kernel's launch density, independent
+ // of viewer DPR. Artifact reads must keep that same viewport while the
+ // display subscription is active.
+ test(`MP-08/MP-11 viewer DPR${dpr}: filled editor ${effect} refuses native artifacts and video`,()=>setup(hostViewport(true).device_scale_factor,async({browser,connection,sessionId,targetId,documentId,fill,evaluate,policy,dpr})=>{
+   const nativeDpr=dpr;
    await evaluate("document.querySelector('iframe').remove();Object.assign(document.querySelector('#editor').style,{width:'40px',height:'24px',whiteSpace:'nowrap',overflow:'visible',font:'20px monospace',color:'black',background:'transparent'})");
    if(effect==='shadow')await evaluate("document.querySelector('#editor').style.textShadow='500px 0 0 magenta'");
    if(effect==='field filter')await evaluate("document.querySelector('#editor').style.filter='drop-shadow(500px 0 0 magenta)'");
@@ -265,7 +271,7 @@ for(const dpr of [1,2]) {
    const reflection=effect.endsWith('reflection'),bounds=reflection?[80,520,430,600]:[575,300,900,330];
    const ink=pixels=>{let count=0;for(let y=bounds[1]*dpr;y<bounds[3]*dpr;y++)for(let x=bounds[0]*dpr;x<bounds[2]*dpr;x++){const i=(y*1280*dpr+x)*4;if(pixels[i]>120&&pixels[i+1]<80&&pixels[i+2]>120)count++;}return count;};
    assert(ink(decodePng(raw,dpr).pixels)>100,'MP-11 actual filled-editor paint effect paints beyond Range geometry');
-   assert(ink(await videoPixels(raw,dpr,`${effect.replaceAll(' ','-')}-baseline`,true))>100,'MP-11 the readable displaced paint survives the actual video encoder');
+   assert(ink(await videoPixels(raw,dpr,`${effect.replaceAll(' ','-')}-baseline`,true,[],'vp09.00.10.08'))>100,'MP-11 the readable displaced paint survives the actual video encoder');
    if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`${effect.replaceAll(' ','-')}-raw-dpr${dpr}.png`),Buffer.from(raw,'base64'));
    connection.browserInstanceId='MP11-shadow-artifact-fixture';
    const viewport={css_width:1280,css_height:800,device_scale_factor:dpr,desktop_pixel_width:1280*dpr,desktop_pixel_height:800*dpr,revision:1,last_actor_id:null};
@@ -279,8 +285,9 @@ for(const dpr of [1,2]) {
    host.tabs.set('shadow-tab',{tab_id:'shadow-tab',target_id:targetId,document_id:documentId});
    let stream;
    try {
-     const subscription=await host.request({op:'display_subscribe',tab_id:'shadow-tab',generation:1,device_scale_factor:dpr,bitrate:8000000,codecs:['png','vp09.00.10.08']});
+     const subscription=await host.request({op:'display_subscribe',tab_id:'shadow-tab',generation:1,device_scale_factor:viewerDpr,bitrate:8000000,codecs:['png','vp09.00.10.08']});
      stream=host.displays.get(subscription.subscription_id);
+     assert.equal(subscription.device_scale_factor,nativeDpr,'viewer density never changes native capture');
      let encoded=0;const encode=stream.encoder.encode.bind(stream.encoder);
      stream.encoder.encode=(...args)=>{encoded++;return encode(...args)};
      const next=()=>host.request({op:'screenshot',generation:1,display_subscription_id:subscription.subscription_id,after_sequence:stream.sequence});
