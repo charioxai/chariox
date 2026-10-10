@@ -92,7 +92,8 @@ async fn a06_ordinary_agents_cannot_generate_credentials() {
     let f = fixture();
     unlock(&f);
     let catalog = names(&f);
-    assert!(!catalog.iter().any(|name| name == VAULT_GENERATE));
+    // MP-08/MP-10/MP-11: stable discovery is not a Vault generation grant.
+    assert!(catalog.iter().any(|name| name == VAULT_GENERATE));
     assert!(
         !catalog
             .iter()
@@ -196,7 +197,7 @@ async fn a06_elevated_generation_commits_one_handle_and_never_returns_the_value(
     f.state
         .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
         .unwrap();
-    assert!(!names(&f).iter().any(|name| name == VAULT_GENERATE));
+    assert!(names(&f).iter().any(|name| name == VAULT_GENERATE));
     assert!(generate(&f, "after-revoke", SITE).await.is_err());
 }
 
