@@ -5,16 +5,19 @@
 Agent allocation uses random 128-bit identities independent of the live-agent
 snapshot, so deletion and kernel restart do not restore a retired counter value.
 Current and legacy ID forms are reserved from aliases; message resolution rejects
-ambiguous references already present in restored state. Workflow execution bindings
-require the caller or an immutable direct child, including code-built definitions
-and persisted definitions at endpoint invocation. Resume also checks saved run
-agents, runtime bindings, and graph nodes the run has not reached yet.
+ambiguous references already present in restored state. New workflow execution
+bindings require the caller or an immutable direct child, including code-built
+definitions. MP-08 / MP-10 / MP-11 A01-S04 integration correction: invoking an
+existing public workflow may execute saved peer bindings in the same room and
+owner scope. This grants no edit, rebind, or destructive authority. Resume retains
+run ownership checks and validates every saved agent, runtime binding, and graph
+node against the same room and owner scope.
 
 Current-session recall rejects an explicit session ID different from the
 authenticated provider run's room. The shared check covers keyword, semantic,
 agent-assisted, and structured recall. Provider instructions describe regular
 agent spawning and workflows when the room tools are exposed, with the same
-self/direct-child execution policy. MP-08 / MP-10 / MP-11 obligation settlement
+self/direct-child policy for new bindings and saved public-peer execution policy. MP-08 / MP-10 / MP-11 obligation settlement
 cells require the PR2 lifecycle implementation; PR1 dispatch registration alone
 does not establish completion settlement.
 
