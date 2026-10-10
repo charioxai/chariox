@@ -19,7 +19,7 @@ import {
 import type { SessionListEntry } from "./sessions.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
-import { NEW_MANAGED_MACHINE_REF } from "./waiting-room-managed-environments.js"
+import { NEW_MANAGED_MACHINE_REF, managedEnvironmentMachineRef } from "./waiting-room-managed-environments.js"
 import type { ProviderAccountProfile } from "@chariox/kernel-client"
 import {
   __setWaitingRoomWorktreeInventoryForTest,
@@ -78,6 +78,17 @@ test("MP-08 / MP-11 existing slice launch defers authentication to its worker", 
     assert.equal(deriveWaitingRoomCreateSessionDecision({ ...options, state: { ...state, sliceSelectionId: "new" } }).action, "error")
     assert.equal(deriveWaitingRoomCreateSessionDecision({ ...options, state: { ...state, sliceSelectionId: "none" } }).action, "error")
   } finally { __setWaitingRoomWorktreeInventoryForTest(null) }
+})
+
+test("MP-08 / MP-11 Start prepares an existing managed machine before sign-in interception", () => {
+  const remote = {
+    providerAccounts: [{ provider: "codex", profile_id: "home-default", label: "Home", is_default: true, auth_state: "not_configured" }] as ProviderAccountProfile[],
+  }
+  const state = { ...waitingRoomState(), providerId: "codex" as const, accountProfileId: "home-default", selectedMachineRef: managedEnvironmentMachineRef("environment-1") }
+  const options = { state, remote, workspacePath: "/workspace", worktreePath: "/workspace" }
+  assert.deepEqual(deriveWaitingRoomControlActivationDecision(options), { action: "none" })
+  // The same unauthenticated account on an ordinary local launch offers login.
+  assert.equal(deriveWaitingRoomControlActivationDecision({ ...options, state: { ...state, selectedMachineRef: "local" } }).action, "stage-command")
 })
 
 test("waiting room activation stages existing worktree selections for session creation", async () => {

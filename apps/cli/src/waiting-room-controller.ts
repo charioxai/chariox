@@ -461,6 +461,9 @@ export function deriveWaitingRoomControlActivationDecision(options: {
   const remote = options.remote ?? {}
   switch (options.state.focus) {
     case "new": {
+      // Source accounts are not authoritative until managed preparation has
+      // started and connected the selected machine.
+      if (waitingRoomManagedLaunchSelection(options.state, remote)) return { action: "none" }
       const placement = waitingRoomLaunchPlacement(options.state, remote)
       const slices = waitingRoomSlices(remote, {
         worktreeSelectionId: options.state.worktreeSelectionId,
