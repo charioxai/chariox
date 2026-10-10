@@ -1,10 +1,28 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { TextRenderable } from "@opentui/core"
+import { CodeRenderable, SyntaxStyle, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { applyTranscriptTextContent } from "./transcript-text-render.js"
 import type { TranscriptEntry } from "./cli-types.js"
 import { linkifyTranscriptChunks } from "./transcript-hyperlinks.js"
+import { installTerminalHyperlinkContent, rememberTerminalLinkChunks } from "./terminal-hyperlink-content.js"
+
+test("MP-08/MP-10/MP-11 hyperlink repaint never replaces newer streamed text with cached content", async () => {
+  const harness = await createTestRenderer({width:80,height:5,useThread:false})
+  const syntax = SyntaxStyle.fromStyles({})
+  const old = "OLD https://github.com/charioxai/chariox"
+  const node = new CodeRenderable(harness.renderer,{content:old,syntaxStyle:syntax})
+  harness.renderer.root.add(node)
+  rememberTerminalLinkChunks(node,linkifyTranscriptChunks([{__isChunk:true,text:old}]),old)
+  const dispose = installTerminalHyperlinkContent(harness.renderer)
+  try {
+    await harness.renderOnce()
+    node.content = "NEW STREAM CONTENT"
+    await harness.renderOnce()
+    assert.ok(harness.captureCharFrame().includes("NEW STREAM CONTENT"))
+    assert.ok(!harness.captureCharFrame().includes("OLD https://"))
+  } finally { dispose(); harness.renderer.destroy(); syntax.destroy() }
+})
 
 test("MP-08/MP-10/MP-11 Markdown bare URLs spanning styled chunks receive one exact native target", () => {
   const url = "https://github.com/charioxai/chariox"

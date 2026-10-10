@@ -1,5 +1,6 @@
 import { CodeRenderable, type MarkdownOptions, type TextChunk } from "@opentui/core"
 import { providerLoginUrl } from "./provider-login-link.js"
+import { rememberTerminalLinkChunks } from "./terminal-hyperlink-content.js"
 
 // MP-08/MP-10/MP-11: native links retain visible text and styling, including
 // bare Markdown URLs that OpenTUI's syntax-based link detection misses.
@@ -34,7 +35,7 @@ export const renderTranscriptMarkdownNode: NonNullable<MarkdownOptions["renderNo
   const node = context.defaultRender()
   if (node instanceof CodeRenderable) {
     const original = node.onChunks
-    node.onChunks = async (chunks, details) => linkifyTranscriptChunks(await original?.(chunks, details) ?? chunks)
+    node.onChunks = async (chunks, details) => rememberTerminalLinkChunks(node, linkifyTranscriptChunks(await original?.(chunks, details) ?? chunks), details.content)
   }
   return node
 }

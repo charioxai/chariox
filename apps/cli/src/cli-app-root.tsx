@@ -5,6 +5,7 @@ import { clipboardCopyMessage, copyTextToClipboard } from "./clipboard.js"
 import { openExternalUrl } from "./external-url.js"
 import { installTerminalNativeSelection } from "./terminal-native-selection.js"
 import { enableTerminalHyperlinks } from "./terminal-hyperlinks.js"
+import { installTerminalHyperlinkContent } from "./terminal-hyperlink-content.js"
 import { providerAccountDisplayLabel, selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
@@ -226,6 +227,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
   const renderer = useRenderer()
   onCleanup(installTerminalNativeSelection(renderer))
+  onCleanup(installTerminalHyperlinkContent(renderer))
   void enableTerminalHyperlinks(renderer)
   const secretInput = createCliSecretInput(renderer)
   const providerLoginLink = createProviderLoginLinkOpener()

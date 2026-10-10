@@ -22,15 +22,6 @@ export async function enableTerminalHyperlinks(renderer: CliRenderer): Promise<b
     const lib = dlopen(libPath, { setHyperlinksCapability: { args: [FFIType.ptr, FFIType.bool], returns: FFIType.void } })
     if (destroyed) { lib.close(); return false }
     renderer.off("destroy", markDestroyed)
-    const native = renderer as unknown as { renderNative(): void }
-    const original = native.renderNative
-    const render = function (this: typeof native) {
-      // Native terminal replies can reset capabilities without a JavaScript
-      // event. Set the flag immediately before every frame, including repaint.
-      lib.symbols.setHyperlinksCapability(rendererPtr, true)
-      original.call(this)
-    }
-    native.renderNative = render
     // Reapply synchronously: native capability replies may reset this flag
     // immediately before a frame. Awaiting another import in the callback
     // races that frame and leaves its unchanged link cells without OSC 8.
@@ -41,7 +32,6 @@ export async function enableTerminalHyperlinks(renderer: CliRenderer): Promise<b
     renderer.on("capabilities", apply)
     renderer.once("destroy", () => {
       renderer.off("capabilities", apply)
-      if (native.renderNative === render) native.renderNative = original
       lib.close()
     })
     apply()

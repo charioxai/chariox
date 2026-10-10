@@ -50,7 +50,7 @@ Object.assign(runtimeEnv, {
 })
 await mkdir(runtimeEnv.HOME, { recursive: true })
 await mkdir(evidence, { recursive: true })
-const url = nativeSelection ? 'https://github.com/charioxai/chariox' : 'https://claude.ai/oauth/authorize?client_id=fixture&redirect_uri=https%3A%2F%2Fexample.org%2Fcallback&state=' + '0123456789abcdef'.repeat(25)
+const url = options['link-url'] ?? (nativeSelection ? 'https://github.com/charioxai/chariox' : 'https://claude.ai/oauth/authorize?client_id=fixture&redirect_uri=https%3A%2F%2Fexample.org%2Fcallback&state=' + '0123456789abcdef'.repeat(25))
 const deviceUrl = 'https://auth.openai.com/codex/device'
 const requests = []
 const upstreamResponses = []
@@ -337,8 +337,15 @@ try {
     await sleep(800)
     await capture('native-04-link')
     }
+    // MP-08/MP-10/MP-11: real terminal resize forces the existing linked
+    // buffers to repaint, exposing expired native URL metadata.
+    await page.evaluate(() => term.resize(101,35)); tui.terminal.resize(101,35)
+    await sleep(400)
+    await page.evaluate(() => term.resize(100,35)); tui.terminal.resize(100,35)
+    await sleep(500)
+    await capture('native-04b-repaint')
     const mark = output.length
-    const linkAt = await rowOf(url)
+    const linkAt = await rowOf(url) ?? await rowOf(url.slice(0,32))
     // A normal click on a blank terminal cell clears the previous native
     // selection before following a link; no selection API or TUI mouse event.
     const blank = await page.evaluate(() => {
@@ -366,7 +373,7 @@ try {
     let browserUrl = openedPage ? openedPage.url() : null
     let browserTitle = null
     if (openedPage) {
-      await openedPage.waitForURL('https://github.com/**',{timeout:30_000}).catch(() => {})
+      await openedPage.waitForURL(value => value.href.startsWith(url),{timeout:30_000}).catch(() => {})
       browserUrl = openedPage.url()
       await openedPage.waitForLoadState('domcontentloaded',{timeout:15_000}).catch(() => {})
       browserTitle = await openedPage.title().catch(() => null)
@@ -375,7 +382,7 @@ try {
     await capture('native-05-click')
     result = {items:['MP-08','MP-10','MP-11'],mode:'native-selection',source:options.source,
       cli,multilineSelected,cliSha256:await (cli.endsWith('.js') ? hashClient(path.dirname(cli)) : hashFile(cli)),mouseEnabled,selected,clipboard,
-      browserUrl,browserTitle,popupDiagnostic,realProvider: Boolean(options['native-session']), kernelSource:options['kernel-source'] ?? null,kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null,
+      browserUrl,browserTitle,popupDiagnostic,resizedBeforeClick:true,realProvider: Boolean(options['native-session']), kernelSource:options['kernel-source'] ?? null,kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null,
       osc8:[...output.matchAll(/\x1b\]8;[^;\x1b\x07]*;([^\x1b\x07]*)/g)].some(match => match[1] === url),activated,
       checkEndByte:output.length,leftScreen:/\x1b\[\?1049l/.test(output),clickLeftScreen:/\x1b\[\?1049l/.test(output.slice(mark)),
       acceptance:options['native-session'] ? 'Real standalone TUI, owned kernel, product-linked official Codex turn, public repository and native terminal clipboard/browser action; local transport. Physical Mac and hosted WSS acceptance remain separate.' : 'Real built CLI/PTY/browser terminal regression with fixture login response. Native macOS Cmd-C/Cmd-click requires a physical desktop; Linux Ctrl-click is not macOS acceptance.'}
