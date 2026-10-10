@@ -167,8 +167,8 @@ test("Escape hides the popup and gives the prompt back; the passkey is gone", as
   try {
     await h.harness.mockInput.typeText("secret")
     await h.harness.mockInput.pressKeys(["ESCAPE"])
-    // A bare ESC is held briefly to distinguish it from a terminal sequence.
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    // The renderer holds a bare ESC for 250 ms to distinguish terminal sequences.
+    await new Promise((resolve) => setTimeout(resolve, 300))
     assert.equal(h.popup.view().open, false)
     assert.equal(h.textarea.focused, true)
     assert.equal(h.textarea.plainText, "draft kept")

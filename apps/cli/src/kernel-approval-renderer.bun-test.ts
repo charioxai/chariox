@@ -105,8 +105,8 @@ test("actual OpenTUI keyboard delivery isolates approval choices from the focuse
     await harness.mockInput.pressKeys(["ARROW_DOWN", "RETURN", "RETURN"])
     assert.deepEqual(requests, ["deny"])
     await harness.mockInput.pressKeys(["ESCAPE"])
-    // A bare ESC is held briefly to distinguish it from a terminal sequence.
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    // The renderer holds a bare ESC for 250 ms to distinguish terminal sequences.
+    await new Promise((resolve) => setTimeout(resolve, 300))
     assert.equal(prompt.focused, true)
     assert.equal(prompt.plainText, "draft kept")
   } finally {
