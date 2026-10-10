@@ -12,6 +12,10 @@ func pairedReply(_ request: [String: Any], epoch: String) -> (reply: [String: An
     func refuse(_ code: String) -> ([String: Any], Bool) {
         reply["ok"] = false
         reply["error"] = ["code": code]
+        // Identity-only mode cannot post input. Confirm that ordinary unsupported
+        // input has no owned press; stale-epoch replies never clear uncertainty.
+        if code == "unsupported", request["method"] as? String == "host.computer",
+           params["op"] as? String == "input" { reply["input_released"] = true }
         return (reply, false)
     }
     guard request["epoch"] as? String == epoch else { return refuse("user_domain_stale_epoch") }

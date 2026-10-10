@@ -20,6 +20,9 @@ import Darwin
             if let input { params["input"] = input }
             return await session.reply(["id":1,"epoch":"first","method":"host.computer","params":params]).reply
         }
+        let identityRefusal = pairedReply(["id":1,"epoch":"first","method":"host.computer",
+            "params":["op":"input","input":["kind":"key","key":"Right"]]], epoch:"first").reply
+        precondition(identityRefusal["input_released"] as? Bool == true, "identity-only rejection poisoned input")
         _ = await call(nil)
         for input in [["kind":"text","text":String(repeating:"x",count:21)], ["kind":"key","key":"cmd+r"]] {
             let refusal = await call(input)
