@@ -469,6 +469,7 @@ impl KernelRuntimeOwnedState {
         });
     }
 
+    #[cfg(test)]
     pub(super) fn delete_session_ref(
         &self,
         session_ref: &str,

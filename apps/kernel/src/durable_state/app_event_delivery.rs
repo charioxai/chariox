@@ -15,7 +15,7 @@ use chariox_app_runtime::app_outbox::{
     VerifiedAutomation,
 };
 pub(crate) use preparation::PreparedAppEvent;
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 use std::sync::{mpsc, Arc};
 
 #[derive(Debug, thiserror::Error)]
@@ -56,9 +56,6 @@ pub(crate) struct AppEventCandidate {
 impl AppEventCandidate {
     pub(crate) fn receipt(&self) -> &Receipt {
         &self.receipt
-    }
-    pub(crate) fn session_id(&self) -> &str {
-        &self.configuration.target.session_id
     }
 }
 

@@ -29,6 +29,10 @@ impl owned::OwnedRemoteAgentProfileUpdate {
 }
 
 impl KernelRuntimeOwnedState {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing update_agent_profile operation signature and explicit context arguments"
+    )]
     pub(super) fn update_agent_profile(
         &self,
         session_id: &str,

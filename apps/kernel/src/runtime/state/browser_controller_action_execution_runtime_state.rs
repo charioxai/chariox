@@ -232,6 +232,10 @@ impl KernelRuntimeState {
             })
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing execute_browser_mutation_as_agent operation signature and explicit context arguments"
+    )]
     pub(crate) async fn execute_browser_mutation_as_agent<T, F>(
         &self,
         session_id: &str,
@@ -260,6 +264,10 @@ impl KernelRuntimeState {
             .await
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing execute_browser_tab_mutation_as_agent operation signature and explicit context arguments"
+    )]
     pub(crate) async fn execute_browser_tab_mutation_as_agent<T, F>(
         &self,
         session_id: &str,

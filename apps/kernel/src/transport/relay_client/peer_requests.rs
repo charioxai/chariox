@@ -2168,6 +2168,10 @@ pub(super) async fn handle_daemon_peer_request(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing send_authenticated_peer_request_for_test operation signature and explicit context arguments"
+)]
 pub(crate) async fn send_authenticated_peer_request_for_test(
     router: &Arc<CommandRouter>,
     state: &Arc<RwLock<RelayClientState>>,
@@ -2830,6 +2834,10 @@ mod tests {
         config
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing send_lease_worker_request operation signature and explicit context arguments"
+    )]
     async fn send_lease_worker_request(
         router: &Arc<CommandRouter>,
         state: &Arc<RwLock<RelayClientState>>,

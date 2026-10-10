@@ -134,10 +134,6 @@ impl CharioxEncryptedCredentialVaultStore {
             kdf_profile,
         }
     }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 impl CredentialVaultStore for CharioxEncryptedCredentialVaultStore {
@@ -1609,6 +1605,10 @@ fn process_memory_vault_backend_allowed() -> bool {
 }
 
 fn process_memory_vault() -> &'static Mutex<BTreeMap<(String, String), Zeroizing<String>>> {
+    #[allow(
+        clippy::type_complexity,
+        reason = "Keep the explicit VAULT state or return type at the existing boundary"
+    )]
     static VAULT: OnceLock<Mutex<BTreeMap<(String, String), Zeroizing<String>>>> = OnceLock::new();
     VAULT.get_or_init(|| Mutex::new(BTreeMap::new()))
 }

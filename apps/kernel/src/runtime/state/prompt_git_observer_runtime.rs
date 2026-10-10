@@ -452,7 +452,7 @@ impl KernelRuntimeState {
                     attachment.repo_fingerprint(),
                 ) {
                     results.push(workspace_live_sync_identity_conflict_result(
-                        change, &link, attachment, message,
+                        change, link, attachment, message,
                     ));
                     continue;
                 }
@@ -476,7 +476,7 @@ impl KernelRuntimeState {
             }
             results.push(
                 self.apply_workspace_live_sync_change_to_remote_target(
-                    &config, change, &link, attachment,
+                    &config, change, link, attachment,
                 )
                 .await,
             );

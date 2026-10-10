@@ -188,6 +188,10 @@ pub(crate) enum Operation {
         cancelled: bool,
         now: u64,
     },
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Occur(InboxEvent),
     Send {
         task: String,

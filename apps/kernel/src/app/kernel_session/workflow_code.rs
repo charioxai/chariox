@@ -1,6 +1,10 @@
 use super::*;
 
 impl<'a> KernelSessionService<'a> {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing apply_workflow_code_definition_with_rebindings_and_alias_base operation signature and explicit context arguments"
+    )]
     pub(super) fn apply_workflow_code_definition_with_rebindings_and_alias_base(
         &mut self,
         session_id: &str,
@@ -353,6 +357,10 @@ impl<'a> KernelSessionService<'a> {
         Ok((definition, validation))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing compile_and_apply_workflow_code_javascript_with_rebindings operation signature and explicit context arguments"
+    )]
     pub(crate) fn compile_and_apply_workflow_code_javascript_with_rebindings(
         &mut self,
         session_id: &str,
@@ -377,6 +385,10 @@ impl<'a> KernelSessionService<'a> {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing compile_and_apply_workflow_code_source_with_rebindings operation signature and explicit context arguments"
+    )]
     pub(crate) fn compile_and_apply_workflow_code_source_with_rebindings(
         &mut self,
         session_id: &str,
@@ -712,8 +724,7 @@ impl<'a> KernelSessionService<'a> {
                     .attachments
                     .list_session_attachment_ids(attachment.session_id()),
                 format!(
-                    "Removed {} queued prompt(s) from detached attachment `{}`.",
-                    removed_queued_prompt_count, attachment_id
+                    "Removed {removed_queued_prompt_count} queued prompt(s) from detached attachment `{attachment_id}`."
                 ),
             );
         }
@@ -726,8 +737,7 @@ impl<'a> KernelSessionService<'a> {
                     .attachments
                     .list_session_attachment_ids(attachment.session_id()),
                 format!(
-                    "Removed the active prompt from detached attachment `{}` and advanced the queue.",
-                    attachment_id
+                    "Removed the active prompt from detached attachment `{attachment_id}` and advanced the queue."
                 ),
             );
             if let Some(agent_id) = session_after_detach.focused_agent_id() {

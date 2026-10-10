@@ -757,6 +757,10 @@ impl KernelRuntimeState {
         runtime_tool_result_from_local_response(response)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing meta_workflow_code_apply_response operation signature and explicit context arguments"
+    )]
     pub(super) async fn meta_workflow_code_apply_response(
         &self,
         session: &crate::session::RuntimeSession,

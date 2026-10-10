@@ -57,6 +57,10 @@ pub(super) fn relay_subscription_task_key(
     format!("{scope}\u{1f}{session_id}\u{1f}{attachment_id}\u{1f}{relay_subscription_id}")
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing handle_relay_subscribe operation signature and explicit context arguments"
+)]
 pub(super) async fn handle_relay_subscribe(
     router: &Arc<CommandRouter>,
     outgoing_tx: &RelayOutgoingSender,
@@ -359,6 +363,10 @@ pub(super) async fn handle_relay_unsubscribe(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing run_relay_subscription_loop operation signature and explicit context arguments"
+)]
 pub(super) async fn run_relay_subscription_loop(
     router: Arc<CommandRouter>,
     outgoing_tx: RelayOutgoingSender,

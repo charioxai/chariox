@@ -546,7 +546,7 @@ fn normalize_claude_rendered_permission_text(value: &str) -> String {
         if ch == '\u{1b}' {
             match chars.next() {
                 Some('[') => {
-                    while let Some(next) = chars.next() {
+                    for next in chars.by_ref() {
                         if ('@'..='~').contains(&next) {
                             break;
                         }

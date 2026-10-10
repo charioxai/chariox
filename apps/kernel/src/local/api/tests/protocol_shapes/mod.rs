@@ -91,4 +91,5 @@ fn history_page_entry(
 }
 
 mod agent_lifecycle;
+mod owner_handoff;
 mod screenshot;

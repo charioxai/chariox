@@ -174,11 +174,23 @@ struct DurableWriteRequest {
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing DurableWriterRequest typed actor payload layout"
+)]
 enum DurableWriterRequest {
     Ordinary(DurableWriteRequest),
     App(Box<apps::AppRegistryRequest>),
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     AppPublisher(Box<app_publishers::AppPublisherRequest>),
     AppPublisherOperation(Box<app_publisher_operations::PublisherOperationRequest>),
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     VerifiedApp(Box<app_installation_staging::AppVerifiedInstallationRequest>),
     AppState(Box<app_state::AppStateRequest>),
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]

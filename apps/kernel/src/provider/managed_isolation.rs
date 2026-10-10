@@ -771,6 +771,7 @@ fn managed_runtime_user_files_for_home(home: &Path, names: &[&str]) -> Vec<PathB
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(test)]
 fn managed_runtime_user_startup_files() -> Result<Vec<PathBuf>, DaemonError> {
     Ok(managed_runtime_user_home()?
         .as_deref()
@@ -781,6 +782,7 @@ fn managed_runtime_user_startup_files() -> Result<Vec<PathBuf>, DaemonError> {
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(test)]
 fn managed_runtime_user_openbox_files() -> Result<Vec<PathBuf>, DaemonError> {
     Ok(managed_runtime_user_home()?
         .as_deref()
@@ -1944,7 +1946,7 @@ fn managed_inherited_github_config(
     };
     // The inherited protected setting belongs to the configured provider HOME.
     // It may not exist before login. Never expose an arbitrary ambient directory.
-    if PathBuf::from(directory) != provider_home.join(".config/gh") {
+    if directory != provider_home.join(".config/gh") {
         return Err(isolation_error(
             "inherited GitHub configuration is outside managed provider HOME",
         ));
@@ -3502,7 +3504,7 @@ mod tests {
         std::fs::set_permissions(&ordinary_repo, std::fs::Permissions::from_mode(0o777))
             .expect("ordinary repository should be writable");
         std::fs::write(&ordinary_seed, "seed\n").expect("ordinary repository seed should exist");
-        std::fs::write(&sibling.join("sibling.txt"), "sibling\n")
+        std::fs::write(sibling.join("sibling.txt"), "sibling\n")
             .expect("sibling marker should exist");
         std::fs::write(&protected_payload, "protected baseline\n")
             .expect("protected payload should exist");
@@ -3565,11 +3567,6 @@ mod tests {
         let ordinary_seed = ordinary_seed
             .canonicalize()
             .expect("ordinary repository seed should canonicalize");
-        let ordinary_write = ordinary_write;
-        let protected_payload = protected_payload;
-        let profile = profile;
-        let openbox_rc = openbox_rc;
-        let command_payloads = command_payloads;
 
         let request = LaunchProviderRequest::new(
             format!("managed-runtime-home-{workspace_kind}"),
@@ -4437,8 +4434,7 @@ mod tests {
         for relative in MANAGED_RUNTIME_USER_COMMAND_DIRECTORY_NAMES {
             assert!(
                 !home.join(relative).join("provider-created").exists(),
-                "provider command payload escaped {}",
-                relative
+                "provider command payload escaped {relative}"
             );
         }
         // Bubblewrap may materialize an empty host-side mountpoint when a

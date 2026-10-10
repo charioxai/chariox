@@ -49,7 +49,7 @@ impl PasskeyPromptBoard {
             .retain(|(session, id)| session != session_id || id != interaction_id);
     }
 
-    fn was_answered(&self, session_id: &str, interaction_id: &str) -> bool {
+    pub(super) fn was_answered(&self, session_id: &str, interaction_id: &str) -> bool {
         self.answered
             .lock()
             .expect("passkey prompts poisoned")

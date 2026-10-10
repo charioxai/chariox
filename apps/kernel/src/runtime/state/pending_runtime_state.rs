@@ -129,6 +129,10 @@ impl std::fmt::Debug for PendingInteractionResolution {
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(
+    clippy::type_complexity,
+    reason = "Keep the explicit PendingInteractionStore state or return type at the existing boundary"
+)]
 pub(super) struct PendingInteractionStore {
     pub(super) inner: Arc<StdMutex<BTreeMap<String, PendingInteraction>>>,
     pub(super) mutation: Arc<StdMutex<()>>,

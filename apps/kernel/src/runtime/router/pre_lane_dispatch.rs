@@ -1,28 +1,14 @@
-use std::sync::Arc;
-
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
-use crate::runtime::agent_utility_executor::execute_agent_utility_request;
-use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::command::KernelCommand;
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
 use crate::runtime::event_catalog_control::execute_event_catalog_request_with_client;
-use crate::runtime::managed_bootstrap_observation_control::execute_managed_bootstrap_observation_request;
-use crate::runtime::managed_context_outbound_control::execute_managed_context_outbound_request;
-use crate::runtime::managed_context_target_control::execute_managed_context_target_request;
-use crate::runtime::managed_environment_control::execute_managed_environment_control_request;
-use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
-use crate::runtime::provider_process_control::provider_processes_visible_to_user_from_projection;
 use crate::runtime::provider_run_control::projected_provider_run_response;
-use crate::runtime::relay_config_control::execute_relay_config_request;
-use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
 use crate::runtime::resource_telemetry::execute_kernel_resource_telemetry_request;
 use crate::runtime::session_read_control::{
     projected_session_inspection_response, projected_session_read_response,
 };
-use crate::runtime::terminal_command_catalog::terminal_command_catalog_response;
 use crate::runtime::workflow_actor::is_workflow_command;
-use crate::runtime::workspace_command_executor::execute_workspace_command_request;
 
 use super::CommandRouter;
 
@@ -40,65 +26,10 @@ impl CommandRouter {
                 .authorize_room_agent_request(actor, request)?;
         }
         if let Some(response) = self
-            .runtime_state
-            .app_control()
-            .publishers()
-            .execute(&self.runtime_state, command, request)
-            .await
-        {
-            return Ok(Some(response));
-        }
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        if let Some(response) = self
-            .runtime_state
-            .app_control()
-            .installs()
-            .execute(&self.runtime_state, command, request)
-            .await
-        {
-            return Ok(Some(response));
-        }
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        if let Some(response) = self
-            .runtime_state
-            .execute_user_app_view_request(command, request)
-            .await
-        {
-            return response.map(Some);
-        }
-        // Protocols 358–360: App routes and grants on a generator connection
-        // are checked with that generator before the App lane stores them.
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        if let Some(response) = self
-            .dispatch_app_event_request(command, request, caller_user_id)
+            .dispatch_app_pre_lane(command, request, caller_user_id)
             .await?
         {
             return Ok(Some(response));
-        }
-        if let Some(response) = self
-            .runtime_state
-            .app_control()
-            .execute(command, request)
-            .await
-        {
-            return Ok(Some(response));
-        }
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        if let Some(response) = self
-            .runtime_state
-            .execute_app_control_request(command, request)
-            .await
-        {
-            return Ok(Some(response));
-        }
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        if let Some(response) = Box::pin(
-            self.runtime_state
-                .execute_app_view_request(command, request),
-        )
-        .await
-        {
-            return response.map(Some);
         }
         if matches!(
             request,
@@ -171,73 +102,10 @@ impl CommandRouter {
             .await
             .map(Some);
         }
-        match request {
-            request @ (LocalDaemonRequest::CreateDisposableWorker(_)
-            | LocalDaemonRequest::GetDisposableWorker(_)
-            | LocalDaemonRequest::ReleaseDisposableWorker(_)
-            | LocalDaemonRequest::KeepDisposableWorkerRunning(_)
-            | LocalDaemonRequest::PrepareDisposableWorkerContextTransfer(_)
-            | LocalDaemonRequest::KeepManagedEnvironmentRunning(_)) => {
-                return crate::runtime::disposable_worker_control::execute_disposable_worker_control_request(
-                    self.config_projection.snapshot(), self.provider_account_profiles.clone(),
-                    caller_user_id, request.clone()).await.map(Some);
-            }
-            LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(request) => {
-                return execute_managed_bootstrap_observation_request(
-                    self.config_projection.snapshot(),
-                    self.managed_kernel_registration.clone(),
-                    caller_user_id,
-                    request.clone(),
-                )
-                .await
-                .map(Some);
-            }
-            request @ (LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
-            | LocalDaemonRequest::GetManagedEnvironment(_)
-            | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)
-            | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
-            | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
-            | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
-            | LocalDaemonRequest::CreateManagedEnvironment(_)
-            | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
-            | LocalDaemonRequest::RequestManagedEnvironmentReimage(_)
-            | LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_)
-            | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)) => {
-                return execute_managed_environment_control_request(
-                    self.config_projection.snapshot(),
-                    self.provider_account_profiles.clone(),
-                    self.managed_context_outbound.clone(),
-                    caller_user_id,
-                    request.clone(),
-                )
-                .await
-                .map(Some);
-            }
-            request @ (LocalDaemonRequest::StartManagedContextTransfer(_)
-            | LocalDaemonRequest::GetManagedContextTransferStatus(_)) => {
-                return execute_managed_context_outbound_request(
-                    self.config_projection.snapshot(),
-                    Arc::clone(&self.relay_state),
-                    self.managed_context_outbound.clone(),
-                    self.provider_account_profiles.clone(),
-                    self.runtime_state.clone(),
-                    caller_user_id,
-                    request.clone(),
-                )
-                .map(Some);
-            }
-            request @ LocalDaemonRequest::GetManagedContextLaunchTarget(_) => {
-                let response = execute_managed_context_target_request(
-                    self.config_projection.snapshot(),
-                    self.managed_kernel_registration.clone(),
-                    self.managed_context_transfers.clone(),
-                    caller_user_id,
-                    request.clone(),
-                )?;
-                if let LocalDaemonResponse::ManagedContextLaunchTarget { target } = &response {
-                    self.runtime_state
-                        .ensure_managed_context_project(target, caller_user_id)?;
-                }
+        // MP-08 / MP-10 / MP-11: poll only the selected request handler.
+        // A missing provider projection still falls through to ordinary dispatch.
+        if let Some(handler) = self.select_pre_lane_request(request, caller_user_id) {
+            if let Some(response) = handler.await? {
                 return Ok(Some(response));
             }
             LocalDaemonRequest::GetTerminalCommandCatalog(_) => {

@@ -6,6 +6,10 @@
 use super::*;
 
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "Trigger names describe the changed resource at each call site"
+)]
 pub(crate) enum ProviderReloadTrigger {
     AgentMcpChanged {
         session_id: String,

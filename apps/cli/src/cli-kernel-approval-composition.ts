@@ -10,7 +10,7 @@ import type { LocalIpcClient } from "./ipc.js"
 import { createPasskeyPopupController, passkeyPromptsFromEvent } from "./passkey-popup-controller.js"
 import { createPasskeyPopupRenderer } from "./passkey-popup-renderer.js"
 import { extendKernelSudo, revokeKernelAccessGrant } from "./kernel-api.js"
-import { respondToInteraction, respondToKernelAccessDecision } from "./prompt-runtime-api.js"
+import { respondToHandoff, respondToInteraction, respondToKernelAccessDecision } from "./prompt-runtime-api.js"
 import { createSudoWindowBand } from "./sudo-window-band.js"
 import { routeRawPastes, type RawPasteEvent } from "./raw-paste-routing.js"
 
@@ -87,6 +87,9 @@ export function createCliKernelApprovalComposition(deps: {
     scroll: surface.scroll,
     respond: (sessionId, interactionId, choiceId) =>
       respondToInteraction(deps.client, sessionId, interactionId, choiceId, null),
+    respondHandoff: (sessionId, interactionId, action) =>
+      respondToHandoff(deps.client, sessionId, interactionId, action),
+    notify: deps.notify,
     applySession: deps.applySession,
     showPasskeyPrompt: (sessionId, interactionId) => popup.show(sessionId, interactionId),
   })

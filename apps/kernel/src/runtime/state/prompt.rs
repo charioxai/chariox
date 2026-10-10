@@ -658,6 +658,10 @@ impl KernelRuntimeOwnedState {
         }))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing record_completed_prompt_settlement operation signature and explicit context arguments"
+    )]
     fn record_completed_prompt_settlement(
         &self,
         session_id: &str,

@@ -210,6 +210,10 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerEventBatch, String> {
         Err("browser controller backend does not support event polling".to_string())
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing import_browser_cookies operation signature and explicit context arguments"
+    )]
     fn import_browser_cookies(
         &mut self,
         _binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
@@ -978,6 +982,10 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing import_browser_cookies operation signature and explicit context arguments"
+    )]
     fn import_browser_cookies(
         &mut self,
         binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
@@ -1440,6 +1448,10 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .poll_browser_events(browser_generation, cursor, limit)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing import_browser_cookies operation signature and explicit context arguments"
+    )]
     pub(crate) fn import_browser_cookies(
         &mut self,
         session_id: &str,
@@ -2058,6 +2070,10 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             .poll_browser_events(browser_generation, cursor, limit)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing import_browser_cookies operation signature and explicit context arguments"
+    )]
     fn import_browser_cookies(
         &mut self,
         binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,

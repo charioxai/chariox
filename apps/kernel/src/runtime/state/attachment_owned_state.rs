@@ -114,8 +114,7 @@ impl KernelRuntimeOwnedState {
                 self.attachment_store
                     .list_session_attachment_ids(attachment.session_id()),
                 format!(
-                    "Removed {} queued prompt(s) from detached attachment `{}`.",
-                    removed_queued_prompt_count, attachment_id
+                    "Removed {removed_queued_prompt_count} queued prompt(s) from detached attachment `{attachment_id}`."
                 ),
             );
         }
@@ -127,8 +126,7 @@ impl KernelRuntimeOwnedState {
                 self.attachment_store
                     .list_session_attachment_ids(attachment.session_id()),
                 format!(
-                    "Removed the active prompt from detached attachment `{}` and advanced the queue.",
-                    attachment_id
+                    "Removed the active prompt from detached attachment `{attachment_id}` and advanced the queue."
                 ),
             );
             if let Some(agent_id) = session_after_detach.focused_agent_id() {

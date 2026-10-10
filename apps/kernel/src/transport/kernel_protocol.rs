@@ -30,6 +30,10 @@ pub(crate) struct BrowserImportRelayResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing KernelIncomingFrame typed actor payload layout"
+)]
 pub(crate) enum KernelIncomingFrame {
     Request {
         request_id: String,
@@ -100,12 +104,20 @@ pub(crate) enum KernelEvent {
     SessionSnapshot {
         session: Box<RuntimeSession>,
         provider_run: Box<Option<PublicProviderRun>>,
+        #[allow(
+            clippy::box_collection,
+            reason = "Keeps the protocol enum payload bounded independently of map header size"
+        )]
         agent_activity: Box<BTreeMap<String, AgentRuntimeActivity>>,
         #[serde(default)]
         agent_activity_revision: u64,
     },
     AgentActivityChanged {
         session_id: String,
+        #[allow(
+            clippy::box_collection,
+            reason = "Keeps the protocol enum payload bounded independently of map header size"
+        )]
         agent_activity: Box<BTreeMap<String, AgentRuntimeActivity>>,
         #[serde(default)]
         agent_activity_revision: u64,

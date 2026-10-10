@@ -460,6 +460,10 @@ mod cli_relay_sender_tests {
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing ParsedRelayClientMessage typed actor payload layout"
+)]
 enum ParsedRelayClientMessage {
     Request(ParsedRelayClientRequest),
     BrowserImportDelivery(crate::runtime::browser_import_payload::BrowserImportDeliveryRequest),
@@ -541,7 +545,9 @@ async fn dispatch_relay_client_request(
     // comes from relay authentication, never the request or command ID.
     if matches!(
         &request,
-        LocalDaemonRequest::KernelBrowser(_) | LocalDaemonRequest::Notes(_)
+        LocalDaemonRequest::KernelBrowser(_)
+            | LocalDaemonRequest::Notes(_)
+            | LocalDaemonRequest::RespondToHandoff(_)
     ) && !command.is_terminal_caller()
     {
         return RelayDispatchOutcome::RelayError(relay_error(
@@ -635,6 +641,10 @@ async fn dispatch_relay_client_request(
     cached_relay_dispatch_outcome(response, error)
 }
 
+#[allow(
+    clippy::boxed_local,
+    reason = "Consumes the already boxed response frame without moving a large payload through the caller stack"
+)]
 fn cached_relay_dispatch_outcome(
     response: Box<Option<Value>>,
     error: Option<KernelTransportError>,

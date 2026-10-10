@@ -69,6 +69,10 @@ pub(super) async fn emit_relay_event(
     send_relay_event_frame(outgoing_tx, subscription_id, event_id, encrypted_event).await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing replay_recent_relay_events operation signature and explicit context arguments"
+)]
 pub(super) async fn replay_recent_relay_events(
     event_runtime: &Arc<RelayEventRuntime>,
     router: &Arc<CommandRouter>,

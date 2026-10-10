@@ -23,6 +23,10 @@ use super::turn::{
 use super::{CodexAssistantCompletion, CodexOutputChunk, CodexRuntimeState};
 
 #[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing apply_notification operation signature and explicit context arguments"
+)]
 pub(super) fn apply_notification(
     notification: CodexNotification,
     active_turn_id: &mut Option<String>,
@@ -52,6 +56,10 @@ pub(super) fn apply_notification(
     );
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing apply_notification_with_manifest operation signature and explicit context arguments"
+)]
 pub(super) fn apply_notification_with_manifest(
     notification: CodexNotification,
     active_turn_id: &mut Option<String>,
@@ -389,6 +397,10 @@ fn codex_retry_progress(message: &str) -> Option<(u32, u32)> {
     (limit > 0 && attempt > 0 && attempt <= limit).then_some((attempt, limit))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing backfill_completed_turn operation signature and explicit context arguments"
+)]
 pub(super) fn backfill_completed_turn(
     client: &CodexClient,
     state: &mut CodexRuntimeState,

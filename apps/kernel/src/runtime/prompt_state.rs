@@ -1335,6 +1335,7 @@ impl PromptStateOwner {
         Ok(prompt)
     }
 
+    #[cfg(test)]
     pub(crate) fn sync_external_active_prompt(
         &self,
         session: &RuntimeSession,

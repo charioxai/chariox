@@ -17,6 +17,7 @@ impl CommandRouter {
             && matches!(
                 request,
                 LocalDaemonRequest::KernelBrowser(_)
+                    | LocalDaemonRequest::RespondToHandoff(_)
                     | LocalDaemonRequest::Notes(_)
                     | LocalDaemonRequest::CaptureVisibleRegion(_)
                     | LocalDaemonRequest::OpenUserAppView(_)

@@ -16,6 +16,10 @@ use super::super::{
 };
 use super::ProviderProcessService;
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing ProviderRuntimeBinding typed actor payload layout"
+)]
 pub(crate) enum ProviderRuntimeBinding {
     Claude(ClaudeRuntimeBinding),
     Codex(CodexRuntimeBinding),
@@ -223,6 +227,10 @@ impl ProviderProcessService {
         self.run_actor_mailbox.stop_run(provider_run_id);
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing enqueue_structured_prompt_submit operation signature and explicit context arguments"
+    )]
     pub(crate) fn enqueue_structured_prompt_submit(
         &mut self,
         session_id: String,

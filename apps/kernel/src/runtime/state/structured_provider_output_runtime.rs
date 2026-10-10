@@ -611,7 +611,7 @@ impl KernelRuntimeState {
         // provider termination evidence.
         let provider_termination = poll_result
             .explicit_provider_error
-            .then(|| terminal_failure.as_deref())
+            .then_some(terminal_failure.as_deref())
             .flatten()
             .map(|message| {
                 crate::provider::ProviderRunTermination::explicit_provider_error(

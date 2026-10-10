@@ -268,6 +268,7 @@ struct KernelRuntimeOwnedState {
     connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool,
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
+    handoff_claims: Arc<std::sync::Mutex<BTreeSet<String>>>,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
     completed_git_turn_snapshots: crate::git_observer::CompletedGitTurnSnapshotStore,
     workspace_live_sync_journal: crate::git_observer::WorkspaceLiveSyncJournal,
@@ -476,6 +477,8 @@ mod kernel_browser_mirror;
 mod kernel_browser_receipts;
 mod kernel_browser_runtime;
 mod kernel_browser_secret_runtime;
+mod owner_handoff_runtime;
+pub(crate) use owner_handoff_runtime::{is_handoff_interaction_id, HANDOFF_OBLIGATION_KIND};
 mod notes_runtime;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
@@ -534,6 +537,10 @@ impl KernelRuntimeState {
     }
 
     #[allow(dead_code)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new_with_owned_state operation signature and explicit context arguments"
+    )]
     pub(crate) fn new_with_owned_state(
         app: Arc<Mutex<DaemonApp>>,
         config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
@@ -612,6 +619,10 @@ impl KernelRuntimeState {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new_with_owned_state_and_lanes operation signature and explicit context arguments"
+    )]
     pub(crate) fn new_with_owned_state_and_lanes(
         app: Arc<Mutex<DaemonApp>>,
         provider_runtime_lanes: ProviderRunOperationLanes,
@@ -913,6 +924,7 @@ impl KernelRuntimeState {
                 ),
                 pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
+                handoff_claims: Arc::default(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
                 completed_git_turn_snapshots,
                 workspace_live_sync_journal,

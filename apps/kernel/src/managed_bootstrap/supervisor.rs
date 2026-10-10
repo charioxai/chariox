@@ -18,13 +18,13 @@ use crate::error::DaemonError;
 
 use super::cloud::BootstrapCloudClient;
 use super::release::VerifiedRelease;
-#[cfg(test)]
-use super::state::BootstrapReceiptStatus;
 use super::state::{BootstrapConfig, BootstrapReceipt};
 use super::{
-    jittered, managed_provider_topology, ManagedProviderTopology, PendingConfirmation,
-    MANAGED_PROVIDER_TOPOLOGY_ENV, PATH1_KERNEL_SLICE_BROKER_ENVS, PATH1_SHARED_HOST_SELECTOR_ENVS,
+    jittered, ManagedProviderTopology, PendingConfirmation, MANAGED_PROVIDER_TOPOLOGY_ENV,
+    PATH1_KERNEL_SLICE_BROKER_ENVS, PATH1_SHARED_HOST_SELECTOR_ENVS,
 };
+#[cfg(test)]
+use super::{managed_provider_topology, state::BootstrapReceiptStatus};
 
 const MIN_RESTART_DELAY: Duration = Duration::from_secs(1);
 const MAX_RESTART_DELAY: Duration = Duration::from_secs(30);
@@ -1406,8 +1406,10 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             .expect("exchanged receipt should exist");
         let envelope = confirmation_test_envelope(&runtime_release_digest);
         persist_confirmation_test_envelope(&config.envelope_path, &envelope);
-        let mut profile = crate::config::PersistedCloudRelayProfile::default();
-        profile.machine_credential = Some(format!("mcred_{}", "a".repeat(40)));
+        let profile = crate::config::PersistedCloudRelayProfile {
+            machine_credential: Some(format!("mcred_{}", "a".repeat(40))),
+            ..crate::config::PersistedCloudRelayProfile::default()
+        };
         let mut confirmation = Some(PendingConfirmation {
             envelope,
             receipt,

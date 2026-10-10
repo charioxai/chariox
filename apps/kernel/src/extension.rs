@@ -309,6 +309,75 @@ pub struct AppCapabilityGrant {
     pub delegated_from_grant_id: Option<String>,
 }
 
+impl ExtensionGrant {
+    /// Bind an existing installation. This does not install or activate it.
+    pub fn app(installation_id: impl Into<String>) -> Self {
+        Self::new(ExtensionKind::App, installation_id)
+    }
+
+    pub(crate) fn validate_app_binding(&self) -> Result<(), crate::error::DaemonError> {
+        if self.kind != ExtensionKind::App
+            || self.name.is_empty()
+            || self.name.len() > 128
+            || self
+                .name
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+            || self.environment.is_some()
+            || self.credential.is_some()
+            || self.max_safety.is_some()
+            || self.app_grant.is_some()
+        {
+            return Err(crate::error::DaemonError::LocalTransport {
+                operation: "agent.extension.grant",
+                message: "App bindings require only an installation ID; environment, credential and safety overrides are not accepted".into(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn new(kind: ExtensionKind, name: impl Into<String>) -> Self {
+        Self {
+            kind,
+            name: name.into(),
+            environment: None,
+            credential: None,
+            max_safety: None,
+            app_grant: None,
+        }
+    }
+
+    pub fn script(name: impl Into<String>, environment: impl Into<String>) -> Self {
+        Self {
+            kind: ExtensionKind::Script,
+            name: name.into(),
+            environment: Some(environment.into()),
+            credential: None,
+            max_safety: None,
+            app_grant: None,
+        }
+    }
+
+    pub fn connector(
+        name: impl Into<String>,
+        credential: Option<String>,
+        max_safety: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ExtensionKind::Connector,
+            name: name.into(),
+            environment: None,
+            credential,
+            max_safety: Some(max_safety.into()),
+            app_grant: None,
+        }
+    }
+
+    pub fn matches(&self, kind: &ExtensionKind, name: &str) -> bool {
+        &self.kind == kind && self.name == name
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,74 +520,5 @@ mod tests {
         assert_ne!(first.invocation_id, second.invocation_id);
         assert!(first.invocation_id.starts_with("run-1:tool:"));
         assert!(second.invocation_id.starts_with("run-1:tool:"));
-    }
-}
-
-impl ExtensionGrant {
-    /// Bind an existing installation. This does not install or activate it.
-    pub fn app(installation_id: impl Into<String>) -> Self {
-        Self::new(ExtensionKind::App, installation_id)
-    }
-
-    pub(crate) fn validate_app_binding(&self) -> Result<(), crate::error::DaemonError> {
-        if self.kind != ExtensionKind::App
-            || self.name.is_empty()
-            || self.name.len() > 128
-            || self
-                .name
-                .chars()
-                .any(|c| c.is_whitespace() || c.is_control())
-            || self.environment.is_some()
-            || self.credential.is_some()
-            || self.max_safety.is_some()
-            || self.app_grant.is_some()
-        {
-            return Err(crate::error::DaemonError::LocalTransport {
-                operation: "agent.extension.grant",
-                message: "App bindings require only an installation ID; environment, credential and safety overrides are not accepted".into(),
-            });
-        }
-        Ok(())
-    }
-
-    pub fn new(kind: ExtensionKind, name: impl Into<String>) -> Self {
-        Self {
-            kind,
-            name: name.into(),
-            environment: None,
-            credential: None,
-            max_safety: None,
-            app_grant: None,
-        }
-    }
-
-    pub fn script(name: impl Into<String>, environment: impl Into<String>) -> Self {
-        Self {
-            kind: ExtensionKind::Script,
-            name: name.into(),
-            environment: Some(environment.into()),
-            credential: None,
-            max_safety: None,
-            app_grant: None,
-        }
-    }
-
-    pub fn connector(
-        name: impl Into<String>,
-        credential: Option<String>,
-        max_safety: impl Into<String>,
-    ) -> Self {
-        Self {
-            kind: ExtensionKind::Connector,
-            name: name.into(),
-            environment: None,
-            credential,
-            max_safety: Some(max_safety.into()),
-            app_grant: None,
-        }
-    }
-
-    pub fn matches(&self, kind: &ExtensionKind, name: &str) -> bool {
-        &self.kind == kind && self.name == name
     }
 }

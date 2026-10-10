@@ -11,6 +11,10 @@ use crate::runtime::command_latency::{
 use crate::runtime::projection::ActorQueueSnapshot;
 
 #[derive(Debug)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "Actor command names mirror the public prompt operations"
+)]
 pub(super) enum AgentCommand {
     SubmitPrompt {
         request: crate::local::SubmitPromptRequest,

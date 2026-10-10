@@ -14,6 +14,10 @@ use crate::transport::relay_peer::{
 use super::provider_run::LeasedProviderRunMatch;
 use super::RemoteLeaseRuntime;
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing PreparedLeasedProviderRun typed actor payload layout"
+)]
 pub(crate) enum PreparedLeasedProviderRun {
     Ready(String),
     LaunchRequired(LaunchProviderRequest),
@@ -528,6 +532,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing submit_leased_prompt_with_workflow_context operation signature and explicit context arguments"
+    )]
     pub(crate) fn submit_leased_prompt_with_workflow_context(
         &mut self,
         leased_agent_id: &str,
@@ -649,6 +657,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing prepare_leased_prompt_submission operation signature and explicit context arguments"
+    )]
     pub(crate) fn prepare_leased_prompt_submission(
         &mut self,
         leased_agent_id: &str,
@@ -824,6 +836,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok((provider_run_id, outcome))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing prepare_leased_prompt_steer operation signature and explicit context arguments"
+    )]
     pub(crate) fn prepare_leased_prompt_steer(
         &mut self,
         leased_agent_id: &str,

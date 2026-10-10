@@ -109,6 +109,7 @@ impl LeasedAgentCleanupPhase {
         }
     }
 
+    #[cfg(test)]
     fn operation(self) -> &'static str {
         match self {
             Self::Provider => "leased_agent.cleanup.provider",
@@ -404,6 +405,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(expired_lease_ids)
     }
 
+    #[cfg(test)]
     pub(crate) fn destroy_execution_lease_for_caller(
         &mut self,
         lease_id: &str,
@@ -413,6 +415,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         self.destroy_execution_lease(lease_id)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing create_leased_agent operation signature and explicit context arguments"
+    )]
     pub(crate) fn create_leased_agent(
         &mut self,
         lease_id: &str,
@@ -447,6 +453,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(crate) fn create_leased_agent_for_caller(
         &mut self,
         lease_id: &str,
@@ -476,6 +483,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing create_leased_agent_from_base_directory operation signature and explicit context arguments"
+    )]
     pub(crate) fn create_leased_agent_from_base_directory(
         &mut self,
         base_directory: &Path,
@@ -848,6 +859,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .insert(leased_agent_id.to_string(), point);
     }
 
+    #[cfg(test)]
     pub(crate) fn destroy_leased_agent_for_caller(
         &mut self,
         leased_agent_id: &str,

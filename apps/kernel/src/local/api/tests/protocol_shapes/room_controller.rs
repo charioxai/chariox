@@ -42,10 +42,7 @@ fn browser_import_peer_contract_is_private_redacted_bounded_and_versioned() {
     let wire = serde_json::to_value(&command).unwrap();
     assert_eq!(wire["kind"], "import_cookies");
     assert_eq!(wire["binding"]["environment_id"], "environment-1");
-    assert_eq!(
-        wire["payload"].as_str().unwrap().contains(&generated_value),
-        true
-    );
+    assert!(wire["payload"].as_str().unwrap().contains(&generated_value));
     let binding = RoomBrowserImportBinding {
         request_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
         user_id: "user-1".into(),

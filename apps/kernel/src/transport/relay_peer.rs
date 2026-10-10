@@ -582,6 +582,10 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing RelayPeerRequest typed actor payload layout"
+)]
 pub enum RelayPeerRequest {
     ListWorkflowNotificationSources {
         protocol_version: u32,

@@ -798,6 +798,10 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing append_user_prompt_history operation signature and explicit context arguments"
+    )]
     pub(super) fn append_user_prompt_history(
         &self,
         session_id: &str,
@@ -872,6 +876,10 @@ impl KernelRuntimeOwnedState {
         Ok(prompt_sent_at_ms)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing append_steering_prompt_history operation signature and explicit context arguments"
+    )]
     pub(super) fn append_steering_prompt_history(
         &self,
         session_id: &str,

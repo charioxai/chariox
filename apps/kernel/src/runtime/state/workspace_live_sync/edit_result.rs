@@ -107,7 +107,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_result_applied(
 pub(in crate::runtime::state) fn record_workspace_live_sync_external_change_if_rejected(
     monitor: &crate::io::ArtifactExternalChangeMonitor,
     workspace_identity: &crate::io::WorkspaceIdentity,
-    path: &PathBuf,
+    path: &Path,
     result: &crate::io::EditResult,
 ) {
     if matches!(
@@ -124,8 +124,8 @@ pub(in crate::runtime::state) fn record_workspace_live_sync_write_if_applied(
     monitor: &crate::io::ArtifactExternalChangeMonitor,
     provider_run_id: &str,
     workspace_identity: &crate::io::WorkspaceIdentity,
-    workspace_root: &PathBuf,
-    path: &PathBuf,
+    workspace_root: &Path,
+    path: &Path,
     result: &crate::io::EditResult,
 ) {
     if workspace_live_sync_result_applied(result) {

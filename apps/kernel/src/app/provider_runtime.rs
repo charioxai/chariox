@@ -437,6 +437,7 @@ impl DaemonApp {
         self.launch_provider_with_lease(request, false)
     }
 
+    #[cfg(test)]
     pub(crate) fn launch_leased_provider(
         &mut self,
         request: LaunchProviderRequest,

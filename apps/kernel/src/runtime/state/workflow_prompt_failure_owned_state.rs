@@ -194,7 +194,7 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let workflow_run_before =
             self.workflow_run_before_prompt_failure(session_id, workflow_run_id)?;
-        let workflow_run = (|| {
+        let workflow_run = {
             self.workflow_record_failure(
                 session_id,
                 workflow_run_id,
@@ -207,7 +207,7 @@ impl KernelRuntimeOwnedState {
             );
             let mut session_store = self.session_store.write();
             session_store.fail_workflow_node_run(session_id, workflow_run_id, workflow_node_run_id)
-        })();
+        };
         let workflow_run = match workflow_run {
             Ok(workflow_run) => workflow_run,
             Err(error) => {

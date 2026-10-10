@@ -230,7 +230,6 @@ impl SessionRuntimeStore {
                 .unwrap_or_else(|| defaults.provider.clone()),
         )
         .with_owner_user_id(caller_user_id);
-        let create_request = create_request;
         let create_request = match caller_metaagent_id.as_deref() {
             Some(metaagent_id) if !request.metaagent => create_request
                 .with_spawned_by_agent_id(metaagent_id)

@@ -21,7 +21,7 @@ pub struct ExternalHistoryArchiveClient {
     require_durable_acceptance: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct HistoryArchiveCapabilities {
     #[serde(default)]
     pub append: bool,
@@ -129,20 +129,6 @@ pub struct HistoryArchiveExporter {
 pub struct ArtifactArchiveExporter {
     store: OperationalArtifactStore,
     client: HistoryArchiveClient,
-}
-
-impl Default for HistoryArchiveCapabilities {
-    fn default() -> Self {
-        Self {
-            append: false,
-            query: false,
-            search: false,
-            semantic_search: false,
-            full_text_search: false,
-            vector_search: false,
-            blob_refs: false,
-        }
-    }
 }
 
 impl HistoryArchiveExporter {
@@ -259,7 +245,7 @@ impl HistoryArchiveClient {
                 let base_url = config
                     .url
                     .as_deref()
-                    .ok_or_else(|| DaemonError::InvalidConfig {
+                    .ok_or(DaemonError::InvalidConfig {
                         field: "history.archive.url",
                         message: "value must be set when archive mode is external",
                     })?
@@ -288,7 +274,7 @@ impl HistoryArchiveClient {
                 let base_url = config
                     .url
                     .as_deref()
-                    .ok_or_else(|| DaemonError::InvalidConfig {
+                    .ok_or(DaemonError::InvalidConfig {
                         field: "artifacts.archive.url",
                         message: "value must be set when artifact archive mode is external",
                     })?

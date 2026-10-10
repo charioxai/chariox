@@ -81,6 +81,7 @@ impl ActivePromptState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn has_active_provider_tools(&self) -> bool {
         !self.active_tool_ids.is_empty()
     }
@@ -199,12 +200,12 @@ impl ActiveTurnStore {
             };
             let replaced_provider_run_ids = guard
                 .iter()
-                .filter_map(|(provider_run_id, existing)| {
-                    (provider_run_id != &turn.provider_run_id
+                .filter(|&(provider_run_id, existing)| {
+                    provider_run_id != &turn.provider_run_id
                         && existing.session_id == turn.session_id
-                        && existing.agent_id == turn.agent_id)
-                        .then(|| provider_run_id.clone())
+                        && existing.agent_id == turn.agent_id
                 })
+                .map(|(provider_run_id, _)| provider_run_id.clone())
                 .collect::<Vec<_>>();
             let replaced = replaced_provider_run_ids
                 .into_iter()
@@ -321,9 +322,8 @@ impl ActiveTurnStore {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let provider_run_ids = guard
                 .iter()
-                .filter_map(|(provider_run_id, turn)| {
-                    predicate(turn).then(|| provider_run_id.clone())
-                })
+                .filter(|&(_, turn)| predicate(turn))
+                .map(|(provider_run_id, _)| provider_run_id.clone())
                 .collect::<Vec<_>>();
             provider_run_ids
                 .into_iter()

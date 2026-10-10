@@ -840,16 +840,19 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     let connect_timeout = response_timeout
         .map(|deadline| deadline.min(transport_timeout))
         .unwrap_or(transport_timeout);
-    let (mut socket, _) = timeout(connect_timeout, connect_async(&relay_url))
-        .await
-        .map_err(|_| DaemonError::LocalTransport {
-            operation: "connect temporary relay peer socket",
-            message: format!("timed out after {}ms", connect_timeout.as_millis()),
-        })?
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "connect temporary relay peer socket",
-            message: error.to_string(),
-        })?;
+    let (mut socket, _) = timeout(
+        connect_timeout,
+        crate::transport::relay_socket_connect::connect(&relay_url),
+    )
+    .await
+    .map_err(|_| DaemonError::LocalTransport {
+        operation: "connect temporary relay peer socket",
+        message: format!("timed out after {}ms", connect_timeout.as_millis()),
+    })?
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "connect temporary relay peer socket",
+        message: error.to_string(),
+    })?;
     #[cfg(test)]
     test_trace.record(
         "registered_peer_socket_connected",
@@ -1063,10 +1066,8 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
         None => Ok(read_response.await),
     };
     let result = response.unwrap_or_else(|_| {
-        let message = format!(
-            "timed out waiting for relay peer response after {}ms",
-            response_timeout_ms
-        );
+        let message =
+            format!("timed out waiting for relay peer response after {response_timeout_ms}ms");
         trace.log_completed("timeout", Some(&message), None);
         Err(DaemonError::LocalTransport {
             operation: "read temporary relay peer response",

@@ -295,6 +295,10 @@ impl KernelRuntimeState {
         .await
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing submit_metaagent_command_prompt_with_steering operation signature and explicit context arguments"
+    )]
     async fn submit_metaagent_command_prompt_with_steering(
         &self,
         session_id: &str,
@@ -318,6 +322,10 @@ impl KernelRuntimeState {
         .await
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing submit_metaagent_prompt_with_steering_and_hidden_context operation signature and explicit context arguments"
+    )]
     async fn submit_metaagent_prompt_with_steering_and_hidden_context(
         &self,
         session_id: &str,
@@ -521,6 +529,10 @@ fn summarize_metaagent_command_agent_activity(
 }
 
 impl KernelRuntimeOwnedState {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing metaagent_owned_agent_event_prompt_dispatches operation signature and explicit context arguments"
+    )]
     pub(super) fn metaagent_owned_agent_event_prompt_dispatches(
         &self,
         session_id: &str,
@@ -545,6 +557,10 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing metaagent_owned_agent_event_prompt_dispatches_for_agent operation signature and explicit context arguments"
+    )]
     pub(super) fn metaagent_owned_agent_event_prompt_dispatches_for_agent(
         &self,
         session_id: &str,
@@ -581,6 +597,10 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing metaagent_workflow_event_prompt_dispatches operation signature and explicit context arguments"
+    )]
     pub(super) fn metaagent_workflow_event_prompt_dispatches(
         &self,
         session_id: &str,
@@ -623,6 +643,10 @@ impl KernelRuntimeOwnedState {
         dispatches
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing metaagent_event_prompt_for_metaagent operation signature and explicit context arguments"
+    )]
     pub(super) fn metaagent_event_prompt_for_metaagent(
         &self,
         session_id: &str,

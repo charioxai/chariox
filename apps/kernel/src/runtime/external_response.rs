@@ -153,6 +153,7 @@ response_policies! {
         WorkflowNotificationAttached,
         WorkflowNotificationDetached,
         WorkflowNotifications,
+        HandoffResolved,
         CloudRelayLoggedOut,
         KernelSudoRequested,
         KernelSudoExtended,

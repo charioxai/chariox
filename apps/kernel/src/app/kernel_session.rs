@@ -449,6 +449,10 @@ impl<'a> KernelSessionService<'a> {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing apply_workflow_code_definition_with_rebindings operation signature and explicit context arguments"
+    )]
     pub(crate) fn apply_workflow_code_definition_with_rebindings(
         &mut self,
         session_id: &str,

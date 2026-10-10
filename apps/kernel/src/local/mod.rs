@@ -172,11 +172,11 @@ pub use api::{
     RequestManagedEnvironmentReleaseUpdateRequest, RequestNativeProviderTurnInteractionRequest,
     RequestRoomEnvironmentInputTakeoverRequest, ResetAllPromptSettingsRequest,
     ResetPromptSettingRequest, ResizeTerminalRequest, ResolveKernelClientConnectionRequest,
-    ResolveSessionRequest, ResolveWorkflowRequest, RespondToInteractionRequest,
-    RestoreProjectRequest, RestoreSliceBackupRequest, ResumeMetaagentTaskRequest,
-    ResumeWorkflowRunRequest, RetryProjectEnvironmentSetupRequest, RetryRoomEnvironmentRequest,
-    RevokeAgentExtensionRequest, RevokeCloudSessionInviteRequest, RevokePairedClientRequest,
-    RevokeSessionInviteRequest, RoomEnvironmentAccessibilityNode,
+    ResolveSessionRequest, ResolveWorkflowRequest, RespondToHandoffRequest,
+    RespondToInteractionRequest, RestoreProjectRequest, RestoreSliceBackupRequest,
+    ResumeMetaagentTaskRequest, ResumeWorkflowRunRequest, RetryProjectEnvironmentSetupRequest,
+    RetryRoomEnvironmentRequest, RevokeAgentExtensionRequest, RevokeCloudSessionInviteRequest,
+    RevokePairedClientRequest, RevokeSessionInviteRequest, RoomEnvironmentAccessibilityNode,
     RoomEnvironmentBrowserHistoryAction, RoomEnvironmentBrowserTabAction,
     RoomEnvironmentClipboardText, RoomEnvironmentHumanAction, RoomEnvironmentHumanBrowserAction,
     RoomEnvironmentKeyboardInput, RoomEnvironmentPointerButton,
@@ -287,7 +287,9 @@ pub use api::{
 pub use api::{
     KernelAccessProviderHarness, KernelAccessRequester, KernelConnectionClass, PasskeyPrompt,
     PasskeyPromptKind,
+    HandoffOutcome, HandoffResponseAction, HandoffStatus, HandoffValue,
 };
+pub use api::{KernelAccessProviderHarness, KernelAccessRequester};
 pub use api::{
     KernelBrowserCommand, KernelBrowserInput, KernelBrowserMirrorAction, KernelBrowserRequest,
 };
