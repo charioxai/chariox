@@ -517,7 +517,7 @@ if [ "$managed_provider_topology" = path1 ]; then
     require_regular_file "$trusted_builder_runtime_key"
     if [ "$(stat -c %u "$trusted_builder_runtime_key")" != 0 ] \
       || [ -n "$(find "$trusted_builder_runtime_key" -maxdepth 0 -perm /022 -print -quit)" ] \
-      || ! cmp -s "$trusted_builder_public_key" "$trusted_builder_runtime_key"; then
+      || ! node "$script_root/managed-kernel-upgrade-state.mjs" compare-builder-pins "$trusted_builder_public_key" "$trusted_builder_runtime_key"; then
       echo "installed trusted builder key differs from the independent input" >&2
       exit 1
     fi

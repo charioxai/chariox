@@ -217,14 +217,15 @@ test("Path-1 install and upgrade keep the independent builder key available to r
   assert.ok(path1Service.includes(`Environment=CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=${keyPath}`))
   for (const source of [installSource, upgradeSource]) {
     assert.ok(source.includes(`trusted_builder_runtime_key=$install_root${keyPath}`))
-    assert.match(source, /cmp -s \"\$trusted_builder_public_key\" \"\$trusted_builder_runtime_key\"/)
+    assert.ok(source.includes('compare-builder-pins "$trusted_builder_public_key" "$trusted_builder_runtime_key"')
+      || source.includes('compare_builder_pins "$trusted_builder_public_key" "$trusted_builder_runtime_key"'))
     assert.match(source, /install -o root -g root -m 0644 \"\$trusted_builder_public_key\" \"\$trusted_builder_runtime_key\"/)
   }
   const publishKey = indexOf(installSource, 'install -o root -g root -m 0644 "$trusted_builder_public_key" "$trusted_builder_runtime_key"', "runtime builder key publication")
   const activate = indexOf(installSource, 'atomic_symlink "releases/$release_name" "$install_root/usr/lib/chariox/current"', "current activation")
   assert.ok(publishKey < activate)
   assert.ok(prepareSource.includes('runtime_builder_key=/etc/chariox/trusted-builder-public-key'))
-  assert.ok(prepareSource.includes('cmp -s "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" "$runtime_builder_key"'))
+  assert.ok(prepareSource.includes('compare-builder-pins "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" "$runtime_builder_key"'))
 })
 
 test("install durably publishes the verified release before activating current", () => {

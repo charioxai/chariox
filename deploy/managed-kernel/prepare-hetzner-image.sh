@@ -320,7 +320,7 @@ if [ "$managed_provider_topology" = path1 ]; then
     || fail "Path-1 image is missing its independent runtime builder key"
   [ "$(stat -c '%u:%a' "$runtime_builder_key")" = "0:644" ] \
     || fail "Path-1 runtime builder key ownership or mode is unsafe"
-  cmp -s "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" "$runtime_builder_key" \
+  node "$script_root/managed-kernel-upgrade-state.mjs" compare-builder-pins "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" "$runtime_builder_key" \
     || fail "Path-1 runtime builder key differs from the independent input"
 fi
 # The general installer journals even a no-op home migration. A fresh image
