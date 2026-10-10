@@ -50,6 +50,7 @@ pub(super) enum ProviderRunActorCommand {
         envelope: PromptEnvelope,
         timeout: Duration,
         policy: ProviderUtilityExecutionPolicy,
+        cancellation: Option<super::utility_cancellation::MetadataUtilityCancellation>,
         response: mpsc::Sender<Result<String, DaemonError>>,
     },
     Abort {
@@ -164,10 +165,17 @@ impl ProviderRunWorkerDeps {
                 envelope,
                 timeout,
                 policy,
+                cancellation,
                 response,
             } => {
-                let result =
-                    execute_utility_command(&self.runtime_registry, run, envelope, timeout, policy);
+                let result = execute_utility_command(
+                    &self.runtime_registry,
+                    run,
+                    envelope,
+                    timeout,
+                    policy,
+                    cancellation,
+                );
                 let _ = response.send(result);
                 self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
             }
