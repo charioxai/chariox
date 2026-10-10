@@ -658,7 +658,32 @@ test("MP-08 popup origins stay internal and distinguish unrelated native tabs", 
   const state = await host.request({op:"state"})
   const popup = state.tabs.find(tab => tab.url === "https://www.wikipedia.org")
   const native = state.tabs.find(tab => tab.url === "https://github.com")
-  assert.equal(state._tab_openers[popup.tab_id], opened.tab_id)
-  assert.equal(state._tab_openers[native.tab_id], undefined)
+  assert.equal(state._tab_creation_actions[popup.tab_id], undefined)
+  assert.equal(state._tab_creation_actions[native.tab_id], undefined)
   assert(!JSON.stringify(state.tabs).includes("opener_target_id"))
 }))
+
+test("MP-08 completed agent input cannot attribute a later native popup on the same document", () => using(async ({host, pages, connection, handlers}) => {
+  const opened = await host.request({op:"open", url:"https://www.wikipedia.org"});
+  const source = host.tabs.get(opened.tab_id);
+  const input = {op:"input", tab_id:source.tab_id, generation:opened.generation,
+    document_id:source.document_id, _action_id:"action-agent", input:{kind:"click", x:10, y:10}};
+  connection.beforeSend = async (method, params) => {
+    if (method !== "Input.dispatchMouseEvent" || params.type !== "mouseReleased") return;
+    // CDP creation arrives during the actual dispatch. Inventory is delayed.
+    for (const handler of handlers) handler({method:"Target.targetCreated", params:{targetInfo:{type:"page", targetId:"agent-popup", openerId:source.target_id}}});
+  };
+  await host.request(input);
+  connection.beforeSend = null;
+  pages.set("agent-popup", {url:"https://en.wikipedia.org", opener_target_id:source.target_id});
+  // Native click after completion bypasses kernel begin/takeover.
+  for (const handler of handlers) handler({method:"Target.targetCreated", params:{targetInfo:{type:"page", targetId:"human-popup", openerId:source.target_id}}});
+  pages.set("human-popup", {url:"https://github.com", opener_target_id:source.target_id});
+  const state = await host.request({op:"state"});
+  const agent = state.tabs.find(tab => tab.url === "https://en.wikipedia.org");
+  const human = state.tabs.find(tab => tab.url === "https://github.com");
+  assert.equal(state._tab_openers?.[human.tab_id], undefined, "opener alone carries no actor evidence");
+  assert.equal(state._tab_creation_actions?.[agent.tab_id], "action-agent");
+  assert.equal(state._tab_creation_actions?.[human.tab_id], undefined);
+  assert.equal(handlers.size, 0, "dispatch observer is retired");
+}));

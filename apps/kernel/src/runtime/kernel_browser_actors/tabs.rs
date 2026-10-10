@@ -6,9 +6,9 @@ use std::collections::BTreeMap;
 #[derive(Default)]
 pub(super) struct BrowserTabActivity {
     openers: BTreeMap<String, EnvironmentActor>,
-    // MP-08: delayed discovery keeps the action's exact source document, not a
-    // browser-wide last actor. These records carry attribution only.
-    sources: BTreeMap<String, (String, EnvironmentActor)>,
+    // MP-08: only controller evidence naming an admitted action can attribute
+    // a creation. A persistent opener/document alone says nothing about actor.
+    actions: BTreeMap<String, (String, String, EnvironmentActor)>,
     sequence: u64,
     activity: Option<Value>,
 }
@@ -17,9 +17,9 @@ impl BrowserTabActivity {
         if let Some(tabs) = tabs.as_array() {
             let live = |id: &str| tabs.iter().any(|tab| tab["tab_id"] == id);
             self.openers.retain(|id, _| live(id));
-            self.sources.retain(|id, (document, _)| {
+            self.actions.retain(|_, (source, document, _)| {
                 tabs.iter().any(|tab| {
-                    tab["tab_id"] == id.as_str() && tab["document_id"] == document.as_str()
+                    tab["tab_id"] == source.as_str() && tab["document_id"] == document.as_str()
                 })
             });
             if self
@@ -32,24 +32,29 @@ impl BrowserTabActivity {
             }
         }
     }
-    pub(super) fn remember_source(
+    pub(super) fn remember_action(
         &mut self,
-        state: &Value,
+        action: &str,
         actor: &EnvironmentActor,
         source: &str,
+        document: &str,
     ) {
-        if let Some(document) = state["tabs"].as_array().and_then(|tabs| {
-            tabs.iter().find(|tab| tab["tab_id"] == source)?["document_id"].as_str()
-        }) {
-            self.sources
-                .insert(source.into(), (document.into(), actor.clone()));
-        }
+        self.actions.insert(
+            action.into(),
+            (source.into(), document.into(), actor.clone()),
+        );
     }
-    pub(super) fn source_actor(&self, source: &str) -> Option<&EnvironmentActor> {
-        self.sources.get(source).map(|(_, actor)| actor)
+    pub(super) fn creation_actor(&self, action: &str) -> Option<&EnvironmentActor> {
+        self.actions.get(action).map(|(_, _, actor)| actor)
     }
     pub(super) fn forget_source(&mut self, source: &str) {
-        self.sources.remove(source);
+        self.actions.retain(|_, (tab, _, _)| tab != source);
+    }
+    pub(super) fn forget_action(&mut self, action: &str) {
+        self.actions.remove(action);
+    }
+    pub(super) fn retain_actions(&mut self, live: impl Fn(&str) -> bool) {
+        self.actions.retain(|id, _| live(id));
     }
     pub(super) fn opened(&mut self, actor: EnvironmentActor, tab: &str) {
         self.openers.insert(tab.into(), actor.clone());

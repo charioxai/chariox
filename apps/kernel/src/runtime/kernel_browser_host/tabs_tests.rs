@@ -11,15 +11,16 @@ fn mp08_delayed_popup_inventory_preserves_completed_agent_action_attribution() {
     let script = root.join("controller.sh");
     std::fs::write(&script, r#"set -eu
 acted=0
+action=
 while IFS= read -r request; do
  id=${request#*:}; id=${id%%,*}
  case "$request" in
  *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
  *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
- *'"op":"input"'*) acted=1; printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"source","document_id":"doc"},{"tab_id":"other","document_id":"other"}]}}\n' "$id" ;;
+ *'"op":"input"'*) acted=1; action=${request#*'"_action_id":"'}; action=${action%%'"'*}; printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"source","document_id":"doc"},{"tab_id":"other","document_id":"other"}]}}\n' "$id" ;;
  *'"method":"host.browser"'*)
  if [ "$acted" = 1 ]; then
- printf '{"id":%s,"ok":true,"result":{"generation":1,"_tab_openers":{"popup":"source","other-popup":"other"},"tabs":[{"tab_id":"source","document_id":"doc"},{"tab_id":"other","document_id":"other"},{"tab_id":"popup","document_id":"popup"},{"tab_id":"native","document_id":"native"},{"tab_id":"other-popup","document_id":"other-popup"}]}}\n' "$id"
+ printf '{"id":%s,"ok":true,"result":{"generation":1,"_tab_creation_actions":{"popup":"%s"},"_tab_openers":{"native":"source","other-popup":"other"},"tabs":[{"tab_id":"source","document_id":"doc"},{"tab_id":"other","document_id":"other"},{"tab_id":"popup","document_id":"popup"},{"tab_id":"native","document_id":"native"},{"tab_id":"other-popup","document_id":"other-popup"}]}}\n' "$id" "$action"
  else
  printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"source","document_id":"doc"},{"tab_id":"other","document_id":"other"}]}}\n' "$id"
  fi ;;
@@ -38,7 +39,7 @@ done
     host.set_focus("alice", Some("mara"));
     host.load("alice", "mara").unwrap();
     let policy = json!({"values":[],"targets":[],"unknown":false});
-    let action = host.protected_request("alice", Some("mara"), "host.browser", json!({"op":"input","tab_id":"source","generation":1,"document_id":"doc","input":{"kind":"click","x":10,"y":10}}), policy.clone()).unwrap();
+    let action = host.protected_request("alice", Some("mara"), "host.browser", json!({"op":"input","tab_id":"source","generation":1,"document_id":"doc","input":{"kind":"click","x":10,"y":10},"_action_id":"caller-forged"}), policy.clone()).unwrap();
     assert_eq!(action["tabs"].as_array().unwrap().len(), 2);
     let before = host.actor_snapshot("alice").unwrap()["input_ownership"].clone();
     let first = host
@@ -64,6 +65,7 @@ done
     std::fs::remove_dir_all(root).unwrap();
     for state in [&first, &second] {
         assert!(state.get("_tab_openers").is_none());
+        assert!(state.get("_tab_creation_actions").is_none());
         assert_eq!(state["tabs"][2]["opened_by"]["actor_id"], "agent:mara");
         assert!(state["tabs"][3]["opened_by"].is_null());
         assert!(state["tabs"][4]["opened_by"].is_null());

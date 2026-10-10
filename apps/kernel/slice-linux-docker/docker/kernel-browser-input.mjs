@@ -47,10 +47,12 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         await checkTextTarget();
         await check();
       }
-      onDispatch?.();
-      const result = await connection.send(method, params, sessionId);
-      assertNotCancelled(signal);
-      return result;
+      const endDispatch = onDispatch?.();
+      try {
+        const result = await connection.send(method, params, sessionId);
+        assertNotCancelled(signal);
+        return result;
+      } finally { endDispatch?.(); }
     };
     // MP-11: sequence-only refusals precede even focus emulation. No page
     // focus/selection/physical input may run before mirror epoch admission.

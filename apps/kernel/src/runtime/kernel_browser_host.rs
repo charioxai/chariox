@@ -483,6 +483,12 @@ impl KernelBrowserHost {
         };
         // MP-11: focused and retained input share grant/run cancellation.
         // Vault requests also carry their live focus authority from admission.
+        // MP-08/MP-11: controller creation evidence names this kernel-admitted
+        // action. Never accept a caller's action identity at the private seam.
+        params["_action_id"] = action
+            .as_ref()
+            .map(|action| Value::String(action.id.clone()))
+            .unwrap_or(Value::Null);
         let request_params = params.clone();
         let mut result = backend.host_request_cancellable(method, params, cancellation.clone());
         if let Some(action) = action {
@@ -511,24 +517,18 @@ impl KernelBrowserHost {
         // actor's tabs or input ownership from the shared ledger.
         // Creation evidence belongs to the private controller seam. Never expose
         // it in the serialized client result or use it to widen capability grants.
-        let tab_openers = result
+        let tab_creation_actions = result
             .as_mut()
             .ok()
             .and_then(|state| state.as_object_mut())
-            .and_then(|state| state.remove("_tab_openers"))
+            .and_then(|state| {
+                state.remove("_tab_openers");
+                state.remove("_tab_creation_actions")
+            })
             .unwrap_or(Value::Null);
         if let Ok(state) = &result {
             let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
-            if mutation {
-                ledger.reconcile_attributed(
-                    state,
-                    &browser_actor(admission, &request_params),
-                    request_params["tab_id"].as_str(),
-                    &tab_openers,
-                )?;
-            } else {
-                ledger.reconcile_inventory(state, &tab_openers)?;
-            }
+            ledger.reconcile_inventory(state, &tab_creation_actions)?;
         }
         if let Ok(payload) = &mut result {
             let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
