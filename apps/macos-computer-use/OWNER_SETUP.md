@@ -1,5 +1,9 @@
 # M0 owner-attended session
 
+For the click/scroll repair after the 2026-10-08 owner session, use
+[OWNER_RECHECK.md](OWNER_RECHECK.md). It reruns only fixture button, fixture scroll
+and TextEdit click after replacing the rebuilt helper's permission entries.
+
 Budget 15 minutes. macOS 14+; use the public fixture and one owner-selected
 real TextEdit window, both with synthetic text. Owner mode and `--list-windows`
 admit only `com.apple.TextEdit` whose running PID satisfies the code requirement
@@ -235,9 +239,12 @@ must belong to that exact window; secure ancestors refuse. Public AX geometry
 must uniquely match the selected CG window, otherwise the helper refuses.
 No fallback to another window, application or display exists.
 
-M0 posts CGEvents to the selected PID only. These checks do not establish
-session/HID delivery, system cursor movement, session-tap observation or input
-self-tagging. The same limitation applies to fixture evidence.
+Text clicks require AXRangeForPosition and use AXSelectedTextRange readback.
+An unresolved position range returns `refused: target`; the global HID fallback
+has been removed. The helper posts no mouse events. Unicode typing remains
+per-PID. Use the rebuilt helper and the shorter `OWNER_RECHECK.md` for the
+pending click check. Input self-tagging and fatal release recovery remain
+unproven.
 
 This implements the single-window part of plan steps 3-4 as standalone OS
 diagnostics. App/display scope, private-region masking, OCR, mixed-display
@@ -260,7 +267,7 @@ cu_delay screen-revoked-input --text public
 
 Expect `revoked-frame` to print `refused: permission` with no PNG. The capture
 path checks Screen Recording before Accessibility or AX target resolution.
-Expect `screen-revoked-input` to print `dispatched; application completion unproven`
+Expect `screen-revoked-input` to print `dispatched; path=CGEventPIDText; application completion unproven`
 and observe exactly `public` inserted in TextEdit. This input does not check
 Screen Recording. Record both results and that Accessibility stayed enabled;
 these establish the Screen Recording revocation separately. Stop and record

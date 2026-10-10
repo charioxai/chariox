@@ -7,7 +7,7 @@ func checkOwnerTarget(bundleIdentifier: String?, pid: Int32,
                       satisfiesRequirement: (Int32, String) -> Bool = runningCodeSatisfiesRequirement) throws {
     guard pid > 0, bundleIdentifier == "com.apple.TextEdit",
           satisfiesRequirement(pid, "identifier \"com.apple.TextEdit\" and anchor apple")
-    else { throw Refusal.target }
+    else { throw tagged(.target, "owner-code-identity") }
 }
 
 func runningCodeSatisfiesRequirement(pid: Int32, requirement: String) -> Bool {

@@ -6,7 +6,7 @@ func launchIdentity() throws -> [String: Any] {
     guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
           SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
           SecCodeCopySigningInformation(staticCode, signingInformationFlags(), &info) == errSecSuccess,
-          let data = info as? [String: Any] else { throw Refusal.native }
+          let data = info as? [String: Any] else { throw tagged(.native, "launch-signature-info") }
     return ["path": Bundle.main.executableURL!.resolvingSymlinksInPath().path,
             "identifier": data[kSecCodeInfoIdentifier as String] ?? "unsigned",
             "team": data[kSecCodeInfoTeamIdentifier as String] ?? "none (ad-hoc)",
@@ -21,15 +21,29 @@ func launchIdentity() throws -> [String: Any] {
             if arguments.count == 2, arguments[0] == "--pair" { try runPairing(arguments[1]) }
             print(String(data: try JSONSerialization.data(withJSONObject: launchIdentity(), options: [.sortedKeys]), encoding: .utf8)!)
             if arguments == ["--identity"] { return }
+            if arguments == ["--drill-permissions"] {
+                try MacSource().checkPermission(.read)
+                print("drillPermission accessibility=granted")
+                return
+            }
             if arguments == ["--enable-owner-window", "--list-windows"] {
                 print(String(data: try JSONSerialization.data(withJSONObject: ownerWindowChoices(), options: [.sortedKeys]), encoding: .utf8)!)
                 return
             }
-            let request = try Request.parse(arguments)
+            var request = try Request.parse(arguments)
+            if request.publicTextDrillDocument != nil {
+                // Compare the historical sampling order before target discovery.
+                request.publicDrillLegacyPointer = CGEvent(source: nil)?.location
+                request.publicDrillAppKitPointer = try currentPointerPoint()
+            }
+            if request.clickAtPointer {
+                // Read the existing pointer once. This does not post a mouse event.
+                request.clickPoint = try currentPointerPoint()
+            }
             for receipt in try await run(request, source: MacSource()) { print(receipt) }
         } catch {
             // Never print framework errors or app-supplied AX data.
-            fputs("refused: \(error as? Refusal ?? .native)\n", stderr)
+            fputs("\(refusalMessage(error))\n", stderr)
             exit(1)
         }
     }

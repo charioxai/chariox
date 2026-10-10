@@ -159,8 +159,9 @@ Capture with `showsCursor=false`. Publish the observed human cursor position
 and agent intended pointer separately through the shared actor projection.
 The viewer draws actor names, colors and action status above video. A small
 local helper overlay may show the agent pointer and Stop control; it must be
-excluded from captured pixels. Planned session/HID CGEvent mouse input moves the
-real system cursor. M0 uses per-PID posting and does not establish cursor movement.
+excluded from captured pixels. Planned M3 session/HID CGEvent mouse input moves
+the real system cursor. M0 clicks use AX only and post no mouse events; text
+clicks require AX caret placement. No separate automation cursor is claimed.
 There is no second independently clickable Mac cursor.
 Use a labeled arrow for the human cursor initially; exact cross-app cursor shapes
 need separate validation. Cursor-only movement updates presence without a frame.
@@ -461,7 +462,7 @@ Split at responsibility boundaries when a PR exceeds its budget.
 
 | PR | Size | Deliverable and merge proof |
 | --- | --- | --- |
-| M0, feasibility helper | M, 650-800 | Native regression fixture and owner-selected real-window helper, disabled by default, signed launch identity, explicit owner setup, one scoped SCK frame and benign AX/CGEvent round trip in a real app; owner-attended evidence required |
+| M0, feasibility helper | M, 800-950 | Native regression fixture and owner-selected real-window helper, disabled by default, signed launch identity, explicit owner setup, one scoped SCK frame and benign AX/CGEvent round trip in a real app; owner-attended evidence required |
 | M1, shared adapter and lifecycle | M, 400-700 | Implement Linux-approved Computer adapter registration, private helper pairing, health/Stop/revoke and stale epochs; focused fake-backend tests and actual crash/denial proof |
 | M2, capture attachment | M, 500-800 | SCK filters/exclusions, HiDPI transforms, damage and protected exact repair; shared viewer shows public fixture pixels over encrypted kernel/relay events |
 | M3, input and takeover | M, 500-800 | Scoped mouse/scroll/keys/Unicode, seat serialization, local-human fence and owned reset; Linux-equivalent physical fixture and adversarial focus/takeover/death cases |
@@ -507,14 +508,35 @@ Stop UI, crash-time owned-press recovery and Developer ID admission remain M2-M5
 
 ## Minimal feasibility prototype, implemented M0 and owner-attended gates
 
-M0's standalone helper is implemented but unattended. Follow
-`apps/macos-computer-use/OWNER_SETUP.md` with the owner present for the fixture
-regression checks and one explicitly selected real TextEdit window. M0 uses per-PID
-CGEvent delivery only. It does not prove session/HID posting, system cursor
-movement, session-tap observation or self-tagging. Text requests admit at most
-20 UTF-16 units and refuse whole overflowing strings without splitting a
-grapheme or surrogate pair. The broader steps below remain later acceptance
-gates, not instructions to run capture unattended.
+M0's standalone helper uses supported AXPress for buttons and a bounded numeric
+AX vertical-scrollbar value step for scroll areas. Text-area/field clicks query
+AXRangeForPosition at the requested global point, focus the element, assign a
+zero-length AXSelectedTextRange at the returned character range's start, and
+read back the selection. This operation reads numeric range metadata only,
+never document text. Without a requested point, it uses the center of the
+element/window/display intersection. A fully invisible target still refuses.
+An unsupported or unavailable AX position range returns `refused: target`
+before any mutation or event dispatch. M0 clicks use AX only. Malformed ranges,
+permission errors, failed focus or selection mutations, and unproven readback
+never trigger a fallback or retry. Text typing retains per-PID CGEvent delivery,
+its 20-UTF-16-unit limit and owned key-up cleanup.
+
+Every path retains PID/window, frontmost, focused-window, secure-input and live
+hit-test fences. Clicks retain the geometry snapshot and actual point across
+resolution, mutation and observation. Typing's owned key-up cleanup retains
+permission and target fences, or reports unresolved owned input requiring owner
+reset. AX receipts prove a synthetic button-counter increment, numeric scrollbar
+increase, or selection-range readback. Per-PID key dispatch alone does not prove
+application completion. Physical mouse input and its owned mouse-up cleanup
+remain planned M3 work.
+See `apps/macos-computer-use/OWNER_RECHECK.md` for the single pending owner
+recheck. The unattended NSTextView drill reached the public helper's permission
+gate but could not use the owner's Accessibility grant. Real TextEdit caret
+placement, live per-PID typing and fatal input recovery remain unproven. No
+session-tap observation or self-tagging is claimed. Unicode typing refuses an
+entire overflowing string without splitting a grapheme or surrogate pair. The
+broader steps below remain later acceptance gates, not instructions to run
+capture unattended.
 
 1. Build the smallest native helper plus public fixture with ordinary and secure
    text fields, buttons and moving color patches. Use external compiler output
