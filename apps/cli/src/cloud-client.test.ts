@@ -14,9 +14,11 @@ import { CloudClientAuthError } from "./cloud-client-http.js"
 
 type Family = { clientId: string; key: string; access: string; refresh: string; revoked: boolean }
 // Renewal includes the real OS profile lock and synchronized credential writes.
-// Keep accelerated expiries, with room for that disk path on a shared builder.
-const ACCESS_LIFETIME_MS = 2_800
-const GRANT_LIFETIME_MS = 2_000
+// The disk path can exceed the 500 ms renewal window of a two-second grant
+// on shared builders. Keep accelerated expiries and the same seven-rotation
+// assertions, while allowing two seconds for serialized profile writes.
+const ACCESS_LIFETIME_MS = 8_400
+const GRANT_LIFETIME_MS = 6_000
 async function fixture() {
   const key = createECDH("prime256v1"); key.generateKeys()
   const daemon = new RelayClientIdentity(key.getPrivateKey())
@@ -172,7 +174,7 @@ test("detached client-only login survives process resume and several access/gran
     let events = 0
     target.onKernelEvent(event => { if (event.event === "runtime_notices") events++ })
     await target.subscribeToKernelEvents("session-fixture", "attachment-fixture")
-    const deadline = Date.now()+12_000
+    const deadline = Date.now()+48_000
     while (Date.now() < deadline) {
       assert.deepEqual(await target.send({ GetDaemonHealth: null }), { accepted: true })
       await new Promise(resolve => setTimeout(resolve, 35))
