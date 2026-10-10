@@ -2290,8 +2290,13 @@ mod tests {
             ..legacy.clone()
         };
         assert!(!pre_artifact.relay_peer_protocol_compatible());
+        let previous = RemoteAgentBinding {
+            relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION - 1),
+            ..legacy.clone()
+        };
+        assert!(!previous.relay_peer_protocol_compatible());
         let current = RemoteAgentBinding {
-            relay_peer_protocol_version: Some(73),
+            relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
             ..legacy
         };
         assert!(current.relay_peer_protocol_compatible());
