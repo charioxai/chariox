@@ -83,7 +83,7 @@ pub(crate) async fn execute_set_provider_account_credential_request(
     config_projection: &DaemonConfigProjectionStore,
     runtime_state: &KernelRuntimeState,
     command: &KernelCommand,
-    request: SetProviderAccountCredentialRequest,
+    mut request: SetProviderAccountCredentialRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     if request.run {
         return claude_setup_token_login::start(runtime_state, command, request).await;
@@ -108,14 +108,24 @@ pub(crate) async fn execute_set_provider_account_credential_request(
             "provider_account_credential_set",
         )
         .await?;
+    // MP-08 / MP-10 / MP-11: supplied tokens use the same official verifier as
+    // interactive setup-token; a failed verification cannot replace Vault data.
+    let token = zeroize::Zeroizing::new(std::mem::take(&mut request.value));
+    claude_setup_token_login::verify(runtime_state, &owner_user_id, &profile.profile_id, &token)
+        .await?;
     let config = config_projection.snapshot();
     let stored = crate::provider::store_provider_account_credential(
         &config,
         &owner_user_id,
         &provider,
         &profile.profile_id,
-        &request.value,
+        &token,
         request.overwrite,
+    )?;
+    claude_setup_token_login::record_verified_account(
+        runtime_state,
+        &owner_user_id,
+        &profile.profile_id,
     )?;
     runtime_state.record_waiting_room_change();
     Ok(LocalDaemonResponse::ProviderAccountCredentialStored {

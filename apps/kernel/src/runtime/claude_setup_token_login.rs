@@ -138,7 +138,14 @@ pub(super) async fn reconcile(
         "Verifying the setup token with Claude…",
         crate::session::unix_epoch_ms(),
     )?;
-    if let Err(error) = verify(runtime_state, owner_user_id, record, &token).await {
+    if let Err(error) = verify(
+        runtime_state,
+        owner_user_id,
+        &record.account_profile,
+        &token,
+    )
+    .await
+    {
         return fail(
             runtime_state,
             owner_user_id,
@@ -217,24 +224,24 @@ pub(super) async fn submit_vault_passphrase(
     .await
 }
 
-async fn verify(
+pub(super) async fn verify(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
-    record: &ProviderLoginProcessRecord,
+    account_profile: &str,
     token: &Zeroizing<String>,
 ) -> Result<(), DaemonError> {
     let registry = runtime_state.provider_account_profile_registry().clone();
     let owner_user_id = owner_user_id.to_string();
-    let account_profile = record.account_profile.clone();
+    let account_profile = account_profile.to_string();
     let token = token.clone();
     tokio::task::spawn_blocking(move || {
+        let executable = crate::provider::resolve_claude_executable()?;
         let mut environment =
             registry.resolve_environment(&owner_user_id, "claude", &account_profile)?;
         environment.insert(
             crate::provider::CLAUDE_OAUTH_TOKEN_ENV.to_string(),
             token.to_string(),
         );
-        let executable = crate::provider::resolve_claude_executable()?;
         let verified = crate::provider::probe_claude_account_usage(
             &executable,
             &account_profile,
@@ -309,18 +316,7 @@ async fn store_token(
                 "Claude setup token verified and stored in the Chariox Vault. Unattended agents can now use this account.",
                 now_ms,
             )?;
-            if let Err(error) = runtime_state
-                .provider_account_profile_registry()
-                .update_observation(
-                    owner_user_id,
-                    "claude",
-                    &record.account_profile,
-                    crate::account_profile::ProviderAccountAuthState::Authenticated,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
+            if let Err(error) = record_verified_account(runtime_state, owner_user_id, &record.account_profile)
             {
                 crate::logging::warn_with_fields(
                     "provider.account",
@@ -389,4 +385,25 @@ fn login_error(message: &str) -> DaemonError {
         operation: "provider login",
         message: message.to_string(),
     }
+}
+
+// MP-08 / MP-10 / MP-11: update admission only after official verification and durable Vault storage.
+pub(super) fn record_verified_account(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    account_profile: &str,
+) -> Result<(), DaemonError> {
+    runtime_state
+        .provider_account_profile_registry()
+        .update_observation(
+            owner_user_id,
+            "claude",
+            account_profile,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            None,
+            None,
+            None,
+            None,
+        )
+        .map(|_| ())
 }
