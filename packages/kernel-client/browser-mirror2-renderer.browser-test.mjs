@@ -199,3 +199,23 @@ test('MP-08: review #320-2 modified deletions in a focused text control are forw
     }
   } finally { await page.close(); }
 });
+
+test('MP-08: review #941-1 an IME composition keeps the kernel\'s insertion point (no viewer-local range is sent while composing)', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'input', form: { value: 'hello world', checked: false, selected_index: -1, selection_start: 5, selection_end: 5 } }]), focused: 'n4' });
+    const cdp = await page.context().newCDPSession(page);
+    // A real composition: the viewer's own value shows the composing text, then the IME commits it.
+    await cdp.send('Input.imeSetComposition', { text: 'にほ', selectionStart: 2, selectionEnd: 2 }); await frames();
+    await cdp.send('Input.imeSetComposition', { text: '日本', selectionStart: 2, selectionEnd: 2 }); await frames();
+    await cdp.send('Input.insertText', { text: '日本' }); await frames();
+    await page.keyboard.press('ArrowRight'); await frames();
+    assert.deepEqual(await page.evaluate(() => window.sent.filter(action => action.kind !== 'scroll_to')), [{ kind: 'text', text: '日本' }, { kind: 'key', key: 'ArrowRight' }], 'MP-08: the composed text inserts at the kernel caret');
+    // A selected range (select-all) that a composition replaces is synced as the composition starts.
+    await page.evaluate(() => window.sent.splice(0)); await page.keyboard.press('Control+A'); await frames();
+    await cdp.send('Input.imeSetComposition', { text: 'か', selectionStart: 1, selectionEnd: 1 }); await frames();
+    await cdp.send('Input.insertText', { text: 'か' }); await frames();
+    assert.deepEqual(await page.evaluate(() => window.sent.filter(action => action.kind !== 'scroll_to')), [{ kind: 'selection', anchor_id: 'n4', anchor_offset: 0, focus_id: 'n4', focus_offset: 13 }, { kind: 'text', text: 'か' }], 'MP-08: the composition replaces the synced range');
+  } finally { await page.close(); }
+});

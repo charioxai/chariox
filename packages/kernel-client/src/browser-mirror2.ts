@@ -91,10 +91,10 @@ export class BrowserMirror2Renderer {
   // before the key or text that replaces it; ranges it already has are not resent.
   private ranges = new WeakMap<Element, string>()
   private rangeOf(field: HTMLInputElement): string { return `${field.selectionStart},${field.selectionEnd},${field.selectionDirection}` }
-  private syncRange(): void {
+  private syncRange(send = true): void {
     const field = this.active() as HTMLInputElement | null, id = field ? this.ids.get(field) : undefined
     if (!field || !id || this.records.get(id)?.kind !== 'element' || !['input', 'textarea'].includes(field.localName) || field.selectionStart === null || field.selectionEnd === null || this.ranges.get(field) === this.rangeOf(field)) return
-    this.ranges.set(field, this.rangeOf(field))
+    this.ranges.set(field, this.rangeOf(field)); if (!send) return
     const [anchor, focus] = field.selectionDirection === 'backward' ? [field.selectionEnd, field.selectionStart] : [field.selectionStart, field.selectionEnd]
     this.enqueue({ kind: 'selection', anchor_id: id, anchor_offset: anchor, focus_id: id, focus_offset: focus })
   }
@@ -126,8 +126,9 @@ export class BrowserMirror2Renderer {
     on('wheel', event => { const hit = element(event), wheel = event as WheelEvent; if (!hit || this.records.get(hit.id)?.kind !== 'tile') { this.localScrollAt = performance.now(); return } event.preventDefault(); this.enqueue({ kind: 'scroll', node_id: hit.id, ...offset(hit.el, wheel), delta_x: Math.trunc(wheel.deltaX), delta_y: Math.trunc(wheel.deltaY) }) })
     on('scroll', this.scrolled)
     on('keydown', event => {
-      const { key, shiftKey, ctrlKey, metaKey, altKey } = event as KeyboardEvent
-      this.syncRange()
+      const { key, shiftKey, ctrlKey, metaKey, altKey, isComposing } = event as KeyboardEvent
+      // While composing, the viewer's own value shows the composition: its range is not the kernel's.
+      if (!isComposing) this.syncRange()
       if (ctrlKey || metaKey || altKey) return
       // Page keys scroll the viewer's own copy natively; the scroll listener sends the position.
       if (['Tab', 'Enter', 'Escape', 'Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(key)) {
@@ -147,7 +148,9 @@ export class BrowserMirror2Renderer {
       if (input.data === composed || !input.data) return
       this.syncRange(); this.enqueue({ kind: 'text', text: input.data })
     })
-    on('compositionend', event => { event.preventDefault(); const data = (event as CompositionEvent).data; if (data) { composed = data; setTimeout(() => { composed = null }, 0); this.syncRange(); this.enqueue({ kind: 'text', text: data }) } })
+    on('compositionend', event => { event.preventDefault(); const data = (event as CompositionEvent).data; if (data) { composed = data; setTimeout(() => { composed = null }, 0); this.enqueue({ kind: 'text', text: data }) } this.syncRange(false) })
+    // The range a composition replaces is synced as it starts; its result is where the kernel's caret ends.
+    on('compositionstart', () => this.syncRange())
     on('selectionchange', () => { if (this.applying) return; const selection = doc.getSelection(); if (!selection || selection.isCollapsed) return; const a = this.ids.get(selection.anchorNode!), b = this.ids.get(selection.focusNode!); if (a && b && this.records.get(a)?.kind === 'text' && this.records.get(b)?.kind === 'text') this.enqueue({ kind: 'selection', anchor_id: a, anchor_offset: selection.anchorOffset, focus_id: b, focus_offset: selection.focusOffset }) })
   }
   // Viewer scrolls (documents and shadow roots: element scroll events do not cross a shadow boundary).
