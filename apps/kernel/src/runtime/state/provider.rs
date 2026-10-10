@@ -197,7 +197,7 @@ impl KernelRuntimeOwnedState {
         Ok(run)
     }
 
-    fn provider_run_for_activation(
+    pub(super) fn provider_run_for_activation(
         &self,
         session_id: &str,
         provider_run_id: &str,
