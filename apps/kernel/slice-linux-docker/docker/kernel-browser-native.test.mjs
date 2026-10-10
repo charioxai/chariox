@@ -50,15 +50,15 @@ test('MP-10 input wake never writes to a fenced capture or destroyed pipe',async
  assert.deepEqual(writes,[{wake:true}]);
 });
 
-// MP-11: an empty DOM admission is event-bound before/after native attestation.
-test('MP-11 marker insertion retires native pixels even while attestation is pending',async()=>{
+// MP-11: live plain-field metadata changes retire pixels before/after attestation.
+test('MP-11 plain-field changes retire native pixels even while attestation is pending',async()=>{
  const {LinuxCapture}=await import('./kernel-browser-native.mjs');const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
  for(const phase of ['refreshing','attesting']){
-  const source=new LinuxCapture({sessionId:'session'});source.regions=new NativeRegionProtection({send:async method=>method==='DOM.getDocument'?{root:{nodeId:1}}:{nodeIds:[]}},'session');
+  const source=new LinuxCapture({sessionId:'session'});source.regions=new NativeRegionProtection({},'session',{measure:async()=>({viewport:[1280,800],regions:[]})});
   if(phase!=='refreshing')await source.regions.refresh();source.attested=phase==='streaming';let released=0;
   source.latest={raw:{release:()=>released++}};source.pending={release:()=>released++};
-  source.onCdp({sessionId:'foreign',method:'DOM.attributeModified',params:{name:'data-chariox-observation-protected'}});assert.equal(source.closed,false);
-  source.onCdp({sessionId:'session',method:'DOM.attributeModified',params:{name:'data-chariox-observation-protected'}});
+  source.onCdp({sessionId:'foreign',method:'DOM.attributeModified',params:{name:'type'}});assert.equal(source.closed,false);
+  source.onCdp({sessionId:'session',method:'DOM.attributeModified',params:{name:'type'}});
   // MP-08/MP-10: the source stays open; attestation needs a fresh, refenced readback.
   assert.equal(source.closed,false);assert.equal(source.attested,false);assert.equal(source.regions.guard,null);assert.equal(source.latest,null);assert.equal(source.pending,null);assert.equal(released,2);assert.equal(source.regionRevision,1);await source.close();
  }
@@ -68,22 +68,15 @@ test('MP-08/MP-10/MP-11 protection changes retire pixels without re-attesting th
  const {LinuxCapture}=await import('./kernel-browser-native.mjs');
  const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
  let maskX=0,refreshes=0,released=0;
- const connection={send:async method=>{
-  if(method==='Page.getFrameTree')return {frameTree:{frame:{loaderId:'d'}}};
-  if(method==='Runtime.evaluate')return {result:{value:'visible'}};
-  if(method==='DOM.getDocument'){refreshes++;return {root:{nodeId:1}};}
-  if(method==='DOM.querySelectorAll')return {nodeIds:[2]};
-  if(method==='DOM.getBoxModel')return {model:{border:[maskX,0,maskX+4,0,maskX+4,4,maskX,4]}};
-  assert.fail('protection refresh must not run window setup/screenshot attestation: '+method);
- }};
+ const connection={send:async method=>assert.fail('metadata refresh must not re-attest the window: '+method)};
  const source=new LinuxCapture({connection,sessionId:'s',tab:{target_id:'t',tab_id:'tab',document_id:'d'},policy:{},allowed:()=>true});
  source.valid=()=>!source.closed;source.attested=true;source.contextId=1;
- source.regions=new NativeRegionProtection(connection,'s');await source.regions.refresh();
+ source.regions=new NativeRegionProtection(connection,'s',{measure:async()=>{refreshes++;return {viewport:[1280,800],regions:[[maskX,0,4,4]]}}});await source.regions.refresh();
  source.latest={raw:{release:()=>released++}};
- maskX=8;source.onCdp({sessionId:'s',method:'DOM.attributeModified',params:{name:'data-chariox-observation-protected'}});
+ maskX=8;source.onCdp({sessionId:'s',method:'DOM.attributeModified',params:{name:'type'}});
  assert.equal(source.closed,false);assert.equal(source.sample(),null);assert.equal(released,1);assert.equal(source.regionRevision,1);
  source.pending={width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4,255),serial:2,format:'bgr0',captured_ms:performance.timeOrigin+performance.now()};
- await source.publish();assert.equal(refreshes,2,'old readback gets full mask after refresh; no surface attestation');
+ await source.publish();assert.equal(refreshes,2,'old readback is discarded after metadata refresh; no surface attestation');
  // This raw precedes the new metadata fence and must never be published.
  assert.equal(source.sample(),null);
  source.pending={width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4,255),serial:3,format:'bgr0',captured_ms:performance.timeOrigin+performance.now()};
@@ -198,9 +191,9 @@ test('MP-10 native start re-sends window bounds that Chromium dropped',async()=>
 
 // MP-08/MP-10/MP-11: renderer image scale must match the physical DPR1 host
 // window; deviceScaleFactor alone produces a different native DPR2 surface.
-for(const scale of [1,2])test(`MP-10 negotiated DPR${scale} also selects native view image scale`,async()=>{
+for(const scale of [1,2])test(`MP-10 negotiated DPR${scale} preserves the native view image scale`,async()=>{
  const geometry=await import('./kernel-browser-geometry.mjs');
- assert.deepEqual(geometry.displayDeviceMetrics(1280,800,scale),{width:1280,height:800,deviceScaleFactor:scale,scale,mobile:false});
+ assert.deepEqual(geometry.displayDeviceMetrics(1280,800,scale),{width:1280,height:800,deviceScaleFactor:scale,scale:1,mobile:false});
 });
 
 // MP-08/MP-10: refusal diagnostics are fixed labels, never error/page text.
@@ -215,16 +208,16 @@ test('MP-10 native refusals carry fixed reasons',async()=>{
  assert.deepEqual(reasons,['display_not_owned']);
 });
 
-// MP-08/MP-10/MP-11 phase 1.3: readbacks publish without a CDP round trip;
-// navigation fences the source by event before any later delivery.
-test('MP-08/MP-10 native readbacks publish without per-frame CDP fences; navigation still fences by event',async()=>{
+// MP-08/MP-10/MP-11: each readback fences live fill metadata; navigation retires it.
+test('MP-08/MP-10/MP-11 native readbacks refence metadata without re-attesting the window',async()=>{
  const {LinuxCapture}=await import('./kernel-browser-native.mjs');const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
- const sent=[];const connection={send:async method=>{sent.push(method);if(method==='DOM.getDocument')return {root:{nodeId:1}};if(method==='DOM.querySelectorAll')return {nodeIds:[]};assert.fail('MP-10: per-readback CDP call '+method);}};
+ const connection={send:async method=>assert.fail('readback must not re-attest the window: '+method)};let measurements=0;
  const source=new LinuxCapture({connection,sessionId:'s',tab:{target_id:'t',tab_id:'tab',document_id:'d'},policy:{},allowed:()=>true});
- source.valid=()=>!source.closed;source.attested=true;source.regions=new NativeRegionProtection(connection,'s');await source.regions.refresh();
- const setup=sent.length,published=[];source.subscribe(sample=>published.push(sample.serial));
+ source.valid=()=>!source.closed;source.attested=true;
+ source.regions=new NativeRegionProtection(connection,'s',{measure:async()=>{measurements++;return {viewport:[1280,800],regions:[]}}});await source.regions.refresh();
+ const published=[];source.subscribe(sample=>published.push(sample.serial));
  for(let serial=1;serial<=5;serial++){source.pending={width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4,255),serial,format:'bgr0',captured_ms:performance.timeOrigin+performance.now()};await source.publish();}
- assert.deepEqual(published,[1,2,3,4,5]);assert.equal(sent.length,setup,'no CDP call per readback');
+ assert.deepEqual(published,[1,2,3,4,5]);assert.equal(measurements,6,'every readback rechecks the live fill metadata');
  source.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{}}});
  assert.equal(source.closed,true);assert.equal(source.sample(),null,'a navigated source never offers its pixels');await source.close();
 });

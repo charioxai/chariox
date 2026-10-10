@@ -5,5 +5,5 @@ export const displayGeometry=Object.freeze(selected==='1920x1080'?{width:1920,he
 
 // MP-08/MP-10: CDP deviceScaleFactor selects screenshot density. The separate
 // view-image scale is a page transform on the native window; keep it at unity
-// so concurrent Browser viewers cannot enlarge or shrink the Computer desktop.
+// while screenshot density remains a separate value.
 export const displayDeviceMetrics=(width,height,scale)=>({width,height,deviceScaleFactor:scale,scale:1,mobile:false});
