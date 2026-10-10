@@ -142,12 +142,16 @@ def fixture_probes(output):
     return probes
 
 
+def fixture_arguments(mode):
+    return ['--unattended'] + (['--text-drill'] if mode == 'text-click' else [])
+
+
 def run_cell(mode):
     require_gui()
     evidence = Path.home() / '.codex/evidence/browser-computer-use-macos' / time.strftime(f'ax-{mode}-%Y%m%d-%H%M%S')
     evidence.mkdir(parents=True, exist_ok=False)
     fixture = BUILD / 'Chariox Computer Fixture.app'
-    arguments = ['--text-drill'] if mode == 'text-click' else []
+    arguments = fixture_arguments(mode)
     pid = None
     code = 1
     try:
@@ -206,7 +210,7 @@ def run_cell(mode):
     finally:
         if pid:
             command = subprocess.run(['ps', '-p', str(pid), '-o', 'command='], capture_output=True, text=True).stdout.strip()
-            expected_command = str(fixture / 'Contents/MacOS/fixture') + (' --text-drill' if arguments else '')
+            expected_command = str(fixture / 'Contents/MacOS/fixture') + ' ' + ' '.join(arguments)
             if command == expected_command:
                 try:
                     os.kill(pid, signal.SIGTERM)

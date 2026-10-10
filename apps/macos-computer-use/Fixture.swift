@@ -10,8 +10,10 @@ final class Fixture: NSObject, NSApplicationDelegate {
     var lastSelection: NSRange?
     func applicationDidFinishLaunching(_ notification: Notification) {
         window.title = "Chariox public fixture"
-        // Close our disposable window even if the runner dies before cleanup.
-        Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { _ in NSApp.terminate(nil) }
+        // Bound runner-owned instances; manual owner sessions stay open.
+        if CommandLine.arguments.contains("--unattended") {
+            Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { _ in NSApp.terminate(nil) }
+        }
         if CommandLine.arguments.contains("--text-drill") { startTextDrill(); return }
         let ordinary = NSTextField(frame: NSRect(x: 20, y: 295, width: 310, height: 28))
         ordinary.placeholderString = "Public Unicode test text"; ordinary.setAccessibilityIdentifier("ordinary")

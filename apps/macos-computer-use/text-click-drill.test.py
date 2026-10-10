@@ -94,6 +94,10 @@ class CaretVerdictTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'fixture-independent-reference-mismatch'):
             drill.fixture_probes(output.splitlines()[0])
 
+    def test_both_runner_modes_opt_into_fixture_watchdog(self):
+        self.assertEqual(drill.fixture_arguments('text-click'), ['--unattended', '--text-drill'])
+        self.assertEqual(drill.fixture_arguments('fixture'), ['--unattended'])
+
     def test_bad_fixture_reference_fails_before_dispatch(self):
         output = '\n'.join(f'probe={name} clickX=366 clickY=571 expectedLocation={index} referenceLocation={index}'
                            for name, index in [('line5-before-r',125), ('line5-after-r',126), ('line1',3), ('line9',233)])

@@ -8,6 +8,11 @@ const policy = readFileSync(new URL('./Policy.swift', import.meta.url), 'utf8');
 const pointer = readFileSync(new URL('./PointerInput.swift', import.meta.url), 'utf8');
 const textClick = readFileSync(new URL('./TextClick.swift', import.meta.url), 'utf8');
 
+test('manual fixture stays open; unattended runner explicitly enables watchdog', () => {
+  const fixture = readFileSync(new URL('./Fixture.swift', import.meta.url), 'utf8');
+  assert.match(fixture, /if CommandLine.arguments.contains\("--unattended"\) \{\s*Timer.scheduledTimer\(withTimeInterval: 20, repeats: false\)/);
+});
+
 test('run owns the pre-dispatch permission gate', () => {
   const dispatch = policy.slice(policy.indexOf('for operation in request.operations {', policy.indexOf('var result:')));
   assert.match(dispatch, /validateTarget\(request\)[\s\S]*checkPermission\(operation\)[\s\S]*source.perform\(operation/);
