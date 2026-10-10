@@ -9,9 +9,10 @@ struct Transfer {
     id: u32,
     text: String,
     offset: usize,
-    outstanding: VecDeque<(u32, usize)>,
+    outstanding: VecDeque<(u32, usize, usize)>,
     wire_bytes: usize,
-    small_bytes: usize,
+    small_sent: usize,
+    small_acked: usize,
     request: bool,
 }
 
@@ -20,10 +21,11 @@ impl Transfer {
         if id != self.id || self.outstanding.front().map(|entry| entry.0) != Some(offset) {
             return false;
         }
-        self.wire_bytes -= self.outstanding.pop_front().unwrap().1;
-        if self.outstanding.is_empty() {
-            self.small_bytes = 0;
-        }
+        let (_, wire_bytes, small_acked) = self.outstanding.pop_front().unwrap();
+        self.wire_bytes -= wire_bytes;
+        // Ordered receipt proves delivery of small messages preceding this chunk.
+        // Older chunks cannot release credit for small messages sent after them.
+        self.small_acked = small_acked;
         true
     }
 
@@ -167,7 +169,7 @@ pub(super) async fn run_writer<S>(
         let urgent = pending.iter().position(|message| {
             control(message)
                 || active.as_ref().is_some_and(|transfer| {
-                    transfer.small_bytes + message.len() <= CHUNK_BYTES
+                    transfer.small_sent - transfer.small_acked + message.len() <= CHUNK_BYTES
                         && independent_small(message)
                         && (!transfer.request || !is_request(message))
                 })
@@ -177,7 +179,7 @@ pub(super) async fn run_writer<S>(
             let terminal = matches!(message, Message::Close(_));
             if let Some(transfer) = active.as_mut() {
                 if matches!(message, Message::Text(_)) {
-                    transfer.small_bytes += message.len();
+                    transfer.small_sent += message.len();
                 }
             }
             if !write(&mut writer, message).await || terminal {
@@ -191,7 +193,9 @@ pub(super) async fn run_writer<S>(
                 let wire_bytes = message.len();
                 // Record before writing so a fast receipt is never ahead of its chunk.
                 transfer.offset = end;
-                transfer.outstanding.push_back((end as u32, wire_bytes));
+                transfer
+                    .outstanding
+                    .push_back((end as u32, wire_bytes, transfer.small_sent));
                 transfer.wire_bytes += wire_bytes;
                 if !write(&mut writer, message).await {
                     return;
@@ -226,7 +230,8 @@ pub(super) async fn run_writer<S>(
                         offset: 0,
                         outstanding: VecDeque::new(),
                         wire_bytes: 0,
-                        small_bytes: 0,
+                        small_sent: 0,
+                        small_acked: 0,
                         request,
                     });
                     continue;
@@ -264,6 +269,128 @@ pub(super) async fn run_writer<S>(
 mod tests {
     use super::*;
     use futures_util::StreamExt;
+
+    // MP-08 / MP-10 / MP-11: ACK of a later chunk must release drained small traffic
+    // even while another bulk chunk remains outstanding.
+    #[test]
+    fn small_credit_follows_proven_wire_progress_not_transfer_completion() {
+        let mut transfer = Transfer {
+            id: 1,
+            text: "x".repeat(17000),
+            offset: 12,
+            outstanding: VecDeque::from([
+                (4, 1000, 0),
+                (8, 1000, CHUNK_BYTES),
+                (12, 1000, CHUNK_BYTES),
+            ]),
+            wire_bytes: 3000,
+            small_sent: CHUNK_BYTES,
+            small_acked: 0,
+            request: false,
+        };
+        assert!(transfer.receipt(1, 4));
+        assert_eq!(
+            transfer.small_sent - transfer.small_acked,
+            CHUNK_BYTES,
+            "older data cannot acknowledge later small frames"
+        );
+        assert!(transfer.receipt(1, 8));
+        assert_eq!(
+            transfer.small_sent - transfer.small_acked,
+            0,
+            "small traffic preceding this chunk has drained; remaining bulk cannot hold its credit"
+        );
+        assert_eq!(transfer.outstanding.len(), 1);
+    }
+
+    // MP-08 / MP-10 / MP-11: both data and receipts traverse real ordered sockets.
+    #[tokio::test]
+    async fn small_requests_continue_during_partial_bulk_drain() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client_task = tokio::spawn(async move {
+            tokio_tungstenite::connect_async(format!("ws://{address}"))
+                .await
+                .unwrap()
+                .0
+        });
+        let (stream, _) = listener.accept().await.unwrap();
+        let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let mut client = client_task.await.unwrap();
+        let (sink, mut reader) = socket.split();
+        let (tx, rx) = mpsc::channel(8);
+        let (ack_tx, ack_rx) = mpsc::channel(8);
+        let (_control_tx, control_rx) = mpsc::channel(8);
+        let acknowledgements = tokio::spawn(async move {
+            while let Some(Ok(Message::Text(text))) = reader.next().await {
+                let TransportFrame::TransportAck {
+                    transfer_id,
+                    offset,
+                } = serde_json::from_str(&text).unwrap()
+                else {
+                    panic!("receipt expected")
+                };
+                if ack_tx.send((transfer_id, offset)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let original = serde_json::json!({"kind":"client_response","request_id":"large","payload":"x".repeat(2_932_256)}).to_string();
+        let expected = original.clone();
+        let sender = tokio::spawn(async move {
+            tx.send(Message::Text(original.into())).await.unwrap();
+            for index in 0..64 {
+                tx.send(Message::Text(serde_json::json!({"kind":"daemon_request","relay_request_id":format!("small-{index}"),"payload":"x".repeat(4096)}).to_string().into())).await.unwrap();
+            }
+        });
+        let writer = tokio::spawn(run_writer(sink, rx, true, ack_rx, control_rx));
+        let mut frames = crate::frame_transport::FrameReceiver::default();
+        let mut complete = false;
+        let mut small = 0;
+        let mut small_before_complete = 0;
+        let mut pending_receipt = None;
+        while !complete || small != 64 {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(3), client.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let Message::Text(text) = message else {
+                continue;
+            };
+            assert!(text.len() <= CHUNK_BYTES);
+            let (text, receipt) = frames.receive(&text).unwrap();
+            if let Some(receipt) = receipt {
+                // A natural one-chunk receipt delay keeps the bulk window nonempty.
+                if let Some(previous) = pending_receipt.replace(receipt) {
+                    client.send(Message::Text(previous.into())).await.unwrap();
+                }
+            }
+            if let Some(text) = text {
+                if text == expected {
+                    complete = true;
+                    if let Some(receipt) = pending_receipt.take() {
+                        client.send(Message::Text(receipt.into())).await.unwrap();
+                    }
+                } else {
+                    assert!(text.contains("small-"));
+                    small += 1;
+                    if !complete {
+                        small_before_complete += 1;
+                    }
+                }
+            }
+        }
+        assert!(small_before_complete >= 32, "small requests must continue beyond the initial16KiB credit while bulk is draining: {small_before_complete}");
+        sender.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), writer)
+            .await
+            .unwrap()
+            .unwrap();
+        acknowledgements.abort();
+        let _ = acknowledgements.await;
+        let _ = client.close(None).await;
+    }
 
     // MP-08 / MP-10 / MP-11: real ordered WebSocket bytes, not a message queue mock.
     #[tokio::test]
