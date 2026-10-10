@@ -62,7 +62,15 @@ def input_action(action, processes=None, connection=None):
         def guard():
             admit_focus()
             admit_clipboard()
-    if kind == 'text': keyboard.type_text(action['text'],before_press=guard); return
+    if kind == 'text':
+        # MP-08/MP-10/MP-11: committed human text is already bounded/ordered
+        # by the owned channel. Keep per-key X sync and restoration, while
+        # agent/Vault paths retain their pacing and fresh focus/clipboard fences.
+        if connection is not None and processes is None:
+            keyboard.type_text(action['text'],pace_seconds=0)
+        else:
+            keyboard.type_text(action['text'],before_press=guard)
+        return
     if kind=='pointer_hold':
         keyboard.hold_input('button',{1:'left',2:'middle',3:'right'}[action['button']],action['duration_ms'],action['x'],action['y']);return
     if kind in ('key', 'hold'):

@@ -132,6 +132,19 @@ class AgentInputClipboardTests(unittest.TestCase):
         self.assertIsNone(self.run_input({'kind':'click','x':5,'y':5},owner_pid=123,owners=[0,owner]))
         self.assertIsNone(self.run_input({'kind':'key','key':'p'},owner_pid=123,owners=[0,owner]))
 class WarmChannelTests(unittest.TestCase):
+    def test_mp10_mp11_human_committed_text_is_unpaced_but_agent_text_stays_fenced(self):
+        connection=object()
+        with patch.object(module.keyboard,'type_text') as text:
+            module.channel_request({'op':'input','input':{'kind':'text','text':'m'*128}},set(),connection)
+            self.assertEqual(text.call_args.kwargs.get('pace_seconds',0.04),0)
+            accessibility=SimpleNamespace(input_guard=lambda _:lambda:None)
+            clipboard_guard=SimpleNamespace(input_admission=lambda *_:lambda:None)
+            with patch.object(module,'load',side_effect=lambda name:accessibility if name=='native-accessibility' else clipboard_guard):
+                module.main({'op':'input','agent_input':True,'processes':[],
+                             'input':{'kind':'text','text':'public'}},connection)
+            self.assertIsNotNone(text.call_args.kwargs['before_press'])
+            self.assertEqual(text.call_args.kwargs.get('pace_seconds',0.04),0.04)
+
     def test_mp10_warm_physical_events_reuse_the_owned_x11_connection(self):
         connection=SimpleNamespace(screen=lambda:SimpleNamespace(width_in_pixels=100,height_in_pixels=100),sync=lambda:None)
         with patch.object(module,'load') as load,patch.object(module.xtest,'fake_input') as event:
