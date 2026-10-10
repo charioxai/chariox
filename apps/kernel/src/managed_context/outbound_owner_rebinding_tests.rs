@@ -64,6 +64,18 @@ async fn mp08_mp10_mp11_terminal_owner_attempt_allows_fresh_peer_binding() {
     let mut corrected = selection.clone();
     corrected.target.relay_public_key = public.clone();
     corrected.target.key_thumbprint = public_key_thumbprint(&public);
+    let invalid_root = root.join("invalid-candidate");
+    let invalid_store = ManagedContextOutboundOperationStore::open(invalid_root.clone()).unwrap();
+    let mut invalid = selection.clone();
+    invalid.target.key_thumbprint = "0".repeat(64);
+    let error = invalid_store
+        .prepare_owner_ticket(&config, &runtime, invalid)
+        .expect_err("an invalid peer pin must be refused before persisting an owner binding");
+    assert!(error.to_string().contains("target identity is invalid"));
+    assert!(!invalid_root.join(".operations").exists());
+    invalid_store
+        .prepare_owner_ticket(&config, &runtime, selection.clone())
+        .expect("a refused malformed peer must not poison the next valid selection");
     for (index, (phase, retryable, replace)) in [
         (
             ManagedContextOutboundOperationPhase::Preparing,

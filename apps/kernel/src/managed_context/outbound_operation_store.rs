@@ -59,6 +59,7 @@ impl ManagedContextOutboundOperationStore {
     ) -> Result<ManagedContextTransferTicket, DaemonError> {
         let candidate =
             crate::managed_context::owner_managed::prepare_ticket(config, runtime, selection)?;
+        validate_ticket(config, &candidate)?;
         self.reclaim_operation_metadata(Some(candidate.context_plan.context_id()))?;
         let Some(parent) = self.status_parent() else {
             return Ok(candidate);
