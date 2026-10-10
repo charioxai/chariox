@@ -18,6 +18,7 @@ import {
   sessionPromptStateRecordForAgent,
   type SessionAgentPromptStateLike,
 } from "./session-agent-prompt-state.js"
+import { sessionAgentNextWake } from "./agent-wake-status.js"
 
 export type AgentRuntimeProjectionContext = {
   readonly agentActivity?: Record<string, AgentRuntimeActivityBusyInput> | null | undefined
@@ -343,7 +344,9 @@ export function sessionAgentTaskStatus(session: RuntimeSession | null | undefine
   if (task.state === "waiting") {
     const deadline = task.wait?.deadline_ms
     if (!deadline || !Number.isFinite(deadline) || deadline > 8.64e15) return { label: `BLOCKED: Invalid wait deadline${suffix}`, tone: "error" }
-    return { label: `WAITING ON ${task.reason} UNTIL ${new Date(deadline).toISOString()}${suffix}`, tone: "idle" }
+    const wake = sessionAgentNextWake(session, agentId)
+    const next = !wake ? "" : wake.next_due_ms ? ` · NEXT WAKE ${wake.label} AT ${new Date(wake.next_due_ms).toISOString()}` : ` · WATCHING ${wake.label}`
+    return { label: `WAITING ON ${task.reason} UNTIL ${new Date(deadline).toISOString()}${next}${suffix}`, tone: "idle" }
   }
   if (task.state === "blocked") return { label: `BLOCKED: ${task.reason}${suffix}`, tone: "error" }
   return { label: `${task.state.toUpperCase()}${suffix}`, tone: task.state === "working" ? "working" : "idle" }

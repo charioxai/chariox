@@ -1,4 +1,5 @@
 import type { ParsedSlashCommand } from "./commands.js"
+import { formatAgentWakeLines } from "@chariox/kernel-client/agent-wake-status"
 import {
   handleAgentAliasCommand,
   handleAgentModeCommand,
@@ -167,9 +168,19 @@ export async function handleAgentSlashCommand(
       await handleAgentTaskCommand(deps, args)
       return
     }
+    case "wakes": {
+      // MP-08 / MP-09 / MP-10 / MP-11 A03: armed wakes, next fire and last receipt.
+      const resolved = args[1] ? deps.resolveSessionAgent(args[1]) : null
+      if (resolved && (resolved.error || !resolved.agent)) {
+        deps.flashFooter(resolved.error ?? "usage: /agent wakes [agent-ref]", "error")
+        return
+      }
+      deps.appendNotice(formatAgentWakeLines(deps.sessionState(), resolved?.agent?.id ?? null).join("\n"))
+      return
+    }
     default:
       deps.flashFooter(
-        "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>|--slice off|new:headless|new:headed|<slice-ref>] | /agent spawn <count> | fork [agent-ref] | delete [agent-name|agent-alias] | focus <agent-id> | alias [agent-ref] <alias|clear> | provider/account/model/variant [agent-ref] <value> | list | inspect [agent-ref] | cycle | mode [agent-ref] <build|plan|inherit> | permissions [agent-ref] <required|yolo|inherit> | task [show|edit|plan|pause|resume|abort] | substitute ...",
+        "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>|--slice off|new:headless|new:headed|<slice-ref>] | /agent spawn <count> | fork [agent-ref] | delete [agent-name|agent-alias] | focus <agent-id> | alias [agent-ref] <alias|clear> | provider/account/model/variant [agent-ref] <value> | list | inspect [agent-ref] | cycle | mode [agent-ref] <build|plan|inherit> | permissions [agent-ref] <required|yolo|inherit> | task [show|edit|plan|pause|resume|abort] | wakes [agent-ref] | substitute ...",
         "error",
       )
   }

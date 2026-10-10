@@ -240,6 +240,10 @@ impl KernelRuntimeState {
             crate::session::WorkflowRunStatus::Stopped
         };
         if resolved_workflow_run.status() == expected_status {
+            if !pause {
+                self.cancel_workflow_agent_tasks(session_id, &workflow_run_id)
+                    .await?;
+            }
             return Ok((resolved_workflow_run, owned.session_snapshot(session_id)?));
         }
         let mut provider_run_ids = owned
@@ -377,6 +381,10 @@ impl KernelRuntimeState {
             if let Some(dispatch) = cancellation.dispatch {
                 self.spawn_prompt_abort(dispatch, self.provider_runtime_lanes.clone());
             }
+        }
+        if !pause {
+            self.cancel_workflow_agent_tasks(session_id, &workflow_run_id)
+                .await?;
         }
         Ok((workflow_run, owned.session_snapshot(session_id)?))
     }

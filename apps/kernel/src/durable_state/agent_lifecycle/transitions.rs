@@ -74,8 +74,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             tx.execute("DELETE FROM agent_tasks WHERE task_id=?1", [&task])
                 .map_err(sql)?;
+            tx.execute("DELETE FROM agent_task_workflows WHERE task_id=?1", [&task])
+                .map_err(sql)?;
             Ok(Outcome::Saved)
         }
+        Operation::BindWorkflow {
+            task,
+            prompt,
+            run,
+            node,
+        } => super::workflow_tasks::bind(tx, &task, &prompt, &run, &node),
         Operation::RegisterObligation {
             owner,
             room,
@@ -414,6 +422,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::Sweep { .. }
         | Operation::CancelTask { .. }
         | Operation::OwnerResponse { .. }) => super::supervision::apply(tx, op),
+        op @ (Operation::CreateWake { .. }
+        | Operation::VerifyWakes { .. }
+        | Operation::FireWakes { .. }
+        | Operation::ProcessStarted { .. }
+        | Operation::ProcessMatched { .. }
+        | Operation::ProcessExited { .. }
+        | Operation::CancelWake { .. }
+        | Operation::WakeAlerted { .. }
+        | Operation::RetireWakes { .. }) => super::wakes::apply(tx, op),
     }
 }
 

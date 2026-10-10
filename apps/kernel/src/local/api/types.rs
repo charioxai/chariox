@@ -273,6 +273,8 @@ pub use workspace::*;
 /// expiry and the `not_requested` refusal (MP-08/MP-10/MP-11 A05).
 /// Version 452 adds durable agent events, enforced turn dispositions and
 /// kernel-emitted workflow notifications (MP-08/09/10/11 A02).
+/// Version 459 adds kernel-owned timer/process wakes with proof-of-life and
+/// delivery receipts on `RuntimeSession.agent_wakes` (MP-08/09/10/11 A03).
 /// Version 451 grants the whole local kernel and routes access popups without sessions.
 /// Version 470 adds structured OS requester identity to access decisions.
 /// Version 472 advertises identity-preserving terminal relay renewal with

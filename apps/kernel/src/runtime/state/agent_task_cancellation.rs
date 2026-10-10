@@ -3,6 +3,51 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{
     AgentTaskExecution, ExecutionState, Operation, Outcome,
 };
+impl KernelRuntimeOwnedState {
+    /// Read current resource state: task cancellation is intent, not physical
+    /// settlement. A matched process can outlive its satisfied obligation.
+    pub(super) fn agent_task_resources_unsettled(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<bool, DaemonError> {
+        let current = self
+            .durable_state_store
+            .agent_tasks(Some(&task.room_id), Some(&task.agent_id))?
+            .into_iter()
+            .find(|t| t.task_id == task.task_id)
+            .ok_or_else(|| {
+                crate::durable_state::agent_lifecycle::error("task resource authority unavailable")
+            })?;
+        let session = self.session_store.get_session(&task.room_id)?;
+        Ok(current.obligations.iter().any(|o| o.status == "open")
+            || self
+                .durable_state_store
+                .agent_wakes(Some(&task.room_id), Some(&task.agent_id))?
+                .iter()
+                .any(|w| {
+                    w.task_id == task.task_id
+                        && matches!(
+                            w.state.as_str(),
+                            "starting" | "running" | "cancelling" | "scheduled"
+                        )
+                })
+            || self
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &task.agent_id)
+                .is_some_and(|p| {
+                    p.id() == current.prompt_id
+                        || current.pending_prompt_id.as_deref() == Some(p.id())
+                })
+            || session
+                .queued_prompts_for_agent(&task.agent_id)
+                .is_some_and(|q| {
+                    q.iter().any(|p| {
+                        p.id() == current.prompt_id
+                            || current.pending_prompt_id.as_deref() == Some(p.id())
+                    })
+                }))
+    }
+}
 impl KernelRuntimeState {
     pub(super) async fn cancel_agent_task_resources(
         &self,
@@ -168,10 +213,54 @@ impl KernelRuntimeState {
                             }
                         }
                     }
+                    "timer" | "process" => {
+                        if let Err(error) =
+                            self.owned
+                                .durable_state_store
+                                .agent_lifecycle(Operation::CancelWake {
+                                    id: resource.clone(),
+                                    task: task.task_id.clone(),
+                                    prompt: None,
+                                })
+                        {
+                            first_error.get_or_insert(error);
+                            continue;
+                        }
+                        self.owned.agent_wakes.processes.terminate(resource);
+                    }
                     _ => {}
                 }
             }
-            if !physical_pending {
+            // A matched output may have satisfied its obligation while the
+            // process still runs. Cancellation owns that resource too.
+            for wake in self
+                .owned
+                .durable_state_store
+                .agent_wakes(Some(&task.room_id), Some(&task.agent_id))?
+                .into_iter()
+                .filter(|w| {
+                    w.task_id == task.task_id
+                        && matches!(
+                            w.state.as_str(),
+                            "scheduled" | "starting" | "running" | "cancelling"
+                        )
+                })
+            {
+                if let Err(error) =
+                    self.owned
+                        .durable_state_store
+                        .agent_lifecycle(Operation::CancelWake {
+                            id: wake.id.clone(),
+                            task: task.task_id.clone(),
+                            prompt: None,
+                        })
+                {
+                    first_error.get_or_insert(error);
+                } else {
+                    self.owned.agent_wakes.processes.terminate(&wake.id);
+                }
+            }
+            if !physical_pending && !self.owned.agent_task_resources_unsettled(&task)? {
                 self.owned
                     .durable_state_store
                     .agent_lifecycle(Operation::SourceOutcome {
