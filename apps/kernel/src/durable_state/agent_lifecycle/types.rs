@@ -15,6 +15,8 @@ pub enum ExecutionState {
 pub struct AgentTaskExecution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<super::goals::AgentGoal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_check: Option<super::completion::AgentCompletionCheck>,
     pub task_id: String,
     pub room_id: String,
     #[serde(default)]
@@ -129,6 +131,9 @@ pub struct AgentWake {
 }
 #[derive(Clone)]
 pub(crate) enum Operation {
+    EnableCompletionCheck {
+        task: String,
+    },
     AdoptGoal {
         owner: String,
         room: String,

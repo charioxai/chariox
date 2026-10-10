@@ -368,8 +368,14 @@ export type AgentGoal = {
   evaluation: { origin: "completion_check"; prompt_id: string; work_prompt_id: string; work_provider_run_id: string | null; objective_revision: number; ledger_revision: number; started_at_ms: number; deadline_ms: number; result: Record<string, unknown> | null } | null
   final_answer: string | null; evidence: string[]
 }
+// MP-08 / MP-09 / MP-10 / MP-11 A12: same bounded check, no goal mode.
+export type AgentCompletionCheck = {
+  schema_version: 1; original_prompt_id: string; check_count: number
+  evaluation: AgentGoal["evaluation"]; final_answer: string | null; evidence: string[]
+}
 export type AgentTaskExecution = {
   goal?: AgentGoal | null
+  completion_check?: AgentCompletionCheck | null
   task_id: string; room_id: string; owner_user_id: string; agent_id: string; prompt_id: string
   provider_run_id: string | null; revision: number; blocked_revision: number
   state: "working" | "waiting" | "blocked" | "done" | "cancelled"

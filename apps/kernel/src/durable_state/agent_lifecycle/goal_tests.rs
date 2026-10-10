@@ -505,3 +505,130 @@ fn a12_rejected_fresh_admission_leaves_no_goal_or_supervised_work() {
     f.apply(Operation::Withdraw { task: "p".into() });
     assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12: plain confirmation never grants goal mode.
+#[test]
+fn a12_plain_done_candidate_must_be_confirmed_without_a_goal_loop() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
+    f.settle("p", true);
+    assert_eq!(
+        f.task().state,
+        ExecutionState::Working,
+        "plain done candidate needs a native check"
+    );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12: supplementary plain/delegate parity guards.
+fn plain(f: &Fixture) {
+    f.begin("p");
+    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
+}
+#[test]
+fn a12_plain_check_has_one_correction_and_no_continuation_mode() {
+    let f = Fixture::new();
+    plain(&f);
+    f.settle("p", true);
+    let first = f.task();
+    f.settle("p", true);
+    assert_eq!(first, f.task());
+    let t = check(&f, assessment("continue"));
+    assert!(t.goal.is_none());
+    assert!(t.correction_used);
+    assert_eq!(t.completion_check.as_ref().unwrap().check_count, 1);
+    assert_eq!(t.pending_prompt_id.as_deref(), Some("task-correction-p"));
+    let id = t.pending_prompt_id.unwrap();
+    f.begin(&id);
+    f.settle(&id, true);
+    let t = check(&f, assessment("continue"));
+    assert_eq!(t.state, ExecutionState::Blocked);
+    assert!(t.pending_prompt_id.is_none());
+    assert_eq!(t.completion_check.unwrap().check_count, 2);
+}
+#[test]
+fn a12_plain_achieved_needs_evidence_and_fences_checks_from_work() {
+    let f = Fixture::new();
+    plain(&f);
+    f.settle("p", true);
+    let id = f.task().pending_prompt_id.clone().unwrap();
+    f.begin(&id);
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::Progress {
+            task: "p".into(),
+            prompt: id.clone(),
+            receipt: "forbidden".into(),
+            now: 4
+        })
+        .is_err());
+    let Outcome::Settled{task:t,..}=f.apply(Operation::EvaluateGoal { task:"p".into(),prompt:id.clone(),result:serde_json::json!({"status":"achieved","final_answer":"Verified original request","evidence":["public:artifact"]}).to_string(),now:4 }) else {panic!()};
+    assert_eq!(t.state, ExecutionState::Done);
+    assert!(t.goal.is_none());
+    f.settle(&id, true);
+    assert_eq!(f.task(), t);
+}
+#[test]
+fn a12_plain_wait_and_failure_are_not_done_candidates() {
+    let f = Fixture::new();
+    plain(&f);
+    f.register();
+    f.subscribe();
+    f.apply(Operation::Yield {
+        task: "p".into(),
+        prompt: "p".into(),
+        registrations: vec!["reg".into()],
+        cursor: 0,
+        deadline: 60000,
+        reason: "depends on peer".into(),
+        now: 2,
+    });
+    f.settle("p", true);
+    assert_eq!(f.task().state, ExecutionState::Waiting);
+    assert_eq!(f.task().completion_check.unwrap().check_count, 0);
+    let f = Fixture::new();
+    plain(&f);
+    f.settle("p", false);
+    let t = f.task();
+    assert!(t.correction_used);
+    assert_eq!(t.completion_check.unwrap().check_count, 0);
+}
+#[test]
+fn a12_plain_timeout_receipt_is_idempotent_and_owner_resume_fences_late_check() {
+    let f = Fixture::new();
+    plain(&f);
+    f.settle("p", true);
+    let id = f.task().pending_prompt_id.unwrap();
+    f.begin(&id);
+    f.apply(Operation::TimeoutGoal {
+        task: "p".into(),
+        prompt: id.clone(),
+        now: 60003,
+    });
+    let t = f.task();
+    assert_eq!(t.state, ExecutionState::Blocked);
+    assert!(matches!(
+        f.apply(Operation::TimeoutGoal {
+            task: "p".into(),
+            prompt: id.clone(),
+            now: 70000
+        }),
+        Outcome::Saved
+    ));
+    assert_eq!(f.task(), t);
+    f.apply(Operation::OwnerResponse {
+        task: "p".into(),
+        revision: t.revision,
+        resume: true,
+        now: 70001,
+    });
+    let resumed = f.task();
+    f.apply(Operation::EvaluateGoal {
+        task: "p".into(),
+        prompt: id,
+        result: serde_json::json!({"status":"achieved","final_answer":"late","evidence":["late"]})
+            .to_string(),
+        now: 70002,
+    });
+    assert_eq!(f.task(), resumed);
+}

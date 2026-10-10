@@ -96,7 +96,11 @@ pub(super) fn start(
             ))
         };
     }
-    if t.state != ExecutionState::Working || t.task_id != t.prompt_id || !t.obligations.is_empty() {
+    if t.state != ExecutionState::Working
+        || t.task_id != t.prompt_id
+        || !t.obligations.is_empty()
+        || t.completion_check.is_some()
+    {
         return Err(error("goal admission must precede work"));
     }
     t.goal = Some(AgentGoal {
@@ -163,35 +167,37 @@ pub(super) fn work_end(t: &mut AgentTaskExecution, has_answer: bool, now: u64) -
         );
         return false;
     }
-    let g = t.goal.as_mut().unwrap();
-    if g.paused {
+    if t.goal.as_ref().is_some_and(|g| g.paused) {
         return false;
     }
-    if g.evaluation
-        .as_ref()
-        .is_some_and(|e| e.work_prompt_id == t.prompt_id)
-    {
+    if completion::evaluation(t).is_some_and(|e| e.work_prompt_id == t.prompt_id) {
         return false;
     }
-    let prompt = format!(
-        "goal-check-{}-{}-{}",
-        t.task_id,
-        g.objective_revision,
-        g.check_count + 1
-    );
-    g.check_count += 1;
-    g.evaluation = Some(GoalEvaluation {
+    let revision = completion::objective_revision(t);
+    let count = t.goal.as_ref().map_or_else(
+        || t.completion_check.as_ref().unwrap().check_count,
+        |g| g.check_count,
+    ) + 1;
+    let prompt = format!("goal-check-{}-{}-{}", t.task_id, revision, count);
+    let check = GoalEvaluation {
         origin: "completion_check".into(),
         prompt_id: prompt.clone(),
         work_prompt_id: t.prompt_id.clone(),
         work_provider_run_id: t.provider_run_id.clone(),
-        objective_revision: g.objective_revision,
-        // Begin consumes the intent and increments the task revision once.
+        objective_revision: revision,
         ledger_revision: t.revision + 2,
         started_at_ms: now,
         deadline_ms: now.saturating_add(CHECK_BOUND_MS),
         result: None,
-    });
+    };
+    if let Some(g) = &mut t.goal {
+        g.check_count = count;
+        g.evaluation = Some(check);
+    } else {
+        let c = t.completion_check.as_mut().unwrap();
+        c.check_count = count;
+        c.evaluation = Some(check);
+    }
     t.pending_prompt_id = Some(prompt);
     t.state = ExecutionState::Working;
     t.reason = "Evaluating original goal objective".into();
@@ -199,10 +205,7 @@ pub(super) fn work_end(t: &mut AgentTaskExecution, has_answer: bool, now: u64) -
 }
 
 pub(crate) fn is_check(t: &AgentTaskExecution, prompt: &str) -> bool {
-    t.goal
-        .as_ref()
-        .and_then(|g| g.evaluation.as_ref())
-        .is_some_and(|e| e.prompt_id == prompt)
+    completion::evaluation(t).is_some_and(|e| e.prompt_id == prompt)
 }
 
 pub(super) fn evaluate(
@@ -213,11 +216,7 @@ pub(super) fn evaluate(
     now: u64,
 ) -> Result<Outcome, DaemonError> {
     let mut t = load(tx, &task)?;
-    let g = t.goal.as_ref().ok_or_else(|| error("no goal"))?;
-    let e = g
-        .evaluation
-        .as_ref()
-        .ok_or_else(|| error("no evaluation intent"))?;
+    let e = completion::evaluation(&t).ok_or_else(|| error("no evaluation intent"))?;
     if e.prompt_id != prompt {
         return Err(error("uncorrelated completion check"));
     }
@@ -231,10 +230,9 @@ pub(super) fn evaluate(
         });
     }
     clock(&mut t, now);
-    let g = t.goal.as_ref().unwrap();
-    let e = g.evaluation.as_ref().unwrap();
+    let e = completion::evaluation(&t).unwrap();
     let valid = t.prompt_id == prompt
-        && e.objective_revision == g.objective_revision
+        && e.objective_revision == completion::objective_revision(&t)
         && e.ledger_revision <= t.revision
         && now <= e.deadline_ms
         && result.len() <= RESULT_LIMIT;
@@ -260,24 +258,22 @@ pub(super) fn evaluate(
                 if t.correction_used {
                     blocked(&mut t, "Repeated achieved claim with unresolved obligations; owner must resume or cancel");
                 } else {
-                    t.correction_used = true;
                     again = continue_work(&mut t, "Completion was rejected: resolve every open obligation, then wait, continue or block");
+                    t.correction_used = true;
                 }
             } else {
                 t.state = ExecutionState::Done;
                 t.wait = None;
                 t.reason.clear();
-                let g = t.goal.as_mut().unwrap();
-                g.final_answer = Some(final_answer);
-                g.evidence = evidence;
-                g.next_check_in_ms = None;
+                if let Some(g) = &mut t.goal { g.final_answer = Some(final_answer); g.evidence = evidence; g.next_check_in_ms = None; }
+                else { let c = t.completion_check.as_mut().unwrap(); c.final_answer = Some(final_answer); c.evidence = evidence; }
             }
         }
         Some(Assessment::Continue { reason }) if !reason.trim().is_empty() => {
             again = continue_work(&mut t, &reason);
         }
         Some(Assessment::Waiting { reason, registration_ids, deadline_ms }) if !reason.trim().is_empty() => {
-            let interval = t.goal.as_ref().unwrap().check_in_minutes as u64 * 60_000;
+            let interval = t.goal.as_ref().map_or(10, |g| g.check_in_minutes) as u64 * 60_000;
             let deadline = deadline_ms.min(now.saturating_add(interval));
             let regs = registrations(tx, &t.task_id)?;
             let valid_sources = !registration_ids.is_empty() && deadline > now
@@ -297,20 +293,20 @@ pub(super) fn evaluate(
                 });
                 t.reason = reason;
                 t.state = ExecutionState::Waiting;
-                t.goal.as_mut().unwrap().next_check_in_ms = Some(deadline);
+                if let Some(g) = &mut t.goal { g.next_check_in_ms = Some(deadline); }
             }
         }
         _ => blocked(&mut t, "Goal evaluation omitted its required answer/evidence or owner action; explicitly resume"),
     }
     let receipt =
         serde_json::from_str(result).unwrap_or_else(|_| serde_json::json!({"invalid":true}));
-    t.goal.as_mut().unwrap().evaluation.as_mut().unwrap().result = Some(receipt);
+    completion::evaluation_mut(&mut t).unwrap().result = Some(receipt);
     t.revision += 1;
     migration::audit(
         tx,
         "goal.evaluation",
         &prompt,
-        serde_json::json!({"goal_id":t.goal.as_ref().unwrap().id,"objective_revision":t.goal.as_ref().unwrap().objective_revision,"evaluation":t.goal.as_ref().unwrap().evaluation,"disposition":t.state,"task_revision":t.revision}),
+        serde_json::json!({"task_id":t.task_id,"goal_id":t.goal.as_ref().map(|g| &g.id),"objective_revision":completion::objective_revision(&t),"evaluation":completion::evaluation(&t),"disposition":t.state,"task_revision":t.revision}),
     )?;
     save(tx, &t)?;
     Ok(Outcome::Settled {
@@ -320,6 +316,17 @@ pub(super) fn evaluate(
 }
 
 fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
+    if t.goal.is_none() {
+        if t.correction_used {
+            blocked(t, "Plain request remains incomplete after one correction; owner must resume or cancel");
+            return false;
+        }
+        t.correction_used = true;
+        t.wait = None;
+        t.reason = reason.into();
+        t.pending_prompt_id = Some(format!("task-correction-{}", t.task_id));
+        return true;
+    }
     if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
         blocked(t, "Goal repeated continuation without handled progress; owner must inspect and explicitly resume");
         return false;
@@ -344,7 +351,7 @@ pub(super) fn timeout(
     now: u64,
 ) -> Result<Outcome, DaemonError> {
     let mut t = load(tx, &task)?;
-    let Some(check) = t.goal.as_ref().and_then(|g| g.evaluation.as_ref()) else {
+    let Some(check) = completion::evaluation(&t) else {
         return Ok(Outcome::Saved);
     };
     if t.state != ExecutionState::Working
@@ -357,15 +364,15 @@ pub(super) fn timeout(
     }
     clock(&mut t, now);
     blocked(&mut t, "Goal completion check exceeded 60 seconds; inspect the exact delivery receipt and explicitly resume");
-    t.goal.as_mut().unwrap().evaluation.as_mut().unwrap().result = Some(serde_json::json!({
+    completion::evaluation_mut(&mut t).unwrap().result = Some(serde_json::json!({
         "status":"blocked","reason":"completion_check service bound exceeded","received_at_ms":now }));
     t.revision += 1;
     migration::audit(
         tx,
         "goal.evaluation",
         &prompt,
-        serde_json::json!({"goal_id":t.goal.as_ref().unwrap().id,
-        "evaluation":t.goal.as_ref().unwrap().evaluation,"disposition":t.state,"task_revision":t.revision}),
+        serde_json::json!({"task_id":t.task_id,"goal_id":t.goal.as_ref().map(|g| &g.id),
+        "evaluation":completion::evaluation(&t),"disposition":t.state,"task_revision":t.revision}),
     )?;
     save(tx, &t)?;
     Ok(Outcome::Task(t))

@@ -8,6 +8,7 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 484);
     let task = AgentTaskExecution {
         goal: None,
+        completion_check: None,
         task_id: "task".into(),
         room_id: "room".into(),
         owner_user_id: "owner".into(),

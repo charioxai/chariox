@@ -37,6 +37,14 @@ impl KernelRuntimeOwnedState {
         else {
             unreachable!()
         };
+        if !existed
+            && super::agent_goal_runtime::parse_goal_prompt(prepared.prompt.prompt())?.is_none()
+        {
+            self.durable_state_store
+                .agent_lifecycle(Operation::EnableCompletionCheck {
+                    task: task.task_id.clone(),
+                })?;
+        }
         self.bind_agent_workflow_task(&task, &prepared.prompt)?;
         Ok(!existed)
     }
@@ -470,10 +478,7 @@ impl KernelRuntimeState {
             Some((run, node)) => prompt.with_workflow_context(run, node),
             None => prompt,
         };
-        let prompt = if task
-            .goal
-            .as_ref()
-            .and_then(|g| g.evaluation.as_ref())
+        let prompt = if ledger::completion::evaluation(&task)
             .is_some_and(|e| e.prompt_id == id && e.result.is_none())
         {
             prompt.with_prompt_origin(crate::session::PromptOrigin::CompletionCheck)
@@ -518,18 +523,12 @@ impl KernelRuntimeState {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
             };
-            if let Some(check) = task
-                .goal
-                .as_ref()
-                .and_then(|g| g.evaluation.as_ref())
-                .filter(|e| {
-                    task.state == ExecutionState::Working
-                        && e.result.is_none()
-                        && e.prompt_id
-                            == task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id)
-                        && now >= e.deadline_ms
-                })
-            {
+            if let Some(check) = ledger::completion::evaluation(&task).filter(|e| {
+                task.state == ExecutionState::Working
+                    && e.result.is_none()
+                    && e.prompt_id == task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id)
+                    && now >= e.deadline_ms
+            }) {
                 if let Outcome::Task(stopped) =
                     self.owned
                         .durable_state_store

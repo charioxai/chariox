@@ -1,5 +1,6 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: home-owned task/inbox transactions.
 //! No provider I/O occurs here. Intent commits precede every dispatch.
+pub(crate) mod completion;
 mod delegation;
 mod delivery;
 #[cfg(test)]
@@ -264,6 +265,15 @@ fn decode_task(
     if t.task_id != id || t.room_id != room || t.agent_id != agent || t.prompt_id != prompt {
         return Err(error("task identity corrupt; quarantine required"));
     }
+    if let Some(c) = &t.completion_check {
+        if t.goal.is_some() || c.schema_version != 1 || c.original_prompt_id != t.task_id
+            || c.evaluation.as_ref().is_some_and(|e| e.origin != "completion_check"
+                || e.objective_revision != 1 || e.prompt_id.is_empty() || e.work_prompt_id.is_empty()
+                || e.ledger_revision == 0 || e.deadline_ms != e.started_at_ms.saturating_add(goals::CHECK_BOUND_MS))
+            || (t.state == ExecutionState::Done && (c.final_answer.as_ref().is_none_or(|s| s.trim().is_empty()) || c.evidence.is_empty())) {
+            return Err(error("plain completion binding/schema corrupt; quarantine required"));
+        }
+    }
     if let Some(g) = &t.goal {
         if g.schema_version != 1
             || g.owner_user_id != t.owner_user_id
@@ -379,10 +389,7 @@ fn registrations(tx: &Connection, task: &str) -> Result<Vec<Registration>, Daemo
 }
 fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
     if goals::is_check(task, prompt)
-        && task
-            .goal
-            .as_ref()
-            .and_then(|g| g.evaluation.as_ref())
+        && completion::evaluation(task)
             .is_some_and(|e| e.result.is_none())
     {
         return Err(error("completion_check cannot mutate work or authority"));
@@ -424,6 +431,7 @@ fn new_task(
 ) -> AgentTaskExecution {
     AgentTaskExecution {
         goal: None,
+        completion_check: None,
         task_id: prompt.clone(),
         room_id: room,
         owner_user_id: String::new(),

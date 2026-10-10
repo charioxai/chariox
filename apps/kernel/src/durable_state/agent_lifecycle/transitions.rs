@@ -2,6 +2,7 @@
 use super::*;
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
+        Operation::EnableCompletionCheck { task } => super::completion::admit(tx, task),
         Operation::AdoptGoal {
             owner,
             room,
@@ -103,6 +104,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     != if t.goal.as_ref().is_some_and(|g| {
                         g.check_count == 0 && g.continuation_sequence == 0 && !g.paused
                     }) && t.provider_run_id.is_none()
+                        || t.completion_check
+                            .as_ref()
+                            .is_some_and(|c| c.check_count == 0)
+                            && t.provider_run_id.is_none()
                     {
                         2
                     } else {
@@ -400,7 +405,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     correction: false,
                 });
             }
-            if !cancelled && t.goal.is_some() && t.state == ExecutionState::Working {
+            if !cancelled
+                && t.state == ExecutionState::Working
+                && (t.goal.is_some()
+                    || (t.completion_check.is_some() && has_answer && t.wait.is_none()))
+            {
                 let correction = super::goals::work_end(&mut t, has_answer, now);
                 t.provider_run_id = Some(run);
                 t.revision += 1;
@@ -412,11 +421,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             let mut correction = false;
             if cancelled
-                && t.goal.as_ref().is_some_and(|g| {
-                    g.paused
-                        || (super::goals::is_check(&t, &prompt)
-                            && t.state == ExecutionState::Blocked)
-                })
+                && (t.goal.as_ref().is_some_and(|g| g.paused)
+                    || (super::goals::is_check(&t, &prompt) && t.state == ExecutionState::Blocked))
             {
                 return Ok(Outcome::Settled {
                     task: t,

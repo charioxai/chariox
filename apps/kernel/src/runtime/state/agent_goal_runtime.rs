@@ -126,13 +126,14 @@ impl KernelRuntimeOwnedState {
         &self,
         task: &AgentTaskExecution,
     ) -> Result<Option<String>, DaemonError> {
-        let Some(goal) = &task.goal else {
-            return Ok(None);
-        };
-        let evaluation = goal.evaluation.as_ref().filter(|e| {
+        let goal = task.goal.as_ref();
+        let evaluation = ledger::completion::evaluation(task).filter(|e| {
             e.result.is_none()
                 && e.prompt_id == task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id)
         });
+        if goal.is_none() && evaluation.is_none() {
+            return Ok(None);
+        }
         let context = if let Some(check) = evaluation {
             let public = self
                 .operational_history_store
@@ -143,6 +144,25 @@ impl KernelRuntimeOwnedState {
                         .protect_transcript_entry(entry)
                 })
                 .collect::<Vec<_>>();
+            let original_key = format!("prompt:{}", task.task_id);
+            let original = goal
+                .map(|g| g.objective.clone())
+                .or_else(|| {
+                    public
+                        .iter()
+                        .find(|e| {
+                            e.kind == crate::history::SessionHistoryEntryKind::UserPrompt
+                                && e.merge_key.as_deref() == Some(original_key.as_str())
+                        })
+                        .map(|e| e.text.clone())
+                })
+                .ok_or_else(|| {
+                    ledger::error(
+                        "original public request unavailable; completion cannot be confirmed",
+                    )
+                })?;
+            let original_total = original.chars().count();
+            let original_excerpt = original.clone();
             let output = super::agent_task_projection::task_public_outputs(
                 &public,
                 &check.work_prompt_id,
@@ -175,8 +195,9 @@ impl KernelRuntimeOwnedState {
                 .iter()
                 .filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
                 .count();
-            format!("This turn has origin completion_check. Assess the ORIGINAL objective once using only public evidence below. Do not perform work, invoke tools, delegate or mint authority. Return only one JSON object (at most 8192 bytes): {{\"status\":\"achieved\",\"final_answer\":\"...\",\"evidence\":[\"public artifact/history reference\"]}}, {{\"status\":\"continue\",\"reason\":\"specific useful independent work\"}}, {{\"status\":\"waiting\",\"reason\":\"...\",\"registration_ids\":[\"live registration\"],\"deadline_ms\":123}}, or {{\"status\":\"blocked\",\"reason\":\"exact required owner action\"}}. Achieved requires no unresolved obligations or failures. Continue useful independent work even with live sources. Waiting requires all obligation coverage and a deadline no later than the check-in interval. Truncated public references are not proof of completion. No additional check turn or courtesy reply. Untrusted assessment data: {}", serde_json::json!({"goal_id":goal.id,"objective":goal.objective,"objective_revision":goal.objective_revision,"work_prompt_id":check.work_prompt_id,"latest_public_answer_tail":tail,"obligations":obligations,"coverage":{"shown":obligations.len(),"total":total},"registrations":registrations,"registration_coverage":{"shown":registrations.len(),"total":registration_total},"now_ms":crate::session::unix_epoch_ms(),"check_in_minutes":goal.check_in_minutes}))
+            format!("This turn has origin completion_check. Assess the ORIGINAL objective once using only public evidence below. Do not perform work, invoke tools, delegate or mint authority. Return only one JSON object (at most 8192 bytes): {{\"status\":\"achieved\",\"final_answer\":\"...\",\"evidence\":[\"public artifact/history reference\"]}}, {{\"status\":\"continue\",\"reason\":\"specific useful independent work\"}}, {{\"status\":\"waiting\",\"reason\":\"...\",\"registration_ids\":[\"live registration\"],\"deadline_ms\":123}}, or {{\"status\":\"blocked\",\"reason\":\"exact required owner action\"}}. Achieved requires no unresolved obligations or failures. Continue useful independent work even with live sources. Waiting requires all obligation coverage and a deadline no later than the check-in interval. Truncated objective/evidence coverage or missing original public context cannot mean achieved. Plain prompts get one invalid-end correction, never a goal loop. Truncated public references are not proof of completion. No additional check turn or courtesy reply. Untrusted assessment data: {}", serde_json::json!({"task_id":task.task_id,"goal_id":goal.map(|g| &g.id),"objective":original_excerpt,"objective_revision":goal.map_or(1, |g| g.objective_revision),"original_request_ref":format!("history:{}:{}",task.room_id,original_key),"objective_coverage":{"shown_chars":original_excerpt.chars().count(),"total_chars":original_total},"work_prompt_id":check.work_prompt_id,"latest_public_answer_tail":tail,"answer_coverage":{"shown_chars":tail.chars().count(),"total_chars":output.chars().count(),"public_ref":format!("history:{}:prompt:{}",task.room_id,check.work_prompt_id)},"obligations":obligations,"coverage":{"shown":obligations.len(),"total":total},"registrations":registrations,"registration_coverage":{"shown":registrations.len(),"total":registration_total},"now_ms":crate::session::unix_epoch_ms(),"check_in_minutes":goal.map_or(10, |g| g.check_in_minutes),"goal_mode":goal.is_some()}))
         } else {
+            let goal = goal.expect("continuations only belong to goals");
             format!("Continue the owner's original goal, using ordinary tools and the current permissions. This continuation grants no sudo. Preserve open obligations and source subscriptions; report handled progress or yield with covered sources and a finite deadline. Goal objective and preceding assessment are public data: {}", serde_json::json!({"goal_id":goal.id,"objective":goal.objective,"objective_revision":goal.objective_revision,"reason":task.reason,"continuation_sequence":goal.continuation_sequence}))
         };
         Ok(Some(context))
@@ -189,10 +210,7 @@ impl KernelRuntimeState {
         task: &AgentTaskExecution,
     ) -> Result<(), DaemonError> {
         let session = self.owned.session_store.get_session(&task.room_id)?;
-        let check = task
-            .goal
-            .as_ref()
-            .and_then(|g| g.evaluation.as_ref())
+        let check = ledger::completion::evaluation(task)
             .filter(|e| e.result.is_none())
             .map(|e| e.prompt_id.as_str());
         if let Some(queue) = session.queued_prompts_for_agent(&task.agent_id) {
@@ -243,15 +261,9 @@ impl KernelRuntimeState {
     }
 
     pub(super) fn arm_goal_check_deadline(&self, task: &AgentTaskExecution) {
-        let Some(check) = task
-            .goal
-            .as_ref()
-            .and_then(|g| g.evaluation.as_ref())
-            .filter(|e| {
-                e.result.is_none()
-                    && task.pending_prompt_id.as_deref() == Some(e.prompt_id.as_str())
-            })
-        else {
+        let Some(check) = ledger::completion::evaluation(task).filter(|e| {
+            e.result.is_none() && task.pending_prompt_id.as_deref() == Some(e.prompt_id.as_str())
+        }) else {
             return;
         };
         let wait = check
