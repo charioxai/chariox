@@ -419,7 +419,12 @@ impl DaemonApp {
                 Some(run.id()),
                 None,
             )?;
-            let _ = self.advance_next_queued_prompt(run.session_id(), agent_id)?;
+            if !self
+                .prompt_state_owner
+                .has_idle_queue_promotion(run.session_id(), agent_id)
+            {
+                let _ = self.advance_next_queued_prompt(run.session_id(), agent_id)?;
+            }
             crate::app::KernelSessionReadService::new(self).session_snapshot(run.session_id())?;
         }
         self.update_provider_run_projection(run.clone());

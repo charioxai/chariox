@@ -17,6 +17,16 @@ impl Drop for PromptQueuePromotionClaim {
 }
 
 impl PromptStateOwner {
+    /// A detached runtime promoter must assemble and dispatch the handoff;
+    /// synchronous provider readiness must leave its queue head untouched.
+    pub(crate) fn has_idle_queue_promotion(&self, session_id: &str, agent_id: &str) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .queue_promotions
+            .contains(&PromptStateKey::new(session_id, agent_id))
+    }
+
     pub(crate) fn try_claim_idle_queue_promotion(
         &self,
         session: &RuntimeSession,

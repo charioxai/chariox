@@ -6,6 +6,32 @@ use crate::transport::flow_control;
 use super::super::{select_next_queued_prompt_candidate, KernelAgentService};
 
 impl<'a> KernelAgentService<'a> {
+    // Activation may synchronously finish a provider launch. A runtime queue
+    // promoter owns dispatch separately, so this step never consumes the head.
+    pub(crate) fn prepare_queued_prompt_provider_run(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &PromptQueueItem,
+    ) -> Result<String, DaemonError> {
+        if crate::app::workflow_runtime::is_workflow_prompt_source(prompt.source_attachment_id()) {
+            crate::app::workflow_runtime::ensure_workflow_provider_run_for_prompt_from_runtime(
+                self.app, session_id, agent_id, prompt,
+            )
+        } else if crate::app::RemoteLeaseRuntime::new(self.app).is_leased_workflow_backing_prompt(
+            session_id,
+            agent_id,
+            prompt.id(),
+        ) {
+            crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
+                self.app, session_id, agent_id,
+            )
+        } else {
+            self.app
+                .ensure_prompt_provider_run_for_agent(session_id, agent_id)
+        }
+    }
+
     pub(crate) fn advance_next_queued_prompt(
         &mut self,
         session_id: &str,
@@ -29,23 +55,11 @@ impl<'a> KernelAgentService<'a> {
                     peeked.id(),
                 );
             let is_workflow_prompt = source_is_workflow || leased_workflow_prompt;
-            let provider_run_id = match if source_is_workflow {
-                crate::app::workflow_runtime::ensure_workflow_provider_run_for_prompt_from_runtime(
-                    self.app,
-                    session_id,
-                    &target_agent_id,
-                    &peeked,
-                )
-            } else if leased_workflow_prompt {
-                crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
-                    self.app,
-                    session_id,
-                    &target_agent_id,
-                )
-            } else {
-                self.app
-                    .ensure_prompt_provider_run_for_agent(session_id, &target_agent_id)
-            } {
+            let provider_run_id = match self.prepare_queued_prompt_provider_run(
+                session_id,
+                &target_agent_id,
+                &peeked,
+            ) {
                 Ok(provider_run_id) => provider_run_id,
                 Err(error) => {
                     self.app.record_notice(

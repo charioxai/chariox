@@ -104,13 +104,51 @@ impl KernelRuntimeState {
             .owned
             .prompt_state_owner
             .try_claim_idle_queue_promotion(&session, agent_id)?;
-        let result = self
-            .with_project_prompt_environment(session_id, agent_id, |app| {
-                // The existing queue boundary resolves/compares revisions before activation,
-                // replaces the idle process, and resumes the agent's native conversation.
-                app.advance_next_queued_prompt(session_id, agent_id)
+        let Some(queued) = self
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, agent_id)
+        else {
+            return None;
+        };
+        let result: Result<Option<crate::session::PromptQueueItem>, DaemonError> = async {
+            let provider_run_id = self
+                .with_project_prompt_environment(session_id, agent_id, |app| {
+                    crate::app::KernelAgentService::new(app)
+                        .prepare_queued_prompt_provider_run(session_id, agent_id, &queued)
+                })
+                .await?;
+            let run = self.owned.provider_store.get_run(&provider_run_id)?;
+            if run.state() == crate::provider::ProviderRunState::Starting {
+                return Ok(None);
+            }
+            let Some(dispatch) = self.owned.advance_queued_prompt_dispatch_for_head(
+                session_id,
+                agent_id,
+                &provider_run_id,
+                Some(queued.id()),
+            )?
+            else {
+                return Ok(None);
+            };
+            // Worker workflow context is indexed by the original queued id,
+            // before activation assigned the prompt its fresh mirror id.
+            self.with_app_side_effect(|app| {
+                crate::app::RemoteLeaseRuntime::new(app)
+                    .activate_leased_workflow_prompt(queued.id(), &provider_run_id);
             })
             .await;
+            let started = self.owned.prompt_state_owner.active_prompt_for_agent(
+                &self.owned.session_store.get_session(session_id)?,
+                agent_id,
+            );
+            if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
+                let _ = self.fail_prompt_dispatch(dispatch, error).await;
+                return Ok(None);
+            }
+            Ok(started)
+        }
+        .await;
         match result {
             Ok(started) => started,
             Err(error) => {

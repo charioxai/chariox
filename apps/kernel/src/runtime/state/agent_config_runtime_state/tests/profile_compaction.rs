@@ -788,6 +788,47 @@ async fn a_leased_backlog_uses_the_next_home_launch_credential_and_receipt() {
 async fn assert_queued_prompt_reaches_committed_profile(leased: bool) {
     let (root, app, runtime, session_id, agent_id, run, lease) =
         compact_fixture_with_lease(leased).await;
+    // MP-08 / MP-10 / MP-11: queued work after /compact must pass through
+    // normal handoff assembly, even when synchronous activation starts a new run.
+    let earlier_prompt = crate::history::SessionHistoryEntry::user_prompt(
+        &session_id,
+        "earlier-source",
+        &agent_id,
+        "Review continuity and keep the proposal distinct from accepted decisions.",
+    );
+    runtime
+        .owned
+        .operational_history_store
+        .append_transcript(
+            &earlier_prompt,
+            crate::history::HistoryEventTurnContext {
+                prompt_id: Some("earlier-audit".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let proposal = crate::history::SessionHistoryEntry::provider_output(
+        &session_id,
+        run.id(),
+        Some(&agent_id),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        None,
+        "Assistant proposal: Continuity Ledger. Keep it distinct from accepted decisions.",
+    );
+    runtime
+        .owned
+        .operational_history_store
+        .append_transcript(
+            &proposal,
+            crate::history::HistoryEventTurnContext {
+                prompt_id: Some("earlier-audit".into()),
+                provider: Some(run.provider().into()),
+                model: Some(run.model().into()),
+                provider_run_id: Some(run.id().into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     let received = root.path().join("new-profile-input");
     let credential_matches = root.path().join("home-credential-matches");
     let executable = root.path().join("claude-queue-fixture");
@@ -1021,6 +1062,10 @@ async fn assert_queued_prompt_reaches_committed_profile(leased: bool) {
     assert!(
         input.contains("request after source compact"),
         "queued request must reach the new runtime: {input:?}"
+    );
+    assert!(
+        input.contains("Continuity Ledger"),
+        "the actual queued submission must carry protected pre-compaction history: {input:?}"
     );
     let current = current.unwrap();
     assert_eq!(current.model(), "haiku");
