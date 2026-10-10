@@ -175,6 +175,7 @@ pub struct DaemonApp {
     agent_runtime_projection: AgentRuntimeProjectionStore,
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
+    pending_agent_context_handoffs: crate::runtime::state::PendingAgentContextHandoffStore,
     provider_process_projection: ProviderProcessProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     credential_enrollment_control:
@@ -386,6 +387,7 @@ impl DaemonApp {
             agent_runtime_projection: AgentRuntimeProjectionStore::default(),
             provider_catalog_projection: ProviderCatalogProjectionStore::default(),
             provider_run_projection: ProviderRunProjectionStore::default(),
+            pending_agent_context_handoffs: Default::default(),
             provider_process_projection: ProviderProcessProjectionStore::default(),
             remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore::default(),
             credential_enrollment_control:
@@ -633,6 +635,12 @@ impl DaemonApp {
 
     pub(crate) fn provider_run_projection_store(&self) -> ProviderRunProjectionStore {
         self.provider_run_projection.clone()
+    }
+
+    pub(crate) fn pending_agent_context_handoff_store(
+        &self,
+    ) -> crate::runtime::state::PendingAgentContextHandoffStore {
+        self.pending_agent_context_handoffs.clone()
     }
 
     pub(crate) fn provider_process_projection_store(&self) -> ProviderProcessProjectionStore {

@@ -37,7 +37,7 @@ pub(super) struct PendingAgentContextHandoff {
 /// a fork target and a turn substitute. Profile switches need no entry; the
 /// kernel derives them from history at dispatch.
 #[derive(Debug, Clone, Default)]
-pub(super) struct PendingAgentContextHandoffStore {
+pub(crate) struct PendingAgentContextHandoffStore {
     inner: Arc<StdMutex<BTreeMap<String, PendingAgentContextHandoff>>>,
     /// Each agent's run known to hold its conversation, so later prompts to it
     /// skip the history checks and the derived handoff is delivered once.
@@ -733,6 +733,116 @@ mod tests {
             metaagent_events,
             workspace_coordinator,
         )
+    }
+
+    // MP-08 / MP-10 / MP-11: hosted profile changes and local queue promotion
+    // can use different routers over the same kernel-owned stores.
+    #[tokio::test]
+    async fn post_compaction_handoff_is_shared_with_another_kernel_router() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(
+            1,
+            "Keep the named assistant proposal separate from decisions.",
+        );
+        fixture.output(
+            2,
+            "source",
+            "claude",
+            Some("native"),
+            "Assistant proposal: Continuity Ledger.",
+        );
+        let mut source = fixture
+            .run("source", "claude", Some("native"))
+            .projected_for_home_agent_with_id(
+                "source".to_string(),
+                fixture.session_id.clone(),
+                fixture.agent_id.clone(),
+            );
+        source.set_model("sonnet");
+        fixture
+            .runtime
+            .owned
+            .prepare_compacted_session_context_handoff(&source);
+        let mut target = fixture
+            .run("target", "claude", Some("native"))
+            .projected_for_home_agent_with_id(
+                "target".to_string(),
+                fixture.session_id.clone(),
+                fixture.agent_id.clone(),
+            );
+        target.set_model("haiku");
+        assert!(
+            fixture
+                .runtime
+                .owned
+                .pending_agent_context_handoffs
+                .peek_matching(&fixture.session_id, &fixture.agent_id, &target)
+                .is_some(),
+            "source compaction must first prepare this session's handoff"
+        );
+        let another_router = owned_runtime_state(&fixture.runtime.app).await;
+        let handoff = another_router
+            .owned
+            .context_handoff_for_dispatch(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &target,
+                "next-turn",
+                false,
+            )
+            .expect("the next router lost the compacted session's kernel history");
+        assert!(handoff.render_hidden(24_000).contains("Continuity Ledger"));
+        another_router.owned.consume_pending_context_handoff(
+            &fixture.session_id,
+            &fixture.agent_id,
+            &target,
+        );
+        assert!(
+            fixture
+                .runtime
+                .owned
+                .pending_agent_context_handoffs
+                .peek_matching(&fixture.session_id, &fixture.agent_id, &target)
+                .is_none(),
+            "delivery through another router must consume the same handoff"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_compaction_handoff_stays_with_its_kernel() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "Keep this kernel's conversation private.");
+        fixture.output(
+            2,
+            "source",
+            "claude",
+            Some("native"),
+            "Assistant proposal: Continuity Ledger.",
+        );
+        let source = fixture
+            .run("source", "claude", Some("native"))
+            .projected_for_home_agent_with_id(
+                "source".to_string(),
+                fixture.session_id.clone(),
+                fixture.agent_id.clone(),
+            );
+        fixture
+            .runtime
+            .owned
+            .prepare_compacted_session_context_handoff(&source);
+        let another_kernel = DerivedHandoffFixture::new().await;
+        assert!(another_kernel
+            .runtime
+            .owned
+            .pending_agent_context_handoffs
+            .peek_matching(&fixture.session_id, &fixture.agent_id, &source)
+            .is_none());
+        assert!(fixture
+            .runtime
+            .owned
+            .pending_agent_context_handoffs
+            .peek_matching(&fixture.session_id, &fixture.agent_id, &source)
+            .is_some());
     }
 
     #[test]

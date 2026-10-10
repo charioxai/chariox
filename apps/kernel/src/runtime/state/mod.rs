@@ -36,7 +36,7 @@ mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
 mod context_handoff;
 mod failed_request_owned_state;
-use context_handoff::*;
+pub(crate) use context_handoff::PendingAgentContextHandoffStore;
 mod app_automation_owned_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_connection_runtime;
@@ -619,6 +619,7 @@ impl KernelRuntimeState {
             app_control,
             managed_kernel_registration,
             runtime_tool_call_activity,
+            pending_agent_context_handoffs,
         ) = {
             let started = Instant::now();
             loop {
@@ -633,6 +634,7 @@ impl KernelRuntimeState {
                         app.app_control_service(),
                         app.managed_kernel_registration(),
                         app.runtime_tool_call_activity.clone(),
+                        app.pending_agent_context_handoff_store(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -847,7 +849,7 @@ impl KernelRuntimeState {
                     crate::io::ArtifactExternalChangeMonitor::default(),
                 workspace_identity_monitor:
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
-                pending_agent_context_handoffs: PendingAgentContextHandoffStore::default(),
+                pending_agent_context_handoffs,
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
                 metaagent_events,
                 metaagent_trace_subscriptions,
