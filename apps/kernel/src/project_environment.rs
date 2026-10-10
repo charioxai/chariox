@@ -4,6 +4,14 @@
 mod aggregate;
 mod aggregate_projection;
 mod aggregate_store;
+mod check;
+mod check_admission;
+mod check_assets;
+mod check_inventory;
+mod check_platform;
+mod check_runner;
+mod check_store;
+mod check_tools;
 mod detect;
 mod detect_importers;
 mod detect_index;
@@ -30,6 +38,8 @@ mod transfer;
 
 pub use aggregate::*;
 pub use aggregate_projection::*;
+pub(crate) use check::*;
+pub(crate) use check_store::*;
 pub use detect::*;
 pub use detect_store::*;
 pub use discovery::*;
@@ -56,3 +66,6 @@ mod aggregate_tests;
 
 #[cfg(test)]
 mod detect_tests;
+
+#[cfg(test)]
+mod check_tests;

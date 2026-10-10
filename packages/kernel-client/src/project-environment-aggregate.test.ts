@@ -84,3 +84,18 @@ test("Environment view memory is bounded and isolates kernel contexts", async ()
   assert.equal(cache.peek("two", "project-8"), null)
   assert.equal(cache.peek("one", "project-8"), null, "switching back does not resurrect a prior kernel view")
 })
+
+// MP-08 / MP-10: ENV-09 observations supersede legacy hints and stale Ready.
+test("P04 projects five measured statuses and suppresses stale Ready", () => {
+  const requirement = { requirement_id: "node", title: "Node", scope: {kind:"project"}, origins:[], spec:{kind:"software", identity:"node", version_constraint:null, platform:null, install_scope:"system", install_source:null, detect_only:false}, depends_on:[], platform_variants:[], required:true, legacy_entry:null }
+  const base = {schema_version:1, local_project_id:"project", lineage:{project_id:"p",environment_id:"env"}, revision:1, content_digest:"digest", project_requirements:[requirement], folders:[], proposals:[], observations:[], operations:[]} as unknown as ProjectEnvironment
+  const row = {environment_id:"env",requirement_id:"node", revision_digest:"digest",status:"ready" as const,checked_at_ms:Date.now(),stale:false,safe_summary:"Measured",reason_code:"probe",target:{machine_id:"m",target_instance_generation:"g",slice_ref:null},measured_facts:{platform:null,version:null,content_digest:null,present:null,cpus:null,memory_bytes:null,free_disk_bytes:null,gpu:null},check_operation_id:"check"}
+  for (const [status,label] of [["ready","Ready"],["missing","Missing"],["outdated","Outdated"],["needs_your_input","Needs your input"],["conflict","Conflict"]] as const) {
+    const environment={...base,observations:[{...row,status}]}
+    assert.equal(projectEnvironmentSections(environment)[0]?.groups[0]?.rows[0]?.status,label)
+  }
+  for(const changed of [{stale:true},{revision_digest:"old"},{checked_at_ms:null}]) {
+    const environment={...base,observations:[{...row,...changed}]}
+    assert.doesNotMatch(projectEnvironmentSections(environment)[0]!.groups[0]!.rows[0]!.status,/^Ready/)
+  }
+})

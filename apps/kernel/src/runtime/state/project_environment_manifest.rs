@@ -18,7 +18,12 @@ impl KernelRuntimeState {
         let store = crate::project_environment::ProjectEnvironmentStore::new(
             &config.private_runtime_state_root(),
         );
-        let environment = store.snapshot(&project)?;
+        let mut environment = store.snapshot(&project)?;
+        store.attach_checks(
+            &mut environment,
+            &crate::project_environment::current_check_target(&config),
+            crate::session::unix_epoch_ms(),
+        )?;
         Ok(LocalDaemonResponse::ProjectEnvironment { environment })
     }
 

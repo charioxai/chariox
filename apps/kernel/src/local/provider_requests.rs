@@ -14,6 +14,7 @@ use super::api::{
 
 mod blocking;
 mod catalog;
+pub(crate) use catalog::probe_capture::capture as capture_inventory_probe;
 mod remote_machines;
 
 use blocking::block_on_relay_query;

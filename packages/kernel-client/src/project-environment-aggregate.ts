@@ -61,9 +61,9 @@ export function projectEnvironmentSections(environment: ProjectEnvironment): Env
   const section = (id: string, title: string, requirements: readonly Requirement[]): EnvironmentViewSection => {
     const groups = Object.entries(labels).flatMap(([kind, label]) => {
       const rows = requirements.filter(r => r.spec.kind === kind).map(r => ({
-        id: r.requirement_id, title: r.title, origins: r.origins.map(environmentOriginLabel), details: details(r),
+        id: r.requirement_id, title: r.title, origins: r.origins.map(environmentOriginLabel), details: [...details(r), ...environmentObservationDetails(environment, r.requirement_id)],
         // P01 has no selected machine and no Check behaviour. Legacy readiness is not an observation.
-        status: "Not checked",
+        status: environmentObservationStatus(environment, r.requirement_id),
       }))
       return rows.length ? [{ kind: label, rows }] : []
     })
@@ -95,3 +95,26 @@ export function environmentFolderModelDisclosure(environment: ProjectEnvironment
 }
 
 export { createEnvironmentViewCache } from "./project-environment-view-cache.js"
+
+// MP-08 / MP-10: only current, kernel-bound observations count as readiness.
+const observationLabels = {ready:"Ready", missing:"Missing", outdated:"Outdated", needs_your_input:"Needs your input", conflict:"Conflict"} as const
+function observation(environment: ProjectEnvironment, id: string) {
+  return (environment.observations ?? []).filter(o => o.requirement_id === id && o.environment_id === environment.lineage.environment_id).at(-1)
+}
+export function environmentObservationStatus(environment: ProjectEnvironment, id: string): string {
+  const o = observation(environment,id)
+  if (!o || o.checked_at_ms == null) return "Not checked"
+  if (o.stale || o.revision_digest !== environment.content_digest || o.checked_at_ms > Date.now() || Date.now() - o.checked_at_ms > 5 * 60 * 1000) return "Last check stale · check again"
+  return observationLabels[o.status]
+}
+export function environmentObservationDetails(environment: ProjectEnvironment, id: string): string[] {
+  const o = observation(environment,id)
+  if (!o) return []
+  const f = o.measured_facts
+  return [o.safe_summary, ...(o.checked_at_ms == null ? [] : [`Last checked ${new Date(o.checked_at_ms).toISOString()}`]), `Machine · ${o.target.machine_id} · Generation · ${o.target.target_instance_generation}`,
+    ...(f.version ? [`Observed version · ${f.version}`] : []), ...(f.platform ? [`Platform · ${f.platform.os}/${f.platform.architecture}`] : []),
+    ...(f.cpus == null ? [] : [`CPUs · ${f.cpus}`]), ...(f.memory_bytes == null ? [] : [`RAM · ${f.memory_bytes} bytes`]), ...(f.free_disk_bytes == null ? [] : [`Free disk · ${f.free_disk_bytes} bytes`]), ...(f.gpu ? [`GPU · ${f.gpu}`] : [])]
+}
+export function checkEnvironmentRequest(environment: ProjectEnvironment, target: ProjectEnvironment["observations"][number]["target"], operationId: string) {
+  return {CheckProjectEnvironment:{projectId:environment.local_project_id,operationId,revisionDigest:environment.content_digest,target,selectedItems:[]}} as const
+}

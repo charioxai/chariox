@@ -99,6 +99,8 @@ impl ProjectEnvironmentStore {
             EnvironmentCapability::Detect,
             EnvironmentCapability::PreviewDiff,
             EnvironmentCapability::Save,
+            EnvironmentCapability::Check,
+            EnvironmentCapability::GetOperation,
         ];
         refresh_environment_content_digest(snapshot);
         Ok(())

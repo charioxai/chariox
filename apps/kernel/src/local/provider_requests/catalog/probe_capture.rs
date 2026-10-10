@@ -14,7 +14,7 @@ pub(super) const OUTPUT_LIMIT: usize = 1024 * 1024;
 const READ_BUDGET: usize = 64 * 1024;
 
 #[derive(Debug)]
-pub(super) enum CaptureError {
+pub(crate) enum CaptureError {
     Io(io::Error),
     TimedOut,
     OutputLimit,
@@ -26,7 +26,7 @@ impl From<io::Error> for CaptureError {
     }
 }
 
-pub(super) fn capture(mut command: Command, timeout: Duration) -> Result<Output, CaptureError> {
+pub(crate) fn capture(mut command: Command, timeout: Duration) -> Result<Output, CaptureError> {
     let deadline = Instant::now() + timeout;
     command
         .stdin(Stdio::null())

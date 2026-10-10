@@ -17,7 +17,7 @@ use super::super::api::{
 };
 use super::blocking::block_on_relay_query;
 
-mod probe_capture;
+pub(crate) mod probe_capture;
 
 pub(crate) const PROVIDER_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
 

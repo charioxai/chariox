@@ -269,7 +269,7 @@ impl ProjectEnvironmentStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err(environment_error("remove revision history failed")),
         }
-        for extension in ["detect.json", "detect-model.json"] {
+        for extension in ["detect.json", "detect-model.json", "checks.json"] {
             match fs::remove_file(self.path(project).with_extension(extension)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

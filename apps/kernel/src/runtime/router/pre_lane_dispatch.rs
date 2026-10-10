@@ -310,6 +310,20 @@ impl CommandRouter {
                     .await
                     .map(Some);
             }
+            LocalDaemonRequest::CheckProjectEnvironment(request) => {
+                return self
+                    .runtime_state
+                    .check_project_environment(request.clone(), caller_user_id)
+                    .await
+                    .map(Some);
+            }
+            LocalDaemonRequest::GetEnvironmentOperation(request) => {
+                return self
+                    .runtime_state
+                    .get_environment_operation(request.clone(), caller_user_id)
+                    .await
+                    .map(Some);
+            }
             LocalDaemonRequest::PreviewEnvironmentDiff(request) => {
                 return self
                     .runtime_state

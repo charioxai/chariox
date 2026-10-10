@@ -1,0 +1,136 @@
+//! MP-08 / MP-10 / MP-11: bounded read-only Check execution and observation settlement.
+use super::*;
+impl ProjectEnvironmentStore {
+    pub(crate) fn run_check(
+        &self,
+        ctx: EnvironmentCheckContext,
+        env: ProjectEnvironment,
+        mut operation: EnvironmentOperation,
+        validate: impl Fn() -> Result<crate::session::RuntimeProject, crate::error::DaemonError>,
+    ) -> Result<(), crate::error::DaemonError> {
+        let target = operation.target.clone();
+        let lock = self.lock(&env.local_project_id)?;
+        let project = validate()?;
+
+        let current = self.snapshot_locked(&project)?;
+        if current.content_digest != env.content_digest {
+            return Err(environment_error("revision changed before Check"));
+        }
+        let mut checks = self.load_checks(project.id())?;
+        operation.phase = EnvironmentOperationPhase::Running;
+        operation.updated_at_ms = crate::session::unix_epoch_ms();
+        if let Some(op) = checks
+            .operations
+            .iter_mut()
+            .find(|o| o.operation_id == operation.operation_id)
+        {
+            *op = operation.clone();
+        }
+        self.save_checks(project.id(), &checks)?;
+        drop(lock);
+        let began = std::time::Instant::now();
+        for r in env
+            .project_requirements
+            .iter()
+            .chain(env.folders.iter().flat_map(|f| &f.requirements))
+            .filter(|r| {
+                if operation.selected_items.is_empty() {
+                    r.required
+                } else {
+                    operation.selected_items.contains(&r.requirement_id)
+                }
+            })
+        {
+            let observation = if began.elapsed() > std::time::Duration::from_secs(60) {
+                MachineObservation {
+                    environment_id: env.lineage.environment_id.clone(),
+                    requirement_id: r.requirement_id.clone(),
+                    target: target.clone(),
+                    revision_digest: env.content_digest.clone(),
+                    status: EnvironmentObservationStatus::NeedsYourInput,
+                    checked_at_ms: Some(crate::session::unix_epoch_ms()),
+                    measured_facts: empty_environment_facts(),
+                    reason_code: "check_budget_exceeded".into(),
+                    safe_summary:
+                        "Check reached its bounded probe budget; select fewer items and check again"
+                            .into(),
+                    check_operation_id: Some(operation.operation_id.clone()),
+                    stale: true,
+                }
+            } else {
+                check_requirement(
+                    &ctx,
+                    &env,
+                    r,
+                    &target,
+                    &operation.operation_id,
+                    &mut checks.public_bindings,
+                )
+            };
+            let _lock = self.lock(&env.local_project_id)?;
+            let project = validate()?;
+            if self.snapshot_locked(&project)?.content_digest != env.content_digest {
+                return Err(environment_error(
+                    "Project changed during Check; check the current revision again",
+                ));
+            }
+            operation.per_item_results.push(EnvironmentItemResult {
+                requirement_id: r.requirement_id.clone(),
+                status: observation.status.clone(),
+                reason_code: observation.reason_code.clone(),
+                safe_summary: observation.safe_summary.clone(),
+                receipt_ids: vec![],
+            });
+            checks
+                .observations
+                .retain(|o| o.requirement_id != r.requirement_id || o.target != target);
+            checks.observations.push(observation);
+            operation.updated_at_ms = crate::session::unix_epoch_ms();
+            if let Some(op) = checks
+                .operations
+                .iter_mut()
+                .find(|o| o.operation_id == operation.operation_id)
+            {
+                *op = operation.clone();
+            }
+            checks.folder_binding_digest = folder_bindings_digest(&env);
+            self.save_checks(project.id(), &checks)?;
+        }
+        let _lock = self.lock(&env.local_project_id)?;
+        let project = validate()?;
+        if self.snapshot_locked(&project)?.content_digest != env.content_digest {
+            return Err(environment_error("Project changed during Check"));
+        }
+        // A dependent cannot become Ready while its prerequisite is missing, stale or excluded.
+        invalidate_check_dependencies(
+            &env,
+            &mut checks.observations,
+            &target,
+            &operation.operation_id,
+        );
+        for result in &mut operation.per_item_results {
+            if let Some(o) = checks.observations.iter().find(|o| {
+                o.requirement_id == result.requirement_id
+                    && o.check_operation_id.as_deref() == Some(&operation.operation_id)
+            }) {
+                result.status = o.status.clone();
+                result.reason_code = o.reason_code.clone();
+                result.safe_summary = o.safe_summary.clone();
+            }
+        }
+        operation.phase = EnvironmentOperationPhase::Ready;
+        operation.updated_at_ms = crate::session::unix_epoch_ms();
+        operation.recovery_state = EnvironmentRecoveryState::Settled;
+        if let Some(op) = checks
+            .operations
+            .iter_mut()
+            .find(|o| o.operation_id == operation.operation_id)
+        {
+            *op = operation;
+        }
+        checks
+            .public_bindings
+            .retain(|k, _| k.starts_with(&format!("{}:", env.content_digest)));
+        self.save_checks(project.id(), &checks)
+    }
+}
