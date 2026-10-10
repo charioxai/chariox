@@ -8,6 +8,19 @@ impl KernelRuntimeState {
         agent_id: &str,
         update: &owned::OwnedRemoteAgentProfileUpdate,
     ) -> Result<(), DaemonError> {
+        // The home reserves admission while the worker prepares its profile.
+        // Show that wait on every home attachment without running or predicting
+        // the worker's provider session command here.
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        self.owned.record_notice_for_agent(
+            agent.session_id(),
+            None,
+            Some(agent_id),
+            self.owned
+                .attachment_store
+                .list_session_attachment_ids(agent.session_id()),
+            "Preparing the worker's profile change…",
+        );
         let mut config = self.config_snapshot().await;
         if let (Some(url), Some(token)) = (update.relay_url.clone(), update.relay_token.clone()) {
             config.apply_remote_relay_override(url, token);

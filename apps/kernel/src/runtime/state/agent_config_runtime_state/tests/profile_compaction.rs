@@ -1161,3 +1161,6 @@ async fn profile_compaction_preserves_history_for_the_next_native_session_turn()
         .terminate_run_provider_only(&session, run.id())
         .unwrap();
 }
+
+#[path = "profile_compaction/remote_profile_notice.rs"]
+mod remote_profile_notice;
