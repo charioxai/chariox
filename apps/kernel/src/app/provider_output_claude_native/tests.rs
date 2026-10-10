@@ -3295,6 +3295,16 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
 // MP-08 / MP-10 / MP-11: user-selected workspace trust uses the official native selector.
 #[test]
 fn claude_selected_workspace_trust_is_automatic_only_at_startup() {
+    selected_workspace_trust_fixture(false);
+}
+
+#[test]
+fn claude_2_1_289_cursor_gaps_trust_only_selected_workspace_at_startup() {
+    // MP-08 / MP-10 / MP-11: actual Omarchy Claude 2.1.289 word-gap bytes.
+    selected_workspace_trust_fixture(true);
+}
+
+fn selected_workspace_trust_fixture(cursor_gaps: bool) {
     let worktree = crate::test_support::TestWorktree::new("claude-chosen-trust");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -3324,6 +3334,12 @@ fn claude_selected_workspace_trust_is_automatic_only_at_startup() {
     app.pty.spawn_for_run(&run).unwrap();
     let bridge = RecordingPermissionBridge::default();
     let rendered = format!("Accessing workspace:\n{}\nQuick safety check\nDo you trust this folder?\n❯ No, exit\nYes, I trust this folder", session.worktree_id());
+    let rendered = if cursor_gaps {
+        include_str!("testdata/claude-workspace-trust-2.1.289.pty")
+            .replace("<workspace>", session.worktree_id())
+    } else {
+        rendered
+    };
     let context = context.display().to_string();
     ProviderOutputClaudeNativeBridge::new(&mut app)
         .process_terminal_output(

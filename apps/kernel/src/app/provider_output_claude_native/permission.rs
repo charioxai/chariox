@@ -615,6 +615,15 @@ fn normalize_claude_rendered_permission_text(value: &str) -> String {
                 Some('[') => {
                     while let Some(next) = chars.next() {
                         if ('@'..='~').contains(&next) {
+                            // MP-08 / MP-10 / MP-11: Ink renders word gaps with
+                            // cursor positioning (e.g. Accessing ESC[12Gworkspace).
+                            // Preserve those separators without splitting text
+                            // across color/style or other non-movement escapes.
+                            if matches!(next, 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'f')
+                                && !output.ends_with(' ')
+                            {
+                                output.push(' ');
+                            }
                             break;
                         }
                     }
@@ -798,4 +807,20 @@ mod composer_initialization_tests {
         std::fs::remove_dir_all(root).unwrap();
         assert_eq!(evidence, vec![false, false, false, true, true, false]);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn workspace_trust_normalization_preserves_path_spaces_and_styles() {
+    // MP-08 / MP-10 / MP-11: never collapse differently named paths for trust.
+    assert_eq!(
+        normalize_claude_rendered_permission_text(
+            "Accessing\x1b[12Gworkspace: /chosen/folder\x1b[1m with spaces\x1b[22m"
+        ),
+        "Accessing workspace: /chosen/folder with spaces"
+    );
+    assert_eq!(
+        normalize_claude_rendered_permission_text("/chosen/co\x1b[1mlored\x1b[22m"),
+        "/chosen/colored"
+    );
 }
