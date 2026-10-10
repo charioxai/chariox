@@ -79,7 +79,7 @@ export function installMirror2(sanitizeMirrorCss) {
     // this world cannot read their content, so they are opaque regions.
     const closedHosts = new WeakSet();
     const urlKeys = new Map();
-    let newResources = [], pendingSheets = [], lastSheetCheck = 0, cssAttrs = null;
+    let newResources = [], pendingSheets = [], lastSheetCheck = 0, lastFormCheck = 0, cssAttrs = null;
     const referenced = text => { const out = []; for (const m of String(text).matchAll(/\[\s*(?:[\w-]*\|)?([a-zA-Z_:][-a-zA-Z0-9_:.]*)|attr\(\s*([a-zA-Z_:][-a-zA-Z0-9_:.]*)/g)) out.push((m[1] ?? m[2]).toLowerCase()); return out; };
     const keepAttr = (html, lower) => !html || !cssAttrs || RENDERED.has(lower) || lower.startsWith('aria-') || cssAttrs.has(lower);
     // New attribute names in CSS mean earlier records lack attributes: resnapshot.
@@ -138,8 +138,8 @@ export function installMirror2(sanitizeMirrorCss) {
         const listen = (type, fn) => root.addEventListener(type, fn, { capture: true, passive: true, signal: listening.signal });
         listen('scroll', event => { const target = event.target; dirty.scroll.add(target.nodeType === 9 ? target.documentElement : target); wake(); });
         // The composed target: a control inside an open shadow root, not its retargeted host.
-        const formEvent = event => { dirty.form.add(event.composedPath()[0] ?? event.target); wake(); };
-        listen('input', formEvent); listen('change', formEvent);
+        const formEvent = event => { const target = event.composedPath()[0] ?? event.target; dirty.form.add(target); if (target.type === 'radio' && target.name) for (const radio of target.getRootNode().querySelectorAll?.('input[type=radio]') ?? []) if (radio.name === target.name) dirty.form.add(radio); wake(); };
+        listen('input', formEvent); listen('change', formEvent); listen('reset', event => { for (const control of event.target.elements ?? []) dirty.form.add(control); wake(); });
         listen('focusin', wake); listen('selectionchange', wake);
         listen('load', event => { const target = event.target; if (target?.localName === 'iframe') dirty.frames.add(target); else if (target?.localName === 'img') dirty.attrs.set(target, new Set(['src'])); else if (target?.localName === 'link') dirty.sheets.add(target); else return; wake(); });
       }
@@ -149,10 +149,12 @@ export function installMirror2(sanitizeMirrorCss) {
     const forget = id => {
       const node = nodes.get(id);
       for (const child of kids.get(id) ?? []) forget(child);
-      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id);
+      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id);
       if (node) ids.delete(node);
     };
-    const remember = (record, node) => { nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
+    // Mirrored form controls: property writes (value, checked, selectedIndex) make no mutation record.
+    const formNodes = new Map();
+    const remember = (record, node) => { if (node.nodeType === 1 && ['input', 'textarea', 'select'].includes(node.localName)) formNodes.set(record.id, node); nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
     const opaqueRecord = (node, record, reason) => {
       const [, , width, height] = box(node);
       record.kind = 'tile'; record.reason = reason; record.size = [width, height];
@@ -301,7 +303,7 @@ export function installMirror2(sanitizeMirrorCss) {
       observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap();
       for (const key of Object.keys(dirty)) dirty[key].clear();
       for (const id of [...nodes.keys()]) { const node = nodes.get(id); if (node) ids.delete(node); }
-      nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear();
+      nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear();
       pendingSheets = []; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.entries()].map(([url, { key, kind }]) => ({ key, url, kind }));
       cssAttrs = null;
@@ -421,6 +423,8 @@ export function installMirror2(sanitizeMirrorCss) {
         childList(node, out, ops);
       }
       for (const node of dirty.masks) { const id = mirrored(node); if (id && node.isConnected) { const [, , width, height] = node.nodeType === 1 ? box(node) : textBox(node); ops.push({ op: 'size', id, size: [width, height] }); } }
+      // Bounded reconciliation: unchanged controls stay silent (formOp compares with the last sent state).
+      const formNow = performance.now(); if (formNow - lastFormCheck > 2000) { lastFormCheck = formNow; let n = 0; for (const node of formNodes.values()) { if (++n > 2000) break; dirty.form.add(node); } }
       for (const node of dirty.form) { const id = mirrored(node); if (id && kindOf.get(id) === 'element' && ['input', 'textarea', 'select'].includes(node.localName)) { if (secretElement(node)) { replaceNode(node); const parent = nodes.get(parentOf.get(id)); if (parent) childList(parent, out, ops); } else formOp(node, id, ops); } }
       // Live focus may change a value without input events (programmatic writes).
       let active = document.activeElement; while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;

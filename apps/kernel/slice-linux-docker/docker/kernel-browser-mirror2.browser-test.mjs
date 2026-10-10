@@ -298,3 +298,19 @@ test("MP-10: review #941-3 typing and checkbox changes inside an open shadow roo
   assert.equal(forms.get(field)?.value, "hi"); assert.equal(forms.get(box)?.checked, true);
 }));
 
+test("MP-10: review #941-4 property-only changes of unfocused controls reach the viewer (value, checked, radio group, select, form reset)", () => mirrored(
+  '<form id="f"><input id="q" value="a"><input id="c" type="checkbox"><input type="radio" name="t" id="r1" checked><input type="radio" name="t" id="r2"><select id="s"><option>x</option><option>y</option></select></form><button id="b">b</button>', async ({ next, evaluate }) => {
+    const snapshot = await next();
+    const id = name => elements(snapshot).find(([, , attrs]) => attrs.id === name)[0];
+    await evaluate("document.querySelector('#b').focus();q.value='updated';c.checked=true;r2.checked=true;s.selectedIndex=1;true");
+    const collect = async want => { const forms = new Map(); for (let i = 0; i < 6 && !want(forms); i++) for (const op of (await next(1000)).ops) if (op.op === "form") forms.set(op.id, { ...forms.get(op.id), ...op.form }); return forms; };
+    let forms = await collect(f => f.size >= 5);
+    assert.equal(forms.get(id("q"))?.value, "updated"); assert.equal(forms.get(id("c"))?.checked, true);
+    assert.equal(forms.get(id("r2"))?.checked, true); assert.equal(forms.get(id("r1"))?.checked, false, "MP-10: the unchecked radio of the group");
+    assert.equal(forms.get(id("s"))?.selected_index, 1);
+    await evaluate("f.reset();true");
+    forms = await collect(f => f.get(id("q"))?.value === "a" && f.get(id("s"))?.selected_index === 0);
+    assert.equal(forms.get(id("q"))?.value, "a"); assert.equal(forms.get(id("s"))?.selected_index, 0); assert.equal(forms.get(id("c"))?.checked, false);
+    // Unchanged controls stay silent.
+    for (let i = 0; i < 3; i++) assert.deepEqual((await next(1900)).ops.filter(op => op.op === "form"), []);
+  }));
