@@ -7,6 +7,7 @@ const FRAME_TIMEOUT_MS = 500;
 const retired = new WeakMap();
 // Fills between recording and completion: covered while plain, never retired.
 const filling = new WeakMap();
+const fillBindings = new WeakMap();
 const fillKey = target => JSON.stringify([target.target_id,target.document_id,target.node_ref]);
 export function pruneBrowserFillTargets(browser,connection) {
   const dead=retired.get(connection);
@@ -47,9 +48,22 @@ export async function recordBrowserFill(connection, options, value, revision) {
     value_hash:digest(options.action?.append ? previous.value+value : value),fill_revision:revision};
   retired.get(connection)?.delete(fillKey(target));
   if(!filling.has(connection))filling.set(connection,new Set());
+  fillBindings.set(target,{connection,sessionId,backendNodeId});
   filling.get(connection).add(fillKey(target));return target;
 }
-export function finishBrowserFill(connection,target) {filling.get(connection)?.delete(fillKey(target));}
+export async function finishBrowserFill(connection,target) {
+  const binding=fillBindings.get(target);
+  if(!binding||binding.connection!==connection)throw Error('MP-11: fill completion unavailable');
+  const state=await fieldState(connection,binding,{frameId:target.frame_id},binding.backendNodeId);
+  const frame=visit(await frameTree(connection,binding.sessionId),target.frame_id);
+  if(!state.exists||!state.editable||!frame||frame.loaderId!==target.frame_document_id)
+    throw Error('MP-11: fill completion unavailable');
+  // HTML input setters strip newlines; textarea setters normalize CRLF.
+  // Bind the actual result before releasing the in-flight capture protection.
+  target.value_hash=digest(state.value);
+  filling.get(connection)?.delete(fillKey(target));
+  fillBindings.delete(target);
+}
 async function fieldState(connection,entry,document,backendNodeId) {
   const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:document.frameId,worldName:'chariox-fill-target'},entry.sessionId);
   const {object}=await connection.send('DOM.resolveNode',{backendNodeId,executionContextId},entry.sessionId);
