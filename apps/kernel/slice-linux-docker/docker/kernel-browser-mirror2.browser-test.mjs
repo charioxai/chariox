@@ -508,3 +508,20 @@ test("MP-10: review #941-3 a disabled adopted stylesheet stays inactive in the v
     assert.deepEqual(await source(), ["rgb(255, 0, 0)", "rgb(255, 0, 0)"]);
     assert.deepEqual(await adoptedColors(evaluate, [...roots.values()]), await source(), "MP-10: disable and enable toggles reach the viewer");
   }));
+
+// Compact element rows -> { id, tag, attrs, ...extra } (snapshot nodes or a children op's nodes).
+const rows = nodes => { const out = []; let id = 0; for (const row of nodes) { id += row[0]; if (typeof row[2] === "string") out.push({ id: `n${id}`, tag: row[2], attrs: row[3] || {}, ...(row[4] || {}) }); } return out; };
+test("MP-10: review #941-2 every selected option of a multiple select reaches the viewer (snapshot, a secondary option changing, replaced options)", () => mirrored(
+  '<select id="m" multiple><option>a</option><option selected>b</option><option selected>c</option></select><select id="one"><option>x</option><option>y</option></select><button id="b">b</button>', async ({ next, evaluate }) => {
+    const all = rows((await next()).nodes), options = all.filter(r => r.tag === "option");
+    assert.deepEqual(options.map(r => r.form?.checked), [false, true, true, undefined, undefined], "MP-10: each option of the multiple select carries its selectedness (single selects need none)");
+    // A secondary option is deselected by script while the first selected one stays (value/selectedIndex unchanged).
+    await evaluate("document.querySelector('#b').focus();m.options[2].selected=false;true");
+    const forms = [];
+    for (let i = 0; i < 3 && !forms.length; i++) forms.push(...(await next(1500)).ops.filter(op => op.op === "form"));
+    assert.deepEqual(forms.map(op => [op.id, op.form.checked]), [[options[2].id, false]]);
+    await evaluate("m.innerHTML='<option>x</option><option selected>y</option><option selected>z</option>';true");
+    let children = null;
+    for (let i = 0; i < 3 && !children; i++) children = (await next(1500)).ops.find(op => op.op === "children");
+    assert.deepEqual(rows(children.nodes).map(r => r.form?.checked), [false, true, true], "MP-10: replaced options carry their selectedness");
+  }));

@@ -95,3 +95,21 @@ test('MP-10: review #320-2 a frame document replaced by one without adopted styl
     assert.deepEqual(await nested(), [0, 'rgb(0, 0, 0)'], 'MP-10: the new page is not styled by the old adopted sheets');
   } finally { await page.close(); }
 });
+
+test('MP-10: review #941-2 a multiple select shows every selected option (snapshot, a secondary option changing, replaced options)', async () => {
+  const page = await viewer();
+  try {
+    const form = (checked, extra = {}) => ({ value: '', checked, selected_index: -1, selection_start: null, selection_end: null, ...extra });
+    const option = (id, parent, text, checked) => [{ id, parent, kind: 'element', tag: 'option', form: form(checked, { value: text }) }, { id: `${id}0`, parent: id, kind: 'text', text }];
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'select', attrs: { multiple: '' }, form: form(false, { value: 'b', selected_index: 1 }) }, ...option('n5', 'n4', 'a', false), ...option('n6', 'n4', 'b', true), ...option('n7', 'n4', 'c', true)]));
+    const selected = () => page.evaluate(() => [...window.r.frame.contentDocument.querySelector('select').selectedOptions].map(o => o.textContent));
+    assert.deepEqual(await selected(), ['b', 'c'], 'MP-10: both selected options are shown');
+    await apply(page, delta(2, [{ op: 'form', id: 'n7', form: { checked: false } }, { op: 'form', id: 'n5', form: { checked: true } }]));
+    assert.deepEqual(await selected(), ['a', 'b'], 'MP-10: a secondary option changes while the first stays selected');
+    await apply(page, delta(3, [{ op: 'children', id: 'n4', children: ['n8', 'n9', 'n10'], nodes: [...option('n8', 'n4', 'x', false), ...option('n9', 'n4', 'y', true), ...option('n10', 'n4', 'z', true)] }]));
+    assert.deepEqual(await selected(), ['y', 'z'], 'MP-10: replaced options keep their selectedness');
+    await apply(page, delta(4, [{ op: 'form', id: 'n4', form: { value: 'y', selected_index: 1 } }]));
+    assert.deepEqual(await selected(), ['y', 'z'], 'MP-10: the select\'s own form state does not collapse the set');
+  } finally { await page.close(); }
+});

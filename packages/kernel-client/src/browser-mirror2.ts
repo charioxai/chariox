@@ -218,10 +218,17 @@ export class BrowserMirror2Renderer {
     const record = this.records.get(id); if (record) { if (key) record.res = key; else delete record.res }
   }
   private form(element: Element, form: Mirror2Form): void {
+    // An option of a multiple select carries its own selectedness (`checked`).
+    if (element.localName === 'option') { (element as HTMLOptionElement).selected = form.checked; return }
     const field = element as HTMLInputElement
     if (field.value !== form.value) field.value = form.value
     if ('checked' in field && field.type !== undefined) field.checked = form.checked
-    if (element.localName === 'select') (element as unknown as HTMLSelectElement).selectedIndex = form.selected_index
+    if (element.localName === 'select') {
+      const select = element as unknown as HTMLSelectElement
+      // A selectedIndex write would keep only the first of a multiple selection.
+      if (!select.multiple) select.selectedIndex = form.selected_index
+      else for (const option of Array.from(select.options)) { const state = this.records.get(this.ids.get(option) ?? '')?.form; if (state) option.selected = state.checked }
+    }
     if ((field.getRootNode() as Document | ShadowRoot).activeElement === field) this.caret(field, form)
   }
   private caret(field: HTMLInputElement, form: Mirror2Form): void {
