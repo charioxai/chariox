@@ -51,6 +51,64 @@ fn remote_extension_manifest_pending_revoke_preserves_retry_state_only_without_i
     ));
 }
 
+// MP-08 / MP-10 / MP-11: restarting must not turn a required approval into yolo.
+#[tokio::test]
+async fn agent_config_required_permission_survives_restart_and_inherit() {
+    let config = crate::config::DaemonConfig::for_tests();
+    let (app, runtime, session_id, agent_id) =
+        agent_config_runtime_with_config(config.clone()).await;
+    runtime
+        .update_agent_config(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            Some(Some(crate::provider::AgentExecutionMode::Plan)),
+            Some(Some(crate::provider::AgentPermissionLevel::Required)),
+            None,
+            None,
+        )
+        .await
+        .expect("mode and approval configuration should update");
+    drop(runtime);
+    drop(app);
+    let restored = DaemonApp::bootstrap(config.clone()).expect("kernel should restore");
+    let agent = restored
+        .agents()
+        .get_agent(&agent_id)
+        .expect("agent should restore");
+    assert_eq!(
+        agent.execution_mode_override(),
+        Some(crate::provider::AgentExecutionMode::Plan)
+    );
+    assert_eq!(
+        agent.permission_level_override(),
+        Some(crate::provider::AgentPermissionLevel::Required)
+    );
+    let app = Arc::new(Mutex::new(restored));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .update_agent_config(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            Some(None),
+            Some(None),
+            None,
+            None,
+        )
+        .await
+        .expect("returning to inherited configuration should update");
+    drop(runtime);
+    drop(app);
+    let restored = DaemonApp::bootstrap(config).expect("kernel should restore inherited values");
+    let agent = restored
+        .agents()
+        .get_agent(&agent_id)
+        .expect("agent should restore");
+    assert_eq!(agent.execution_mode_override(), None);
+    assert_eq!(agent.permission_level_override(), None);
+}
+
 #[tokio::test]
 async fn agent_config_update_ignores_legacy_processing_without_active_prompt() {
     let (app, runtime, session_id, agent_id) = agent_config_runtime().await;

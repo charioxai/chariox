@@ -256,8 +256,12 @@ impl ProviderResumeState {
         if same_provider && from_account_profile == to_account_profile {
             return self.clone();
         }
-        self.without_provider_session_id(from_provider)
-            .without_provider_session_id(to_provider)
+        self.without_provider_session_id(
+            super::canonical_provider_family(from_provider).unwrap_or(from_provider),
+        )
+        .without_provider_session_id(
+            super::canonical_provider_family(to_provider).unwrap_or(to_provider),
+        )
     }
 
     pub fn replacement_after_provider_resume_failure(
@@ -1049,6 +1053,41 @@ mod tests {
         assert_eq!(account_change.claude_session_id(), Some("claude-1"));
         assert_eq!(provider_change.codex_thread_id(), None);
         assert_eq!(provider_change.claude_session_id(), None);
+    }
+
+    // MP-08 / MP-10 / MP-11: provider mode names must not retain another account's conversation.
+    #[test]
+    fn provider_resume_state_clears_claude_modes_across_accounts() {
+        for from in ["claude", "claude-p", "claude-headless"] {
+            for to in ["claude", "claude-p", "claude-headless"] {
+                let mut state = ProviderResumeState::from_claude_session_id("previous-account");
+                state.set_codex_thread_id("unrelated-thread");
+                let changed = state.after_profile_change(from, "work", to, "personal");
+                assert_eq!(changed.claude_session_id(), None, "{from} -> {to}");
+                assert_eq!(changed.codex_thread_id(), Some("unrelated-thread"));
+            }
+        }
+    }
+
+    #[test]
+    fn provider_resume_state_clears_both_families_across_claude_modes() {
+        for mode in ["claude-p", "claude-headless"] {
+            let mut state = ProviderResumeState::from_claude_session_id("claude-account");
+            state.set_codex_thread_id("codex-account");
+            for (from, to) in [("codex", mode), (mode, "codex")] {
+                let changed = state.after_profile_change(from, "work", to, "personal");
+                assert!(changed.is_empty(), "{from} -> {to}");
+            }
+        }
+    }
+
+    #[test]
+    fn provider_resume_state_preserves_same_account_across_claude_modes() {
+        let state = ProviderResumeState::from_claude_session_id("same-account");
+        assert_eq!(
+            state.after_profile_change("claude-p", "work", "claude-headless", "work"),
+            state
+        );
     }
 
     #[test]
