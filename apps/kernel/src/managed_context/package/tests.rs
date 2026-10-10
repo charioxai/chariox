@@ -39,6 +39,7 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
     .expect("export development context");
     let binding = ManagedContextPackageBinding {
         plan: ManagedContextPlanBinding {
+            destination: None,
             context_id: "context-empty-apply".to_string(),
             plan_digest: format!("sha256:{}", "1".repeat(64)),
             kernel_context: ManagedContextKernelSelection::Empty,
@@ -859,6 +860,7 @@ impl PackageFixture {
             development_bytes,
             binding: ManagedContextPackageBinding {
                 plan: ManagedContextPlanBinding {
+                    destination: None,
                     context_id: "context-1".to_string(),
                     plan_digest: format!("sha256:{}", "1".repeat(64)),
                     kernel_context: ManagedContextKernelSelection::Empty,
@@ -942,7 +944,7 @@ impl PackageFixture {
                 },
                 extensions: Vec::new(),
                 dependencies: Vec::new(),
-                vault: crate::secret::TransferredVaultSnapshot {
+                vault: Some(crate::secret::TransferredVaultSnapshot {
                     schema_version: 1,
                     context_id: self.binding.plan.context_id.clone(),
                     source_kernel_id: self.binding.source_kernel_id.clone(),
@@ -957,7 +959,7 @@ impl PackageFixture {
                         nonce: "nonce".to_string(),
                         ciphertext: "ciphertext".to_string(),
                     },
-                },
+                }),
             },
             snapshot_sha256: "d".repeat(64),
         }

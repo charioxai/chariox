@@ -50,6 +50,8 @@ export async function sshTarget(t, { beforeCleanup = async () => {} } = {}) {
   const pub = (await readFile(join(scratch, "host-key.pub"), "utf8")).trim().split(" ").slice(0, 2).join(" ")
   await writeFile(join(scratch, "known_hosts"), `[127.0.0.1]:${port} ${pub}\n`, { mode: 0o600 })
   const targetPath = `${bin}:${saved.PATH}`
+  // This supplementary fixture models an already-persistent user manager.
+  await writeFile(join(bin, "loginctl"), '#!/bin/sh\n[ "$1" = show-user ] || exit 2\nprintf "yes\\n"\n', { mode: 0o700 })
   const forced = join(scratch, "forced.sh")
   await writeFile(forced, `#!/bin/sh\nexport HOME=${quote(home)}\nexport PATH=${quote(targetPath)}\nexec /bin/sh -c "$SSH_ORIGINAL_COMMAND"\n`, { mode: 0o700 })
   await writeFile(join(bin, "systemctl"), `#!/usr/bin/env node

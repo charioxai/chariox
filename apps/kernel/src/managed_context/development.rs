@@ -265,6 +265,32 @@ use import_archive::{extract_and_verify_archive, validate_git_oid};
 use import_materialize::{materialize_prepared_repository, prepare_repository};
 use overlay::{export_overlay, validate_relative_path};
 
+/// MP-08 / MP-11: credential admission inspects exactly the artifacts import
+/// accepts: complete multi-member decoding, strict tar and manifest binding.
+pub(crate) fn extract_verified_development_archive(
+    archive_path: &Path,
+    expected_project_id: &str,
+    expected_source_repositories: Option<&[DevelopmentSourceRepositoryBinding]>,
+    artifacts_root: &Path,
+) -> Result<DevelopmentContextManifest, DaemonError> {
+    let archive = File::open(archive_path)
+        .map_err(|error| context_io_error("open development context archive", error))?;
+    let size = archive
+        .metadata()
+        .map_err(|error| context_io_error("inspect development context archive", error))?
+        .len();
+    if size > MAX_PACKAGE_BYTES {
+        return Err(context_error("development context archive is too large"));
+    }
+    create_private_directory(artifacts_root)?;
+    extract_and_verify_archive(
+        archive,
+        expected_project_id,
+        expected_source_repositories,
+        artifacts_root,
+    )
+}
+
 fn create_private_directory(path: &Path) -> Result<(), DaemonError> {
     fs::create_dir_all(path)
         .map_err(|error| context_io_error("create private directory", error))?;

@@ -72,25 +72,41 @@ pub(crate) fn isolate_environment_test() -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        command.process_group(0);
+        // MP-11: retain an exclusive-session launch witness for safe timeout cleanup.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
     }
     let mut child = command
         .spawn()
         .expect("isolated environment test should start");
+    #[cfg(unix)]
+    let mut signals =
+        crate::runtime::owned_process_signals::OwnedProcessSignals::for_session_child(&child)
+            .expect("isolated test must retain its process identity");
     let status = child.wait_timeout(Duration::from_secs(180)).unwrap();
     if status.is_none() {
         #[cfg(unix)]
         {
-            let pid = i32::try_from(child.id()).expect("child PID fits the signal interface");
-            assert!(pid > 1, "refusing reserved child PID");
-            if let Some(group) = verified_isolated_group(pid) {
-                // The child created this group; every current member was
-                // verified as the child or one of its descendants.
-                unsafe { libc::kill(-group, libc::SIGKILL) };
+            if signals.kill_group().is_err() {
+                signals
+                    .kill_owned_processes()
+                    .expect("stop only witnessed test descendants");
+            }
+            signals.kill_child().expect("stop the witnessed test child");
+        }
+        #[cfg(not(unix))]
+        {
+            if child.id() > 1 {
+                let _ = child.kill();
             }
         }
-        assert!(child.id() > 1, "refusing reserved child PID");
-        let _ = child.kill();
         let _ = child.wait();
     }
     let stdout = std::fs::read_to_string(stdout).unwrap();

@@ -6,10 +6,10 @@ fn plain_workspace_launch_and_relay_shapes_are_versioned() {
         DevelopmentRepositoryRole, DevelopmentWorkspaceKind,
     };
     use crate::transport::relay_peer::RelayManagedContextImportedRepository;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 479);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 480);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        73
+        88
     );
     let local = crate::local::ManagedContextRepositoryLaunchTarget {
         workspace_kind: DevelopmentWorkspaceKind::Directory,
@@ -52,7 +52,7 @@ fn plain_workspace_launch_and_relay_shapes_are_versioned() {
 
 #[test]
 fn local_daemon_managed_context_outbound_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 479);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 480);
     let plan = crate::managed_bootstrap::ManagedKernelContextPlan::source_project_for_tests(
         "context-1",
         "realm-1",
@@ -86,7 +86,8 @@ fn local_daemon_managed_context_outbound_shape_is_versioned() {
     let snapshot = serde_json::json!([
         LocalDaemonRequest::StartManagedContextTransfer(
             crate::local::StartManagedContextTransferRequest {
-                ticket,
+                ticket: Some(ticket),
+                owner_managed: None,
                 interactive: false
             },
         ),
@@ -109,6 +110,7 @@ fn local_daemon_managed_context_outbound_shape_is_versioned() {
         },
         LocalDaemonResponse::ManagedContextLaunchTarget {
             target: crate::local::ManagedContextLaunchTarget {
+                destination: None,
                 environment_id: "environment-empty".to_string(),
                 kernel_id: "target-kernel".to_string(),
                 context_id: "context-empty".to_string(),
@@ -120,6 +122,7 @@ fn local_daemon_managed_context_outbound_shape_is_versioned() {
         },
         LocalDaemonResponse::ManagedContextLaunchTarget {
             target: crate::local::ManagedContextLaunchTarget {
+                destination: None,
                 environment_id: "environment-1".to_string(),
                 kernel_id: "target-kernel".to_string(),
                 context_id: "context-1".to_string(),
@@ -187,6 +190,7 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
     };
 
     let relay_receipt = RelayManagedContextImportReceipt {
+        destination: None,
         transfer_id: "transfer-1".to_string(),
         archive_sha256: "a".repeat(64),
         plan_digest: "sha256:plan".to_string(),
@@ -329,5 +333,25 @@ fn managed_context_launch_target_reads_schema_v4_variant_fields() {
         crate::local::ManagedContextDevelopmentLaunchTarget::Empty {
             workspace_path: String::new(),
         }
+    );
+}
+
+// MP-08/MP-11: owner admission and environment-free launch require protocol 480.
+#[test]
+fn mp08_mp11_owner_managed_context_shapes_are_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 480);
+    let value: serde_json::Value = serde_json::from_str(r#"{"StartManagedContextTransfer":{"interactive":true,"ownerManaged":{"target":{"relayRealmId":"realm","machineId":"machine","kernelId":"kernel","relayPublicKey":"public","keyThumbprint":"thumbprint"},"contextSelection":{"kernelContext":"source_kernel_without_credentials","developmentSetup":{"kind":"source_project","projectId":"project","repositories":[{"role":"primary","workspaceId":"workspace","worktreeId":null}]}}}}}"#).unwrap();
+    let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), value);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
+        "89c4e71d4b995bad514d5f0518c5f41a41abcfa427681fb9647a6037bc2c3df0"
+    );
+    let value: serde_json::Value = serde_json::from_str(r#"{"ManagedContextLaunchTarget":{"target":{"destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"kernelId":"kernel","contextId":"context","planDigest":"digest","development":{"kind":"empty","workspacePath":"/home/user/chariox-contexts/context/workspace"}}}}"#).unwrap();
+    let response: LocalDaemonResponse = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(response).unwrap(), value);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
+        "07030d79fe7fc60ef4e5145cb8d73e53146d34b82362bd725caad55ed327b489"
     );
 }

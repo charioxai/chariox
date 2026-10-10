@@ -1867,6 +1867,44 @@ mod tests {
         );
     }
 
+    // MP-08/MP-10: a completed Copy creates its Named Project before the first
+    // target session. Restart must not turn that successful copy into an orphan.
+    #[test]
+    fn durable_restore_preserves_copied_project_before_first_session() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let mut project = crate::session::RuntimeProject::new(
+            "copy-owner-context-before-first-session",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "/owned-target/chariox-contexts/copy/primary",
+            "Managed Project",
+            crate::session::RuntimeProjectKind::Named,
+        );
+        project.replace_workspace_ids(vec![
+            "/owned-target/chariox-contexts/copy/primary".to_string(),
+            "/owned-target/chariox-contexts/copy/supporting".to_string(),
+        ]);
+        {
+            let app = DaemonApp::bootstrap(config.clone()).expect("target should boot");
+            app.durable_state_store()
+                .append_event(
+                    "project.created",
+                    Some(project.id().to_string()),
+                    serde_json::json!({ "project": &project }),
+                )
+                .expect("completed Copy Project should persist");
+        }
+        for _ in 0..2 {
+            let app = DaemonApp::bootstrap(config.clone()).expect("target should restore");
+            assert_eq!(
+                app.sessions()
+                    .get_project(project.id())
+                    .expect("copied Project must survive before its first session"),
+                project
+            );
+            assert!(app.sessions().list_all_sessions().is_empty());
+        }
+    }
+
     #[test]
     fn durable_restore_removes_project_without_visible_sessions() {
         let config = crate::config::DaemonConfig::for_tests();

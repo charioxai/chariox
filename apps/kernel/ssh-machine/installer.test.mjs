@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import test from "node:test"
 import { createFixture } from "./fixture.mjs"
-import { runMachine, validateRequest } from "./remote.mjs"
+import { runMachine, validateRequest, ensureSystemdUserPersistence } from "./remote.mjs"
 import { sshArguments, validateDestination } from "./transport.mjs"
 
 const base = process.env.CHARIOX_BYOM_TEST_STATE ?? join(tmpdir(), "chariox-byom-tests")
@@ -18,10 +18,48 @@ async function harness(t, kernelBytes) {
   for (const [name, p] of [["release.tar.gz", f.archive], ["release-public-pin", f.releasePublicKey], ["builder-public-pin", f.builderPublicKey]]) await copyFile(p, join(stage, name))
   for (const [name, p] of [["extract-release.py", "../../../deploy/managed-kernel/extract-release.py"], ["verify-image-release.mjs", "../../../deploy/managed-kernel/verify-image-release.mjs"], ["path1-service-policy.mjs", "../../../deploy/managed-kernel/path1-service-policy.mjs"]]) await copyFile(new URL(p, import.meta.url), join(stage, name))
   const calls = [], request = { action: "install", installId: "byom-test", port: 55129, releaseDigest: f.releaseDigest }
-  const options = { home, stage, serviceManager: async args => { calls.push(args); return "LoadState=not-found\nFragmentPath=\nDropInPaths=\nActiveState=inactive\nUnitFileState=disabled\n" } }
+  const options = { home, stage, servicePersistence: async () => {}, serviceManager: async args => { calls.push(args); return "LoadState=not-found\nFragmentPath=\nDropInPaths=\nActiveState=inactive\nUnitFileState=disabled\n" } }
   const root = join(home, ".local/share/chariox/ssh-machines/byom-test")
   return { dir, home, stage, f, calls, request, options, root }
 }
+test("MP-07/MP-08/MP-11 start refuses a session-bound user manager before consuming enrollment", async t => {
+  const h = await harness(t)
+  const port = createServer()
+  await new Promise(resolve => port.listen(0, "127.0.0.1", resolve))
+  h.request.port = port.address().port
+  await new Promise(resolve => port.close(resolve))
+  await runMachine(h.request, h.options)
+  let enrolled = false
+  await assert.rejects(runMachine({ ...h.request, action: "start" }, {
+    ...h.options,
+    servicePersistence: async () => { throw new Error("Enable lingering for this user") },
+    enrollKernel: async () => { enrolled = true; return { userId: "owner", kernelId: "kernel", machineId: "machine", publicKeyThumbprint: "pin" } },
+    kernelCommand: async () => ({ connected: true, userId: "owner", kernelId: "kernel", machineId: "machine", publicKeyThumbprint: "pin" }),
+  }), /Enable lingering/)
+  assert.equal(enrolled, false, "a persistence prerequisite must not consume the one-use code")
+  assert.ok(!h.calls.some(args => ["start", "enable"].includes(args[0])))
+})
+test("MP-07/MP-11 user persistence uses logind's owner operation and verifies its result", async () => {
+  for (const initial of [true, false]) {
+    let enabled = initial
+    const calls = []
+    await ensureSystemdUserPersistence(async (program, args) => {
+      calls.push([program, args])
+      if (args[0] === "show-user") return enabled ? "yes\n" : "no\n"
+      enabled = true
+    }, 1001)
+    assert.equal(calls.length, initial ? 1 : 3)
+    assert.ok(calls.every(([program]) => program === "loginctl"))
+    if (!initial) assert.deepEqual(calls[1], ["loginctl", ["enable-linger", "1001"]])
+  }
+  for (const mode of ["denied", "unchanged", "unknown"]) {
+    await assert.rejects(ensureSystemdUserPersistence(async (_program, args) => {
+      if (args[0] === "enable-linger" && mode === "denied") throw Error("private host diagnostic")
+      return mode === "unknown" ? "unknown" : "no"
+    }, 1001), /sudo loginctl enable-linger 1001, then retry Setup\. No enrollment code was consumed/)
+  }
+  await assert.rejects(ensureSystemdUserPersistence(undefined, -1), /cannot identify/)
+})
 test("MP-11 SSH destination never becomes an option or shell command; normal config/agent retained", () => {
   for (const bad of ["-oProxyCommand=evil", "host;id", "host x", "a\n", "x$(id)", "../foo", ""]) assert.throws(() => validateDestination(bad))
   for (const good of ["linux-lan", "alice@host.example", "10.0.0.3", "alice@[::1]"]) assert.equal(validateDestination(good), good)

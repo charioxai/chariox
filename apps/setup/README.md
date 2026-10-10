@@ -5,6 +5,10 @@ never a user enrollment code or credential. Linux x86_64 and macOS arm64 share
 PR1's marked per-user installer, signed immutable release trees, isolated service
 and state roots. Linux uses systemd --user; macOS uses launchd in the user's GUI
 domain. Setup requires Python 3 for the existing bounded archive extractor.
+For MP-07 / MP-08, Linux Setup checks logind lingering before enrollment/start,
+repair or upgrade so the user service survives SSH logout. It enables lingering
+for the current user when host policy permits. Otherwise it stops with the exact
+administrator command before consuming an enrollment code; it never invokes sudo.
 The Linux executable carries its JavaScript runtime (no Node/Bun install); its
 libc floor is the build target's. CI also packages an unsigned amd64 `.deb`
 for Linux (libc 2.35+); it contains only the generic executable and metadata,

@@ -1,3 +1,15 @@
+#[path = "outbound_completion.rs"]
+mod completion;
+#[path = "outbound_operation_store.rs"]
+mod operation_store;
+#[cfg(test)]
+#[path = "outbound_owner_expiry_tests.rs"]
+mod owner_expiry_tests;
+use completion::{
+    cleanup_durable_completion, complete_outbound_operation, load_transfer_checkpoint,
+    persist_transfer_checkpoint,
+};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::fs::OpenOptions;
@@ -15,7 +27,7 @@ use crate::managed_context::development::{
 };
 use crate::managed_context::kernel::{export_kernel_context, KernelContextExportRequest};
 use crate::managed_context::outbound::{
-    random_managed_context_capability, transfer_managed_context_package,
+    random_managed_context_capability, transfer_managed_context_package_with_resume,
     ManagedContextOutboundTransferRequest, RelayManagedContextPeerTransport,
 };
 use crate::managed_context::package::{
@@ -60,6 +72,7 @@ pub struct ManagedContextTransferTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedContextTransferTicket {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub environment_id: String,
     pub context_plan: ManagedKernelContextPlan,
     pub target: ManagedContextTransferTarget,
@@ -71,6 +84,8 @@ pub struct ManagedContextTransferTicket {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedContextOutboundImportReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
     pub transfer_id: String,
     pub archive_sha256: String,
     pub plan_digest: String,
@@ -133,6 +148,7 @@ pub enum ManagedContextOutboundKernelContextImportReceipt {
 impl From<RelayManagedContextImportReceipt> for ManagedContextOutboundImportReceipt {
     fn from(receipt: RelayManagedContextImportReceipt) -> Self {
         Self {
+            destination: receipt.destination.clone(),
             transfer_id: receipt.transfer_id,
             archive_sha256: receipt.archive_sha256,
             plan_digest: receipt.plan_digest,
@@ -279,15 +295,8 @@ impl ManagedContextOutboundOperationStore {
             crate::session::unix_epoch_ms(),
         )?;
         drop(guard);
+        store.reclaim_operation_metadata_at_startup()?;
         Ok(store)
-    }
-
-    pub(crate) fn get(&self, context_id: &str) -> Option<ManagedContextOutboundOperationStatus> {
-        self.state
-            .lock()
-            .expect("managed-context outbound operation lock")
-            .get(context_id)
-            .cloned()
     }
 
     pub(crate) fn remember_prepared_git_enrollment_ticket(
@@ -377,10 +386,28 @@ impl ManagedContextOutboundOperationStore {
         ),
         DaemonError,
     > {
+        self.reclaim_operation_metadata(Some(context_id))?;
+        // Serialize recovery/admission with retirement and owner rebinding.
+        let _guard = self.artifact_lock.lock().expect("operation admission lock");
+        let recovered = self.get(context_id);
         let mut state = self
             .state
             .lock()
             .expect("managed-context outbound operation lock");
+        if let Some(mut recovered) = recovered {
+            if !state.contains_key(context_id) {
+                if matches!(
+                    recovered.phase,
+                    ManagedContextOutboundOperationPhase::Preparing
+                        | ManagedContextOutboundOperationPhase::Uploading
+                        | ManagedContextOutboundOperationPhase::Importing
+                ) {
+                    recovered.phase = ManagedContextOutboundOperationPhase::Failed;
+                    recovered.retryable = true;
+                }
+                state.insert(context_id.to_string(), recovered);
+            }
+        }
         if let Some(existing) = state.get(context_id) {
             if existing.plan_digest != plan_digest {
                 return Err(outbound_service_error(
@@ -401,16 +428,18 @@ impl ManagedContextOutboundOperationStore {
                 return Ok((existing.clone(), None));
             }
         }
-        let permit = self
-            .transfer_slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| {
-                outbound_service_error(
+        let permit = match self.transfer_slots.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                drop(state);
+                drop(_guard);
+                self.reclaim_rejected_preparation(context_id)?;
+                return Err(outbound_service_error(
                     "managed-context transfer concurrency limit is reached",
                     true,
-                )
-            })?;
+                ));
+            }
+        };
         while state.len() >= MAX_OUTBOUND_OPERATIONS {
             let Some(oldest_terminal_id) = state
                 .values()
@@ -441,6 +470,9 @@ impl ManagedContextOutboundOperationStore {
             retryable: false,
             updated_at_ms: crate::session::unix_epoch_ms(),
         };
+        // MP-08/MP-11: a failed durable start must leave no phantom Preparing
+        // operation and must preserve an existing retryable failure.
+        self.persist_status(&status)?;
         state.insert(context_id.to_string(), status.clone());
         self.active
             .lock()
@@ -453,7 +485,7 @@ impl ManagedContextOutboundOperationStore {
         &self,
         context_id: &str,
         update: impl FnOnce(&mut ManagedContextOutboundOperationStatus),
-    ) {
+    ) -> bool {
         let mut state = self
             .state
             .lock()
@@ -461,7 +493,16 @@ impl ManagedContextOutboundOperationStore {
         if let Some(status) = state.get_mut(context_id) {
             update(status);
             status.updated_at_ms = crate::session::unix_epoch_ms();
+            if self.persist_status(status).is_err() {
+                status.phase = ManagedContextOutboundOperationPhase::Failed;
+                status.failure_code = Some("managed_context_status_persistence_failed".to_string());
+                status.failure_message = Some("Transfer status could not be persisted".to_string());
+                status.retryable = true;
+                return false;
+            }
+            return true;
         }
+        false
     }
 
     fn finish(&self, context_id: &str) {
@@ -564,6 +605,44 @@ pub(crate) fn start_managed_context_outbound_operation(
                 }
             },
         };
+        // MP-08/MP-11: owner confirmation gates every selection, including
+        // kernel-only copies, before either development preparation or packaging.
+        let owner_copy = authoritative_ticket
+            .context_plan
+            .package_binding()
+            .destination
+            .is_some();
+        if owner_copy {
+            let review = match (runtime.as_ref(), interactive) {
+                (Some(runtime), true) => {
+                    runtime
+                        .review_credential_free_owner_context(
+                            &authoritative_ticket
+                                .context_plan
+                                .package_binding()
+                                .development,
+                            &context_id,
+                            &authoritative_ticket.target.machine_id,
+                        )
+                        .await
+                }
+                _ => Err(crate::managed_context::owner_managed::admission_error(
+                    "Owner-managed context copy requires native source confirmation",
+                )),
+            };
+            if let Err(error) = review {
+                let retirement_error = retire_matching_artifact_after_terminal_preflight(
+                    &config,
+                    &store,
+                    &authoritative_ticket,
+                )
+                .err();
+                store.update(&context_id, |status| {
+                    fail_terminal_preflight_status(status, &error, retirement_error.as_ref())
+                });
+                return;
+            }
+        }
         let environment = match (
             &authoritative_ticket
                 .context_plan
@@ -577,28 +656,27 @@ pub(crate) fn start_managed_context_outbound_operation(
                     repositories,
                 },
                 Some(runtime),
-            ) => {
-                let selections = repositories
+            ) if !owner_copy => {
+                let result = match repositories
                     .iter()
                     .map(resolve_repository_selection)
-                    .collect::<Result<Vec<_>, _>>();
-                let result = match selections {
-                    Ok(selections) => {
-                        runtime
-                            .prepare_project_environment_layer(
-                                project_id,
-                                &selections,
-                                &context_id,
-                                &authoritative_ticket.target.kernel_id,
-                                &authoritative_ticket.target.relay_public_key,
-                                interactive,
-                            )
-                            .await
-                    }
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(selections) => runtime
+                        .prepare_project_environment_layer(
+                            project_id,
+                            &selections,
+                            &context_id,
+                            &authoritative_ticket.target.kernel_id,
+                            &authoritative_ticket.target.relay_public_key,
+                            interactive,
+                        )
+                        .await
+                        .map(Some),
                     Err(error) => Err(error),
                 };
                 match result {
-                    Ok(layer) => Some(layer),
+                    Ok(layer) => layer,
                     Err(error) => {
                         store.update(&context_id, |status| fail_status(status, &error));
                         return;
@@ -644,7 +722,14 @@ pub(crate) fn start_managed_context_outbound_operation(
             authoritative_ticket.target.kernel_id.clone(),
             authoritative_ticket.target.relay_public_key.clone(),
         );
-        let transfer = transfer_managed_context_package(
+        let resume = match load_transfer_checkpoint(&prepared.artifact_root) {
+            Ok(resume) => resume,
+            Err(error) => {
+                task_store.update(&task_context_id, |status| fail_status(status, &error));
+                return;
+            }
+        };
+        let transfer = transfer_managed_context_package_with_resume(
             &transport,
             ManagedContextOutboundTransferRequest {
                 plan,
@@ -654,6 +739,8 @@ pub(crate) fn start_managed_context_outbound_operation(
                 package: prepared.package,
                 capability: prepared.capability,
             },
+            resume,
+            |checkpoint| persist_transfer_checkpoint(&prepared.artifact_root, checkpoint),
             |target_status| {
                 task_store.update(&task_context_id, |status| {
                     status.accepted_bytes = target_status.accepted_bytes;
@@ -670,21 +757,12 @@ pub(crate) fn start_managed_context_outbound_operation(
         )
         .await;
         match transfer {
-            Ok(result) => match remove_artifact_root(&prepared.artifact_root) {
-                Ok(()) => task_store.update(&task_context_id, |status| {
-                    status.phase = ManagedContextOutboundOperationPhase::Completed;
-                    status.accepted_bytes = result.package_size_bytes;
-                    status.package_size_bytes = result.package_size_bytes;
-                    status.receipt = Some(result.receipt.into());
-                    status.failure_code = None;
-                    status.failure_message = None;
-                    status.retryable = false;
-                }),
-                Err(error) => task_store.update(&task_context_id, |status| {
-                    status.receipt = Some(result.receipt.into());
-                    fail_status(status, &error);
-                }),
-            },
+            Ok(result) => complete_outbound_operation(
+                &task_store,
+                &task_context_id,
+                &prepared.artifact_root,
+                result,
+            ),
             Err(error) => {
                 if error_is_retryable(&error) {
                     task_store.update(&task_context_id, |status| fail_status(status, &error));
@@ -702,8 +780,18 @@ pub(crate) fn start_managed_context_outbound_operation(
 
 async fn fetch_authoritative_ticket(
     config: &DaemonConfig,
+    store: &ManagedContextOutboundOperationStore,
     requested: &ManagedContextTransferTicket,
 ) -> Result<ManagedContextTransferTicket, DaemonError> {
+    if requested
+        .context_plan
+        .package_binding()
+        .destination
+        .is_some()
+    {
+        return crate::managed_context::owner_authority::authorize_export(config, requested, store)
+            .await;
+    }
     let cloud = config.cloud_relay.as_ref().ok_or_else(|| {
         outbound_service_error("source kernel is not connected to Chariox Cloud", true)
     })?;
@@ -738,10 +826,19 @@ async fn fetch_authoritative_ticket(
     .await
     .map_err(|error| {
         let retryable = cloud_error_is_retryable(&error);
-        outbound_service_error(
-            format!("Cloud could not authorize the managed-context transfer ticket: {error}"),
-            retryable,
-        )
+        if requested
+            .context_plan
+            .package_binding()
+            .destination
+            .is_some()
+        {
+            crate::managed_context::owner_managed::cloud_admission_error(error)
+        } else {
+            outbound_service_error(
+                format!("Cloud could not authorize the managed-context transfer ticket: {error}"),
+                retryable,
+            )
+        }
     })
 }
 
@@ -753,7 +850,7 @@ async fn authoritative_ticket_for_outbound_operation(
     if requested.context_plan.is_git_credential_enrollment() {
         return store.prepared_git_enrollment_ticket(requested);
     }
-    fetch_authoritative_ticket(config, requested).await
+    fetch_authoritative_ticket(config, store, requested).await
 }
 
 fn retire_matching_artifact_after_terminal_preflight(
@@ -884,7 +981,11 @@ fn prepare_managed_context_package_with_environment(
                     repositories: selections,
                     archive_path: artifact_root.join("development.tar.gz"),
                 },
-                environment,
+                if plan.destination.is_some() {
+                    None
+                } else {
+                    environment
+                },
             )?;
             ManagedContextPackageDevelopment::FromSource {
                 archive_path: exported.archive_path,
@@ -951,6 +1052,20 @@ fn prepare_managed_context_package_with_environment(
     let source_key_thumbprint = public_key_thumbprint(&config.relay_public_key);
     let kernel_context = match plan.kernel_context {
         ManagedContextKernelSelection::Empty => ManagedContextPackageKernel::Empty,
+        ManagedContextKernelSelection::SourceKernelWithoutCredentials => {
+            ManagedContextPackageKernel::FromKernel(Box::new(
+                crate::managed_context::kernel::export_kernel_context_without_credentials(
+                    KernelContextExportRequest {
+                        context_id: plan.context_id.clone(),
+                        source_kernel_id: config.daemon_id.clone(),
+                        source_key_thumbprint: source_key_thumbprint.clone(),
+                        target_kernel_id: ticket.target.kernel_id.clone(),
+                        target_key_thumbprint: ticket.target.key_thumbprint.clone(),
+                        vault: None,
+                    },
+                )?,
+            ))
+        }
         ManagedContextKernelSelection::SourceKernel => {
             let vault = export_transferred_vault_snapshot(
                 &config.user_config.credential_vault.path,
@@ -967,11 +1082,27 @@ fn prepare_managed_context_package_with_environment(
                     source_key_thumbprint: source_key_thumbprint.clone(),
                     target_kernel_id: ticket.target.kernel_id.clone(),
                     target_key_thumbprint: ticket.target.key_thumbprint.clone(),
-                    vault,
+                    vault: Some(vault),
                 },
             )?))
         }
     };
+    if plan.destination.is_some() {
+        if let (
+            ManagedContextPackageDevelopment::FromSource { archive_path, .. },
+            ManagedContextDevelopmentSelection::SourceProject {
+                project_id,
+                repositories,
+            },
+        ) = (&development, &plan.development)
+        {
+            crate::managed_context::credential_free::validate_development_archive(
+                archive_path,
+                project_id,
+                Some(repositories),
+            )?;
+        }
+    }
     let development_archive_path = match &development {
         ManagedContextPackageDevelopment::Empty => None,
         ManagedContextPackageDevelopment::FromSource { archive_path, .. } => {
@@ -998,6 +1129,7 @@ fn prepare_managed_context_package_with_environment(
     }
     let capability = random_managed_context_capability();
     let persisted = PersistedOutboundArtifact {
+        destination: ticket.context_plan.package_binding().destination.clone(),
         schema_version: OUTBOUND_ARTIFACT_SCHEMA_VERSION,
         created_at_ms: crate::session::unix_epoch_ms(),
         environment_id: ticket.environment_id.clone(),
@@ -1070,6 +1202,8 @@ struct PersistedOutboundArtifact {
     schema_version: u32,
     created_at_ms: u64,
     environment_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
     plan_digest: String,
     target_kernel_id: String,
     target_key_thumbprint: String,
@@ -1092,6 +1226,7 @@ fn persisted_artifact_matches_ticket(
     plan: &crate::managed_context::package::ManagedContextPlanBinding,
 ) -> bool {
     persisted.schema_version == OUTBOUND_ARTIFACT_SCHEMA_VERSION
+        && persisted.destination == plan.destination
         && persisted.environment_id == ticket.environment_id
         && persisted.plan_digest == plan.plan_digest
         && persisted.target_kernel_id == ticket.target.kernel_id
@@ -1112,10 +1247,10 @@ fn reconcile_outbound_artifacts(
     create_private_directory(artifact_parent)?;
     let entries = fs::read_dir(artifact_parent)
         .map_err(|error| outbound_service_io_error("list outbound artifacts", error))?
-        .take(MAX_OUTBOUND_ARTIFACT_SCAN_ENTRIES + 1)
+        .take(MAX_OUTBOUND_ARTIFACT_SCAN_ENTRIES + 2)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| outbound_service_io_error("list outbound artifacts", error))?;
-    if entries.len() > MAX_OUTBOUND_ARTIFACT_SCAN_ENTRIES {
+    if entries.len() > MAX_OUTBOUND_ARTIFACT_SCAN_ENTRIES + 1 {
         return Err(outbound_service_error(
             "managed-context outbound artifact inventory exceeds its scan limit",
             false,
@@ -1133,6 +1268,10 @@ fn reconcile_outbound_artifacts(
                 false,
             )
         })?;
+        if name == ".operations" {
+            validate_artifact_root(&entry.path())?;
+            continue;
+        }
         if !valid_artifact_name(&name) {
             return Err(outbound_service_error(
                 "managed-context outbound artifact name is invalid",
@@ -1169,6 +1308,9 @@ fn reconcile_outbound_artifacts(
             || persisted.package_size_bytes > MAX_MANAGED_CONTEXT_PACKAGE_BYTES
         {
             remove_artifact_root(&root)?;
+            continue;
+        }
+        if cleanup_durable_completion(artifact_parent, &name, &persisted)? {
             continue;
         }
         let retired_marker = root.join("retired");
@@ -1236,14 +1378,14 @@ fn valid_artifact_name(value: &str) -> bool {
 fn validate_settled_artifact_entries(root: &Path) -> Result<(), DaemonError> {
     let entries = fs::read_dir(root)
         .map_err(|error| outbound_service_io_error("list retained outbound artifact", error))?
-        .take(4)
+        .take(5)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| outbound_service_io_error("list retained outbound artifact", error))?;
-    if entries.len() > 3
+    if entries.len() > 4
         || entries.iter().any(|entry| {
             !matches!(
                 entry.file_name().to_str(),
-                Some("state.json" | "managed-context.pkg" | "retired")
+                Some("state.json" | "managed-context.pkg" | "retired" | "transfer.json")
             )
         })
     {
@@ -1354,6 +1496,7 @@ fn retire_artifact_root(root: &Path) -> Result<(), DaemonError> {
     for path in [
         root.join("managed-context.pkg"),
         root.join("development.tar.gz"),
+        root.join("transfer.json"),
     ] {
         match fs::remove_file(path) {
             Ok(()) => {}
@@ -1471,8 +1614,23 @@ pub(crate) fn validate_ticket(
             false,
         ));
     }
-    if ticket.environment_id.trim().is_empty()
-        || ticket.target.machine_id.trim().is_empty()
+    let binding = ticket.context_plan.package_binding();
+    crate::managed_context::owner_managed::validate_destination_binding(
+        &ticket.environment_id,
+        binding.destination.as_ref(),
+        &ticket.target.kernel_id,
+    )?;
+    if binding
+        .destination
+        .as_ref()
+        .is_some_and(|destination| destination.machine_id() != ticket.target.machine_id)
+    {
+        return Err(outbound_service_error(
+            "owner context machine pin does not match destination",
+            false,
+        ));
+    }
+    if ticket.target.machine_id.trim().is_empty()
         || ticket.target.kernel_id.trim().is_empty()
         || public_key_thumbprint(&ticket.target.relay_public_key) != ticket.target.key_thumbprint
     {
@@ -1762,8 +1920,275 @@ mod tests {
     use crate::config::PersistedCloudRelayProfile;
     use crate::transport::relay_crypto;
 
+    #[test]
+    fn mp08_mp11_source_refuses_compound_shell_assignments_in_overlay() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        assert_source_refuses_inline_shell(
+            "FOO=bar API_KEY=synthetic-canary curl https://example.test\n",
+            false,
+        );
+    }
+
+    #[test]
+    fn mp08_mp11_source_refuses_basic_auth_in_overlay() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        assert_source_refuses_inline_shell(
+            "curl --user owner:synthetic-canary https://example.test\n",
+            false,
+        );
+    }
+
+    #[test]
+    fn mp08_mp11_source_refuses_compound_shell_assignments_in_history() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        assert_source_refuses_inline_shell(
+            "FOO=bar API_KEY=synthetic-canary curl https://example.test\n",
+            true,
+        );
+    }
+
+    #[test]
+    fn mp08_mp11_source_refuses_basic_auth_in_history() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        assert_source_refuses_inline_shell(
+            "curl --user owner:synthetic-canary https://example.test\n",
+            true,
+        );
+    }
+
+    fn assert_source_refuses_inline_shell(text: &str, history: bool) {
+        assert_source_shell_result(text, history, false);
+    }
+
+    #[test]
+    fn mp08_mp11_source_accepts_ordinary_short_flags_in_overlay_and_history() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        for history in [false, true] {
+            assert_source_shell_result(
+                "set -euo pipefail\npython -u worker.py\ngit add -u\n",
+                history,
+                true,
+            );
+        }
+    }
+
+    fn assert_source_shell_result(text: &str, history: bool, accepted: bool) {
+        let fixture =
+            crate::managed_context::credential_free::tests::InlineShellFixture::new(text, history);
+        assert_source_fixture_result(fixture, accepted);
+    }
+
+    fn assert_source_fixture_result(
+        fixture: crate::managed_context::credential_free::tests::InlineShellFixture,
+        accepted: bool,
+    ) {
+        use crate::managed_context::owner_managed::*;
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            realm_id: "realm".into(),
+            machine_id: Some(config.host_machine_id.clone()),
+            ..Default::default()
+        });
+        let selection = OwnerManagedTransfer {
+            target: ManagedContextTransferTarget {
+                relay_realm_id: "realm".into(),
+                machine_id: "target-machine".into(),
+                kernel_id: "target-kernel".into(),
+                relay_public_key: config.relay_public_key.clone(),
+                key_thumbprint: public_key_thumbprint(&config.relay_public_key),
+            },
+            context_selection: OwnerManagedContextSelection {
+                kernel_context: OwnerManagedKernelSelection::Empty,
+                development_setup: OwnerManagedDevelopmentSelection::SourceProject {
+                    project_id: "project".into(),
+                    repositories: vec![OwnerManagedRepositorySelection {
+                        role: super::super::development::DevelopmentRepositoryRole::Primary,
+                        workspace_id: fixture.project.display().to_string(),
+                        worktree_id: None,
+                    }],
+                },
+            },
+        };
+        let ticket = ManagedContextTransferTicket {
+            environment_id: String::new(),
+            context_plan: ManagedKernelContextPlan::for_owner_managed(&config, &selection).unwrap(),
+            target: selection.target,
+        };
+        let store =
+            ManagedContextOutboundOperationStore::open(fixture.root.join("outbound")).unwrap();
+        let profiles = crate::account_profile::ProviderAccountProfileRegistry::open(
+            fixture.root.join("profiles.json"),
+        )
+        .unwrap();
+        let result = prepare_managed_context_package(&config, &store, &profiles, &ticket);
+        if accepted {
+            assert!(
+                result.is_ok(),
+                "MP-08 ordinary source shell refused: {:?}",
+                result.as_ref().err()
+            );
+            return;
+        }
+        assert!(
+            matches!(result, Err(ref error) if error.to_string().contains("credential-free context")),
+            "MP-11 source must reject inline shell credentials"
+        );
+        assert!(
+            !fixture
+                .root
+                .join("outbound")
+                .join(ticket.context_plan.context_id())
+                .exists(),
+            "MP-11 rejected package is cleaned up"
+        );
+    }
+
+    #[test]
+    fn mp08_mp11_source_refuses_utf16_in_overlay_and_history() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        use crate::managed_context::credential_free::tests::{utf16, InlineShellFixture};
+        for history in [false, true] {
+            for little_endian in [true, false] {
+                assert_source_fixture_result(
+                    InlineShellFixture::file(
+                        "bootstrap.ps1",
+                        &utf16("$env:API_KEY = 'synthetic-canary'\n", little_endian),
+                        history,
+                    ),
+                    false,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mp08_mp11_source_accepts_package_metadata_in_overlay_and_history() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        use crate::managed_context::credential_free::tests::{
+            InlineShellFixture, PACKAGE_METADATA,
+        };
+        for history in [false, true] {
+            for (path, bytes) in PACKAGE_METADATA {
+                assert_source_fixture_result(InlineShellFixture::file(path, bytes, history), true);
+            }
+        }
+    }
+
+    #[test]
+    fn mp08_mp11_operation_recovers_after_initial_status_write_failure() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-status-write-{:032x}",
+            rand::random::<u128>()
+        ));
+        let store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+        let _cleanup = ArtifactRootCleanup::new(root.clone());
+        let blocked = root.join(".operations");
+        fs::write(&blocked, b"synthetic storage failure").unwrap();
+        assert!(store.start("context", "sha256:one").is_err());
+        assert!(
+            store.get("context").is_none(),
+            "MP-08 failed durable start must not leave Preparing in memory"
+        );
+        assert!(store.active_context_ids().is_empty());
+        assert_eq!(
+            store.transfer_slots.available_permits(),
+            MAX_CONCURRENT_OUTBOUND_TRANSFERS
+        );
+        fs::remove_file(&blocked).unwrap();
+        let (status, permit) = store.start("context", "sha256:one").unwrap();
+        assert!(
+            permit.is_some(),
+            "MP-08 recovery must acquire an execution permit"
+        );
+        assert_eq!(
+            status.phase,
+            ManagedContextOutboundOperationPhase::Preparing
+        );
+        assert!(store.active_context_ids().contains("context"));
+        let reopened = ManagedContextOutboundOperationStore::open(root).unwrap();
+        assert_eq!(reopened.get("context"), Some(status));
+        drop(permit);
+        store.finish("context");
+    }
+
+    #[test]
+    fn mp08_mp11_final_status_failure_retains_restart_artifact() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-final-status-{:032x}",
+            rand::random::<u128>()
+        ));
+        let _cleanup = ArtifactRootCleanup::new(root.clone());
+        let store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+        let ticket = persisted_test_ticket("context-final");
+        let plan = ticket.context_plan.package_binding();
+        let (_, permit) = store.start(&plan.context_id, &plan.plan_digest).unwrap();
+        let artifact = root.join(&plan.context_id);
+        write_persisted_test_artifact(
+            &artifact,
+            &ticket,
+            crate::session::unix_epoch_ms(),
+            Some(b"package"),
+        );
+        let status_path = root
+            .join(".operations")
+            .join(format!("{}.json", plan.context_id));
+        fs::remove_file(&status_path).unwrap();
+        fs::create_dir(&status_path).unwrap();
+        complete_outbound_operation(
+            &store,
+            &plan.context_id,
+            &artifact,
+            super::super::outbound::ManagedContextOutboundTransferResult {
+                transfer_id: "transfer".into(),
+                package_sha256: "c".repeat(64),
+                package_size_bytes: 7,
+                receipt: RelayManagedContextImportReceipt {
+                    destination: None,
+                    transfer_id: "transfer".into(),
+                    archive_sha256: "c".repeat(64),
+                    plan_digest: plan.plan_digest.clone(),
+                    development: RelayManagedDevelopmentContextImportReceipt::Empty,
+                    kernel_context: RelayManagedKernelContextImportReceipt::Empty,
+                    receipt_sha256: "d".repeat(64),
+                },
+            },
+        );
+        assert!(
+            artifact.join("managed-context.pkg").exists(),
+            "MP-08 final status failure must retain recovery artifacts"
+        );
+        fs::remove_dir(&status_path).unwrap();
+        drop(permit);
+        store.finish(&plan.context_id);
+        let reopened = ManagedContextOutboundOperationStore::open(root).unwrap();
+        assert!(restore_prepared_artifact(
+            &ticket,
+            plan,
+            artifact.clone(),
+            &artifact.join("state.json")
+        )
+        .is_ok());
+        drop(reopened);
+    }
+
     #[tokio::test]
     async fn kernel_only_profile_requests_authoritative_transfer_ticket() {
+        assert_kernel_ticket_authority(false).await;
+    }
+
+    #[tokio::test]
+    async fn mp08_mp11_owner_transfer_reauthorizes_without_an_environment() {
+        assert_kernel_ticket_authority(true).await;
+    }
+
+    async fn assert_kernel_ticket_authority(owner_managed: bool) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut config = DaemonConfig::for_tests();
@@ -1775,17 +2200,40 @@ mod tests {
             kernel_credential: Some("synthetic-kernel-only-ticket-credential".into()),
             ..Default::default()
         });
-        let ticket = git_enrollment_test_ticket(&config, "ticket-request", "public-target-key");
-        let response = serde_json::to_vec(&ticket).unwrap();
+        let mut ticket = git_enrollment_test_ticket(&config, "ticket-request", "public-target-key");
+        if owner_managed {
+            let selection = crate::managed_context::owner_managed::OwnerManagedTransfer {
+                target: ticket.target.clone(),
+                context_selection: crate::managed_context::owner_managed::OwnerManagedContextSelection {
+                    kernel_context: crate::managed_context::owner_managed::OwnerManagedKernelSelection::SourceKernelWithoutCredentials,
+                    development_setup: crate::managed_context::owner_managed::OwnerManagedDevelopmentSelection::Empty,
+                },
+            };
+            ticket.context_plan =
+                ManagedKernelContextPlan::for_owner_managed(&config, &selection).unwrap();
+            ticket.environment_id.clear();
+        }
+        let expected_plan = serde_json::to_value(&ticket.context_plan).unwrap();
+        let expected_target = serde_json::to_value(&ticket.target).unwrap();
+        let source = serde_json::json!({ "kernelId": config.daemon_id, "machineId": config.host_machine_id,
+            "relayRealmId": "realm-1", "relayPublicKey": config.relay_public_key,
+            "keyThumbprint": public_key_thumbprint(&config.relay_public_key) });
+        let selection = serde_json::json!({ "kernelContext": expected_plan["kernelContext"], "developmentSetup": expected_plan["developmentSetup"] });
+        let binding = serde_json::json!({ "kind": "owner_managed_machine", "sourceTargetId": "directory-source-id",
+            "source": source, "target": expected_target, "contextSelection": selection });
+        let legacy_response = serde_json::to_value(&ticket).unwrap();
         let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            loop {
-                let mut buf = [0; 4096];
-                let size = stream.read(&mut buf).await.unwrap();
-                assert!(size > 0);
-                request.extend_from_slice(&buf[..size]);
-                if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+            for step in 0..if owner_managed { 4 } else { 1 } {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buf = [0; 4096];
+                    let size = stream.read(&mut buf).await.unwrap();
+                    assert!(size > 0);
+                    request.extend_from_slice(&buf[..size]);
+                    let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") else {
+                        continue;
+                    };
                     let headers = String::from_utf8_lossy(&request[..end]);
                     let len: usize = headers
                         .lines()
@@ -1794,22 +2242,90 @@ mod tests {
                                 .strip_prefix("content-length:")
                                 .map(|value| value.trim().parse().unwrap())
                         })
-                        .unwrap();
-                    if request.len() >= end + 4 + len {
+                        .unwrap_or(0);
+                    if request.len() < end + 4 + len {
+                        continue;
+                    }
+                    let body: serde_json::Value = if len == 0 {
+                        serde_json::json!({})
+                    } else {
+                        serde_json::from_slice(&request[end + 4..end + 4 + len]).unwrap()
+                    };
+                    let mut status = "200 OK";
+                    let response = if !owner_managed {
                         assert!(headers.starts_with("POST /v1/managed-kernels/context/ticket "));
-                        let body: serde_json::Value =
-                            serde_json::from_slice(&request[end + 4..end + 4 + len]).unwrap();
                         assert!(body.get("kernelCredential").is_some());
                         assert!(body.get("machineCredential").is_none());
-                        let header = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len());
-                        stream.write_all(header.as_bytes()).await.unwrap();
-                        stream.write_all(&response).await.unwrap();
-                        break;
-                    }
+                        legacy_response.clone()
+                    } else {
+                        assert!(body.get("environmentId").is_none());
+                        match step {
+                            0 => {
+                                assert!(
+                                    headers.starts_with("POST /v1/managed-kernels/context/ticket ")
+                                );
+                                assert!(body["ownerManagedExport"].is_object());
+                                status = "403 Forbidden";
+                                serde_json::json!({ "error": { "code": "authorization_expired", "message": "Not consumed" } })
+                            }
+                            1 => {
+                                assert!(headers
+                                    .starts_with("GET /v1/owner-managed-context-tickets/peers "));
+                                assert!(headers
+                                    .to_ascii_lowercase()
+                                    .contains("x-chariox-kernel-credential:"));
+                                serde_json::json!({ "peers": [{ "targetId": "directory-source-id", "peer": source }] })
+                            }
+                            2 => {
+                                assert!(
+                                    headers.starts_with("POST /v1/owner-managed-context-tickets ")
+                                );
+                                assert!(headers
+                                    .to_ascii_lowercase()
+                                    .contains("x-chariox-kernel-credential:"));
+                                assert_eq!(body["sourceTargetId"], "directory-source-id");
+                                assert_eq!(body["contextSelection"], selection);
+                                let mut issued = binding.clone();
+                                issued["ticket"] = serde_json::json!("synthetic-single-use-ticket");
+                                issued
+                            }
+                            _ => {
+                                assert!(
+                                    headers.starts_with("POST /v1/managed-kernels/context/ticket ")
+                                );
+                                assert!(body.get("kernelCredential").is_some());
+                                assert!(body.get("admission").is_none());
+                                assert_eq!(
+                                    body["ownerManaged"]["ticket"],
+                                    "synthetic-single-use-ticket"
+                                );
+                                assert_eq!(body["ownerManaged"]["source"], source);
+                                assert_eq!(
+                                    body["ownerManaged"]["contextId"],
+                                    expected_plan["contextId"]
+                                );
+                                assert_eq!(
+                                    body["ownerManaged"]["planDigest"],
+                                    expected_plan["planDigest"]
+                                );
+                                binding.clone()
+                            }
+                        }
+                    };
+                    let response = serde_json::to_vec(&response).unwrap();
+                    let header = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len());
+                    stream.write_all(header.as_bytes()).await.unwrap();
+                    stream.write_all(&response).await.unwrap();
+                    break;
                 }
             }
         });
-        let result = fetch_authoritative_ticket(&config, &ticket).await;
+        let result = fetch_authoritative_ticket(
+            &config,
+            &ManagedContextOutboundOperationStore::default(),
+            &ticket,
+        )
+        .await;
         assert!(
             result.is_ok(),
             "kernel-only profile must reach Cloud ticket authorization"
@@ -1880,12 +2396,13 @@ mod tests {
         assert_eq!(materializations.len(), 1);
     }
 
-    fn persisted_test_artifact(
+    pub(super) fn persisted_test_artifact(
         ticket: &ManagedContextTransferTicket,
         created_at_ms: u64,
         package_size_bytes: u64,
     ) -> PersistedOutboundArtifact {
         PersistedOutboundArtifact {
+            destination: None,
             schema_version: OUTBOUND_ARTIFACT_SCHEMA_VERSION,
             created_at_ms,
             environment_id: ticket.environment_id.clone(),
@@ -1904,7 +2421,7 @@ mod tests {
         }
     }
 
-    fn persisted_test_ticket(context_id: &str) -> ManagedContextTransferTicket {
+    pub(super) fn persisted_test_ticket(context_id: &str) -> ManagedContextTransferTicket {
         ManagedContextTransferTicket {
             environment_id: "environment-1".to_string(),
             context_plan: ManagedKernelContextPlan::source_project_for_tests(
@@ -1924,7 +2441,7 @@ mod tests {
         }
     }
 
-    fn write_persisted_test_artifact(
+    pub(super) fn write_persisted_test_artifact(
         root: &Path,
         ticket: &ManagedContextTransferTicket,
         created_at_ms: u64,
@@ -2462,6 +2979,7 @@ mod tests {
             "restart-capability-canary".to_string(),
         );
         let persisted = PersistedOutboundArtifact {
+            destination: None,
             schema_version: OUTBOUND_ARTIFACT_SCHEMA_VERSION,
             created_at_ms: crate::session::unix_epoch_ms(),
             environment_id: ticket.environment_id.clone(),
@@ -2535,6 +3053,104 @@ mod tests {
         assert_eq!(inventory.artifact_count, 0);
         assert!(root.exists());
         remove_artifact_root(&parent).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn owner_cloud_outage_preserves_original_package_and_upload_checkpoint() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            api_url: format!("http://{}", listener.local_addr().unwrap()),
+            realm_id: "realm-1".into(),
+            machine_id: Some(config.host_machine_id.clone()),
+            kernel_credential: Some("synthetic-owner-credential".into()),
+            ..Default::default()
+        });
+        let target_key = relay_crypto::public_key_from_private_key_base64(
+            &relay_crypto::generate_private_key_base64(),
+        )
+        .unwrap();
+        let mut ticket = git_enrollment_test_ticket(&config, "unused", &target_key);
+        let selection = crate::managed_context::owner_managed::OwnerManagedTransfer {
+            target: ticket.target.clone(),
+            context_selection: crate::managed_context::owner_managed::OwnerManagedContextSelection {
+                kernel_context: crate::managed_context::owner_managed::OwnerManagedKernelSelection::Empty,
+                development_setup: crate::managed_context::owner_managed::OwnerManagedDevelopmentSelection::Empty,
+            },
+        };
+        ticket.context_plan =
+            ManagedKernelContextPlan::for_owner_managed(&config, &selection).unwrap();
+        ticket.environment_id.clear();
+        let binding = ticket.context_plan.package_binding();
+        let parent = std::env::temp_dir().join(format!(
+            "chariox-owner-outage-{:032x}",
+            rand::random::<u128>()
+        ));
+        let store = ManagedContextOutboundOperationStore::open(parent.clone()).unwrap();
+        let root = parent.join(&binding.context_id);
+        write_persisted_test_artifact(
+            &root,
+            &ticket,
+            crate::session::unix_epoch_ms(),
+            Some(b"package"),
+        );
+        let mut persisted = persisted_test_artifact(&ticket, crate::session::unix_epoch_ms(), 7);
+        persisted.destination = binding.destination;
+        crate::config::write_private_file(
+            &root.join("state.json"),
+            &serde_json::to_vec(&persisted).unwrap(),
+        )
+        .unwrap();
+        crate::config::write_private_file(
+            &root.join("transfer.json"),
+            b"original-upload-checkpoint",
+        )
+        .unwrap();
+        let server = tokio::spawn(async move {
+            for status in [503, 403] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 16384];
+                assert!(stream.read(&mut request).await.unwrap() > 0);
+                stream.write_all(format!("HTTP/1.1 {status} Failure\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+            }
+        });
+        start_managed_context_outbound_operation(
+            config,
+            Arc::new(RwLock::new(RelayClientState::default())),
+            store.clone(),
+            crate::account_profile::ProviderAccountProfileRegistry::open(
+                parent.join("profiles.json"),
+            )
+            .unwrap(),
+            ticket,
+            None,
+            false,
+        )
+        .unwrap();
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let status = store.get(&binding.context_id).unwrap();
+                if status.phase == ManagedContextOutboundOperationPhase::Failed {
+                    break status;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        server.abort();
+        let package_retained = fs::read(root.join("managed-context.pkg")).ok();
+        let checkpoint_retained = fs::read(root.join("transfer.json")).ok();
+        let retired = root.join("retired").exists();
+        fs::remove_dir_all(parent).unwrap();
+        assert_eq!(package_retained.as_deref(), Some(b"package".as_slice()));
+        assert_eq!(
+            checkpoint_retained.as_deref(),
+            Some(b"original-upload-checkpoint".as_slice())
+        );
+        assert!(!retired);
+        assert!(status.retryable);
     }
 
     #[test]

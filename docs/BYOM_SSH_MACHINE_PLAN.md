@@ -1,7 +1,10 @@
 # BYOM / Chariox Setup (MP-07 / MP-08 / MP-11)
 
 PR1 and PR2 are rebased onto coordinator-requested OSS ownership `27aedc57e`
-on main `60c1ccb1e`. Local protocol 479 is retained; relay 73 comes from that base. MP-11 follows the
+on main `60c1ccb1e`. Their base uses local protocol 479 and relay 73. The
+linear PR4 owner-context layer on PR2 uses the already reviewed local 480 and
+relay 88 contracts, with both Setup/login and context-copy CLI entry points.
+MP-11 follows the
 owner's narrowed behavioural and security-anchor scope. Cloud remains control
 plane; each independent kernel owns its runtime and provider execution.
 
@@ -22,6 +25,10 @@ plane; each independent kernel owns its runtime and provider execution.
 The source kernel runs the user's SSH config/agent, with host-key checking,
 batch authentication and no agent forwarding. Chariox stores no SSH password
 or key. PR1 supports Linux x86_64 with Python 3, Node 22 and systemd --user.
+MP-07 / MP-08 service start, repair and upgrade require logind lingering for the
+current user. The installer enables it where permitted and verifies it before
+redeeming enrollment; a refusal reports the administrator command and cannot
+claim persistent readiness from an SSH-bound user manager.
 An operator-owned `ssh-machine-releases.json` beside source `config.toml`
 selects the approved immutable release/version and independent public trust
 pins; clients never supply arbitrary paths or pins. Selected Project context
@@ -90,6 +97,63 @@ fresh-machine parity acceptance; Path-1 bootstrap checks are unchanged.
 The strict startup parser admits SSH, self-ticket and device stdin enrollment
 and readiness as distinct typed commands, rejecting extra arguments before
 runtime initialization. Inherited Browser/Computer/public-provider guards bind
-local 479 and retain relay 73; the aggregate version/hash is reconciled. Local
+the PR1/PR2 base at local 479 and relay 73; PR4 advances these to local 480 and
+relay 88 for owner context transfer. The aggregate version/hash is reconciled. Local
 source/mock drills do not establish live Cloud, signed distribution, real user
 services or fresh-machine acceptance.
+
+## MP-08 / MP-11 credential-free export boundary and threat model
+
+Owner-managed copy uses the ordinary kernel export/import path. A source owner
+may accidentally select credential-bearing context; an untrusted source may
+compose a correctly hashed snapshot to bypass source admission. The target
+rechecks the same boundary before publication. Hashes establish content identity,
+not the absence of secrets. This policy does not alter credential-bearing
+Path-1 transfer, its explicit Vault binding, or official provider profiles.
+
+The exportable structured schema is the typed Extension/dependency model.
+MCP definitions allow transport command/arguments or URL, working directory,
+names, tool policy, enablement and numeric timeouts. Credential-free source
+projection omits **all** literal environment/header maps, ambient environment
+bindings and credential bindings; no field-name guess decides whether a value
+is safe. The target refuses snapshots carrying any of those slots. Users must
+configure required values on the receiving kernel through its normal Vault
+and capability settings. This copy mode never exports provider/workspace
+settings, provider profiles, credential registry, Vault or Project environment
+value layers as structured dependencies. It does not read them to redact them.
+
+Skill metadata exports name, descriptions and portable path; packaged skill
+files remain owner-selected free-form content. Script metadata allows runtime,
+description, numeric timeout and the supported JSON Schema vocabulary. Schema
+property/definition names describe inputs; arbitrary defaults, constants,
+examples, enum values and unknown schema extensions are refused. Connector
+operation settings allow only string `url`/`method`/`path` and unsigned numeric
+`timeout_ms`/`max_response_bytes`; other arbitrary settings are refused. This
+closed allowlist deliberately refuses unsupported configuration rather than
+classifying it by whether a key sounds secret. New typed fields/variants require
+an explicit export decision.
+
+Every packaged file is scanned under its actual path, including skill/MCP,
+portable environment and user adapter files. Standalone script source retains
+Python/TypeScript runtime context. The same file detector applies to development
+overlays and Git history: high-signal private-key/provider-token formats,
+credential assignments/flags/URLs, and strict UTF-8 or BOM-marked UTF-16/32
+decoding. Unsupported bytes, malformed encodings and binary controls fail
+closed. Shell paths and shell shebangs also refuse undecodable shell quoting.
+Dependency-name maps and lock integrity have explicit package metadata roles;
+their values remain inspected. Literal structured manifest copies occurring
+inside owner-selected files are free-form inputs, subject to the same file
+guard and owner review, never a way to populate the typed configuration schema.
+
+**The scanner is a guard, not a proof.** Arbitrary secrets may look like normal
+prose, source literals, allowed URLs or metadata. Computed values, arbitrary
+encodings/encryption, external references and every language's execution
+semantics are outside its finite detectors. It neither executes files nor
+certifies that a package is safe to execute. False refusals are possible,
+including secret-looking examples, unsupported schema features and binary
+assets. The owner must review and confirm the selected exports in the source
+Project RuntimeInteraction, including packaged files and repository history;
+that confirmation does not bypass a scanner refusal. Target admission, owner
+and plan binding, integrity checks, publication ownership and recovery remain
+independent controls. No whole MP-10 matrix or MP-11 review gate closes from a
+scanner test or this bounded two-kernel drill.

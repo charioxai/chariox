@@ -22,6 +22,13 @@ pub(super) fn write_private_state_file(path: &Path, bytes: &[u8]) -> Result<(), 
 }
 
 pub(super) fn read_private_state_file(path: &Path) -> Result<Option<Vec<u8>>, DaemonError> {
+    read_private_file_bounded(path, MAX_STATE_FILE_BYTES)
+}
+
+pub(super) fn read_private_file_bounded(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<Option<Vec<u8>>, DaemonError> {
     let mut options = OpenOptions::new();
     options.read(true);
     configure_no_follow(&mut options);
@@ -38,16 +45,16 @@ pub(super) fn read_private_state_file(path: &Path) -> Result<Option<Vec<u8>>, Da
     let metadata = file
         .metadata()
         .map_err(|error| transfer_io_error("inspect managed context transfer state", error))?;
-    if !metadata.is_file() || metadata.len() > MAX_STATE_FILE_BYTES {
+    if !metadata.is_file() || metadata.len() > max_bytes {
         return Err(transfer_error(
             "managed context transfer state must be a bounded regular file",
         ));
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.take(MAX_STATE_FILE_BYTES + 1)
+    file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| transfer_io_error("read managed context transfer state", error))?;
-    if bytes.len() as u64 > MAX_STATE_FILE_BYTES {
+    if bytes.len() as u64 > max_bytes {
         return Err(transfer_error(
             "managed context transfer state exceeds its size limit",
         ));

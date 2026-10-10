@@ -321,11 +321,15 @@ impl SessionService {
             .filter(|session| !session.is_hidden())
             .map(|session| session.project_id().to_string())
             .collect::<BTreeSet<_>>();
+        // MP-08/MP-10: Named Projects are explicit durable resources. Copy
+        // publishes one before the target's first session; keep it across restart.
+        // Empty Default Projects are session-derived and still need legacy cleanup.
         let empty_project_ids = self
             .projects
-            .keys()
-            .filter(|project_id| !visible_project_ids.contains(project_id.as_str()))
-            .cloned()
+            .values()
+            .filter(|project| project.kind() == RuntimeProjectKind::Default)
+            .filter(|project| !visible_project_ids.contains(project.id()))
+            .map(|project| project.id().to_string())
             .collect::<Vec<_>>();
         empty_project_ids
             .into_iter()

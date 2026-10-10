@@ -411,11 +411,9 @@ pub(super) fn verify_git_bundle_isolated(
     verify_git_bundle_with_environment(worktree, bundle, expected_head, true)
 }
 
-fn verify_git_bundle_with_environment(
-    worktree: &Path,
+pub(super) fn verify_git_bundle_header(
     bundle: &Path,
     expected_head: &str,
-    isolated: bool,
 ) -> Result<(), DaemonError> {
     let file = File::open(bundle).map_err(|error| context_io_error("open Git bundle", error))?;
     let mut reader = BufReader::new(file);
@@ -427,6 +425,7 @@ fn verify_git_bundle_with_environment(
     if !signature.starts_with("# v") || !signature.ends_with(" git bundle") {
         return Err(context_error("Git bundle has an invalid signature"));
     }
+    let mut head_seen = false;
     while let Some(line) =
         read_bounded_bundle_header_line(&mut reader, &mut header_bytes, &mut header_records)?
     {
@@ -438,16 +437,48 @@ fn verify_git_bundle_with_environment(
                 "Git bundle has prerequisites and is not self-contained",
             ));
         }
+        if line.starts_with('@') {
+            continue; // Version 3 capability, not an advertised ref.
+        }
+        let (oid, reference) = line
+            .split_once(' ')
+            .ok_or_else(|| context_error("Git bundle has malformed refs"))?;
+        if reference != "HEAD" || head_seen {
+            return Err(context_error(
+                "Git bundle advertises unexpected refs; only HEAD is supported",
+            ));
+        }
+        if oid != expected_head {
+            return Err(context_error(
+                "Git bundle HEAD does not match the captured repository HEAD",
+            ));
+        }
+        head_seen = true;
     }
+    if !head_seen {
+        return Err(context_error(
+            "Git bundle HEAD does not match the captured repository HEAD",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_git_bundle_with_environment(
+    worktree: &Path,
+    bundle: &Path,
+    expected_head: &str,
+    isolated: bool,
+) -> Result<(), DaemonError> {
+    verify_git_bundle_header(bundle, expected_head)?;
     let bundle_text = bundle
         .to_str()
         .ok_or_else(|| context_error("Git bundle path is not valid UTF-8"))?;
     let heads = if isolated {
-        git_text_isolated(worktree, &["bundle", "list-heads", bundle_text, "HEAD"])?
+        git_text_isolated(worktree, &["bundle", "list-heads", bundle_text])?
     } else {
-        git_text(worktree, &["bundle", "list-heads", bundle_text, "HEAD"])?
+        git_text(worktree, &["bundle", "list-heads", bundle_text])?
     };
-    if heads.split_whitespace().next() != Some(expected_head) {
+    if heads.split_whitespace().collect::<Vec<_>>() != [expected_head, "HEAD"] {
         return Err(context_error(
             "Git bundle HEAD does not match the captured repository HEAD",
         ));

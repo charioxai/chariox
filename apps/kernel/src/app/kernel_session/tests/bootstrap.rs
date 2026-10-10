@@ -101,6 +101,7 @@ fn lease_worker_bootstrap_rejects_incomplete_managed_context_import() {
         .arm(
             crate::managed_context::transfer::ArmManagedContextTransfer {
                 plan: crate::managed_context::package::ManagedContextPlanBinding {
+                    destination: None,
                     context_id: "context-1".to_string(),
                     plan_digest: format!("sha256:{}", "1".repeat(64)),
                     kernel_context:

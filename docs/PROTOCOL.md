@@ -553,6 +553,56 @@ client surface includes:
   launch-target request
 - multi-Workspace Project updates and exact slice repository selections
 
+MP-05 / MP-08 / MP-11 owner-managed admission (local 480, relay peer 88)
+adds `ownerManaged` to the same `StartManagedContextTransfer` request. Exactly one
+of `ticket` and `ownerManaged` is allowed; owner-managed requests require
+`interactive: true`. The client supplies only destination identity pins and
+inventory selections. The source kernel derives source identity, context ID and
+canonical plan digest, validates Project/Workspace/worktree ownership and obtains
+a Cloud ticket. A disconnected source refuses the request. The selected destination
+must be an enrolled ordinary kernel owned by the same account/user in the same realm.
+
+MP-08 / MP-11 owner destination bindings are
+`{kind:"owner_managed_machine", machineId, kernelId}`. Plans, import arms,
+persisted operations, authoritative receipts and launch targets retain this binding.
+`environmentId` / `target_environment_id` is absent only for this branch; mixed
+or missing bindings are rejected. The source issues owner tickets with
+`POST /v1/owner-managed-context-tickets` (peer directory at
+`GET /v1/owner-managed-context-tickets/peers`). Consumption, export and import checks
+share `POST /v1/managed-kernels/context/ticket`, discriminated by the
+`ownerManaged`, `ownerManagedExport` or `ownerManagedImport` body; they never use the
+managed-environment authority.
+The target independently validates a Cloud ticket against the encrypted source
+identity and its own enrollment; every arm/begin/chunk/finalize/status operation
+retains the existing capability, identity/key, realm/user, digest, TTL and size checks.
+Chunks remain encrypted kernel-to-kernel relay packets.
+
+MP-08 / MP-11 `source_kernel_without_credentials` is part of the canonical plan
+and package binding. Provider accounts and Git credentials are kernel-forced `none`.
+Its source exporter does not read the credential registry or Vault. Native source
+confirmation gates packaging and transfer for every owner copy. A selected Project
+uses its native Project review; kernel-only copies use an idle source-owner session
+with an owner-bound, human-only kernel-operation RuntimeInteraction naming the destination
+Machine. Meta delegation, ordinary agents, Host clients and sudo agent turns cannot
+answer this review; the owner terminal can continue or cancel. Without such a session
+the copy is refused with retry guidance. Cancellation or expiry stops export. Environment
+values are omitted and Vault access is denied for Project review. Source and target checks reject credential dependencies, Vault
+snapshots, credential-bearing extension files, overlays/setup files, sealed Project
+environment values and recognized secrets in Git history. Target import uses an
+isolated target-owned workspace and the existing additive extension publication
+journal/collision checks. It does not replace runtime configuration or credentials.
+
+MP-08 / MP-11 progress and completion use the existing start/status responses.
+Completed owner-managed launch resolution uses the durable context ID/digest receipt
+and owner/realm/key binding; its response has `destination` and omits `environmentId`.
+Each owner copy publishes a fresh workspace and registers it as target Project
+`copy-<contextId>`, so copying an updated Project again adds a Project beside the earlier copy.
+It never reports completion to the managed-environment endpoint. Clients must check
+`owner_managed_context_transfer_v1` on both kernels and local >=480 / relay peer >=88.
+Cloud presence publishes `owner_managed_context_transfer_protocol_version: 1` plus
+the peer protocol version; the older managed-context source marker alone is insufficient.
+Web activation still requires end-to-end acceptance, including target first-login readiness.
+
 Every kernel that implements the direct source side of this contract advertises
 `managed_context_source_protocol_version: 1` in its Cloud relay-presence
 metadata. Cloud lists a kernel under `Kernel context from` only while that
@@ -3217,7 +3267,7 @@ WebSocket frames through the ordinary router and provider-native export paths
 with disposable synthetic Codex, Claude and OpenCode profiles. It establishes
 local protocol/portability behavior, not live provider login, provisioning or
 fresh-machine MP-10 acceptance.
-### MP-07 / MP-08 / MP-11 owner-managed SSH machines (local 444)
+### MP-07 / MP-08 / MP-11 owner-managed SSH machines (local 479)
 
 `AddSshMachine { host, install_id?, port?, release? }` and
 `RemoveSshMachine { install_id }` use the owning kernel's normal admitted
@@ -3243,10 +3293,10 @@ requires an explicit later upgrade. Remove stops/uninstalls the owned service
 and release tree while retaining private kernel state and directory identity.
 No VM provisioning/deletion or runtime proxy is involved. Relay peer protocol
 inherits 73 from the ownership base; native/web minimums are unchanged for existing behavior. The SSH
-commands themselves require a local-444-capable kernel/client pair.
+commands themselves require a local-479-capable kernel/client pair.
 
 MP-07 / MP-08 / MP-11 self-setup reuses the owner-managed install core and
-existing device enrollment; local 444/relay 73 are retained. Generic Setup
+existing device enrollment; local 479/relay 73 are retained. Generic Setup
 creates a separate user service/root/ports and invokes a pre-daemon stdin
 bootstrap. Kernel device flow uses the existing `KERNEL` start/poll exchange,
 public verification URL/code and #888 key/machine/owner profile admission.
