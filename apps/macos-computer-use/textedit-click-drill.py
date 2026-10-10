@@ -54,6 +54,7 @@ def run():
     pid = None
     saved = None
     warped = None
+    lease = None
     code = 1
     verdict = 'FAIL: TextEdit completion not proven.'
     try:
@@ -86,18 +87,20 @@ def run():
         else:
             raise RuntimeError('new TextEdit window not unambiguously frontmost; no mutation attempted')
         (evidence / 'desktop.json').write_text(json.dumps(state, indent=2) + '\n')
+        lease = drill.PointerLease(drill.desktop, drill.run_pointer_script, saved)
+        lease.bind(pid, int(scope[4]))
         initial = reference(evidence, 'reference', scope, document)
         checks = []
         for at_pointer in [False, True]:
             for probe in initial['probes']:
                 drill.require_gui()
-                if drill.desktop()['frontmostPID'] != pid:
-                    raise RuntimeError('TextEdit lost frontmost; no mutation attempted')
+                lease.require()
                 point = probe['point']
                 label = probe['name'] + ('-pointer' if at_pointer else '-explicit')
                 if at_pointer:
-                    drill.warp_pointer(point)
-                    state = drill.desktop()
+                    lease.warp(point)
+                    warped = lease.last
+                    state = lease.require()
                     warped = state['pointer']
                     (evidence / f'{label}-warp.json').write_text(json.dumps(state, indent=2) + '\n')
                     if (not all(abs(warped[k] - point[k]) < 1 for k in ['x', 'y'])
@@ -109,11 +112,13 @@ def run():
                     arguments = ['--click-at', str(point['x']), str(point['y']), '--click']
                     wanted = point
                 receipt = drill.launch_helper(evidence, label, scope + arguments)
+                lease.require()
                 actual = reference(evidence, label + '-actual', scope, document)
+                lease.require()
                 # Layout must stay unchanged during this comparison.
                 passed = (actual['probes'] == initial['probes']
                           and caret_matches(receipt, probe['expectedLocation'], wanted, actual['selectedRange'])
-                          and drill.desktop()['frontmostPID'] == pid)
+                          and lease.require()['frontmostPID'] == pid)
                 checks.append(passed)
                 (evidence / f'{label}.json').write_text(json.dumps({
                     'probe': probe, 'sampledPoint': wanted, 'actual': actual, 'passed': passed}, indent=2) + '\n')
@@ -122,8 +127,8 @@ def run():
     except Exception as error:
         verdict = f'FAIL: {error}'
     finally:
-        if warped is not None and drill.desktop()['pointer'] == warped:
-            drill.warp_pointer(saved)
+        if lease and warped is not None:
+            lease.restore()
         if scope:
             try:
                 reference(evidence, 'close', scope, document, close=True)
