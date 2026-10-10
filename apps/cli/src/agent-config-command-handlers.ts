@@ -216,6 +216,12 @@ async function updateAgentAccountProfile(
       deps.flashFooter(`account is unavailable for ${agent.provider}`, "error")
       return
     }
+    const selected = deps.resolveSessionAgent(agent.id).agent
+    if (!selected || selected.provider !== agent.provider || selected.account_profile !== agent.account_profile) return
+    if (selected.account_profile === profile.profile_id) {
+      deps.flashFooter(`${deps.formatAgentLabel(selected)} account: ${providerAccountDisplayLabel(profile, selected.model)}`, "info")
+      return
+    }
     const catalog = await deps.getProviderCatalogForAgent(agent, agent.provider, profile.profile_id)
     // Catalog discovery can finish after a later profile command. Preserve its
     // model/effort; a newer provider or account selection supersedes this one.
