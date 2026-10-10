@@ -217,6 +217,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     closeSessionBrowserDialog,
     closeTerminalPairingDialog: dialogOverlayController.closeTerminalPairing,
     captureCopyKey: clipboardController.captureCopyKey,
+    capturePaste: clipboardController.capturePaste,
     replayCopyKey: clipboardController.replayCopyKey,
     discardCopyInput: clipboardController.discardCopyInput,
     copyPromptSelection: clipboardController.copyCapturedSelection,

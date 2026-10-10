@@ -230,6 +230,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   renderer.keyInput.prependListener("keyrelease", nativeSelectionInput)
   const nativeSelectionPaste = (event: { preventDefault(): void; stopPropagation(): void }) => {
     if (nativeSelection.handleRendererPaste()) { event.preventDefault(); event.stopPropagation() }
+    else capturePaste()
   }
   renderer.keyInput.prependListener("paste", nativeSelectionPaste)
   onCleanup(() => {
@@ -550,7 +551,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
   const {
     assignDialogOverlayBox, closeActiveDialogOverlay, closeHotkeys, closeSessionBrowserDialog,
-    closeTerminalPairingDialog, captureCopyKey, replayCopyKey, discardCopyInput, copyPromptSelection, dialogOverlayOpen, handleHotkeysToggleShortcut,
+    closeTerminalPairingDialog, captureCopyKey, capturePaste, replayCopyKey, discardCopyInput, copyPromptSelection, dialogOverlayOpen, handleHotkeysToggleShortcut,
     handleManagedMachineDialogKey, handlePromptSelectionSurfaceMouseUp, handleSessionBrowserKey,
     openHotkeys, openManagedMachineDialog, openSessionBrowserDialog,
     openTerminalPairingDialog, renderHotkeysOverlay,

@@ -71,11 +71,19 @@ export function createClipboardController(deps: ClipboardControllerDeps) {
   const snapshots: Array<{ key: SelectionCopyKey; text: string | null }> = []
   let replayed: { text: string | null } | undefined
   const selectedText = () => selectedPromptText() || selectedTerminalText()
+  // MP-08 / MP-10: release transcript selection in decoded event order so
+  // a later copy in this chunk cannot snapshot it. Raw routing still owns
+  // the deferred rebuild flush; preserve the textarea's own selection.
+  const clearRetainedSelection = () => {
+    if (!deps.promptInput()?.getSelection()) deps.renderer.clearSelection()
+  }
 
   return {
     captureCopyKey(event: SelectionCopyKey) {
       if (isSelectionCopyKey(event)) snapshots.push({ key: event, text: selectedText() })
+      else if (event.name && event.eventType !== "release") clearRetainedSelection()
     },
+    capturePaste: clearRetainedSelection,
     replayCopyKey(event: SelectionCopyKey) {
       replayed = undefined
       const next = snapshots[0]

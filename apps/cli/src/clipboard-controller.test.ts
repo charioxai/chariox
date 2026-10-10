@@ -94,6 +94,23 @@ test("MP-08 / MP-10 clipboard discard removes pending copy input", () => {
   assert.deepEqual(harness.copiedText(), ["current selection"])
 })
 
+// MP-08 / MP-10: decoded invalidation excludes non-input responses, releases
+// and copy keys, and never clears the textarea's selection before its edit.
+test("MP-08 / MP-10 decoded edits clear only retained transcript selection", () => {
+  const state = { promptText: "draft", promptSelection: null as { start: number; end: number } | null }
+  const harness = createHarness(state)
+  const controller = createClipboardController(harness.deps)
+  for (const key of [{ name: "" }, { name: "z", eventType: "release" }, { name: "f6" }]) controller.captureCopyKey(key)
+  assert.equal(harness.clearCount(), 0)
+  controller.captureCopyKey({ name: "z" })
+  controller.capturePaste()
+  assert.equal(harness.clearCount(), 2)
+  state.promptSelection = { start: 0, end: 5 }
+  controller.captureCopyKey({ name: "z" })
+  controller.capturePaste()
+  assert.equal(harness.clearCount(), 2)
+})
+
 function createHarness(options: {
   promptText?: string
   promptSelection?: { start: number; end: number } | null

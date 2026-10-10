@@ -400,10 +400,11 @@ try {
   // MP-08 / MP-10: send text in one PTY write, matching paste/SSH batching.
   const pasteCases = async (needle, beforePaste) => {
     const cells = []
-    for (const [kind, text, sequence] of [
+    for (const batchedCopy of [false, true]) for (const [inputKind, text, sequence] of [
       ['bracketed-paste', 'pasted text', '\x1b[200~pasted text\x1b[201~'],
       ['batched-text', 'ab', 'ab'],
     ]) {
+      const kind = `${inputKind}-${batchedCopy ? 'coalesced' : 'separate'}-copy`
       await press('\x15')
       const at = await settledRowOf(needle)
       assert.ok(at, 'paste selection target visible')
@@ -414,13 +415,16 @@ try {
       assert.ok(highlighted, 'paste begins with a retained selection')
       const deferred = await beforePaste?.(kind)
       await capture(`${kind}-selected`)
-      await press(sequence)
+      const copiesBefore = (await copiedTexts()).length
+      await press(sequence + (batchedCopy ? copySequence : ''))
+      if (!batchedCopy) await press(copySequence)
       await sleep(700)
       const cleared = JSON.stringify(await cellColors(at, needle.length)) === JSON.stringify(before)
       const inserted = await promptShows(text)
       const rebuilt = deferred ? await deferred() : null
       await capture(`${kind}-after`)
-      cells.push({kind, highlighted, cleared, inserted, rebuilt})
+      const copyKept = (await copiedTexts()).length === copiesBefore
+      cells.push({kind, highlighted, cleared, inserted, rebuilt, copyKept})
       // Settle for the next case only AFTER observing paste without a named key.
       await press('\x15')
     }
@@ -452,7 +456,7 @@ try {
     result = {items: ['MP-08','MP-10'], mode: 'waiting-room-paste', source: options.source,
       cli, cliSha256: await hashClient(path.dirname(cli)), kernelSha256: await hashFile(options['kernel-binary']),
       dpr: Number(options.dpr ?? 1), fragmentMouse: Boolean(options['fragment-mouse']), cells}
-    const green = cells.every(cell => cell.cleared && cell.rebuilt)
+    const green = cells.every(cell => cell.cleared && cell.rebuilt && cell.copyKept)
     console.log(JSON.stringify(result))
     if (options['expect-red']) assert.ok(!green, 'base must fail paste selection/refresh')
     else assert.ok(green, 'paste clears selection and flushes real waiting-room inventory')
@@ -514,7 +518,7 @@ try {
         acceptance: 'real provider and built TUI via PTY; native clipboard uses a Linux browser terminal; Terminal.app/SSH and hosted transport need separate observations' }
       const green = highlighted && keyboardCopy && typedAfterDrag && clearedByTyping && emptyCopyKeptAlive
         && promptSelections.every(cell => cell.copied && cell.replaced)
-        && pasted.every(cell => cell.cleared && cell.inserted)
+        && pasted.every(cell => cell.cleared && cell.inserted && cell.copyKept)
         && themes.every(cell => cell.highlighted && cell.retained && cell.copied)
       console.log(JSON.stringify(result))
       if (options['expect-red']) assert.ok(!green, 'baseline must fail selection/copy review')
