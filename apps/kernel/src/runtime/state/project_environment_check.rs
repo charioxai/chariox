@@ -62,6 +62,11 @@ impl KernelRuntimeState {
             ));
         }
         let mut checks = store.load_checks(project.id())?;
+        checks.observations.retain(|o| {
+            requirements
+                .iter()
+                .any(|r| r.requirement_id == o.requirement_id)
+        });
         if checks.folder_binding_digest != folder_bindings_digest(&env) {
             for observation in &mut checks.observations {
                 observation.stale = true;
@@ -218,11 +223,23 @@ impl KernelRuntimeState {
         let LocalDaemonResponse::ProjectEnvironment { environment } = response else {
             return Err(environment_error("Environment unavailable"));
         };
-        let operation = environment
+        let current = environment
             .operations
             .into_iter()
-            .find(|o| o.operation_id == request.operation_id)
-            .ok_or_else(|| environment_error("Environment operation not found"))?;
+            .find(|o| o.operation_id == request.operation_id);
+        let operation = match current {
+            Some(operation) => operation,
+            None => {
+                let config = self.owned.config_projection.snapshot();
+                ProjectEnvironmentStore::new(&config.private_runtime_state_root())
+                    .check_operation(
+                        &environment.local_project_id,
+                        &request.operation_id,
+                        &current_check_target(&config),
+                    )?
+                    .ok_or_else(|| environment_error("Environment operation not found"))?
+            }
+        };
         Ok(LocalDaemonResponse::EnvironmentOperation { operation })
     }
 }

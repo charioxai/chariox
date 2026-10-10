@@ -75,9 +75,16 @@ impl ProjectEnvironmentStore {
     ) -> Result<(), crate::error::DaemonError> {
         let checks = self.load_checks(&env.local_project_id)?;
         let bindings = folder_bindings_digest(env);
+        let requirements: std::collections::HashSet<_> = env
+            .project_requirements
+            .iter()
+            .chain(env.folders.iter().flat_map(|f| &f.requirements))
+            .map(|r| r.requirement_id.clone())
+            .collect();
         env.observations = checks
             .observations
             .into_iter()
+            .filter(|o| requirements.contains(&o.requirement_id))
             .map(|mut o| {
                 o.stale |= o.target != *target
                     || o.revision_digest != env.content_digest
@@ -88,23 +95,47 @@ impl ProjectEnvironmentStore {
                 o
             })
             .collect();
-        env.operations
-            .extend(checks.operations.into_iter().map(|mut o| {
-                if o.target != *target
-                    && matches!(
-                        o.phase,
-                        EnvironmentOperationPhase::Requested
-                            | EnvironmentOperationPhase::Running
-                            | EnvironmentOperationPhase::Validating
-                    )
-                {
-                    o.phase = EnvironmentOperationPhase::Failed;
-                    o.recovery_state = EnvironmentRecoveryState::Settled;
-                }
-                o
-            }));
+        // MP-08 / MP-10 / MP-11: the current view need not replay old result
+        // bodies on every poll. Retained operation IDs remain queryable below.
+        env.operations.extend(
+            checks
+                .operations
+                .into_iter()
+                .last()
+                .map(|o| project_check_operation(o, target)),
+        );
         Ok(())
     }
+    pub(crate) fn check_operation(
+        &self,
+        project: &str,
+        id: &str,
+        target: &EnvironmentTargetBinding,
+    ) -> Result<Option<EnvironmentOperation>, crate::error::DaemonError> {
+        Ok(self
+            .load_checks(project)?
+            .operations
+            .into_iter()
+            .find(|o| o.operation_id == id)
+            .map(|o| project_check_operation(o, target)))
+    }
+}
+fn project_check_operation(
+    mut operation: EnvironmentOperation,
+    target: &EnvironmentTargetBinding,
+) -> EnvironmentOperation {
+    if operation.target != *target
+        && matches!(
+            operation.phase,
+            EnvironmentOperationPhase::Requested
+                | EnvironmentOperationPhase::Running
+                | EnvironmentOperationPhase::Validating
+        )
+    {
+        operation.phase = EnvironmentOperationPhase::Failed;
+        operation.recovery_state = EnvironmentRecoveryState::Settled;
+    }
+    operation
 }
 pub(crate) fn folder_bindings_digest(env: &ProjectEnvironment) -> String {
     super::aggregate_projection::metadata_digest(

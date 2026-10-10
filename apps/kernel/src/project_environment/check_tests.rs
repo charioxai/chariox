@@ -18,6 +18,9 @@ fn environment() -> (
     let environment = store.snapshot(&project).unwrap();
     (root, store, environment)
 }
+fn requirement(id: &str) -> Requirement {
+    serde_json::from_value(serde_json::json!({"requirement_id":id,"title":id,"scope":{"kind":"project"},"origins":[],"spec":{"kind":"software","identity":"node","version_constraint":null,"platform":null,"install_scope":"system","install_source":null,"detect_only":true},"depends_on":[],"platform_variants":[],"required":true,"legacy_entry":null})).unwrap()
+}
 fn observation(
     env: &ProjectEnvironment,
     id: &str,
@@ -41,6 +44,7 @@ fn observation(
 #[test]
 fn envp04_observations_are_stale_for_revision_target_bindings_and_clock() {
     let (_root, store, mut env) = environment();
+    env.project_requirements.push(requirement("file"));
     let target = EnvironmentTargetBinding {
         machine_id: "machine".into(),
         target_instance_generation: "boot-one".into(),
@@ -142,4 +146,60 @@ fn envp04_dependencies_cannot_borrow_stale_readiness() {
         rows[2].stale,
         "known dependency drift invalidates previously checked dependents"
     );
+}
+
+// MP-08 / MP-10 / MP-11: current reads stay small; older operation IDs retain their outcome.
+#[test]
+fn envp04_current_projection_omits_removed_items_and_historical_result_bodies() {
+    let (_root, store, mut env) = environment();
+    env.project_requirements.push(requirement("file"));
+    let target = EnvironmentTargetBinding {
+        machine_id: "machine".into(),
+        target_instance_generation: "boot".into(),
+        slice_ref: None,
+    };
+    let operation = |id: &str| EnvironmentOperation {
+        operation_id: id.into(),
+        attempt: 1,
+        local_project_id: env.local_project_id.clone(),
+        revision_digest: env.content_digest.clone(),
+        target: target.clone(),
+        kind: EnvironmentOperationKind::Check,
+        phase: EnvironmentOperationPhase::Ready,
+        selected_items: vec![],
+        per_item_opt_ins: vec![],
+        per_item_results: vec![],
+        created_at_ms: 1000,
+        updated_at_ms: 1000,
+        cancellation: None,
+        receipts: vec![],
+        recovery_state: EnvironmentRecoveryState::Settled,
+    };
+    let checks = super::check_store::EnvironmentChecks {
+        folder_binding_digest: folder_bindings_digest(&env),
+        observations: vec![
+            observation(&env, "file", &target, 1000),
+            observation(&env, "removed", &target, 1000),
+        ],
+        operations: vec![operation("older"), operation("current")],
+        ..Default::default()
+    };
+    store.save_checks(&env.local_project_id, &checks).unwrap();
+    store.attach_checks(&mut env, &target, 1001).unwrap();
+    assert_eq!(env.observations.len(), 1);
+    assert_eq!(env.observations[0].requirement_id, "file");
+    assert_eq!(env.operations.len(), 1);
+    assert_eq!(env.operations[0].operation_id, "current");
+    assert_eq!(
+        store
+            .check_operation(&env.local_project_id, "older", &target)
+            .unwrap()
+            .unwrap()
+            .phase,
+        EnvironmentOperationPhase::Ready
+    );
+    assert!(store
+        .check_operation(&env.local_project_id, "unknown", &target)
+        .unwrap()
+        .is_none());
 }
