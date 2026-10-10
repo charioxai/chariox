@@ -103,10 +103,8 @@ pub(super) async fn handle_incoming_envelope(
             message: error.to_string(),
         }
     })?;
-    chariox_relay::transport_timing::record(
-        "kernel_receive",
-        chariox_relay::transport_timing::envelope_signature(&envelope),
-    );
+    let timing_packet = chariox_relay::transport_timing::envelope_signature(&envelope);
+    chariox_relay::transport_timing::record("kernel_receive", timing_packet);
     match envelope {
         RelayEnvelope::DaemonRequest {
             relay_request_id,
@@ -153,6 +151,7 @@ pub(super) async fn handle_incoming_envelope(
                 if let Some(turn) = turn.as_mut() {
                     turn.ready().await;
                 }
+                chariox_relay::transport_timing::record("kernel_request_start", timing_packet);
                 let mut relay_response = match prepared {
                     Ok(prepared) => {
                         handle_prepared_daemon_request(
@@ -166,6 +165,7 @@ pub(super) async fn handle_incoming_envelope(
                     }
                     Err(outcome) => outcome,
                 };
+                chariox_relay::transport_timing::record("kernel_request_end", timing_packet);
                 drop(turn);
                 if let Some((display_id, event_id, encrypted_event)) = relay_response.display_event
                 {

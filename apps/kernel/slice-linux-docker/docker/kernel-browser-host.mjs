@@ -514,7 +514,7 @@ export class KernelBrowserHost {
       const scale = this.scales.get(tab.tab_id);
       if (scale && scale !== command.device_scale_factor) throw new Error("MD-DISPLAY: canonical tab geometry is already selected");
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-      await connection.send("Emulation.setDeviceMetricsOverride", displayDeviceMetrics(geometry.width,geometry.height,command.device_scale_factor,this.chromium.scale??1), sessionId);
+      await connection.send("Emulation.setDeviceMetricsOverride", displayDeviceMetrics(geometry.width,geometry.height,command.device_scale_factor), sessionId);
       this.scales.set(tab.tab_id, command.device_scale_factor);
       const id = `host-display-${randomUUID()}`;
       const codec=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER&&command.codecs.includes('avc1.420033')?'avc1.420033':command.codecs.find(c=>['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(c))??'png';

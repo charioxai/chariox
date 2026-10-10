@@ -1,9 +1,7 @@
-// MP-08/MP-10: a Browser density must fit the shared physical desktop.
+// MP-08/MP-10: Browser density cannot change the shared physical page transform.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {displayDeviceMetrics} from './kernel-browser-geometry.mjs';
-for(const hostScale of [1,2])for(const dpr of [1,2])test(`MP-10 shared desktop fits Browser DPR${dpr} at host scale${hostScale}`,()=>{
-  const metrics=displayDeviceMetrics(1280,800,dpr,hostScale);
-  assert.equal(metrics.deviceScaleFactor,dpr);
-  assert.equal(metrics.scale*dpr,hostScale,'emulated density must not enlarge or crop the physical viewport');
+for(const dpr of [1,2])test(`MP-10 Browser DPR${dpr} preserves the native page transform`,()=>{
+  assert.deepEqual(displayDeviceMetrics(1280,800,dpr),{width:1280,height:800,deviceScaleFactor:dpr,scale:1,mobile:false});
 });

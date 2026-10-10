@@ -85,7 +85,7 @@ mod tests {
             encrypted_event: EncryptedRelayPayload {
                 sender_public_key: "public".into(),
                 nonce: "0000000000000000".into(),
-                ciphertext: STANDARD.encode([1, 2, 3, 4]),
+                ciphertext: STANDARD.encode([1u8; 16]),
             },
         };
         let text = Message::Text(serde_json::to_string(&event).unwrap().into());
