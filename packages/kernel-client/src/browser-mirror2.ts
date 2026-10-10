@@ -133,6 +133,8 @@ export class BrowserMirror2Renderer {
       if (isComposing || keyCode === 229) return
       this.syncRange()
       if (ctrlKey || metaKey || altKey) return
+      // A select's typeahead is the kernel's (a select emits no text input to forward).
+      if (this.active()?.localName === 'select' && /^[^\p{C}]$/u.test(key)) { event.preventDefault(); this.enqueue({ kind: 'key', key }); return }
       // Page keys scroll the viewer's own copy natively; the scroll listener sends the position.
       if (['Tab', 'Enter', 'Escape', 'Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(key)) {
         event.preventDefault()

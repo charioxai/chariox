@@ -618,3 +618,15 @@ test("MP-08: review #320-1 a range sent for an unfocused text control focuses it
       assert.deepEqual(await values(), expected, `MP-08: the edit replaced the range of #${name}; #a is unchanged`);
     }
   }));
+
+test("MP-08: review #320-2 a printable key on the focused select runs the kernel's typeahead and echoes as a form op", () => mirrored(
+  '<select id="s"><option>Apple</option><option>Banana</option><option>Cherry</option></select>', async ({ next, evaluate, input }) => {
+    const snapshot = await next(), id = elements(snapshot).find(([, , attrs]) => attrs.id === "s")[0];
+    await evaluate("document.getElementById('s').focus();true");
+    const focused = await next(600);
+    await input(focused.sequence, { kind: "key", key: "b" });
+    assert.equal(await evaluate("document.getElementById('s').value"), "Banana");
+    const forms = [];
+    for (let i = 0; i < 3 && !forms.length; i++) forms.push(...(await next(1000)).ops.filter(op => op.op === "form" && op.id === id));
+    assert.equal(forms[0]?.form.selected_index, 1, "MP-08: the viewer receives the kernel's typeahead result");
+  }));

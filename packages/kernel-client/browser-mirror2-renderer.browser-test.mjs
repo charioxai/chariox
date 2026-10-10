@@ -260,3 +260,16 @@ test('MP-08: review #320-1 a drag that selects in a control the kernel has not f
     assert.deepEqual(await sent(), [{ kind: 'text', text: 'x' }], 'MP-08: the edit follows without resending the range');
   } finally { await page.close(); }
 });
+
+test('MP-08: review #320-2 printable typeahead keys on a focused select go to the kernel; the viewer keeps the kernel\'s option until it echoes', async () => {
+  const page = await viewer();
+  try {
+    const option = (id, value) => ({ id, parent: 'n4', kind: 'element', tag: 'option', attrs: { value } });
+    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'select', form: { value: 'Apple', checked: false, selected_index: 0, selection_start: null, selection_end: null } },
+      option('n5', 'Apple'), { id: 'n6', parent: 'n5', kind: 'text', text: 'Apple' }, option('n7', 'Banana'), { id: 'n8', parent: 'n7', kind: 'text', text: 'Banana' }, option('n9', 'Cherry'), { id: 'n10', parent: 'n9', kind: 'text', text: 'Cherry' }]), focused: 'n4' });
+    await page.keyboard.press('b'); await page.keyboard.press('Shift+C'); await frames();
+    assert.deepEqual(await page.evaluate(() => window.sent.filter(action => action.kind !== 'scroll_to')), [{ kind: 'key', key: 'b' }, { kind: 'key', key: 'C' }], 'MP-08: the typeahead keys reach the kernel');
+    assert.equal(await page.evaluate(() => window.r.frame.contentDocument.querySelector('select').value), 'Apple', 'MP-08: no viewer-local typeahead');
+  } finally { await page.close(); }
+});
