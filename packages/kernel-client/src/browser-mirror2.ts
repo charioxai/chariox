@@ -108,22 +108,7 @@ export class BrowserMirror2Renderer {
     on('submit', event => event.preventDefault())
     // Native, local scrolling; opaque regions (canvas, video, foreign stills) take the wheel themselves.
     on('wheel', event => { const hit = element(event), wheel = event as WheelEvent; if (!hit || this.records.get(hit.id)?.kind !== 'tile') { this.localScrollAt = performance.now(); return } event.preventDefault(); this.enqueue({ kind: 'scroll', node_id: hit.id, ...offset(hit.el, wheel), delta_x: Math.trunc(wheel.deltaX), delta_y: Math.trunc(wheel.deltaY) }) })
-    let scrolled = new Set<Node>(), frame = 0
-    const position = (target: Node): [number, number] => target.nodeType === 9 ? [(target as Document).defaultView?.scrollX ?? 0, (target as Document).defaultView?.scrollY ?? 0] : [(target as Element).scrollLeft, (target as Element).scrollTop]
-    on('scroll', event => {
-      const target = event.target as Node, kernel = this.applied.get(target), now = position(target)
-      if (this.applying || kernel && Math.abs(kernel[0] - now[0]) < 1 && Math.abs(kernel[1] - now[1]) < 1) return
-      this.applied.delete(target)
-      this.localScrollAt = performance.now(); scrolled.add(target)
-      frame ||= requestAnimationFrame(() => {
-        frame = 0; const targets = scrolled; scrolled = new Set()
-        for (const target of targets) {
-          const doc = target.nodeType === 9 ? target as Document : null, id = this.ids.get(target)
-          if (doc) this.enqueue({ kind: 'scroll_to', node_id: doc === this.doc ? null : id ?? null, x: doc.defaultView?.scrollX ?? 0, y: doc.defaultView?.scrollY ?? 0 })
-          else if (id) this.enqueue({ kind: 'scroll_to', node_id: id, x: (target as Element).scrollLeft, y: (target as Element).scrollTop })
-        }
-      })
-    })
+    on('scroll', this.scrolled)
     on('keydown', event => {
       const { key, shiftKey, ctrlKey, metaKey, altKey } = event as KeyboardEvent
       if (ctrlKey || metaKey || altKey) return
@@ -137,6 +122,24 @@ export class BrowserMirror2Renderer {
     on('beforeinput', event => { const input = event as InputEvent; event.preventDefault(); if (input.isComposing || input.inputType.includes('Composition') || input.data === composed || !input.data) return; this.enqueue({ kind: 'text', text: input.data }) })
     on('compositionend', event => { event.preventDefault(); const data = (event as CompositionEvent).data; if (data) { composed = data; setTimeout(() => { composed = null }, 0); this.enqueue({ kind: 'text', text: data }) } })
     on('selectionchange', () => { if (this.applying) return; const selection = doc.getSelection(); if (!selection || selection.isCollapsed) return; const a = this.ids.get(selection.anchorNode!), b = this.ids.get(selection.focusNode!); if (a && b && this.records.get(a)?.kind === 'text' && this.records.get(b)?.kind === 'text') this.enqueue({ kind: 'selection', anchor_id: a, anchor_offset: selection.anchorOffset, focus_id: b, focus_offset: selection.focusOffset }) })
+  }
+  // Viewer scrolls (documents and shadow roots: element scroll events do not cross a shadow boundary).
+  private scrollTargets = new Set<Node>()
+  private scrollFrame = 0
+  private scrolled = (event: Event): void => {
+    const target = event.target as Node, kernel = this.applied.get(target)
+    const now = target.nodeType === 9 ? [(target as Document).defaultView?.scrollX ?? 0, (target as Document).defaultView?.scrollY ?? 0] : [(target as Element).scrollLeft, (target as Element).scrollTop]
+    if (this.applying || kernel && Math.abs(kernel[0] - now[0]!) < 1 && Math.abs(kernel[1] - now[1]!) < 1) return
+    this.applied.delete(target)
+    this.localScrollAt = performance.now(); this.scrollTargets.add(target)
+    this.scrollFrame ||= requestAnimationFrame(() => {
+      this.scrollFrame = 0; const targets = this.scrollTargets; this.scrollTargets = new Set()
+      for (const target of targets) {
+        const doc = target.nodeType === 9 ? target as Document : null, id = this.ids.get(target)
+        if (doc) this.enqueue({ kind: 'scroll_to', node_id: doc === this.doc ? null : id ?? null, x: doc.defaultView?.scrollX ?? 0, y: doc.defaultView?.scrollY ?? 0 })
+        else if (id) this.enqueue({ kind: 'scroll_to', node_id: id, x: (target as Element).scrollLeft, y: (target as Element).scrollTop })
+      }
+    })
   }
   // ---- resources
   private substitute(raw: string): string { return raw.replace(resourcePattern, (_, key: string) => `url("${this.resources.get(key) ?? this.empty}")`) }
@@ -238,7 +241,7 @@ export class BrowserMirror2Renderer {
   }
   private attachShadow(host: Element, record: Mirror2Record, fragment: DocumentFragment): void {
     let root: ShadowRoot | null = host.shadowRoot
-    if (!root) try { root = host.attachShadow({ mode: 'open' }) } catch { root = null }
+    if (!root) try { root = host.attachShadow({ mode: 'open' }); root.addEventListener('scroll', this.scrolled, { capture: true, passive: true }) } catch { root = null }
     if (!root) { this.forget(record.id); return }
     root.replaceChildren(...Array.from(fragment.childNodes))
     this.dom.set(record.id, root); this.ids.set(root, record.id)

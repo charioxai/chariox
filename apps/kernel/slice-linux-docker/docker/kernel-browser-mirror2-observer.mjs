@@ -133,7 +133,8 @@ export function installMirror2(sanitizeMirrorCss) {
     const watch = (root, rootId) => {
       roots.set(rootId, root);
       observer.observe(root, { subtree: true, childList: true, attributes: true, characterData: true });
-      if (root.nodeType === 9 && !listened.has(root)) {
+      // Shadow roots too: scroll, change, reset and load events do not cross their boundary.
+      if (!listened.has(root)) {
         listened.add(root);
         const listen = (type, fn) => root.addEventListener(type, fn, { capture: true, passive: true, signal: listening.signal });
         listen('scroll', event => { const target = event.target; dirty.scroll.add(target.nodeType === 9 ? target.documentElement : target); wake(); });

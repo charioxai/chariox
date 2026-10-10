@@ -239,3 +239,21 @@ test('MP-08: review #320-2 a terminal application failure followed by close rele
   assert.equal(f.failures.length, 1)
   assert.equal(f.requests.filter(command => command.op === 'mirror_close').length, 1, 'MP-08: one mirror_close frees the subscription, its observer and the shared budget')
 })
+
+test('MP-10: review #941-2 a viewer scroll inside a rendered open shadow root reaches the kernel', async () => {
+  const listeners = new Map<string, (event: unknown) => void>()
+  const root = { addEventListener: (type: string, fn: (event: unknown) => void) => listeners.set(type, fn), replaceChildren: () => {} }
+  const iframe = { setAttribute: () => {}, addEventListener: () => {}, style: {} }, container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
+  const sent: unknown[] = []
+  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async action => { sent.push(action) }) as unknown as { attachShadow(host: unknown, record: Mirror2Record, fragment: unknown): void; ids: WeakMap<object, string>; documentId: string }
+  renderer.documentId = 'd'
+  renderer.attachShadow({ shadowRoot: null, attachShadow: () => root }, { id: 'n7', parent: 'n6', kind: 'shadow' }, { childNodes: [] })
+  const scroller = { nodeType: 1, scrollLeft: 0, scrollTop: 300 }; renderer.ids.set(scroller, 'n9')
+  const raf = globalThis.requestAnimationFrame
+  globalThis.requestAnimationFrame = (fn: FrameRequestCallback) => setTimeout(() => fn(0), 0) as unknown as number
+  try {
+    listeners.get('scroll')?.({ target: scroller })
+    await new Promise(resolve => setTimeout(resolve, 10))
+  } finally { globalThis.requestAnimationFrame = raf }
+  assert.deepEqual(sent, [{ kind: 'scroll_to', node_id: 'n9', x: 0, y: 300 }])
+})

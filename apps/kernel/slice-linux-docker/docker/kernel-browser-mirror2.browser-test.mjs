@@ -364,3 +364,18 @@ test("MP-11: review #941-1(P1) a morphed child-frame node refuses clicks and key
     await input(morphed.sequence, { kind: "key", key: "Enter" });
   }, { "/list": { type: "text/html", body: frameTypeahead } }));
 
+const shadowScroller = '<x-s></x-s><script>customElements.define("x-s",class extends HTMLElement{constructor(){super();this.attachShadow({mode:"open"}).innerHTML=\'<div id="sc" style="height:100px;overflow:auto"><div style="height:2000px">long</div></div>\'}})</script>';
+test("MP-10: review #941-2 scrolling inside an open shadow root reaches every viewer (page script, another viewer's scroll_to)", () => mirrored(shadowScroller, async ({ next, evaluate, subscribe }) => {
+  const a = { next }, b = await subscribe();
+  const snapA = await a.next(), snapB = await b.next();
+  const scroller = snapshot => elements(snapshot).find(([, , attrs]) => attrs.id === "sc")?.[0];
+  const [idA, idB] = [scroller(snapA), scroller(snapB)];
+  assert(idA && idB, "MP-10: the shadow scroller is mirrored");
+  const scrolls = async (viewer, id, y) => { const seen = []; for (let i = 0; i < 4 && !seen.some(s => s[1] === y); i++) seen.push(...(await viewer.next(1000)).ops.filter(op => op.op === "scroll" && op.id === id).map(op => op.scroll)); return seen; };
+  await evaluate("document.querySelector('x-s').shadowRoot.getElementById('sc').scrollTop=300;true");
+  assert.deepEqual(await scrolls(a, idA, 300), [[0, 300]], "MP-10: viewer A follows the page's shadow scroll");
+  assert.deepEqual(await scrolls(b, idB, 300), [[0, 300]], "MP-10: viewer B follows the page's shadow scroll");
+  await b.input((await b.next(0)).sequence, { kind: "scroll_to", node_id: idB, x: 0, y: 600 });
+  assert.deepEqual(await scrolls(a, idA, 600), [[0, 600]], "MP-10: viewer A follows viewer B's shadow scroll");
+}));
+
