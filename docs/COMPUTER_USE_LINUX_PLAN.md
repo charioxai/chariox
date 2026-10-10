@@ -4,6 +4,44 @@ Phase A source: OSS main `e325afa580d81954e2c179757fc53fa02ed2a2b3`
 (local435 / relay73). Work branch: `computer/unicode-input-ocr-main`.
 This is an audit and proposed design, not Phase B implementation or acceptance.
 
+## MP-08 / MP-10 / MP-11: hosted capture and Drill D scope (2026-10-10)
+
+The culinux r32 campaign measures OSS #958
+`b27870a9a44a50897b205477a99fd7410e143c06` with Cloud #313
+`04764d3734f199fdf7bc5b94e1c39828efbfc205`. Its native kernel, real built
+TUI, web entry and relay use those sources; screenshots and logs remain outside
+the repositories under the campaign evidence root. The capture flow navigates
+the real Wikipedia Linux article or MDN JavaScript page, opens Computer,
+captures a region crossing its title and desktop pixels, then opens the ready
+PNG thumbnail in the screenshot editor. The hosted WSS viewer uses an 8 Mbit/s
+uplink and 35 ms propagation in each direction at DPR 1 and 2.
+
+All four capture cells pass in the completed per-DPR runs: Wikipedia and MDN
+at DPR 1 and 2. Each produces a ready PNG draft and opens its thumbnail in the
+editor with no capture refusal. Both completed batches report no remaining
+owned processes and remove their disposable kernel homes. The earlier real
+RED campaign retains OSS `449f5b43149d342b4385f78556febc903e44e503` / Cloud
+`f2bfbbd884ebf966fdd9e50bd60c7be61d9a020a`; all four capture gestures failed
+there. These results establish capture acceptance for this scoped campaign,
+not the broader site or provider matrix.
+
+The owner narrowed this round's Drill D to an official agent launching an
+installed editor through the Computer tool and editing a public document,
+observed in hosted Web at DPR 1 and 2. Native-host Vault insertion is separately
+blocked on the owner's Vault session; Google remains blocked without CAPTCHA
+bypass. This scope does not close the provider/placement/terminal matrix below,
+full-site mirroring, latency, smoothness, stability, or ordinary/Path-1 parity.
+
+Drill D cannot start an official OpenCode turn from the fresh product-created
+UID 65534 profile: `ProviderAccountProfileRegistry::require_authenticated`
+rejects `opencode/big-pickle` before provider dispatch. The ordinary
+`LinkProviderAccountProfile` request to the documented fleet OpenCode scope also
+fails with Unix permission denied under that UID. The missing prerequisite is
+a Chariox-materialized authenticated Zen scope accessible to UID 65534, or a
+supported free-model admission path. This is not a provider quota failure or a
+request for a new personal login. Shared credentials and permissions were not
+changed, and the authentication guard was not weakened.
+
 ## MP-08 / MP-10 / MP-11: reconcile #846
 
 Compared #846 `0c4e848eb9997741cbde03f4c20f5de502a0794e` with the
