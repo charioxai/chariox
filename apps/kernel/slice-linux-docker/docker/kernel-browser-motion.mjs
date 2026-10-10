@@ -26,9 +26,11 @@ export class MotionEncoder {
  // Nothing was encoded for it, so no reference chain is retired.
  retry(sample){if(sample?.serial===this.lastSerial&&!this.pending&&!this.closed){this.lastSerial=sample.serial-1;this.offer(sample)}}
  offer(sample){if(!sample||this.closed||!this.valid()||sample.serial<=this.lastSerial)return;this.lastSerial=sample.serial;if(!this.shouldEncode(sample)){this.wakeReady();return;}this.pending?.raw?.release?.();sample.raw?.retain?.();this.pending={...sample,offeredAt:this.now()};this.pump();}
- pump(){if(this.active||!this.pending||this.closed||this.frames.length>=2)return;this.active=this.run().catch(()=>{if(!this.closed)this.failure=Error('MD-DISPLAY: motion encoder failed')}).finally(()=>{this.active=null;if(this.failure)this.wakeReady();if(this.pending&&!this.closed&&!this.failure)this.pump()});}
+ // MP-08/MP-10: one completed native packet waits for credit. Coalesce
+ // only unencoded samples; every encoded reference is still delivered.
+ pump(){if(this.active||!this.pending||this.closed||this.frames.length>=(this.native?1:2))return;this.active=this.run().catch(()=>{if(!this.closed)this.failure=Error('MD-DISPLAY: motion encoder failed')}).finally(()=>{this.active=null;if(this.failure)this.wakeReady();if(this.pending&&!this.closed&&!this.failure)this.pump()});}
  async run(){
-  while(this.pending&&!this.closed&&!this.failure&&this.frames.length<2){
+  while(this.pending&&!this.closed&&!this.failure&&this.frames.length<(this.native?1:2)){
    const sample=this.pending;this.pending=null;this.native=Boolean(sample.raw?.nativeEncode);const rowMode=Boolean(this.stripes&&sample.raw&&!denseNative(sample.raw));if(this.rowMode!==rowMode)this.key=true;this.rowMode=rowMode;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
    try{
    const encoded=rowMode?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec,sample[displayMaskRegions]??[]);this.timing('motion_encode',at);
@@ -66,8 +68,8 @@ export class MotionEncoder {
    if(this.closed||!this.valid()){this.encoder.discard?.(encoded);return;}
    if(encoded.stripes?.length===0)continue;
    if(revision!==this.revision){this.encoder.discard?.(encoded);if(encoded.stripes&&!this.key)for(const row of encoded.stripes)this.resetRows.add(row.row);else this.key=true;continue;}
-   if(this.frames.length>=2||this.frames.reduce((n,f)=>n+frameBytes(f),(JSON.stringify(encoded).length+(encoded.packet?.length??0)))>1024*1024){this.encoder.discard?.(encoded);this.invalidate();continue;}
-   this.frames.push({...sample,encoded,encoded_ms:performance.timeOrigin+this.now()});this.wakeReady();
+   if(this.frames.length>=(this.native?1:2)||this.frames.reduce((n,f)=>n+frameBytes(f),(JSON.stringify(encoded).length+(encoded.packet?.length??0)))>1024*1024){this.encoder.discard?.(encoded);this.invalidate();continue;}
+   this.frames.push({...sample,encoded,encode_started_ms:at,encoded_ms:performance.timeOrigin+this.now()});this.wakeReady();
    }finally{sample.raw?.release?.()}
   }
  }

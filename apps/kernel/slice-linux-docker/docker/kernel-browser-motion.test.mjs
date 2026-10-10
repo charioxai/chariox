@@ -203,3 +203,15 @@ for(const native of [true,false])test('MP-08/MP-10 congestion rate change keeps 
   assert.ok(calls[1].bitrate<8000000,'congestion lowers the rate');assert.equal(calls[1].key,!native);
  }finally{await m.close()}
 });
+
+// MP-08/MP-10/MP-11: completed native packets keep their decoder references;
+// only the newest unencoded sample replaces work waiting for a credit.
+test('MP-08/MP-10 native motion keeps one encoded frame ahead of delivery',async()=>{
+ let offer;const calls=[],source={subscribe:f=>(offer=f,()=>{}),sample:()=>null};
+ const m=new MotionEncoder(source,{encode:async raw=>(calls.push(raw.serial),{key:calls.length===1,data_base64:'AA=='})},{codec:'avc1.420033',bitrate:8000000});
+ try{
+  for(let serial=1;serial<=5;serial++){offer({serial,raw:{serial,nativeEncode(){}}});await m.active;}
+  assert.equal(m.frames.length,1,'one completed packet waits for a credit');assert.deepEqual(calls,[1]);
+  assert.equal(m.take().serial,1);await m.active;assert.deepEqual(calls,[1,5]);assert.equal(m.take().encoded.key,false);
+ }finally{await m.close();}
+});

@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { displayTiming, timestamp } from './kernel-browser-timing.mjs';
+import { displayTiming, timestamp, timedHostRequests } from './kernel-browser-timing.mjs';
 import { hostErrorLabel, hostFailureMessage } from './kernel-browser-error-label.mjs';
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
@@ -759,5 +759,5 @@ if (process.argv[2] === "stdio" && process.argv[1] && import.meta.url === pathTo
   const stop = async () => { if (closing) return; closing = true; await host.stop(); process.exit(0); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
-  await new BrowserControllerStdioServer({ scheduleRequest: request => scheduleHostRequest(request, host.browser), handleRequest: (request, options) => host.handle(request, options) }).run().finally(() => host.stop());
+  await new BrowserControllerStdioServer(timedHostRequests(host, scheduleHostRequest)).run().finally(() => host.stop());
 }
