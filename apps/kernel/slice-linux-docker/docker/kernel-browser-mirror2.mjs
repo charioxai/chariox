@@ -10,8 +10,9 @@ import { assertCurrentDocument, assertNotCancelled } from './browser-controller-
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
 import { decodePng, maskPixels } from './kernel-browser-pixels.mjs';
 import { losslessRegion } from './kernel-browser-display.mjs';
-import { MirrorFrames, slotOf, localId } from './kernel-browser-mirror2-frames.mjs';
+import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror2-frames.mjs';
 
+const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
 const MAX_WAIT_MS = 2000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
 // Protocol 489: resource bytes travel in slices (base64 characters, a multiple
 // of 4) of at most a packet budget, smaller while the viewer is typing or
@@ -312,6 +313,11 @@ export class Mirror2 {
     else packet.ops = [...source.ops, ...sheets];
     // Morphed nodes (a new page node under a viewer id) count as changed targets.
     for (const id of [...(packet.ops ?? []).filter(op => op.op === 'attr').map(op => op.id), ...(reset ? [] : source?.changed ?? [])]) stream.attrSequence.set(id, sequence);
+    // Text/key targets: when each node reached the viewer, and when its identity (morph, type,
+    // editability) last changed. Ordinary attribute churn (aria-* per keystroke) does not refuse typing.
+    if (reset) { stream.introduced = new Map(); stream.identity = new Map(); }
+    for (const record of [...(packet.nodes ?? []), ...(packet.ops ?? []).flatMap(op => op.op === 'children' ? op.nodes : [])]) if (!stream.introduced.has(record.id)) stream.introduced.set(record.id, sequence);
+    for (const id of [...(packet.ops ?? []).filter(op => op.op === 'attr' && TARGET_ATTRIBUTES.has(op.name)).map(op => op.id), ...(reset ? [] : source?.changed ?? [])]) stream.identity.set(id, sequence);
     if (reset) stream.sheetRefs = new Set();
     dedupeMirrorSheets(packet, stream.sheetRefs ??= new Set());
     if (packet.nodes) packet.nodes = encodeMirrorRecords(packet.nodes, null);
@@ -556,7 +562,13 @@ export class Mirror2 {
     if (action.kind === 'focus') { const entry = frameOf(action.node_id); return { perform: async () => { if (entry) await inFrame(entry, `${m}.focus(${JSON.stringify({ node_id: localId(action.node_id) })})`); else await call(`${m}.focus(${JSON.stringify({ node_id: action.node_id })})`); } }; }
     if (action.kind === 'selection') { const entry = frameOf(action.anchor_id); return { perform: async () => { if (entry) await inFrame(entry, `${m}.select(${JSON.stringify({ ...action, anchor_id: localId(action.anchor_id), focus_id: localId(action.focus_id) })})`); else await call(`${m}.select(${JSON.stringify(action)})`); } }; }
     // Live focus inside a mirrored cross-origin frame is validated in that frame.
-    const activeTarget = async editable => { const owner = await call(`${m}.activeForeign()`); const entry = owner && stream.frames.get(owner); if (owner && !entry) throw new Error('MP-11: unavailable native text focus'); return entry ? inFrame(entry, `${m}.activeTarget(${editable})`) : call(`${m}.activeTarget(${editable})`); };
+    // The live focused leaf and its ancestry must be part of the viewer's applied epoch.
+    const seen = ids => { for (const id of ids) { const at = stream.introduced?.get(id); if (!at || at > input.sequence || (stream.identity.get(id) ?? 0) > input.sequence) throw new Error('MP-11: changed mirror input target'); } };
+    const activeTarget = async editable => {
+      const owner = await call(`${m}.activeForeign()`); const entry = owner && stream.frames.get(owner); if (owner && !entry) throw new Error('MP-11: unavailable native text focus');
+      if (!entry) return seen(await call(`${m}.activeTarget(${editable})`));
+      seen((await inFrame(entry, `${m}.activeTarget(${editable})`)).map(id => rebaseId(id, entry.slot))); seen(await call(`${m}.ancestry(${JSON.stringify(owner)})`));
+    };
     // The shared text preflight's verdict for focus inside a mirrored cross-origin frame.
     const frameSensitive = async expression => { const owner = await call(`${m}.activeForeign()`); const entry = owner && stream.frames.get(owner); return entry ? inFrame(entry, expression) : true; };
     if (action.kind === 'key') {

@@ -248,3 +248,25 @@ test("MP-10: opaque-region stills never ride on a DOM-change packet and an uncha
   let changed = []; for (let i = 0; i < 4 && !changed.length; i++) changed = (await next(600)).tiles;
   assert.equal(changed.length, 1, "MP-10: a changed still reaches the viewer");
 }));
+
+test("MP-11: review #941-1(P1) text/keys are refused for a focused field the viewer has not applied (delayed packet, programmatic focus)", () => mirrored(
+  '<input id="a"><p id="x">page</p>', async ({ next, evaluate, input }) => {
+    const snapshot = await next();
+    await input(snapshot.sequence, { kind: "focus", node_id: elements(snapshot).find(([, tag, attrs]) => tag === "input" && attrs.id === "a")[0] });
+    // The page inserts and focuses another input; credit 2 serializes it, but that reply never reached the viewer.
+    await evaluate("const b=document.createElement('input');b.id='b';document.body.append(b);b.focus()");
+    const unseen = await next(600);
+    assert(unseen.ops.some(op => op.op === "children"), "MP-10: the new input is serialized in a later packet");
+    await assert.rejects(input(snapshot.sequence, { kind: "text", text: "secret" }), /changed mirror input target/);
+    await assert.rejects(input(snapshot.sequence, { kind: "key", key: "Enter" }), /changed mirror input target/);
+    assert.equal(await evaluate("document.querySelector('#b').value"), "", "MP-11: nothing reached the unseen field");
+    // Once applied, the same focus is admitted.
+    await input(unseen.sequence, { kind: "text", text: "ok" });
+    assert.equal(await evaluate("document.querySelector('#b').value"), "ok");
+    // An identity change of the focused field (text -> password) after the viewer's epoch is refused too.
+    await evaluate("document.querySelector('#b').type='search'");
+    const swapped = await next(600);
+    await assert.rejects(input(unseen.sequence, { kind: "text", text: "x" }), /changed mirror input target/);
+    await input(swapped.sequence, { kind: "text", text: "!" });
+    assert.equal(await evaluate("document.querySelector('#b').value"), "ok!");
+  }));
