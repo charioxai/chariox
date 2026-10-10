@@ -83,7 +83,7 @@ pub fn run_codex_utility_prompt(
     if policy.is_read_only_discovery() {
         state.set_read_only_discovery_permissions(true);
     }
-    state.ephemeral = policy.is_metadata_only();
+    state.ephemeral = policy.is_read_only_discovery();
     let input = codex_input(prompt, &[]);
     let thread_id = state.thread_id().to_string();
     let response = client.turn_start(
