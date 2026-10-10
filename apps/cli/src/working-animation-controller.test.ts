@@ -39,6 +39,7 @@ test("working animation starts and stops one interval", () => {
 })
 
 function createHarness(options: {
+  hasWaitingDeadline?: boolean
   sessionStatusMode?: string
   splitAgentResponseMode?: boolean
 } = {}) {
@@ -56,6 +57,7 @@ function createHarness(options: {
       calls.push("frame")
     },
     sessionStatusMode: () => options.sessionStatusMode ?? "idle",
+    hasWaitingDeadline: () => options.hasWaitingDeadline ?? false,
     splitAgentResponseMode: () => options.splitAgentResponseMode ?? false,
     updateSessionChrome: () => {
       calls.push("chrome")
@@ -70,3 +72,9 @@ function createHarness(options: {
     calls: () => calls,
   }
 }
+
+test("MP-08/MP-09/MP-10/MP-11 waiting deadlines repaint once per second while native provider is idle", () => {
+  const harness = createHarness({ hasWaitingDeadline: true })
+  for (let i = 0; i < 9; i++) harness.controller.tick()
+  assert.equal(harness.calls().filter((call) => call === "chrome").length, 1)
+})

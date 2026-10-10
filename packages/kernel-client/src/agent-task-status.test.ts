@@ -32,17 +32,25 @@ test("MP-08/MP-09/MP-10/MP-11 A02 malformed wait is safely blocked", () => {
 // MP-08/MP-10/MP-11 G13: actual single-pane status must show the durable wait.
 test("focused footer does not call a durable waiting task idle", () => {
   const session = { agent_tasks: [task("waiting")] } as RuntimeSession
-  const options = { attached: true, daemonDisconnected: false, activeStatusLabel: null,
+  const options = { attached: true, daemonDisconnected: false, activeStatusLabel: null, nowMs: 0,
     focusedBusy: false, agents: [{ id: "agent", busy: false }],
     taskStatus: sessionAgentTaskStatus(session, "agent") }
-  assert.equal(sessionFocusedStatusBadge(options).label, "WAITING UNTIL 00:01:00Z")
+  assert.equal(sessionFocusedStatusBadge(options).label, "WAITING 1:00 UNTIL 00:01:00Z")
 })
 
 // MP-08/MP-09/MP-10/MP-11 G13: long reasons must not consume the terminal footer.
 test("focused waiting deadline stays readable with long reasons and multiple agents", () => {
   const session = { agent_tasks: [{ ...task("waiting"), reason: "source review ".repeat(100) }] } as RuntimeSession
-  const options = { attached: true, daemonDisconnected: false, activeStatusLabel: null,
+  const options = { attached: true, daemonDisconnected: false, activeStatusLabel: null, nowMs: 0,
     focusedBusy: false, agents: [{ id: "agent", busy: false }, { id: "peer", busy: true }],
     taskStatus: sessionAgentTaskStatus(session, "agent") }
-  assert.equal(sessionFocusedStatusBadge(options).label, "WAITING UNTIL 00:01:00Z")
+  assert.equal(sessionFocusedStatusBadge(options).label, "WAITING 1:00 UNTIL 00:01:00Z")
+})
+
+test("MP-08/MP-09/MP-10/MP-11 G13 deadline countdown advances without settling the task", () => {
+  const session = { agent_tasks: [task("waiting")] } as RuntimeSession
+  const options = { attached: true, daemonDisconnected: false, activeStatusLabel: null,
+    focusedBusy: false, taskStatus: sessionAgentTaskStatus(session, "agent") }
+  assert.match(sessionFocusedStatusBadge({ ...options, nowMs: 30000 }).label, /WAITING 0:30 UNTIL /)
+  assert.match(sessionFocusedStatusBadge({ ...options, nowMs: 60001 }).label, /WAITING due now UNTIL /)
 })

@@ -18,7 +18,7 @@ import {
   sessionPromptStateRecordForAgent,
   type SessionAgentPromptStateLike,
 } from "./session-agent-prompt-state.js"
-import { agentTaskStatus } from "@chariox/tool-display/agent-task-status"
+import { agentTaskStatus, agentWaitCountdown } from "@chariox/tool-display/agent-task-status"
 
 export type AgentRuntimeProjectionContext = {
   readonly agentActivity?: Record<string, AgentRuntimeActivityBusyInput> | null | undefined
@@ -84,6 +84,7 @@ export function sessionFocusedStatusBadge(options: {
   readonly activeStatusLabel: string | null
   readonly focusedBusy: boolean
   readonly agents?: readonly SessionAgentBusyState[]
+  readonly nowMs?: number
   readonly taskStatus?: SessionAgentPaneStatusBadge | null
 }): SessionFocusedStatusBadge {
   if (!options.attached) {
@@ -98,7 +99,7 @@ export function sessionFocusedStatusBadge(options: {
     const task = options.taskStatus
     // MP-08/MP-09/MP-10/MP-11 G13: reserve footer space for the actual deadline.
     const label = task.deadline_ms !== undefined
-      ? `WAITING UNTIL ${new Date(task.deadline_ms).toISOString().slice(11, 19)}Z`
+      ? `WAITING ${agentWaitCountdown(task.deadline_ms, options.nowMs ?? Date.now())} UNTIL ${new Date(task.deadline_ms).toISOString().slice(11, 19)}Z`
       : task.label.length > 24 ? `${task.label.slice(0, 23)}…` : task.label
     return sessionStatusBadge([{ label, tone: task.tone }])
   }

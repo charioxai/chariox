@@ -42,3 +42,13 @@ export function agentTaskStatus(session: AgentTaskStatusSession | null | undefin
   if (state === "blocked") return { state, label: `BLOCKED: ${reason}${suffix}`, tone: "error" }
   return { state, label: `${state.toUpperCase()}${suffix}`, tone: state === "working" ? "working" : "idle" }
 }
+
+// MP-08/MP-09/MP-10/MP-11 G13: bounded countdown for permanent client chrome.
+export function agentWaitCountdown(deadlineMs: number, nowMs: number): string {
+  if (!Number.isFinite(deadlineMs) || !Number.isFinite(nowMs)) return ""
+  const seconds = Math.max(0, Math.ceil((deadlineMs - nowMs) / 1000))
+  if (!seconds) return "due now"
+  if (seconds >= 86400) return ">24h"
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`
+}
