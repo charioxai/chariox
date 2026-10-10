@@ -7,7 +7,8 @@ import { handleRelayCloudCommand } from "./relay-cloud-command-handlers.js"
 import { createInitialCloudClientTokenIssuer } from "./cloud-client-token-issuer.js"
 import { parseArgs } from "./cli-options.js"
 import type { LocalIpcClient } from "./ipc.js"
-import type { RelayCloudProfile } from "./preferences.js"
+import type { RelayCloudProfile as PublicCloudProfile } from "./preferences.js"
+type RelayCloudProfile = PublicCloudProfile & { cloudSessionToken?: string; machineCredential?: string; cloudSessionExpiresAtMs?: number }
 
 test("relay cloud status reports missing cloud link", async () => {
   let notice = ""
@@ -52,7 +53,7 @@ test("relay cloud client-token lets kernel issuance pair the client and preserve
 
   assert.equal(savedClientId, "client-1")
   assert.equal(issuedSessionId, "session-1")
-  assert.match(notices[0] ?? "", /command=chariox --relay-url wss:\/\/relay\.example --relay-token relay-token --target-daemon-alias builder-kernel/)
+  assert.ok(notices.every(message => !message.includes("relay-token")))
   assert.equal(notices.at(-1), "cloud client token minted for builder-kernel")
 })
 
@@ -102,14 +103,8 @@ test("machine-only client-token uses shared kernel issuance and launches its can
   assert.equal(saved.length, 1)
   assert.equal(saved[0]?.clientId, "machine-scoped-client-1")
   assert.equal(machineOnly.clientId, undefined)
-  const command = notices[0]?.split("\n").find((line) => line.startsWith("command="))
-  assert.ok(command)
-  assert.equal(command, `command=${fixture.generatedCommand}`)
-  const options = parseArgs(command.slice("command=chariox ".length).split(" "))
-  assert.equal(options.targetDaemonId, canonicalTarget)
-  assert.equal(options.targetDaemonAlias ?? null, fixture.parsedTarget.daemonAlias)
-  assert.equal(options.relayToken, token)
-  assert.deepEqual(claims.allowed_targets, [options.targetDaemonId])
+  assert.ok(notices.every(message => !message.includes(token)))
+  assert.ok(notices[0]?.includes("next=select the target kernel"))
   assert.equal(notices.at(-1), `cloud client token minted for ${requestedAlias}`)
 })
 
@@ -148,8 +143,9 @@ test("restarted TUI client-token command issues for its saved paired login ident
     session_id: "session-1", public_key_thumbprint: "restart-key",
   } }, {RelayStatus: null}])
   assert.equal(notices.at(-1), "cloud client token minted for builder-kernel")
-  assert.match(notices[0]!, /--target-daemon-id kernel-1/)
-  assert.match(notices[0]!, /--relay-token-issuer/)
+  assert.match(notices[0]!, /target_daemon_id=kernel-1/)
+  assert.match(notices[0]!, /issuer_endpoint=/)
+  assert.ok(!notices[0]!.includes("relay-token"), "notices must not print credentials")
   const commandOptions = parseArgs(["--relay-url", "wss://relay.example", "--relay-token", "synthetic", "--target-daemon-id", "kernel-1", "--relay-token-issuer", "ws://127.0.0.1:49911/kernel", "issuing-kernel"])
   assert.deepEqual(commandOptions.relayTokenIssuer, {endpoint: "ws://127.0.0.1:49911/kernel", daemonId: "issuing-kernel"})
 })
@@ -290,3 +286,11 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     ...overrides,
   }
 }
+
+test("kernel logout preserves enrollment metadata until Cloud acknowledges unlink", async () => {
+  let cleared = false
+  const current = profile({kernelId: "kernel-a", kernelEnrolled: true})
+  const deps = {appendNotice: () => {}, flashFooter: () => {}, formatError: String, sessionState: () => session(), getCloudRelayProfile: async () => current, saveCloudRelayProfile: async () => {cleared = true}, logoutCloudRelay: async () => {throw new Error("Cloud unavailable")}}
+  await assert.rejects(handleRelayCloudCommand(deps, ["logout"]), /Cloud unavailable/)
+  assert.equal(cleared, false)
+})

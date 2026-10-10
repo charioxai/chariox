@@ -6,6 +6,13 @@ import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
 type FeatureMinimum = { feature: string; minimum: number }
 
 const features: Record<string, FeatureMinimum> = {
+  CloudRelayStatus: { feature: "Kernel Cloud ownership", minimum: 478 },
+  StartCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: 478 },
+  PollCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: 478 },
+  LogoutCloudRelay: { feature: "Kernel Cloud unlink", minimum: 478 },
+  ConnectCloudRelay: { feature: "Kernel Cloud ownership", minimum: 478 },
+  ResolveKernelClientConnection: { feature: "Key-bound kernel pivot", minimum: 478 },
+  IssueCloudRelayClientToken: { feature: "Kernel terminal delegation", minimum: 478 },
   RequestKernelAccess: { feature: "Local-kernel access", minimum: 470 },
   AcceptAppHostAction: { feature: "App host actions", minimum: requests.appHostActionMinimumProtocolVersion },
   RevokeAppFileGrants: { feature: "App file revocation", minimum: requests.appFileRevokeMinimumProtocolVersion },
@@ -54,7 +61,7 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     feature = { feature: "Local-kernel access", minimum: payload?.choice_id === "refuse" ? 451 : 470 }
   } else if (name === "RequestNativeProviderTurnInteraction" && payload?.origin != null) {
     feature = { feature: "Native provider approval origin", minimum: requests.nativeProviderInteractionMinimumProtocolVersion }
-  } else if ((name === "IssueCloudRelayClientToken" || name === "JoinTerminalPairingLink") && payload?.public_key_thumbprint != null) {
+  } else if ((name === "JoinTerminalPairingLink") && payload?.public_key_thumbprint != null) {
     feature = { feature: "Key-bound terminal connection", minimum: requests.relayClientKeyBindingMinimumProtocolVersion }
   }
   return feature

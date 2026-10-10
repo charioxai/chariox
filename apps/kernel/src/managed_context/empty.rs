@@ -689,6 +689,9 @@ mod tests {
         config.daemon_id = kernel_id.to_string();
         config.user_config.state.path = Some(root.join("state.db").display().to_string());
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url: api_url.to_string(),
             email: "user@example.test".to_string(),
             account_id: "account-1".to_string(),

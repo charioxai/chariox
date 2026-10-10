@@ -392,6 +392,9 @@ async fn structured_output_usage_resolves_the_cloud_owners_local_account_authori
     let cloud_owner_user_id = "cloud-owner";
     let mut config = crate::config::DaemonConfig::for_tests();
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         user_id: cloud_owner_user_id.to_string(),
         ..Default::default()
     });

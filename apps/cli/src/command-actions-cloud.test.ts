@@ -8,30 +8,16 @@ import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentLi
 import type { AgentInstance, ProviderProcessInfo, WorkflowQueuedPrompt, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 import { makeAgent, makeCommandDeps, makeSession, runGit } from "./command-actions-test-support.js"
 
-test("relay cloud login stores the bootstrap profile", async () => {
-  const notices: string[] = []
-  let savedProfile: Record<string, unknown> | null = null
+test("email bootstrap cannot bypass independent kernel enrollment", async () => {
+  let saved = false
+  const footers: string[] = []
   const handlers = createCommandActionHandlers(makeCommandDeps({
-    appendNotice: (message: string) => { notices.push(message) },
-    bootstrapCloudRelay: async (apiUrl: string, email: string, accountSlug?: string) => ({
-      apiUrl,
-      email,
-      accountId: "account-1",
-      userId: "user-1",
-      accountSlug: accountSlug ?? "user",
-      realmId: "realm-1",
-      relayUrl: "wss://relay.example",
-      issuerId: "issuer-1",
-    }),
-    saveCloudRelayProfile: async (profile: Record<string, unknown> | null) => {
-      savedProfile = profile
-    },
+    flashFooter: (message: string) => { footers.push(message) },
+    saveCloudRelayProfile: async () => { saved = true },
   }))
-
-  await handlers.handleRelayCommand({ kind: "relay", raw: "/relay cloud login", args: ["cloud", "login", "https://cloud.example", "user@example.com", "user"] })
-
-  assert.equal((savedProfile as { relayUrl?: string } | null)?.relayUrl, "wss://relay.example")
-  assert.equal(notices.at(-1), "cloud profile saved: user")
+  await handlers.handleRelayCommand({kind:"relay", raw:"/relay cloud login", args:["cloud", "login", "https://cloud.example.test", "fixture@example.test"]})
+  assert.equal(saved, false)
+  assert.match(footers[0] ?? "", /email bootstrap is retired/)
 })
 
 test("relay cloud login without args uses device flow", async () => {
@@ -55,7 +41,7 @@ test("relay cloud login without args uses device flow", async () => {
     }),
     startCloudDeviceLogin: async (apiUrl: string, input: { clientId?: string; machineId?: string; machineAlias?: string }) => {
       assert.equal(apiUrl, "https://staging.chariox.com")
-      assert.equal(input.clientId, "client-1")
+      assert.equal(input.clientId, undefined)
       assert.equal(input.machineId, "machine-1")
       assert.equal(input.machineAlias, "laptop")
       return {
@@ -225,7 +211,7 @@ test("/cloud links instead of opening when the local kernel is not linked", asyn
   await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
 
   assert.equal(startedDeviceLogin, true)
-  assert.match(notices[0] ?? "", /Link this machine to Chariox Cloud/)
+  assert.match(notices[0] ?? "", /Link this kernel to Chariox Cloud/)
   assert.doesNotMatch(notices[0] ?? "", /Opening Chariox Cloud/)
 })
 
@@ -291,7 +277,7 @@ test("/cloud links instead of opening when the cloud machine identity was revoke
   assert.equal(startedDeviceLogin, true)
   assert.deepEqual(openedUrls, ["https://cloud.example/activate?user_code=ABCD-EFGH"])
   assert.match(notices[0] ?? "", /Cloud link needs refresh/)
-  assert.match(notices[1] ?? "", /Link this machine to Chariox Cloud/)
+  assert.match(notices[1] ?? "", /Link this kernel to Chariox Cloud/)
   assert.doesNotMatch(notices.join("\n"), /Opening Chariox Cloud/)
 })
 
@@ -357,7 +343,7 @@ test("/cloud link triggers hosted device login flow", async () => {
   await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud link", args: ["link"] })
 
   assert.deepEqual(flashed, [])
-  assert.match(notices[0] ?? "", /Link this machine to Chariox Cloud/)
+  assert.match(notices[0] ?? "", /Link this kernel to Chariox Cloud/)
   assert.equal(notices.at(-1), "cloud linked: user")
 })
 

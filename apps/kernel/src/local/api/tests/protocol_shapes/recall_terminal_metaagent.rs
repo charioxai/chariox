@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_semantic_recall_search_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
 
     let request = LocalDaemonRequest::SemanticSearchRecall(SemanticSearchRecallRequest {
         query: "why did the build fail".to_string(),
@@ -120,7 +120,7 @@ fn local_daemon_protocol_semantic_recall_search_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_query_recall_context_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
 
     let request = LocalDaemonRequest::QueryRecall(QueryRecallRequest {
         session_id: Some("session-1".to_string()),
@@ -153,7 +153,7 @@ fn local_daemon_protocol_query_recall_context_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
         session_id: "session-1".to_string(),
@@ -186,7 +186,7 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
 
     let request =
         LocalDaemonRequest::UpdateProviderRunSelection(UpdateProviderRunSelectionRequest {
@@ -216,7 +216,7 @@ fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_terminal_input_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
 
     let request = LocalDaemonRequest::SendTerminalInput(SendTerminalInputRequest {
         session_id: "session-1".to_string(),
@@ -252,7 +252,7 @@ fn local_daemon_protocol_terminal_input_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_terminal_output_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
 
     let batch_request = LocalDaemonRequest::AppendNativeProviderOutputBatch(
         AppendNativeProviderOutputBatchRequest {
@@ -399,7 +399,7 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_metaagent_event_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
 
     let search =
         LocalDaemonRequest::SearchMetaagentCommands(crate::local::SearchMetaagentCommandsRequest {
@@ -642,7 +642,7 @@ fn local_daemon_protocol_metaagent_event_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
 
     let account = RelayProviderAccountSummary {
         provider: "codex".to_string(),
@@ -709,10 +709,11 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
 
 #[test]
 fn local_daemon_protocol_kernel_client_connection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
 
     let snapshot = serde_json::json!([
         LocalDaemonRequest::ResolveKernelClientConnection(ResolveKernelClientConnectionRequest {
+            public_key_thumbprint: None,
             kernel_ref: "kernel-1".to_string(),
             machine_ref: Some("machine-1".to_string()),
             client_id: Some("cli-1".to_string()),
@@ -743,6 +744,6 @@ fn local_daemon_protocol_kernel_client_connection_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "623235862705f7aa8f85c6b29f98188caa2b75ac7acf0f8f72f63f822b888e9a"
+        "7dacd30594d735dbe373670c4c0425d5c4515181243af73fbc482140db326912"
     );
 }

@@ -267,7 +267,7 @@ async fn authenticated_public_setup_status_request_has_a_bounded_worker_response
     let start_private_key = send_client_request(
         &mut client_socket,
         "setup-status-latency-start",
-        &config_home.daemon_id,
+        &config_home,
         &home_public_key,
         LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
             operation_id: operation_id.clone(),
@@ -300,7 +300,7 @@ async fn authenticated_public_setup_status_request_has_a_bounded_worker_response
     let _status_private_key = send_client_request(
         &mut client_socket,
         "setup-status-latency-get",
-        &config_home.daemon_id,
+        &config_home,
         &home_public_key,
         LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
             GetProjectEnvironmentSetupStatusRequest {
@@ -360,7 +360,7 @@ async fn authenticated_public_setup_status_request_has_a_bounded_worker_response
     let recovery_private_key = send_client_request(
         &mut recovery_socket,
         "setup-status-latency-recovery-get",
-        &config_home.daemon_id,
+        &config_home,
         &recovery_home_public_key,
         LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
             GetProjectEnvironmentSetupStatusRequest { operation_id },
@@ -650,7 +650,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls_with_mode(
     let start_private_key = send_client_request(
         &mut first_client,
         "setup-status-concurrent-start",
-        &config_home.daemon_id,
+        &config_home,
         &first_home_public_key,
         LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
             operation_id: operation_id.clone(),
@@ -747,7 +747,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls_with_mode(
         let fresh_get_private_key = send_client_request(
             &mut first_client,
             "setup-status-dropped-get-fresh-poll",
-            &config_home.daemon_id,
+            &config_home,
             &first_home_public_key,
             LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
                 GetProjectEnvironmentSetupStatusRequest {
@@ -843,7 +843,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls_with_mode(
         let cancel_private_key = send_client_request(
             &mut recovery_client,
             "setup-status-dropped-get-cancel",
-            &config_home.daemon_id,
+            &config_home,
             &recovery_home_public_key,
             LocalDaemonRequest::CancelProjectEnvironmentSetup(
                 CancelProjectEnvironmentSetupRequest {
@@ -878,7 +878,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls_with_mode(
         let retry_private_key = send_client_request(
             &mut recovery_client,
             "setup-status-dropped-get-retry",
-            &config_home.daemon_id,
+            &config_home,
             &recovery_home_public_key,
             LocalDaemonRequest::RetryProjectEnvironmentSetup(RetryProjectEnvironmentSetupRequest {
                 operation_id: operation_id.clone(),
@@ -924,7 +924,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls_with_mode(
         let final_get_private_key = send_client_request(
             &mut recovery_client,
             "setup-status-dropped-get-final-poll",
-            &config_home.daemon_id,
+            &config_home,
             &recovery_home_public_key,
             LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
                 GetProjectEnvironmentSetupStatusRequest { operation_id },
@@ -993,7 +993,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls_with_mode(
     let _ = send_client_request(
         &mut first_client,
         "setup-status-concurrent-get-a",
-        &config_home.daemon_id,
+        &config_home,
         &first_home_public_key,
         LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
             GetProjectEnvironmentSetupStatusRequest {
@@ -1014,7 +1014,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls_with_mode(
     let _ = send_client_request(
         &mut second_client,
         "setup-status-concurrent-get-b",
-        &config_home.daemon_id,
+        &config_home,
         &second_home_public_key,
         LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
             GetProjectEnvironmentSetupStatusRequest {
@@ -1075,7 +1075,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls_with_mode(
     let recovery_private_key = send_client_request(
         &mut recovery_client,
         "setup-status-concurrent-recovery-get",
-        &config_home.daemon_id,
+        &config_home,
         &recovery_home_public_key,
         LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
             GetProjectEnvironmentSetupStatusRequest {
@@ -1130,7 +1130,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls_with_mode(
         let post_loss_private_key = send_client_request(
             &mut recovery_client,
             "setup-status-acknowledged-loss-get",
-            &config_home.daemon_id,
+            &config_home,
             &recovery_home_public_key,
             LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
                 GetProjectEnvironmentSetupStatusRequest { operation_id },

@@ -15,7 +15,7 @@ import type {
   DeploymentSetupCheckpoint,
   DeploymentSetupConfiguration,
 } from "./deployed-workflow-setup-api.js"
-import type { RelayCloudProfile } from "./preferences.js"
+import type { CloudControlProfile as RelayCloudProfile } from "./cloud-control-auth.js"
 
 const sourceDigest = `sha256:${"a".repeat(64)}`
 const callerClaimsPublicKeyPem = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/pMgE2dD4Y9eL57S6f9+lve+T2A4M0ueD5GmOZfHjkI=\n-----END PUBLIC KEY-----\n"

@@ -460,7 +460,7 @@ pub(crate) async fn handle_connection(
                             let guard = registry.read().await;
                             let (machines, kernels, kernel) = match query {
                                 RelayMetadataQuery::ListLiveMachines => (
-                                    Some(guard.live_machines_in_realm(&identity.realm_id)),
+                                    Some(guard.live_machines_in_realm_with_targets(&identity.realm_id, identity.allowed_targets.as_deref())),
                                     None,
                                     None,
                                 ),
@@ -469,13 +469,13 @@ pub(crate) async fn handle_connection(
                                     Some(guard.live_kernels_for_machine_in_realm(
                                         &identity.realm_id,
                                         &machine_ref,
-                                    )),
+                                    ).into_iter().filter(|kernel| super::metadata_scope::kernel_is_permitted(kernel, identity.allowed_targets.as_deref())).collect()),
                                     None,
                                 ),
                                 RelayMetadataQuery::GetLiveKernel { kernel_ref } => (
                                     None,
                                     None,
-                                    guard.live_kernel_in_realm(&identity.realm_id, &kernel_ref),
+                                    guard.live_kernel_in_realm(&identity.realm_id, &kernel_ref).filter(|kernel| super::metadata_scope::kernel_is_permitted(kernel, identity.allowed_targets.as_deref())),
                                 ),
                             };
                             send_envelope(

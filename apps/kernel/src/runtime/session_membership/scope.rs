@@ -693,6 +693,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetCredentialVaultStatus(_)
         | LocalDaemonRequest::LockCredentialVault(_)
         | LocalDaemonRequest::ManageCredentialVault(_)
+        | LocalDaemonRequest::PreflightProviderAccountPortability(_)
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
         | LocalDaemonRequest::GetManagedEnvironment(_)
         | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)

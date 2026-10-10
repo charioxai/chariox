@@ -111,6 +111,11 @@ export function createWaitingRoomActivationController(
 
   const activate = async () => {
     try {
+      const detachedControl = deriveControlDecision({
+        state: deps.getWaitingRoomState(),
+        workspacePath: deps.getWorkspaceTarget(), worktreePath: deps.getWorktreeTarget(), remote: deps.getRemoteState(),
+      })
+      if (["cloud", "browse-kernel"].includes(detachedControl.action) && await applyControlDecision(detachedControl)) return
       if (!deps.isKernelConnected()) {
         await deps.connectKernel()
       }

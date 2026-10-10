@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdir } from "node:fs/promises"
+import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -19,19 +19,17 @@ import {
   cleanupHostedCloudIdentity,
   closeClient,
   createHostedCommandDeps,
-  devBrowserCloudLogin,
+  createCloudDrillClient,
+  loadCloudRelayDrillModules,
+  waitForCloudRelayTarget,
+  connectSessionScopedCloudClient,
+  cleanupHostedCloudTerminal,
   expectReject,
-  handleRelayCommandWithRetry,
   installSendRetry,
-  issueMachineRelayToken,
-  issueSessionScopedClientToken,
   log,
   makePorts,
   makeWorkerPorts,
   manualCloudDeviceLogin,
-  pairCloudMachineDirect,
-  parseCloudClientTokenNotice,
-  postJson,
   resolveExecutable,
   run,
   runSsh,
@@ -44,7 +42,6 @@ import {
   waitForCompletion,
   waitForHistoryText,
   waitForLocalDaemon,
-  waitForRelayTarget,
   waitForRemoteMachine,
   waitForSession,
 } from "./lib/live-hosted-cloud-relay-drill-helpers.mjs"
@@ -77,12 +74,18 @@ if ((runWorkspaceLiveSync || runTrackedWorkspaceLiveSync) && !runSecondKernel) {
 
 async function main() {
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
-    console.log("Usage: node apps/cli/scripts/live-hosted-cloud-relay-drill.mjs\n\nHosted scenario selection is controlled by CHARIOX_CLOUD_HOSTED_* environment variables.")
+    console.log("Usage: node apps/cli/scripts/live-hosted-cloud-relay-drill.mjs\n\nUse --check to validate built modules without live services.\nHosted scenario selection is controlled by CHARIOX_CLOUD_HOSTED_* environment variables.")
+    return
+  }
+  if (process.argv.includes("--check")) {
+    await loadCloudRelayDrillModules()
+    log("module-composition-ok")
     return
   }
   const ports = await makePorts()
   const runId = `hosted-cloud-relay-${process.pid}-${Date.now()}`
-  const rootDir = path.join(os.tmpdir(), runId)
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-hosted-relay-"))
+  const evidenceDir = path.join(process.env.CHARIOX_DRILL_EVIDENCE_DIR ?? path.join(os.homedir(), ".codex/evidence/live-hosted-cloud-relay"), runId)
   const workspace = path.join(rootDir, "workspace")
   const homeDir = path.join(rootDir, "home")
   const charioxHome = path.join(homeDir, ".chariox")
@@ -93,10 +96,10 @@ async function main() {
   const xdgRuntimeDir = path.join(homeDir, "run")
   const daemonId = `hosted-daemon-${process.pid}-${Date.now()}`
   const daemonAlias = `hosted-home-${process.pid}`
-  const clientId = `hosted-cli-${process.pid}-${Date.now()}`
+  let clientId = null
   const ownerAccountSlug = `hosted-owner-${process.pid}-${Date.now()}`
 
-  await prepareDrillArtifacts(rootDir)
+  await prepareDrillArtifacts(evidenceDir)
   await mkdir(workspace, { recursive: true })
   await mkdir(charioxHome, { recursive: true })
   await mkdir(xdgConfigHome, { recursive: true })
@@ -110,6 +113,9 @@ async function main() {
   let passed = false
   let failure = null
   let createdSessionId = null
+  let terminal = null
+  let ownerProfile = null
+  let modules = null
   const profileRef = { current: null }
 
   try {
@@ -123,12 +129,11 @@ async function main() {
     const kernelPath = await buildKernelIfNeeded()
     const python = await resolveExecutable(process.env.PYTHON ?? "python3")
 
-    const [{ LocalIpcClient }, loadedRequests, commandActions] = await Promise.all([
-      import("../../../packages/kernel-client/dist/ipc.js"),
-      import("../../../packages/kernel-client/dist/ipc-requests.js"),
-      import("../dist/command-actions.js"),
-    ])
-    requests = loadedRequests
+    modules = await loadCloudRelayDrillModules()
+    const { LocalIpcClient } = modules
+    requests = modules.requests
+    terminal = createCloudDrillClient(modules, rootDir, "owner-terminal")
+    clientId = `cli:${terminal.identity.publicKeyThumbprint}`
 
     const daemonEnv = withDevStubProviderInventory(withHostedKernelIsolation({
       ...process.env,
@@ -159,7 +164,7 @@ async function main() {
     localClient = new LocalIpcClient(kernelUrl, { localAuthEnvironment: daemonEnv })
 
     const notices = []
-    const handlers = commandActions.createCommandActionHandlers(createHostedCommandDeps({
+    const handlers = modules.createCommandActionHandlers(createHostedCommandDeps({
       workspace,
       clientId,
       localClient,
@@ -167,62 +172,27 @@ async function main() {
       profileRef,
       notices,
       ownerAccountSlug,
+      terminal,
+      modules,
     }))
 
+    // MP-08 / MP-10 / MP-11: enroll this kernel once, then authenticate the
+    // owner terminal independently with the CLIENT flow/private product store.
+    log("command-cloud-link", { apiUrl })
+    await handlers.handleCloudCommand({kind: "cloud", raw: "/cloud link", args: ["link"]})
+    assert(profileRef.current?.kernelEnrolled && profileRef.current.kernelId === daemonId, "hosted link should enroll the current kernel")
+    assert(!profileRef.current.cloudSessionToken && !profileRef.current.kernelCredential && !profileRef.current.machineCredential, "kernel profile must not export credentials")
+
     log("command-cloud-login", { apiUrl })
-    await handleRelayCommandWithRetry(handlers, {
-      kind: "relay",
-      raw: "/relay cloud login",
-      args: ["cloud", "login"],
-    }, "cloud-login")
-    assert(profileRef.current?.cloudSessionToken, "hosted cloud login should save an authenticated profile", profileRef.current)
+    await handlers.handleCloudCommand({kind: "cloud", raw: "/cloud login", args: ["login"]})
+    ownerProfile = await terminal.client.profile()
+    assert(ownerProfile?.clientId === clientId && ownerProfile.accountId === profileRef.current.accountId, "hosted terminal should use separate CLIENT authority in the enrolled account")
+    assert(!ownerProfile.machineId && !ownerProfile.kernelId, "terminal login must not enroll a kernel")
 
-    log("command-cloud-pair")
-    await handleRelayCommandWithRetry(handlers, {
-      kind: "relay",
-      raw: "/relay cloud pair hosted-drill-cli",
-      args: ["cloud", "pair", "hosted-drill-cli"],
-    }, "cloud-pair")
-    assert(profileRef.current?.clientId === clientId, "hosted cloud pair should save client id", profileRef.current)
-
-    log("command-cloud-pair-machine")
-    await handleRelayCommandWithRetry(handlers, {
-      kind: "relay",
-      raw: `/relay cloud pair-machine ${daemonId} hosted-drill-machine`,
-      args: ["cloud", "pair-machine", daemonId, "hosted-drill-machine"],
-    }, "cloud-pair-machine")
-    assert(profileRef.current?.machineId === daemonId, "hosted cloud pair-machine should save machine id", profileRef.current)
-
-    log("command-cloud-connect")
-    await handleRelayCommandWithRetry(handlers, {
-      kind: "relay",
-      raw: "/relay cloud connect",
-      args: ["cloud", "connect"],
-    }, "cloud-connect")
-
-    log("command-cloud-client-token")
-    await handleRelayCommandWithRetry(handlers, {
-      kind: "relay",
-      raw: `/relay cloud client-token ${daemonAlias}`,
-      args: ["cloud", "client-token", daemonAlias],
-    }, "cloud-client-token")
-    const clientRelay = parseCloudClientTokenNotice(notices)
-
-    log("relay-target-probe", { relayUrl: clientRelay.relayUrl, daemonAlias })
-    await waitForRelayTarget(
-      LocalIpcClient,
-      requests,
-      clientRelay.relayUrl,
-      clientRelay.relayToken,
-      daemonAlias,
-    )
-
-    remoteClient = installSendRetry(new LocalIpcClient(clientRelay.relayUrl, {
-      relayAuthToken: clientRelay.relayToken,
-      targetDaemonAlias: daemonAlias,
-      kernelPingIntervalMs: 60_000,
-      kernelMaxMissedPongs: 10,
-    }), "owner-relay")
+    log("relay-target-probe", { daemonId })
+    await waitForCloudRelayTarget(terminal.client, {daemonId, status: "ONLINE"})
+    const clientRelay = {relayUrl: ownerProfile.relayUrl}
+    remoteClient = installSendRetry(await terminal.client.connect(daemonId), "owner-relay")
 
     log("remote-session-create")
     const created = unwrap(
@@ -244,12 +214,12 @@ async function main() {
 
     if (runRemoteCli) {
       await runHostedRemoteCliAssertions({
+        apiUrl,
+        ownerAccountSlug,
+        ownerAccountId: ownerProfile.accountId,
         requests,
         homeClient: localClient,
         verificationClient: remoteClient,
-        relayUrl: clientRelay.relayUrl,
-        relayToken: clientRelay.relayToken,
-        targetDaemonAlias: daemonAlias,
         repoRoot,
         remoteCliRepo,
         remoteCliHost,
@@ -323,10 +293,14 @@ async function main() {
         trackedWorkspaceLiveSync: runTrackedWorkspaceLiveSync,
         trackedWorkspaceLiveSyncProvider,
         trackedWorkspaceLiveSyncModel,
-        homeDaemonAlias: daemonAlias,
         homeClient: localClient,
-        ownerProfile: profileRef.current,
-        ownerClientId: clientId,
+        ownerProfile,
+        ownerTerminal: terminal,
+        modules,
+        stateRoot: rootDir,
+        homeDaemonId: daemonId,
+        connectSessionScopedCloudClient,
+        cleanupHostedCloudTerminal,
         apiUrl,
         repoRoot,
         pollTimeoutMs,
@@ -334,17 +308,12 @@ async function main() {
         assert,
         unwrap,
         makeWorkerPorts,
-        pairCloudMachineDirect,
-        issueMachineRelayToken,
-        issueSessionScopedClientToken,
-        postJson,
         manualCloudDeviceLogin,
-        devBrowserCloudLogin,
         installSendRetry,
         expectReject,
         waitForLocalDaemon,
         allowDevStubProvider,
-        waitForRelayTarget,
+        waitForCloudRelayTarget,
         waitForRemoteMachine,
         waitForCompletion,
         closeClient,
@@ -356,25 +325,23 @@ async function main() {
 
     if (runMultiUser) {
       await runHostedMultiUserAssertions({
-        LocalIpcClient,
         requests,
-        localClient,
         ownerRemoteClient: remoteClient,
-        ownerProfile: profileRef.current,
-        ownerClientId: clientId,
+        ownerProfile,
+        ownerTerminal: terminal,
+        modules,
+        stateRoot: rootDir,
+        homeDaemonId: daemonId,
+        connectSessionScopedCloudClient,
+        cleanupHostedCloudTerminal,
         workspace,
-        daemonAlias,
         session: created.session,
-        apiUrl,
         log,
         assert,
         unwrap,
-        postJson,
-        issueSessionScopedClientToken,
         manualCloudDeviceLogin,
         installSendRetry,
         expectReject,
-        cleanupHostedCloudIdentity,
       })
     } else {
       log("multi-user-skipped", {
@@ -387,7 +354,7 @@ async function main() {
     log("pass", {
       apiUrl,
       relayUrl: clientRelay.relayUrl,
-      accountSlug: profileRef.current.accountSlug,
+      accountSlug: ownerProfile.accountSlug,
       sessionId: created.session.id,
       multiUser: runMultiUser,
       remoteCli: runRemoteCli,
@@ -411,23 +378,26 @@ async function main() {
         })
       })
     }
+    if (localClient && profileRef.current?.kernelEnrolled) {
+      await modules.relayApi.logoutCloudRelay(localClient).catch(error => {
+        cleanupErrors.push(error)
+        log("cloud-kernel-unlink-failed", {error: error instanceof Error ? error.message : String(error)})
+      })
+    }
     await closeClient(remoteClient, "remote")
     await closeClient(localClient, "local")
     await terminateChild(daemon)
-    if (profileRef.current) {
-      await cleanupHostedCloudIdentity({
-        profile: profileRef.current,
-        clientIds: [clientId],
-        machineIds: [daemonId],
-        kernelPresences: [{ machineId: daemonId, kernelId: daemonId }],
+    if (terminal && await terminal.client.profile()) {
+      await cleanupHostedCloudTerminal(terminal, {
+        machineIds: [profileRef.current?.machineId],
         reason: "hosted Cloud relay drill cleanup",
-      }).catch((error) => {
+      }).catch(error => {
         cleanupErrors.push(error)
-        log("cloud-identity-cleanup-failed", {
-          error: error instanceof Error ? error.message : String(error),
-        })
+        log("cloud-identity-cleanup-failed", {error: error instanceof Error ? error.message : String(error)})
       })
     }
+    terminal?.client.stop()
+    await rm(rootDir, {recursive: true, force: true}).catch(error => cleanupErrors.push(error))
     const cleanupFailure = cleanupErrors.length > 0
       ? new AggregateError(cleanupErrors, "hosted Cloud relay drill cleanup failed")
       : null
@@ -436,7 +406,7 @@ async function main() {
       failure = cleanupFailure
     }
     await finalizeDrillArtifacts({
-      rootDir,
+      rootDir: evidenceDir,
       passed,
       failure,
       log,

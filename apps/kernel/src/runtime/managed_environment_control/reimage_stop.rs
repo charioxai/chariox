@@ -270,6 +270,9 @@ mod tests {
                 .unwrap();
         });
         let cloud = PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url: format!("http://{address}"),
             account_id: "account-1".into(),
             ..Default::default()

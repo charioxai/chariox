@@ -1,4 +1,5 @@
 import process from "node:process"
+import { runCloudClientCommand } from "./cloud-client-command.js"
 import { runSudoCommand } from "./sudo-command.js"
 import { runAccessCommand } from "./access-command.js"
 
@@ -26,6 +27,7 @@ import { assertSolidClientBuild } from "./solid-client-build.js"
 async function main() {
   assertSolidClientBuild()
   const argv = process.argv.slice(2)
+  if (await runCloudClientCommand(argv)) return
   if (await runSudoCommand(argv)) return
   if (await runAccessCommand(argv)) return
   if (await runAppCommand(argv)) return

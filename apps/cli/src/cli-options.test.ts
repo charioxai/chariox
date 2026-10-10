@@ -177,3 +177,14 @@ test("applyProviderPreferenceDefaults preserves explicit model and effort", () =
   assert.equal(options.model, "gpt-5.2")
   assert.equal(options.effort, "medium")
 })
+
+
+test("scoped self-host pairing takes a separate operator CLIENT token in either flag order", () => {
+  const link = `chariox-terminal-pair-v1.${Buffer.from(JSON.stringify({ relay_url:"ws://relay",relay_token:"operator-client-token-required",target_daemon_id:"kernel",terminal_id:"terminal" })).toString("base64url")}`
+  const previous = process.env.CHARIOX_DRILL_CLIENT_TOKEN
+  process.env.CHARIOX_DRILL_CLIENT_TOKEN = "synthetic-operator-client"
+  try {
+    assert.throws(() => parseArgs([link]), /operator-issued CLIENT transport token/)
+    for (const args of [[link,"--relay-token-env","CHARIOX_DRILL_CLIENT_TOKEN"],["--relay-token-env","CHARIOX_DRILL_CLIENT_TOKEN",link]]) assert.equal(parseArgs(args).relayToken,"synthetic-operator-client")
+  } finally { if(previous === undefined) delete process.env.CHARIOX_DRILL_CLIENT_TOKEN; else process.env.CHARIOX_DRILL_CLIENT_TOKEN=previous }
+})

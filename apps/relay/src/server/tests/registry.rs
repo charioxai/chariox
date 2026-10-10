@@ -535,3 +535,32 @@ fn relay_metadata_ignores_temporary_peer_transport_registrations() {
         "temporary peer transport sockets are not live kernels"
     );
 }
+
+#[test]
+fn metadata_scope_counts_and_provider_metadata_include_only_permitted_targets() {
+    let mut registry = RelayRegistry::default();
+    let mut one = test_registration("kernel-one", "machine-one", "Linux", 10);
+    one.available_providers = vec!["codex".into()];
+    let mut two = one.clone();
+    two.daemon_id = "kernel-two".into();
+    // A foreign registration cannot borrow a permitted canonical ID as its alias.
+    two.kernel_alias = Some("kernel-one".into());
+    two.available_providers = vec!["claude".into()];
+    insert_live_registration(&mut registry, "realm-a", one, 10001);
+    insert_live_registration(&mut registry, "realm-a", two, 10002);
+    let targets = vec!["kernel-one".to_string()];
+    let machines = registry.live_machines_in_realm_with_targets("realm-a", Some(&targets));
+    assert_eq!(machines.len(), 1);
+    assert_eq!(machines[0].kernel_count, 1);
+    assert_eq!(machines[0].available_providers, vec!["codex"]);
+    let kernels = registry.live_kernels_for_machine_in_realm("realm-a", "machine-one");
+    let visible: Vec<_> = kernels
+        .into_iter()
+        .filter(|kernel| super::super::metadata_scope::kernel_is_permitted(kernel, Some(&targets)))
+        .collect();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].kernel_id, "kernel-one");
+    assert!(registry
+        .live_machines_in_realm_with_targets("realm-a", Some(&[]))
+        .is_empty());
+}

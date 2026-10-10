@@ -4,6 +4,7 @@ mod display;
 mod metadata;
 mod peer;
 mod registry;
+mod renewal;
 mod routing;
 mod runtime_client;
 mod slice_identity;

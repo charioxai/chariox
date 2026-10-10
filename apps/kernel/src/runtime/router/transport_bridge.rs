@@ -223,6 +223,26 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) fn relay_owner_directory_allowed(
+        &self,
+        caller: &crate::runtime::command::KernelCaller,
+    ) -> bool {
+        let config = self.config_projection.snapshot();
+        config.cloud_relay.is_none()
+            || crate::runtime::cloud_relay_authorization::cloud_relay_caller_owner(&config, caller)
+    }
+
+    pub(crate) fn relay_remote_machines_snapshot(
+        &self,
+        caller: &crate::runtime::command::KernelCaller,
+    ) -> Vec<RemoteMachineRecord> {
+        if self.relay_owner_directory_allowed(caller) {
+            self.transport_remote_machines_snapshot()
+        } else {
+            Vec::new()
+        }
+    }
+
     pub(crate) fn transport_remote_machines_snapshot(&self) -> Vec<RemoteMachineRecord> {
         let (machines, _) = self.remote_relay_inventory_projection.snapshot();
         machines

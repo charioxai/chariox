@@ -7,6 +7,7 @@ import type { TerminalPairingLinkJoined } from "@chariox/kernel-client/kernel-ty
 import type { RelayCloudProfile } from "./preferences.js"
 import { parseAbsoluteInstantMs } from "@chariox/kernel-client/time"
 import {
+  cloudRelayStatusRequest,
   configureRelayRequest,
   connectCloudRelayRequest,
   createTerminalPairingLinkRequest,
@@ -21,6 +22,7 @@ import {
   resolveKernelClientConnectionRequest,
   startCloudRelayLoginRequest,
 } from "./ipc-requests.js"
+import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { expectVariant } from "./ipc-response.js"
 import { sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 
@@ -54,9 +56,8 @@ type KernelCloudRelayProfile = {
   client_alias?: string | null
   machine_id?: string | null
   machine_alias?: string | null
-  machine_credential?: string | null
-  cloud_session_token?: string | null
-  cloud_session_expires_at_ms?: number | null
+  kernel_id?: string | null
+  kernel_enrolled?: boolean
   token_expires_at_ms?: number | null
 }
 
@@ -157,7 +158,7 @@ export async function pollCloudRelayLogin(
     status: "approved" as const,
     profile: {
       ...relayCloudProfileFromKernel(payload.profile),
-      ...(payload.expires_at ? { cloudSessionExpiresAtMs: parseAbsoluteInstantMs(payload.expires_at) } : {}),
+
     },
   }
 }
@@ -190,18 +191,15 @@ export async function pairKernelCloudRelayMachine(
   return relayCloudProfileFromKernel(payload.profile)
 }
 
+export async function getKernelCloudRelayProfile(client: LocalIpcClient): Promise<RelayCloudProfile | null> {
+  const response = await client.send<Record<string, unknown>>(cloudRelayStatusRequest())
+  const payload = expectVariant<{ profile?: KernelCloudRelayProfile | null }>(response, "CloudRelayStatus")
+  return payload.profile ? relayCloudProfileFromKernel(payload.profile) : null
+}
 export async function connectKernelCloudRelay(client: LocalIpcClient) {
   const response = await client.send<Record<string, unknown>>(connectCloudRelayRequest())
-  const payload = expectVariant<{
-    profile: KernelCloudRelayProfile
-    token: KernelCloudRelayRuntimeToken
-  }>(response, "CloudRelayConnected")
-  return {
-    relayUrl: payload.token.relay_url,
-    relayToken: payload.token.relay_token,
-    tokenExpiresAtMs: parseAbsoluteInstantMs(payload.token.token_expires_at),
-    profile: relayCloudProfileFromKernel(payload.profile),
-  }
+  const payload = expectVariant<{ profile: KernelCloudRelayProfile; status: RelayStatusView }>(response, "CloudRelayConnected")
+  return { profile: relayCloudProfileFromKernel(payload.profile), status: payload.status }
 }
 
 export async function issueKernelCloudRelayClientToken(
@@ -272,14 +270,14 @@ export async function joinKernelTerminalPairingLink(
   if (joined.pairing.public_key_thumbprint !== publicKeyThumbprint) {
     throw new Error("terminal pairing response did not confirm this CLI relay identity")
   }
-  if (!joined.relay_token?.trim()) {
-    throw new Error("key-bound terminal pairing requires a fresh protocol 349 relay token; the legacy token cannot be used for remote viewing")
+  if (!joined.kernel_pairing && !joined.relay_token?.trim()) {
+    throw new Error("key-bound terminal pairing requires a kernel-issued admission or a fresh bound relay token")
   }
-  requireRelayTokenKeyBinding(joined.relay_token, publicKeyThumbprint, "key-bound terminal pairing")
+  if (joined.relay_token) requireRelayTokenKeyBinding(joined.relay_token, publicKeyThumbprint, "key-bound terminal pairing")
   return joined
 }
 
-function requireRelayTokenKeyBinding(token: string, expectedThumbprint: string, capability: string): void {
+export function requireRelayTokenKeyBinding(token: string, expectedThumbprint: string, capability: string): void {
   const payload = relayTokenPayload(token)
   if (!payload) {
     throw new Error(`${capability} requires a relay token bound to this CLI's public key`)
@@ -320,12 +318,14 @@ export async function resolveKernelClientConnection(
     sessionId?: string | null
   },
 ): Promise<KernelClientConnectionView> {
+  const thumbprint = createCliRelayIdentityStore().getOrCreate().publicKeyThumbprint
   const response = await client.send<Record<string, unknown>>(
-    resolveKernelClientConnectionRequest(input),
+    resolveKernelClientConnectionRequest({ ...input, publicKeyThumbprint: thumbprint }),
   )
   const payload = expectVariant<{
     connection: KernelClientConnectionPayload
   }>(response, "KernelClientConnectionResolved").connection
+  if (payload.token_expires_at) requireRelayTokenKeyBinding(payload.relay_token, thumbprint, "kernel terminal pivot")
   return {
     relayUrl: payload.relay_url,
     relayToken: payload.relay_token,
@@ -405,9 +405,8 @@ function relayCloudProfileFromKernel(profile: KernelCloudRelayProfile): RelayClo
     ...(profile.client_alias ? { clientAlias: profile.client_alias } : {}),
     ...(profile.machine_id ? { machineId: profile.machine_id } : {}),
     ...(profile.machine_alias ? { machineAlias: profile.machine_alias } : {}),
-    ...(profile.machine_credential ? { machineCredential: profile.machine_credential } : {}),
-    ...(profile.cloud_session_token ? { cloudSessionToken: profile.cloud_session_token } : {}),
-    ...(profile.cloud_session_expires_at_ms ? { cloudSessionExpiresAtMs: profile.cloud_session_expires_at_ms } : {}),
+    ...(profile.kernel_id ? { kernelId: profile.kernel_id } : {}),
+    kernelEnrolled: profile.kernel_enrolled ?? false,
     ...(profile.token_expires_at_ms ? { tokenExpiresAtMs: profile.token_expires_at_ms } : {}),
   }
 }

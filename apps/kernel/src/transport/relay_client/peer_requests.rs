@@ -2661,6 +2661,9 @@ mod tests {
         config.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
         config.remote_lease_capacity = Some(1);
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             realm_id: "realm-1".to_string(),
             user_id: "user-1".to_string(),
             machine_id: Some("machine-worker-1".to_string()),
@@ -5458,6 +5461,9 @@ mod tests {
 
     fn test_cloud_profile(api_url: String, machine_id: String) -> PersistedCloudRelayProfile {
         PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url,
             email: "user@example.test".to_string(),
             account_id: "account-1".to_string(),

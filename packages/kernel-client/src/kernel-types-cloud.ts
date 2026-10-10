@@ -321,6 +321,7 @@ export type TerminalPairingLinkJoined = {
   terminal: TerminalRecord
   pairing: PairingJoinRecord
   relay_token?: string | null
+  kernel_pairing?: boolean
 }
 
 export type RelayKernelPresence = {

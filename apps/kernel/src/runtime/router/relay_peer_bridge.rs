@@ -143,6 +143,19 @@ impl CommandRouter {
         self.config_projection.snapshot().daemon_id
     }
 
+    pub(crate) fn admit_self_host_terminal(
+        &self,
+        public_key: &str,
+    ) -> Result<Option<crate::config::PersistedClientPairing>, DaemonError> {
+        crate::runtime::self_host_terminal_grants::admit(
+            &self.config_projection.snapshot(),
+            public_key,
+        )
+    }
+    pub(crate) fn self_host_terminal_pairing_required(&self) -> bool {
+        crate::runtime::self_host_terminal_grants::required(&self.config_projection.snapshot())
+    }
+
     pub(crate) fn relay_private_key(&self) -> String {
         self.config_projection.snapshot().relay_private_key
     }

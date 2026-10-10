@@ -189,6 +189,9 @@ fn app_with_cloud_login() -> DaemonApp {
     config.daemon_id = "kernel-a".into();
     config.host_machine_id = MACHINE.into();
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         api_url: "https://cloud.example.test".into(),
         email: "user@example.test".into(),
         account_id: "account-1".into(),

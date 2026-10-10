@@ -41,10 +41,10 @@ pub(crate) async fn execute_cloud_relay_request(
             execute_cloud_relay_status_request(config_projection).await
         }
         LocalDaemonRequest::StartCloudRelayLogin(request) => {
-            execute_start_cloud_relay_login_request(request).await
+            execute_start_cloud_relay_login_request(config_projection, request).await
         }
         LocalDaemonRequest::PollCloudRelayLogin(request) => {
-            execute_poll_cloud_relay_login_request(runtime_state, request).await
+            execute_poll_cloud_relay_login_request(runtime_state, config_projection, request).await
         }
         LocalDaemonRequest::LogoutCloudRelay(request) => {
             execute_logout_cloud_relay_request(runtime_state, config_projection, request).await

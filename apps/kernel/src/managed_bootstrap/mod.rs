@@ -1204,6 +1204,9 @@ fn validate_profile(
 
 fn persisted_profile(profile: ManagedCloudRelayProfile) -> PersistedCloudRelayProfile {
     PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         api_url: profile.api_url,
         email: profile.email,
         account_id: profile.account_id,

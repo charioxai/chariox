@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn relay_status_control_capabilities_are_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
     let legacy = serde_json::json!({
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",
@@ -41,7 +41,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
 
 #[test]
 fn key_bound_cli_relay_requests_and_join_response_have_exact_protocol_shapes() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
 
     let token_request =
         LocalDaemonRequest::IssueCloudRelayClientToken(IssueCloudRelayClientTokenRequest {
@@ -100,6 +100,7 @@ fn key_bound_cli_relay_requests_and_join_response_have_exact_protocol_shapes() {
             public_key_thumbprint: "cli-thumbprint".to_string(),
             paired_at_ms: 42,
         },
+        kernel_pairing: false,
         relay_token: Some("fresh-bound-token".to_string()),
     };
     assert_eq!(
@@ -154,6 +155,7 @@ fn legacy_terminal_join_requests_and_responses_remain_unbound() {
             paired_at_ms: 42,
         },
         relay_token: None,
+        kernel_pairing: false,
     };
     let serialized = serde_json::to_value(response).expect("legacy response shape");
     assert!(serialized
@@ -163,7 +165,7 @@ fn legacy_terminal_join_requests_and_responses_remain_unbound() {
 
 #[test]
 fn relay_status_native_process_identity_is_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
     let legacy = serde_json::json!({
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",
@@ -187,5 +189,78 @@ fn relay_status_native_process_identity_is_versioned_and_hashed() {
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
         "c3dfd43214945bfdc036638d58c9724d9d572cb00267c90aef7bb975241e8cef"
+    );
+}
+
+#[test]
+fn kernel_cloud_ownership_status_and_connect_never_serialize_credentials() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
+    let private = crate::config::PersistedCloudRelayProfile {
+        kernel_id: Some("kernel-a".into()),
+        kernel_credential: Some("synthetic-kernel-secret".into()),
+        machine_credential: Some("synthetic-machine-secret".into()),
+        cloud_session_token: Some("synthetic-human-secret".into()),
+        ..Default::default()
+    };
+    let profile = crate::runtime::cloud_api_client::cloud_profile_from_persisted(&private);
+    let value = serde_json::to_value(LocalDaemonResponse::CloudRelayStatus {
+        profile: Some(profile),
+    })
+    .unwrap();
+    let fields = value["CloudRelayStatus"]["profile"].as_object().unwrap();
+    assert!(fields["kernel_enrolled"].as_bool().unwrap());
+    for key in [
+        "machine_credential",
+        "cloud_session_token",
+        "kernel_credential",
+        "cloud_session_expires_at_ms",
+    ] {
+        assert!(!fields.contains_key(key));
+    }
+    let encoded = serde_json::to_string(&value).unwrap();
+    assert!(!encoded.contains("secret"));
+    assert_eq!(
+        format!("{:x}", Sha256::digest(encoded.as_bytes())),
+        "7780e190db04ee7a94c6194558d4eb5899a933e1c9f5b60b0a843b6cf2215c42"
+    );
+}
+
+#[test]
+fn self_host_terminal_admission_response_is_versioned_and_hashed() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
+    let response = LocalDaemonResponse::TerminalPairingLinkJoined {
+        terminal: TerminalRecord {
+            terminal_id: "terminal".into(),
+            terminal_type: TerminalType::Cli,
+            alias: None,
+            paired_at_ms: 42,
+            revoked: false,
+        },
+        pairing: PairingJoinRecord {
+            intent: PairingInviteIntent::Client,
+            subject_id: "terminal".into(),
+            relay_url: "ws://relay".into(),
+            target_daemon_id: "kernel".into(),
+            alias: None,
+            public_key_thumbprint: "key-pin".into(),
+            paired_at_ms: 42,
+        },
+        relay_token: None,
+        kernel_pairing: true,
+    };
+    let snapshot = serde_json::to_value(response).unwrap();
+    assert_eq!(
+        snapshot["TerminalPairingLinkJoined"]["kernel_pairing"],
+        true
+    );
+    assert!(snapshot["TerminalPairingLinkJoined"]
+        .get("relay_token")
+        .is_none());
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "b47bb884a797a0940decd25f3eb83de04b5633d56671b34ea2867d62cbd314da"
     );
 }

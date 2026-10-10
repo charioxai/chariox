@@ -647,9 +647,20 @@ impl RelayRegistry {
     }
 
     pub(crate) fn live_machines_in_realm(&self, realm_id: &str) -> Vec<RelayMachinePresence> {
+        self.live_machines_in_realm_with_targets(realm_id, None)
+    }
+
+    pub(crate) fn live_machines_in_realm_with_targets(
+        &self,
+        realm_id: &str,
+        targets: Option<&[String]>,
+    ) -> Vec<RelayMachinePresence> {
         let relay_aliases = self.relay_kernel_aliases(realm_id);
         let mut grouped = BTreeMap::<String, Vec<&DaemonRegistration>>::new();
         for registration in self.daemon_registrations_in_realm(realm_id) {
+            if targets.is_some_and(|targets| !targets.contains(&registration.daemon_id)) {
+                continue;
+            }
             grouped
                 .entry(registration.machine_id.clone())
                 .or_default()

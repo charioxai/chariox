@@ -21,7 +21,7 @@ export function runPublicProviderRunProtocolDrill(binary, run = spawnSync) {
     const passed = result.status === 0 && /test result: ok\. 1 passed; 0 failed;/.test(result.stdout ?? "")
     return { check, passed, exitCode: result.status }
   })
-  return { mpItem: "MP-11", finding: "F7", localProtocol: 472, scope: "synthetic public DTO/response/event serialization and private persistence", results, passed: results.every(result => result.passed) }
+  return { mpItem: "MP-11", finding: "F7", localProtocol: 478, scope: "synthetic public DTO/response/event serialization and private persistence", results, passed: results.every(result => result.passed) }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

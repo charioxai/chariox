@@ -3,7 +3,7 @@ use base64::Engine;
 use chariox_relay::protocol::DaemonRegistration;
 
 pub(crate) const CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS: u64 = 300_000;
-pub(crate) const CLOUD_RELAY_CLIENT_TOKEN_TTL_MS: u64 = 30 * 60_000;
+pub(crate) const CLOUD_RELAY_CLIENT_TOKEN_TTL_MS: u64 = 300_000;
 pub(crate) const CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS: u64 = 60_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,7 +16,7 @@ pub(crate) struct CloudRuntimeTokenSubject {
 pub(crate) fn cloud_relay_profile_has_runtime_credentials(
     profile: &PersistedCloudRelayProfile,
 ) -> bool {
-    profile.cloud_session_token.is_some() || profile.machine_credential.is_some()
+    profile.kernel_credential.is_some() || profile.machine_credential.is_some()
 }
 
 pub(crate) fn cloud_relay_token_refresh_due(config: &DaemonConfig, now_ms: u64) -> bool {
@@ -109,7 +109,12 @@ pub(crate) fn cloud_kernel_presence_body(
         return None;
     }
     let mut body = serde_json::Map::new();
-    if let Some(machine_credential) = profile.machine_credential.clone() {
+    if let Some(kernel_credential) = profile.kernel_credential.clone() {
+        body.insert(
+            "kernelCredential".into(),
+            serde_json::Value::String(kernel_credential),
+        );
+    } else if let Some(machine_credential) = profile.machine_credential.clone() {
         body.insert(
             "machineCredential".to_string(),
             serde_json::Value::String(machine_credential),
@@ -176,6 +181,9 @@ mod tests {
 
     fn profile() -> PersistedCloudRelayProfile {
         PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url: "https://cloud.test".to_string(),
             email: "user@example.test".to_string(),
             account_id: "account-1".to_string(),
@@ -308,15 +316,16 @@ mod tests {
         let mut session_profile = profile();
         session_profile.machine_credential = None;
         session_profile.cloud_session_token = Some("session-token".to_string());
-        let body = cloud_kernel_presence_body(
-            &config(Some(session_profile.clone())),
-            &session_profile,
-            false,
-            None,
-        )
-        .expect("session token presence body should build");
-        assert_eq!(body["sessionToken"], "session-token");
-        assert_eq!(body["status"], "OFFLINE");
+        assert!(
+            cloud_kernel_presence_body(
+                &config(Some(session_profile.clone())),
+                &session_profile,
+                false,
+                None
+            )
+            .is_none(),
+            "human sessions cannot publish kernel presence"
+        );
 
         let mut no_machine = profile();
         no_machine.machine_id = None;

@@ -3,7 +3,7 @@ use crate::local::*;
 
 #[test]
 fn managed_reimage_receipt_read_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
     let request =
         LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(GetManagedEnvironmentRequest {
             environment_id: "environment-1".to_string(),
@@ -23,7 +23,7 @@ fn managed_reimage_receipt_read_shape_is_versioned() {
 
 #[test]
 fn local_daemon_managed_environment_control_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
     let policy = ManagedEnvironmentAutoStopPolicy {
         minimum_runtime_seconds: 0,
         idle_delay_seconds: Some(900),
@@ -563,7 +563,7 @@ fn local_daemon_reimage_request_rejects_repository_root_override() {
 
 #[test]
 fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
     let preflight = ManagedEnvironmentReimagePreflight {
         environment_id: "environment-1".to_string(),
         retained: ManagedEnvironmentReimagePreflightRetained {
@@ -625,7 +625,7 @@ fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
 
 #[test]
 fn local_daemon_pre_reimage_observation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
     let snapshot = serde_json::json!([
         LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
             ObserveManagedEnvironmentPreReimageRequest {
@@ -751,7 +751,7 @@ fn remove_shutdown_observation_fields(value: &mut serde_json::Value) {
 
 #[test]
 fn managed_release_update_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
     let request = LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(
         RequestManagedEnvironmentReleaseUpdateRequest {
             environment_id: "environment-1".to_string(),
@@ -816,4 +816,31 @@ fn managed_release_update_shapes_are_versioned() {
             request
         );
     }
+}
+
+#[test]
+fn provider_account_portability_preflight_protocol_478_is_acknowledgement_only() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
+    let request_json = serde_json::json!({"PreflightProviderAccountPortability": {
+        "providerAccounts": {"kind": "selected", "accounts": [{"provider": "codex", "accountProfile": "synthetic-profile"}]}
+    }});
+    let request: LocalDaemonRequest =
+        serde_json::from_value(request_json.clone()).expect("selection-only kernel preflight");
+    assert_eq!(serde_json::to_value(request).unwrap(), request_json);
+    let response_json = serde_json::json!({"ProviderAccountPortabilityPreflightPassed": {}});
+    let response: LocalDaemonResponse =
+        serde_json::from_value(response_json.clone()).expect("acknowledgement-only response");
+    assert_eq!(serde_json::to_value(response).unwrap(), response_json);
+    let snapshot = serde_json::json!([request_json, response_json]);
+    let serialized = serde_json::to_string(&snapshot).unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serialized.as_bytes())),
+        "0fdaa3cbf78bfba9b1e58d2164fdcf5471ff8e989d064e2614be8e8fbcd27115"
+    );
+    assert!(serde_json::from_value::<LocalDaemonRequest>(
+        serde_json::json!({"PreflightProviderAccountPortability": {
+            "providerAccounts": {"kind": "none"}, "credential": "forbidden"
+        }})
+    )
+    .is_err());
 }
