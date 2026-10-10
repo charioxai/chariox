@@ -57,7 +57,10 @@ impl KernelRuntimeState {
         )
         .load(session.project_id())?
         .is_some();
-        let _vault = if has_environment {
+        let vault_path = super::runtime_vault_unlock_state::expand_vault_path(
+            &config.user_config.credential_vault.path,
+        );
+        let _vault = if has_environment && !account.covers_vault(&vault_path) {
             Some(
                 self.ensure_vault_unlocked_for_agent(
                     session_id,
@@ -305,6 +308,10 @@ impl KernelRuntimeState {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "project_environment_manifest/prompt_vault_lease_tests.rs"]
+mod prompt_vault_lease_tests;
 
 #[cfg(test)]
 mod tests {

@@ -20,6 +20,11 @@ impl VaultUnlockGuard {
         }
     }
 
+    // This explicit lease covers only the same configured Vault operation.
+    pub(super) fn covers_vault(&self, path: &std::path::Path) -> bool {
+        self.path.as_deref() == Some(path)
+    }
+
     fn not_required() -> Self {
         Self {
             path: None,

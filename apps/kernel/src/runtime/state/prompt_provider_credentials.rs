@@ -10,6 +10,12 @@ pub(super) struct PromptProviderCredentialGuard {
 }
 
 impl PromptProviderCredentialGuard {
+    pub(super) fn covers_vault(&self, path: &std::path::Path) -> bool {
+        self._unlock
+            .as_ref()
+            .is_some_and(|lease| lease.covers_vault(path))
+    }
+
     // Human unlock or sign-in can outlive a provider/account change. Recheck
     // the selected identity under the app lock before the ordinary launcher.
     pub(super) fn validate(&self, app: &DaemonApp) -> Result<(), DaemonError> {
