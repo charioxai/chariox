@@ -138,8 +138,8 @@ test("command center treats a command followed by arguments as the typed command
   assert.equal(promptAddsArgumentsToCommandCenterItem(commandItem, "/agent listing"), false)
   assert.equal(promptAddsArgumentsToCommandCenterItem(commandItem, "/agent list"), false)
   assert.equal(shouldSubmitExactCommandCenterMatch(commandItem, "/agent list --all"), true)
-  // Groups and suggestions keep completing.
-  assert.equal(promptAddsArgumentsToCommandCenterItem({ ...dev, kind: "group" }, "/app dev stop"), false)
+  // Suggestions keep completing; typed group arguments must survive.
+  assert.equal(promptAddsArgumentsToCommandCenterItem({ ...dev, kind: "group" }, "/app dev stop"), true)
   assert.equal(promptAddsArgumentsToCommandCenterItem({ ...dev, kind: "model" }, "/app dev stop"), false)
 })
 
@@ -147,4 +147,20 @@ test("command center submit selection bypasses session alias prompts", () => {
   assert.equal(shouldBypassCommandCenterSubmitSelection("/session docs"), true)
   assert.equal(shouldBypassCommandCenterSubmitSelection("/session attach docs"), false)
   assert.equal(shouldBypassCommandCenterSubmitSelection("/workflow docs"), false)
+})
+
+// MP-08/MP-10/MP-11: real hosted typed /machine list was replaced by a group entry.
+test("typed machine and agent commands bypass their palette group", () => {
+  for (const [prefix, prompt] of [
+    ["/machine ", "/machine list"],
+    ["/machine ", "/machine kernels machine-worker"],
+    ["/agent ", "/agent spawn review --kernel kernel-worker"],
+  ] as const) {
+    const group: CommandCenterItem = {
+      id: prefix, label: prefix, description: "Command group", kind: "group", value: prefix,
+    }
+    assert.equal(promptAddsArgumentsToCommandCenterItem(group, prompt), true)
+    assert.equal(shouldSubmitExactCommandCenterMatch(group, prompt), true)
+    assert.equal(shouldSubmitExactCommandCenterMatch(group, prefix), false)
+  }
 })

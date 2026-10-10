@@ -63,17 +63,10 @@ impl KernelRuntimeOwnedState {
             .map(str::to_string);
 
         if let Some(current_active_run_id) = current_active_run_id.as_deref() {
-            let active_run = self
-                .provider_store
-                .get_run(current_active_run_id)
-                .or_else(|_| {
-                    self.provider_run_projection
-                        .get(current_active_run_id)
-                        .ok_or_else(|| DaemonError::ProviderRunNotFound {
-                            provider_run_id: current_active_run_id.to_string(),
-                        })
-                })?;
-            if active_run.agent_instance_id() != Some(agent_id)
+            let (active_run, locally_owned) =
+                self.provider_run_for_activation(session_id, current_active_run_id)?;
+            if locally_owned
+                && active_run.agent_instance_id() != Some(agent_id)
                 && active_run.state() == crate::provider::ProviderRunState::Running
                 && active_run.client_interface().is_chariox()
                 && !self.provider_run_has_prompt_work(session_id, &active_run)?

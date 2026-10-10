@@ -472,6 +472,9 @@ pub struct LaunchProviderRequest {
     /// execution kernel resolves the stable profile id against its registry.
     #[serde(skip)]
     pub(crate) provider_account_env: BTreeMap<String, String>,
+    /// Selected kernel-local namespace survives subsequent preparation passes.
+    #[serde(skip)]
+    pub(crate) resolved_provider_account: Option<crate::account_profile::ResolvedProviderAccount>,
     /// Vault-resolved values for this in-flight launch. This is excluded from
     /// every serialized request shape and uses a redacted debug projection.
     #[serde(skip)]
@@ -645,6 +648,7 @@ impl LaunchProviderRequest {
             provider_config_overrides: BTreeMap::new(),
             provider_env_remove: Vec::new(),
             provider_account_env: BTreeMap::new(),
+            resolved_provider_account: None,
             provider_credential_env: super::ProviderCredentialEnvironment::default(),
             project_environment_revision: None,
             preparation_environment: None,

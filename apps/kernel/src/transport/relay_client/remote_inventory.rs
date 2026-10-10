@@ -2,7 +2,6 @@
 
 use std::future::Future;
 
-use crate::runtime::cloud_api_client::issue_cloud_relay_inventory_discovery_token;
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
 };
@@ -90,31 +89,12 @@ pub(crate) async fn refresh_remote_inventory_projection(
         .relay_request_timeout_ms
         .min(REMOTE_INVENTORY_RELAY_TIMEOUT_MS);
 
-    let visible_kernel_ids = if let Some(profile) = runtime_config
-        .cloud_relay
-        .as_ref()
-        .filter(|p| p.kernel_credential.is_some())
-    {
-        let directory =
-            crate::runtime::cloud_api_client::get_cloud_kernel_directory(profile).await?;
-        Some(cloud_directory_discovery_targets(&directory)?)
+    let visible_kernel_ids = if let Some(profile) = runtime_config.cloud_relay.as_ref() {
+        relay_discovery::authorization::visible_targets(profile).await?
     } else {
         None
     };
-    let mut discovery_config = runtime_config.clone();
-    if let Some(profile) = runtime_config.cloud_relay.as_ref() {
-        let token = issue_cloud_relay_inventory_discovery_token(
-            profile,
-            &runtime_config.daemon_id,
-            visible_kernel_ids
-                .as_ref()
-                .map(|ids| ids.iter().cloned().collect()),
-        )
-        .await?;
-        discovery_config.relay_token = Some(token.token);
-    }
-
-    let live_machines = relay_discovery::list_live_machines(&discovery_config).await?;
+    let live_machines = relay_discovery::list_live_machines(&runtime_config).await?;
     let mut remote_machines = crate::local::provider_requests::remote_machine_records(
         live_machines,
         &runtime_config.host_machine_id,
@@ -130,7 +110,7 @@ pub(crate) async fn refresh_remote_inventory_projection(
         .filter(|machine| machine.online && machine.kernel_count > 0)
     {
         let kernels =
-            relay_discovery::list_live_kernels_for_machine(&discovery_config, &machine.machine_id)
+            relay_discovery::list_live_kernels_for_machine(&runtime_config, &machine.machine_id)
                 .await?;
         let kernels = kernels
             .into_iter()
@@ -197,32 +177,6 @@ async fn validate_live_relay_kernels(
     validated
 }
 
-fn cloud_directory_discovery_targets(
-    directory: &serde_json::Value,
-) -> Result<std::collections::BTreeSet<String>, DaemonError> {
-    Ok(directory
-        .get("targets")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "read My kernels",
-            message: "Cloud returned an invalid kernel directory".into(),
-        })?
-        .iter()
-        // The owner directory retains revoked rows for account history, but
-        // Cloud rejects discovery grants containing any revoked target. An
-        // unlinked sibling must not prevent the remaining kernels renewing.
-        .filter(|target| {
-            target.get("status").and_then(serde_json::Value::as_str) != Some("REVOKED")
-        })
-        .filter_map(|target| {
-            target
-                .get("daemonId")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        })
-        .collect())
-}
-
 fn requires_peer_probe(is_known: bool, is_hosted: bool) -> bool {
     // Hosted inventory is already freshness-filtered by the relay. A second
     // lookup inside the temporary peer probe would incorrectly reuse the
@@ -233,21 +187,6 @@ fn requires_peer_probe(is_known: bool, is_hosted: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cloud_directory_excludes_revoked_siblings_from_discovery_grants() {
-        let targets = cloud_directory_discovery_targets(&serde_json::json!({
-            "targets": [
-                {"daemonId": "owner", "status": "ONLINE"},
-                {"daemonId": "sibling", "status": "OFFLINE"},
-                {"daemonId": "unlinked", "status": "REVOKED"},
-                {"daemonId": "sibling", "status": "STALE"},
-                {"status": "ONLINE"}
-            ]
-        }))
-        .unwrap();
-        assert_eq!(targets, ["owner".to_string(), "sibling".to_string()].into());
-    }
 
     #[tokio::test]
     async fn bounded_remote_inventory_refresh_reports_success() {
