@@ -2089,7 +2089,7 @@ impl KernelRuntimeState {
         failed_run: &RuntimeProviderRun,
         credentials: &crate::provider::ProviderCredentialEnvironment,
     ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.cleanup_restarted_provider_run(failed_run.id()).await;
+        debug_assert_eq!(original_run.id(), failed_run.id());
         let result = self
             .relaunch_provider_run_after_restart_failure(original_run, credentials)
             .await;
@@ -2105,20 +2105,23 @@ impl KernelRuntimeState {
         original_run: &RuntimeProviderRun,
         credentials: &crate::provider::ProviderCredentialEnvironment,
     ) -> Result<RuntimeProviderRun, DaemonError> {
-        let restored = self
-            .owned
-            .provider_store
-            .restore_run_snapshot_after_restart_failure(original_run.clone())?;
-        self.owned.provider_run_projection.update(restored.clone());
-
-        let run_for_spawn = restored.clone();
+        let original_run = original_run.clone();
         let spawn_credentials = credentials.clone();
-        self.with_app_side_effect(move |app| {
-            let _ = crate::app::ProviderProcessTracker::new(app).remove_run(run_for_spawn.id())?;
-            crate::app::ProviderLaunchProcessRuntime::new(app)
-                .spawn_for_launch_with_credentials(&run_for_spawn, &spawn_credentials)
-        })
-        .await?;
+        let restored = self
+            .with_app_side_effect(move |app| {
+                let restored = app
+                    .providers
+                    .restore_run_snapshot_after_restart_failure(original_run)?;
+                app.providers.clear_runtime(restored.id());
+                // Liveness polling uses the same app lock. Keep removal and
+                // replacement together so it cannot observe a missing child.
+                let _ = crate::app::ProviderProcessTracker::new(app).remove_run(restored.id())?;
+                crate::app::ProviderLaunchProcessRuntime::new(app)
+                    .spawn_for_launch_with_credentials(&restored, &spawn_credentials)?;
+                Ok(restored)
+            })
+            .await?;
+        self.owned.provider_run_projection.update(restored.clone());
 
         let run_for_binding = restored.clone();
         let binding_credentials = credentials.clone();
@@ -3645,8 +3648,13 @@ fn log_project_environment_binding_failure(stage: &'static str, error: &DaemonEr
         DaemonError::ProviderProtocol { operation, .. }
         | DaemonError::LocalTransport { operation, .. }
         | DaemonError::InternalInvariant { operation, .. }
-        | DaemonError::ManagedContext { operation, .. } => *operation,
+        | DaemonError::ManagedContext { operation, .. }
+        | DaemonError::InvalidProviderRunState { operation, .. } => *operation,
         _ => "unclassified",
+    };
+    let state = match error {
+        DaemonError::InvalidProviderRunState { state, .. } => Some(state.to_string()),
+        _ => None,
     };
     let text = error.to_string();
     crate::logging::warn_with_fields(
@@ -3655,6 +3663,7 @@ fn log_project_environment_binding_failure(stage: &'static str, error: &DaemonEr
         serde_json::json!({
             "stage": stage,
             "operation": operation,
+            "state": state,
             "timed_out": text.contains("timed out"),
             "io_in_flight": text.contains("I/O is in flight"),
             "unauthorized": text.to_ascii_lowercase().contains("unauthorized"),
@@ -3673,12 +3682,24 @@ fn binding_failure_diagnostics_do_not_retain_private_details() {
         message: format!("timed out; private context {private_marker}"),
     };
     log_project_environment_binding_failure("restore-ordinary", &error);
+    log_project_environment_binding_failure(
+        "restore-ordinary",
+        &DaemonError::InvalidProviderRunState {
+            provider_run_id: private_marker.into(),
+            state: crate::provider::ProviderRunState::Ended,
+            operation: "restore provider after restart failure",
+        },
+    );
     let records = capture.records();
     assert!(records.iter().any(|record| {
         record.contains("project.environment_setup.binding")
             && record.contains("codex_endpoint_unhealthy")
             && record.contains("restore-ordinary")
             && record.contains("\"timed_out\":true")
+    }));
+    assert!(records.iter().any(|record| {
+        record.contains("restore provider after restart failure")
+            && record.contains("\"state\":\"ended\"")
     }));
     assert!(records
         .iter()
