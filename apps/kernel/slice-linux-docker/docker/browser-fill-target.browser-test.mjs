@@ -283,6 +283,32 @@ for(const dpr of [1,2]) {
    await connection.send('Page.stopScreencast',{},sessionId);
  }));
 
+ for(const interruption of ['non-editability','removal'])test(`MP-08/MP-10/MP-11 DPR${dpr}: a real pending fill survives temporary ${interruption}`,()=>setup(dpr,async({browser,connection,fill,collect,evaluate,capture})=>{
+   await evaluate("document.querySelector('#editor').style.background='magenta'");
+   const paused=Promise.withResolvers(),release=Promise.withResolvers(),send=connection.send.bind(connection);
+   let blocked=false;
+   connection.send=async(method,params,...args)=>{
+     if(!blocked&&method==='Runtime.callFunctionOn'&&params.functionDeclaration.includes('function actionabilityFunction')) {
+       blocked=true;paused.resolve();await release.promise;
+     }
+     return send(method,params,...args);
+   };
+   const pending=fill('#editor');
+   try {
+     await paused.promise;
+     await evaluate(interruption==='removal'?"globalThis.pendingEditor=document.querySelector('#editor');pendingEditor.remove()":"document.querySelector('#editor').contentEditable='false'");
+     await assert.rejects(collect(),/MP-11: pending fill target unavailable/);
+     regions.pruneBrowserFillTargets(browser,connection);
+     assert.equal(browser.fillTargets.size,1,'MP-11 background pruning cannot discard a pending fill');
+     await evaluate(interruption==='removal'?"document.body.append(pendingEditor)":"document.querySelector('#editor').contentEditable='true'");
+     release.resolve();await pending;
+     assert.equal((await collect()).length,1);
+     const frame=await capture(`temporary-${interruption}-completed-fill`),i=((310*dpr)*frame.width+100*dpr)*4;
+     assert.deepEqual([...frame.pixels.subarray(i,i+3)],[0,0,0]);
+     if(frame.video)assert([...frame.video.subarray(i,i+3)].every(channel=>channel<=32),'MP-11 decoded completed-fill video remains covered');
+   }finally{release.resolve();await pending.catch(()=>{});connection.send=send;}
+ }));
+
  test(`MP-08/MP-10/MP-11 DPR${dpr}: fill completion cannot retire an overlapping old field read`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,ref,policy,collect,evaluate,capture})=>{
    const node_ref=await ref('#plain');
    const target=await recordBrowserFill(connection,{sessionId,targetId,documentId,nodeRef:node_ref,browserGeneration:browser.browserGeneration,action:{kind:'fill'}},value,1);

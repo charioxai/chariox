@@ -65,7 +65,7 @@ async function stableFieldState(connection,entry,document,backendNodeId,target,l
   for(let attempt=0;attempt<2;attempt++) {
     check();const pending=lifecycle?.pending;
     const state=await fieldState(connection,entry,document,backendNodeId);
-    check();if(pending===lifecycle?.pending)return {state,inFlight:pending&&state.exists&&state.editable};
+    check();if(pending===lifecycle?.pending)return {state,inFlight:pending===true};
   }
   throw Error('MP-11: fill changed during protection measurement');
 }
@@ -173,6 +173,9 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         if(!frame || target.frame_id&&target.frame_id!==frameId || target.frame_document_id&&target.frame_document_id!==frame.loaderId)continue;
         seen.add(key);
         const {state,inFlight}=await stableFieldState(connection,entry,{frameId},backendNodeId,target,lifecycles.get(key));
+        // Actionability may wait while an editor is temporarily disabled. Its
+        // pending fill still owns protection; refuse pixels until it is measurable.
+        if(inFlight&&(!state.exists||!state.editable))throw Error('MP-11: pending fill target unavailable');
         if(!inFlight&&(!state.exists||state.changed||!state.editable||!state.value || (target.value_hash?digest(state.value)!==target.value_hash:!(policy.values??[]).includes(state.value)))) {dead.add(key);continue;}
         if(state.password)continue; // Rechecked even for a previously plain field.
         // MP-08/MP-11: DOMSnapshot includes retained non-rendered fields. Only
@@ -218,7 +221,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         }
       }
     }
-    for(const target of targets)if(!seen.has(fillKey(target))){const key=fillKey(target);if(lifecycles.get(key)!==filling.get(connection)?.get(key))throw Error('MP-11: fill changed during protection measurement');dead.add(key);}
+    for(const target of targets)if(!seen.has(fillKey(target))){const key=fillKey(target);if(lifecycles.get(key)!==filling.get(connection)?.get(key))throw Error('MP-11: fill changed during protection measurement');if(lifecycles.get(key)?.pending)throw Error('MP-11: pending fill target unavailable');dead.add(key);}
     await assertBrowserFramesUnchanged(connection,frames);
   });
   return page;
