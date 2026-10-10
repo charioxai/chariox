@@ -262,4 +262,5 @@ pub use workspace::*;
 /// Version 478 adds kernel-owned Cloud ownership, Cloud-free kernel-owned
 /// key-bound terminal admission and provider account portability preflight
 /// (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 478;
+/// Version 479 adds owner-managed SSH machine add/remove. Relay shapes are unchanged.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 479;

@@ -5,7 +5,7 @@ use super::*;
 fn mp08_mp10_mp11_provider_login_projection_shape_is_versioned() {
     use crate::session::*;
     use crate::transport::relay_peer::*;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 479);
     assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 73);
     let projection = RuntimeProviderLogin {
         kernel_id: "worker".into(),

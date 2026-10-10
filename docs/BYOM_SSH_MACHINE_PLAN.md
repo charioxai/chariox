@@ -1,8 +1,8 @@
 # BYOM over SSH (MP-07 / MP-08 / MP-11)
 
-PR1 coordinator-requested base: OSS ownership `f61b0fab5` on main `e325afa58`
+PR1 coordinator-requested base: OSS ownership `27aedc57e` on main `60c1ccb1e`
 (local 439, relay 73);
-BYOM retains local 444 and inherits relay 73, with no BYOM relay shape change. Owner request 2026-10-05 adds an owner-managed machine, not a
+BYOM retains local 479 and inherits relay 73, with no BYOM relay shape change. Owner request 2026-10-05 adds an owner-managed machine, not a
 Cloud-disposable environment. The ordinary runtime remains the authority.
 MP-11 follows the owner's narrowed behavioural/security-anchor scope.
 
@@ -116,7 +116,7 @@ ID and port in the Mac-to-Omarchy drill.
    <install-id>`; upload, target verify, install, one-time enrollment, owned
    service start and authenticated local relay readiness. Stop/uninstall retains
    identity/state. Repeat selects the same digest/root/port/identity. A different
-   release is refused pending explicit upgrade support. Local 444 snapshot/hash
+   release is refused pending explicit upgrade support. Local 479 snapshot/hash
    and localhost source-kernel/SSH drill; Mac-to-Omarchy handoff is required.
 2. PR2 Chariox Setup plus public install.sh and CLI login offer: shared install
    core, device-flow enrollment, repair/upgrade/rollback/uninstall. macOS app
@@ -146,7 +146,7 @@ A ticket-issue failure cannot reserve an install. Failed deployment and correcte
 
 The strict startup parser admits the private owner-managed stdin enrollment and
 readiness commands before ordinary runtime initialization. Extra arguments are
-refused. The inherited Browser/Computer/public-provider guards bind local 444
+refused. The inherited Browser/Computer/public-provider guards bind local 479
 and retain relay 73; wire hashes remain unchanged except the aggregate snapshot
 that includes the local version. Local source/mock drills do not establish live
 Cloud, signed distribution, service-manager or fresh-machine acceptance.
