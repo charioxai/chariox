@@ -1,5 +1,5 @@
 from fence_cleanup import finish_cleanup
-from fence_pointer import PointerLease
+from fence_pointer import PointerLease, run_pointer_script
 import importlib.util
 import json
 import os
@@ -23,7 +23,7 @@ pointer = None
 try:
     d.wait_for_gui()
     d.require_gui()
-    pointer = PointerLease(d.desktop, d.warp_pointer, d.desktop()["pointer"])
+    pointer = PointerLease(d.desktop, run_pointer_script, d.desktop()["pointer"])
     permission = d.launch_helper(E, 'preflight', ['--drill-permissions'])
     if 'accessibility=granted' not in permission:
         report['status'] = 'BLOCKED'; raise RuntimeError('helper-regrant-required')
