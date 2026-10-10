@@ -137,6 +137,7 @@ class WarmChannelTests(unittest.TestCase):
         with patch.object(module.keyboard,'type_text') as text:
             module.channel_request({'op':'input','input':{'kind':'text','text':'m'*128}},set(),connection)
             self.assertEqual(text.call_args.kwargs.get('pace_seconds',0.04),0)
+            self.assertIs(text.call_args.kwargs.get('connection'),connection)
             accessibility=SimpleNamespace(input_guard=lambda _:lambda:None)
             clipboard_guard=SimpleNamespace(input_admission=lambda *_:lambda:None)
             with patch.object(module,'load',side_effect=lambda name:accessibility if name=='native-accessibility' else clipboard_guard):
@@ -144,6 +145,7 @@ class WarmChannelTests(unittest.TestCase):
                              'input':{'kind':'text','text':'public'}},connection)
             self.assertIsNotNone(text.call_args.kwargs['before_press'])
             self.assertEqual(text.call_args.kwargs.get('pace_seconds',0.04),0.04)
+            self.assertNotIn('connection',text.call_args.kwargs)
 
     def test_mp10_warm_physical_events_reuse_the_owned_x11_connection(self):
         connection=SimpleNamespace(screen=lambda:SimpleNamespace(width_in_pixels=100,height_in_pixels=100),sync=lambda:None)

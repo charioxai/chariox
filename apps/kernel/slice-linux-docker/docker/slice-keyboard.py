@@ -154,8 +154,11 @@ def assert_secret_target(connection, expected_target):
         raise SecretTargetChanged()
 
 
-def type_text(text, expected_target=None, before_press=None, *, pace_seconds=0.04):
-    connection = _x11_module.open_display(display)
+def type_text(text, expected_target=None, before_press=None, *, pace_seconds=0.04, connection=None):
+    # MP-08/MP-10/MP-11: the human-only channel owns its authenticated X11
+    # connection; one-shot agent/Vault callers retain a fresh owned connection.
+    owned = connection is None
+    if owned: connection = _x11_module.open_display(display)
     keyboard = ComputerTextKeyboard(connection)
     lifted = []
     active_keysym = None
@@ -236,7 +239,7 @@ def type_text(text, expected_target=None, before_press=None, *, pace_seconds=0.0
         for code in lifted:
             xtest.fake_input(connection, Xlib.X.KeyPress, code)
         connection.sync()
-        connection.close()
+        if owned: connection.close()
 
 
 def hold_input(kind, value, duration_ms, x=None, y=None, before_press=None):
