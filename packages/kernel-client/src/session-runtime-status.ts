@@ -336,10 +336,13 @@ export function sessionAgentTaskStatus(session: RuntimeSession | null | undefine
   const tasks = (session?.agent_tasks ?? []).filter((task) => task.agent_id === agentId)
   if (!tasks.length) return null
   const unfinished = tasks.filter((task) => task.state !== "done" && task.state !== "cancelled")
-  const task = unfinished.find((task) => task.state === "blocked")
+  const goals = tasks.filter((task) => task.goal)
+  const task = goals.find((task) => task.state !== "done" && task.state !== "cancelled")
+    ?? goals[goals.length - 1]
+    ?? unfinished.find((task) => task.state === "blocked")
     ?? unfinished.find((task) => task.state === "working")
     ?? unfinished[0] ?? tasks[tasks.length - 1]!
-  const open = tasks.flatMap((task) => task.obligations).filter((item) => ["open", "settling", "failed"].includes(item.status)).length
+  const open = (task.goal ? task.obligations : tasks.flatMap((task) => task.obligations)).filter((item) => ["open", "settling", "failed"].includes(item.status)).length
   const suffix = open ? ` (${open} obligations)` : ""
   if (task.goal) {
     const goal = task.goal
