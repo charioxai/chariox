@@ -5,12 +5,13 @@ import { createHash } from 'node:crypto';
 import { withBrowserFrames, assertBrowserFramesUnchanged } from './browser-controller-frames.mjs';
 const FRAME_TIMEOUT_MS = 500;
 const retired = new WeakMap();
-// Fills between recording and completion: covered while plain, never retired.
+// Keep the completed lifecycle until its target is pruned: a measurement may
+// still hold a field read from before completion across a CDP release await.
 const filling = new WeakMap();
 const fillKey = target => JSON.stringify([target.target_id,target.document_id,target.node_ref]);
 export function pruneBrowserFillTargets(browser,connection) {
   const dead=retired.get(connection);
-  for(const [key,target] of browser.fillTargets??[])if(dead?.has(fillKey(target))||target.browser_generation!==browser.browserGeneration)browser.fillTargets.delete(key);
+  for(const [key,target] of browser.fillTargets??[])if(dead?.has(fillKey(target))||target.browser_generation!==browser.browserGeneration){browser.fillTargets.delete(key);if(filling.get(connection)?.get(fillKey(target))?.target===target)filling.get(connection).delete(fillKey(target));}
 }
 const digest = value => createHash('sha256').update(value).digest('hex');
 const frameTree = async (connection, sessionId) => (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree;
@@ -53,10 +54,21 @@ export async function recordBrowserFill(connection, options, value, revision) {
     frame_id:frame.id,frame_document_id:frame.loaderId,browser_generation:browserGeneration,
     value_hash:digest(options.action?.append ? previous.value+value : value),fill_revision:revision};
   retired.get(connection)?.delete(fillKey(target));
-  if(!filling.has(connection))filling.set(connection,new Set());
-  filling.get(connection).add(fillKey(target));return target;
+  if(!filling.has(connection))filling.set(connection,new Map());
+  filling.get(connection).set(fillKey(target),{target,pending:true});return target;
 }
-export function finishBrowserFill(connection,target) {filling.get(connection)?.delete(fillKey(target));}
+export function finishBrowserFill(connection,target) {const state=filling.get(connection)?.get(fillKey(target));if(state?.target===target)state.pending=false;}
+async function stableFieldState(connection,entry,document,backendNodeId,target,lifecycle) {
+  const key=fillKey(target),check=()=>{
+    if(lifecycle!==filling.get(connection)?.get(key)||lifecycle&&((target.fill_revision!==undefined&&target.fill_revision!==lifecycle.target.fill_revision)||target.value_hash&&target.value_hash!==lifecycle.target.value_hash))throw Error('MP-11: fill changed during protection measurement');
+  };
+  for(let attempt=0;attempt<2;attempt++) {
+    check();const pending=lifecycle?.pending;
+    const state=await fieldState(connection,entry,document,backendNodeId);
+    check();if(pending===lifecycle?.pending)return {state,inFlight:pending&&state.exists&&state.editable};
+  }
+  throw Error('MP-11: fill changed during protection measurement');
+}
 async function fieldState(connection,entry,document,backendNodeId) {
   const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:document.frameId,worldName:'chariox-fill-target'},entry.sessionId);
   const {object}=await connection.send('DOM.resolveNode',{backendNodeId,executionContextId},entry.sessionId);
@@ -131,6 +143,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
   const page={url:top.frame.url,document_id:top.frame.loaderId,dpr:metrics.dpr,zoom:visual?.zoom??1,viewport:[Math.round(metrics.width*metrics.dpr),Math.round(metrics.height*metrics.dpr)],regions:[],withheld:[]};
   const dead=retired.get(connection)??new Set();retired.set(connection,dead);
   const targets=(policy.targets??[]).filter(t=>t.target_id===targetId&&!t.echo_only&&!dead.has(fillKey(t)));
+  const lifecycles=new Map(targets.map(target=>[fillKey(target),filling.get(connection)?.get(fillKey(target))]));
   if(!targets.length)return page;
   await withBrowserFrames(connection,sessionId,targetId,top.frame.loaderId,async frames=>{
     const seen=new Set(),transforms=new Map([[frames[0],point=>point]]);
@@ -159,8 +172,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         const frameId=snapshot.strings[raw.frameId],frame=visit(entry.tree,frameId);
         if(!frame || target.frame_id&&target.frame_id!==frameId || target.frame_document_id&&target.frame_document_id!==frame.loaderId)continue;
         seen.add(key);
-        const state=await fieldState(connection,entry,{frameId},backendNodeId);
-        const inFlight=filling.get(connection)?.has(key)&&state.exists&&state.editable;
+        const {state,inFlight}=await stableFieldState(connection,entry,{frameId},backendNodeId,target,lifecycles.get(key));
         if(!inFlight&&(!state.exists||state.changed||!state.editable||!state.value || (target.value_hash?digest(state.value)!==target.value_hash:!(policy.values??[]).includes(state.value)))) {dead.add(key);continue;}
         if(state.password)continue; // Rechecked even for a previously plain field.
         // MP-08/MP-11: DOMSnapshot includes retained non-rendered fields. Only
@@ -206,7 +218,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         }
       }
     }
-    for(const target of targets)if(!seen.has(fillKey(target)))dead.add(fillKey(target));
+    for(const target of targets)if(!seen.has(fillKey(target))){const key=fillKey(target);if(lifecycles.get(key)!==filling.get(connection)?.get(key))throw Error('MP-11: fill changed during protection measurement');dead.add(key);}
     await assertBrowserFramesUnchanged(connection,frames);
   });
   return page;

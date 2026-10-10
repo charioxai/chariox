@@ -283,6 +283,30 @@ for(const dpr of [1,2]) {
    await connection.send('Page.stopScreencast',{},sessionId);
  }));
 
+ test(`MP-08/MP-10/MP-11 DPR${dpr}: fill completion cannot retire an overlapping old field read`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,ref,policy,collect,evaluate,capture})=>{
+   const node_ref=await ref('#plain');
+   const target=await recordBrowserFill(connection,{sessionId,targetId,documentId,nodeRef:node_ref,browserGeneration:browser.browserGeneration,action:{kind:'fill'}},value,1);
+   browser.fillTargets.set(`${targetId}:${node_ref}`,target);policy.targets.push(target);
+   const read=Promise.withResolvers(),release=Promise.withResolvers(),send=connection.send.bind(connection);
+   let measuring=true,oldRead=false;
+   connection.send=async(method,params,...args)=>{
+     const result=await send(method,params,...args);
+     if(measuring&&method==='Runtime.callFunctionOn'&&params.functionDeclaration.includes('const editable='))oldRead=true;
+     if(measuring&&oldRead&&method==='Runtime.releaseObject'){measuring=false;read.resolve();await release.promise;}
+     return result;
+   };
+   try {
+     const pending=collect();await read.promise;
+     await evaluate(`document.querySelector('#plain').value=${JSON.stringify(value)}`);
+     regions.finishBrowserFill(connection,target);release.resolve();
+     assert.equal((await pending).length,1,'MP-11 changed fill lifecycle rechecks the stale read');
+     assert.equal((await collect()).length,1,'MP-11 subsequent captures retain the completed target');
+     assert(browser.fillTargets.has(`${targetId}:${node_ref}`),'MP-11 stale read cannot prune the completed fill');
+     const frame=await capture('overlap-completed-fill'),i=((90*dpr)*frame.width+100*dpr)*4;
+     assert.deepEqual([...frame.pixels.subarray(i,i+3)],[0,0,0]);
+   }finally{release.resolve();connection.send=send;}
+ }));
+
  test(`MP-08/MP-11 DPR${dpr}: image artifacts report actual plain-field redaction`,()=>setup(dpr,async({browser,connection,fill,evaluate,targetId,documentId})=>{
    connection.browserInstanceId='MP11-public-artifact-fixture';
    const request={target_id:targetId,document_id:documentId,browser_generation:browser.browserGeneration,kind:'image',guid:null,viewport:{css_width:1280,css_height:800,device_scale_factor:dpr,desktop_pixel_width:1280*dpr,desktop_pixel_height:800*dpr,revision:1,last_actor_id:null}};
