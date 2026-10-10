@@ -933,3 +933,35 @@ fn r3_guard_scans_every_gzip_member_the_importer_accepts() {
     validate_development_archive(&archive.archive_path, "project", None).unwrap();
     ordinary.assert_target_archive(true, &archive);
 }
+
+// MP-08/MP-11: public sindresorhus/slugify at 3b17b2e84b97624a683aafaa38184bf2746fab22.
+// The POSIX tokenizer joined a Markdown fence and paragraphs into a dynamic name.
+#[test]
+fn mp08_mp11_public_slugify_declarations_are_not_a_shell_assignment() {
+    let public = include_bytes!("fixtures/slugify-index.d.ts.txt");
+    assert!(validate_bytes("index.d.ts", public).is_ok());
+    for secret in [
+        b"API_KEY=synthetic-live-secret-canary".as_slice(),
+        b"-----BEGIN PRIVATE KEY-----\nsynthetic-private-material\n-----END PRIVATE KEY-----",
+        b"env API_${NAME}=synthetic-canary worker",
+        b"sh -c 'API_`printf KEY`=synthetic-canary worker'",
+    ] {
+        let mut with_secret = public.to_vec();
+        with_secret.extend_from_slice(b"\n");
+        with_secret.extend_from_slice(secret);
+        assert!(validate_bytes("index.d.ts", &with_secret).is_err());
+    }
+}
+
+// MP-08/MP-11: psf/requests public commit c0813a2d910ea6b4f8438b91d315b8d181302356.
+// Backticked timeout=value is documentation, not a computed shell assignment name.
+#[test]
+fn mp08_mp11_public_requests_prose_retains_secret_detection() {
+    let public = include_bytes!("fixtures/requests-commit-message.txt");
+    assert!(validate_bytes("", public).is_ok());
+    let mut changed = public.to_vec();
+    changed.extend_from_slice(b"\nAPI_KEY=synthetic-real-secret-format-control\n");
+    assert!(validate_bytes("", &changed).is_err());
+    assert!(validate_bytes("", b"`API_KEY=synthetic-canary`").is_err());
+    assert!(validate_bytes("", b"env API_`printf KEY`=synthetic-canary worker").is_err());
+}

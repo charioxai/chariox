@@ -38,7 +38,7 @@ fn safe_flag(flag: &str) -> bool {
 }
 
 fn credential_word(word: &str) -> bool {
-    let word = word.trim_matches(['\'', '"', ',', ';', '{', '}', '[', ']']);
+    let word = word.trim_matches(['`', '\'', '"', ',', ';', '{', '}', '[', ']']);
     let word = word.strip_prefix("$env:").unwrap_or(word);
     if let Some(flag) = word.strip_prefix("--") {
         let flag = flag
@@ -75,7 +75,12 @@ fn credential_word(word: &str) -> bool {
             let count_or_path = key
                 .strip_prefix("--")
                 .is_some_and(|flag| safe_flag(&flag.to_ascii_lowercase().replace('-', "_")));
-            if (!count_or_path && sensitive(key)) || (ch == '=' && key.contains(['$', '`'])) {
+            // MP-08/MP-11: prose quotes can span paragraphs and code examples.
+            // Such a joined word is not one assignment name; raw candidates and
+            // recursive line inspection still check the actual embedded words.
+            if !key.contains(['\n', '\r'])
+                && ((!count_or_path && sensitive(key)) || (ch == '=' && key.contains(['$', '`'])))
+            {
                 return true;
             }
         }
