@@ -119,7 +119,7 @@ export class MirrorFrames {
   }
   // Deltas of attached children; a navigated child is re-snapshotted under its owner.
   async drain(stream, policy, tab) {
-    const out = { ops: [], resources: [] };
+    const out = { ops: [], resources: [], changed: [] };
     for (const [owner, entry] of stream.frames) {
       try {
         const loaderId = await this.loaderId(entry.child);
@@ -127,6 +127,8 @@ export class MirrorFrames {
         const delta = await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`);
         if (delta.resync) throw new Error('resync');
         out.ops.push(...delta.ops.map(op => rebaseOp(op, entry.slot)), ...await this.sheetOps(entry.child, entry.slot, delta.sheets));
+        // Morphed child nodes (a new page node under a viewer id) are changed input targets too.
+        out.changed.push(...delta.changed.map(id => rebaseId(id, entry.slot)));
         // The child's window position is its header, not an op: forward its changes.
         if (JSON.stringify(delta.scroll) !== entry.scroll) { entry.scroll = JSON.stringify(delta.scroll); out.ops.push({ op: 'scroll', id: entry.documentId, scroll: delta.scroll }); }
         out.resources.push(...delta.resources.map(d => ({ ...d, key: rebaseKey(d.key, entry.slot), slot: entry.slot })));

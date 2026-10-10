@@ -14,7 +14,7 @@ async function mirrored(html, run, routes = {}) {
   const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-"));
   const server = createServer((request, response) => {
     const port = String(server.address().port), route = routes[request.url];
-    if (route) { response.setHeader("Content-Type", route.type); response.end(route.body.replaceAll("PORT", port)); return; }
+    if (route) { response.setHeader("Content-Type", route.type); for (const [name, value] of Object.entries(route.headers ?? {})) response.setHeader(name, value); response.end(route.body.replaceAll("PORT", port)); return; }
     response.setHeader("Content-Type", "text/html"); response.end(`<!doctype html>${html.replaceAll("PORT", port)}`);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -345,3 +345,22 @@ test("MP-10: review #941-6 previews respect the packet budget while the viewer m
     }
     assert(sizes.every(n => n <= 64 * 1024), `MP-10: every packet within 1 s of input stays within 64 KB of media (${sizes})`);
   }));
+
+// Typeahead inside a cross-origin frame: the top page asks it (postMessage) to rebuild its list with the same shape.
+const frameTypeahead = '<!doctype html><div id="s"></div><script>const render=items=>{document.querySelector("#s").innerHTML=items.map(t=>`<a href="#x" style="display:block;height:20px"><b>${t}</b></a>`).join("")};render(["Ada","Adams"]);onmessage=e=>{render(e.data);document.querySelector("a").focus()}</script>';
+test("MP-11: review #941-1(P1) a morphed child-frame node refuses clicks and keys from before the morph reached the viewer", () => mirrored(
+  '<p>top</p><iframe src="http://localhost:PORT/list" style="width:300px;height:100px"></iframe>', async ({ next, evaluate, input }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const snapshot = await next();
+    const [link] = elements(snapshot).find(([id, tag]) => tag === "a" && Number(id.slice(1)) >= 1e9) ?? [];
+    assert(link, "MP-10: the frame's links are mirrored");
+    await input(snapshot.sequence, { kind: "focus", node_id: link });
+    await evaluate("frames[0].postMessage(['Bob','Bobby'],'*');true");
+    let morphed = null; for (let i = 0; i < 4 && !morphed; i++) { const packet = await next(1000); if (packet.ops.some(op => op.op === "text" && op.text === "Bob")) morphed = packet; }
+    assert(morphed && !morphed.ops.some(op => op.op === "children" && op.nodes.length), "MP-10: the rebuilt list travels as a morph (same ids, new text)");
+    await assert.rejects(input(snapshot.sequence, { kind: "click", node_id: link, x: 5, y: 5 }), /changed mirror input target/);
+    await assert.rejects(input(snapshot.sequence, { kind: "key", key: "Enter" }), /changed mirror input target/);
+    // Once the viewer applied the morph, the same target is admitted.
+    await input(morphed.sequence, { kind: "key", key: "Enter" });
+  }, { "/list": { type: "text/html", body: frameTypeahead } }));
+

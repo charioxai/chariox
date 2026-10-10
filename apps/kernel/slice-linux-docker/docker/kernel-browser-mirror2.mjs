@@ -258,7 +258,7 @@ export class Mirror2 {
         } else ops.push(op);
       }
       const children = await this.frames.drain(stream, policy, tab);
-      return { ...delta, ops: [...ops, ...children.ops], resources: [...resources, ...children.resources] };
+      return { ...delta, ops: [...ops, ...children.ops], resources: [...resources, ...children.resources], changed: [...delta.changed, ...children.changed] };
     };
     let resources = [];
     try {
