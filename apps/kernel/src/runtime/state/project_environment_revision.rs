@@ -29,7 +29,7 @@ impl KernelRuntimeState {
         }
         let current = store.snapshot_locked(&project)?;
         Ok(LocalDaemonResponse::ProjectEnvironmentDiff {
-            diff: environment_revision_diff(&current, &request.draft)?,
+            diff: store.preview_revision_diff_locked(&current, &request.draft)?,
         })
     }
     pub(crate) async fn save_project_environment_revision(

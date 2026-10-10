@@ -72,6 +72,7 @@ fn text(value: &str, limit: usize) -> Result<(), DaemonError> {
 fn validate_draft(
     current: &ProjectEnvironment,
     draft: &EnvironmentRevisionDraft,
+    historical: &[&Requirement],
 ) -> Result<(), DaemonError> {
     if draft.folders.len() != current.folders.len()
         || requirements(draft).count() > 4096
@@ -111,7 +112,10 @@ fn validate_draft(
         text(&folder.label, 256)?;
     }
     let before = environment_draft(current);
-    let known: BTreeMap<_, _> = requirements(&before)
+    let known: BTreeMap<_, _> = historical
+        .iter()
+        .copied()
+        .chain(requirements(&before))
         .chain(current.proposals.iter().map(|p| &p.requirement))
         .map(|r| (r.requirement_id.as_str(), r))
         .collect();
@@ -272,7 +276,15 @@ pub fn environment_revision_diff(
     current: &ProjectEnvironment,
     draft: &EnvironmentRevisionDraft,
 ) -> Result<EnvironmentRevisionDiff, DaemonError> {
-    validate_draft(current, draft)?;
+    revision_diff_with_history(current, draft, &[])
+}
+
+fn revision_diff_with_history(
+    current: &ProjectEnvironment,
+    draft: &EnvironmentRevisionDraft,
+    historical: &[&Requirement],
+) -> Result<EnvironmentRevisionDiff, DaemonError> {
+    validate_draft(current, draft, historical)?;
     let before = environment_draft(current);
     let old: BTreeMap<_, _> = requirements(&before)
         .map(|r| (&r.requirement_id, r))
@@ -316,7 +328,35 @@ pub fn environment_revision_diff(
     })
 }
 
+fn historical_requirements<'a>(
+    revisions: &'a [ProjectEnvironment],
+    current: &ProjectEnvironment,
+) -> Vec<&'a Requirement> {
+    revisions
+        .iter()
+        .filter(|row| row.lineage == current.lineage)
+        .flat_map(|row| {
+            row.project_requirements
+                .iter()
+                .chain(row.folders.iter().flat_map(|folder| &folder.requirements))
+        })
+        .collect()
+}
+
 impl ProjectEnvironmentStore {
+    pub(crate) fn preview_revision_diff_locked(
+        &self,
+        current: &ProjectEnvironment,
+        draft: &EnvironmentRevisionDraft,
+    ) -> Result<EnvironmentRevisionDiff, DaemonError> {
+        let history = self.load_revisions(&current.local_project_id)?;
+        let known = history
+            .as_ref()
+            .map(|history| historical_requirements(&history.revisions, current))
+            .unwrap_or_default();
+        revision_diff_with_history(current, draft, &known)
+    }
+
     pub(crate) fn load_revisions(
         &self,
         project: &str,
@@ -443,8 +483,9 @@ impl ProjectEnvironmentStore {
                 .flatten()
                 .collect(),
             });
+        let historical = historical_requirements(&history.revisions, current);
         let mut draft = request.draft.clone();
-        validate_draft(current, &draft)?;
+        validate_draft(current, &draft, &historical)?;
         let mut review_context = current.clone();
         let mut review_draft = request.draft.clone();
         let mut selected = BTreeSet::new();
@@ -518,7 +559,7 @@ impl ProjectEnvironmentStore {
                 );
             }
         }
-        validate_draft(&review_context, &draft)?;
+        validate_draft(&review_context, &draft, &historical)?;
         for r in draft
             .project_requirements
             .iter_mut()
@@ -555,7 +596,7 @@ impl ProjectEnvironmentStore {
                 .decisions
                 .contains_key(&p.requirement.requirement_id)
         });
-        let mut diff = environment_revision_diff(&review_context, &review_draft)?;
+        let mut diff = revision_diff_with_history(&review_context, &review_draft, &historical)?;
         diff.target_digest = saved.content_digest.clone();
         // Include server-accepted proposals in the same review diff as field edits.
         for r in requirements(&draft).filter(|r| accepted_requirements.contains(&r.requirement_id))

@@ -2068,3 +2068,56 @@ fn envp02b_accept_detected_requirement_from_new_attachment_preserves_history() {
     assert_eq!(envp02b_read(&harness).folders, reviewed.folders);
 }
 
+// MP-08 / MP-10 / MP-11: explicit restoration trusts only immutable kernel history.
+#[test]
+fn envp02b_restores_deleted_requirement_with_trusted_history_and_rejects_forgery() {
+    let harness = envp02b_harness();
+    let initial = envp02b_read(&harness);
+    harness
+        .dispatch(envp02b_save(&initial, "Original Node"))
+        .unwrap();
+    let saved = envp02b_read(&harness);
+    let mut removal = serde_json::to_value(envp02b_save(&saved, "Original Node")).unwrap();
+    removal["SaveProjectEnvironmentRevision"]["draft"]["project_requirements"] =
+        serde_json::json!([]);
+    harness
+        .dispatch(serde_json::from_value(removal).unwrap())
+        .unwrap();
+    let deleted = envp02b_read(&harness);
+    let mut restoration = serde_json::to_value(envp02b_save(&saved, "Reviewed Node")).unwrap();
+    let body = &mut restoration["SaveProjectEnvironmentRevision"];
+    body["expectedRevision"] = serde_json::json!(deleted.revision);
+    body["expectedContentDigest"] = serde_json::json!(deleted.content_digest);
+    let preview = serde_json::json!({"PreviewEnvironmentDiff":{"projectId":"edit-project","expectedRevision":deleted.revision,"draft":body["draft"]}});
+    let LocalDaemonResponse::ProjectEnvironmentDiff { diff } = harness
+        .dispatch(serde_json::from_value(preview).unwrap())
+        .expect("reviewed restoration must retain trusted historical provenance")
+    else {
+        panic!("Diff expected")
+    };
+    assert!(diff
+        .requirements
+        .iter()
+        .any(|row| row.requirement_id == "user-node"
+            && row.kind == crate::project_environment::EnvironmentDiffKind::Added));
+    let mut forged = restoration.clone();
+    forged["SaveProjectEnvironmentRevision"]["draft"]["project_requirements"][0]["origins"][0]
+        ["user_id"] = serde_json::json!("forged");
+    assert!(harness
+        .dispatch(serde_json::from_value(forged).unwrap())
+        .unwrap_err()
+        .to_string()
+        .contains("provenance"));
+    let LocalDaemonResponse::ProjectEnvironmentSaved { environment, .. } = harness
+        .dispatch(serde_json::from_value(restoration).unwrap())
+        .unwrap()
+    else {
+        panic!("Save expected")
+    };
+    assert_eq!(environment.project_requirements[0].title, "Reviewed Node");
+    assert_eq!(
+        environment.project_requirements[0].origins,
+        saved.project_requirements[0].origins
+    );
+    assert_eq!(environment.revision, deleted.revision + 1);
+}
