@@ -178,9 +178,9 @@ export async function bootstrapSession(
     options.accountProfile,
     createdSession,
     {
-      getCredentialVaultStatus: deps.getCredentialVaultStatus
-        ? () => deps.getCredentialVaultStatus!(client)
-        : undefined,
+      ...(deps.getCredentialVaultStatus
+        ? { getCredentialVaultStatus: () => deps.getCredentialVaultStatus!(client) }
+        : {}),
       launchProviderRun: (sessionId, provider, accountProfile, model, effort, targetAgentId) =>
         deps.launchProviderRun(client, sessionId, provider, accountProfile, model, effort, targetAgentId),
       getSessionState: (sessionId) => deps.getSessionState(client, sessionId),
