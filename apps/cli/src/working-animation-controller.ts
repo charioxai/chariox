@@ -4,6 +4,7 @@ export type WorkingAnimationControllerDeps<TimerHandle> = {
   clearInterval: (handle: TimerHandle) => void
   incrementFrame: () => void
   sessionStatusMode: () => string
+  hasGoalClock?: () => boolean
   splitAgentResponseMode: () => boolean
   updateSessionChrome: () => void
   renderSplitPaneFooters: () => void
@@ -22,7 +23,7 @@ export function createWorkingAnimationController<TimerHandle>(
 
   const tick = () => {
     deps.incrementFrame()
-    if (deps.sessionStatusMode() === "working") {
+    if (deps.sessionStatusMode() === "working" || deps.hasGoalClock?.()) {
       deps.updateSessionChrome()
     }
     if (deps.splitAgentResponseMode()) {

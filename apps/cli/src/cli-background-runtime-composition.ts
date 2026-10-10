@@ -1,3 +1,4 @@
+import { sessionHasActiveGoalClock } from "@chariox/kernel-client/session-runtime-status"
 import { createEffect, onCleanup, onMount } from "solid-js"
 
 import { createBackgroundPollerStartupController } from "./background-poller-startup-controller.js"
@@ -716,6 +717,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
       deps.setWorkingAnimationFrame((value: number) => value + 1)
     },
     sessionStatusMode: deps.sessionStatusMode,
+    hasGoalClock: () => sessionHasActiveGoalClock(deps.sessionState()),
     splitAgentResponseMode: deps.splitAgentResponseMode,
     updateSessionChrome: deps.updateSessionChrome,
     renderSplitPaneFooters: deps.renderSplitPaneFooters,

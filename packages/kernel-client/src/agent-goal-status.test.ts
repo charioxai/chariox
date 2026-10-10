@@ -13,3 +13,11 @@ test("goal row exposes objective, evaluation, elapsed, check-in and revision con
   assert.match(row.label, /1m.*check 1/)
   assert.match(row.label, /goal:p.*revision 3/)
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: client time does not change home phase.
+test("goal waiting row shows a finite countdown without implying completion at zero", () => {
+  const session={agent_tasks:[{task_id:"p",agent_id:"a",prompt_id:"p",state:"waiting",revision:3,obligations:[],wait:{registration_ids:["peer"]},goal:{id:"goal:p",objective:"Review live sites",check_in_minutes:1,active_elapsed_ms:1000,waiting_elapsed_ms:0,state_since_ms:1000,next_check_in_ms:61000,check_count:1}}]} as unknown as RuntimeSession
+  assert.match(sessionAgentTaskStatus(session,"a",2000)!.label,/next check 59s/)
+  assert.match(sessionAgentTaskStatus(session,"a",62000)!.label,/GOAL WAITING/)
+  assert.match(sessionAgentTaskStatus(session,"a",62000)!.label,/next check 0s/)
+})
