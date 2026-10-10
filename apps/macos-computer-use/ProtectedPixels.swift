@@ -4,7 +4,8 @@ func protectedRaster(_ image: CGImage, surface: NativeSurface, masks: [CGRect], 
     throws -> (image: CGImage, pixels: [UInt8]) {
     guard surface.width > 0, surface.height > 0, surface.width * surface.height <= 4 * 1024 * 1024,
           image.width == surface.width, image.height == surface.height,
-          masks.allSatisfy({ !$0.isNull && [$0.minX, $0.minY, $0.width, $0.height].allSatisfy { $0.isFinite } }) else {
+          masks.allSatisfy({ !$0.isNull && $0.width > 0 && $0.height > 0 &&
+              [$0.minX, $0.minY, $0.width, $0.height].allSatisfy { $0.isFinite } }) else {
         throw tagged(.secure, "capture-mask-geometry-unknown")
     }
     var pixels = [UInt8](repeating: 0, count: surface.width * surface.height * 4)
@@ -20,6 +21,7 @@ func protectedRaster(_ image: CGImage, surface: NativeSurface, masks: [CGRect], 
             else {
                 for mask in masks {
                     let rect = mask.intersection(surface.bounds)
+                    if rect.isNull || rect.isEmpty { continue }
                     context.fill(CGRect(x: (rect.minX - surface.bounds.minX) * surface.scale,
                         y: (surface.bounds.maxY - rect.maxY) * surface.scale,
                         width: rect.width * surface.scale, height: rect.height * surface.scale).insetBy(dx: -2, dy: -2).integral)
