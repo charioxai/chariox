@@ -18,6 +18,7 @@ mod remote_machines;
 
 use blocking::block_on_relay_query;
 pub(crate) use catalog::{
+    claude_auth_status,
     load_provider_catalog, logout_provider_response, observe_provider_auth_status,
     provider_auth_status_response, provider_command_catalogs_response,
     refresh_provider_account_profile_response, start_provider_login_response,

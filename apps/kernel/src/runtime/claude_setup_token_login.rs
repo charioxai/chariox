@@ -143,6 +143,7 @@ pub(super) async fn reconcile(
         owner_user_id,
         &record.account_profile,
         &token,
+        TokenVerification::SubscriptionUsage,
     )
     .await
     {
@@ -224,11 +225,17 @@ pub(super) async fn submit_vault_passphrase(
     .await
 }
 
+pub(super) enum TokenVerification {
+    SubscriptionUsage,
+    NativeAuthStatus,
+}
+
 pub(super) async fn verify(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
     account_profile: &str,
     token: &Zeroizing<String>,
+    verification: TokenVerification,
 ) -> Result<(), DaemonError> {
     let registry = runtime_state.provider_account_profile_registry().clone();
     let owner_user_id = owner_user_id.to_string();
@@ -242,15 +249,35 @@ pub(super) async fn verify(
             crate::provider::CLAUDE_OAUTH_TOKEN_ENV.to_string(),
             token.to_string(),
         );
-        let verified = crate::provider::probe_claude_account_usage(
-            &executable,
-            &account_profile,
-            &environment,
-        );
+        let verified = match verification {
+            TokenVerification::SubscriptionUsage => crate::provider::probe_claude_account_usage(
+                &executable,
+                &account_profile,
+                &environment,
+            )
+            .map(|_| ()),
+            TokenVerification::NativeAuthStatus => {
+                // MP-08 / MP-10 / MP-11: supplied setup tokens may only have
+                // inference scope. Use the existing official status contract;
+                // subscription meters are not authentication.
+                crate::local::provider_requests::claude_auth_status(
+                    "claude",
+                    &account_profile,
+                    &environment,
+                )
+                .and_then(|status| {
+                    if status.auth_state == "authenticated" {
+                        Ok(())
+                    } else {
+                        Err(login_error("Claude did not report an authenticated supplied token"))
+                    }
+                })
+            }
+        };
         if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
             zeroize::Zeroize::zeroize(value);
         }
-        verified.map(|_| ())
+        verified
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {

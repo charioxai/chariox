@@ -367,7 +367,7 @@ pub(crate) fn refresh_provider_account_profile_response(
     }
 }
 
-fn claude_auth_status(
+pub(crate) fn claude_auth_status(
     provider: &str,
     account_profile: &str,
     environment: &BTreeMap<String, String>,
@@ -412,6 +412,15 @@ fn claude_auth_status(
     match (output.status.code(), logged_in) {
         (Some(0), Some(_)) | (Some(1), Some(false)) => {}
         _ => return Err(verification_error()),
+    }
+    // MP-08 / MP-10 / MP-11: an explicit supplied token must be the credential
+    // Claude reports using, not an API-key helper from the selected profile.
+    if environment.contains_key(crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
+        && logged_in == Some(true)
+        && (value.get("authMethod").and_then(serde_json::Value::as_str) != Some("oauth_token")
+            || value.get("apiProvider").and_then(serde_json::Value::as_str) != Some("firstParty"))
+    {
+        return Err(verification_error());
     }
     Ok(claude_auth_status_from_value(
         provider,

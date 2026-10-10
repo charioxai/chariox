@@ -1279,8 +1279,15 @@ mod mp11_always_tests {
         let executable = root.join("claude");
         std::fs::write(&executable, r##"#!/bin/sh
 if [ "$1" = "-p" ]; then
-  if [ "$CLAUDE_CODE_OAUTH_TOKEN" != "synthetic-valid" ]; then exit 1; fi
-  printf '%s' '{"type":"result","subtype":"success","is_error":false,"result":"Current session: 17% used\nCurrent week (all models): 41% used","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0},"num_turns":0,"total_cost_usd":0,"duration_api_ms":0}'
+  printf '%s' '{"type":"result","subtype":"success","is_error":false,"result":"Subscription usage is unavailable for this token","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0},"num_turns":0,"total_cost_usd":0,"duration_api_ms":0}'
+elif [ "$1" = "auth" ]; then
+  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "synthetic-valid" ]; then
+    printf '%s' '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstParty"}'
+  elif [ "$CLAUDE_CODE_OAUTH_TOKEN" = "synthetic-wrong-source" ]; then
+    printf '%s' '{"loggedIn":true,"authMethod":"api_key_helper","apiProvider":"firstParty"}'
+  else
+    printf '%s' '{"loggedIn":false}'; exit 1
+  fi
 else
   printf '%s' '{"loggedIn":false}'
 fi
@@ -1362,8 +1369,17 @@ fi
             .await;
         assert!(
             bad.is_err(),
-            "a rejected token must not replace the registered credential"
+            "a provider-reported unauthenticated token must not replace the registered credential"
         );
+        let wrong_source =
+            crate::runtime::user_config_executor::execute_set_provider_account_credential_request(
+                &state.owned.config_projection,
+                &state,
+                &command,
+                request("synthetic-wrong-source", true),
+            )
+            .await;
+        assert!(wrong_source.is_err(), "another credential source cannot verify the supplied token");
         let values = crate::provider::resolve_provider_account_credentials(
             &state.owned.config_projection.snapshot(),
             &owner,
