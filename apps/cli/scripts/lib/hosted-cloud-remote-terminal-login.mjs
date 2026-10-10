@@ -48,8 +48,8 @@ export async function prepareHostedRemoteTerminal({
         await approve({ role: "remote-receiver", userCode: value.userCode, verificationUrl: value.verificationUrl, accountSlug: ownerAccountSlug })
         approved = true
       }
-      const ready = await runSsh(`test -f ${shellQuote(remoteRoot + "/login-ready")}`)
-      if (ready.code === 0) return { environment, cleanup }
+      const ready = await runSsh(`cat ${shellQuote(remoteRoot + "/login-ready")}`)
+      if (ready.code === 0) return { environment, cleanup, publicClient: JSON.parse(ready.stdout) }
       if (login.exitCode != null || login.signalCode != null) throw new Error("receiver CLIENT login failed before bootstrap")
       await new Promise(resolve => setTimeout(resolve, 1000))
     }
@@ -72,10 +72,12 @@ export async function runRemoteTerminalLogin(mode, root, apiUrl, accountId) {
         access(path.join(root, "abort-login")).then(() => { client.stop(); process.exit(1) }, () => {})
       }, 500)
       await mkdir(root, { recursive: true, mode: 0o700 })
-      await client.login(apiUrl, async ({ verificationUrl, userCode }) => {
+      const profile = await client.login(apiUrl, async ({ verificationUrl, userCode }) => {
         await writeFile(path.join(root, "verification.json"), JSON.stringify({ verificationUrl, userCode }), { mode: 0o600 })
       }, accountId)
-      await writeFile(path.join(root, "login-ready"), "MP-08 / MP-10 / MP-11 CLIENT login complete\n", { mode: 0o600 })
+      // Only the public, key-bound CLIENT identity leaves this machine.
+      await writeFile(path.join(root, "login-ready"), JSON.stringify({accountId: profile.accountId,
+        clientId: profile.clientId, publicKeyThumbprint: profile.clientId.slice("cli:".length)}), { mode: 0o600 })
     } else if (mode === "logout") {
       await client.logout()
     } else throw new Error("unknown receiver login operation")

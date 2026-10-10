@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, rm, stat } from "node:fs/promises"
+import { mkdtemp, rm, stat, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -230,6 +230,9 @@ test("MP-08 / MP-10 / MP-11: receiver device login feeds actual CLI pairing boot
   await assert.rejects(boot(), /signed-in terminal/)
   assert.equal(clients, 0, "fresh receiver rejects before IPC")
   await runRemoteTerminalLogin("login", root, "http://127.0.0.1:44123", "account")
+  const receivingClient = JSON.parse(await readFile(path.join(root, "login-ready"), "utf8"))
+  assert.deepEqual(receivingClient, {accountId: "account", clientId: identity.clientId,
+    publicKeyThumbprint: identity.publicKeyThumbprint})
   assert.equal((await boot()).kind, "ready")
   assert.equal(joins, 1)
   assert.equal(grantKey, identity.publicKeyThumbprint)

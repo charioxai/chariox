@@ -304,25 +304,17 @@ export async function runHostedRemoteCliPairingAssertions({
       remoteSnapshot,
     )
 
-    const terminals = unwrap(
-      await homeClient.send(requests.listTerminalsRequest()),
-      "TerminalsListed",
-    ).terminals ?? []
+    // Hosted pairing locates the kernel; admission uses the receiver's own
+    // account CLIENT, not the locator's legacy local pairing record.
+    const receivingClient = receiver.publicClient
     assert(
-      terminals.some((terminal) => terminal.terminal_id === pairing.terminal_id && terminal.terminal_type === "cli"),
-      "home kernel should list the paired CLI terminal",
-      { pairing, terminals },
+      receivingClient?.accountId === ownerAccountId
+        && /^[0-9a-f]{64}$/.test(receivingClient.publicKeyThumbprint)
+        && receivingClient.clientId === `cli:${receivingClient.publicKeyThumbprint}`,
+      "receiving CLI should use its own owner-account public key identity",
+      receivingClient,
     )
-    const pairedClients = unwrap(
-      await homeClient.send(requests.listPairedClientsRequest()),
-      "PairedClientsListed",
-    ).clients ?? []
-    const pairedCli = pairedClients.find((client) => client.client_id === pairing.terminal_id)
-    assert(
-      pairedCli && /^[0-9a-f]{64}$/.test(pairedCli.public_key_thumbprint),
-      "home kernel should record the receiving CLI public key thumbprint",
-      { terminalId: pairing.terminal_id, pairedCli },
-    )
+    log("remote-cli-account-identity", receivingClient)
 
     await waitForSession(homeClient, requests, localSnapshot.session.id)
     await waitForSession(verificationClient, requests, localSnapshot.session.id)
