@@ -256,8 +256,13 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
             return false;
         }
         let text = text.trim();
+        let continuation = text
+            .strip_prefix("This session is being continued from a previous conversation that ran out of context.")
+            .and_then(|body| body.trim_start().strip_prefix("The summary below covers the earlier portion of the conversation."))
+            .is_some_and(|body| body.trim_start().starts_with("Summary:"));
         text == "[Request interrupted by user]"
             || (text.starts_with("<task-notification>") && text.ends_with("</task-notification>"))
+            || continuation
     }
 
     pub(crate) fn status_settles(self, text: &str) -> bool {
