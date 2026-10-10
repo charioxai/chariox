@@ -336,7 +336,7 @@ fn managed_context_launch_target_reads_schema_v4_variant_fields() {
     );
 }
 
-// MP-08/MP-11: owner admission and environment-free launch require protocol 445.
+// MP-08/MP-11: owner admission and environment-free launch require protocol 480.
 #[test]
 fn mp08_mp11_owner_managed_context_shapes_are_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 480);
