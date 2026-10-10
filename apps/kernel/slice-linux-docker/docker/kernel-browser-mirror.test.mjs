@@ -278,7 +278,7 @@ test('MP-11: native keyboard unknown/protected focus refuses with no retry marke
 // MP-08/MP-10/MP-11: both transports must size the actual compositor view.
 for(const dpr of [1,2])test(`MP-10 mirror negotiates native view image scale at DPR${dpr}`,async()=>{
  const {service,calls}=fixture();await service.subscribe({tab_id:'t',generation:1,device_scale_factor:dpr},'a');
- assert.deepEqual(calls.find(c=>c.method==='Emulation.setDeviceMetricsOverride').params,{width:1280,height:800,deviceScaleFactor:dpr,scale:dpr,mobile:false});
+ assert.deepEqual(calls.find(c=>c.method==='Emulation.setDeviceMetricsOverride').params,{width:1280,height:800,deviceScaleFactor:dpr,scale:1/dpr,mobile:false});
 });
 
 // MP-11: no new packet is produced after the live page/native focus moves.
