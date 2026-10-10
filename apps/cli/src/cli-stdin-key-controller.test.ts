@@ -158,7 +158,6 @@ test("cli stdin key controller routes copy and ctrl-c shortcuts", () => {
   assert.deepEqual(copyHarness.calls(), [
     "parse:x",
     "session-browser:c",
-    "focused:c",
     "copy",
   ])
 
@@ -429,3 +428,12 @@ function keyEvent(name: string, options: {
   }
   return event
 }
+
+ test("MP-08 / MP-10 transcript copy precedes both active interaction paths", () => {
+  for (const promptFocused of [true, false]) for (const event of [keyEvent("f6"), keyEvent("c", {meta: true}), keyEvent("c", {ctrl: true, shift: true})]) {
+    const h = createHarness({parsedEvent: event, promptFocused, focusedInteractionActive: true, focusedInteractionHandled: true, copyHandled: true})
+    h.controller.handleData("x")
+    assert.ok(h.calls().includes("copy"))
+    assert.ok(!h.calls().includes(`focused:${event.name}`))
+  }
+})

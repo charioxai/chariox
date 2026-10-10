@@ -87,6 +87,10 @@ export function createCliStdinKeyController(
       deps.requestExit()
       return true
     }
+    // Meta+C shares Alt+C with queued-prompt cancel; a selection wins.
+    if (event.eventType !== "release" && copyKey && deps.copyPromptSelection()) {
+      return true
+    }
     // The focused textarea receives the same terminal key through its
     // onKeyDown handler. Let it exclusively own an active interaction so a
     // printable key is not appended once here and once by the textarea.
@@ -94,10 +98,6 @@ export function createCliStdinKeyController(
       return true
     }
     if (deps.handleFocusedInteractionKey(event)) {
-      return true
-    }
-    // Meta+C shares Alt+C with queued-prompt cancel; a selection wins.
-    if (event.eventType !== "release" && copyKey && deps.copyPromptSelection()) {
       return true
     }
     const queuedPromptKeyEvent = queuedPromptKeyEventFromStdin(event)
