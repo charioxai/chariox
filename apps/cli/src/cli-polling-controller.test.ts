@@ -436,3 +436,24 @@ function workspaceLiveSyncStatus(
     },
   }
 }
+
+test("MP-08 / MP-10 / MP-11 G03 drops an old provider refresh after room selection", async () => {
+  let complete!: (run: RuntimeProviderRun) => void
+  let began!: () => void
+  const started = new Promise<void>(resolve => { began = resolve })
+  const pendingRun = new Promise<RuntimeProviderRun>(resolve => { complete = resolve })
+  const harness = createHarness({
+    nextSession: session({active_provider_run_id: "run-1"}),
+    tryGetProviderRun: () => { began(); return pendingRun },
+  })
+  const polling = harness.controller.pollSessionState()
+  await started
+  harness.sessionState = session({id: "session-2"})
+  harness.attachment = {id: "attachment-2", session_id: "session-2"}
+  const nextRun = providerRun("run-2")
+  harness.providerRun = nextRun
+  complete(providerRun("run-1"))
+  await polling
+  assert.equal(harness.sessionState.id, "session-2")
+  assert.equal(harness.providerRun, nextRun)
+})

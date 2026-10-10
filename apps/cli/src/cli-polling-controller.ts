@@ -147,11 +147,16 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
           return
         }
         const previousSession = deps.getSession()
+        const attachmentId = deps.getAttachment()?.id
+        const bindingStillCurrent = () => deps.isAttached()
+          && deps.getSession().id === previousSession.id
+          && deps.getAttachment()?.id === attachmentId
         const shouldRefreshWorkflowOutline = deps.workflowScreenActive()
         const previousWorkflowRuntimeSignature = shouldRefreshWorkflowOutline
           ? workflowRuntimeSignature(previousSession)
           : null
         const session = await deps.getSessionState(previousSession.id)
+        if (!bindingStillCurrent()) return
         deps.recordDaemonActivity("session_state_poll")
         const projectedSession = deps.projectSession(session, deps.getProviderRun())
         const refreshTransition = sessionSnapshotRefreshTransition({
@@ -170,13 +175,16 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
         if (refreshTransition.shouldRefreshAgentPanes) {
           await deps.refreshAgentPanes(projectedSession)
         }
+        if (!bindingStillCurrent()) return
         if (
           refreshTransition.shouldRefreshWorkspaceLiveSyncStatus
           && deps.getWorkspaceLiveSyncStatus
           && deps.setWorkspaceLiveSyncStatus
         ) {
           try {
-            deps.setWorkspaceLiveSyncStatus(await deps.getWorkspaceLiveSyncStatus(projectedSession.id))
+            const status = await deps.getWorkspaceLiveSyncStatus(projectedSession.id)
+            if (!bindingStillCurrent()) return
+            deps.setWorkspaceLiveSyncStatus(status)
             deps.updateSessionChrome()
           } catch (error) {
             deps.logger?.warn("workspace live sync status refresh failed", {
@@ -188,6 +196,7 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
         if (session.active_provider_run_id) {
           const activeRun = deps.getProviderRun()
           const run = await deps.tryGetProviderRun(session.active_provider_run_id)
+          if (!bindingStillCurrent()) return
           if (run && (!activeRun || !deps.sameProviderRun(activeRun, run))) {
             deps.logProviderRunDebug("session poll refreshed provider run", run, {
               session_id: session.id,
