@@ -122,5 +122,6 @@ test('MP-08/MP-10: mirror wheel retains fractions and normalizes line/page units
  actions.length=0;wheel(.5,1);wheel(.5,2);await renderer.inputChain;
  assert.deepEqual(actions.map(action=>action.delta_y),[10,400]);
  actions.length=0;wheel(-.4);wheel(-.4);wheel(-.4);await renderer.inputChain;assert.equal(actions.reduce((sum,action)=>sum+action.delta_y,0),-1);
+ actions.length=0;wheel(.6);await renderer.inputChain;renderer.documentId='next';wheel(.6);await renderer.inputChain;assert.equal(actions.length,0,'source navigation drops the old fractional remainder');wheel(.4);await renderer.inputChain;assert.equal(actions.reduce((sum,action)=>sum+(action.input?.delta_y??action.delta_y),0),1);
  renderer.releaseDocuments(new Set());renderer.bindEvents(doc);actions.length=0;wheel(.4);await renderer.inputChain;assert.equal(actions.length,0,'released document drops its old remainder');
 });
