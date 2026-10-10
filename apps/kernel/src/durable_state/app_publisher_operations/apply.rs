@@ -63,7 +63,7 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<R
             if current.phase != PublisherOperationPhase::Pending {
                 check(&budget)?;
                 tx.commit().map_err(commit_failed)?;
-                return Ok(Reply::Review(PublisherReview::Terminal(current)));
+                return Ok(Reply::Review(PublisherReview::Terminal));
             }
             fresh_nonce(&tx, &owner, &interaction)?;
             sql(tx.execute("UPDATE app_publisher_operations SET interaction_id=?1,updated_ms=?2 WHERE owner_id=?3 AND request_id=?4",params![interaction,now()?,owner,request]))?;

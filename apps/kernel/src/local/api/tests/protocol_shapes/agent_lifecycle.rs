@@ -63,7 +63,7 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
 
 #[test]
 fn agent_wake_projection_shape_is_bound_to_protocol459() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let wake = crate::durable_state::agent_lifecycle::AgentWake {
         id: "wake".into(),
         task_id: "task".into(),

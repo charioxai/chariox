@@ -237,6 +237,7 @@ fn a03_owner_resume_delivery_cannot_create_a_second_task_before_continuation() {
         target: None,
         run: None,
         now: 1_002,
+        work: None,
     };
     assert!(
         f.store.agent_lifecycle(attempt()).is_err(),
@@ -432,6 +433,7 @@ fn a03_one_shot_timer_fires_once_wakes_the_wait_and_records_receipts() {
         target: None,
         run: Some("run".into()),
         now: 1_600,
+        work: None,
     });
     assert_eq!(f.task().state, ExecutionState::Working);
     assert_eq!(f.wake("t1").last_delivery.as_deref(), Some("submitting"));
@@ -670,6 +672,7 @@ fn a03_overdue_wake_cold_admission_has_a_bounded_clock_without_fake_progress() {
         target: None,
         run: None,
         now: 300_001,
+        work: None,
     });
     let task = f.task();
     assert!(lacks_live_executor(&task, 300_002, false, false));
@@ -774,6 +777,7 @@ fn a03_wake_admission_survives_more_than_one_page_of_handled_history() {
         target: None,
         run: None,
         now: 300_001,
+        work: None,
     });
     assert!(
         f.store
@@ -803,6 +807,7 @@ fn a03_recurring_timer_check_ins_require_owner_after_three_without_progress() {
             target: None,
             run: Some("run".into()),
             now: now + 1,
+            work: None,
         });
         f.apply(Operation::Receipt {
             room: "room".into(),
@@ -959,6 +964,7 @@ fn teardown_settles_inflight_deliveries(state: &str) {
             target: None,
             run: Some("wake-run".into()),
             now: 1_001,
+            work: None,
         });
         if state == "uncertain" {
             f.apply(Operation::Receipt {
@@ -972,6 +978,7 @@ fn teardown_settles_inflight_deliveries(state: &str) {
             f.apply(Operation::Sweep {
                 now: 1_001 + DELIVERY_TIMEOUT_MS,
                 busy_recipients: vec![],
+                held_work: Vec::new(),
             });
         }
         assert_eq!(f.inbox()[0].state, state);
@@ -996,6 +1003,7 @@ fn teardown_settles_inflight_deliveries(state: &str) {
         f.apply(Operation::Sweep {
             now: 3_000 + 2 * DELIVERY_TIMEOUT_MS,
             busy_recipients: vec![],
+            held_work: Vec::new(),
         });
         assert!(
             f.store
@@ -1229,6 +1237,7 @@ fn security_f12_recurring_ack_does_not_reset_no_progress_budget() {
         target: None,
         run: Some("run".into()),
         now: 1001,
+        work: None,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),

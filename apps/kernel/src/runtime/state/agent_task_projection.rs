@@ -74,14 +74,29 @@ impl KernelRuntimeOwnedState {
             })
             .collect::<Vec<_>>();
         // Output entries are streamed deltas; the conclusion is at the end.
-        let output =
-            task_public_outputs(&entries, &task.prompt_id, task.provider_run_id.as_deref())
-                .concat();
+        let output = task_public_outputs(
+            &entries,
+            &task.prompt_id,
+            task_answer_history_run(task.provider_run_id.as_deref()),
+        )
+        .concat();
         let excerpt = answer_tail(output.trim(), 1_024);
         let mut answer = serde_json::json!({"agent_id":task.agent_id,"task_id":task.task_id,"prompt_id":task.prompt_id,"excerpt":excerpt});
         crate::secret_redaction::redact_json_secrets(&mut answer);
         Ok(Some(answer))
     }
+}
+
+// Leased history retains the worker run ID. Resolve it from the task's durable
+// execution binding, so reconciliation does not depend on the current lease or
+// active run. This is a history lookup only; the task's authority stays projected.
+fn task_answer_history_run(run: Option<&str>) -> Option<&str> {
+    run.map(|run| {
+        run.strip_prefix("leased:")
+            .and_then(|binding| binding.split_once(':'))
+            .filter(|(lease, worker)| !lease.is_empty() && !worker.is_empty())
+            .map_or(run, |(_, worker)| worker)
+    })
 }
 
 fn answer_tail(text: &str, limit: usize) -> String {
@@ -163,6 +178,54 @@ mod tests {
         assert!(task_public_outputs(&entries, "absent", Some("run")).is_empty());
         assert!(task_public_outputs(&entries, "current", None).is_empty());
     }
+    // MP-08/MP-10/MP-11 R947: persisted completion/sweep lookup uses the
+    // task's old worker run even after another lease or turn becomes current.
+    #[test]
+    fn a10_public_answer_resolves_durable_worker_run_without_live_binding() {
+        assert_eq!(
+            task_answer_history_run(Some("leased:old-lease:old-run")),
+            Some("old-run")
+        );
+        assert_eq!(
+            task_answer_history_run(Some("leased:old-lease:worker:run")),
+            Some("worker:run")
+        );
+        for run in ["local-run", "leased:", "leased::worker", "leased:lease:"] {
+            assert_eq!(task_answer_history_run(Some(run)), Some(run));
+        }
+        assert_eq!(task_answer_history_run(None), None);
+        let entry = |kind: &str, key: Option<&str>, run: Option<&str>, text: &str| {
+            serde_json::from_value(serde_json::json!({"session_id":"room", "kind":kind,
+                "merge_key":key,"provider_run_id":run,"text":text,"timestamp_ms":1}))
+            .unwrap()
+        };
+        let entries = vec![
+            entry("user_prompt", Some("prompt:completed"), None, "task"),
+            entry(
+                "provider_output",
+                None,
+                Some("old-run"),
+                "verified worker answer",
+            ),
+            entry(
+                "provider_output",
+                None,
+                Some("current-run"),
+                "foreign answer",
+            ),
+            entry("user_prompt", Some("prompt:later"), None, "later task"),
+            entry("provider_output", None, Some("old-run"), "later answer"),
+        ];
+        assert_eq!(
+            task_public_outputs(
+                &entries,
+                "completed",
+                task_answer_history_run(Some("leased:old-lease:old-run"))
+            ),
+            vec!["verified worker answer"]
+        );
+    }
+
     #[test]
     fn a02_public_answer_keeps_streamed_conclusion() {
         let streamed = ["I", "’ll", " check.", " Done: all tools exist."].concat();

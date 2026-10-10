@@ -113,6 +113,22 @@ earlier turn has no authority in a later turn. Sudo Unix terminal subscriptions 
 limited to the window session and owner attachments; ordinary external grants
 can subscribe across their local kernel. Leased sudo execution
 remains a separate leg.
+earlier turn has no authority in a later turn. Unix terminal subscriptions are
+limited to the window session and owner attachments.
+
+A leased agent (running on a worker kernel) is elevated by its home kernel only
+(MP-08/MP-09/MP-10/MP-11 A10). The window is bound to the agent's execution
+lease; any other placement ends it. Before each elevated leased turn, and on
+Extend and at the end, the home sends the worker `UpdateLeasedSudo` (relay
+peer protocol 83) naming the exact leased home prompt, the window revision and
+the time left. The worker lists `chariox_kernel_request` only for that turn
+and forwards every call home, where the same window, turn and lease are checked
+again before any effect; the worker fence can only narrow authority. Other
+leased agents on the worker, including ones the elevated agent delegates to,
+never see the tool. The fence lives in worker memory: a worker restart drops it,
+and the next renewal for that window ends it at home (`worker_restarted`).
+Workers older than peer protocol 83 are refused, `/sudo` entered on a worker
+for a leased backing agent is refused, and shell CLI elevation stays local-only.
 
 ## Vault generation and protected login (A06)
 

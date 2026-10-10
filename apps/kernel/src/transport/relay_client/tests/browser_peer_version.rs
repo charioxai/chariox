@@ -6,7 +6,7 @@ use futures_util::FutureExt;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_73_encrypted_lease_admission() {
+fn mp08_mp10_mp11_browser_artifact_current_peer_encrypted_lease_admission() {
     crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("browser-artifact-peer-version", check);
 }

@@ -34,7 +34,7 @@ fn mp08_mp10_mp11_browser_artifact_peer_82_shape_hashes() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 487);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        82
+        83
     );
     let wire = serde_json::json!({"kind":"artifact","request":{"target_id":"tab-target","document_id":"doc-a","browser_generation":1,"viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800,"revision":1,"last_actor_id":null},"kind":"network"}});
     let typed: RoomBrowserControllerCommand = serde_json::from_value(wire.clone()).unwrap();

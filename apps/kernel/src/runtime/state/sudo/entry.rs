@@ -84,9 +84,33 @@ impl KernelRuntimeState {
         {
             return Err(error("only the session host can authorize sudo"));
         }
-        if agent.remote_execution().is_some() || agent.is_metaagent() {
+        if agent.is_metaagent() {
             return Err(error(
-                "sudo requires a local regular agent; finish Meta mode first",
+                "sudo requires a regular agent; finish Meta mode first",
+            ));
+        }
+        // A10: a leased agent is elevated by its home kernel over the existing
+        // lease, and only on a worker that enforces the window as well.
+        if agent.remote_execution().is_some_and(|remote| {
+            remote.relay_peer_protocol_version.unwrap_or(0)
+                < super::leased::LEASED_SUDO_PEER_PROTOCOL_VERSION
+        }) {
+            return Err(error(
+                "this agent's worker kernel predates leased sudo windows; update the worker or run the agent locally",
+            ));
+        }
+        if self
+            .owned
+            .provider_store
+            .get_run_for_agent(session.id(), agent_id)
+            .is_some_and(|run| {
+                self.owned
+                    .provider_run_projection
+                    .is_leased_provider_run(run.id())
+            })
+        {
+            return Err(error(
+                "a leased agent's sudo window is authorized only by its home kernel",
             ));
         }
         if prompt.trim().is_empty() {
@@ -108,6 +132,9 @@ impl KernelRuntimeState {
             revision: 0,
             warning_sent: false,
             deadline: None,
+            placement: agent
+                .remote_execution()
+                .map(|remote| remote.execution_lease_id.clone()),
         };
         {
             let mut access = self.owned.sudo_turns.lock().expect("access state poisoned");
@@ -239,31 +266,37 @@ impl KernelRuntimeState {
         let entry = &entry;
         self.audit_sudo(entry, "authorized")?;
         self.arm_sudo_timer(&entry.entry_id, entry.revision);
+        let leased = entry.placement.is_some();
         // A provider that caches its tool catalog and already runs listed it
-        // before this window: reload it once, idle, before the first turn.
-        let mut reload = self
-            .owned
-            .provider_store
-            .get_run_for_agent(&entry.session_id, &entry.agent_id)
-            .is_some_and(|run| {
-                crate::provider::provider_runtime_catalog_requires_reload(run.provider())
-            });
+        // before this window: reload it once, idle, before the first turn. A
+        // leased provider's catalog is the worker's; home never reloads it.
+        let mut reload = !leased
+            && self
+                .owned
+                .provider_store
+                .get_run_for_agent(&entry.session_id, &entry.agent_id)
+                .is_some_and(|run| {
+                    crate::provider::provider_runtime_catalog_requires_reload(run.provider())
+                });
         let attachments = crate::runtime::agent_actor::prompt_attachment_materialization::materialize_inline_prompt_attachments(&entry.session_id, &entry.agent_id, request.attachments.clone())?;
         // A cold launch uses the normal provider path. No elevated authority is
         // usable until admission installs the exact prompt and run identity.
-        self.with_app_side_effect(|app| {
-            if !self
-                .owned
-                .sudo_turns
-                .lock()
-                .expect("access state poisoned")
-                .contains_key(&entry.entry_id)
-            {
-                return Err(error("queued sudo was revoked"));
-            }
-            app.ensure_prompt_provider_run_for_agent(&entry.session_id, &entry.agent_id)
-        })
-        .await?;
+        // A leased agent launches on its worker through the leased dispatch.
+        if !leased {
+            self.with_app_side_effect(|app| {
+                if !self
+                    .owned
+                    .sudo_turns
+                    .lock()
+                    .expect("access state poisoned")
+                    .contains_key(&entry.entry_id)
+                {
+                    return Err(error("queued sudo was revoked"));
+                }
+                app.ensure_prompt_provider_run_for_agent(&entry.session_id, &entry.agent_id)
+            })
+            .await?;
+        }
         let mut relaunch_deadline = None;
         // MP-08/MP-10/MP-11: the catalog budget counts only idle refresh
         // attempts. Busy work restarts it; human vault popups precede it.
@@ -335,7 +368,10 @@ impl KernelRuntimeState {
                 relaunch_deadline = None;
             }
             let submission = self.try_start_sudo(entry, request, prompt, &attachments, !reload)?;
-            if let Some(submission) = submission {
+            if let Some(mut submission) = submission {
+                if let Some(dispatch) = submission.remote_dispatch.take() {
+                    self.spawn_remote_prompt_dispatch(dispatch);
+                }
                 if let Some(dispatch) = submission.dispatch {
                     self.start_active_turn_with_trace_id(
                         &dispatch.session_id,
@@ -449,10 +485,15 @@ impl KernelRuntimeState {
         }
         // Provider launch and concurrent ordinary submissions can leave the
         // target busy. Retry without ever admitting a durable queued prompt.
-        let submission = match self
-            .owned
-            .submit_local_prepared_prompt_with_queue_policy(&prepared, false)
-        {
+        let leased = entry.placement.is_some();
+        let submitted = if leased {
+            self.owned
+                .submit_remote_prepared_prompt_with_queue_policy(&prepared, false)
+        } else {
+            self.owned
+                .submit_local_prepared_prompt_with_queue_policy(&prepared, false)
+        };
+        let submission = match submitted {
             Err(DaemonError::LocalTransport { message, .. })
                 if message == "target agent is busy; retry when its provider is ready" =>
             {
@@ -473,13 +514,15 @@ impl KernelRuntimeState {
         let PromptSubmissionOutcome::Started { prompt } = &submission.outcome else {
             return Err(error("sudo must start a fresh turn"));
         };
-        let dispatch = submission
-            .dispatch
-            .as_ref()
-            .ok_or_else(|| error("sudo provider dispatch unavailable"))?;
+        // A leased turn's worker run is bound when the worker accepts it.
+        let run = match (&submission.dispatch, &submission.remote_dispatch) {
+            (Some(dispatch), _) => Some(dispatch.provider_run_id.clone()),
+            (None, Some(_)) => None,
+            (None, None) => return Err(error("sudo provider dispatch unavailable")),
+        };
         let mut turn = entry.clone();
         turn.prompt_id = Some(prompt.id().into());
-        turn.provider_run_id = Some(dispatch.provider_run_id.clone());
+        turn.provider_run_id = run;
         turn.task_id = durable_work.then(|| prompt.id().into());
         let bound = self.owned.prompt_state_owner.bind_sudo_turn(
             &session,

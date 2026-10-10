@@ -20,6 +20,7 @@ mod legacy_workflow_history;
 mod prompt_activity;
 mod prompt_lifecycle;
 mod prompt_state_owner;
+mod provider_account_authority;
 mod provider_activation;
 mod provider_endpoint_identity;
 mod provider_focus;

@@ -17,7 +17,8 @@ use crate::{
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::sync::mpsc;
 
-type WorkflowNotificationInventory = (
+// MP-08/MP-10/MP-11: the shared notification inventory returned by this store.
+pub(crate) type WorkflowNotificationInventory = (
     Vec<WorkflowNotificationSource>,
     Vec<WorkflowNotificationSubscription>,
     Vec<WorkflowNotificationDiagnostic>,

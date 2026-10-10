@@ -22,7 +22,39 @@ impl KernelRuntimeState {
         if current_run.id() != run.id() {
             return Err(ledger::error("stale provider tool authority"));
         }
-        let session = self.owned.session_store.get_session(run.session_id())?;
+        self.dispatch_agent_event_tool_for(run.session_id(), actor, Some(run), name, args)
+            .await
+    }
+    /// A10: a leased agent's event tools reach the home ledger, which owns
+    /// its waiting state and wake ordering. The forwarded context must name
+    /// the current lease, worker run and running home prompt.
+    pub(crate) async fn dispatch_leased_agent_event_tool(
+        &self,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if !self.owned.config_projection.snapshot().room_agent_tools {
+            return Err(ledger::error("room event tools are disabled"));
+        }
+        if context.home_prompt_id.is_none() {
+            return Err(ledger::error(
+                "leased event tools need the running home prompt",
+            ));
+        }
+        let agent = self.authorize_forwarded_workspace_context(context)?;
+        self.dispatch_agent_event_tool_for(&context.home_session_id, agent.id(), None, name, args)
+            .await
+    }
+    async fn dispatch_agent_event_tool_for(
+        &self,
+        room: &str,
+        actor: &str,
+        run: Option<&crate::provider::RuntimeProviderRun>,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let session = self.owned.session_store.get_session(room)?;
         let prompt = self
             .owned
             .prompt_state_owner
@@ -39,23 +71,21 @@ impl KernelRuntimeState {
         let task = self
             .owned
             .durable_state_store
-            .agent_tasks(Some(run.session_id()), Some(actor))?
+            .agent_tasks(Some(room), Some(actor))?
             .into_iter()
             .find(|t| t.task_id == task_id && t.prompt_id == prompt.id())
             .ok_or_else(|| ledger::error("task unavailable in this room and turn"))?;
         let now = crate::session::unix_epoch_ms();
         let payload = match name {
-            "chariox.events.inbox" => serde_json::to_value(
-                self.owned.durable_state_store.agent_work_inbox(
-                    run.session_id(),
+            "chariox.events.inbox" => {
+                serde_json::to_value(self.owned.durable_state_store.agent_work_inbox(
+                    room,
                     actor,
                     args["after"].as_u64().unwrap_or(0),
-                    self.owned
-                        .sudo_work_task(run.session_id(), actor)
-                        .as_deref(),
-                )?,
-            )
-            .map_err(|_| ledger::error("inbox encoding failed"))?,
+                    self.owned.sudo_work_task(room, actor).as_deref(),
+                )?)
+                .map_err(|_| ledger::error("inbox encoding failed"))?
+            }
             "chariox.events.subscriptions" => {
                 serde_json::json!({"task":task,"registrations":self.owned.durable_state_store.agent_registrations(task_id)?})
             }
@@ -76,12 +106,12 @@ impl KernelRuntimeState {
                 let source = args["source_id"]
                     .as_str()
                     .ok_or_else(|| ledger::error("source_id required"))?;
-                let agents = self.session_agents(run.session_id());
+                let agents = self.session_agents(room);
                 let delegate = agents.iter().any(|a| a.id() == source && a.id() != actor);
                 let peer_task = self
                     .owned
                     .durable_state_store
-                    .agent_tasks(Some(run.session_id()), None)?
+                    .agent_tasks(Some(room), None)?
                     .iter()
                     .any(|t| t.task_id == source && t.agent_id != actor);
                 let workflow = session.workflow_runs().iter().any(|w| {
@@ -123,16 +153,11 @@ impl KernelRuntimeState {
                 let seq = args["sequence"]
                     .as_u64()
                     .ok_or_else(|| ledger::error("sequence required"))?;
-                if let Some(work) = self.owned.sudo_work_task(run.session_id(), actor) {
+                if let Some(work) = self.owned.sudo_work_task(room, actor) {
                     if !self
                         .owned
                         .durable_state_store
-                        .agent_work_inbox(
-                            run.session_id(),
-                            actor,
-                            seq.saturating_sub(1),
-                            Some(&work),
-                        )?
+                        .agent_work_inbox(room, actor, seq.saturating_sub(1), Some(&work))?
                         .iter()
                         .any(|event| event.sequence == seq)
                     {
@@ -142,7 +167,7 @@ impl KernelRuntimeState {
                 self.owned
                     .durable_state_store
                     .agent_lifecycle(Operation::Ack {
-                        room: run.session_id().into(),
+                        room: room.into(),
                         agent: actor.into(),
                         sequence: seq,
                         handled: args["handled"].as_bool().unwrap_or(false),
