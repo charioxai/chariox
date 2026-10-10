@@ -42,7 +42,7 @@ export class NativeAccessibility {
       if(nodes.length>=64)break;
       const target_id=`atspi-${randomUUID()}`;
       const protectedNode=Boolean(node.protected || node.role==='password text' || policy?.targets?.length);
-      const projected={target_id,role:node.role,name:protectedNode?'[protected]':node.name,states:node.states??[],bounds:node.bounds,actions:protectedNode?[]:node.actions??[]};
+      const projected={target_id,role:node.role,name:protectedNode?'[protected]':node.name,states:node.states??[],bounds:node.desktop_bounds??node.bounds,actions:protectedNode?[]:node.actions??[]};
       const size=Buffer.byteLength(JSON.stringify(projected))+1;
       // MP-08: MCP duplicates and pretty-prints this payload; history caps at12KiB.
       if(bytes+size>3072)continue;

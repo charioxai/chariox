@@ -119,6 +119,7 @@ class TraversalTest(unittest.TestCase):
         tree=self.driver.snapshot([{'pid':200,'started':'1'}],values=['v-secret'])
         self.assertEqual(tree['uncovered'],[])
         self.assertEqual(tree['nodes'][-1]['bounds'],[10,20,56,14])
+        self.assertEqual(tree['nodes'][-1]['desktop_bounds'],[20,40,112,28])
         self.assertEqual(tree['masks'],[])
         self.assertEqual(self.driver.native_frame_scale([50,40,150,100],[100,80,300,200],[100,80,300,200]),2)
         self.assertIsNone(self.driver.native_frame_scale([50,40,150,100],[100,80,300,240],[100,80,300,240]))

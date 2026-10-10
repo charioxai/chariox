@@ -270,7 +270,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
             clients=root.get_full_property(connection.intern_atom('_NET_CLIENT_LIST_STACKING'),X.AnyPropertyType)
             stacked=clients is not None
             if not stacked:clients=root.get_full_property(connection.intern_atom('_NET_CLIENT_LIST'),X.AnyPropertyType)
-            windows=[];scales={}
+            windows=[]
             for window_id in clients.value if clients is not None else []:
                 window=connection.create_resource_object('window',int(window_id))
                 if window.get_attributes().map_state!=X.IsViewable:continue
@@ -298,7 +298,10 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                     scale=native_frame_scale(frame['bounds'],rect,client)
                     for node in nodes:
                         if node['pid']==pid and node['path'][:len(frame['path'])]==frame['path']:
-                            scales[id(node)]=scale
+                            # MP-08/MP-11: public pointer targets use physical
+                            # desktop pixels; private focus fences retain raw extents.
+                            if node['bounds'] is not None:
+                                node['desktop_bounds']=[part*scale for part in node['bounds']]
                 if pid not in allowed:complete=False
                 if not covered or pid in browsers:
                     visible=visible_rect(rect,screen)

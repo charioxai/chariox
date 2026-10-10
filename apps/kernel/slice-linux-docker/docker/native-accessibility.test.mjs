@@ -122,3 +122,24 @@ test('MP-08 snapshot announces masked windows without accessibility so agents ca
  const plain=await new NativeAccessibility({binding:()=>binding,execute:async()=>structuredClone(tree)}).snapshot('agent:a',{});
  assert.deepEqual(plain.masked,[]);
 });
+
+// MP-08/MP-10/MP-11 #904 scale2: public bounds and pointer input share desktop pixels.
+import {NativeComputer} from './native-computer.mjs';
+import {RoomNativeAccessibility} from './room-native-accessibility.mjs';
+test('MP-08 / MP-11 host and Room scaled snapshot centers reach the physical pointer unchanged',async()=>{
+ for(const placement of ['host','slice']) {
+  const scoped={...binding,width:2560,height:1600};let clicked;
+  const execute=async request=>request.op==='accessibility'
+   ? {...tree,nodes:[{...tree.nodes[0],bounds:[100,50,20,10],desktop_bounds:[200,100,40,20]}]}
+   : (clicked=request.input,{applied:true});
+  const native=placement==='host'?new NativeAccessibility({binding:()=>scoped,execute}):new RoomNativeAccessibility({binding:()=>scoped,execute});
+  const policy={unknown:false,values:[],targets:[]};
+  const seen=placement==='host'?await native.snapshot('agent:a',policy):await native.request({op:'snapshot',observer:'agent:a',policy});
+  const [x,y,w,h]=seen.nodes[0].bounds;
+  assert.deepEqual(seen.nodes[0].bounds,[200,100,40,20]);
+  assert.equal(seen.nodes[0].desktop_bounds,undefined,'private geometry metadata stays below clients');
+  const computer=new NativeComputer({placement,binding:()=>scoped,execute});
+  await computer.request({op:'input',surface_id:scoped.surface_id,generation:scoped.generation,input:{kind:'click',x:x+w/2,y:y+h/2}},policy);
+  assert.deepEqual(clicked,{kind:'click',x:220,y:110});
+ }
+});
