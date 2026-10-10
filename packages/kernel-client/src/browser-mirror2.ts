@@ -118,7 +118,8 @@ export class BrowserMirror2Renderer {
     on('pointerdown', event => { const e = event as PointerEvent; origin = { x: e.clientX, y: e.clientY }; dragged = false })
     on('pointermove', event => { const e = event as PointerEvent; if (origin && (e.buttons & 1) && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > 4) dragged = true })
     const selecting = (el: Element): boolean => { if (el.closest('input,textarea,button,select,[contenteditable]')) return false; const s = doc.getSelection(); return Boolean(s && !s.isCollapsed && (el.contains(s.anchorNode) || el.contains(s.focusNode))) }
-    on('click', event => { event.preventDefault(); const hit = element(event); if (!hit || dragged || selecting(hit.el)) { dragged = false; return } this.enqueue({ kind: 'click', node_id: hit.id, ...offset(hit.el, event as MouseEvent) }) })
+    // A drag inside a text control focused it here only: its range goes now (the kernel focuses the control with it).
+    on('click', event => { event.preventDefault(); const hit = element(event); if (!hit || dragged || selecting(hit.el)) { if (dragged) this.syncRange(); dragged = false; return } this.enqueue({ kind: 'click', node_id: hit.id, ...offset(hit.el, event as MouseEvent) }) })
     on('auxclick', event => event.preventDefault())
     on('dragstart', event => event.preventDefault())
     on('submit', event => event.preventDefault())

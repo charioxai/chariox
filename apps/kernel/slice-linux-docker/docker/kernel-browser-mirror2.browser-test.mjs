@@ -604,3 +604,17 @@ test("MP-10: review #941-4 a text selection inside a mirrored same-origin child 
     const scripted = { anchor_id: child, anchor_offset: 11, focus_id: child, focus_offset: 6 };
     assert.deepEqual(await follow(scripted), scripted, "MP-10: a page script's selection in the child reaches viewer B");
   }, { "/child": { type: "text/html", body: '<p id="c">child words here</p>' } }));
+
+test("MP-08: review #320-1 a range sent for an unfocused text control focuses it, so the next text and keys edit that control, not the one focused before", () => mirrored(
+  '<input id="a" value="first field"><input id="b" value="second field"><textarea id="t">third field</textarea>', async ({ next, evaluate, input }) => {
+    const snapshot = await next(), id = name => elements(snapshot).find(([, , attrs]) => attrs.id === name)[0];
+    const values = () => evaluate("['a','b','t'].map(id => document.getElementById(id).value)");
+    for (const [name, anchor, focus, edit, expected] of [["b", 7, 12, { kind: "text", text: "box" }, ["first field", "second box", "third field"]], ["t", 11, 5, { kind: "key", key: "Backspace" }, ["first field", "second box", "third"]]]) {
+      await evaluate("document.getElementById('a').focus();document.getElementById('a').setSelectionRange(11,11);true");
+      const focused = await next(600);
+      await input(focused.sequence, { kind: "selection", anchor_id: id(name), anchor_offset: anchor, focus_id: id(name), focus_offset: focus });
+      assert.equal(await evaluate("document.activeElement.id"), name, `MP-08: #${name} takes the kernel's focus with its range`);
+      await input(focused.sequence, edit);
+      assert.deepEqual(await values(), expected, `MP-08: the edit replaced the range of #${name}; #a is unchanged`);
+    }
+  }));

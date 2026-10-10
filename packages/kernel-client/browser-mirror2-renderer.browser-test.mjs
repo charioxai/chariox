@@ -240,3 +240,23 @@ test('MP-08: review #941-1 keys pressed while composing stay with the viewer\'s 
     assert.deepEqual(await page.evaluate(() => window.sent.filter(action => action.kind !== 'scroll_to')), [{ kind: 'text', text: '日本' }], 'MP-08: only the committed text reaches the kernel (no Enter submits the source form)');
   } finally { await page.close(); }
 });
+
+test('MP-08: review #320-1 a drag that selects in a control the kernel has not focused sends its range when the drag ends (the kernel focuses it), before any edit', async () => {
+  const page = await viewer();
+  try {
+    const form = (value, at) => ({ value, checked: false, selected_index: -1, selection_start: at, selection_end: at });
+    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'font:16px monospace;width:300px;display:block' }, form: form('first field', 11) },
+      { id: 'n5', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'font:16px monospace;width:300px;display:block' }, form: form('second field', 12) }]), focused: 'n4' });
+    const cdp = await page.context().newCDPSession(page);
+    const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelectorAll('input')[1].getBoundingClientRect(); return { x: f.x + t.x, y: f.y + t.y + 9 }; });
+    const mouse = (type, x, buttons) => cdp.send('Input.dispatchMouseEvent', { type, x: box.x + x, y: box.y, button: 'left', buttons, clickCount: 1 });
+    await mouse('mousePressed', 70, 1); for (const x of [80, 95, 110, 125]) await mouse('mouseMoved', x, 1); await mouse('mouseReleased', 125, 0); await frames();
+    const [start, end] = await page.evaluate(() => { const e = window.r.frame.contentDocument.activeElement; return [e.selectionStart, e.selectionEnd]; });
+    assert(start < end, 'MP-08: the drag selected inside the second control');
+    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to'));
+    assert.deepEqual(await sent(), [{ kind: 'selection', anchor_id: 'n5', anchor_offset: start, focus_id: 'n5', focus_offset: end }], 'MP-08: the range (and with it the kernel focus) goes when the drag ends');
+    await page.keyboard.type('x'); await frames();
+    assert.deepEqual(await sent(), [{ kind: 'text', text: 'x' }], 'MP-08: the edit follows without resending the range');
+  } finally { await page.close(); }
+});

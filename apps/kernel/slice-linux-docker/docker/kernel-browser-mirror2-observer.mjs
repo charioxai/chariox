@@ -567,6 +567,8 @@ export function installMirror2(sanitizeMirrorCss) {
       // A text control's own range (select-all, a drag inside it): offsets into its value.
       if (a === b && a.nodeType === 1 && ['input', 'textarea'].includes(a.localName) && a.selectionStart !== null) {
         if (!offsets.every(offset => Number.isInteger(offset) && offset >= 0 && offset <= a.value.length)) throw new Error('mirror2 invalid selection');
+        // It is the viewer's focused control (a drag focuses one without a click): the next text and keys edit it here too.
+        focus({ node_id: request.anchor_id });
         a.setSelectionRange(Math.min(...offsets), Math.max(...offsets), offsets[0] > offsets[1] ? 'backward' : 'forward'); return true;
       }
       if (a.nodeType !== 3 || b.nodeType !== 3 || a.ownerDocument !== b.ownerDocument || !Number.isInteger(request.anchor_offset) || !Number.isInteger(request.focus_offset) || request.anchor_offset < 0 || request.anchor_offset > a.length || request.focus_offset < 0 || request.focus_offset > b.length) throw new Error('mirror2 invalid selection');
