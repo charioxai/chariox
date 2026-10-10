@@ -142,7 +142,7 @@ test("MP-07/MP-11 an occupied companion MCP port fails before install publicatio
 
 test("MP-07/MP-08 a signed pre-BYOM kernel release cannot publish an install", async t => {
   const h = await harness(t, Buffer.from('#!/bin/sh\nprintf "439\\n"\n'))
-  await assert.rejects(runMachine(h.request,h.options), /bootstrap protocol 444/)
+  await assert.rejects(runMachine(h.request,h.options), /bootstrap protocol 479/)
   assert.deepEqual(await readdir(join(h.home,".config/systemd/user")),[])
 })
 
@@ -234,4 +234,13 @@ test("MP-07 / MP-11 occupied install lock reports its path and guarded recovery 
   })
   assert.deepEqual(await readdir(lock), [])
   assert.deepEqual(h.calls, [])
+})
+
+test("MP-07/MP-08/MP-11 signed ownership predecessor 478 publishes no service, root or binding", async t => {
+  const h = await harness(t, Buffer.from('#!/bin/sh\nprintf "478\\n"\n'))
+  await assert.rejects(runMachine(h.request,h.options), /bootstrap protocol 479/)
+  await assert.rejects(readFile(join(h.root, "install.json")), { code: "ENOENT" })
+  await assert.rejects(readFile(join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service")), { code: "ENOENT" })
+  await assert.rejects(readFile(join(h.home, ".chariox/dev/ssh-machines/byom-test/ssh-install-owner.json")), { code: "ENOENT" })
+  assert.ok(!h.calls.some(args => ["daemon-reload", "enable", "start"].includes(args[0])))
 })

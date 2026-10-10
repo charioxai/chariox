@@ -24,7 +24,7 @@ async function treeHash(root) {
   return `sha256:${hash.digest("hex")}`
 }
 export async function createFixture(dir, chosenKernelBytes) {
-  const kernelBytes = chosenKernelBytes ?? Buffer.from('#!/bin/sh\nif [ "$1" = "--print-local-daemon-protocol-version" ]; then printf "444\\n"; exit 0; fi\nexit 64\n')
+  const kernelBytes = chosenKernelBytes ?? Buffer.from('#!/bin/sh\nif [ "$1" = "--print-local-daemon-protocol-version" ]; then printf "479\\n"; exit 0; fi\nexit 64\n')
   const root = join(dir, "image"); await mkdir(root)
   const releaseKeys = generateKeyPairSync("ed25519"), builderKeys = generateKeyPairSync("ed25519")
   const publicKey = key => key.export({ format: "der", type: "spki" }).subarray(-32).toString("base64")

@@ -249,7 +249,7 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
     await command("python3", [join(stage, "extract-release.py"), join(stage, "release.tar.gz"), image])
     await verifyImage(image, r.releaseDigest, stage, stage)
     const protocol = (await command(join(image, "usr/local/bin/chariox-kernel"), ["--print-local-daemon-protocol-version"], true)).trim()
-    if (!/^\d+$/.test(protocol) || Number(protocol) < 444) fail("chosen release requires owner-managed bootstrap protocol 444 or newer")
+    if (!/^\d+$/.test(protocol) || Number(protocol) < 479) fail("chosen release requires owner-managed bootstrap protocol 479 or newer")
     const manifest = JSON.parse(await readFile(join(image, "usr/lib/chariox/release-manifest.json")))
     const unit = unitFor(home, r, root)
     const state = await tree(home, stateRelative)
