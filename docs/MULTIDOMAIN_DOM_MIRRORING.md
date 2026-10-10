@@ -9,7 +9,7 @@ The screen tiers are native App views, mirrored web pages, then protected video.
 This implementation targets host Chromium on Linux. It does not introduce a
 browser inside a slice, a Cloud runtime proxy, or a second input authority.
 
-## Protocol 489: DOM mirror v2 (current; introduced in 482, compact wire in 489)
+## Protocol 492: DOM mirror v2 (current; introduced in 482, compact wire in 489, control/UA state in 492)
 
 `mirror_subscribe {wire: 2}` selects v2; the 443 computed-style packets below
 remain for one protocol version (TUI/tests) and are superseded for web clients.
@@ -22,7 +22,7 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
 - **Snapshot, then deltas.** One pre-order snapshot per document (`reset`),
   then MutationObserver deltas as ops: `children` (reconcile a parent's child
   list; new subtrees carried as records), `attr`, `text`, `css`, `adopted`,
-  `form`, `scroll`, `size`, `res`. Records travel as compact rows
+  `form`, `scroll`, `size`, `res`, `state` (492). Records travel as compact rows
   `[idDelta, parentBack, tag | kindCode, attrs | 0, extra]`; a stylesheet text
   of 2 KB or more travels once per snapshot epoch (`sheets` + `css_ref`).
   Deltas carry only changes: a child list that ends as it was sends nothing, a
@@ -36,12 +36,27 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
 - **Author CSS and real attributes.** Stylesheets are the page's own CSSOM
   text (imports inlined; cross-origin sheets read through CDP and normalized
   by a constructed sheet); adoptedStyleSheets and open shadow roots are kept.
-  HTML attributes ship by denylist and only if rendered/exposed by the UA or
-  referenced by the page's CSS selectors/attr(); links carry `href="#"`.
+  CSSOM edits (insertRule, rule.style writes, replace/replaceSync) make no
+  mutation record: the controller enables the CDP CSS domain per mirrored
+  session and a `styleSheetChanged` marks the owner node (constructed sheets:
+  the adopted lists; imported sheets: sheets with imports) in every observer
+  instance of that frame's world; there is no periodic text compare and no
+  rule-count cap. A per-drain signature (rule count, `disabled`) covers what
+  Chrome does not report (`disabled` arrives as a removal, media-list edits not
+  at all). Attributes ship by denylist (492): every attribute except
+  `src`-like/navigation names, `on*` handlers and credential-like names
+  (`csrf`, `xsrf`, `token`, `nonce`, `secret`, `passw`) outside the rendered
+  set; values outside the rendered set and `aria-*` are capped at 1 KB. Links
+  carry `href="#"`; `:target` is rewritten to `[chariox-target]`, which the
+  viewer sets on the element the `fragment` header names.
 - **Pushed credits.** `mirror_next {wait_ms <= 2000}` is a long poll answered
   by the next page change; the client keeps four credits outstanding, packets
   apply strictly in sequence (`base_sequence`), and a gap asks for a reset
-  (`after_sequence: 0`). Replies arrive in credit order, so a gap with no older
+  (`after_sequence: 0`). A packet that stays unacknowledged for 1.5 s while a
+  later credit still names an older base was lost with its reply (a dropped
+  socket): the kernel sends it again, in order, with its original bytes (its
+  last 16 packets, at most 8 MB). One failed credit re-credits from the
+  applied sequence; a failed reset or a second failure in a row resets. Replies arrive in credit order, so a gap with no older
   credit outstanding (for example a credit replayed after a reconnect, which the
   kernel runs again) resets at once; the reset credit does not wait for credits
   in flight, and the kernel ends the long poll of every credit that arrived
@@ -50,7 +65,8 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   its arrival (below the client's 8 s request timeout).
 - **Compact wire (489).** A reset packet carries the binding and header
   (`subscription_id`, `tab_id`, `generation`, `document_id`, `css_width`,
-  `css_height`, `device_scale_factor`, `scroll`, `focused`, `selection`). A
+  `css_height`, `device_scale_factor`, `scroll`, `focused`, `selection`,
+  `fragment` (492)). A
   delta carries `wire`, `sequence`, its ops, and only the header fields that
   differ from its base (an explicit `null` replaces); its base is
   `sequence - 1`, and the viewer restores the rest from its binding and the
@@ -86,15 +102,39 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
 - **Frames.** Same-origin frames are part of the document. Cross-origin frames
   are mirrored through their own CDP session/isolated world with the same
   observer (ids and resource keys rebased per frame slot; stylesheets its CSSOM
-  cannot read are read through the child's CDP session); nested or
-  unattachable frames, canvas/video/plugins are opaque regions painted from
-  masked lossless captures (at most 1 Hz until video regions land).
+  cannot read are read through the child's CDP session). Every field of a
+  child record, op and delta is rebased by a declared schema; an unnamed field
+  is refused. Nested or unattachable frames, canvas/video/plugins are opaque
+  regions, stills at most 1 Hz until video regions land: a canvas bitmap or a
+  video frame travels as the element's own pixels (overlays above it stay
+  mirrored DOM); tainted media, plugins, closed roots and unattached frames are
+  masked screenshot crops, and such a crop under a scale/rotate transform or a
+  filter hands the page to labelled video (`region_transform`). Region and
+  mask records carry their layout size; sizes and a mask's display are
+  reconciled every drain.
+- **UA state (492).** State without an attribute footprint is sampled from a
+  declared set (elements with `popover`, dialogs, checkboxes, custom elements)
+  on toggle/close/input/change, attribute changes, morphs and the 2 s cursor:
+  `state {popover_open, modal, indeterminate, defined}` (records carry
+  non-default values). The viewer shows/hides popovers (its copies are
+  `manual`: no viewer light dismiss), opens modal dialogs in its top layer,
+  sets `indeterminate`, and defines each custom tag the kernel has defined in
+  its sandbox registry (an empty class) so `:defined` matches.
 - **Input** is node-addressed with the viewer's offset inside the node; the
   kernel clamps to the live box, hit-tests at dispatch (through frames/shadow),
   refuses protected ancestry and targets whose attributes changed after the
   viewer's applied sequence. Epochs are snapshot sequences, not wall clocks.
   CDP pointer coordinates follow the emulated view scale (DPR1 on a scale-2
   window). Text/keys go to the live focus behind the shared text fence.
+  Focus transitions travel explicitly (492): viewer `focusin` sends `focus`,
+  focus leaving to nothing while the mirror keeps focus sends `blur` (the
+  kernel blurs only while that control is still its live focus), and a kernel
+  header `focused: null` blurs the viewer's control. Selects and date/time/
+  month/week/color/range inputs keep the viewer's own UI (popup, picker,
+  typeahead, arrows; only Tab/Enter go to the kernel); their committed value
+  travels as `set {node_id, value | checked | selected_index}`, which the kernel
+  validates live (protected/sensitive/disabled/epoch) and writes with
+  input + change events. Keystroke forwarding remains for text controls.
 - **Scroll** is shared (owner decision): the kernel tab has one position. A
   viewer scrolls its own copy natively for frame rate and sends coalesced
   `scroll_to`; the kernel applies it and every other viewer follows the
@@ -103,6 +143,19 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   scroll position back. Wheel over opaque regions drives the kernel.
 - **No tree hash.** Correctness comes from sequenced deltas, base checks,
   resnapshot on a gap and independent client validation.
+- **Observer bounds.** Instances are least recently used first, at most 16 per
+  world (twice the service's subscriptions); a new instance for a running
+  subscription answers `resync: evicted`. Resource keys are monotonic and the
+  URL map is LRU at 4096, so long sessions keep materializing images; the
+  kernel drops resource bytes once the viewer acknowledged them.
+- **Stated bounds (unsupported).** JS-only styling without a sheet or attribute
+  (`element.animate`/WAAPI, `FontFace`/`document.fonts.add`,
+  `CSS.registerProperty`, `CSS.highlights`); CSS animations restart at the
+  snapshot; ElementInternals custom states (`:state()`); closed shadow roots on
+  non-custom hosts; select popups and pickers use the viewer's OS UI. Font and
+  scrollbar parity assumes the viewer resolves the same fonts and scrollbar
+  width as the kernel host (Linux Chrome); Mac/Windows viewers may wrap
+  differently.
 - **Fallback.** Over-budget or unavailable DOM returns a labelled `fallback`
   packet; the web client shows protected video and retries the mirror after
   30 s, doubling to 10 min. A retired subscription (`stale or foreign mirror`)
