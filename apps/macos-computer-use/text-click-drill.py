@@ -9,7 +9,7 @@ import signal
 import subprocess
 import time
 
-BUILD = Path(os.environ.get('CUMAC_BUILD_DIR', '/Users/miguel/.chariox/dev/cumac/build'))
+BUILD = Path(os.environ.get('CUMAC_BUILD_DIR', str(Path.home() / '.chariox/dev/cumac/build')))
 HELPER = BUILD / 'Chariox Computer Helper.app'
 LANE = Path('/Users/miguel/.chariox/dev/browser-computer-use/resume-20260930/agents/cumac')
 
@@ -59,13 +59,28 @@ def read(evidence, name):
     return path.read_text() if path.exists() else ''
 
 
+def verify_launch_receipt(receipt, executable, cdhash):
+    try:
+        identity = next(json.loads(line) for line in receipt.splitlines() if line.startswith('{'))
+        if (Path(identity['path']).resolve() != executable.resolve() or identity['cdhash'] != cdhash
+                or identity['identifier'] != 'ai.chariox.computer-helper'
+                or identity['signatureValid'] is not True or identity['parentPID'] != 1):
+            raise ValueError('identity mismatch')
+    except (ValueError, KeyError, StopIteration, TypeError):
+        raise RuntimeError('helper-launch-identity-mismatch') from None
+
+
 def launch_helper(evidence, label, arguments):
     require_gui()
+    signing = subprocess.run(['codesign', '-dvvv', str(HELPER)], capture_output=True, text=True, check=True)
+    match = re.search(r'^CDHash=([0-9a-f]{40})$', signing.stderr, re.MULTILINE)
+    if not match: raise RuntimeError('helper-signature-unavailable')
     subprocess.run(['open', '-n', '-g', '-W', '--stdout', str(evidence / f'{label}.out'),
                     '--stderr', str(evidence / f'{label}.err'),
                     str(HELPER), '--args', *arguments],
                    check=True, timeout=8)
     receipt = read(evidence, f'{label}.out') + read(evidence, f'{label}.err')
+    verify_launch_receipt(receipt, HELPER / 'Contents/MacOS/helper', match[1])
     print(receipt, end='')
     return receipt
 

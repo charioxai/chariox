@@ -12,15 +12,24 @@ import Darwin
     private var surface: NativeSurface?
     private let capture = PairedCapture()
     private var unresolvedInput = false
-    init(fd: Int32, epoch: String, scope: Any?) throws {
+    private let readSurface: (Request) throws -> NativeSurface
+    private let execute: (Request, MacSource) async throws -> [String]
+    init(fd: Int32, epoch: String, scope: Any?,
+         surfaceProvider: @escaping (Request) throws -> NativeSurface = nativeSurface,
+         execute: @escaping (Request, MacSource) async throws -> [String] = { try await run($0, source: $1) }) throws {
+        self.readSurface = surfaceProvider; self.execute = execute
         self.fd = fd; self.epoch = epoch
         self.scope = try pairedScope(scope)
     }
     func renew() { lastKernelRequest = ProcessInfo.processInfo.systemUptime }
     func checkAuthority() throws {
         guard !revoked else { throw tagged(.disabled, "grant-revoked") }
-        if let scope, let surface, try nativeSurface(scope) != surface {
-            revoked = true; capture.clear(); throw tagged(.target, "surface-geometry-changed")
+        if let scope, let surface {
+            do {
+                guard try readSurface(scope) == surface else { throw Refusal.target }
+            } catch {
+                revoked = true; capture.clear(); throw tagged(.target, "surface-geometry-changed")
+            }
         }
         var byte: UInt8 = 0
         let count = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
@@ -37,9 +46,9 @@ import Darwin
         let method = request["method"] as? String
         let params = request["params"] as? [String: Any] ?? [:]
         if method == "stop" { revoked = true; capture.clear(); return pairedReply(request, epoch: epoch) }
-        if method == "host.computer.reset", unresolvedInput {
+        if unresolvedInput, method != "stop" && method != "heartbeat" {
             return (["id": request["id"] ?? NSNull(), "epoch": epoch, "ok": false,
-                "error": ["code": "unsupported", "reason": "owned-release-failed"]], false)
+                     "error": ["code": "owner_reset_required"]], false)
         }
         if method == "heartbeat" {
             do {
@@ -55,7 +64,7 @@ import Darwin
         if method == "host.protect" { capture.protect(params); return pairedReply(request, epoch: epoch) }
         if method == "host.computer", ["start", "state"].contains(params["op"] as? String ?? "") {
             do {
-                if surface == nil { surface = try nativeSurface(scope) }
+                if surface == nil { surface = try readSurface(scope) }
                 try checkAuthority()
                 var result = pairedReply(request, epoch: epoch)
                 result.reply["result"] = ["surface_id": "macos-seat", "generation": epoch,
@@ -65,7 +74,7 @@ import Darwin
                 return result
             } catch {
                 return (["id": request["id"] ?? NSNull(), "epoch": epoch, "ok": false,
-                         "error": ["code": "user_domain_stale_epoch"]], false)
+                         "error": ["code": "user_domain_stale_epoch"]], true)
             }
         }
         if method == "host.display" {
@@ -96,10 +105,10 @@ import Darwin
                 }
                 try checkAuthority(); reply["ok"] = true
             } catch {
-                reply["error"] = ["code": revoked ? "browser_action_cancelled" : "unsupported",
+                reply["error"] = ["code": unresolvedInput ? "owner_reset_required" : (revoked ? "browser_action_cancelled" : "unsupported"),
                                   "reason": (error as? RefusalDetail)?.reason ?? "native-refused"]
             }
-            return (reply, false)
+            return (reply, revoked)
         }
         guard method == "host.computer", ["input", "screenshot"].contains(params["op"] as? String ?? "") else {
             return pairedReply(request, epoch: epoch)
@@ -119,17 +128,17 @@ import Darwin
             }
             guard let input = params["input"] as? [String: Any] else { throw tagged(.arguments, "invalid-paired-input") }
             let operation = try pairedInput(input, scope: scope, surface: surface)
-            let receipts = try await run(operation, source: MacSource(authority: { try self.checkAuthority() }))
+            let receipts = try await execute(operation, MacSource(authority: { try self.checkAuthority() }))
             try checkAuthority()
             reply["ok"] = true
             reply["result"] = ["dispatched": true, "receipts": receipts]
         } catch {
             if refusalKind(error) == .ownedInput { unresolvedInput = true }
             // Fixed public tags only. No text, AX tree or app errors cross the socket.
-            reply["error"] = ["code": revoked ? "browser_action_cancelled" : "unsupported",
+            reply["error"] = ["code": unresolvedInput ? "owner_reset_required" : (revoked ? "browser_action_cancelled" : "unsupported"),
                               "reason": (error as? RefusalDetail)?.reason ?? "native-refused"]
         }
-        return (reply, false)
+        return (reply, revoked)
     }
 }
 

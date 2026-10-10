@@ -5,6 +5,8 @@ use super::*;
 #[derive(Clone, Copy, PartialEq)]
 enum Fake {
     Honest,
+    OwnedReleaseFailure,
+    ScopeRefused,
     WrongToken,
     StaleReply,
     StaleGeneration,
@@ -65,6 +67,11 @@ fn helper(dir: &Path, fake: Fake, seen: &Mutex<Vec<String>>) {
         } else {
             epoch.clone()
         };
+        if method != "heartbeat" && matches!(fake, Fake::OwnedReleaseFailure | Fake::ScopeRefused) {
+            let code = if fake == Fake::OwnedReleaseFailure { "owner_reset_required" } else { "user_domain_stale_epoch" };
+            writeln!(stream, "{}", json!({"id":request["id"],"epoch":epoch,"ok":false,"error":{"code":code}})).unwrap();
+            continue;
+        }
         let result = json!({"surface_id":"macos-seat","generation":generation});
         writeln!(
             stream,
@@ -400,4 +407,33 @@ fn m1_private_drill_scope_is_bounded_and_has_no_extra_fields() {
     ] {
         assert!(drill_scope(value).is_err());
     }
+}
+
+#[test]
+fn m1_unresolved_native_release_latches_owner_reset_across_stop_and_start() {
+    let (mut seat, root, _) = seat("always", Fake::OwnedReleaseFailure);
+    seat.start().unwrap();
+    let error = state(&mut seat).unwrap_err().to_string();
+    assert!(error.contains("owner-reset-required"), "owned release was hidden: {error}");
+    assert!(!seat.ready());
+    seat.stop().unwrap();
+    assert!(seat.start().unwrap_err().contains("owner-reset-required"));
+    assert!(seat.request("host.computer.reset", json!({}), None).unwrap_err().to_string().contains("owner-reset-required"));
+    seat.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn m1_scope_refusal_retires_link_and_explicit_start_gets_fresh_epoch() {
+    let (mut seat, root, _) = seat("always", Fake::ScopeRefused);
+    seat.start().unwrap();
+    let old = seat.link.as_ref().unwrap().epoch.clone();
+    let dir = seat.link.as_ref().unwrap().dir.clone();
+    assert!(state(&mut seat).is_err());
+    assert!(wait(|| !dir.exists()), "permanently invalidated pairing stayed alive");
+    assert!(!seat.ready());
+    seat.start().unwrap();
+    assert_ne!(seat.link.as_ref().unwrap().epoch, old);
+    seat.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }
