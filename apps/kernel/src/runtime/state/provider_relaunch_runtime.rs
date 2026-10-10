@@ -90,7 +90,10 @@ impl KernelRuntimeState {
                         return Ok(false);
                     }
                     crate::app::ProviderLaunchProcessRuntime::new(app)
-                        .spawn_for_launch(&started.run)
+                        .spawn_for_launch_with_credentials(
+                            &started.run,
+                            &started.provider_credential_env,
+                        )
                         .map(|_| true)
                 })
                 .await;
@@ -111,8 +114,9 @@ impl KernelRuntimeState {
                 return;
             }
             let run = started.run.clone();
+            let credentials = started.provider_credential_env.clone();
             let binding = tokio::task::spawn_blocking(move || {
-                crate::provider::ProviderProcessService::initialize_runtime_binding(&run)
+                crate::provider::ProviderProcessService::initialize_runtime_binding_with_credentials(&run, &credentials)
             })
             .await
             .map_err(|error| DaemonError::LocalTransport {
@@ -219,6 +223,95 @@ mod tests {
             metaagent_events,
             workspace_coordinator,
         )
+    }
+
+    // MP-08 / MP-10 / MP-11: exercise both credential delivery seams of
+    // recovery's asynchronous relaunch, without invoking human account repair.
+    #[tokio::test]
+    async fn recovery_relaunch_delivers_credentials_to_both_claude_modes() {
+        crate::test_support::isolated_env_test!();
+        let worktree = crate::test_support::TestWorktree::new("recovery-credential-delivery");
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let mut agents = Vec::new();
+        for provider in ["claude-p", "claude-headless"] {
+            agents.push(
+                crate::app::KernelSessionService::new(&mut app)
+                    .spawn_agent(crate::agent::CreateAgentRequest::new(
+                        session.id(),
+                        provider,
+                    ))
+                    .unwrap(),
+            );
+        }
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let mut delivered = Vec::new();
+        for agent in agents {
+            let mut credentials = crate::provider::ProviderCredentialEnvironment::default();
+            credentials.insert(
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                zeroize::Zeroizing::new("synthetic-repaired-token".into()),
+            );
+            runtime.spawn_provider_relaunch(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    agent.provider(),
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id())
+                .with_provider_credential_env(credentials),
+                200,
+                None,
+                0,
+            );
+            let run = tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if let Some(run) = runtime
+                        .owned
+                        .provider_store
+                        .get_run_for_agent(session.id(), agent.id())
+                    {
+                        break run;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let probe = crate::provider::ProviderCredentialDeliveryProbe::install(
+                run.id(),
+                &[("CLAUDE_CODE_OAUTH_TOKEN", "synthetic-repaired-token")],
+            );
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while runtime
+                    .owned
+                    .provider_store
+                    .get_run(run.id())
+                    .unwrap()
+                    .state()
+                    == crate::provider::ProviderRunState::Starting
+                {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            delivered.push((
+                probe.observed_exactly("pty_spawn"),
+                probe.observed_exactly("runtime_binding"),
+            ));
+        }
+        app.lock().await.shutdown_cleanup().unwrap();
+        assert_eq!(
+            delivered,
+            vec![(true, true); 2],
+            "repaired credentials must reach both replacement launch seams"
+        );
     }
 
     #[tokio::test]
