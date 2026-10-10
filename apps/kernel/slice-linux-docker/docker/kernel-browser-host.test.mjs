@@ -765,12 +765,11 @@ test('MP-08/MP-11 protected full captures cannot interrupt an in-flight pointer 
 
 // MP-08/MP-10: run this bound admission check under both supported host geometries.
 test('MP-08/MP-10 #893 unsupported DPR fails before emulation/subscription mutation',()=>using(async({host,sent})=>{
- const {displayGeometry}=await import('./kernel-browser-geometry.mjs');
  const old=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
  try{
   const opened=await host.request({op:'open',url:'about:blank'});
   const before=sent.filter(x=>x.method==='Emulation.setDeviceMetricsOverride').length;
-  const dpr=displayGeometry.width===1920?2:3;
+  const dpr=3;
   await assert.rejects(host.request({op:'display_subscribe',tab_id:opened.tab_id,generation:opened.generation,codecs:['png'],bitrate:8000000,device_scale_factor:dpr}),/negotiation/);
   assert.equal(host.displays.size,0);assert.equal(host.scales.size,0);
   assert.equal(sent.filter(x=>x.method==='Emulation.setDeviceMetricsOverride').length,before);
@@ -839,3 +838,22 @@ for (const first of [1,2]) test(`MP-08 mixed-DPR viewers keep native geometry wh
   assert.deepEqual(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride'),metrics,'a watcher never changes the live viewport');
  } finally {if(before===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=before;}
 }));
+
+// MP-08/MP-10/MP-11: requested viewer DPR never selects native capture geometry.
+test('MP-08/MP-10/MP-11 canonical native display accepts a DPR2 viewer',()=>using(async({host,sent})=>{
+ const previous=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try {
+  const {hostViewport}=await import('./kernel-browser-geometry.mjs'),viewport=hostViewport();
+  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+  const subscribed=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:opened.generation,codecs:['png'],bitrate:8000000,device_scale_factor:2});
+  const stream=host.displays.get(subscribed.subscription_id);
+  assert.equal(subscribed.device_scale_factor,viewport.device_scale_factor);assert.equal(stream.device_scale_factor,viewport.device_scale_factor);
+  assert.equal(stream.css_width,viewport.css_width);assert.equal(stream.css_height,viewport.css_height);
+  assert.equal(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').length,0);
+ } finally {if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous}
+}));
+test('MP-08/MP-10/MP-11 canonical native 1920 display accepts a DPR2 viewer',async()=>{
+ const {spawnSync}=await import('node:child_process');
+ const run=spawnSync(process.execPath,['--test','--test-name-pattern=^MP-08/MP-10/MP-11 canonical native display accepts',import.meta.filename],{env:{...process.env,NODE_TEST_CONTEXT:undefined,CHARIOX_BROWSER_DISPLAY_GEOMETRY:'1920x1080'},encoding:'utf8'});
+ assert.match(run.stdout,/ok 1 - MP-08\/MP-10\/MP-11 canonical native display accepts/);assert.equal(run.status,0,run.stdout+run.stderr);
+});

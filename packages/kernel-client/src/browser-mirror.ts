@@ -164,6 +164,8 @@ export class BrowserMirrorRenderer {
     if(this.disposed||!this.doc)throw Error('MP-08: mirror closed during validation')
     const newTiles=packet.tiles.map<TileRaster>(tile=>{const cached=packet.reset?undefined:this.tileCache.get(tile.node_id);return cached&&JSON.stringify(cached.tile)===JSON.stringify(tile)?cached:{tile,url:blobUrl(tile.data_base64,'image/png')}})
     this.timed('resource_decode',at);at=performance.now()
+    // MP-08/MP-10/MP-11: validated canonical host bounds, independent of viewer DPR.
+    this.frame.style.width=`${packet.css_width}px`;this.frame.style.height=`${packet.css_height}px`
     this.dpr=packet.device_scale_factor
     if(this.nativeFocus&&(packet.reset||this.nativeFocus.document_id!==packet.document_id||!this.pendingInputs&&packet.sequence>this.nativeFocus.through_sequence))this.nativeFocus=null
     // MP-11: local progress never crosses reset/protection or document fences,
