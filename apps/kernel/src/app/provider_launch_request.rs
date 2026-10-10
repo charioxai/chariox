@@ -172,13 +172,19 @@ impl DaemonApp {
                 }
             }
         }
+        let selected_project = agent
+            .as_ref()
+            .and_then(|agent| agent.worktree_id().map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from(session.worktree_id()));
+        let is_project = !session.project_id().is_empty();
         if request.working_directory.is_none() {
-            let working_directory = agent
-                .as_ref()
-                .and_then(|agent| agent.worktree_id().map(PathBuf::from))
-                .unwrap_or_else(|| PathBuf::from(session.worktree_id()));
-            request = request.with_working_directory(working_directory);
+            request = request.with_working_directory(selected_project.clone());
         }
+        crate::provider::redirect_claude_home_to_project(
+            &mut request,
+            &selected_project,
+            is_project,
+        )?;
         if request.uses_workspace_live_sync() && request.workspace_live_sync_roots.is_empty() {
             let workspace_live_sync_roots = crate::app::workspace_live_sync_protected_roots(
                 &session,
@@ -240,12 +246,18 @@ impl DaemonApp {
             mcp_servers,
         )?);
         request = apply_metaagent_launch_policy(request, agent.as_ref());
-        crate::project_environment::attach_project_provider_environment(
+        let request = crate::project_environment::attach_project_provider_environment(
             &self.config,
             &session,
             agent.as_ref(),
             request,
-        )
+        )?;
+        crate::provider::prepare_claude_selected_project_trust(
+            &request,
+            &selected_project,
+            is_project,
+        );
+        Ok(request)
     }
 }
 
@@ -261,6 +273,93 @@ mod tests {
     use crate::provider::LaunchProviderRequest;
     use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
     use crate::session::CreateSessionRequest;
+
+    #[test]
+    fn pre_recorded_claude_project_trust_uses_only_selected_account_and_project() {
+        crate::test_support::isolated_env_test!();
+        let folder = crate::test_support::TestWorktree::new("pre-recorded-trust");
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(folder.session_request())
+            .unwrap();
+        let first = app
+            .provider_account_profiles
+            .create_managed("local", "claude", "first")
+            .unwrap();
+        let second = app
+            .provider_account_profiles
+            .create_managed("local", "claude", "second")
+            .unwrap();
+        let state_path = |profile: &str| {
+            let environment = app
+                .provider_account_profiles
+                .resolve_environment("local", "claude", profile)
+                .unwrap();
+            PathBuf::from(&environment["CLAUDE_CONFIG_DIR"]).join(".claude.json")
+        };
+        let first_path = state_path(&first.profile_id);
+        let second_path = state_path(&second.profile_id);
+        let prepared = app.prepare_app_provider_launch_request(
+            LaunchProviderRequest::new(
+                session.id(),
+                "claude",
+                "claude-headless",
+                &first.profile_id,
+                "haiku",
+            )
+            .with_client_interface(crate::provider::ProviderClientInterface::NativeTui),
+            "pre-recorded project trust test",
+        );
+        let state = std::fs::read(&first_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        let trusted = state
+            .as_ref()
+            .and_then(|v| v.get("projects"))
+            .and_then(|v| v.get(folder.path().to_str().unwrap()))
+            .and_then(|v| v.get("hasTrustDialogAccepted"))
+            .and_then(serde_json::Value::as_bool);
+        let untouched = !second_path.exists();
+        app.shutdown_cleanup().unwrap();
+        assert!(prepared.is_ok());
+        assert_eq!(
+            trusted,
+            Some(true),
+            "selected Chariox project must be trusted before launch"
+        );
+        assert!(untouched, "another account must remain untouched");
+    }
+
+    #[test]
+    fn pre_recorded_claude_project_trust_redirects_home_to_selected_project() {
+        crate::test_support::isolated_env_test!();
+        let folder = crate::test_support::TestWorktree::new("trust-home-redirect");
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(folder.session_request())
+            .unwrap();
+        let profile = app
+            .provider_account_profiles
+            .create_managed("local", "claude", "first")
+            .unwrap();
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        let prepared = app
+            .prepare_app_provider_launch_request(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "claude",
+                    "claude-headless",
+                    &profile.profile_id,
+                    "haiku",
+                )
+                .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
+                .with_working_directory(home),
+                "pre-recorded home redirect test",
+            )
+            .unwrap();
+        app.shutdown_cleanup().unwrap();
+        assert_eq!(prepared.working_directory.as_deref(), Some(folder.path()));
+    }
 
     #[test]
     fn mp08_mp10_mp11_account_activation_preserves_resolved_project_environment() {

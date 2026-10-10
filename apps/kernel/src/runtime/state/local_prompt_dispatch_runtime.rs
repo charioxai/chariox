@@ -3230,6 +3230,39 @@ mod tests {
             .contains_key(provider_run.id()));
     }
 
+    // MP-08 / MP-10 / MP-11: operator logs must expose the failed dispatch seam safely.
+    #[tokio::test]
+    async fn dispatch_failure_logs_run_and_redacted_cause() {
+        let (_worktree, runtime, _session_id, _agent_id, _observer_id, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+        let capture = crate::logging::capture::start();
+        runtime
+            .fail_prompt_dispatch(
+                dispatch,
+                DaemonError::LocalTransport {
+                    operation: "diagnostic-test-dispatch-seam",
+                    message: "diagnostic-test-real-cause api_key=private-test-value".into(),
+                },
+            )
+            .await
+            .expect_err("dispatch must propagate its cause");
+        let records = capture.records();
+        assert!(
+            records
+                .iter()
+                .any(|record| record.contains("diagnostic-test-dispatch-seam")
+                    && record.contains("diagnostic-test-real-cause")
+                    && record.contains(&provider_run_id)),
+            "dispatch error must reach operator logs"
+        );
+        assert!(
+            !records
+                .iter()
+                .any(|record| record.contains("private-test-value")),
+            "secret must not reach any log"
+        );
+    }
+
     #[tokio::test]
     async fn stale_dispatch_failure_does_not_settle_the_current_prompt() {
         let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
@@ -3915,6 +3948,19 @@ impl KernelRuntimeState {
         dispatch: crate::app::KernelPromptDispatch,
         error: DaemonError,
     ) -> Result<(), DaemonError> {
+        // MP-08 / MP-10 / MP-11: preserve the original failed seam in operator
+        // logs even if recovery or durable settlement subsequently fails.
+        crate::logging::warn_with_fields(
+            "daemon.prompt_dispatch",
+            "provider prompt dispatch failed after acknowledgement",
+            serde_json::json!({
+                "session_id": dispatch.session_id,
+                "agent_id": dispatch.agent_id,
+                "provider_run_id": dispatch.provider_run_id,
+                "prompt_id": dispatch.prompt_id,
+                "error": crate::provider::redact_provider_diagnostic(&error.to_string()),
+            }),
+        );
         let mut next_dispatch = None;
         let dispatch_owns_active_prompt = self
             .owned

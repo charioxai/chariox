@@ -32,6 +32,29 @@ Legacy registries did not record whether `$HOME/.claude` was an ambient default 
 
 Use `/provider accounts import-native <provider>` to register the kernel host's current native scope explicitly. Import is idempotent for a scope already registered. When the native scope differs from an ambiguous legacy profile, it creates a separate stable profile and does not replace the old registration, change the default, start login, or copy provider files. Select or mark the imported profile as default only after its native status is refreshed. Do not edit a running kernel's registry file or remove/recreate profiles that existing agents depend on. Registration removal preserves provider files but does not preserve references to the removed profile ID.
 
+### Claude headless project trust — MP-08 / MP-10 / MP-11
+
+Claude headless remains the default interactive harness. Before launch, the
+kernel records the native folder-trust decision for the agent's selected Chariox
+Project in that account's config. The scope must equal the launch directory;
+an ancestor Git root or worktree's main checkout requires the user's decision.
+A launch pointing at HOME uses the selected Project folder instead, or fails
+with a request to choose a Project when that folder is also HOME.
+
+The writer merges only `projects[canonical folder].hasTrustDialogAccepted`,
+preserves other values as opaque JSON, and atomically publishes a private file.
+Chariox writers share a config lock. Native Claude ignores that lock, so the
+kernel re-reads immediately before publication and retries against changes.
+A native write after the final comparison can still replace the decision.
+The startup dialog remains a fallback for that race, write failures and provider
+versions with different trust state. Logs identify `pre-recorded` and
+`screen-fallback`; the fallback explicitly selects the trust choice and checks
+the displayed path against the selected Project before automatic approval.
+
+On a fresh registry, launch admission observes official `claude auth status`
+when the selected account's cached authentication state is unknown. Confirmed
+signed-out, expired and failed states retain their authentication gate.
+
 ## Workers and slices
 
 The home kernel owns the agent and selects the account profile used for its initial placement. When an agent is assigned to a trusted home-worker or home-managed slice, only that selected profile is installed through the existing encrypted kernel-to-worker channel. Separate profiles use separate roots. Claude uses its provider-native portable `.credentials.json` shape after refreshability validation. Cloud and the relay receive only opaque encrypted packets and safe installation status.

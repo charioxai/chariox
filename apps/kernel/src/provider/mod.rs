@@ -49,11 +49,14 @@ pub(crate) use account_credential::{
     store_provider_account_credential, validate_provider_account_credential_input,
     CLAUDE_OAUTH_TOKEN_ENV,
 };
-pub(crate) use claude::probe_claude_account_usage;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
     ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
     CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+};
+pub(crate) use claude::{
+    prepare_claude_selected_project_trust, probe_claude_account_usage,
+    redirect_claude_home_to_project, selected_project_trust_scope,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
@@ -148,6 +151,7 @@ pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
 pub(crate) use termination::{
     provider_launch_failure_diagnostic, redact_provider_diagnostic, sanitize_provider_diagnostic,
+    sanitize_provider_exit_diagnostic,
 };
 pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
 pub(crate) use types::provider_workspace_live_sync_mode_for_session;

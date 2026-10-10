@@ -792,3 +792,114 @@ async fn promptless_codex_poll_failure_before_prompt_start_reschedules_and_deliv
     );
     assert_eq!(run_after.terminal_diagnostic(), None);
 }
+
+// MP-08 / MP-10 / MP-11: a deleted session can leave a final actor poll
+// queued alongside the next real session's first response.
+async fn deleted_session_poll_fixture(error: bool) {
+    crate::test_support::isolated_env_test!();
+    let worktree = crate::test_support::TestWorktree::new("deleted-session-poll");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "healthy-output",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let deleted = external_codex_run("deleted-session", "deleted-agent", "deleted-run");
+    let healthy = external_codex_run(session.id(), agent.id(), "healthy-run");
+    app.providers_mut().insert_run_for_test(deleted.clone());
+    app.providers_mut().insert_run_for_test(healthy.clone());
+    app.providers_mut().use_manual_output_polls_for_tests();
+    let prompt = submit_prompt_for_agent(
+        &mut app,
+        session.id(),
+        attachment.id(),
+        agent.id(),
+        "receive the first provider response",
+    );
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        &prompt,
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(healthy.id().into()),
+        None,
+    )
+    .unwrap();
+    crate::transport::flow_control::note_prompt_started(&mut app, healthy.id());
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .owned
+        .structured_output_records
+        .mark_poll_enqueued(deleted.id(), None);
+    runtime
+        .owned
+        .structured_output_records
+        .mark_poll_enqueued(healthy.id(), Some(prompt));
+    runtime
+        .owned
+        .provider_store
+        .write()
+        .push_finished_structured_output_poll_for_test(
+            deleted.id().into(),
+            if error {
+                Err(crate::error::DaemonError::ProviderProtocol {
+                    provider_run_id: deleted.id().into(),
+                    operation: "late deleted-session poll",
+                    message: "provider already stopped".into(),
+                })
+            } else {
+                Ok(Some(crate::provider::ProviderPromptSignalBatch::default()))
+            },
+        );
+    runtime
+        .owned
+        .provider_store
+        .write()
+        .push_finished_structured_output_poll_for_test(
+            healthy.id().into(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: None,
+                    bytes: b"MP-10-FIRST-OUTPUT-PASS".to_vec(),
+                }],
+                ..Default::default()
+            })),
+        );
+    let records = runtime
+        .pump_owned_structured_provider_output(
+            session.id(),
+            healthy.id(),
+            vec![attachment.id().into()],
+        )
+        .await
+        .expect("deleted-session completion must not abort the healthy batch drain");
+    assert!(
+        records.iter().any(
+            |record| String::from_utf8_lossy(&record.bytes).contains("MP-10-FIRST-OUTPUT-PASS")
+        ),
+        "the next session must receive its first provider output"
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .structured_output_records
+            .poll_due_at_ms(deleted.id()),
+        None
+    );
+}
+
+#[tokio::test]
+async fn deleted_session_success_poll_preserves_healthy_first_output() {
+    deleted_session_poll_fixture(false).await;
+}
+#[tokio::test]
+async fn deleted_session_failed_poll_preserves_healthy_first_output() {
+    deleted_session_poll_fixture(true).await;
+}

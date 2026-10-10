@@ -191,14 +191,18 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
+        let selected_project = agent
+            .as_ref()
+            .and_then(|agent| agent.worktree_id().map(std::path::PathBuf::from))
+            .unwrap_or_else(|| std::path::PathBuf::from(session.worktree_id()));
         if request.working_directory.is_none() {
-            let agent_worktree = agent
-                .as_ref()
-                .and_then(|agent| agent.worktree_id().map(std::path::PathBuf::from));
-            request.working_directory = Some(
-                agent_worktree.unwrap_or_else(|| std::path::PathBuf::from(session.worktree_id())),
-            );
+            request.working_directory = Some(selected_project.clone());
         }
+        crate::provider::redirect_claude_home_to_project(
+            &mut request,
+            &selected_project,
+            !session.project_id().is_empty(),
+        )?;
         if request.uses_workspace_live_sync() && request.workspace_live_sync_roots.is_empty() {
             let workspace_live_sync_roots = crate::app::workspace_live_sync_protected_roots(
                 &session,
@@ -276,12 +280,24 @@ impl KernelRuntimeOwnedState {
             .agent_id
             .as_deref()
             .and_then(|id| self.agent_store.get_agent(id).ok());
-        crate::project_environment::attach_project_provider_environment(
+        let selected_project = agent
+            .as_ref()
+            .and_then(|agent| agent.worktree_id().map(std::path::PathBuf::from))
+            .unwrap_or_else(|| std::path::PathBuf::from(session.worktree_id()));
+        let request = crate::project_environment::attach_project_provider_environment(
             &self.config_projection.snapshot(),
             &session,
             agent.as_ref(),
             request,
-        )
+        )?;
+        // MP-08 / MP-10 / MP-11: ordinary and workflow owned launches use the
+        // same selected-account trust policy as the app launch path.
+        crate::provider::prepare_claude_selected_project_trust(
+            &request,
+            &selected_project,
+            !session.project_id().is_empty(),
+        );
+        Ok(request)
     }
 
     fn attach_provider_account_credentials(
@@ -1474,7 +1490,9 @@ mod tests {
             .expect("vault passphrase interaction should resolve");
     }
 
-    async fn owned_runtime_state(app: &Arc<Mutex<crate::app::DaemonApp>>) -> KernelRuntimeState {
+    pub(super) async fn owned_runtime_state(
+        app: &Arc<Mutex<crate::app::DaemonApp>>,
+    ) -> KernelRuntimeState {
         let (
             config_projection,
             session_store,
@@ -1546,3 +1564,6 @@ mod tests {
         )
     }
 }
+
+#[cfg(test)]
+mod project_trust_tests;
