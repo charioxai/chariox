@@ -69,10 +69,12 @@ class FillProofTests(unittest.TestCase):
         leaf=SimpleNamespace(path='/other',childCount=0)
         app=SimpleNamespace(path='/app',childCount=8193,get_process_id=lambda:200,getChildAtIndex=lambda i:leaf)
         large=SimpleNamespace(childCount=1,getChildAtIndex=lambda i:app)
+        unknown_app=SimpleNamespace(path='/app',childCount=1,get_process_id=lambda:200,getChildAtIndex=lambda i:None)
+        unavailable_child=SimpleNamespace(childCount=1,getChildAtIndex=lambda i:unknown_app)
         window=SimpleNamespace(get_full_property=lambda *args:SimpleNamespace(value=[200]),get_attributes=lambda:SimpleNamespace(map_state=2))
         connection=SimpleNamespace(create_resource_object=lambda *args:window,intern_atom=lambda *args:1,close=lambda:None)
         xlib=SimpleNamespace(X=SimpleNamespace(AnyPropertyType=0,IsViewable=2),display=SimpleNamespace(),error=SimpleNamespace(BadWindow=type('BadWindow',(Exception,),{})))
-        for desktop in [missing,large]:
+        for desktop in [missing,large,unavailable_child]:
             with self.subTest(app_missing=desktop is missing),patch.dict(sys.modules,pyatspi=SimpleNamespace(Registry=SimpleNamespace(getDesktop=lambda i:desktop)),Xlib=xlib),patch.object(fill,'open_display',return_value=connection),patch.object(fill,'read',return_value=[target]),patch.object(fill,'update') as update:
                 with self.assertRaisesRegex(ValueError,'Vault fill field unavailable'):fill.regions()
                 update.assert_not_called()
