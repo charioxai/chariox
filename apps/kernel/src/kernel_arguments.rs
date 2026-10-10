@@ -7,6 +7,8 @@ pub enum Command {
     Version,
     ProtocolVersion,
     PrepareProtectedSliceIdentity(u16),
+    OwnerManagedEnroll,
+    OwnerManagedReady,
 }
 
 pub const USAGE: &str = "usage: chariox-kernel [--help | --version | --print-local-daemon-protocol-version | --prepare-protected-slice-identity PORT]
@@ -31,6 +33,8 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         ("--help" | "-h", 1) => Ok(Command::Help),
         ("--version", 1) => Ok(Command::Version),
         ("--print-local-daemon-protocol-version", 1) => Ok(Command::ProtocolVersion),
+        ("--owner-managed-enroll-stdin", 1) => Ok(Command::OwnerManagedEnroll),
+        ("--owner-managed-ready", 1) => Ok(Command::OwnerManagedReady),
         ("--prepare-protected-slice-identity", 2) => {
             let port = args[1]
                 .to_str()
@@ -46,5 +50,29 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
             Err(format!("{first} does not accept additional arguments"))
         }
         _ => Err(format!("unknown argument {first}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn byom_mp07_mp08_mp11_bootstrap_flags_are_admitted() {
+        assert!(matches!(
+            parse(vec!["--owner-managed-enroll-stdin".into()]),
+            Ok(Command::OwnerManagedEnroll)
+        ));
+        assert!(matches!(
+            parse(vec!["--owner-managed-ready".into()]),
+            Ok(Command::OwnerManagedReady)
+        ));
+    }
+
+    #[test]
+    fn byom_mp11_bootstrap_flags_reject_extra_arguments() {
+        for flag in ["--owner-managed-enroll-stdin", "--owner-managed-ready"] {
+            assert!(parse(vec![flag.into(), "unexpected".into()]).is_err());
+        }
     }
 }

@@ -563,6 +563,8 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
 
 fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
+        LocalDaemonRequest::AddSshMachine(_) => "machine.ssh.add",
+        LocalDaemonRequest::RemoveSshMachine(_) => "machine.ssh.remove",
         LocalDaemonRequest::RequestKernelAccess(_) => "kernel_access.request",
         LocalDaemonRequest::RequestKernelSudo(_) => "kernel_access.sudo_request",
         LocalDaemonRequest::ListKernelAccessGrants(_) => "kernel_access.list",

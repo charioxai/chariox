@@ -40,6 +40,27 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             println!("{}", proof);
             return Ok(());
         }
+        mode @ (kernel_arguments::Command::OwnerManagedEnroll
+        | kernel_arguments::Command::OwnerManagedReady) => {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| chariox_kernel::DaemonError::LocalTransport {
+                    operation: "owner-managed bootstrap",
+                    message: "runtime unavailable".into(),
+                })?;
+            return runtime.block_on(async {
+                match mode {
+                    kernel_arguments::Command::OwnerManagedEnroll => {
+                        chariox_kernel::owner_managed_bootstrap::enroll_from_stdin().await
+                    }
+                    kernel_arguments::Command::OwnerManagedReady => {
+                        chariox_kernel::owner_managed_bootstrap::wait_ready().await
+                    }
+                    _ => unreachable!(),
+                }
+            });
+        }
         kernel_arguments::Command::Run => {}
     }
     chariox_kernel::slice::initialize_managed_docker_broker();

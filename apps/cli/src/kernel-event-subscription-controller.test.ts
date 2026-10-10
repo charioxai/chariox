@@ -7,6 +7,7 @@ test("sync subscribes to waiting-room inventory once while detached", async () =
   let waitingRoomSubscriptions = 0
   const evaluations: unknown[] = []
   const controller = createKernelEventSubscriptionController({
+    isKernelConnected: () => true,
     supportsKernelEventStream: () => true,
     getAttachment: () => null,
     getSessionId: () => "session-1",
@@ -42,6 +43,7 @@ test("sync subscribes to session events and skips duplicate bindings", async () 
   let currentAttachment = { id: "attachment-1" }
   const subscriptions: Array<{ sessionId: string; attachmentId: string }> = []
   const controller = createKernelEventSubscriptionController({
+    isKernelConnected: () => true,
     supportsKernelEventStream: () => true,
     getAttachment: () => currentAttachment,
     getSessionId: () => currentSessionId,
@@ -77,6 +79,7 @@ test("sync subscribes to session events and skips duplicate bindings", async () 
 test("reset clears the remembered subscription so the same binding resubscribes", async () => {
   let subscriptions = 0
   const controller = createKernelEventSubscriptionController({
+    isKernelConnected: () => true,
     supportsKernelEventStream: () => true,
     getAttachment: () => ({ id: "attachment-1" }),
     getSessionId: () => "session-1",
@@ -101,6 +104,7 @@ test("reset clears the remembered subscription so the same binding resubscribes"
 test("sync reports subscription failures without updating remembered scope", async () => {
   let failure: unknown
   const controller = createKernelEventSubscriptionController({
+    isKernelConnected: () => true,
     supportsKernelEventStream: () => true,
     getAttachment: () => ({ id: "attachment-1" }),
     getSessionId: () => "session-1",
@@ -130,6 +134,7 @@ test("sync reports subscription failures without updating remembered scope", asy
 test("sync is idle when kernel event streams are unavailable", async () => {
   let evaluated = false
   const controller = createKernelEventSubscriptionController({
+    isKernelConnected: () => true,
     supportsKernelEventStream: () => false,
     getAttachment: () => ({ id: "attachment-1" }),
     getSessionId: () => "session-1",
@@ -152,4 +157,25 @@ test("sync is idle when kernel event streams are unavailable", async () => {
     sessionId: null,
     attachmentId: null,
   })
+})
+
+test("MP-08 / MP-10 detached Cloud discovery never opens a kernel subscription before selection", async () => {
+  let connected = false
+  const calls: string[] = []
+  const controller = createKernelEventSubscriptionController({
+    isKernelConnected: () => connected,
+    supportsKernelEventStream: () => true,
+    getAttachment: () => null,
+    getSessionId: () => "unused",
+    subscribeToWaitingRoomInventory: async () => { calls.push("inventory") },
+    subscribeToKernelEvents: async () => { calls.push("session") },
+    onEvaluate: () => {}, onWaitingRoomSubscribed: () => {}, onSessionSubscribed: () => {},
+    onWaitingRoomSubscriptionFailed: () => {}, onSessionSubscriptionFailed: () => {},
+  })
+  await controller.sync()
+  assert.deepEqual(calls, [], "disconnected discovery must not touch localhost")
+  connected = true
+  await controller.sync()
+  await controller.sync()
+  assert.deepEqual(calls, ["inventory"], "selected kernel receives the ordinary inventory subscription")
 })

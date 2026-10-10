@@ -166,6 +166,17 @@ impl CommandRouter {
                 )
                 .map(Some);
             }
+            request @ (LocalDaemonRequest::AddSshMachine(_)
+            | LocalDaemonRequest::RemoveSshMachine(_)) => {
+                return crate::runtime::ssh_machine_control::execute(
+                    self.config_projection.snapshot(),
+                    command,
+                    request.clone(),
+                )
+                .await
+                .map(Some);
+            }
+
             request @ (LocalDaemonRequest::CreateDisposableWorker(_)
             | LocalDaemonRequest::GetDisposableWorker(_)
             | LocalDaemonRequest::ReleaseDisposableWorker(_)

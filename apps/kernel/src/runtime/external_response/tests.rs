@@ -387,3 +387,28 @@ async fn external_response_register_and_remove_existing_literal_credentials() {
     }
     assert!(!path.exists());
 }
+
+#[test]
+fn mp07_mp08_mp11_ssh_receipts_share_the_typed_and_cached_public_boundary() {
+    let response = LocalDaemonResponse::SshMachine {
+        machine: crate::local::SshMachineResult {
+            install_id: "byom-owned".into(),
+            status: "ready".into(),
+            kernel_id: Some("kernel-owned".into()),
+            machine_id: Some("machine-owned".into()),
+            release_digest: format!("sha256:{}", "a".repeat(64)),
+            state_retained: false,
+        },
+    };
+    let expected = serde_json::to_value(&response).unwrap();
+    for class in [
+        KernelConnectionClass::ExternalAgent,
+        KernelConnectionClass::KernelAgent,
+    ] {
+        let projected = finish_response(&command(class), Ok(response.clone())).unwrap();
+        assert_eq!(serde_json::to_value(projected).unwrap(), expected);
+    }
+    let mut cached = expected.clone();
+    project_response_value(&mut cached).unwrap();
+    assert_eq!(cached, expected);
+}

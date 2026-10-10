@@ -130,6 +130,8 @@ response_policies! {
         EventConnectionAuthorizationObserved,
     ],
     Public => [
+        // MP-07/MP-08/MP-11: receipt metadata only; SSH admission stays owner-scoped.
+        SshMachine,
         CloudRelayLoggedOut,
         KernelSudoRequested,
         KernelAccessGranted,
