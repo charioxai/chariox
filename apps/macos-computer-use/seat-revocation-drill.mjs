@@ -11,6 +11,8 @@ const { values: args } = parseArgs({ options: {
   'fixture-log': { type: 'string' }, evidence: { type: 'string' },
 } });
 for (const key of ['token-file', 'scope-file', 'fixture-log', 'evidence']) assert.ok(args[key] && path.isAbsolute(args[key]), `${key} must be absolute`);
+assert.ok(args.evidence.startsWith('/Users/miguel/.codex/evidence/'), 'evidence must stay under the owner evidence root');
+assert.ok(Number.isInteger(Number(args.port)) && Number(args.port) > 0 && Number(args.port) < 65536, 'valid approved endpoint port required');
 const tokenStat = statSync(args['token-file']);
 assert.ok(tokenStat.isFile() && (tokenStat.mode & 0o077) === 0 && tokenStat.uid === process.getuid(), 'private local kernel token required');
 const scope = JSON.parse(readFileSync(args['scope-file'], 'utf8'));

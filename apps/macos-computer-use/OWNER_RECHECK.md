@@ -32,17 +32,18 @@ runtime state, so it is unsuitable for this retained-identity recheck.
 ## Unattended fence and real-window replay
 
 ```bash
+set -e
 cd /Users/miguel/chariox-worktrees/cumac-m2
 export CUMAC_BUILD_DIR=/Users/miguel/.chariox/dev/cumac/build/r6
 export PYTHONDONTWRITEBYTECODE=1
-shasum -a 256 "$CUMAC_BUILD_DIR/Chariox Computer Helper.app/Contents/MacOS/helper"
+test "$(shasum -a 256 "$CUMAC_BUILD_DIR/Chariox Computer Helper.app/Contents/MacOS/helper" | awk '{print $1}')" = b02c5ba5aa6619698ae045a7fff4f4403b7fcf79ff6f09a981143a6ff8282028
 codesign --verify --strict "$CUMAC_BUILD_DIR/Chariox Computer Helper.app"
 python3 apps/macos-computer-use/text-click-drill.py --suite
 python3 apps/macos-computer-use/textedit-click-drill.py
 python3 apps/macos-computer-use/fence-drill.py
 ```
 
-Require the SHA-256 above to equal the pinned executable SHA-256. Stop on any
+The SHA-256 check fails unless the executable matches the pin. Stop on any
 failure or missing grant. The foreign-cover drill independently binds the
 foreign panel to its WindowServer ID, verifies it covers the selected point
 without activation, and requires both explicit and pointer click refusals with
@@ -75,6 +76,7 @@ this Mac. The local-only relay URL/token below are synthetic and cannot connect
 to the hosted relay. No provider is run by this suite.
 
 ```bash
+set -e
 : "${CUMAC_APPROVED_KERNEL_HOME:?coordinator must supply the approved durable home}"
 : "${CUMAC_APPROVED_KERNEL_PORT:?use its existing registered endpoint}"
 test -d "$CUMAC_APPROVED_KERNEL_HOME"
@@ -82,7 +84,7 @@ export CUMAC_BUILD_DIR=/Users/miguel/.chariox/dev/cumac/build/r6
 export PYTHONDONTWRITEBYTECODE=1
 CUMAC_KERNEL=/Users/miguel/.chariox/dev/cumac/build/r6-retained-kernel/chariox-kernel
 CUMAC_EVIDENCE=/Users/miguel/.codex/evidence/browser-computer-use-macos/owner-seat-$(date -u +%Y%m%dT%H%M%SZ)
-shasum -a 256 "$CUMAC_KERNEL"
+test "$(shasum -a 256 "$CUMAC_KERNEL" | awk '{print $1}')" = f28ef31f57e89d5eaffdb0f9728fe9ba4f41a2316160f8bc30c55242c6cfe2f9
 codesign --verify --strict "$CUMAC_KERNEL"
 CUMAC_SCOPE=$(python3 apps/macos-computer-use/prepare-seat.py --evidence "$CUMAC_EVIDENCE")
 CHARIOX_HOME="$CUMAC_APPROVED_KERNEL_HOME" \
