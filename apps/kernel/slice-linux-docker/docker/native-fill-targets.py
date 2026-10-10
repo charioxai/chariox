@@ -192,7 +192,8 @@ def regions():
                 incomplete = False
                 while pending and visited < 8192:
                     item = pending.pop(); visited += 1
-                    if not item: continue
+                    if not item:
+                        incomplete = True; continue
                     if item.path == target['path']: node = item; break
                     count = item.childCount
                     limit = min(count,8192-visited)
