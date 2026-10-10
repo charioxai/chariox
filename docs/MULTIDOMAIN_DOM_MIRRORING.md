@@ -129,7 +129,11 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   Focus transitions travel explicitly (492): viewer `focusin` sends `focus`,
   focus leaving to nothing while the mirror keeps focus sends `blur` (the
   kernel blurs only while that control is still its live focus), and a kernel
-  header `focused: null` blurs the viewer's control. Selects and date/time/
+  header `focused: null` blurs the viewer's control. The caret (a collapsed
+  selection) travels inside editable content only. A press's focus/selection
+  waits up to 50 ms for the rest of its click, so a menu the page renders a
+  frame later shares the packet; after an acknowledged viewer focus, packets
+  still in flight that name the old focus leave the viewer's focus alone. Selects and date/time/
   month/week/color/range inputs keep the viewer's own UI (popup, picker,
   typeahead, arrows; only Tab/Enter go to the kernel); their committed value
   travels as `set {node_id, value | checked | selected_index}`, which the kernel
@@ -151,8 +155,10 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
 - **Stated bounds (unsupported).** JS-only styling without a sheet or attribute
   (`element.animate`/WAAPI, `FontFace`/`document.fonts.add`,
   `CSS.registerProperty`, `CSS.highlights`); CSS animations restart at the
-  snapshot; ElementInternals custom states (`:state()`); closed shadow roots on
-  non-custom hosts; select popups and pickers use the viewer's OS UI. Font and
+  snapshot; ElementInternals custom states (`:state()`) and custom validity
+  (`setCustomValidity`); external `<use>` sprite files; closed shadow roots on
+  non-custom hosts (open ones attached late are found within 2 s); select popups
+  and pickers use the viewer's OS UI. Font and
   scrollbar parity assumes the viewer resolves the same fonts and scrollbar
   width as the kernel host (Linux Chrome); Mac/Windows viewers may wrap
   differently.
@@ -166,9 +172,11 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
 MP-11 rules for v2 (owner decision, Miguel 2026-10-09 11:30 UTC, replacing the
 earlier variant scanning): only the fields the kernel filled from the Vault are
 masked, by node identity (top-level `backend:N` and child-frame
-`frame:<id>:<loader>:backend:N` targets), and only while they are plain text
-fields (text-like input, textarea, contenteditable); the type is checked on
-every capture, so a show-password toggle becomes a mask. A password field
+`frame:<id>:<loader>:backend:N` targets), and only while they are not password
+fields (any other input type, textarea, contenteditable: the pixel path's rule);
+the type is checked on every capture, so a show-password toggle becomes a mask.
+A target stays masked until its node leaves, its document changes or the policy
+changes (the pixel path also retires a target whose value the user changed). A password field
 renders as dots of the same length and its value never leaves, nor does a
 hidden input's. No page-text, attribute or CSS value scanning and no
 container, frame or media masks: cross-origin frames are mirrored. Fonts and
