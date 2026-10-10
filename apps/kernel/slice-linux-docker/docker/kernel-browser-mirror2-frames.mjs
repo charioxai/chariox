@@ -64,12 +64,13 @@ export class MirrorFrames {
     return owners;
   }
   // A child world: the OOPIF's own flat session if it has one, else the page session.
-  async world(world, frame) {
+  async world(world, frame, streamId) {
     const sessionId = this.mirror.host.browser.frameSession?.(frame.id, world.connection) ?? world.sessionId;
     const { executionContextId } = await world.connection.send('Page.createIsolatedWorld', { frameId: frame.id, worldName: WORLD, grantUniveralAccess: false }, sessionId);
     const child = { connection: world.connection, sessionId, contextId: executionContextId, frame, ref: world.ref };
     const installed = await world.connection.send('Runtime.evaluate', { expression: mirror2ObserverExpression(), contextId: executionContextId, returnByValue: true }, sessionId);
     if (installed.exceptionDetails || installed.result?.value !== true) throw new Error('MP-11: frame observer unavailable');
+    await this.mirror.css.watch(child, frame.id, streamId);
     return child;
   }
   async loaderId(child) {
@@ -106,7 +107,7 @@ export class MirrorFrames {
       if (!frame || stream.frames.size >= MAX_FRAMES) { this.failed('unowned', `${owners.size} owners`); out.opaque.push(id); continue; }
       try {
         const slot = ++stream.frameSlot;
-        const child = await this.world(world, frame);
+        const child = await this.world(world, frame, stream.id);
         const loaderId = await this.loaderId(child);
         const snap = await this.snapshot(child, loaderId, policy, tab, slot);
         const entry = { slot, owner: id, child, loaderId, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll), focus: rebaseFocus(snap, slot) };
@@ -143,7 +144,7 @@ export class MirrorFrames {
         try {
           const owners = await this.owners(this.mirror.parentWorld(stream));
           const frame = owners.get(owner); if (!frame) continue;
-          const slot = ++stream.frameSlot, child = await this.world(this.mirror.parentWorld(stream), frame), loaderId = await this.loaderId(child);
+          const slot = ++stream.frameSlot, child = await this.world(this.mirror.parentWorld(stream), frame, stream.id), loaderId = await this.loaderId(child);
           const snap = await this.snapshot(child, loaderId, policy, tab, slot);
           const next = { slot, owner, child, loaderId, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll), focus: rebaseFocus(snap, slot) };
           stream.frames.set(owner, next); stream.frameSlots.set(slot, next);

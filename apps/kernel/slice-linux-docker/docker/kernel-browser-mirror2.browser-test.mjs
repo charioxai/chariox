@@ -659,3 +659,20 @@ test("MP-08: protocol 492 `blur` leaves the kernel's focus only while the viewer
   await input(blurred.sequence, { kind: "blur", node_id: id("a") });
   assert.equal(await evaluate("document.activeElement.id"), "b", "MP-08: a stale blur never takes focus from another control");
 }));
+
+// Audit 2026-10-10 §4.5: CDP CSS events replace stylesheet polling and its caps (GitHub's main sheet
+// exceeds 4000 rules; insertRule into it never mirrored).
+const bigSheets = '<style id="big"></style><p class="hit">text</p><div id="h"></div><script>document.getElementById("big").textContent=Array.from({length:5000},(_,i)=>".c"+i+"{color:rgb(1,1,1)}").join("");window.k=new CSSStyleSheet();k.replaceSync(Array.from({length:5000},(_,i)=>".d"+i+"{color:rgb(2,2,2)}").join(""));document.adoptedStyleSheets=[k];const r=document.getElementById("h").attachShadow({mode:"open"});r.innerHTML="<b>shadow</b>";r.adoptedStyleSheets=[k]</script>';
+test("MP-10: CSSOM edits of sheets over 4000 rules (style element, adopted in document and shadow root) reach the viewer within one credit", () => mirrored(bigSheets, async ({ next, evaluate }) => {
+  assert.equal((await next()).reset, true);
+  await evaluate("document.getElementById('big').sheet.insertRule('.hit{color:rgb(9,8,7)}', 5000);k.insertRule('.hit{background:rgb(6,5,4)}', 5000);true");
+  const started = Date.now(), packet = await next(2000), text = JSON.stringify(packet.ops) + JSON.stringify(packet.sheets ?? {});
+  assert.match(text, /rgb\(9, 8, 7\)/, "MP-10: the style element's new rule travels");
+  assert.match(text, /rgb\(6, 5, 4\)/, "MP-10: the adopted sheet's new rule travels");
+  assert.equal(packet.ops.filter(op => op.op === "adopted").length, 2, "MP-10: both adopting roots are updated");
+  assert(Date.now() - started < 1500, "MP-10: reported by the CSS agent, not a periodic check");
+  // A rule's declaration edit (no rule count change) travels too.
+  await evaluate("document.getElementById('big').sheet.cssRules[5000].style.color='rgb(3,4,5)';true");
+  const edited = await next(2000);
+  assert.match(JSON.stringify(edited.ops) + JSON.stringify(edited.sheets ?? {}), /rgb\(3, 4, 5\)/);
+}));

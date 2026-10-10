@@ -11,6 +11,7 @@ import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
 import { decodePng, maskPixels } from './kernel-browser-pixels.mjs';
 import { losslessRegion } from './kernel-browser-display.mjs';
 import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror2-frames.mjs';
+import { MirrorCssEvents } from './kernel-browser-mirror2-css.mjs';
 
 const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
 const MAX_WAIT_MS = 2000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
@@ -138,7 +139,7 @@ export function dedupeMirrorSheets(packet, sent) {
 const observerRef = stream => `globalThis.__charioxMirror2.get(${JSON.stringify(String(stream.id))})`;
 
 export class Mirror2 {
-  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); }
+  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); }
   parentWorld(stream) { return stream.world; }
   async world(tab, stream) {
     const { connection, sessionId } = await this.host.browser.resolvePageTarget(tab.target_id);
@@ -151,7 +152,9 @@ export class Mirror2 {
       if (installed.exceptionDetails || installed.result?.value !== true) throw new Error('MP-11: mirror observer unavailable');
       world.mirror2Installed = true;
     }
-    return { connection, sessionId, contextId: world.contextId, frame: frameTree.frame, ref: observerRef(stream) };
+    const out = { connection, sessionId, contextId: world.contextId, frame: frameTree.frame, ref: observerRef(stream) };
+    await this.css.watch(out, frameTree.frame.id, stream.id);
+    return out;
   }
   async evaluate(world, expression, awaitPromise = false) {
     const reply = await world.connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId);
@@ -164,7 +167,7 @@ export class Mirror2 {
   }
   // A closed subscription's observers stop (best effort: a gone world has none).
   dispose(stream) {
-    stream.deflate?.close(); stream.deflate = null;
+    stream.deflate?.close(); stream.deflate = null; this.css.release(stream.id);
     const drop = `globalThis.__charioxMirror2?.drop(${JSON.stringify(String(stream.id))})`;
     for (const world of [stream.world, ...[...stream.frames.values()].map(entry => entry.child)]) if (world) world.connection.send('Runtime.evaluate', { expression: drop, contextId: world.contextId, returnByValue: true }, world.sessionId).catch(() => {});
   }

@@ -53,6 +53,8 @@ export function installMirror2(sanitizeMirrorCss) {
       return instance;
     },
     drop: id => { instances.get(id)?.dispose(); instances.delete(id); return true; },
+    // CDP CSS events (kernel-browser-mirror2-css.mjs): a changed sheet's owner node, 'adopted' or 'imports'.
+    sheetChanged: owner => { for (const instance of instances.values()) instance.sheetChanged(owner); return true; },
   });
   return true;
   function create() {
@@ -80,7 +82,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const closedHosts = new WeakSet();
     const urlKeys = new Map();
     let selectedDoc = null; // the document whose selection changed last
-    let newResources = [], pendingSheets = [], lastSheetCheck = 0, lastFormCheck = 0, formCursor = 0, cssAttrs = null;
+    let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, cssAttrs = null;
     const referenced = text => { const out = []; for (const m of String(text).matchAll(/\[\s*(?:[\w-]*\|)?([a-zA-Z_:][-a-zA-Z0-9_:.]*)|attr\(\s*([a-zA-Z_:][-a-zA-Z0-9_:.]*)/g)) out.push((m[1] ?? m[2]).toLowerCase()); return out; };
     const keepAttr = (html, lower) => !html || !cssAttrs || RENDERED.has(lower) || lower.startsWith('aria-') || cssAttrs.has(lower);
     // New attribute names in CSS mean earlier records lack attributes: resnapshot.
@@ -218,7 +220,7 @@ export function installMirror2(sanitizeMirrorCss) {
       sentForms.set(node, form); ops.push({ op: 'form', id, form: changed });
     };
     // Adopted sheets have no mutation records: identity + rule count + disabled state + media each
-    // drain, and their rule text on the periodic full check (replaceSync, rule edits).
+    // drain, and their rule text when CDP reports a constructed sheet changed (replaceSync, rule edits).
     // A disabled sheet keeps its ordered slot as an empty sheet; a sheet's media list is its @media condition.
     const sheetIds = new WeakMap(), adoptedTexts = new WeakMap(); let sheetSerial = 0;
     const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base), media = sheet.media.mediaText; adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sanitizeMirrorCss(media ? `@media ${media}{${text}}` : text, base, resource)); } catch { sheets.push(''); } } return sheets; };
@@ -226,7 +228,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const adoptedEdited = () => {
       const edited = new Map(), out = new Set();
       for (const [id, root] of roots) for (const sheet of root.adoptedStyleSheets ?? []) {
-        if (!edited.has(sheet)) { let text = adoptedTexts.get(sheet); try { if (sheet.cssRules.length <= 4000) text = sheetText(sheet, root.baseURI ?? document.baseURI); } catch {} edited.set(sheet, text !== adoptedTexts.get(sheet)); }
+        if (!edited.has(sheet)) { let text = adoptedTexts.get(sheet); try { text = sheetText(sheet, root.baseURI ?? document.baseURI); } catch {} edited.set(sheet, text !== adoptedTexts.get(sheet)); }
         if (edited.get(sheet)) out.add(id);
       }
       return out;
@@ -234,6 +236,7 @@ export function installMirror2(sanitizeMirrorCss) {
     // Rule count ('x' when cross-origin rules are unreadable) and, independently, the disabled state.
     const ruleCount = sheet => { try { return String(sheet.cssRules.length); } catch { return 'x'; } };
     const sheetSignature = sheet => `${ruleCount(sheet)}:${sheet.disabled}`;
+    const imports = sheet => { try { return sheet?.cssRules[0]?.type === 3; } catch { return false; } };
     const styleRecord = (node, record) => {
       record.tag = 'style'; record.attrs = {};
       const media = node.getAttribute('media'); if (media && media.length <= 4096) record.attrs.media = media;
@@ -242,7 +245,7 @@ export function installMirror2(sanitizeMirrorCss) {
         if (sheet.disabled) record.attrs.media = 'not all';
         try { record.css = css(sheet, sheet.href ?? node.baseURI); } catch { if (sheet.href) pendingSheets.push({ id: record.id, url: sheet.href }); }
       }
-      styleNodes.set(record.id, { node, signature: sheet ? sheetSignature(sheet) : '', text: record.css, media: record.attrs.media ?? null });
+      styleNodes.set(record.id, { node, signature: sheet ? sheetSignature(sheet) : '', text: record.css, media: record.attrs.media ?? null, imports: imports(sheet) });
     };
     // Pre-order records; a record's children are the following records naming it.
     const serialize = (node, parent, out, depth = 0) => {
@@ -332,7 +335,7 @@ export function installMirror2(sanitizeMirrorCss) {
       cssAttrs = new Set(learned); cssStale = false;
       for (const record of out) { if (record.css) noteCss(record.css); if (record.attrs?.style) noteCss(record.attrs.style); for (const text of record.adopted ?? []) noteCss(text); }
       for (const record of out) if (record.attrs && !record.ns) for (const name of Object.keys(record.attrs)) if (!keepAttr(true, name.toLowerCase())) delete record.attrs[name];
-      lastSheetCheck = performance.now();
+      adoptedDirty = false;
       return { root, nodes: out, ...take(), ...header() };
     };
     const imageOp = (node, id, ops) => { const key = node.currentSrc ? resource(node.currentSrc, node.baseURI, 'image') : null; if ((key ?? null) === (resOf.get(id) ?? null)) return; if (key) resOf.set(id, key); else resOf.delete(id); ops.push({ op: 'res', id, res: key }); };
@@ -455,25 +458,21 @@ export function installMirror2(sanitizeMirrorCss) {
       const activeId = active && mirrored(active);
       if (activeId && kindOf.get(activeId) === 'element' && ['input', 'textarea'].includes(active.localName) && !dirty.form.has(active)) formOp(active, activeId, ops);
       for (const node of dirty.scroll) { const id = node && mirrored(node); if (id && node !== document.documentElement && kindOf.get(id) === 'element') ops.push({ op: 'scroll', id, scroll: [node.scrollLeft, node.scrollTop] }); }
-      // CSSOM edits (insertRule/replaceSync, rule.style writes) produce no mutation record: readable
-      // <style> and <link> sheets are compared every 2 s (unreadable rules: count 'x').
-      const now = performance.now(), full = now - lastSheetCheck > 2000; if (full) lastSheetCheck = now;
-      // Linked sheets can be megabytes (GitHub ~4 MB): ~256 KB of them per check, least recently checked first.
-      const links = new Set(); if (full) { let room = 256 * 1024; for (const [id, entry] of [...styleNodes].filter(([, e]) => e.node.localName === 'link').sort((a, b) => (a[1].checkedAt ?? 0) - (b[1].checkedAt ?? 0))) { if (links.size && (entry.text?.length ?? 0) > room) continue; room -= entry.text?.length ?? 0; links.add(id); entry.checkedAt = now; } }
+      // CSSOM edits (insertRule/replaceSync, rule.style writes) produce no mutation record: CDP reports
+      // them (sheetChanged); the cheap signature (rule count, disabled) still runs every drain.
       for (const [id, entry] of styleNodes) {
         const sheet = entry.node.sheet, signature = sheet ? sheetSignature(sheet) : '';
-        const unread = signature.startsWith('x:');
-        if (dirty.sheets.has(entry.node) || signature !== entry.signature || full && (entry.node.localName === 'style' || links.has(id)) && sheet && !unread && sheet.cssRules.length <= 4000) {
+        if (dirty.sheets.has(entry.node) || signature !== entry.signature) {
           let text = ''; let media = entry.node.getAttribute('media'); if (media && media.length > 4096) media = null;
           // An unreadable sheet is re-read through CDP when it (re)loaded, not when only its disabled state changed.
           if (sheet) { try { text = css(sheet, sheet.href ?? entry.node.baseURI); } catch { if (sheet.href && (dirty.sheets.has(entry.node) || !entry.signature.startsWith('x:'))) pendingSheets.push({ id, url: sheet.href }); text = entry.text; } if (sheet.disabled) media = 'not all'; }
-          entry.signature = signature;
+          entry.signature = signature; entry.imports = imports(sheet);
           if (text !== entry.text) { entry.text = text; ops.push({ op: 'css', id, css: text }); }
           // Effective media: CSSOM `sheet.disabled` changes it without any mutation or event.
           if ((media || null) !== entry.media) { entry.media = media || null; ops.push({ op: 'attr', id, name: 'media', value: entry.media }); }
         }
       }
-      const edited = full ? adoptedEdited() : new Set();
+      const edited = adoptedDirty ? adoptedEdited() : new Set(); adoptedDirty = false;
       for (const [id, root] of roots) {
         const signature = adoptedSignature(root);
         if (signature !== rootSignatures.get(id) || edited.has(id)) { rootSignatures.set(id, signature); ops.push({ op: 'adopted', id, sheets: adopted(root) }); }
@@ -637,8 +636,14 @@ export function installMirror2(sanitizeMirrorCss) {
       visit(document, 0);
       return { mirrored: mirroredText, total };
     };
+    const sheetChanged = owner => {
+      if (owner === 'adopted') adoptedDirty = true;
+      else if (owner === 'imports') { for (const entry of styleNodes.values()) if (entry.imports) dirty.sheets.add(entry.node); }
+      else { const id = owner && mirrored(owner); if (id && styleNodes.has(id)) dirty.sheets.add(owner); }
+      wake(); return true;
+    };
     // Credit long-poll: resolves on the next page change (or the bound).
-    const changed = () => records.length > 0 || overflow || Object.values(dirty).some(set => set.size > 0);
+    const changed = () => records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
     // Credit long-poll. The delta is taken in the wake microtask, right after our
     // capture-phase listener or MutationObserver callback, so an echo does not
     // wait for the page's own handlers to finish their task. A change flagged
@@ -679,6 +684,6 @@ export function installMirror2(sanitizeMirrorCss) {
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ cssStale: () => cssStale, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, nearImages, preview, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
+    return Object.freeze({ cssStale: () => cssStale, sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, nearImages, preview, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
   }
 }
