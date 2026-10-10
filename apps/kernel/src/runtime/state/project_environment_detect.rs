@@ -239,6 +239,30 @@ impl KernelRuntimeState {
                     "unsupported_model"
                 } else if error_text.contains("exceeds bounds") {
                     "metadata_bounds"
+                // MP-08 / MP-10 / MP-11: fixed parser categories only.
+                // Never expose the model response or a dynamic error message.
+                } else if error_text.contains("invalid project environment discovery output") {
+                    "discovery_invalid_json"
+                } else if error_text.contains("discovery project or evidence binding mismatch") {
+                    "discovery_binding_mismatch"
+                } else if error_text
+                    .contains("discovery private file decisions do not match the inventory")
+                {
+                    "discovery_private_inventory_mismatch"
+                } else if error_text.contains("discovery introduced unreferenced name or locator") {
+                    "discovery_unreferenced_entry"
+                } else if error_text.contains("discovery omitted a project environment reference") {
+                    "discovery_missing_reference"
+                } else if error_text.contains("invalid project environment hint") {
+                    "discovery_invalid_hint"
+                } else if error_text
+                    .contains("invalid project environment entry binding or evidence")
+                {
+                    "discovery_invalid_entry"
+                } else if error_text
+                    .contains("invalid project environment manifest identity or bounds")
+                {
+                    "discovery_invalid_manifest"
                 } else {
                     "utility_failed"
                 };
