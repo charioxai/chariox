@@ -21,7 +21,7 @@ check_pressure
 swiftc "${flags[@]}" "${common[@]}" NativeCaptureStream.swift StreamTests.swift -o "$build/stream-tests"
 "$build/stream-tests"
 check_pressure
-swiftc "${flags[@]}" "${common[@]}" CaptureDamage.swift CaptureAttachment.swift ProtectedPixels.swift NativeCaptureStream.swift CaptureProtection.swift PairedCapture.swift PairedSession.swift ChannelTests.swift -o "$build/channel-tests"
+swiftc "${flags[@]}" "${common[@]}" CaptureDamage.swift CaptureAttachment.swift ProtectedPixels.swift NativeCaptureStream.swift CaptureProtection.swift PairedCapture.swift PhysicalHuman.swift NativeInput.swift PairedNativeInput.swift PairedSession.swift ChannelTests.swift -o "$build/channel-tests"
 "$build/channel-tests"
 check_pressure
 swiftc "${flags[@]}" "${common[@]}" CaptureDamage.swift CaptureAttachment.swift ProtectedPixels.swift CaptureReplay.swift -o "$build/capture-replay"
@@ -31,5 +31,5 @@ swiftc "${flags[@]}" Policy.swift CaptureProtection.swift CaptureProtectionTests
 "$build/protection-tests"
 
 check_pressure
-swiftc "${flags[@]}" "${common[@]}" CaptureDamage.swift CaptureAttachment.swift ProtectedPixels.swift NativeCaptureStream.swift CaptureProtection.swift PairedCapture.swift PairedSession.swift PairedFailureTests.swift -o "$build/paired-failure-tests"
+swiftc "${flags[@]}" "${common[@]}" CaptureDamage.swift CaptureAttachment.swift ProtectedPixels.swift NativeCaptureStream.swift CaptureProtection.swift PairedCapture.swift PhysicalHuman.swift NativeInput.swift PairedNativeInput.swift PairedSession.swift PairedFailureTests.swift -o "$build/paired-failure-tests"
 "$build/paired-failure-tests"

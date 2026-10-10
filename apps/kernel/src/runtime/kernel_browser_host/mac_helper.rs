@@ -30,6 +30,8 @@ const PAIRING: Duration = Duration::from_secs(10);
 const OWNER_RESET: &str = "MP-11: owner-reset-required: native input release is unresolved; owner release and kernel restart required";
 const REQUEST: Duration = Duration::from_secs(20);
 
+type HumanCallback = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
 type Launch = Box<dyn Fn(&Path) -> Result<(), String> + Send>;
 
 pub(crate) struct MacComputerHelper {
@@ -39,6 +41,8 @@ pub(crate) struct MacComputerHelper {
     link: Option<Arc<Link>>,
     rendezvous_guard: Arc<Mutex<()>>,
     unresolved_input: bool,
+    physical_input: bool,
+    on_physical_human: HumanCallback,
     // Watchers can also retire links, so kernel exit must drain both kinds.
     workers: Vec<std::thread::JoinHandle<()>>,
 }
@@ -52,13 +56,19 @@ struct Link {
     dir: PathBuf,
     alive: AtomicBool,
     unresolved_input: AtomicBool,
+    physical_input: bool,
+    physical_human: AtomicBool,
+    on_physical_human: HumanCallback,
     control: UnixStream,
     channel: Mutex<(BufReader<UnixStream>, u64)>,
 }
 
 impl MacComputerHelper {
     /// Feature-disabled unless the owner configures the installed helper.
-    pub(crate) fn configured(root: &Path) -> Result<Option<Self>, String> {
+    pub(crate) fn configured(
+        root: &Path,
+        on_physical_human: HumanCallback,
+    ) -> Result<Option<Self>, String> {
         let Some(app) = std::env::var_os("CHARIOX_MACOS_COMPUTER_HELPER").map(PathBuf::from) else {
             return Ok(None);
         };
@@ -71,11 +81,14 @@ impl MacComputerHelper {
             .ok()
             .filter(|h| h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit()))
             .ok_or("MP-11: signed Computer helper identity is not configured")?;
-        Ok(Some(Self::new(
+        let mut helper = Self::new(
             rendezvous_root(root)?,
             format!("identifier \"{HELPER_ID}\" and cdhash H\"{cdhash}\""),
             Box::new(move |dir| launch_services(&app, dir)),
-        )))
+        );
+        helper.physical_input = std::env::var("CHARIOX_MACOS_COMPUTER_INPUT").as_deref() == Ok("1");
+        helper.on_physical_human = on_physical_human;
+        Ok(Some(helper))
     }
     fn new(run_root: PathBuf, requirement: String, launch: Launch) -> Self {
         Self {
@@ -85,6 +98,8 @@ impl MacComputerHelper {
             link: None,
             rendezvous_guard: Arc::new(Mutex::new(())),
             unresolved_input: false,
+            physical_input: false,
+            on_physical_human: Arc::new(|_| Ok(())),
             workers: Vec::new(),
         }
     }
@@ -143,7 +158,7 @@ impl MacComputerHelper {
             .and_then(|mut file| {
                 serde_json::to_writer(
                     &mut file,
-                    &json!({"token":token,"epoch":epoch,"kernel_pid":std::process::id(),"scope":scope}),
+                    &json!({"token":token,"epoch":epoch,"kernel_pid":std::process::id(),"scope":scope,"physical_input":self.physical_input}),
                 )?;
                 Ok(())
             })
@@ -172,6 +187,8 @@ impl MacComputerHelper {
             epoch,
             dir.to_path_buf(),
             self.rendezvous_guard.clone(),
+            self.physical_input,
+            self.on_physical_human.clone(),
         )
     }
 }
@@ -184,6 +201,8 @@ fn admit(
     epoch: String,
     dir: PathBuf,
     rendezvous_guard: Arc<Mutex<()>>,
+    physical_input: bool,
+    on_physical_human: HumanCallback,
 ) -> Result<Arc<Link>, String> {
     const REFUSED: &str = "MP-11: Computer helper pairing refused";
     stream.set_nonblocking(false).map_err(|_| REFUSED)?;
@@ -220,6 +239,9 @@ fn admit(
         dir,
         alive: AtomicBool::new(true),
         unresolved_input: AtomicBool::new(false),
+        physical_input,
+        physical_human: AtomicBool::new(false),
+        on_physical_human,
         control: stream.try_clone().map_err(|_| REFUSED)?,
         channel: Mutex::new((reader, 1)),
     }))
@@ -286,8 +308,36 @@ impl Link {
             self.fence();
             return Err(HostFailure::Refused(UserDomainRefusalReason::StaleEpoch));
         }
+        // Private paired status only. The local observer already fenced input;
+        // project that physical owner through the existing shared actor ledger.
+        let human = response["physical_human"]
+            .as_bool()
+            .or_else(|| response["result"]["physical_human"].as_bool());
+        if self.physical_input {
+            if let Some(human) = human {
+                let previous = self.physical_human.swap(human, Ordering::AcqRel);
+                if human && !previous {
+                    if let Err(error) = (self.on_physical_human)(&self.epoch) {
+                        self.fence();
+                        return Err(error.into());
+                    }
+                }
+            }
+        }
+        if response["input_released"] == true {
+            self.unresolved_input.store(false, Ordering::Release);
+        }
         if response["ok"] == true {
-            return Ok(response["result"].clone());
+            if method == "host.computer.reset"
+                && request["params"]["physical_human_release"] == true
+            {
+                self.physical_human.store(false, Ordering::Release);
+            }
+            let mut result = response["result"].clone();
+            if let Some(result) = result.as_object_mut() {
+                result.remove("physical_human");
+            }
+            return Ok(result);
         }
         if response["error"]["code"] == "owner_reset_required" {
             self.unresolved_input.store(true, Ordering::Release);
@@ -462,12 +512,16 @@ impl ComputerBackend for MacComputerHelper {
             let (cancel, link) = (cancel.clone(), link.clone());
             RequestFence::watch(move || cancel.requested(), move || link.fence())
         });
-        // The currently admitted click paths use AX, with no physical press.
-        // Text and future physical input retain uncertainty until an authenticated
+        // AX-only clicks do not own a press. Experimental physical clicks do.
+        // Native input retains uncertainty until an authenticated
         // successful reply confirms the helper finished release. EOF cannot do so.
         let owns_press = method == "host.computer"
             && params["op"] == "input"
-            && params["input"]["kind"] != "click";
+            && match params["input"]["kind"].as_str() {
+                Some("click") => link.physical_input,
+                Some("move" | "scroll") => false,
+                _ => true,
+            };
         if owns_press {
             link.unresolved_input.store(true, Ordering::Release);
         }

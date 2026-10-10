@@ -63,7 +63,6 @@ impl ComputerBackend for BrowserControllerProcessStdioBackend {
 }
 
 impl KernelBrowserHost {
-    #[cfg(any(test, target_os = "macos"))]
     pub(super) fn require_computer_owner(user: &str) -> Result<(), String> {
         // Cloud owner requests have already been mapped to this canonical ID.
         // Room membership and arrival order never confer the personal Mac seat.
@@ -110,10 +109,35 @@ impl KernelBrowserHost {
 
     pub(super) fn computer_backend(&self, user: &str) -> Result<ComputerSeat, String> {
         #[cfg(target_os = "macos")]
-        let seat = self.computer_seat_or_create(user, || {
-            super::mac_helper::MacComputerHelper::configured(&self.root)
+        let seat = {
+            Self::require_computer_owner(user)?;
+            let actors = self.actor_model(user)?;
+            self.computer_seat_or_create(user, || {
+                super::mac_helper::MacComputerHelper::configured(
+                    &self.root,
+                    Arc::new(move |epoch| {
+                        let mut actors = actors
+                            .lock()
+                            .map_err(|_| "MP-11: physical actor lock unavailable")?;
+                        actors.reconcile_desktop(
+                            &serde_json::json!({"surface_id":"macos-seat","generation":epoch}),
+                        )?;
+                        actors
+                            .takeover_desktop(
+                                crate::session::EnvironmentActor::new(
+                                    "human:physical-owner",
+                                    crate::session::EnvironmentActorKind::Human,
+                                    "Mac owner",
+                                ),
+                                "macos-seat",
+                                epoch,
+                            )
+                            .map(drop)
+                    }),
+                )
                 .map(|helper| helper.map(|helper| Arc::new(Mutex::new(helper)) as ComputerSeat))
-        })?;
+            })?
+        };
         #[cfg(not(target_os = "macos"))]
         let seat = self
             .inner

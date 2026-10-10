@@ -6,6 +6,7 @@ import Security
 
 struct MacSource: NativeSource {
     var authority: () throws -> Void = {}
+    var tagInput: (CGEvent) -> Void = { _ in }
 
     func checkPermission(_ operation: Operation) throws {
         try authority()
@@ -125,7 +126,7 @@ struct MacSource: NativeSource {
         throw tagged(.target, "focused-element-outside-window")
     }
     func fence(_ request: Request, element: AXUIElement, typing: Bool,
-               clickGeometry: ClickGeometry? = nil, eventLocation: CGPoint? = nil) throws {
+               clickGeometry: ClickGeometry? = nil, eventLocation: CGPoint? = nil, physicalKey: Bool = false) throws {
         try validateTarget(request)
         if request.clickAtPointer {
             try checkPointerSnapshot(request, currentPoint: currentPointerPoint())
@@ -141,7 +142,7 @@ struct MacSource: NativeSource {
             guard CFEqual(focused, element) else { throw tagged(.target, "owner-focus-changed") }
         }
         if typing {
-            guard CFEqual(focused, element), request.ownerWindow || request.target == "ordinary",
+            guard CFEqual(focused, element), request.ownerWindow || request.target == "ordinary" || (physicalKey && request.target == "text"),
                   let role = try attribute(element, kAXRoleAttribute) as? String,
                   [kAXTextFieldRole, kAXTextAreaRole].contains(role) else { throw tagged(.target, "typing-target-focus-or-role") }
         } else {
@@ -304,7 +305,7 @@ struct MacSource: NativeSource {
         }, releaseFence: { _ in
             try fence(request, element: element, typing: true)
             try checkPermission(operation)
-        }, releaseAllowed: { CGPreflightPostEventAccess() }, post: { $0.postToPid(request.pid) })
+        }, releaseAllowed: { CGPreflightPostEventAccess() }, post: { tagInput($0); $0.postToPid(request.pid) })
         try fence(request, element: element, typing: true)
         return inputReceipt(path: "CGEventPIDText")
     }

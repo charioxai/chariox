@@ -90,3 +90,17 @@ func readLine(_ fd: Int32, _ buffer: inout Data) -> Data? {
         buffer.append(contentsOf: chunk[..<count])
     }
 }
+
+// One detached read at a time owns this buffer; the main actor never accesses it.
+// Keeping it across reads preserves coalesced requests on the pairing socket.
+final class PairingReader: @unchecked Sendable {
+    private let fd: Int32
+    private var buffer = Data()
+    private let lock = NSLock()
+    init(fd: Int32) { self.fd = fd }
+    private func read() -> Data? {
+        lock.lock(); defer { lock.unlock() }
+        return readLine(fd, &buffer)
+    }
+    func next() async -> Data? { await Task.detached { [self] in read() }.value }
+}

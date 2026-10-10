@@ -4,9 +4,13 @@ struct NativeInputPlan {
     let point: CGPoint?
     let events: [CGEvent]
     let typing: Bool
+    let dwellNanoseconds: UInt64
+    init(point: CGPoint?, events: [CGEvent], typing: Bool, dwellNanoseconds: UInt64 = 5_000_000) {
+        self.point = point; self.events = events; self.typing = typing; self.dwellNanoseconds = dwellNanoseconds
+    }
 }
 
-// Existing shared Computer input kinds. Holds, raw keycodes and shortcuts stay
+// Existing shared Computer input kinds. Long holds, raw keycodes and shortcuts stay
 // refused until granted fatal-death and inert-key acceptance has passed.
 func nativeInputPlan(_ input: [String: Any], surface: NativeSurface) throws -> NativeInputPlan {
     let source = CGEventSource(stateID: .privateState)
@@ -42,15 +46,22 @@ func nativeInputPlan(_ input: [String: Any], surface: NativeSurface) throws -> N
                                   wheel1: Int32(-steps * 40), wheel2: 0, wheel3: 0) else { throw tagged(.arguments, "invalid-native-scroll") }
         event.location = location
         return NativeInputPlan(point: location, events: [event], typing: false)
-    case "key":
+    case "key", "hold":
         let keys: [String: CGKeyCode] = ["left": 123, "right": 124, "down": 125, "up": 126,
             "home": 115, "end": 119, "escape": 53, "backspace": 51, "delete": 117]
         guard let key = input["key"] as? String, let code = keys[key.lowercased()] else { throw tagged(.arguments, "unsupported-native-key") }
+        var dwell: UInt64 = 5_000_000
+        if input["kind"] as? String == "hold" {
+            guard let milliseconds = input["duration_ms"] as? Int, (1...100).contains(milliseconds) else {
+                throw tagged(.arguments, "native-hold-budget")
+            }
+            dwell = UInt64(milliseconds) * 1_000_000
+        }
         let events = try [true, false].map { down -> CGEvent in
             guard let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { throw Refusal.native }
             return event
         }
-        return NativeInputPlan(point: nil, events: events, typing: true)
+        return NativeInputPlan(point: nil, events: events, typing: true, dwellNanoseconds: dwell)
     default: throw tagged(.arguments, "unsupported-native-input")
     }
 }
@@ -76,7 +87,7 @@ func nativeInputPlan(_ input: [String: Any], surface: NativeSurface) throws -> N
                 post(event)
                 if [.leftMouseUp, .rightMouseUp, .otherMouseUp, .keyUp].contains(event.type) { ownedRelease = nil }
                 // Let the listen-only tap fence the next event and pending Actions.
-                try await Task.sleep(nanoseconds: 5_000_000)
+                try await Task.sleep(nanoseconds: ownedRelease == nil ? 5_000_000 : plan.dwellNanoseconds)
                 try fence()
             }
         } catch {
@@ -106,7 +117,7 @@ extension MacSource {
             try observer.check()
             try checkPermission(.click)
             try self.fence(request, element: element, typing: plan.typing,
-                clickGeometry: plan.point == nil ? nil : geometry, eventLocation: plan.point)
+                clickGeometry: plan.point == nil ? nil : geometry, eventLocation: plan.point, physicalKey: plan.typing)
             guard CGPreflightPostEventAccess() else { throw tagged(.permission, "post-permission-denied") }
         }, releaseFence: {
             // Never release over a human takeover or unknown target. Failed

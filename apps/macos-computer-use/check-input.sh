@@ -15,3 +15,7 @@ check() {
 check M3ReleaseTests
 check PhysicalHumanTests
 check NativeInputTests
+
+common+=(CaptureDamage.swift CaptureAttachment.swift ProtectedPixels.swift NativeCaptureStream.swift CaptureProtection.swift PairedCapture.swift PairedNativeInput.swift PairedSession.swift)
+check PairedNativeInputTests
+check PairedRefusalTests

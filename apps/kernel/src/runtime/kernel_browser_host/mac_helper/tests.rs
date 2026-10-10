@@ -7,6 +7,8 @@ enum Fake {
     Honest,
     OwnedReleaseFailure,
     ScopeRefused,
+    NoPressRefusal,
+    PhysicalHuman,
     WrongToken,
     StaleReply,
     StaleGeneration,
@@ -67,6 +69,10 @@ fn helper(dir: &Path, fake: Fake, seen: &Mutex<Vec<String>>) {
         } else {
             epoch.clone()
         };
+        if fake == Fake::NoPressRefusal && request["params"]["op"] == "input" {
+            writeln!(stream,"{}",json!({"id":request["id"],"epoch":epoch,"ok":false,"input_released":true,"error":{"code":"unsupported"}})).unwrap();
+            continue;
+        }
         if method != "heartbeat" && matches!(fake, Fake::OwnedReleaseFailure | Fake::ScopeRefused) {
             let code = if fake == Fake::OwnedReleaseFailure {
                 "owner_reset_required"
@@ -77,6 +83,16 @@ fn helper(dir: &Path, fake: Fake, seen: &Mutex<Vec<String>>) {
                 stream,
                 "{}",
                 json!({"id":request["id"],"epoch":epoch,"ok":false,"error":{"code":code}})
+            )
+            .unwrap();
+            continue;
+        }
+        if fake == Fake::PhysicalHuman && request["params"]["op"] == "input" {
+            writeln!(
+                stream,
+                "{}",
+                json!({"id":request["id"],"epoch":epoch,"ok":false,
+                "physical_human":true,"input_released":true,"error":{"code":"unsupported"}})
             )
             .unwrap();
             continue;
@@ -510,4 +526,105 @@ fn m1_lost_release_confirmation_after_key_down_latches_across_stop_and_start() {
         passed,
         "lost owned-release confirmation admitted a new pairing"
     );
+}
+
+#[test]
+fn m3_fatal_physical_click_requires_owner_reset_before_repairing() {
+    let (mut seat, root, _) = seat("always", Fake::CrashOnRequest);
+    seat.physical_input = true;
+    seat.start().unwrap();
+    let result = seat.request(
+        "host.computer",
+        json!({"op":"input","input":{"kind":"click","x":20,"y":20,"button":1}}),
+        None,
+    );
+    let latched = result
+        .unwrap_err()
+        .to_string()
+        .contains("owner-reset-required");
+    seat.stop().unwrap();
+    let denied = seat
+        .start()
+        .is_err_and(|error| error.contains("owner-reset-required"));
+    seat.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        latched && denied,
+        "fatal mouse-down uncertainty admitted a fresh helper"
+    );
+}
+
+#[test]
+fn m3_physical_human_refusal_projects_owner_without_poisoning_unpressed_input() {
+    let (mut seat, root, _) = seat("always", Fake::PhysicalHuman);
+    seat.physical_input = true;
+    let (notify, notified) = std::sync::mpsc::channel();
+    seat.on_physical_human = Arc::new(move |epoch| {
+        notify.send(epoch.to_string()).unwrap();
+        Ok(())
+    });
+    seat.start().unwrap();
+    let epoch = seat.link.as_ref().unwrap().epoch.clone();
+    for _ in 0..2 {
+        let failed = seat
+            .request(
+                "host.computer",
+                json!({"op":"input","input":{"kind":"click"}}),
+                None,
+            )
+            .unwrap_err();
+        assert!(!failed.to_string().contains("owner-reset-required"));
+    }
+    assert_eq!(
+        notified.recv_timeout(Duration::from_secs(1)).unwrap(),
+        epoch
+    );
+    assert!(
+        notified.try_recv().is_err(),
+        "one takeover was projected twice"
+    );
+    seat.request(
+        "host.computer.reset",
+        json!({"physical_human_release":true}),
+        None,
+    )
+    .unwrap();
+    assert!(seat
+        .request(
+            "host.computer",
+            json!({"op":"input","input":{"kind":"click"}}),
+            None
+        )
+        .is_err());
+    assert_eq!(
+        notified.recv_timeout(Duration::from_secs(1)).unwrap(),
+        epoch,
+        "takeover after release was lost"
+    );
+    seat.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn m1_authenticated_no_press_refusal_leaves_the_seat_usable() {
+    let (mut seat, root, _) = seat("always", Fake::NoPressRefusal);
+    seat.start().unwrap();
+    for input in [
+        json!({"kind":"text","text":"xxxxxxxxxxxxxxxxxxxxx"}),
+        json!({"kind":"key","key":"Right"}),
+    ] {
+        let error = seat
+            .request("host.computer", json!({"op":"input","input":input}), None)
+            .unwrap_err();
+        assert!(
+            !error.to_string().contains("owner-reset-required"),
+            "no-effect refusal poisoned the seat: {error}"
+        );
+        assert!(state(&mut seat).is_ok());
+    }
+    seat.stop().unwrap();
+    seat.start().unwrap();
+    assert!(state(&mut seat).is_ok());
+    seat.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }

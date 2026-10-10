@@ -12,11 +12,14 @@ import Darwin
     private var surface: NativeSurface?
     private let capture = PairedCapture()
     private var unresolvedInput = false
+    private let nativeInput: PairedNativeInput?
     private let readSurface: (Request) throws -> NativeSurface
     private let execute: (Request, MacSource) async throws -> [String]
     init(fd: Int32, epoch: String, scope: Any?,
          surfaceProvider: @escaping (Request) throws -> NativeSurface = nativeSurface,
-         execute: @escaping (Request, MacSource) async throws -> [String] = { try await run($0, source: $1) }) throws {
+         execute: @escaping (Request, MacSource) async throws -> [String] = { try await run($0, source: $1) },
+         nativeInput: PairedNativeInput? = nil) throws {
+        self.nativeInput = nativeInput
         self.readSurface = surfaceProvider; self.execute = execute
         self.fd = fd; self.epoch = epoch
         self.scope = try pairedScope(scope)
@@ -45,7 +48,7 @@ import Darwin
         }
         let method = request["method"] as? String
         let params = request["params"] as? [String: Any] ?? [:]
-        if method == "stop" { revoked = true; capture.clear(); return pairedReply(request, epoch: epoch) }
+        if method == "stop" { revoked = true; capture.clear(); nativeInput?.stop(); return pairedReply(request, epoch: epoch) }
         if unresolvedInput, method != "stop" && method != "heartbeat" {
             return (["id": request["id"] ?? NSNull(), "epoch": epoch, "ok": false,
                      "error": ["code": "owner_reset_required"]], false)
@@ -54,7 +57,11 @@ import Darwin
             do {
                 try checkAuthority()
                 try capture.checkHealth(authority: { try self.checkAuthority() })
-                return pairedReply(request, epoch: epoch)
+                var result = pairedReply(request, epoch: epoch)
+                if let nativeInput {
+                    result.reply["result"] = ["physical_human": nativeInput.paused, "surface_id": "macos-seat", "generation": epoch]
+                }
+                return result
             } catch {
                 revoked = true; capture.clear()
                 return (["id": request["id"] ?? NSNull(), "epoch": epoch, "ok": false,
@@ -64,17 +71,31 @@ import Darwin
         if method == "host.protect" { capture.protect(params); return pairedReply(request, epoch: epoch) }
         if method == "host.computer", ["start", "state"].contains(params["op"] as? String ?? "") {
             do {
-                if surface == nil { surface = try readSurface(scope) }
+                if surface == nil {
+                    surface = try readSurface(scope)
+                    try nativeInput?.start()
+                }
                 try checkAuthority()
                 var result = pairedReply(request, epoch: epoch)
                 result.reply["result"] = ["surface_id": "macos-seat", "generation": epoch,
-                    "mode": "scoped-drill", "capture": scope.ownerWindow ? "unavailable" : "protected-fixture-png", "input": "bounded-ax",
+                    "mode": "scoped-drill", "capture": scope.ownerWindow ? "unavailable" : "protected-fixture-png", "input": nativeInput == nil ? "bounded-ax" : "experimental-physical",
+                    "physical_human": nativeInput?.paused ?? false,
                     "width": surface!.width, "height": surface!.height, "placement": "host",
                     "pid": Int(getpid())]
                 return result
             } catch {
                 return (["id": request["id"] ?? NSNull(), "epoch": epoch, "ok": false,
                          "error": ["code": "user_domain_stale_epoch"]], true)
+            }
+        }
+        if method == "host.computer.reset", let nativeInput {
+            do {
+                try checkAuthority()
+                try nativeInput.reset(explicitRelease: params["physical_human_release"] as? Bool == true)
+                return pairedReply(request, epoch: epoch)
+            } catch {
+                return (["id": request["id"] ?? NSNull(), "epoch": epoch, "ok": false,
+                         "error": ["code": nativeInput.seat.unresolved ? "owner_reset_required" : "unsupported"]], false)
             }
         }
         if method == "host.display" {
@@ -131,8 +152,18 @@ import Darwin
                 return (reply, false)
             }
             guard let input = params["input"] as? [String: Any] else { throw tagged(.arguments, "invalid-paired-input") }
-            let operation = try pairedInput(input, scope: scope, surface: surface)
-            let receipts = try await execute(operation, MacSource(authority: { try self.checkAuthority() }))
+            if nativeInput != nil, scope.ownerWindow { throw tagged(.disabled, "physical-owner-window-unavailable") }
+            let source = MacSource(authority: {
+                try self.checkAuthority()
+                try self.nativeInput?.observer.check()
+            }, tagInput: { self.nativeInput?.observer.fence.tag($0) })
+            let receipts: [String]
+            if let nativeInput, input["kind"] as? String != "text" {
+                receipts = try await nativeInput.perform(input, scope: scope, surface: surface, source: source)
+            } else {
+                let operation = try pairedInput(input, scope: scope, surface: surface)
+                receipts = try await execute(operation, source)
+            }
             try checkAuthority()
             reply["ok"] = true
             reply["result"] = ["dispatched": true, "receipts": receipts]
@@ -141,6 +172,8 @@ import Darwin
             // Fixed public tags only. No text, AX tree or app errors cross the socket.
             reply["error"] = ["code": unresolvedInput ? "owner_reset_required" : (revoked ? "browser_action_cancelled" : "unsupported"),
                               "reason": (error as? RefusalDetail)?.reason ?? "native-refused"]
+            reply["input_released"] = !unresolvedInput
+            reply["physical_human"] = nativeInput?.paused ?? false
         }
         return (reply, revoked)
     }
@@ -197,10 +230,11 @@ func pairedInput(_ input: [String: Any], scope: Request, surface: NativeSurface)
     var lease = timeval(tv_sec: 2, tv_usec: 0)
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &lease, socklen_t(MemoryLayout<timeval>.size))
     try send(fd, ["token": token, "epoch": epoch, "pid": Int(getpid())])
-    let session = try PairedSession(fd: fd, epoch: epoch, scope: bootstrap["scope"])
-    var buffer = Data()
-    while let line = readLine(fd, &buffer),
-          let request = try? JSONSerialization.jsonObject(with: line) as? [String: Any] {
+    let session = try PairedSession(fd: fd, epoch: epoch, scope: bootstrap["scope"],
+        nativeInput: bootstrap["physical_input"] as? Bool == true ? PairedNativeInput() : nil)
+    let reader = PairingReader(fd: fd)
+    // Socket waiting must not block the main run loop that delivers human events.
+    while let line = await reader.next(), let request = try? JSONSerialization.jsonObject(with: line) as? [String: Any] {
         session.renew()
         let (reply, stop) = await session.reply(request)
         try send(fd, reply)
