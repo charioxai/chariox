@@ -7,13 +7,14 @@ import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
 type FeatureMinimum = { feature: string; minimum: number }
 
 const features: Record<string, FeatureMinimum> = {
-  CloudRelayStatus: { feature: "Kernel Cloud ownership", minimum: 478 },
-  StartCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: 478 },
-  PollCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: 478 },
-  LogoutCloudRelay: { feature: "Kernel Cloud unlink", minimum: 478 },
-  ConnectCloudRelay: { feature: "Kernel Cloud ownership", minimum: 478 },
-  ResolveKernelClientConnection: { feature: "Key-bound kernel pivot", minimum: 478 },
-  IssueCloudRelayClientToken: { feature: "Kernel terminal delegation", minimum: 478 },
+  CloudRelayStatus: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  StartCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  PollCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  LogoutCloudRelay: { feature: "Kernel Cloud unlink", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  ConnectCloudRelay: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  ResolveKernelClientConnection: { feature: "Key-bound kernel pivot", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  IssueCloudRelayClientToken: { feature: "Kernel terminal delegation", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  PreflightProviderAccountPortability: { feature: "Provider account portability", minimum: requests.providerAccountPortabilityPreflightMinimumProtocolVersion },
   RequestKernelAccess: { feature: "Local-kernel access", minimum: 470 },
   GetProjectEnvironment: { feature: "Project Environment", minimum: requests.projectEnvironmentMinimumProtocolVersion },
   AcceptAppHostAction: { feature: "App host actions", minimum: requests.appHostActionMinimumProtocolVersion },

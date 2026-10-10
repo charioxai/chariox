@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn relay_status_control_capabilities_are_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 487);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 496);
     let legacy = serde_json::json!({
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",
@@ -41,7 +41,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
 
 #[test]
 fn key_bound_cli_relay_requests_and_join_response_have_exact_protocol_shapes() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 487);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 496);
 
     let token_request =
         LocalDaemonRequest::IssueCloudRelayClientToken(IssueCloudRelayClientTokenRequest {
@@ -165,7 +165,7 @@ fn legacy_terminal_join_requests_and_responses_remain_unbound() {
 
 #[test]
 fn relay_status_native_process_identity_is_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 487);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 496);
     let legacy = serde_json::json!({
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",
@@ -194,7 +194,7 @@ fn relay_status_native_process_identity_is_versioned_and_hashed() {
 
 #[test]
 fn kernel_cloud_ownership_status_and_connect_never_serialize_credentials() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 487);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 496);
     let private = crate::config::PersistedCloudRelayProfile {
         kernel_id: Some("kernel-a".into()),
         kernel_credential: Some("synthetic-kernel-secret".into()),
@@ -217,6 +217,25 @@ fn kernel_cloud_ownership_status_and_connect_never_serialize_credentials() {
     ] {
         assert!(!fields.contains_key(key));
     }
+    let connected = serde_json::to_value(LocalDaemonResponse::CloudRelayConnected {
+        status: serde_json::from_value(serde_json::json!({
+            "configured": true, "connected": true, "relay_url": "wss://relay.example",
+            "relay_token_configured": true, "daemon_id": "kernel-a",
+            "daemon_alias": null, "machine_id": "machine-a", "machine_alias": null
+        }))
+        .unwrap(),
+        profile: crate::runtime::cloud_api_client::cloud_profile_from_persisted(&private),
+    })
+    .unwrap();
+    assert_eq!(
+        connected["CloudRelayConnected"].as_object().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        connected["CloudRelayConnected"]["profile"],
+        value["CloudRelayStatus"]["profile"]
+    );
+    assert!(connected["CloudRelayConnected"].get("token").is_none());
     let encoded = serde_json::to_string(&value).unwrap();
     assert!(!encoded.contains("secret"));
     assert_eq!(
@@ -227,7 +246,7 @@ fn kernel_cloud_ownership_status_and_connect_never_serialize_credentials() {
 
 #[test]
 fn self_host_terminal_admission_response_is_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 487);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 496);
     let response = LocalDaemonResponse::TerminalPairingLinkJoined {
         terminal: TerminalRecord {
             terminal_id: "terminal".into(),
@@ -263,4 +282,19 @@ fn self_host_terminal_admission_response_is_versioned_and_hashed() {
         ),
         "b47bb884a797a0940decd25f3eb83de04b5633d56671b34ea2867d62cbd314da"
     );
+}
+
+// MP-08 / MP-10 / MP-11: the receiver public key travels through the numbered pivot.
+#[test]
+fn ownership_pivot_receiver_key_has_exact_protocol_496_shape() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 496);
+    let expected = serde_json::json!({"ResolveKernelClientConnection": {
+        "kernel_ref": "home", "machine_ref": null, "client_id": "receiver",
+        "session_id": null, "public_key_thumbprint": "public-key-pin"
+    }});
+    let decoded: LocalDaemonRequest = serde_json::from_value(expected.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), expected);
+    let legacy: crate::local::ResolveKernelClientConnectionRequest =
+        serde_json::from_value(serde_json::json!({"kernel_ref": "home"})).unwrap();
+    assert_eq!(legacy.public_key_thumbprint, None);
 }

@@ -45,11 +45,11 @@ test("unknown versions and unrelated requests retain existing transport behavior
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ ListSessions: null }, 388))
 })
 
-test("Cloud owner control and terminal pivots require allocated protocol 478", () => {
-  for (const name of ["CloudRelayStatus", "StartCloudRelayLogin", "PollCloudRelayLogin", "LogoutCloudRelay", "ConnectCloudRelay", "IssueCloudRelayClientToken", "ResolveKernelClientConnection"]) {
-    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 472), /478/)
-    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 477), /478/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 478))
+test("Cloud owner control and terminal pivots require allocated protocol 496", () => {
+  for (const name of ["CloudRelayStatus", "StartCloudRelayLogin", "PollCloudRelayLogin", "LogoutCloudRelay", "ConnectCloudRelay", "IssueCloudRelayClientToken", "ResolveKernelClientConnection", "PreflightProviderAccountPortability"]) {
+    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 472), /496/)
+    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 495), /496/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 496))
   }
 })
 
