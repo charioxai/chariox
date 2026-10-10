@@ -105,8 +105,13 @@ test("MP-07/MP-10 activation diagnostics identify steps and unexpected exits wit
       (await readFile(join(directory, name), "utf8")).trim().split("\n").map(line => JSON.parse(line))))).flat()
     for (const record of records) assert.deepEqual(Object.keys(record).sort(), ["atMs", "event", "pid", "schema"])
     const events = records.sort((a, b) => a.atMs - b.atMs).map(record => record.event)
-    assert.deepEqual(events, fail ? ["prepared", "update_unexpected_exit", "rolled_back"]
-      : ["prepared", "stopped", ...steps.map(step => `activation_${step}_start`), "activated", "committed"])
+    const pinSteps = ["builder_pin_journal_start", "builder_pin_journal_returned",
+      "builder_pin_runtime_start", "builder_pin_runtime_returned",
+      "builder_pin_compare_start", "builder_pin_compare_returned",
+      "builder_pin_atomic_start", "builder_pin_atomic_returned"]
+    assert.deepEqual(events, fail ? ["prepared", "update_unexpected_exit", ...pinSteps, "rolled_back"]
+      : ["prepared", "stopped", "activation_builder_pin_start", ...pinSteps,
+        ...steps.slice(1).map(step => `activation_${step}_start`), "activated", "committed"])
   }
 })
 
@@ -128,7 +133,14 @@ for (const [boundary, selected, phase] of [
   }
   await put(join(harness.state, `crash-after-${boundary}`), "crash\n")
   const interrupted = harness.run(harness.env)
-  assert.equal(interrupted.signal, "SIGKILL", interrupted.stderr)
+  if (boundary === "builder-pin") {
+    // MP-07: the pin validator is isolated; its death now reaches the caller's
+    // rollback branch instead of killing the updater with a stopped kernel.
+    assert.equal(interrupted.status, 1, interrupted.stderr)
+    await assertSettled(harness, "previous", "rolled_back", before)
+  } else {
+    assert.equal(interrupted.signal, "SIGKILL", interrupted.stderr)
+  }
   const recovered = await recoverWithoutImage(harness)
   assert.equal(recovered.status, 0, recovered.stderr)
   await assertSettled(harness, selected, phase, before)

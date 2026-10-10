@@ -35,20 +35,38 @@ validate_builder_runtime_key() {
   require_root_owned_private_regular_file "$trusted_builder_runtime_key" "trusted builder runtime key"
 }
 
-activate_builder_pin() {
+# MP-07/MP-11: public checkpoints only. No paths, key bytes or command output.
+builder_pin_diagnostic() {
+  if command -v record_diagnostic_phase >/dev/null 2>&1; then
+    record_diagnostic_phase "$1" || :
+  fi
+}
+
+# Authority checks use exit on invalid input. Keep them in a subshell so the
+# caller still reaches its explicit rollback branch, including during recovery.
+activate_builder_pin() (
   [ "$managed_provider_topology" = path1 ] || return 0
+  trap 'builder_pin_status=$?; if [ "$builder_pin_status" -ne 0 ]; then builder_pin_diagnostic builder_pin_failed; fi' EXIT
+  builder_pin_diagnostic builder_pin_journal_start
   validate_builder_pin_journal "$1" || return 1
+  builder_pin_diagnostic builder_pin_journal_returned
   case "$2" in previous|target) ;; *) return 1 ;; esac
+  builder_pin_diagnostic builder_pin_runtime_start
   validate_builder_runtime_key || return 1
+  builder_pin_diagnostic builder_pin_runtime_returned
   # Refuse to overwrite an unrelated authority introduced during the transaction.
+  builder_pin_diagnostic builder_pin_compare_start
   if ! cmp -s "$trusted_builder_runtime_key" "$1/previous-builder-public-key" \
     && ! cmp -s "$trusted_builder_runtime_key" "$1/target-builder-public-key"; then
     echo "runtime builder pin does not belong to the upgrade transaction" >&2
     return 1
   fi
+  builder_pin_diagnostic builder_pin_compare_returned
+  builder_pin_diagnostic builder_pin_atomic_start
   node "$script_root/managed-kernel-upgrade-state.mjs" atomic-file \
-    "$1/$2-builder-public-key" "$trusted_builder_runtime_key"
-}
+    "$1/$2-builder-public-key" "$trusted_builder_runtime_key" || return 1
+  builder_pin_diagnostic builder_pin_atomic_returned
+)
 
 validate_active_builder_pin() {
   [ "$managed_provider_topology" = path1 ] || return 0

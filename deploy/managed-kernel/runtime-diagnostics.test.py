@@ -21,6 +21,22 @@ class Diagnostics(unittest.TestCase):
             with self.assertRaises(ValueError):diag.ship(guest,'https://observer.example/',set(),lambda raw:{'sha256':'wrong'})
             with self.assertRaises(ValueError):diag.ship(guest,'http://observer.example/',set(),post)
             with self.assertRaises(ValueError):diag.ship(guest,'https://secret@observer.example/',set(),post)
+    def test_mp07_builder_pin_substeps_survive_observer_shipping(self):
+        events = ('builder_pin_journal_start', 'builder_pin_journal_returned',
+                  'builder_pin_runtime_start', 'builder_pin_runtime_returned',
+                  'builder_pin_compare_start', 'builder_pin_compare_returned',
+                  'builder_pin_atomic_start', 'builder_pin_atomic_returned', 'builder_pin_failed')
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            guest, observer = pathlib.Path(a), pathlib.Path(b)
+            for event in events:
+                diag.event(guest, event)
+            result = diag.ship(guest, 'https://observer.example/path1-diagnostics/round-e', set(),
+                               lambda raw: {'sha256': diag.accept(observer, raw)})
+            records = [json.loads(path.read_bytes()) for path in observer.glob('*.json')]
+            self.assertEqual(result['records'], len(events))
+            self.assertEqual({record['event'] for record in records}, set(events))
+            for record in records:
+                self.assertEqual(set(record), {'schema', 'atMs', 'pid', 'event'})
     def test_mp10_snapshot_hash_is_observer_verifiable_and_deduplicates_replay(self):
         import hashlib
         with tempfile.TemporaryDirectory() as a,tempfile.TemporaryDirectory() as b:

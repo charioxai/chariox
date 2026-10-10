@@ -25,6 +25,9 @@ EVENTS = frozenset(('prompt_dispatch provider_dispatch_start provider_dispatch_r
     'update_unit_starting update_unit_started prepared stopped activated committed '
     'rolled_back observer_flush update_unexpected_exit '
     'activation_builder_pin_start activation_home_migration_start activation_receipt_start '
+    'builder_pin_journal_start builder_pin_journal_returned builder_pin_runtime_start '
+    'builder_pin_runtime_returned builder_pin_compare_start builder_pin_compare_returned '
+    'builder_pin_atomic_start builder_pin_atomic_returned builder_pin_failed '
     'activation_release_override_start activation_app_prepare_start activation_current_link_start '
     'activation_data_volume_links_start activation_app_storage_start activation_slice_facade_start '
     'activation_slice_facade_check_start').split())
