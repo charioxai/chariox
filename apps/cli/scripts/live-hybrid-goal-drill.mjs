@@ -89,10 +89,22 @@ try {
   sessionId = initial.session.id
   await writeFile(path.join(evidence,'live-runtime.json'), JSON.stringify({kernel_url:url,chariox_home:env.CHARIOX_HOME,host_home:env.HOME,kernel_pid:kernel.pid,tui_pid:tui.pid,session_id:sessionId}))
   if (args.has('--start-gate')) await waitUntil(async()=>{try { await readFile(required('--start-gate')); return true } catch { return false }},Boolean,'owner-driven hosted client attachment',600_000)
-  const submitted = await automation.send('submit_prompt',{prompt:`/goal --interval 1 ${objective.trim()}`})
+  const submitted = await automation.send('submit_prompt',{prompt:`/goal ${args.get('--goal-interval')==='default'?'':`--interval ${args.get('--goal-interval')??1} `}${objective.trim()}`})
   await writeFile(path.join(evidence,'submit-status.json'),JSON.stringify({statusLine:submitted.statusLine,footer:submitted.footer}))
+  if (['resume-red','resume-green'].includes(args.get('--expect'))) {
+    const start = await waitUntil(async()=>unwrap(await client.send(getSessionStateRequest(sessionId)))?.agent_tasks?.find(t=>t.goal),Boolean,'real native goal admitted')
+    await automation.send('submit_prompt',{prompt:'/goal pause'})
+    const paused = await waitUntil(async()=>unwrap(await client.send(getSessionStateRequest(sessionId)))?.agent_tasks?.find(t=>t.goal),t=>t?.goal.paused,'real owner pause')
+    await sleep(3000)
+    await automation.send('submit_prompt',{prompt:'/goal resume'})
+    const resumed = await waitUntil(async()=>unwrap(await client.send(getSessionStateRequest(sessionId)))?.agent_tasks?.find(t=>t.goal),t=>t?.revision>paused.revision&&!t.goal.paused,'real owner resume')
+    await writeFile(path.join(evidence,'resume-counter-red.json'),JSON.stringify({area:'MP-08 / MP-09 / MP-10 / MP-11 A12-S02',start,paused,resumed,ansi_bytes:ptyLog.bytesWritten},null,2))
+    assert.equal(resumed.goal.continuation_sequence,paused.goal.continuation_sequence+1,'owner Resume must retain the shared incremented continuation sequence')
+    if (args.get('--expect') === 'resume-red') throw Error('counter RED reproduction unexpectedly passed')
+    result={status:'PASS',control:'real owner pause/resume',before_sequence:paused.goal.continuation_sequence,after_sequence:resumed.goal.continuation_sequence}
+  }
   const deadline = Date.now()+timeoutMs; let lastSignature, sawWaiting=false, sawCheckIn=false
-  while (Date.now()<deadline) {
+  while (!result && Date.now()<deadline) {
     await resourceSample()
     const session = unwrap(await client.send(getSessionStateRequest(sessionId)))
     const task = session.agent_tasks?.find(t=>t.goal)
@@ -123,6 +135,7 @@ try {
     await sleep(2000)
   }
   assert(result,'goal drill did not reach its required disposition')
+  if (args.has('--finish-gate')) await waitUntil(async()=>{try { await readFile(required('--finish-gate')); return true } catch { return false }},Boolean,'real hosted final-state capture',600_000)
 } catch(error) { failure=error; result={status:'FAIL',first_failing_seam:error.message} }
 finally {
   const owned = await ownProcesses()

@@ -482,7 +482,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       deps.applySessionState(payload.session)
       await deps.refreshAgentPanes(payload.session)
       deps.rebuildTranscript()
-      deps.requestRender()
+      requestRootRender()
     },
     focusedAgentId,
     multiAgentResponseLayout,
