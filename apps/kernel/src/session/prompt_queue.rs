@@ -20,6 +20,7 @@ pub enum PromptOrigin {
     #[default]
     #[serde(alias = "arroba")]
     Chariox,
+    CompletionCheck,
     External,
 }
 

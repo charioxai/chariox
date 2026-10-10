@@ -112,6 +112,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         }))
                 {
                     // Settle blocks at the limit, so a Waiting task is always below it.
+                    super::goals::clock(&mut t, now);
+                    if let Some(g) = &mut t.goal {
+                        g.continuation_sequence += 1;
+                        g.next_check_in_ms = None;
+                    }
                     t.no_progress_wakes += 1;
                     t.pending_prompt_id = Some(prompt);
                     t.state = ExecutionState::Working;

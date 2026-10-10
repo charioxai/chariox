@@ -377,6 +377,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
             }
+            super::goals::clock(&mut t, now);
             t.state = if resume {
                 ExecutionState::Working
             } else {
@@ -389,6 +390,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             t.wait = None;
             t.revision += 1;
             if resume {
+                if let Some(g) = &mut t.goal {
+                    g.paused = false;
+                    g.continuation_sequence += 1;
+                    g.next_check_in_ms = None;
+                }
                 t.pending_prompt_id = Some(format!("task-resume-{}-{}", t.task_id, t.revision));
                 t.last_progress_at_ms = now;
             }
@@ -402,6 +408,10 @@ pub(super) fn cancel_intent(
     tx: &Transaction<'_>,
     task: &mut AgentTaskExecution,
 ) -> Result<(), DaemonError> {
+    super::goals::clock(task, crate::session::unix_epoch_ms());
+    if let Some(g) = &mut task.goal {
+        g.next_check_in_ms = None;
+    }
     task.state = ExecutionState::Cancelled;
     task.wait = None;
     task.reason =

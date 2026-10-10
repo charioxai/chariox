@@ -1,0 +1,503 @@
+//! MP-08 / MP-09 / MP-10 / MP-11 A12 supplementary policy/restart regressions.
+use super::tests::Fixture;
+use super::*;
+
+fn goal(f: &Fixture, minutes: u32) {
+    f.begin("p");
+    f.apply(Operation::StartGoal {
+        task: "p".into(),
+        owner: "owner".into(),
+        objective: "Implement and verify real work".into(),
+        minutes,
+        now: 1,
+    });
+}
+fn check(f: &Fixture, result: serde_json::Value) -> AgentTaskExecution {
+    let t = f.task();
+    let id = t.pending_prompt_id.unwrap();
+    f.begin(&id);
+    let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
+        task: "p".into(),
+        prompt: id,
+        result: result.to_string(),
+        now: 4,
+    }) else {
+        panic!()
+    };
+    task
+}
+fn assessment(status: &str) -> serde_json::Value {
+    serde_json::json!({"status":status,"reason":"Useful independent implementation remains"})
+}
+
+#[test]
+fn a12_each_work_turn_gets_one_check_and_only_goals_continue() {
+    let ordinary = Fixture::new();
+    ordinary.begin("p");
+    ordinary.settle("p", true);
+    assert_eq!(ordinary.task().state, ExecutionState::Done);
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.settle("p", true);
+    let first = f.task();
+    assert_eq!(first.state, ExecutionState::Working);
+    assert_eq!(first.goal.as_ref().unwrap().check_count, 1);
+    f.settle("p", true);
+    assert_eq!(f.task(), first);
+    let t = check(&f, assessment("continue"));
+    assert_eq!(t.goal.as_ref().unwrap().continuation_sequence, 1);
+    let id = t.pending_prompt_id.unwrap();
+    f.begin(&id);
+    f.settle(&id, true);
+    assert_eq!(f.task().goal.unwrap().check_count, 2);
+}
+
+#[test]
+fn a12_achieved_requires_zero_open_and_evidence_and_never_recurses() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.settle("p", true);
+    let t = check(
+        &f,
+        serde_json::json!({"status":"achieved","final_answer":"Verified implementation","evidence":["artifact:commit"]}),
+    );
+    assert_eq!(t.state, ExecutionState::Done);
+    assert!(t.pending_prompt_id.is_none());
+    f.settle(&t.prompt_id, true);
+    assert_eq!(f.task(), t);
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.register();
+    f.settle("p", true);
+    let claim =
+        serde_json::json!({"status":"achieved","final_answer":"done","evidence":["history"]});
+    let t = check(&f, claim.clone());
+    assert!(t.correction_used);
+    assert_ne!(t.state, ExecutionState::Done);
+    let id = t.pending_prompt_id.unwrap();
+    f.begin(&id);
+    f.settle(&id, true);
+    assert_eq!(check(&f, claim).state, ExecutionState::Blocked);
+}
+
+#[test]
+fn a12_continue_keeps_live_sources_and_wait_checks_coverage_and_interval() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    f.register();
+    f.subscribe();
+    f.settle("p", true);
+    let t = check(&f, assessment("continue"));
+    assert_eq!(t.obligations.len(), 1);
+    assert!(f.store.agent_registrations("p").unwrap()[0].live);
+    let id = t.pending_prompt_id.unwrap();
+    f.begin(&id);
+    f.settle(&id, true);
+    let t = check(
+        &f,
+        serde_json::json!({"status":"waiting","reason":"depends on delegate","registration_ids":["reg"],"deadline_ms":9_000_000}),
+    );
+    assert_eq!(t.state, ExecutionState::Waiting);
+    assert_eq!(t.wait.unwrap().deadline_ms, 60_004);
+    let f = Fixture::new();
+    goal(&f, 60);
+    f.register();
+    f.settle("p", true);
+    assert_eq!(check(&f,serde_json::json!({"status":"waiting","reason":"no coverage","registration_ids":["missing"],"deadline_ms":60_000})).state,ExecutionState::Blocked);
+}
+
+#[test]
+fn a12_failed_eof_malformed_oversize_and_timeout_block_once() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.settle("p", false);
+    assert_eq!(f.task().state, ExecutionState::Blocked);
+    assert_eq!(f.task().goal.unwrap().check_count, 0);
+    for (result, now) in [
+        ("invalid".into(), 4),
+        ("x".repeat(8193), 4),
+        (assessment("continue").to_string(), 60_004),
+    ] {
+        let f = Fixture::new();
+        goal(&f, 10);
+        f.settle("p", true);
+        let id = f.task().pending_prompt_id.unwrap();
+        f.begin(&id);
+        f.apply(Operation::EvaluateGoal {
+            task: "p".into(),
+            prompt: id.clone(),
+            result: result.clone(),
+            now,
+        });
+        let before = f.task();
+        assert_eq!(before.state, ExecutionState::Blocked);
+        f.apply(Operation::EvaluateGoal {
+            task: "p".into(),
+            prompt: id,
+            result,
+            now,
+        });
+        assert_eq!(f.task(), before);
+    }
+}
+
+#[test]
+fn a12_immediate_no_progress_guard_survives_restart() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    let mut id = "p".to_string();
+    for n in 0..4 {
+        f.settle(&id, true);
+        let t = check(&f, assessment("continue"));
+        let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+        assert_eq!(
+            reopened.agent_tasks(Some("room"), Some("parent")).unwrap()[0],
+            t
+        );
+        if n == 3 {
+            assert_eq!(t.state, ExecutionState::Blocked);
+            break;
+        }
+        id = t.pending_prompt_id.unwrap();
+        f.begin(&id);
+    }
+}
+
+#[test]
+fn a12_owner_revision_pause_edit_and_cancel_fence_late_checks() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.settle("p", true);
+    let id = f.task().pending_prompt_id.unwrap();
+    f.begin(&id);
+    let before = f.task();
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::ControlGoal {
+            task: "p".into(),
+            owner: "other".into(),
+            revision: before.revision,
+            action: "pause".into(),
+            value: None,
+            now: 4
+        })
+        .is_err());
+    f.apply(Operation::ControlGoal {
+        task: "p".into(),
+        owner: "owner".into(),
+        revision: before.revision,
+        action: "edit".into(),
+        value: Some("Changed owner objective".into()),
+        now: 4,
+    });
+    let edited = f.task();
+    assert_eq!(edited.goal.as_ref().unwrap().objective_revision, 2);
+    f.apply(Operation::EvaluateGoal {
+        task: "p".into(),
+        prompt: id,
+        result:
+            serde_json::json!({"status":"achieved","final_answer":"stale","evidence":["history"]})
+                .to_string(),
+        now: 5,
+    });
+    assert_eq!(f.task(), edited);
+    f.apply(Operation::ControlGoal {
+        task: "p".into(),
+        owner: "owner".into(),
+        revision: edited.revision,
+        action: "resume".into(),
+        value: None,
+        now: 6,
+    });
+    let resumed = f.task();
+    assert!(resumed.pending_prompt_id.is_some());
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::ControlGoal {
+            task: "p".into(),
+            owner: "owner".into(),
+            revision: edited.revision,
+            action: "resume".into(),
+            value: None,
+            now: 6
+        })
+        .is_err());
+    f.apply(Operation::ControlGoal {
+        task: "p".into(),
+        owner: "owner".into(),
+        revision: resumed.revision,
+        action: "cancel".into(),
+        value: None,
+        now: 7,
+    });
+    assert_eq!(f.task().state, ExecutionState::Cancelled);
+}
+
+#[test]
+fn a12_progressing_goals_have_no_turn_cap_and_evaluations_cannot_mutate_work() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    let mut id = "p".to_string();
+    for n in 0..12 {
+        f.apply(Operation::Progress {
+            task: "p".into(),
+            prompt: id.clone(),
+            receipt: format!("verified-artifact-{n}"),
+            now: 2,
+        });
+        f.settle(&id, true);
+        let check_id = f.task().pending_prompt_id.clone().unwrap();
+        f.begin(&check_id);
+        assert!(f
+            .store
+            .agent_lifecycle(Operation::Progress {
+                task: "p".into(),
+                prompt: check_id.clone(),
+                receipt: "assessment-is-not-work".into(),
+                now: 4
+            })
+            .is_err());
+        assert!(f
+            .store
+            .agent_lifecycle(Operation::Subscribe {
+                task: "p".into(),
+                prompt: check_id.clone(),
+                registration: Registration {
+                    id: "forged".into(),
+                    task_id: "p".into(),
+                    source_id: "source".into(),
+                    obligation_id: None,
+                    source_cursor: 0,
+                    live: true
+                }
+            })
+            .is_err());
+        let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
+            task: "p".into(),
+            prompt: check_id,
+            result: assessment("continue").to_string(),
+            now: 4,
+        }) else {
+            panic!()
+        };
+        assert_eq!(task.state, ExecutionState::Working);
+        assert_eq!(task.progress_sequence, n + 1);
+        id = task.pending_prompt_id.unwrap();
+        f.begin(&id);
+    }
+}
+
+#[test]
+fn a12_timeout_once_and_owner_resume_fences_its_late_timer_and_result() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.settle("p", true);
+    let id = f.task().pending_prompt_id.clone().unwrap();
+    f.begin(&id);
+    f.apply(Operation::TimeoutGoal {
+        task: "p".into(),
+        prompt: id.clone(),
+        now: 60_004,
+    });
+    let blocked = f.task();
+    assert_eq!(blocked.state, ExecutionState::Blocked);
+    assert!(matches!(
+        f.apply(Operation::TimeoutGoal {
+            task: "p".into(),
+            prompt: id.clone(),
+            now: 60_005
+        }),
+        Outcome::Saved
+    ));
+    assert_eq!(f.task(), blocked);
+    f.apply(Operation::ControlGoal {
+        task: "p".into(),
+        owner: "owner".into(),
+        revision: blocked.revision,
+        action: "resume".into(),
+        value: None,
+        now: 60_005,
+    });
+    let resumed = f.task();
+    f.apply(Operation::TimeoutGoal {
+        task: "p".into(),
+        prompt: id.clone(),
+        now: 60_006,
+    });
+    f.apply(Operation::EvaluateGoal {
+        task: "p".into(),
+        prompt: id,
+        result: assessment("continue").to_string(),
+        now: 60_006,
+    });
+    assert_eq!(f.task(), resumed);
+}
+
+#[test]
+fn a12_owner_adoption_is_atomic_idempotent_and_preserves_existing_nodes() {
+    let f = Fixture::new();
+    let op = Operation::AdoptGoal {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "parent".into(),
+        run: "legacy-run".into(),
+        nodes: vec!["planner".into(), "worker".into(), "reviewer".into()],
+        objective: "Owner-confirmed legacy objective".into(),
+        now: 1,
+    };
+    let Outcome::Task(t) = f.apply(op.clone()) else {
+        panic!()
+    };
+    assert_eq!(t.state, ExecutionState::Waiting);
+    assert!(t.pending_prompt_id.is_none());
+    assert_eq!(t.obligations.len(), 4);
+    assert!(t
+        .obligations
+        .iter()
+        .all(|o| o.resource_id.as_deref() == Some("legacy-run")));
+    let Outcome::Task(again) = f.apply(op) else {
+        panic!()
+    };
+    assert_eq!(again, t);
+    let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+    assert_eq!(reopened.agent_tasks(None, None).unwrap(), vec![t]);
+    assert_eq!(
+        f.store
+            .load_events_by_kind("goal.legacy_adopted")
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn a12_wait_deadlines_default_max_and_owner_interval_remain_finite() {
+    for (minutes, interval) in [(10, 600_000), (60, 3_600_000)] {
+        let f = Fixture::new();
+        goal(&f, minutes);
+        f.register();
+        f.subscribe();
+        f.settle("p", true);
+        let t = check(
+            &f,
+            serde_json::json!({"status":"waiting","reason":"source required","registration_ids":["reg"],"deadline_ms":9_000_000}),
+        );
+        assert_eq!(t.wait.as_ref().unwrap().deadline_ms, 4 + interval);
+        f.apply(Operation::ControlGoal {
+            task: "p".into(),
+            owner: "owner".into(),
+            revision: t.revision,
+            action: "interval".into(),
+            value: Some("1".into()),
+            now: 10,
+        });
+        assert_eq!(f.task().wait.unwrap().deadline_ms, 60_010);
+    }
+}
+
+#[test]
+fn a12_overdue_restart_coalesces_and_blocked_source_events_never_resume() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    f.register();
+    f.subscribe();
+    f.settle("p", true);
+    let t = check(
+        &f,
+        serde_json::json!({"status":"waiting","reason":"live delegate needed","registration_ids":["reg"],"deadline_ms":60_004}),
+    );
+    assert_eq!(t.state, ExecutionState::Waiting);
+    let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+    for now in [600_000, 660_000, 720_000] {
+        reopened
+            .agent_lifecycle(Operation::Sweep {
+                now,
+                busy_recipients: vec![],
+                held_work: vec![],
+            })
+            .unwrap();
+    }
+    assert_eq!(
+        reopened
+            .agent_inbox("room", "parent", 0)
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind == "deadline_reached")
+            .count(),
+        1
+    );
+    let t = f.task();
+    f.apply(Operation::ControlGoal {
+        task: "p".into(),
+        owner: "owner".into(),
+        revision: t.revision,
+        action: "pause".into(),
+        value: None,
+        now: 720_001,
+    });
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "source-lost".into(),
+        success: false,
+        public_answer: None,
+        now: 720_002,
+    });
+    assert_eq!(f.task().state, ExecutionState::Blocked);
+    assert!(f.task().pending_prompt_id.is_none());
+    assert!(f.task().obligations.iter().any(|o| o.status == "failed"));
+}
+
+#[test]
+fn a12_current_ledger_is_rechecked_after_a_source_changes_during_assessment() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.register();
+    f.subscribe();
+    f.settle("p", true);
+    let id = f.task().pending_prompt_id.unwrap();
+    f.begin(&id);
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "real-source-failed".into(),
+        success: false,
+        public_answer: None,
+        now: 4,
+    });
+    let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
+        task: "p".into(),
+        prompt: id,
+        result:
+            serde_json::json!({"status":"achieved","final_answer":"done","evidence":["artifact"]})
+                .to_string(),
+        now: 5,
+    }) else {
+        panic!()
+    };
+    assert_ne!(task.state, ExecutionState::Done);
+    assert!(task.correction_used);
+    assert!(task.obligations.iter().any(|o| o.status == "failed"));
+}
+
+#[test]
+fn a12_rejected_fresh_admission_leaves_no_goal_or_supervised_work() {
+    let f = Fixture::new();
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: "p".into(),
+        run: None,
+        now: 1,
+    });
+    f.apply(Operation::StartGoal {
+        task: "p".into(),
+        owner: "owner".into(),
+        objective: "Owner work".into(),
+        minutes: 10,
+        now: 1,
+    });
+    f.apply(Operation::Withdraw { task: "p".into() });
+    assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
+}

@@ -13,6 +13,8 @@ pub enum ExecutionState {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTaskExecution {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<super::goals::AgentGoal>,
     pub task_id: String,
     pub room_id: String,
     #[serde(default)]
@@ -127,6 +129,41 @@ pub struct AgentWake {
 }
 #[derive(Clone)]
 pub(crate) enum Operation {
+    AdoptGoal {
+        owner: String,
+        room: String,
+        agent: String,
+        run: String,
+        nodes: Vec<String>,
+        objective: String,
+        now: u64,
+    },
+    TimeoutGoal {
+        task: String,
+        prompt: String,
+        now: u64,
+    },
+    StartGoal {
+        task: String,
+        owner: String,
+        objective: String,
+        minutes: u32,
+        now: u64,
+    },
+    EvaluateGoal {
+        task: String,
+        prompt: String,
+        result: String,
+        now: u64,
+    },
+    ControlGoal {
+        task: String,
+        owner: String,
+        revision: u64,
+        action: String,
+        value: Option<String>,
+        now: u64,
+    },
     Begin {
         owner: String,
         room: String,

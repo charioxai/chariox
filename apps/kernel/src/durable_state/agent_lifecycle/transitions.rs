@@ -2,6 +2,39 @@
 use super::*;
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
+        Operation::AdoptGoal {
+            owner,
+            room,
+            agent,
+            run,
+            nodes,
+            objective,
+            now,
+        } => super::goals::adopt(tx, owner, room, agent, run, nodes, objective, now),
+        Operation::TimeoutGoal { task, prompt, now } => {
+            super::goals::timeout(tx, task, prompt, now)
+        }
+        Operation::StartGoal {
+            task,
+            owner,
+            objective,
+            minutes,
+            now,
+        } => super::goals::start(tx, task, owner, objective, minutes, now),
+        Operation::EvaluateGoal {
+            task,
+            prompt,
+            result,
+            now,
+        } => super::goals::evaluate(tx, task, prompt, result, now),
+        Operation::ControlGoal {
+            task,
+            owner,
+            revision,
+            action,
+            value,
+            now,
+        } => super::goals::control(tx, task, owner, revision, action, value, now),
         Operation::Begin {
             owner,
             room,
@@ -42,7 +75,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             // The retained wait is consumed only by an actual provider dispatch;
             // a refused wake before that returns the task to this wait.
-            if run.is_some() {
+            if run.is_some() && !super::goals::is_check(&task, &task.prompt_id) {
+                super::goals::clock(&mut task, now);
                 task.wait = None;
             }
             if task.owner_user_id.is_empty() {
@@ -65,7 +99,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             // work keeps the task supervised.
             if t.task_id != t.prompt_id
                 || t.state != ExecutionState::Working
-                || t.revision != 1
+                || t.revision
+                    != if t.goal.as_ref().is_some_and(|g| {
+                        g.check_count == 0 && g.continuation_sequence == 0 && !g.paused
+                    }) && t.provider_run_id.is_none()
+                    {
+                        2
+                    } else {
+                        1
+                    }
                 || !t.obligations.is_empty()
                 || t.wait.is_some()
                 || t.pending_prompt_id.is_some()
@@ -297,6 +339,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     "yield sources must cover every unresolved obligation",
                 ));
             }
+            let deadline = deadline.min(now.saturating_add(
+                t.goal.as_ref().map_or(60, |g| g.check_in_minutes) as u64 * 60_000,
+            ));
             t.wait = Some(AgentWait {
                 registration_ids: ids,
                 deadline_ms: deadline,
@@ -323,6 +368,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if reason.trim().is_empty() {
                 return Err(error("blocked requires an owner action"));
             }
+            super::goals::clock(&mut t, crate::session::unix_epoch_ms());
             t.state = ExecutionState::Blocked;
             t.blocked_revision = t.revision + 1;
             t.reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
@@ -354,7 +400,29 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     correction: false,
                 });
             }
+            if !cancelled && t.goal.is_some() && t.state == ExecutionState::Working {
+                let correction = super::goals::work_end(&mut t, has_answer, now);
+                t.provider_run_id = Some(run);
+                t.revision += 1;
+                save(tx, &t)?;
+                return Ok(Outcome::Settled {
+                    task: t,
+                    correction,
+                });
+            }
             let mut correction = false;
+            if cancelled
+                && t.goal.as_ref().is_some_and(|g| {
+                    g.paused
+                        || (super::goals::is_check(&t, &prompt)
+                            && t.state == ExecutionState::Blocked)
+                })
+            {
+                return Ok(Outcome::Settled {
+                    task: t,
+                    correction: false,
+                });
+            }
             if cancelled {
                 super::supervision::cancel_intent(tx, &mut t)?;
             } else if t.state != ExecutionState::Blocked {

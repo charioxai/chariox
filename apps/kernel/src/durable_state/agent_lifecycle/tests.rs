@@ -1,21 +1,21 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02 supplementary single-writer fault tests.
 use super::*;
-struct Fixture {
-    root: std::path::PathBuf,
-    store: DurableKernelStateStore,
+pub(super) struct Fixture {
+    pub(super) root: std::path::PathBuf,
+    pub(super) store: DurableKernelStateStore,
 }
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let root =
             std::env::temp_dir().join(format!("chariox-am2-tests-{:032x}", rand::random::<u128>()));
         std::fs::create_dir(&root).unwrap();
         let store = DurableKernelStateStore::open_owned(root.join("state.sqlite")).unwrap();
         Self { root, store }
     }
-    fn apply(&self, op: Operation) -> Outcome {
+    pub(super) fn apply(&self, op: Operation) -> Outcome {
         self.store.agent_lifecycle(op).unwrap()
     }
-    fn begin(&self, prompt: &str) {
+    pub(super) fn begin(&self, prompt: &str) {
         self.apply(Operation::Begin {
             owner: "owner".into(),
             room: "room".into(),
@@ -25,13 +25,13 @@ impl Fixture {
             now: 1,
         });
     }
-    fn task(&self) -> AgentTaskExecution {
+    pub(super) fn task(&self) -> AgentTaskExecution {
         self.store
             .agent_tasks(Some("room"), Some("parent"))
             .unwrap()
             .remove(0)
     }
-    fn register(&self) {
+    pub(super) fn register(&self) {
         self.apply(Operation::RegisterObligation {
             owner: "owner".into(),
             room: "room".into(),
@@ -44,7 +44,7 @@ impl Fixture {
             now: 1,
         });
     }
-    fn subscribe(&self) {
+    pub(super) fn subscribe(&self) {
         self.apply(Operation::Subscribe {
             task: "p".into(),
             prompt: "p".into(),
@@ -69,7 +69,7 @@ impl Fixture {
             now: 2,
         });
     }
-    fn settle(&self, prompt: &str, answer: bool) -> Outcome {
+    pub(super) fn settle(&self, prompt: &str, answer: bool) -> Outcome {
         self.apply(Operation::Settle {
             room: "room".into(),
             agent: "parent".into(),

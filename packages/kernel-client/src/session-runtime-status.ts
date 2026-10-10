@@ -341,6 +341,17 @@ export function sessionAgentTaskStatus(session: RuntimeSession | null | undefine
     ?? unfinished[0] ?? tasks[tasks.length - 1]!
   const open = tasks.flatMap((task) => task.obligations).filter((item) => ["open", "settling", "failed"].includes(item.status)).length
   const suffix = open ? ` (${open} obligations)` : ""
+  if (task.goal) {
+    const goal = task.goal
+    const phase = goal.paused ? "PAUSED" : task.state === "working" && goal.evaluation?.result === null && goal.evaluation.prompt_id === (task.pending_prompt_id ?? task.prompt_id) ? "EVALUATING" : task.state.toUpperCase()
+    const elapsed = Number.isFinite(goal.state_since_ms) ? Math.max(0, Date.now() - goal.state_since_ms) : 0
+    const active = goal.active_elapsed_ms + (task.state === "working" ? elapsed : 0)
+    const waiting = goal.waiting_elapsed_ms + (task.state === "waiting" ? elapsed : 0)
+    const seconds = (ms: number) => `${Math.floor(ms / 1000)}s`
+    const deadline = goal.next_check_in_ms ? ` · next check ${new Date(goal.next_check_in_ms).toISOString()}` : ""
+    const sources = task.wait?.registration_ids.join(", ") ?? "none"
+    return { label: `GOAL ${phase}: ${goal.objective}\nactive ${seconds(active)} · wait ${seconds(waiting)} · ${goal.check_in_minutes}m · check ${goal.check_count} · sources ${sources}${deadline} · progress ${task.progress_sequence ?? 0} at ${task.last_progress_at_ms ? new Date(task.last_progress_at_ms).toISOString() : "none"} · ${open} obligations${task.reason ? ` · ${task.reason}` : ""}\n${goal.id} revision ${task.revision} · /goal pause | resume | cancel | interval <minutes> | edit <objective>`, tone: task.state === "blocked" ? "error" : task.state === "working" ? "working" : "idle" }
+  }
   if (task.state === "waiting") {
     const deadline = task.wait?.deadline_ms
     if (!deadline || !Number.isFinite(deadline) || deadline > 8.64e15) return { label: `BLOCKED: Invalid wait deadline${suffix}`, tone: "error" }

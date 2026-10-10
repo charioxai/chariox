@@ -64,6 +64,11 @@ impl KernelRuntimeOwnedState {
         if task.state != ExecutionState::Done {
             return Ok(None);
         }
+        if let Some(goal) = &task.goal {
+            return Ok(Some(
+                serde_json::json!({"goal_id":goal.id,"task_id":task.task_id,"excerpt":goal.final_answer,"evidence":goal.evidence}),
+            ));
+        }
         let entries = self
             .operational_history_store
             .load_session_history_entries(&task.room_id, Some(&task.agent_id))?
@@ -90,7 +95,7 @@ impl KernelRuntimeOwnedState {
 // Leased history retains the worker run ID. Resolve it from the task's durable
 // execution binding, so reconciliation does not depend on the current lease or
 // active run. This is a history lookup only; the task's authority stays projected.
-fn task_answer_history_run(run: Option<&str>) -> Option<&str> {
+pub(super) fn task_answer_history_run(run: Option<&str>) -> Option<&str> {
     run.map(|run| {
         run.strip_prefix("leased:")
             .and_then(|binding| binding.split_once(':'))

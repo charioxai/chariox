@@ -161,7 +161,7 @@ import {
   updateMetaagentTask,
 } from "./session-api.js"
 import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "@chariox/kernel-client/session-config-projection"
-import { createAgentPromptScheduleRequest } from "@chariox/kernel-client/ipc-requests"
+import { submitPromptRequest, createAgentPromptScheduleRequest } from "@chariox/kernel-client/ipc-requests"
 import { formatSessionList } from "./sessions.js"
 import {
   createSlice,
@@ -473,6 +473,17 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     currentAccountProfileId: () => currentAccountProfileId?.() || options.accountProfile || "default",
     currentExecutionMode,
     currentPermissionLevel,
+    submitGoalPrompt: async (text, targetAgentId) => {
+      const attachment = attachmentState()
+      if (!attachment) throw new Error("goal needs an attached terminal")
+      const response = await client.send<{ PromptSubmitted?: { session: RuntimeSession }; SessionState?: { session: RuntimeSession } }>(submitPromptRequest(sessionState().id, attachment.id, targetAgentId, text, []))
+      const payload = response.PromptSubmitted ?? response.SessionState
+      if (!payload?.session) throw new Error("goal admission did not return session state")
+      deps.applySessionState(payload.session)
+      await deps.refreshAgentPanes(payload.session)
+      deps.rebuildTranscript()
+      deps.requestRender()
+    },
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,

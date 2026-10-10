@@ -305,6 +305,42 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        for run in self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token)
+        {
+            if let Some(agent) = run.agent_instance_id() {
+                let session = self.owned.session_store.get_session(run.session_id())?;
+                if self
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent)
+                    .is_some_and(|p| {
+                        p.prompt_origin() == crate::session::PromptOrigin::CompletionCheck
+                    })
+                {
+                    return Err(crate::durable_state::agent_lifecycle::error(
+                        "completion_check cannot run tools",
+                    ));
+                }
+                if self
+                    .owned
+                    .durable_state_store
+                    .agent_tasks(Some(run.session_id()), Some(agent))?
+                    .iter()
+                    .any(|t| {
+                        t.state == crate::durable_state::agent_lifecycle::ExecutionState::Working
+                            && crate::durable_state::agent_lifecycle::goals::is_check(
+                                t,
+                                &t.prompt_id,
+                            )
+                    })
+                {
+                    return Err(crate::durable_state::agent_lifecycle::error("completion_check is assessment only; tools cannot run work or mint authority"));
+                }
+            }
+        }
         if let Some(result) =
             Box::pin(self.try_kernel_browser_tool(auth_token, tool_name, arguments.clone())).await
         {

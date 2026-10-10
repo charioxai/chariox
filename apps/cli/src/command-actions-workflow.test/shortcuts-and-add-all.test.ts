@@ -16,6 +16,7 @@ test("root workflow shortcuts run registered templates", async () => {
   const session = makeSession()
   const handlers = createCommandActionHandlers(makeCommandDeps({
     flashFooter: (message: string, tone: string) => flashes.push(`${message}:${tone}`),
+    submitGoalPrompt: async (text: string) => { calls.push(`native:${text}`) },
     selectWorkflowCanvas: (workflowId: string | null) => selectedWorkflowIds.push(workflowId),
     showWorkflowScreen: () => screenOpens.push("workflow"),
     runWorkflowRegistryEntry: async (
@@ -52,13 +53,12 @@ test("root workflow shortcuts run registered templates", async () => {
 
   assert.deepEqual(calls, [
     "loop-until-done:entry:Build a Kanban app:default:worker->agent-1",
-    "planner-worker-reviewer:entry:Build a Kanban app:default:planner->agent-1",
+    "native:/goal Build a Kanban app",
   ])
-  assert.deepEqual(selectedWorkflowIds, ["workflow-loop-until-done", "workflow-planner-worker-reviewer"])
-  assert.deepEqual(screenOpens, ["workflow", "workflow"])
+  assert.deepEqual(selectedWorkflowIds, ["workflow-loop-until-done"])
+  assert.deepEqual(screenOpens, ["workflow"])
   assert.deepEqual(flashes, [
     "ran workflow loop-until-done as workflow-loop-until-done; reused agent-1 as worker; spawned agent-checker [run_started]:info",
-    "ran workflow planner-worker-reviewer as workflow-planner-worker-reviewer; reused agent-1 as planner; spawned agent-worker, agent-reviewer [run_started]:info",
   ])
 })
 
@@ -131,7 +131,7 @@ test("root workflow shortcuts reject empty prompts", async () => {
   assert.deepEqual(calls, [])
   assert.deepEqual(flashes, [
     "usage: /loop <prompt>:error",
-    "usage: /goal <prompt>:error",
+    "usage: /goal [--interval 1–60] <objective>:error",
   ])
 })
 
@@ -300,3 +300,16 @@ test("workflow add node all adds only agents missing from the selected workflow"
   assert.equal(flashedMessage, "workflow workflow-1 already has nodes for all session agents")
 })
 
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12: RED on the legacy shortcut.
+test("goal enters normal kernel prompting without template nodes", async () => {
+  const prompts: string[] = []
+  const templates: string[] = []
+  const deps = makeCommandDeps({
+    runWorkflowRegistryEntry: async (name: string) => { templates.push(name); return { session: makeSession(), entry: { name }, result: {} } },
+  })
+  const handlers = createCommandActionHandlers({ ...deps, submitGoalPrompt: async (text: string) => { prompts.push(text) } })
+  await handlers.handleGoalCommand({ kind: "goal", raw: "/goal --interval 1 Implement real delegated work", prompt: "--interval 1 Implement real delegated work" })
+  assert.deepEqual(templates, [])
+  assert.deepEqual(prompts, ["/goal --interval 1 Implement real delegated work"])
+})

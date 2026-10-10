@@ -59,7 +59,13 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(None);
         };
+        if ledger::goals::is_check(&task, prompt) {
+            return self.goal_continuation_context(&task);
+        }
         let mut context = format!("<chariox-task-context>For chariox.events tools use task_id `{}` and origin_prompt_id `{prompt}`. Final answers are done candidates; finish tracked obligations or yield on live sources with a future deadline. If owner action is required call chariox.events.blocked. Message events request no courtesy reply unless explicitly opted in.</chariox-task-context>", task.task_id);
+        if let Some(goal_context) = self.goal_continuation_context(&task)? {
+            context = format!("{context}\n{goal_context}");
+        }
         if task.task_id != prompt {
             // A cold provider run cannot recover the task from the untrusted
             // wake label. Read its original turn only from this agent's home
@@ -146,6 +152,39 @@ impl KernelRuntimeOwnedState {
         )
         .iter()
         .any(|text| !text.trim().is_empty());
+        if !cancelled {
+            if let Some(task) = self
+                .durable_state_store
+                .agent_tasks(Some(room), Some(agent))?
+                .into_iter()
+                .find(|t| ledger::goals::is_check(t, prompt.id()))
+            {
+                let entries = entries
+                    .into_iter()
+                    .map(|entry| {
+                        self.room_secret_observations
+                            .protect_transcript_entry(entry)
+                    })
+                    .collect::<Vec<_>>();
+                let result = super::agent_task_projection::task_public_outputs(
+                    &entries,
+                    prompt.id(),
+                    Some(answer_run),
+                )
+                .concat();
+                return match self
+                    .durable_state_store
+                    .agent_lifecycle(Operation::EvaluateGoal {
+                        task: task.task_id,
+                        prompt: prompt.id().into(),
+                        result,
+                        now: crate::session::unix_epoch_ms(),
+                    })? {
+                    Outcome::Settled { task, correction } => Ok(Some((task, correction))),
+                    _ => unreachable!(),
+                };
+            }
+        }
         match self
             .durable_state_store
             .agent_lifecycle(Operation::Settle {
@@ -330,6 +369,7 @@ impl KernelRuntimeState {
         let resources_unsettled = self.owned.agent_task_resources_unsettled(&task)?;
         if correction {
             let text=format!("The prior answer is progress, not completion. Finish or cancel these obligations, or call chariox.events.yield with admitted live sources and a future deadline. Otherwise call chariox.events.blocked with the exact owner action. One correction is allowed. Untrusted obligation data: {}",serde_json::to_string(&task.obligations).unwrap_or_default());
+            let text = self.owned.goal_continuation_context(&task)?.unwrap_or(text);
             if let Err(e) = Box::pin(self.dispatch_task_continuation(
                 &task,
                 source.source_attachment_id(),
@@ -430,6 +470,16 @@ impl KernelRuntimeState {
             Some((run, node)) => prompt.with_workflow_context(run, node),
             None => prompt,
         };
+        let prompt = if task
+            .goal
+            .as_ref()
+            .and_then(|g| g.evaluation.as_ref())
+            .is_some_and(|e| e.prompt_id == id && e.result.is_none())
+        {
+            prompt.with_prompt_origin(crate::session::PromptOrigin::CompletionCheck)
+        } else {
+            prompt
+        };
         let mut submission = self
             .submit_prepared_prompt_with_queue_policy(
                 crate::app::KernelPreparedPromptSubmission {
@@ -443,6 +493,7 @@ impl KernelRuntimeState {
                 true,
             )
             .await?;
+        self.arm_goal_check_deadline(task);
         if let Some(dispatch) = submission.dispatch.take() {
             self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
         }
@@ -456,6 +507,9 @@ impl KernelRuntimeState {
             return Ok(());
         }
         let now = crate::session::unix_epoch_ms();
+        if let Err(error) = self.offer_legacy_goal_adoption() {
+            tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A12: legacy adoption offer unavailable; other goals continue");
+        }
         if let Err(error) = self.sweep_agent_wakes(now).await {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake dead-man check retained");
         }
@@ -464,6 +518,32 @@ impl KernelRuntimeState {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
             };
+            if let Some(check) = task
+                .goal
+                .as_ref()
+                .and_then(|g| g.evaluation.as_ref())
+                .filter(|e| {
+                    task.state == ExecutionState::Working
+                        && e.result.is_none()
+                        && e.prompt_id
+                            == task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id)
+                        && now >= e.deadline_ms
+                })
+            {
+                if let Outcome::Task(stopped) =
+                    self.owned
+                        .durable_state_store
+                        .agent_lifecycle(Operation::TimeoutGoal {
+                            task: task.task_id.clone(),
+                            prompt: check.prompt_id.clone(),
+                            now,
+                        })?
+                {
+                    let _ = self.stop_goal_turn(&stopped).await;
+                    blocked.push(stopped);
+                }
+                continue;
+            }
             if task.state == ExecutionState::Cancelled {
                 if let Err(error) = Box::pin(self.cancel_agent_task_resources(&task)).await {
                     tracing::warn!(%error,"MP-08/MP-09/MP-10/MP-11 A02: cancellation remains supervised");

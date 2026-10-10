@@ -357,7 +357,19 @@ export type WorkspaceLiveSyncStatus = {
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11 A02, protocol 452; agent_wakes since 459 (A03).
+// MP-08 / MP-09 / MP-10 / MP-11 A12: home-owned goal projection.
+export type AgentGoal = {
+  schema_version: 1; id: string; owner_user_id: string; room_id: string; agent_id: string
+  objective: string; original_prompt_id: string; objective_revision: number; created_at_ms: number
+  legacy_run_id?: string | null
+  active_elapsed_ms: number; waiting_elapsed_ms: number; state_since_ms: number
+  check_in_minutes: number; next_check_in_ms: number | null; paused: boolean
+  continuation_sequence: number; check_count: number
+  evaluation: { origin: "completion_check"; prompt_id: string; work_prompt_id: string; work_provider_run_id: string | null; objective_revision: number; ledger_revision: number; started_at_ms: number; deadline_ms: number; result: Record<string, unknown> | null } | null
+  final_answer: string | null; evidence: string[]
+}
 export type AgentTaskExecution = {
+  goal?: AgentGoal | null
   task_id: string; room_id: string; owner_user_id: string; agent_id: string; prompt_id: string
   provider_run_id: string | null; revision: number; blocked_revision: number
   state: "working" | "waiting" | "blocked" | "done" | "cancelled"

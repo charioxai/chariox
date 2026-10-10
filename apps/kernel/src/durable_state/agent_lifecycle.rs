@@ -2,6 +2,9 @@
 //! No provider I/O occurs here. Intent commits precede every dispatch.
 mod delegation;
 mod delivery;
+#[cfg(test)]
+mod goal_tests;
+pub(crate) mod goals;
 mod migration;
 mod quarantine;
 mod replies;
@@ -261,6 +264,33 @@ fn decode_task(
     if t.task_id != id || t.room_id != room || t.agent_id != agent || t.prompt_id != prompt {
         return Err(error("task identity corrupt; quarantine required"));
     }
+    if let Some(g) = &t.goal {
+        if g.schema_version != 1
+            || g.owner_user_id != t.owner_user_id
+            || g.room_id != room
+            || g.agent_id != agent
+            || g.original_prompt_id != id
+            || g.id != format!("goal:{id}")
+            || !(1..=60).contains(&g.check_in_minutes)
+            || g.objective_revision == 0
+            || g.objective.trim().is_empty()
+            || g.objective.len() > goals::RESULT_LIMIT
+            || g.evaluation.as_ref().is_some_and(|e| {
+                e.origin != "completion_check"
+                    || e.prompt_id.is_empty()
+                    || e.work_prompt_id.is_empty()
+                    || e.objective_revision == 0
+                    || e.objective_revision > g.objective_revision
+                    || e.ledger_revision == 0
+                    || e.deadline_ms != e.started_at_ms.saturating_add(goals::CHECK_BOUND_MS)
+            })
+            || (t.state == ExecutionState::Done
+                && (g.final_answer.as_ref().is_none_or(|s| s.trim().is_empty())
+                    || g.evidence.is_empty()))
+        {
+            return Err(error("goal binding/schema corrupt; quarantine required"));
+        }
+    }
     if t.state == ExecutionState::Waiting
         && t.wait.as_ref().is_none_or(|w| {
             w.registration_ids.is_empty()
@@ -348,6 +378,15 @@ fn registrations(tx: &Connection, task: &str) -> Result<Vec<Registration>, Daemo
     .collect()
 }
 fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
+    if goals::is_check(task, prompt)
+        && task
+            .goal
+            .as_ref()
+            .and_then(|g| g.evaluation.as_ref())
+            .is_some_and(|e| e.result.is_none())
+    {
+        return Err(error("completion_check cannot mutate work or authority"));
+    }
     if task.prompt_id != prompt
         || task.state != ExecutionState::Working
         || task.pending_prompt_id.is_some()
@@ -384,6 +423,7 @@ fn new_task(
     now: u64,
 ) -> AgentTaskExecution {
     AgentTaskExecution {
+        goal: None,
         task_id: prompt.clone(),
         room_id: room,
         owner_user_id: String::new(),
