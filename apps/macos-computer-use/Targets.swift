@@ -3,6 +3,7 @@ import AppKit
 struct TargetContext: Equatable {
     let processStart: String
     let stamp: CaptureStamp
+    var observer: String = "private"
 }
 struct TargetMetadata: Equatable {
     let role: String, subrole: String?, label: String?
@@ -15,6 +16,40 @@ struct ObservedTarget {
     let revision: UInt64
     let metadata: TargetMetadata
 }
+enum NativeObservation {
+    case ax([ObservedTarget], CaptureStamp)
+    case ocr([ObservedText], CaptureStamp)
+}
+// Reuse the shared snapshot and OCR result shapes. Bounds are top-left desktop
+// pixels; richer private OCR confidence/ambiguity metadata never invents a ref.
+func projectNativeObservation(_ observation: NativeObservation, op: String, revision: UInt64) throws -> [String: Any] {
+    switch observation {
+    case let .ocr(text, stamp):
+        if op == "ocr" {
+            guard !text.contains(where: { $0.ambiguous }) else { throw tagged(.target, "ocr-ambiguous") }
+            return ["text": text.map(\.text).joined(separator: "\n"), "surface_id": "macos-seat", "generation": stamp.generation]
+        }
+        return ["surface_id": "macos-seat", "generation": stamp.generation, "tree_revision": revision,
+                "nodes": [], "complete": false, "fallback": "ocr"]
+    case let .ax(targets, stamp):
+        var nodes: [[String: Any]] = [], bytes = 0
+        for target in targets {
+            let metadata = target.metadata, surface = stamp.surface
+            let rect = metadata.bounds.intersection(surface.bounds)
+            let node: [String: Any] = ["target_id": target.ref, "role": metadata.role, "name": metadata.label ?? "",
+                "states": [metadata.enabled ? "enabled" : nil, metadata.focused ? "focused" : nil, "showing"].compactMap { $0 },
+                "bounds": [Int((rect.minX - surface.bounds.minX) * surface.scale), Int((rect.minY - surface.bounds.minY) * surface.scale),
+                           Int(rect.width * surface.scale), Int(rect.height * surface.scale)],
+                "actions": metadata.enabled && metadata.role == kAXButtonRole && metadata.actions.contains(kAXPressAction) ? ["click"] : []]
+            let size = try JSONSerialization.data(withJSONObject: node).count + 1
+            if bytes + size > 3072 { continue }
+            bytes += size; nodes.append(node)
+        }
+        let complete = nodes.count == targets.count && !nodes.isEmpty
+        return ["surface_id": "macos-seat", "generation": stamp.generation, "tree_revision": revision,
+                "nodes": nodes, "complete": complete, "fallback": complete ? "none" : "ocr"]
+    }
+}
 // OS reads are injected at the AX boundary. Secure nodes are classified before
 // metadata or children, and a failed walk cannot retain an earlier observation.
 struct TargetReader<Node> {
@@ -23,10 +58,11 @@ struct TargetReader<Node> {
     let children: (Node) throws -> [Node]
 }
 final class TargetRegistry<Node> {
-    private var entries: [String: Node] = [:]
+    private var entries: [String: (node: Node, metadata: TargetMetadata)] = [:]
     private var context: TargetContext?
     private var expires: TimeInterval = 0
     private var revision: UInt64 = 0
+    var currentRevision: UInt64 { revision }
     private let now: () -> TimeInterval
     init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) { self.now = now }
     func invalidate() { entries.removeAll(); context = nil; revision &+= 1 }
@@ -54,7 +90,7 @@ final class TargetRegistry<Node> {
                 enabled: metadata.enabled, focused: metadata.focused, actions: metadata.actions)
             if !safe.bounds.intersection(context.stamp.surface.bounds).isEmpty {
                 let ref = UUID().uuidString
-                entries[ref] = node; result.append(ObservedTarget(ref: ref, revision: revision, metadata: safe))
+                entries[ref] = (node, safe); result.append(ObservedTarget(ref: ref, revision: revision, metadata: safe))
             }
             let children = try reader.children(node)
             guard children.count <= 128 - visited - pending.count, now() < deadline else { throw tagged(.target, "target-coverage-budget") }
@@ -64,11 +100,11 @@ final class TargetRegistry<Node> {
         self.context = context; expires = now() + 2; complete = true
         return result
     }
-    func resolve(_ ref: String, context: TargetContext, validate: (Node) throws -> Bool) throws -> Node {
+    func resolve(_ ref: String, context: TargetContext, validate: (Node, TargetMetadata) throws -> Bool) throws -> Node {
         do {
-            guard self.context == context, now() < expires, let node = entries[ref],
-                  try validate(node) else { throw tagged(.target, "target-ref-stale") }
-            return node
+            guard self.context == context, now() < expires, let entry = entries[ref],
+                  try validate(entry.node, entry.metadata) else { throw tagged(.target, "target-ref-stale") }
+            return entry.node
         } catch { invalidate(); throw error }
     }
 }

@@ -72,7 +72,7 @@ test('owned text releases retain permission and target fences', () => {
 test('unresolved text clicks refuse; only typing reaches per-PID event posting', () => {
   assert.match(pointer, /guard let range = try rangeAtPoint\(point\) else \{ throw tagged\(\.target, "[^"]+"\) \}/);
   assert.match(native, /if operation == .click \{\s*return try await performTextClick[\s\S]*guard case .text\(let text\) = operation/);
-  assert.match(native, /post: \{ \$0.postToPid\(request.pid\) \}/);
+  assert.match(native, /post: \{ tagInput\(\$0\); \$0.postToPid\(request.pid\) \}/);
   assert.doesNotMatch(native + pointer + textClick, /post\(tap:|cghidEventTap|hidClickEvents|mouseEventWindowUnderMousePointer/);
   assert.doesNotMatch(native, /CGWarpMouseCursorPosition|activate\(ignoringOtherApps/);
 });

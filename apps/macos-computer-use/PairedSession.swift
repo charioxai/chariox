@@ -135,7 +135,7 @@ import Darwin
             }
             return (reply, revoked)
         }
-        guard method == "host.computer", ["input", "screenshot"].contains(params["op"] as? String ?? "") else {
+        guard method == "host.computer", ["input", "screenshot", "snapshot", "ocr", "target_action"].contains(params["op"] as? String ?? "") else {
             return pairedReply(request, epoch: epoch)
         }
         var reply: [String: Any] = ["id": request["id"] ?? NSNull(), "epoch": epoch, "ok": false]
@@ -145,6 +145,16 @@ import Darwin
             guard params["surface_id"] as? String == "macos-seat",
                   params["generation"] as? String == epoch else { throw tagged(.target, "stale-native-scope") }
             guard let surface else { throw tagged(.disabled, "scope-not-started") }
+            if let op = params["op"] as? String, ["snapshot", "ocr", "target_action"].contains(op) {
+                let source = MacSource(authority: {
+                    try self.checkAuthority()
+                    if op == "target_action" { try self.nativeInput?.observer.check() }
+                })
+                reply["result"] = try await capture.structured(op, params: params, scope: scope,
+                    surface: surface, generation: epoch, source: source)
+                try checkAuthority(); reply["ok"] = true
+                return (reply, false)
+            }
             if params["op"] as? String == "screenshot" {
                 let image = try await capture.screenshot(scope, surface: surface, generation: epoch,
                                                          authority: { try self.checkAuthority() })
@@ -243,4 +253,3 @@ func pairedInput(_ input: [String: Any], scope: Request, surface: NativeSurface)
     // Stop, lease loss or kernel exit: identity mode has nothing else to fence.
     exit(0)
 }
-

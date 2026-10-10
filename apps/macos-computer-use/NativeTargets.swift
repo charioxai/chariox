@@ -4,9 +4,8 @@ import AppKit
     private let registry = TargetRegistry<AXUIElement>()
     private var observer: AXObserver?
     private var watched: [(AXUIElement, CFString)] = []
-    private var context: TargetContext?
     deinit { if let observer { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes) } }
-    func invalidate() { registry.invalidate(); context = nil }
+    func invalidate() { registry.invalidate() }
     func stop() {
         if let observer {
             for (node, name) in watched { AXObserverRemoveNotification(observer, node, name) }
@@ -14,12 +13,13 @@ import AppKit
         }
         observer = nil; watched.removeAll(); invalidate()
     }
-    private func bind(_ scope: Request, stamp: CaptureStamp) throws -> TargetContext {
+    var revision: UInt64 { registry.currentRevision }
+    private func bind(_ scope: Request, stamp: CaptureStamp, observer: String) throws -> TargetContext {
         guard let app = NSRunningApplication(processIdentifier: scope.pid), !app.isTerminated,
               let launched = app.launchDate else { throw tagged(.target, "target-process-identity-unknown") }
-        return TargetContext(processStart: "\(scope.pid):\(launched.timeIntervalSince1970)", stamp: stamp)
+        return TargetContext(processStart: "\(scope.pid):\(launched.timeIntervalSince1970)", stamp: stamp, observer: observer)
     }
-    func observe(_ scope: Request, stamp: CaptureStamp, source: MacSource,
+    func observe(_ scope: Request, stamp: CaptureStamp, observer: String, source: MacSource,
                  scrub: (String) throws -> String) throws -> [ObservedTarget] {
         stop()
         var completed = false
@@ -27,7 +27,7 @@ import AppKit
         try source.checkPermission(.click)
         let target = try source.target(scope)
         try source.fence(scope, element: target, typing: false)
-        let bound = try bind(scope, stamp: stamp)
+        let bound = try bind(scope, stamp: stamp, observer: observer)
         let app = AXUIElementCreateApplication(scope.pid)
         let root = try source.selectedWindow(scope, app: app)
         var created: AXObserver?
@@ -35,7 +35,7 @@ import AppKit
             guard let pointer else { return }
             MainActor.assumeIsolated { Unmanaged<NativeTargets>.fromOpaque(pointer).takeUnretainedValue().invalidate() }
         }, &created) == .success, let created else { throw tagged(.target, "target-observer-unavailable") }
-        observer = created
+        self.observer = created
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(created), .commonModes)
         let reader = TargetReader<AXUIElement>(secure: { element in
             guard AXUIElementSetMessagingTimeout(element, 0.05) == .success else { throw Refusal.target }
@@ -56,19 +56,35 @@ import AppKit
         })
         let result = try registry.observe(root: root, context: bound, reader: reader, scrub: scrub)
         try source.fence(scope, element: target, typing: false)
-        guard try bind(scope, stamp: stamp) == bound, try nativeSurface(scope) == stamp.surface else { throw Refusal.target }
-        context = bound; completed = true
+        guard try bind(scope, stamp: stamp, observer: observer) == bound, try nativeSurface(scope) == stamp.surface else { throw Refusal.target }
+        completed = true
         return result
     }
-    func resolve(_ ref: String, scope: Request, stamp: CaptureStamp, expected: TargetMetadata, source: MacSource) throws -> AXUIElement {
-        let bound = try bind(scope, stamp: stamp)
-        return try registry.resolve(ref, context: bound) { node in
+    func press(_ ref: String, revision: UInt64, observer: String, scope: Request, stamp: CaptureStamp, source: MacSource) async throws {
+        guard registry.currentRevision == revision else { throw tagged(.target, "target-ref-stale") }
+        let bound = try bind(scope, stamp: stamp, observer: observer)
+        var original: TargetMetadata?
+        let node = try registry.resolve(ref, context: bound) { node, expected in
+            guard expected.enabled, expected.role == kAXButtonRole, expected.actions.contains(kAXPressAction) else { return false }
+            original = expected
+            return try self.validate(node, expected: expected, scope: scope, stamp: stamp, source: source)
+        }
+        // A failed post-effect receipt may not replay this reference.
+        registry.invalidate()
+        try source.checkPermission(.click)
+        try source.fence(scope, element: node, typing: false)
+        guard let original, try validate(node, expected: original, scope: scope, stamp: stamp, source: source) else { throw Refusal.target }
+        guard AXUIElementPerformAction(node, kAXPressAction as CFString) == .success else { throw tagged(.native, "press-mutation-failed") }
+        try source.authority()
+        try source.checkPermission(.click)
+        try source.fence(scope, element: node, typing: false)
+    }
+    private func validate(_ node: AXUIElement, expected: TargetMetadata, scope: Request, stamp: CaptureStamp, source: MacSource) throws -> Bool {
             try source.checkPermission(.click)
             try source.fence(scope, element: node, typing: false)
             guard try nativeSurface(scope) == stamp.surface else { return false }
             if try captureElementIsSecure(read: { self.read(node, kAXSubroleAttribute) }) { return false }
             return try self.metadata(node, source: source) == expected
-        }
     }
     private func read(_ node: AXUIElement, _ name: String) -> (AXError, CFTypeRef?) {
         var value: CFTypeRef?
@@ -86,8 +102,9 @@ import AppKit
         guard AXUIElementCopyActionNames(node, &names) == .success, let actions = names as? [String],
               let role = try optional(node, kAXRoleAttribute, as: String.self) else { throw Refusal.target }
         // Never read AXValue, descriptions, selections or arbitrary attributes.
+        let editable = [kAXTextFieldRole, kAXTextAreaRole].contains(role)
         return try TargetMetadata(role: role, subrole: optional(node, kAXSubroleAttribute, as: String.self),
-            label: optional(node, kAXTitleAttribute, as: String.self), bounds: source.bounds(node),
+            label: editable ? nil : optional(node, kAXTitleAttribute, as: String.self), bounds: source.bounds(node),
             enabled: optional(node, kAXEnabledAttribute, as: Bool.self) ?? false,
             focused: optional(node, kAXFocusedAttribute, as: Bool.self) ?? false, actions: actions)
     }

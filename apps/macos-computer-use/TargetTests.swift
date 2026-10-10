@@ -15,22 +15,22 @@ import AppKit
         }, children: { $0 == "root" ? ["secure", "button"] : [] })
         let first = try registry.observe(root: "root", context: context, reader: reader, scrub: { $0.replacingOccurrences(of: "secret", with: "[redacted]") })
         precondition(first.count == 2 && secureReads == 0 && first[1].metadata.label == "public canary [redacted]")
-        let resolved = try registry.resolve(first[1].ref, context: context, validate: { _ in !moved })
+        let resolved = try registry.resolve(first[1].ref, context: context, validate: { _, _ in !moved })
         precondition(resolved == "button")
         moved = true
-        expectRefusal { _ = try registry.resolve(first[1].ref, context: context, validate: { _ in !moved }) }
+        expectRefusal { _ = try registry.resolve(first[1].ref, context: context, validate: { _, _ in !moved }) }
         moved = false
-        expectRefusal { _ = try registry.resolve(first[1].ref, context: context, validate: { _ in true }) }
+        expectRefusal { _ = try registry.resolve(first[1].ref, context: context, validate: { _, _ in true }) }
         let second = try registry.observe(root: "root", context: context, reader: reader, scrub: { $0 })
-        expectRefusal { _ = try registry.resolve(first[1].ref, context: context, validate: { _ in true }) }
+        expectRefusal { _ = try registry.resolve(first[1].ref, context: context, validate: { _, _ in true }) }
         let changed = TargetContext(processStart: "reused-pid", stamp: context.stamp)
-        expectRefusal { _ = try registry.resolve(second[1].ref, context: changed, validate: { _ in true }) }
+        expectRefusal { _ = try registry.resolve(second[1].ref, context: changed, validate: { _, _ in true }) }
         let third = try registry.observe(root: "root", context: context, reader: reader, scrub: { $0 })
         registry.invalidate()
-        expectRefusal { _ = try registry.resolve(third[1].ref, context: context, validate: { _ in true }) }
+        expectRefusal { _ = try registry.resolve(third[1].ref, context: context, validate: { _, _ in true }) }
         let fourth = try registry.observe(root: "root", context: context, reader: reader, scrub: { $0 })
         clock = 3
-        expectRefusal { _ = try registry.resolve(fourth[1].ref, context: context, validate: { _ in true }) }
+        expectRefusal { _ = try registry.resolve(fourth[1].ref, context: context, validate: { _, _ in true }) }
         let cycle = TargetReader<String>(secure: { _ in false }, metadata: reader.metadata, children: { [$0] })
         expectRefusal { _ = try registry.observe(root: "root", context: context, reader: cycle, scrub: { $0 }) }
         let duringWalk = TargetReader<String>(secure: reader.secure, metadata: { node in
@@ -42,8 +42,18 @@ import AppKit
                       CaptureStamp(generation: "g1", surface: surface, protection: 2),
                       CaptureStamp(generation: "g1", surface: NativeSurface(bounds: surface.bounds, scale: 1), protection: 1)] {
             let snapshot = try registry.observe(root: "root", context: context, reader: reader, scrub: { $0 })
-            expectRefusal { _ = try registry.resolve(snapshot[1].ref, context: TargetContext(processStart: "p1", stamp: stamp), validate: { _ in true }) }
+            expectRefusal { _ = try registry.resolve(snapshot[1].ref, context: TargetContext(processStart: "p1", stamp: stamp), validate: { _, _ in true }) }
         }
+        let owned = try registry.observe(root: "root", context: context, reader: reader, scrub: { $0 })
+        var foreign = context; foreign.observer = "other-actor"
+        expectRefusal { _ = try registry.resolve(owned[1].ref, context: foreign, validate: { _, _ in true }) }
+        let projected = try projectNativeObservation(.ax([ObservedTarget(ref: "opaque", revision: 1,
+            metadata: TargetMetadata(role: kAXButtonRole, subrole: nil, label: "Public", bounds: CGRect(x: -90, y: 30, width: 20, height: 20), enabled: true, focused: true, actions: [kAXPressAction]))], context.stamp), op: "snapshot", revision: 1)
+        let node = (projected["nodes"] as! [[String: Any]])[0]
+        precondition(node["bounds"] as? [Int] == [20, 20, 40, 40] && node["actions"] as? [String] == ["click"])
+        precondition(Set(projected.keys) == ["surface_id", "generation", "tree_revision", "nodes", "complete", "fallback"])
+        let ambiguous = ObservedText(text: "public", confidence: 0.5, bounds: surface.bounds, ambiguous: true)
+        expectRefusal { _ = try projectNativeObservation(.ocr([ambiguous], context.stamp), op: "ocr", revision: 1) }
         print("PASS secure nodes expose no metadata/children; scrubbed opaque refs expire on movement, failed validation, observation, process reuse, notification and age; cycles refuse")
     }
     static func expectRefusal(_ body: () throws -> Void) {
