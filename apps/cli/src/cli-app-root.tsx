@@ -1,11 +1,10 @@
-import { createProviderLoginLinkPresenter, localDesktopAvailable } from "./provider-login-link.js"
+import { createProviderLoginLinkOpener, localDesktopAvailable } from "./provider-login-link.js"
 import { createProviderLoginInteractionController } from "./provider-login-interaction-controller.js"
 import { getRelayStatus } from "./relay-api.js"
 import { clipboardCopyMessage, copyTextToClipboard } from "./clipboard.js"
 import { openExternalUrl } from "./external-url.js"
 import { enableTerminalHyperlinks } from "./terminal-hyperlinks.js"
 import { providerAccountDisplayLabel, selectedProviderAccount } from "./waiting-room-provider-accounts.js"
-import { appendInteractionCustomReply, interactionCustomReplyPasteText } from "@chariox/kernel-client/interaction-choice"
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
 import { AppDevLoop } from "./app-dev-loop.js"
@@ -227,7 +226,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   const renderer = useRenderer()
   void enableTerminalHyperlinks(renderer)
   const secretInput = createCliSecretInput(renderer)
-  const providerLoginLink = createProviderLoginLinkPresenter(renderer)
+  const providerLoginLink = createProviderLoginLinkOpener()
   onCleanup(secretInput.cancel)
   const dimensions = useTerminalDimensions()
   const setCenterMode = (_mode: "transcript") => {}
@@ -253,17 +252,6 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     localDesktop: localDesktopAvailable,
     openUrl: openExternalUrl,
     copyUrl: async (url) => clipboardCopyMessage(await copyTextToClipboard(url, renderer)),
-    showPlainLink: providerLoginLink,
-    pasteCode: (interaction, text) => {
-      const line = interactionCustomReplyPasteText(text)
-      if (line === null) return
-      interactionChoiceStore.setSelectedIndex(interaction.id, interaction.choices.length)
-      interactionChoiceStore.setCustomEditing(interaction.id, true)
-      interactionChoiceStore.setCustomReply(interaction.id, appendInteractionCustomReply({
-        current: interactionChoiceStore.customReply(interaction.id), input: line,
-        maxLength: interaction.custom_choice?.max_length,
-      }))
-    },
     appendNotice: (message, tone) => appendNotice(message, tone),
     flashFooter: (message, tone) => flashFooter(message, tone),
     render: () => renderAgentInteractions(),
@@ -986,7 +974,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   } = createCliAppProcessRuntimeComposition({
     client, options, appLogger, formatError,
     flashFooter, handleSigint,
-    handleStdinData: (chunk: Buffer | string) => { if (!providerLoginLink.isActive()) handleStdinData(chunk) },
+    handleStdinData,
     clearTerminalOutputRecordTimer,
     workspaceScreenMode,
     workflowScreenActive: workflowActions.workflowScreenActive,

@@ -32,7 +32,7 @@ test("MP-08/MP-11 a login strip shows steps, a countdown, the focused code field
     getKernelId: async () => "fleet",
     getLoginStatus: () => new Promise(() => {}), getAuthStatus: async () => { throw Error("unused") },
     accountLabel: () => "disposable-claude", localDesktop: () => false, openUrl: async () => false,
-    copyUrl: async () => "", showPlainLink: async () => true, pasteCode: () => {},
+    copyUrl: async () => "",
     appendNotice: () => {}, flashFooter: () => {}, render: () => {}, setTimer: () => null, clearTimer: () => {},
   })
   const render = () => renderAgentInteractionStrips({
@@ -48,7 +48,7 @@ test("MP-08/MP-11 a login strip shows steps, a countdown, the focused code field
     render()
     await harness.renderOnce()
     const rows = harness.captureCharFrame().split("\n").map((row) => row.trimEnd())
-    const first = rows.findIndex((row) => row.includes("1. Open the link (click it):"))
+    const first = rows.findIndex((row) => row.includes("1. Cmd-click the link"))
     const second = rows.findIndex((row) => row.includes("2. Authorize Chariox in your browser."))
     assert.ok(first >= 0 && second > first + 1, rows.join("\n"))
     // Only the terminal edge wraps the link; its rows hold nothing else.

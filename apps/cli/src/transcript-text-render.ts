@@ -5,6 +5,8 @@ import {
   type TextRenderable,
 } from "@opentui/core"
 
+import { providerLoginUrl } from "./provider-login-link.js"
+
 import type { TranscriptEntry } from "./cli-types.js"
 import { theme } from "./theme.js"
 import { splitInlineCodeSpans } from "./transcript.js"
@@ -149,17 +151,19 @@ function tokenMime(kind: string) {
 
 function appendTranscriptSpans(text: TextRenderable, entry: TranscriptEntry, value: string) {
   for (const span of splitInlineCodeSpans(value)) {
-    text.add(
-      TextNodeRenderable.fromString(
-        span.text,
-        span.code
-          ? {
-              fg: transcriptInlineCodeColor(entry),
-              attributes: TextAttributes.BOLD,
-            }
-          : undefined,
-      ),
-    )
+    const style = span.code ? { fg: transcriptInlineCodeColor(entry), attributes: TextAttributes.BOLD } : undefined
+    // MP-08/MP-10/MP-11: preserve displayed text; native terminals receive
+    // complete HTTP(S) targets, including links split across rendered rows.
+    let offset = 0
+    for (const match of span.text.matchAll(/https?:\/\/[^\s<>\u0000-\u001f\u007f]+/gu)) {
+      const url = match[0]
+      if (!providerLoginUrl(url)) continue
+      const index = match.index!
+      text.add(TextNodeRenderable.fromString(span.text.slice(offset, index), style))
+      text.add(TextNodeRenderable.fromString(url, { ...style, link: { url } }))
+      offset = index + url.length
+    }
+    text.add(TextNodeRenderable.fromString(span.text.slice(offset), style))
   }
 }
 

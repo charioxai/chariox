@@ -70,7 +70,8 @@ async function main() {
       gatherStats: false,
       exitOnCtrlC: false,
       useKittyKeyboard: {},
-      useMouse: process.env.CHARIOX_TUI_MOUSE !== "off",
+      // MP-08/MP-10: the terminal owns plain drag-selection and Cmd-C.
+      useMouse: process.env.CHARIOX_TUI_MOUSE === "on",
       enableMouseMovement: false,
       useAlternateScreen: true,
       autoFocus: true,

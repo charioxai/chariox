@@ -53,7 +53,7 @@ export function renderProviderLoginStrip(options: ProviderLoginStripOptions): vo
   } else if (!url) {
     container.add(text("1. Waiting for the authorization link…", theme.textMuted))
   } else {
-    container.add(text("1. Open the link (click it):"))
+    container.add(text("1. Cmd-click the link (Terminal.app: Cmd-double-click), or drag-select and Cmd-C:"))
     container.add(linkRows(options, url))
   }
   state.view.steps.forEach((step, index) => container.add(text(`${index + 2}. ${step}`)))

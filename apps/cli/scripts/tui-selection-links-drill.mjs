@@ -29,6 +29,8 @@ const hashFile = async filename => {
 }
 const options = Object.fromEntries(process.argv.slice(2).reduce((pairs, item, i, args) => i % 2 ? pairs : [...pairs, [item.replace(/^--/, ''), args[i + 1]]], []))
 const cli = path.resolve(options.cli ?? 'apps/cli/dist/index.js')
+const clientDir = path.resolve(options['client-dir'] ?? path.dirname(cli))
+const nativeSelection = options['native-selection'] || (!options.attached && !options['waiting-room-paste'])
 const evidence = path.resolve(options.output)
 const tools = options.tools ? path.resolve(options.tools) : null
 assert.ok(!evidence.startsWith(`${process.cwd()}/`), 'evidence must be outside the repository')
@@ -44,11 +46,11 @@ Object.assign(runtimeEnv, {
   OPENCODE_CONFIG_DIR: path.join(scratch,'opencode'),
   // Separate client discovery state prevents bypassing the fixture proxy.
   CHARIOX_HOME: path.join(scratch,'client-state'), CHARIOX_LOG_DIR: path.join(scratch,'client-logs'),
-  ...(process.env.CHARIOX_TUI_MOUSE === 'off' ? { CHARIOX_TUI_MOUSE: 'off' } : {}),
+  ...(options.attached || options['waiting-room-paste'] ? { CHARIOX_TUI_MOUSE: 'on' } : {}),
 })
 await mkdir(runtimeEnv.HOME, { recursive: true })
 await mkdir(evidence, { recursive: true })
-const url = 'https://claude.ai/oauth/authorize?client_id=fixture&redirect_uri=https%3A%2F%2Fexample.org%2Fcallback&state=' + '0123456789abcdef'.repeat(25)
+const url = nativeSelection ? 'https://github.com/charioxai/chariox' : 'https://claude.ai/oauth/authorize?client_id=fixture&redirect_uri=https%3A%2F%2Fexample.org%2Fcallback&state=' + '0123456789abcdef'.repeat(25)
 const deviceUrl = 'https://auth.openai.com/codex/device'
 const requests = []
 const upstreamResponses = []
@@ -61,15 +63,15 @@ let KernelClient
 const upstreamClients = new Set()
 let result
 const sessionAlias = `tuifix-drill-${process.pid}`
-let sessionDeleted = !options.attached
+let sessionDeleted = !options.attached && !options['native-session']
 const deleteSession = async () => {
-  const client = new KernelClient(options['fleet-kernel-url'], {})
+  const client = new KernelClient(options['native-session'] ? kernelUrl : options['fleet-kernel-url'], {})
   try { await client.send({ DeleteSession: { session_ref: sessionAlias, workspace_id: null } }); sessionDeleted = true }
   finally { await client.close() }
 }
 // Kernel-side status of the drill's queued prompt (authoritative "not cancelled").
 const queuedPromptStatus = async prompt => {
-  const client = new KernelClient(options['fleet-kernel-url'], {})
+  const client = new KernelClient(options['native-session'] ? kernelUrl : options['fleet-kernel-url'], {})
   try {
     const resolved = JSON.stringify(await client.send({ ResolveSession: { session_ref: sessionAlias, workspace_id: null } }))
     const sessionId = resolved.match(/"session_id":"([^"]+)"/)?.[1]
@@ -103,7 +105,7 @@ try {
     const port = listener.port; listener.stop(true)
     kernelUrl = `ws://127.0.0.1:${port}/kernel`
     process.env.CHARIOX_HOME = path.join(scratch, 'state')
-    KernelClient = (await import(path.join(path.dirname(cli), 'ipc.js'))).LocalIpcClient
+    KernelClient = (await import(path.join(clientDir, 'ipc.js'))).LocalIpcClient
     kernel = Bun.spawn([path.resolve(options['kernel-binary'])], { env: { ...runtimeEnv, CHARIOX_HOME: path.join(scratch, 'state'), CHARIOX_KERNEL_PORT: String(port), CHARIOX_MCP_PORT: String(mcpPort), CHARIOX_DAEMON_SOCKET: path.join(scratch,'kernel.sock'), CHARIOX_LOG_DIR: path.join(scratch, 'logs') }, stdout: 'ignore', stderr: 'ignore' })
     const probe = new KernelClient(kernelUrl, {})
     upstreamClients.add(probe)
@@ -112,12 +114,19 @@ try {
       if (kernel.exitCode !== null) throw Error(`owned kernel exited: ${kernel.exitCode}`)
       try { return Object.keys(await probe.send({ RelayStatus: null }))[0] === 'RelayStatus' } catch { return false }
     })
+    if (options['native-session']) {
+      const {linkProviderAccountProfile,refreshProviderAccountProfile} = await import(path.join(clientDir,'provider-api.js'))
+      const profile = await linkProviderAccountProfile(probe,'codex','loginux-native',options['provider-scope'])
+      const refreshed = await refreshProviderAccountProfile(probe,'codex',profile.profile_id)
+      assert.equal(refreshed.auth_state,'authenticated','product-linked provider must be authenticated')
+      options['account-profile'] = profile.profile_id
+    }
     await probe.close()
   }
   if (options.attached) {
     // Normal product client authorization from the account-holding kernel home.
     process.env.CHARIOX_HOME = path.resolve(options['fleet-home'])
-    KernelClient = (await import(path.join(path.dirname(cli), 'ipc.js'))).LocalIpcClient
+    KernelClient = (await import(path.join(clientDir, 'ipc.js'))).LocalIpcClient
   }
   fixture.on('connection', (socket) => {
     const upstream = kernelUrl ? new KernelClient(kernelUrl, {}) : null
@@ -152,12 +161,12 @@ try {
     })
   })
   if (options.interactive) {
-    tui = Bun.spawn(['bun', cli, '--detached', '--kernel-url', `ws://127.0.0.1:${fixture.address().port}/kernel`], {
+    tui = Bun.spawn([...(cli.endsWith('.js') ? ['bun', cli] : [cli]), '--detached', '--kernel-url', `ws://127.0.0.1:${fixture.address().port}/kernel`], {
       cwd: process.cwd(), env: runtimeEnv,
       stdin: 'inherit', stdout: 'inherit', stderr: 'inherit',
     })
     await tui.exited
-    result = { items: ['MP-08','MP-11'], source: options.source, cli, cliSha256: await hashClient(path.dirname(cli)), requests, interactive: true, acceptance: 'manual macOS/SSH observations must be recorded by the operator' }
+    result = { items: ['MP-08','MP-11'], source: options.source, cli, cliSha256: await (cli.endsWith('.js') ? hashClient(path.dirname(cli)) : hashFile(cli)), requests, interactive: true, acceptance: 'manual macOS/SSH observations must be recorded by the operator' }
   } else {
   frontend = Bun.serve({ hostname: '127.0.0.1', port: 0,
     fetch(request, server) {
@@ -165,9 +174,9 @@ try {
       if (route === '/terminal' && server.upgrade(request)) return
       if (route === '/xterm.js') return new Response(Bun.file(path.join(tools, 'node_modules/@xterm/xterm/lib/xterm.js')))
       if (route === '/xterm.css') return new Response(Bun.file(path.join(tools, 'node_modules/@xterm/xterm/css/xterm.css')))
-      return new Response(`<!doctype html><link rel="stylesheet" href="/xterm.css"><style>body{background:#141414;margin:16px}</style><div id="terminal"></div><script src="/xterm.js"></script><script>
+      return new Response(`<!doctype html><link rel="stylesheet" href="/xterm.css"><style>body{background:#141414;margin:16px}</style><button id="native-copy" onmousedown="event.preventDefault()" onclick="document.execCommand('copy')">Terminal Copy</button><div id="terminal"></div><script src="/xterm.js"></script><script>
         window.term=new Terminal({cols:100,rows:35,fontSize:16,fontFamily:'monospace',allowProposedApi:true,scrollback:10000});term.open(document.querySelector('#terminal'));term.focus();
-        window.openedLinks=[];term.options.linkHandler={activate:(event,text)=>openedLinks.push(text)};
+        window.openedLinks=[];term.options.linkHandler={activate:(event,text)=>{openedLinks.push(text);${nativeSelection ? "window.openedWindow=Boolean(window.open(text,'_blank'))" : ''}}};
         window.copies=[];term.parser.registerOscHandler(52,data=>{copies.push(data.split(';').slice(1).join(';'));return true});
         window.ws=new WebSocket('ws://'+location.host+'/terminal');ws.onmessage=e=>term.write(e.data);term.onData(data=>ws.send(data));
         window.terminalScreen=()=>Array.from({length:term.rows},(_,i)=>term.buffer.active.getLine(term.buffer.active.viewportY+i)?.translateToString(true)??'').join('\\n');
@@ -178,16 +187,18 @@ try {
       message(_socket, data) { tui?.terminal.write(String(data)) },
     },
   })
-  const tuiArgs = options['waiting-room-paste']
+  const tuiArgs = options['native-session']
+    ? ['--kernel-url', kernelUrl, '--create-session', '--alias', sessionAlias, '--workspace', process.cwd(), '--worktree', process.cwd(), '--provider', 'codex', '--account-profile', options['account-profile'], '--model', 'codex/gpt-6.1-sol']
+    : options['waiting-room-paste']
     ? ['--kernel-url', kernelUrl]
     : options.attached
     ? ['--kernel-url', options['fleet-kernel-url'], '--create-session', '--alias', sessionAlias, '--workspace', process.cwd(), '--worktree', process.cwd(),
       '--provider', options.provider ?? 'codex', '--account-profile', options['account-profile'], '--model', options.model]
     : ['--detached', '--kernel-url', `ws://127.0.0.1:${fixture.address().port}/kernel`]
-  tui = Bun.spawn(['bun', cli, ...tuiArgs], {
+  tui = Bun.spawn([...(cli.endsWith('.js') ? ['bun', cli] : [cli]), ...tuiArgs], {
     cwd: process.cwd(), env: { ...runtimeEnv, TERM: options.term ?? 'xterm-256color', SSH_CONNECTION: 'fixture 1 fixture 2',
       ...(options['no-mouse'] ? { CHARIOX_TUI_MOUSE: 'off' } : {}),
-      ...(options.attached || options['waiting-room-paste'] ? { CHARIOX_HOME: process.env.CHARIOX_HOME } : {}) },
+      ...(options.attached || options['waiting-room-paste'] || options['native-session'] ? { CHARIOX_HOME: process.env.CHARIOX_HOME } : {}) },
     terminal: { cols: 100, rows: 35, data(_terminal, chunk) { const data = new TextDecoder().decode(chunk); output += data; for (const c of clients) c.send(data) } },
   })
   browser = await chromium.launch({ headless: true, args: ['--no-sandbox'], executablePath: options.chromium })
@@ -267,7 +278,78 @@ try {
     }
     return cells
   }
-  if (options['waiting-room-paste']) {
+  if (nativeSelection) {
+    // MP-08/MP-10/MP-11: browser mouse events, real PTY bytes, and the
+    // terminal's own Copy action. No F-key, Shift-drag, OSC 52 or select API.
+    let selectionText = 'Provider Accounts'
+    if (options['native-session']) {
+      await waitFor(() => page.evaluate(() => terminalScreen().includes('Write your next prompt here')),90_000)
+      await typeText('Read the public README at https://github.com/charioxai/chariox, then return NATIVE COPY READY on one line and that repository URL alone on the next line. No explanation.')
+      await press('\r')
+      await waitFor(() => page.evaluate(() => terminalScreen().includes('NATIVE COPY READY') && /\bIDLE\b/.test(terminalScreen())),180_000)
+      selectionText = 'NATIVE COPY READY'
+    } else await waitFor(() => page.evaluate(() => terminalScreen().includes('Provider Accounts')))
+    await capture('native-01-open')
+    const at = await settledRowOf(selectionText)
+    const coords = await page.evaluate(({x,y}) => {
+      const rect = document.querySelector('.xterm-screen').getBoundingClientRect()
+      return { x: rect.x+(x+0.2)*rect.width/term.cols, y: rect.y+(y+0.5)*rect.height/term.rows, cw: rect.width/term.cols }
+    }, at)
+    await page.mouse.move(coords.x, coords.y); await page.mouse.down()
+    await page.mouse.move(coords.x+selectionText.length*coords.cw, coords.y, {steps:20}); await page.mouse.up()
+    await sleep(400)
+    const selected = await page.evaluate(() => term.getSelection())
+    await capture('native-02-drag')
+    const mouseEnabled = /\x1b\[\?(?:1000|1002|1003|1006)h/.test(output)
+    result = {items:['MP-08','MP-10','MP-11'],source:options.source,mouseEnabled,selected}
+    assert.ok(!mouseEnabled && selected === selectionText, 'plain drag must create native terminal selection without F7')
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+    await page.click('#native-copy')
+    const clipboard = await page.evaluate(() => navigator.clipboard.readText()).catch(() => null)
+    await capture('native-03-copy')
+    if (!options['native-session']) {
+    // Keyboard navigation is the same public user flow in native mouse mode.
+    for (let i=0;i<65;i++) {
+      if (await page.evaluate(() => />\s+Provider Accounts/.test(terminalScreen()))) break
+      await press('\x1b[A')
+    }
+    await press('\r')
+    await waitFor(() => page.evaluate(() => terminalScreen().includes('/provider accounts')))
+    await press('\x15'); await typeText('/provider login-status fixture'); await press('\r')
+    await waitFor(() => requests.includes('GetProviderLoginStatus'))
+    await sleep(800)
+    await capture('native-04-link')
+    }
+    const mark = output.length
+    const linkAt = await rowOf(url)
+    let activated = false
+    if (linkAt) {
+      const linkCoords = await page.evaluate(({x,y}) => {
+        const rect = document.querySelector('.xterm-screen').getBoundingClientRect()
+        return {x:rect.x+(x+8)*rect.width/term.cols,y:rect.y+(y+0.5)*rect.height/term.rows}
+      }, linkAt)
+      await page.keyboard.down('Control')
+      await page.mouse.move(linkCoords.x,linkCoords.y); await sleep(400)
+      await page.mouse.click(linkCoords.x,linkCoords.y)
+      await page.keyboard.up('Control'); await sleep(500)
+      activated = await page.evaluate(expected => openedLinks.includes(expected),url)
+    }
+    await sleep(2000)
+    const popupDiagnostic = await page.evaluate(() => ({requested:window.openedWindow,links:openedLinks}))
+    const openedPage = page.context().pages().find(value => value !== page)
+    let browserUrl = openedPage ? openedPage.url() : null
+    if (openedPage) { await openedPage.waitForURL('https://github.com/**',{timeout:30_000}).catch(() => {}); browserUrl = openedPage.url() }
+    await capture('native-05-click')
+    result = {items:['MP-08','MP-10','MP-11'],mode:'native-selection',source:options.source,
+      cli,cliSha256:await (cli.endsWith('.js') ? hashClient(path.dirname(cli)) : hashFile(cli)),mouseEnabled,selected,clipboard,
+      browserUrl,popupDiagnostic,realProvider: Boolean(options['native-session']), kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null,
+      osc8:[...output.matchAll(/\x1b\]8;[^;\x1b\x07]*;([^\x1b\x07]*)/g)].some(match => match[1] === url),activated,
+      leftScreen:/\x1b\[\?1049l/.test(output),clickLeftScreen:/\x1b\[\?1049l/.test(output.slice(mark)),
+      acceptance:'Real built CLI/PTY/browser terminal regression with fixture login response. Native macOS Cmd-C/Cmd-click requires a physical desktop; Linux Ctrl-click is not macOS acceptance.'}
+    console.log(JSON.stringify(result))
+    await writeFile(path.join(evidence,'result.json'),JSON.stringify(result,null,2))
+    assert.ok(!mouseEnabled && selected === selectionText && clipboard === selected && result.osc8 && activated && browserUrl?.startsWith(url) && !result.leftScreen,'native selection/copy/link must stay in TUI')
+  } else if (options['waiting-room-paste']) {
     // Real owned kernel inventory changes while the user retains a selection.
     // Empty profiles need no login/credential and vanish with the owned home.
     await waitFor(async () => (await rowOf('Provider Accounts')) !== null, 60_000)
@@ -291,7 +373,7 @@ try {
       })
     } finally { await client.close() }
     result = {items: ['MP-08','MP-10'], mode: 'waiting-room-paste', source: options.source,
-      cli, cliSha256: await hashClient(path.dirname(cli)), kernelSha256: await hashFile(options['kernel-binary']),
+      cli, cliSha256: await (cli.endsWith('.js') ? hashClient(path.dirname(cli)) : hashFile(cli)), kernelSha256: await hashFile(options['kernel-binary']),
       dpr: Number(options.dpr ?? 1), fragmentMouse: Boolean(options['fragment-mouse']), cells}
     const green = cells.every(cell => cell.cleared && cell.rebuilt)
     console.log(JSON.stringify(result))
@@ -335,7 +417,7 @@ try {
       const emptyCopyKeptAlive = tui.exitCode === null
       await capture('a05-typed-and-empty-copy')
       result = { items: ['MP-08', 'MP-10'], mode: 'selection-review', source: options.source,
-        cli, cliSha256: await hashClient(path.dirname(cli)), kernelUrl: options['fleet-kernel-url'],
+        cli, cliSha256: await (cli.endsWith('.js') ? hashClient(path.dirname(cli)) : hashFile(cli)), kernelUrl: options['fleet-kernel-url'],
         provider: options.provider ?? 'codex', accountProfile: options['account-profile'], model: options.model,
         dpr: Number(options.dpr ?? 1), batchMouse: Boolean(options['batch-mouse']), fragmentMouse: Boolean(options['fragment-mouse']), copyKey: options['copy-key'] ?? 'f6',
         highlighted, keyboardCopy, typedAfterDrag, clearedByTyping, emptyCopyKeptAlive, pasted,
@@ -420,7 +502,7 @@ try {
     try { await waitFor(() => page.evaluate(() => /┃\s+(Join Existing Session|Projects|Provider Accounts|Machines|Theme)\b/.test(terminalScreen())), 20_000) } catch { waitingRoomAfterDelete = false }
     await capture('a10-after-delete')
     } catch (error) { flowError = error?.message ?? String(error) }
-    result = { items: ['MP-08','MP-11'], mode: 'attached', cli, cliSha256: await hashClient(path.dirname(cli)), source: options.source, dpr: Number(options.dpr ?? 1),
+    result = { items: ['MP-08','MP-11'], mode: 'attached', cli, cliSha256: await (cli.endsWith('.js') ? hashClient(path.dirname(cli)) : hashFile(cli)), source: options.source, dpr: Number(options.dpr ?? 1),
       kernelUrl: options['fleet-kernel-url'], provider: options.provider ?? 'codex', accountProfile: options['account-profile'], model: options.model,
       highlighted, heldAfterRefresh, typedAfterDrag, clearedByTyping, typedAfterClick, selectedWithQueue, queuedAtMeta, metaCopy, metaCopies, queueStripAfterMeta, kernelQueuedAfterMeta, queuedSurvived, waitingRoomAfterDelete, flowError,
       acceptance: 'real provider turns on the shared fleet kernel; macOS Terminal.app behavior requires the coordinator desktop check' }
@@ -431,137 +513,7 @@ try {
     if (options['expect-red']) assert.ok(!green, 'baseline must fail')
     else assert.ok(green, 'attached selection/focus regression')
     }
-  } else {
-  await waitFor(() => page.evaluate(() => terminalScreen().includes('Provider Accounts')))
-  const command = async text => {
-    // The ordinary waiting-room account control stages and focuses a command.
-    if (options['no-mouse']) { await press('\x1b[A'); await press('\x1b[A') }
-    else {
-    for (let i = 0; i < 60; i++) {
-      // The completed intro pushes the bottom control rows below a short PTY.
-      tui.terminal.write('\x1b[<65;60;20M'.repeat(12)); await sleep(100)
-      if (await page.evaluate(() => />\s+Provider Accounts/.test(terminalScreen()))) break
-      await press('\x1b[A')
-    }
-    assert.ok(await page.evaluate(() => />\s+Provider Accounts/.test(terminalScreen())), 'navigate to the visible Provider Accounts control')
-    }
-    await press('\r')
-    await waitFor(() => page.evaluate(() => terminalScreen().includes('/provider accounts')), 90_000)
-    await capture('03b-accounts-command'); await press('\x15')
-    for (const c of text) { tui.terminal.write(c); await sleep(15) }
-    await press('\r')
-  }
-  await capture('01-waiting-room')
-  // Select an ordinary text row via actual SGR mouse reports, then release.
-  // Compare the terminal's cell colors while dragging and after release.
-  const selection = await page.evaluate(() => {
-    const rows = terminalScreen().split('\n'); const y = rows.findIndex(row => row.includes('Provider Accounts'))
-    return { x: rows[y].indexOf('Provider Accounts'), y }
-  })
-  const colors = () => page.evaluate(({x,y}) => {
-    const line = term.buffer.active.getLine(term.buffer.active.viewportY+y)
-    return Array.from({length:16},(_,i)=>line.getCell(x+i).getBgColor())
-  }, selection)
-  const before = await colors()
-  let retained
-  if (options['no-mouse']) {
-    const coords = await page.evaluate(({x,y}) => {
-      const rect = document.querySelector('.xterm-screen').getBoundingClientRect()
-      return { x: rect.x, y: rect.y, cw: rect.width/term.cols, ch: rect.height/term.rows, col: x, row: y }
-    }, selection)
-    await page.mouse.move(coords.x+coords.cw*(coords.col+0.2), coords.y+coords.ch*(coords.row+0.5))
-    await page.mouse.down()
-    await page.mouse.move(coords.x+coords.cw*(coords.col+17.2), coords.y+coords.ch*(coords.row+0.5), { steps: 20 })
-    await capture('02-dragging')
-    await page.mouse.up()
-    await sleep(500)
-    retained = await page.evaluate(() => term.getSelection() === 'Provider Accounts')
-  } else {
-  await mouse(`\x1b[<0;${selection.x+1};${selection.y+1}M`)
-  const move = `\x1b[<32;${selection.x+16};${selection.y+1}M`
-  await mouse(options['batch-mouse'] ? `\x1b[<32;${selection.x+8};${selection.y+1}M${move}` : move)
-  }
-  const during = await colors()
-  if (!options['no-mouse']) await capture('02-dragging')
-  const copyMark = output.length
-  if (!options['no-mouse']) await mouse(`\x1b[<0;${selection.x+16};${selection.y+1}m`)
-  await sleep(500)
-  const after = await colors()
-  await capture('03-released')
-  if (!options['no-mouse']) retained = JSON.stringify(before) !== JSON.stringify(during) && JSON.stringify(during) === JSON.stringify(after)
-  const copyCount = await page.evaluate(() => copies.length)
-  if (!options['no-mouse']) await press(copySequence)
-  const keyboardCopy = options['no-mouse'] ? null : await page.evaluate(count => copies.length > count, copyCount)
-  // Stage a command through real key input. Never start a real login process.
-  await command('/provider login-status fixture')
-  await waitFor(() => requests.includes('GetProviderLoginStatus'))
-  await sleep(600)
-  await capture('04-claude-link')
-  let nativeSelection = false
-  let hyperlinkActivated = false
-  if (output.includes(`\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\`)) {
-    const coords = await page.evaluate(length => {
-      const y = terminalScreen().split('\n').findIndex(line => line.startsWith('https://claude.ai/'))
-      const rect = document.querySelector('.xterm-screen').getBoundingClientRect()
-      return { x: rect.x, y: rect.y, cw: rect.width/term.cols, ch: rect.height/term.rows, row: y, endRow: y+Math.floor(length/term.cols), endCol: length%term.cols }
-    }, url.length)
-    assert.ok(coords.row >= 0)
-    await page.mouse.move(coords.x+coords.cw*0.2, coords.y+coords.ch*(coords.row+0.5))
-    await page.mouse.down()
-    await page.mouse.move(coords.x+coords.cw*(coords.endCol+0.2), coords.y+coords.ch*(coords.endRow+0.5), { steps: 20 })
-    await page.mouse.up()
-    nativeSelection = await page.evaluate(expected => term.getSelection() === expected, url)
-    await capture('04b-native-url-selection')
-    await page.keyboard.down('Control')
-    await page.mouse.move(coords.x+coords.cw*10, coords.y+coords.ch*(coords.row+0.5))
-    await sleep(300)
-    await page.mouse.click(coords.x+coords.cw*10, coords.y+coords.ch*(coords.row+0.5))
-    await page.keyboard.up('Control')
-    hyperlinkActivated = await page.evaluate(expected => openedLinks.includes(expected), url)
-  }
-  const linkMark = output.length
-  await press('c'); await sleep(300)
-  await capture('05-copy-link')
-  const fullLink = output.includes(`\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\`)
-  const exactCopy = (await page.evaluate(() => copies)).some(payload => Buffer.from(payload,'base64').toString() === url)
-  // A terminal OpenTUI reports without OSC 52: honest guidance, no raw request.
-  const osc52Declined = options['expect-osc52'] === 'declined'
-  const honest = !output.slice(copyMark).includes('selection copied to clipboard') && (osc52Declined
-    ? output.slice(linkMark).includes('clipboard unavailable') && !output.includes('\x1b]52;')
-    : output.slice(linkMark).includes('unconfirmed'))
-  let deviceLink = false
-  let transcriptLink = false
-  let linkViewOnce = false
-  if (fullLink) {
-  await press(options['return-key'] === 'ctrl-c' ? '\x03' : '\r')
-  // The same prompt regains focus after the handoff, with mouse mode restored.
-  await sleep(600)
-  await capture('05b-returned')
-  transcriptLink = await page.evaluate(() => terminalScreen().includes('https://claude.ai/oauth/authorize?client_id=fixture'))
-  // A second status check of the same waiting login must not hand off again.
-  const statusMark = output.length
-  await press('\x15'); await typeText('/provider login-status fixture'); await press('\r')
-  await waitFor(() => requests.filter(request => request === 'GetProviderLoginStatus').length >= 2)
-  await sleep(800)
-  await capture('05c-status-again')
-  linkViewOnce = !output.slice(statusMark).includes('Provider authorization link')
-  if (!linkViewOnce) { await press('\r'); await sleep(600) }
-  await press('\x15')
-  for (const c of '/provider login codex') { tui.terminal.write(c); await sleep(15) }
-  await press('\r')
-  await sleep(700)
-  await capture('06-codex-link')
-  deviceLink = output.includes(`\x1b]8;;${deviceUrl}\x1b\\${deviceUrl}\x1b]8;;\x1b\\`)
-  await press('\r')
-  }
-  result = { items: ['MP-08','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null, source: options.source, dpr: Number(options.dpr ?? 1), mouse: !options['no-mouse'], fragmentMouse: Boolean(options['fragment-mouse']), retained, keyboardCopy, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, upstreamResponses, transcriptLink, linkViewOnce, term: options.term ?? 'xterm-256color', expectOsc52: options['expect-osc52'] ?? 'supported', selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
-  await writeFile(path.join(evidence, 'terminal.pty'), output)
-  console.log(JSON.stringify(result))
-  const copied = osc52Declined ? !exactCopy : exactCopy
-  if (options['expect-red']) assert.ok(!retained || !keyboardCopy || !fullLink || !copied || !honest || !deviceLink || !transcriptLink || !linkViewOnce, 'baseline must fail')
-  else assert.ok(retained && fullLink && copied && nativeSelection && hyperlinkActivated && honest && deviceLink && transcriptLink && linkViewOnce, 'selection/link regression')
-  if (!options['expect-red'] && !options['no-mouse']) assert.ok(osc52Declined ? !keyboardCopy : keyboardCopy, 'F6 must copy the retained selection only through OSC 52 support')
-  if (kernelUrl) assert.ok(upstreamResponses.some(entry => entry.request === 'ListProviderAccountProfiles' && entry.response === 'ProviderAccountProfilesListed'), 'ordinary account inventory must come from the owned real kernel')
+
   }
   }
 } finally {
@@ -572,7 +524,45 @@ try {
   await new Promise(resolve => fixture.close(resolve))
   await Promise.allSettled([...upstreamClients].map(client => client.close()))
   frontend?.stop(true)
-  await stop(kernel)
+  if (kernel && kernel.exitCode === null) {
+    const audit = Bun.spawn(['python3','-c',`
+import os,json
+root=int(__import__('sys').argv[1]); assert root>1
+rows={}
+for name in os.listdir('/proc'):
+ if name.isdigit():
+  try:
+   v=open('/proc/'+name+'/stat').read().rsplit(')',1)[1].split(); rows[int(name)]=(int(v[1]),v[19])
+  except (OSError,IndexError,ValueError): pass
+owned={root}; changed=True
+while changed:
+ changed=False
+ for pid,(parent,start) in rows.items():
+  if parent in owned and pid not in owned: owned.add(pid); changed=True
+print(json.dumps([[pid,rows[pid][1]] for pid in owned if pid!=root and pid>1]))
+`,String(kernel.pid)],{stdout:'pipe'})
+    const owned = JSON.parse(await new Response(audit.stdout).text()); await audit.exited
+    await stop(kernel)
+    const cleanup = Bun.spawn(['python3','-c',`
+import os,json,signal,sys,time
+rows=json.loads(sys.argv[1]); stopped=[]; live=[]
+for pid,start in rows:
+ assert isinstance(pid,int) and pid>1
+ try:
+  v=open('/proc/'+str(pid)+'/stat').read().rsplit(')',1)[1].split()
+  if v[19]!=start or v[0]=='Z': continue
+  fd=os.pidfd_open(pid); signal.pidfd_send_signal(fd,signal.SIGTERM); time.sleep(.1)
+  try:
+   v=open('/proc/'+str(pid)+'/stat').read().rsplit(')',1)[1].split()
+   if v[19]==start and v[0]!='Z': signal.pidfd_send_signal(fd,signal.SIGKILL)
+  except OSError: pass
+  os.close(fd); stopped.append(pid)
+ except ProcessLookupError: pass
+ except FileNotFoundError: pass
+print(json.dumps({'stopped':stopped}))
+`,JSON.stringify(owned)],{stdout:'pipe'})
+    await writeFile(path.join(evidence,'descendant-cleanup.json'),await new Response(cleanup.stdout).text()); await cleanup.exited
+  } else await stop(kernel)
   await rm(scratch, { recursive: true, force: true })
   if (!options.interactive) await writeFile(path.join(evidence, 'terminal.pty'), output)
   await writeFile(path.join(evidence, 'result.json'), JSON.stringify({ source: options.source, ...result, requests, upstreamResponses, cleanup: 'owned TUI/kernel/browser/proxy stopped; disposable state removed' }, null, 2))

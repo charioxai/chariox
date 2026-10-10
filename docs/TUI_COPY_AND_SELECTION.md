@@ -1,35 +1,23 @@
-# TUI copy and selection (MP-08 / MP-10)
+# TUI copy and links (MP-08 / MP-10 / MP-11)
 
-Drag across transcript text to select it. Releasing the mouse copies the
-selection and keeps its highlight. Press **F6** to copy it again. F6 works with
-legacy terminal keyboard input, including Terminal.app and tmux without extended
-keys; a Mac keyboard may require Fn+F6. **Meta+C** also copies a selection and
-otherwise retains its queued-prompt cancel action.
+Drag-select text, then use the terminal's Copy action: **Cmd-C** in
+Terminal.app/iTerm/kitty on macOS. No F7, Shift modifier or clipboard extension
+is required. The terminal owns the selection and clipboard by default, including
+over SSH. Use keyboard navigation for TUI controls.
 
-**Ctrl+C stops the active agent or exits an idle CLI.** Terminal.app and other
-terminals without extended keyboard support send that same byte for Ctrl+Shift+C,
-so use F6 instead. The TUI accepts a separately encoded Ctrl+Shift+C when the
-terminal supplies it, but does not advertise it as a portable copy key.
+**Cmd-click** opens a link using the terminal's native handling. Terminal.app
+may require **Cmd-double-click**. Links remain on the TUI screen; Chariox does
+not switch to a plain terminal buffer. Terminals supporting OSC 8 receive the
+complete URL even when the displayed link wraps. Terminals without OSC 8 use
+the displayed URL and their native URL detection.
 
-Over SSH, OSC 52 clipboard delivery is unconfirmed and some terminals ignore it.
-Use the terminal's native Copy action after Shift-dragging (terminal dependent),
-or set `CHARIOX_TUI_MOUSE=off` to select text with the terminal itself.
+`CHARIOX_TUI_MOUSE=on` opts into app mouse controls. In that mode, transcript
+drag-release, **F6** and **Meta+C** use the app clipboard path; OSC 52 delivery
+is unconfirmed over SSH. Use the terminal's selection modifier in that mode.
+**Ctrl-C** retains its stop-active-agent / exit-idle-CLI action.
 
-## Provider sign-in links (MP-08 / MP-11)
-
-A provider sign-in (for example `/provider login claude <profile>`) appears as
-numbered steps above the prompt with a countdown. The authorization link sits
-alone on its rows, wrapped only at the terminal edge, and is an OSC 8 hyperlink
-where the terminal supports it (`CHARIOX_TUI_HYPERLINKS=off` keeps plain text).
-The code field has the cursor: paste the provider's code and press Enter.
-
-Click the link (mouse reporting stays on). On the local desktop Chariox opens
-the browser. Over SSH it shows the plain link view: the link is one
-terminal-wrapped line for Cmd-click or native selection, and pasting the code
-there returns to Chariox with it. With the code field empty, **O** does the
-same and **C** copies the link (OSC 52 over SSH is a request, never a
-confirmed copy).
-
-After the code is sent the TUI follows the kernel's login status and ends with
-`Signed in to <provider> · saved to <profile>` or the reason the sign-in failed
-and the command that retries it.
+Provider sign-in remains in the TUI: open the authorization link in your desktop
+browser, paste the returned code into the focused Code field, and press Enter.
+The kernel's result reports who signed in and which profile was saved. On a
+local desktop, an explicit login start or the **O** action may also ask the
+browser to open; SSH links open on the client through the terminal.

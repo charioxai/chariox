@@ -6,7 +6,6 @@ import {
   type ProviderLoginView,
 } from "@chariox/kernel-client/provider-login-projection"
 import type { ProviderAuthStatus, ProviderLoginStatus, RuntimeInteraction } from "./cli-types.js"
-import type { ProviderLoginLinkOptions } from "./provider-login-link.js"
 
 /** The kernel ends a provider login 10 minutes after it starts. */
 const PROVIDER_LOGIN_TIMEOUT_MS = 10 * 60_000
@@ -35,9 +34,6 @@ export type ProviderLoginInteractionControllerDeps = {
   localDesktop: () => boolean
   openUrl: (url: string) => Promise<boolean>
   copyUrl: (url: string) => Promise<string>
-  showPlainLink: (url: string, options: ProviderLoginLinkOptions) => Promise<boolean | void>
-  /** Hands text pasted in the plain link view to the code field. */
-  pasteCode: (interaction: RuntimeInteraction, text: string) => void
   appendNotice: (message: string, tone?: NoticeTone) => void
   flashFooter: (message: string, tone: FooterTone) => void
   render: () => void
@@ -214,23 +210,11 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
       const state = stripState(interaction)
       if (!state?.view.url) return
       try {
-        // Only a local desktop can open a browser for the user. Over SSH the
-        // plain view leaves the link to the terminal (OSC 8 or URL detection).
         if (deps.localDesktop() && await deps.openUrl(state.view.url)) {
           deps.flashFooter("Opened the link in your browser", "info")
           return
         }
-        await deps.showPlainLink(state.view.url, {
-          force: true,
-          autoOpen: false,
-          title: state.view.title,
-          ...(state.view.takesCode
-            ? {
-              steps: [...state.view.steps.slice(0, -1), "Paste the code here (Cmd-V); Chariox returns with it."],
-              onPaste: (text: string) => deps.pasteCode(interaction, text),
-            }
-            : { steps: state.view.steps }),
-        })
+        deps.flashFooter("Cmd-click the link (Terminal.app: Cmd-double-click) to open it, or drag-select it and press Cmd-C", "info")
       } catch (error) {
         deps.flashFooter(`Could not show the link: ${error instanceof Error ? error.message : String(error)}`, "error")
       }

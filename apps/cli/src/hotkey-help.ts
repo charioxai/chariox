@@ -16,7 +16,7 @@ const GLOBAL_HOTKEYS: HotkeyItem[] = [
   { keys: "Ctrl+E", description: "Exit the CLI with the same behavior as /exit." },
   { keys: "Ctrl+C", description: "Stop the active agent; if idle, exit the CLI." },
   { keys: "F6 / Meta+C", description: "Copy the selected text (drag release also copies); OSC 52 delivery is unconfirmed over SSH." },
-  { keys: "Native selection", description: "Hold Shift while dragging (terminal dependent), then use terminal Copy. Set CHARIOX_TUI_MOUSE=off to disable mouse capture." },
+  { keys: "Drag + terminal Copy", description: "Drag-select, then Cmd-C (macOS) or your terminal Copy shortcut. CHARIOX_TUI_MOUSE=on enables app mouse controls; use keyboard navigation by default." },
 ]
 
 const SESSION_HOTKEYS: HotkeyItem[] = [

@@ -21,8 +21,6 @@ function harness(statuses: Array<ProviderLoginStatus | Error>, overrides: Partia
   const timers: Array<() => void> = []
   const notices: string[] = []
   const flashes: Array<{ message: string; tone: string }> = []
-  const shown: unknown[] = []
-  const pasted: string[] = []
   const controller = createProviderLoginInteractionController({
     getKernelId: async () => "fleet",
     getLoginStatus: async () => {
@@ -35,8 +33,6 @@ function harness(statuses: Array<ProviderLoginStatus | Error>, overrides: Partia
     localDesktop: () => false,
     openUrl: async () => true,
     copyUrl: async () => "clipboard request sent (OSC 52, unconfirmed); if empty, use native selection and Copy",
-    showPlainLink: async (_url, options) => { shown.push(options); options.onPaste?.("code#state"); return true },
-    pasteCode: (_interaction, text) => { pasted.push(text) },
     appendNotice: (message) => { notices.push(message) },
     flashFooter: (message, tone) => { flashes.push({ message, tone }) },
     render: () => {},
@@ -46,7 +42,7 @@ function harness(statuses: Array<ProviderLoginStatus | Error>, overrides: Partia
     ...overrides,
   })
   const tick = async () => { const next = timers.shift(); next?.(); for (let i = 0; i < 5; i++) await Promise.resolve() }
-  return { controller, tick, timers, notices, flashes, shown, pasted }
+  return { controller, tick, timers, notices, flashes }
 }
 
 test("MP-08/MP-11 a sent code waits for the kernel and ends with who signed in and where it was saved", async () => {
@@ -154,17 +150,14 @@ test("MP-08/MP-11 retry and Vault phases keep the kernel's message and still fol
   }
 })
 
-test("MP-08/MP-11 over SSH the link opens in the plain view, whose paste fills the code field", async () => {
+test("MP-08/MP-11 MP-10 over SSH a link click stays in the TUI and explains native opening", async () => {
   const h = harness([status("running")])
   await h.controller.openLink(interaction)
-  assert.equal(h.shown.length, 1)
-  assert.match(JSON.stringify(h.shown[0]), /"force":true/)
-  assert.deepEqual(h.pasted, ["code#state"])
+  assert.match(h.flashes.at(-1)!.message, /Cmd-click.*Cmd-double-click.*Cmd-C/)
   await h.controller.copyLink(interaction)
   assert.match(h.flashes.at(-1)!.message, /^Link: clipboard request sent \(OSC 52, unconfirmed\)/)
   const local = harness([status("running")], { localDesktop: () => true })
   await local.controller.openLink(interaction)
-  assert.equal(local.shown.length, 0)
   assert.equal(local.flashes.at(-1)!.message, "Opened the link in your browser")
 })
 
