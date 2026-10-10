@@ -456,7 +456,7 @@ export class KernelBrowserHost {
       if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
       if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
-        ![1, 2].includes(command.device_scale_factor) || (geometry.width===1920&&command.device_scale_factor!==1) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
+        ![1, 2].includes(command.device_scale_factor) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
       // MP-08/MP-10/MP-11: observation never changes the native page density.
       const scale = hostViewport().device_scale_factor;
       this.scales.set(tab.tab_id, scale);
