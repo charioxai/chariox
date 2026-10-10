@@ -3294,7 +3294,7 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
 
 // MP-08 / MP-10 / MP-11: user-selected workspace trust uses the official native selector.
 #[test]
-fn claude_selected_workspace_trust_does_not_project_an_interaction() {
+fn claude_selected_workspace_trust_is_automatic_only_at_startup() {
     let worktree = crate::test_support::TestWorktree::new("claude-chosen-trust");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -3350,6 +3350,26 @@ fn claude_selected_workspace_trust_does_not_project_an_interaction() {
     }
     std::thread::sleep(std::time::Duration::from_millis(100));
     let input = fs::read_to_string(&capture).unwrap_or_default();
+    // A warm assistant can quote a startup frame. That untrusted observation
+    // must never gain the startup-only automatic approval authority.
+    write_claude_native_marker(&context, "accepted:previous-real-turn");
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_terminal_output(
+            session.id(),
+            run.id(),
+            &run,
+            Some(std::sync::Arc::new(bridge.clone())),
+            &rendered,
+        )
+        .unwrap();
+    let mut warm_projected = Vec::new();
+    for _ in 0..100 {
+        warm_projected = bridge.interaction_ids.lock().unwrap().clone();
+        if !warm_projected.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     app.pty.remove_process(run.id()).unwrap();
     app.shutdown_cleanup().unwrap();
     fs::remove_dir_all(root).unwrap();
@@ -3360,6 +3380,11 @@ fn claude_selected_workspace_trust_does_not_project_an_interaction() {
     assert!(
         approved,
         "native trust must complete before prompt injection"
+    );
+    assert_eq!(
+        warm_projected.len(),
+        1,
+        "warm provider text must remain explicitly gated"
     );
     assert!(
         input.contains("\x1b[B\n"),

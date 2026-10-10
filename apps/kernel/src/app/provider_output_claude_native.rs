@@ -1802,7 +1802,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let agent = self.app.agents.get_agent(&agent_id)?;
         let selected =
             std::path::Path::new(agent.worktree_id().unwrap_or_else(|| session.worktree_id()));
-        if provider_run.session_id() == session_id
+        if !claude_headless_composer_initialized(context_file)
+            && provider_run.session_id() == session_id
             && agent.session_id() == session_id
             && workspace_trust::selected_workspace_is_trust_target(
                 selected,
