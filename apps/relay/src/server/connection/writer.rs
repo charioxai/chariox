@@ -208,7 +208,16 @@ pub(super) async fn run_writer<S>(
                 if text.len() > CHUNK_BYTES {
                     if !chunks || text.len() > MAX_MESSAGE_BYTES {
                         let _ = writer.send(Message::Text("{\"kind\":\"close\",\"reason\":\"relay bounded transport requires an updated client\"}".into())).await;
-                        let _ = writer.send(Message::Close(None)).await;
+                        // MP-08 / MP-10 / MP-11: legacy clients project the final
+                        // WebSocket close after the application close; retain its action.
+                        let _ = writer
+                            .send(Message::Close(Some(
+                                tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                                    code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Policy,
+                                    reason: "relay bounded transport requires an updated client".into(),
+                                },
+                            )))
+                            .await;
                         return;
                     }
                     let Some(id) = next_id.checked_add(1) else {
@@ -269,6 +278,46 @@ pub(super) async fn run_writer<S>(
 mod tests {
     use super::*;
     use futures_util::StreamExt;
+
+    // MP-08 / MP-10 / MP-11: clients project the final native close to the user.
+    #[tokio::test]
+    async fn legacy_large_response_retains_upgrade_reason_in_native_close() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = tokio::spawn(async move {
+            tokio_tungstenite::connect_async(format!("ws://{address}"))
+                .await
+                .unwrap()
+                .0
+        });
+        let (stream, _) = listener.accept().await.unwrap();
+        let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let mut client = client.await.unwrap();
+        let (tx, rx) = mpsc::channel(8);
+        let (_ack_tx, ack_rx) = mpsc::channel(8);
+        let (_control_tx, control_rx) = mpsc::channel(8);
+        tx.send(Message::Text("x".repeat(CHUNK_BYTES + 1).into()))
+            .await
+            .unwrap();
+        let task = tokio::spawn(run_writer(socket, rx, false, ack_rx, control_rx));
+        let message = client.next().await.unwrap().unwrap();
+        assert!(
+            matches!(message, Message::Text(text) if text.contains("requires an updated client"))
+        );
+        let Message::Close(Some(close)) = client.next().await.unwrap().unwrap() else {
+            panic!("native close must preserve the actionable upgrade reason");
+        };
+        assert_eq!(
+            close.code,
+            tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Policy
+        );
+        assert_eq!(
+            close.reason,
+            "relay bounded transport requires an updated client"
+        );
+        task.await.unwrap();
+        let _ = client.close(None).await;
+    }
 
     // MP-08 / MP-10 / MP-11: ACK of a later chunk must release drained small traffic
     // even while another bulk chunk remains outstanding.
