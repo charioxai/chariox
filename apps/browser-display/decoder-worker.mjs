@@ -1,17 +1,21 @@
 // MD-DISPLAY-04: one bounded decoder job; dependency order stays in presenter.
 const inWorker=typeof WorkerGlobalScope!=='undefined'&&globalThis instanceof WorkerGlobalScope;
 if(inWorker){
- let decoder,pending;
- const fail=()=>{const id=pending;pending=null;self.postMessage({id,error:'MD-DISPLAY: worker decode failed'})};
+ let decoder,pending,format;
+ const fail=()=>{const id=pending;pending=null;if(decoder&&decoder.state!=='closed')decoder.close();decoder=null;format=null;self.postMessage({id,error:'MD-DISPLAY: worker decode failed'})};
  self.onmessage=({data})=>{
   const {id,codec,key,sequence,width,height,bytes}=data;
   try{
    if(pending!==undefined&&pending!==null)throw Error('queue bound');
    if(!Number.isSafeInteger(id)||bytes.byteLength>4*1024*1024||!['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(codec))throw Error('codec bound');
    pending=id;
-   if(!decoder||key){
+   const nextFormat=`${codec}:${width}:${height}`;
+   if(!decoder||format!==nextFormat){
+    if(!key)throw Error('independent key required');
+    // MP-08/MP-10: decoding a key replaces codec references without paying
+    // codec process startup again. Reconfigure only for a stream format change.
     decoder?.close();decoder=new VideoDecoder({output:frame=>{if(pending===null||pending===undefined){frame.close();return}const id=pending;pending=null;self.postMessage({id,frame},[frame])},error:fail});
-    decoder.configure({codec,codedWidth:width,codedHeight:height,optimizeForLatency:true});
+    decoder.configure({codec,codedWidth:width,codedHeight:height,optimizeForLatency:true});format=nextFormat;
    }
    decoder.decode(new EncodedVideoChunk({type:key?'key':'delta',timestamp:sequence*16667,data:bytes}));
   }catch{fail()}
