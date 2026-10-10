@@ -18,7 +18,7 @@ import {
   sessionPromptStateRecordForAgent,
   type SessionAgentPromptStateLike,
 } from "./session-agent-prompt-state.js"
-import { sessionAgentNextWake } from "./agent-wake-status.js"
+import { agentTaskStatus } from "@chariox/tool-display/agent-task-status"
 
 export type AgentRuntimeProjectionContext = {
   readonly agentActivity?: Record<string, AgentRuntimeActivityBusyInput> | null | undefined
@@ -83,6 +83,7 @@ export function sessionFocusedStatusBadge(options: {
   readonly activeStatusLabel: string | null
   readonly focusedBusy: boolean
   readonly agents?: readonly SessionAgentBusyState[]
+  readonly taskStatus?: SessionAgentPaneStatusBadge | null
 }): SessionFocusedStatusBadge {
   if (!options.attached) {
     return sessionStatusBadge([])
@@ -92,6 +93,9 @@ export function sessionFocusedStatusBadge(options: {
   }
 
   const agents = options.agents
+  if (options.taskStatus && (!agents || agents.length <= 1)) {
+    return sessionStatusBadge([options.taskStatus])
+  }
   if (!agents || agents.length <= 1) {
     if (!options.focusedBusy) {
       return sessionStatusBadge([{ label: "IDLE", tone: "idle" }])
@@ -333,21 +337,6 @@ function promptStateHasActivePrompt(state: SessionAgentPromptStateLike | null | 
 
 // MP-08 / MP-09 / MP-10 / MP-11 A02: older unfinished tasks survive newer answers.
 export function sessionAgentTaskStatus(session: RuntimeSession | null | undefined, agentId: string): SessionAgentPaneStatusBadge | null {
-  const tasks = (session?.agent_tasks ?? []).filter((task) => task.agent_id === agentId)
-  if (!tasks.length) return null
-  const unfinished = tasks.filter((task) => task.state !== "done" && task.state !== "cancelled")
-  const task = unfinished.find((task) => task.state === "blocked")
-    ?? unfinished.find((task) => task.state === "working")
-    ?? unfinished[0] ?? tasks[tasks.length - 1]!
-  const open = tasks.flatMap((task) => task.obligations).filter((item) => ["open", "settling", "failed"].includes(item.status)).length
-  const suffix = open ? ` (${open} obligations)` : ""
-  if (task.state === "waiting") {
-    const deadline = task.wait?.deadline_ms
-    if (!deadline || !Number.isFinite(deadline) || deadline > 8.64e15) return { label: `BLOCKED: Invalid wait deadline${suffix}`, tone: "error" }
-    const wake = sessionAgentNextWake(session, agentId)
-    const next = !wake ? "" : wake.next_due_ms ? ` · NEXT WAKE ${wake.label} AT ${new Date(wake.next_due_ms).toISOString()}` : ` · WATCHING ${wake.label}`
-    return { label: `WAITING ON ${task.reason} UNTIL ${new Date(deadline).toISOString()}${next}${suffix}`, tone: "idle" }
-  }
-  if (task.state === "blocked") return { label: `BLOCKED: ${task.reason}${suffix}`, tone: "error" }
-  return { label: `${task.state.toUpperCase()}${suffix}`, tone: task.state === "working" ? "working" : "idle" }
+  const status = agentTaskStatus(session, agentId)
+  return status ? { label: status.label, tone: status.tone } : null
 }

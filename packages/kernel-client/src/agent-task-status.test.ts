@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import type { AgentTaskExecution, RuntimeSession } from "./kernel-types-session.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
-import { sessionAgentTaskStatus } from "./session-runtime-status.js"
+import { sessionAgentTaskStatus, sessionFocusedStatusBadge } from "./session-runtime-status.js"
 function task(state: AgentTaskExecution["state"]): AgentTaskExecution {
   return { task_id: state, room_id: "room", owner_user_id: "owner", agent_id: "agent", prompt_id: state,
     provider_run_id: null, revision: 1, blocked_revision: 0, state, reason: "delegate result",
@@ -27,4 +27,13 @@ test("MP-08/MP-10/MP-11 A02 task DTO requires protocol452",()=>{ assert.equal(LO
 test("MP-08/MP-09/MP-10/MP-11 A02 malformed wait is safely blocked", () => {
   const session = { agent_tasks: [{ ...task("waiting"), wait: null }] } as RuntimeSession
   assert.match(sessionAgentTaskStatus(session, "agent")!.label, /^BLOCKED: Invalid wait deadline/)
+})
+
+// MP-08/MP-10/MP-11 G13: actual single-pane status must show the durable wait.
+test("focused footer does not call a durable waiting task idle", () => {
+  const session = { agent_tasks: [task("waiting")] } as RuntimeSession
+  const options = { attached: true, daemonDisconnected: false, activeStatusLabel: null,
+    focusedBusy: false, agents: [{ id: "agent", busy: false }],
+    taskStatus: sessionAgentTaskStatus(session, "agent") }
+  assert.match(sessionFocusedStatusBadge(options).label, /^WAITING ON delegate result UNTIL /)
 })
