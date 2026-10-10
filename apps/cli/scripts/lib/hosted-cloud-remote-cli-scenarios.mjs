@@ -371,7 +371,7 @@ export async function runHostedRemoteCliPairingAssertions({
     )
 
     await localAutomation.send("submit_prompt", {
-      prompt: `Reply with exactly ${localMarker} and nothing else.`,
+      prompt: `Read docs/PROTOCOL.md section 3.3.2 with an official tool and fetch https://developer.mozilla.org/en-US/docs/Web/API/WebSocket. Explain the home/worker authority boundary and name the public page title. Do not modify files. Finish with ${localMarker}.`,
     })
     await Promise.all([
       waitForHistoryText(homeClient, requests, localSession.id, localSnapshot.session.focusedAgentId, localMarker, pollTimeoutMs, undefined, { providerOutputOnly: true }),
@@ -379,7 +379,7 @@ export async function runHostedRemoteCliPairingAssertions({
     ])
 
     await remoteAutomation(remoteSocket, "submit_prompt", {
-      prompt: `Reply with exactly ${remoteMarker} and nothing else.`,
+      prompt: `Read docs/PROTOCOL.md section 3.3.2 with an official tool and fetch https://developer.mozilla.org/en-US/docs/Web/API/WebSocket. Explain which kernel owns the session and name the public page title. Do not modify files. Finish with ${remoteMarker}.`,
       timeoutMs: pollTimeoutMs,
     }, { runSsh, shellQuote, assert })
     await Promise.all([
