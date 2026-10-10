@@ -859,3 +859,14 @@ test("MP-11: every Vault-filled non-password field is masked like the pixel path
     for (const value of ["2031-04", "5550100", "note1234", "pw998877"]) assert(!wire.includes(value), `MP-11: ${value} never travels`);
     assert(rows(packet.nodes).some(r => r.tag === "input" && r.attrs.id === "p" && /^•+$/.test(r.form?.value)), "MP-11: the password field stays a field showing dots");
   }));
+
+// Decision G (GitHub ref picker): the click's focus must not leave in a packet of its own ahead of the overlay the
+// click renders a frame later; one packet carries both.
+test("MP-10: a click that focuses a button and renders its overlay a frame later reaches the viewer as one packet", () => mirrored(
+  '<button id="b">main</button><div id="host"></div><script>b.addEventListener("click",()=>setTimeout(()=>{b.setAttribute("aria-expanded","true");host.innerHTML="<div class=overlay><h2>Switch branches/tags</h2></div>"},17))</script>', async ({ next, input }) => {
+    const snapshot = await next(), button = elements(snapshot).find(([, tag, attrs]) => tag === "button" && attrs.id === "b")[0];
+    await input(snapshot.sequence, { kind: "click", node_id: button, x: 5, y: 5 });
+    const first = await next(1500);
+    assert.equal(first.focused, button, "MP-10: the focus travels");
+    assert(first.ops.some(op => op.op === "children") && JSON.stringify(first.ops).includes("Switch branches/tags"), `MP-10: with the overlay in the same packet: ${JSON.stringify(first.ops).slice(0, 300)}`);
+  }));

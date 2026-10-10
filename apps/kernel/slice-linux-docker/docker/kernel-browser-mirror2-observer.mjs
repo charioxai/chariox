@@ -89,7 +89,7 @@ export function installMirror2(sanitizeMirrorCss) {
     // use gets a new key). Keys are never reused within a document, below the frame key slot.
     const urlKeys = new Map(); let keySerial = 0, snapshotted = false;
     let selectedDoc = null; // the document whose selection changed last
-    let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, lastStateCheck = 0, stateCursor = 0, lastHostCheck = 0, hostCursor = 0;
+    let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, lastStateCheck = 0, stateCursor = 0, lastHostCheck = 0, hostCursor = 0, pressedAt = -Infinity;
     const dirty = { children: new Set(), attrs: new Map(), text: new Set(), form: new Set(), state: new Set(), scroll: new Set(), replace: new Set(), sheets: new Set(), frames: new Set(), masks: new Set() };
     let waiters = [];
     const wake = () => { const list = waiters; waiters = []; for (const resolve of list) resolve(true); };
@@ -155,10 +155,14 @@ export function installMirror2(sanitizeMirrorCss) {
         // The composed target: a control inside an open shadow root, not its retargeted host.
         const formEvent = event => { const target = event.composedPath()[0] ?? event.target; changedForm(target); if (stateNodes.has(mirrored(target))) dirty.state.add(target); if (target.type === 'radio' && target.name) for (const radio of target.getRootNode().querySelectorAll?.('input[type=radio]') ?? []) if (radio.name === target.name) dirty.form.add(radio); wake(); };
         listen('input', formEvent); listen('change', formEvent); listen('reset', event => { for (const control of event.target.elements ?? []) changedForm(control); wake(); });
-        listen('focusin', wake);
+        // Focus and selection taken by a pointer press wait (50 ms at most) for the rest of its click, so the
+        // click's own changes (a menu rendered a frame later) leave in the same packet; other moves wake now.
+        listen('pointerdown', () => { pressedAt = performance.now(); });
+        const soon = () => { if (performance.now() - pressedAt < 100) setTimeout(wake, 50); else wake(); };
+        listen('focusin', soon);
         // Popover and dialog transitions (toggle does not bubble: capture sees it); the cursor samples the rest.
         const stateEvent = event => { const target = event.composedPath()[0] ?? event.target; if (target?.nodeType === 1) { dirty.state.add(target); wake(); } };
-        listen('toggle', stateEvent); listen('close', stateEvent); listen('selectionchange', event => { selectedDoc = event.target.nodeType === 9 ? event.target : event.target.ownerDocument; wake(); });
+        listen('toggle', stateEvent); listen('close', stateEvent); listen('selectionchange', event => { selectedDoc = event.target.nodeType === 9 ? event.target : event.target.ownerDocument; soon(); });
         listen('load', event => { const target = event.target; if (target?.localName === 'iframe') dirty.frames.add(target); else if (target?.localName === 'img') dirty.attrs.set(target, new Set(['src'])); else if (target?.localName === 'link') dirty.sheets.add(target); else return; wake(); });
       }
     };
@@ -530,7 +534,7 @@ export function installMirror2(sanitizeMirrorCss) {
         if (signature !== rootSignatures.get(id) || edited.has(id)) { rootSignatures.set(id, signature); ops.push({ op: 'adopted', id, sheets: adopted(root) }); }
       }
       for (const key of Object.keys(dirty)) dirty[key].clear();
-      return { ops, changed: rebound, ...take(), ...header() };
+      return { ops, changed: rebound, ...take(), ...header(), pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())) };
     };
     // Opaque regions visible now, in top-level viewport CSS pixels.
     const opaqueBoxes = () => {
