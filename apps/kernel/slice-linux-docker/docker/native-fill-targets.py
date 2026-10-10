@@ -113,32 +113,43 @@ def begin(expected_window, value, connection=None):
     except Exception: raise ValueError('Vault fill field unavailable') from None
 
 
+def bind_delivery(node, target):
+    """MP-11: a deadline or a partial value is not input-delivery evidence."""
+    import pyatspi
+    insertion = target.get('insertion')
+    if insertion is None: return False
+    if node.queryText().characterCount != target['length']: return False
+    if node.getRole() == pyatspi.ROLE_PASSWORD_TEXT:
+        # Dots cannot establish same-length selected replacement. Keep it
+        # pending until a reveal can verify the insertion fingerprint.
+        if target['length'] == target['initial_length']: return False
+    else:
+        value = field_value(node)
+        offset, length = insertion['offset'], insertion['length']
+        if len(value) != target['length'] or hashlib.sha256(value[offset:offset+length].encode()).hexdigest() != insertion['hash']: return False
+        target['value_hash'] = hashlib.sha256(value.encode()).hexdigest()
+        del target['insertion']
+    target['pending'] = False
+    del target['initial_length']
+    update(lambda targets: [target if item['registration'] == target['registration'] else item for item in targets])
+    return True
+
+
 def finish(record, inserted):
     if record is None: return
     node, target, (initial_length, offset, selected) = record
     try:
-        # Physical XTEST input is delivered asynchronously to GTK. Account for
-        # the existing contents and replaced selection, rather than input length.
-        expected = initial_length - selected + len(inserted)
-        for _ in range(20):
-            if node.queryText().characterCount == expected: break
-            time.sleep(.025)
-        import pyatspi
-        target['length'] = node.queryText().characterCount
-        if node.getRole() == pyatspi.ROLE_PASSWORD_TEXT:
-            # GTK exposes dots, not the resulting password. Bind the delivered
-            # insertion at its original caret, including max-length truncation.
-            length = target['length'] - initial_length + selected
-            if not 0 < length <= len(inserted):
-                update(lambda targets: [t for t in targets if t['registration'] != target['registration']])
-                return
-            target['value_hash'] = None
-            target['insertion'] = {'offset': offset, 'length': length,
-                                   'hash': hashlib.sha256(inserted[:length].encode()).hexdigest()}
-        else:
-            target['value_hash'] = hashlib.sha256(field_value(node).encode()).hexdigest()
-        target['pending'] = False
+        target['length'] = initial_length - selected + len(inserted)
+        target['initial_length'] = initial_length
+        target['value_hash'] = None
+        target['insertion'] = {'offset': offset, 'length': len(inserted),
+                               'hash': hashlib.sha256(inserted.encode()).hexdigest()}
         update(lambda targets: [target if item['registration'] == target['registration'] else item for item in targets])
+        # XTEST sync acknowledges the X server, not the application. Retain
+        # pending coverage on timeout; captures can bind later full delivery.
+        for _ in range(20):
+            if bind_delivery(node, target): return
+            time.sleep(.025)
     except Exception: pass
 
 
@@ -146,7 +157,7 @@ def matches(node, target):
     import pyatspi
     try:
         if identity(node) != {key:target[key] for key in ('pid','started','path')}: return False
-        if target.get('pending'): return True
+        if target.get('pending') and not bind_delivery(node, target): return True
         if node.getRole() == pyatspi.ROLE_PASSWORD_TEXT:
             return node.queryText().characterCount == target['length'] and target['length'] > 0
         value = field_value(node)
