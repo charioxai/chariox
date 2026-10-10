@@ -105,12 +105,10 @@ impl DaemonApp {
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
             let account_owner_user_id =
-                crate::account_profile::provider_account_authority_owner_for_profile(
+                crate::account_profile::provider_account_authority_for_launch(
                     &self.config,
                     &self.provider_account_profiles,
-                    &request.owner_user_id,
-                    &request.provider,
-                    &request.account_profile,
+                    &request,
                 )?;
             let profile = if request.client_interface.is_chariox() {
                 refresh_provider_usage_before_launch(
@@ -163,6 +161,10 @@ impl DaemonApp {
                 launch_environment.insert(name, zeroize::Zeroizing::new(value.to_string()));
             }
             request.account_profile = profile.profile_id;
+            crate::account_profile::bind_provider_account_authority(
+                &mut request,
+                account_owner_user_id,
+            );
             request = request
                 .with_provider_account_env(provider_account_env)
                 .with_provider_credential_env(launch_environment);

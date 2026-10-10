@@ -96,12 +96,10 @@ impl KernelRuntimeState {
             let Some(agent_id) = run.agent_instance_id() else {
                 return Ok(false);
             };
-            let owner = crate::account_profile::provider_account_authority_owner_for_profile(
+            let owner = crate::account_profile::provider_account_authority_for_run(
                 &self.owned.config_projection.snapshot(),
                 &self.owned.provider_account_profiles,
-                run.owner_user_id(),
-                run.provider(),
-                run.account_profile(),
+                run,
             )?;
             if !crate::provider::renewal_failure::oauth_renewal_evidence(message)
                 && !self
@@ -392,12 +390,10 @@ impl KernelRuntimeState {
         {
             return Ok(false);
         }
-        let owner = crate::account_profile::provider_account_authority_owner_for_profile(
+        let owner = crate::account_profile::provider_account_authority_for_run(
             &self.owned.config_projection.snapshot(),
             &self.owned.provider_account_profiles,
-            run.owner_user_id(),
-            run.provider(),
-            run.account_profile(),
+            run,
         )?;
         let response = crate::runtime::provider_auth_control::execute_start_provider_login_request(
             self,

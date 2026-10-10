@@ -21,7 +21,11 @@ mod copy_notice;
 
 #[path = "account_profile_authority.rs"]
 mod authority;
-pub(crate) use authority::provider_account_authority_owner_for_profile;
+pub(crate) use authority::{
+    bind_provider_account_authority, copy_provider_account_selection,
+    provider_account_authority_for_launch, provider_account_authority_for_run,
+    provider_account_authority_owner_for_profile, ResolvedProviderAccount,
+};
 
 const REGISTRY_VERSION: u32 = 1;
 const SUPPORTED_PROVIDERS: [&str; 3] = ["codex", "claude", "opencode"];
