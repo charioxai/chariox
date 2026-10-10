@@ -4,11 +4,11 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use serde_json::json;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, RwLock};
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::{accept_hdr_async, tungstenite::Message};
 
 use crate::auth::{RelayAction, RelayAuthVerifier, VerifiedRelayIdentity};
 use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayError, RelayMetadataQuery};
@@ -20,6 +20,7 @@ use crate::registry::{
 mod support;
 #[cfg(test)]
 mod tests;
+mod writer;
 
 use support::*;
 
@@ -105,23 +106,35 @@ pub(crate) async fn handle_connection(
     auth_verifier: RelayAuthVerifier,
     relay_request_counter: Arc<AtomicU64>,
 ) -> Result<(), std::io::Error> {
-    let socket =
-        match tokio::time::timeout(RELAY_WEBSOCKET_HANDSHAKE_TIMEOUT, accept_async(stream)).await {
-            Ok(Ok(socket)) => socket,
-            Ok(Err(error)) => return Err(std::io::Error::other(error.to_string())),
-            Err(_) => return Ok(()),
-        };
-    let (mut writer, mut reader) = socket.split();
-    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Message>(relay_outgoing_queue_capacity());
+    let mut chunks = false;
+    let handshake = accept_hdr_async(
+        stream,
+        |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+            chunks = request.uri().query().is_some_and(|query| {
+                query
+                    .split('&')
+                    .any(|part| part == crate::frame_transport::TRANSPORT_QUERY)
+            });
+            Ok(response)
+        },
+    );
+    let socket = match tokio::time::timeout(RELAY_WEBSOCKET_HANDSHAKE_TIMEOUT, handshake).await {
+        Ok(Ok(socket)) => socket,
+        Ok(Err(error)) => return Err(std::io::Error::other(error.to_string())),
+        Err(_) => return Ok(()),
+    };
+    let (writer, mut reader) = socket.split();
+    let (outgoing_tx, outgoing_rx) = mpsc::channel::<Message>(relay_outgoing_queue_capacity());
     let routes = registry.read().await.route_index();
-    let mut writer_task = Some(tokio::spawn(async move {
-        while let Some(message) = outgoing_rx.recv().await {
-            if writer.send(message).await.is_err() {
-                let _ = writer.flush().await;
-                break;
-            }
-        }
-    }));
+    let (receipt_tx, receipt_rx) = mpsc::channel(8);
+    let (control_tx, control_rx) = mpsc::channel(8);
+    let mut writer_task = Some(tokio::spawn(writer::run_writer(
+        writer,
+        outgoing_rx,
+        chunks,
+        receipt_rx,
+        control_rx,
+    )));
     let mut registered_daemon_key: Option<DaemonKey> = None;
     let mut verified_identity: Option<VerifiedRelayIdentity> = None;
     let mut auth_expiry_deadline: Option<Instant> = None;
@@ -200,7 +213,7 @@ pub(crate) async fn handle_connection(
                         break;
                     }
                     if last_ping_at.elapsed() >= RELAY_HEARTBEAT_INTERVAL {
-                        if outgoing_tx.try_send(Message::Ping(Vec::new().into())).is_err() {
+                        if control_tx.try_send(Message::Ping(Vec::new().into())).is_err() {
                             break;
                         }
                         last_ping_at = Instant::now();
@@ -226,6 +239,16 @@ pub(crate) async fn handle_connection(
             last_read_at = Instant::now();
             match message {
                 Message::Text(text) => {
+                    if chunks && serde_json::from_str::<serde_json::Value>(&text).ok()
+                        .is_some_and(|value| value.get("kind").and_then(|kind| kind.as_str()) == Some("transport_ack")) {
+                        match serde_json::from_str::<crate::frame_transport::TransportFrame>(&text) {
+                            Ok(crate::frame_transport::TransportFrame::TransportAck { transfer_id, offset }) => {
+                                if receipt_tx.try_send((transfer_id, offset)).is_err() { break; }
+                                continue;
+                            }
+                            _ => break,
+                        }
+                    }
                     first_message_received = true;
                     let envelope: RelayEnvelope = serde_json::from_str(&text).map_err(|error| {
                         std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
@@ -966,13 +989,13 @@ pub(crate) async fn handle_connection(
                     }
                 }
                 Message::Ping(payload) => {
-                    if outgoing_tx.try_send(Message::Pong(payload)).is_err() {
+                    if control_tx.try_send(Message::Pong(payload)).is_err() {
                         break;
                     }
                 }
                 Message::Pong(_) => {}
                 Message::Close(frame) => {
-                    let _ = outgoing_tx.try_send(Message::Close(frame));
+                    let _ = control_tx.try_send(Message::Close(frame));
                     break;
                 }
                 _ => {}
@@ -1079,6 +1102,7 @@ pub(crate) async fn handle_connection(
             })
             .await;
     }
+    drop(control_tx);
     drop(outgoing_tx);
     if let Some(mut writer_task) = writer_task {
         if tokio::time::timeout(RELAY_WEBSOCKET_CLOSE_TIMEOUT, &mut writer_task)

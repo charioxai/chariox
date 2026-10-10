@@ -6,7 +6,7 @@ use futures_util::FutureExt;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_73_encrypted_lease_admission() {
+fn mp08_mp10_mp11_browser_artifact_peer_100_encrypted_lease_admission() {
     crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("browser-artifact-peer-version", check);
 }
@@ -153,7 +153,7 @@ async fn check() {
     };
     wait_for_daemon_registration(registry, &worker_config.daemon_id).await;
     let assertions = std::panic::AssertUnwindSafe(async {
-        for advertised in [70, 73] {
+        for advertised in [99, 100] {
             version.store(advertised, Ordering::SeqCst);
             requests.lock().await.clear();
             let config = home_config.clone();
@@ -176,8 +176,8 @@ async fn check() {
                     let binding = agent.remote_execution().unwrap();
                     app.destroy_remote_execution_binding(binding, &|| Ok(()))
                         .unwrap();
-                    if advertised == 73 {
-                        assert_eq!(binding.relay_peer_protocol_version, Some(73));
+                    if advertised == 100 {
+                        assert_eq!(binding.relay_peer_protocol_version, Some(100));
                         app.ensure_remote_agent_binding_protocol(binding).unwrap();
                     }
                 }
@@ -185,15 +185,15 @@ async fn check() {
             })
             .await
             .unwrap();
-            if advertised == 70 {
+            if advertised == 99 {
                 let error =
-                    result.expect_err("v70 must be rejected before spawn or artifact dispatch");
+                    result.expect_err("v99 must be rejected before spawn or artifact dispatch");
                 assert!(
-                    error.to_string().contains("protocol 70"),
+                    error.to_string().contains("protocol 99"),
                     "{error}; request kinds: {:?}",
                     *requests.lock().await
                 );
-                assert!(error.to_string().contains("requires 73"));
+                assert!(error.to_string().contains("requires 100"));
                 assert_eq!(
                     *requests.lock().await,
                     ["create_execution_lease", "destroy_execution_lease"]
@@ -201,7 +201,7 @@ async fn check() {
             } else {
                 assert!(
                     result.is_ok(),
-                    "v73 must bind: {}",
+                    "v100 must bind: {}",
                     result
                         .as_ref()
                         .err()
