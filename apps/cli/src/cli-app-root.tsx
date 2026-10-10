@@ -335,8 +335,10 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     const session = sessionState()
+    // MP-08 / MP-09 / MP-10 / MP-11 G03: read outside the untracked signal updater.
+    const attachmentId = attachmentState()?.id
     setWorkspaceShellContext((previous) =>
-      deriveWorkspaceShellContextForSession(previous, session, attachmentState()?.id))
+      deriveWorkspaceShellContextForSession(previous, session, attachmentId))
   })
   const historyLoadingRenderController = createHistoryLoadingRenderController({
     renderer,
