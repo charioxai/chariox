@@ -101,6 +101,20 @@ impl ProviderRunTermination {
 
 pub(crate) fn sanitize_provider_diagnostic(reason: &str) -> String {
     redact_diagnostic(reason, is_evidence_character)
+        .chars()
+        .take(MAX_PROVIDER_TERMINATION_REASON_CHARS)
+        .collect()
+}
+
+/// MP-08 / MP-10 / MP-11: keep the final exit cause after redacting the whole
+/// retained PTY tail. Truncating raw text first could lose a secret's label.
+pub(crate) fn sanitize_provider_exit_diagnostic(reason: &str) -> String {
+    let sanitized = redact_diagnostic(reason, is_evidence_character);
+    let skip = sanitized
+        .chars()
+        .count()
+        .saturating_sub(MAX_PROVIDER_TERMINATION_REASON_CHARS);
+    sanitized.chars().skip(skip).collect()
 }
 
 /// The same credential redaction as [`sanitize_provider_diagnostic`], for text
@@ -108,6 +122,9 @@ pub(crate) fn sanitize_provider_diagnostic(reason: &str) -> String {
 /// characters (`·`, `%`, `?`, accents) instead of the narrow evidence set.
 pub(crate) fn redact_provider_diagnostic(reason: &str) -> String {
     redact_diagnostic(reason, is_readable_character)
+        .chars()
+        .take(MAX_PROVIDER_TERMINATION_REASON_CHARS)
+        .collect()
 }
 
 fn redact_diagnostic(reason: &str, keep: fn(char) -> bool) -> String {
@@ -189,9 +206,6 @@ fn redact_diagnostic(reason: &str, keep: fn(char) -> bool) -> String {
     }
 
     sanitized
-        .chars()
-        .take(MAX_PROVIDER_TERMINATION_REASON_CHARS)
-        .collect()
 }
 
 pub(crate) fn provider_launch_failure_diagnostic(
@@ -410,6 +424,28 @@ mod tests {
             sanitize_provider_diagnostic("90% used · resets"),
             "90 used resets",
             "evidence keeps its narrow character set"
+        );
+    }
+
+    #[test]
+    fn provider_exit_diagnostic_redacts_before_retaining_the_final_cause() {
+        for sensitive in [
+            format!("api_key={}", "private-fixture-value".repeat(100)),
+            format!("prompt={}", "private fixture words ".repeat(100)),
+        ] {
+            let diagnostic = super::sanitize_provider_exit_diagnostic(&format!(
+                "{} {sensitive} code=authentication_failed final provider error",
+                "startup progress ".repeat(100),
+            ));
+            assert!(diagnostic.ends_with("final provider error"), "{diagnostic}");
+            assert!(diagnostic.contains("[redacted]"), "{diagnostic}");
+            assert!(!diagnostic.contains("private"), "{diagnostic}");
+            assert!(diagnostic.chars().count() <= MAX_PROVIDER_TERMINATION_REASON_CHARS);
+        }
+        assert!(super::sanitize_provider_exit_diagnostic("\n\0").is_empty());
+        assert_eq!(
+            super::sanitize_provider_exit_diagnostic("short final error"),
+            "short final error"
         );
     }
 

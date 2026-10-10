@@ -785,7 +785,7 @@ impl PtyManager {
         let process = self.processes.get(&process_key)?;
         let bytes = snapshot_pty_diagnostic_tail(&process.diagnostic_tail);
         let raw = String::from_utf8_lossy(&bytes);
-        let diagnostic = crate::provider::sanitize_provider_diagnostic(&raw);
+        let diagnostic = crate::provider::sanitize_provider_exit_diagnostic(&raw);
         Some(diagnostic)
     }
 

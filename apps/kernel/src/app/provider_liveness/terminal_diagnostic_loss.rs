@@ -11,15 +11,20 @@ const SYNTHETIC_TOKEN: &str = "app-liveness-token";
 
 #[test]
 fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
-    app_liveness_diagnostic_fixture(false);
+    app_liveness_diagnostic_fixture(false, false);
 }
 
 #[test]
 fn app_resize_liveness_retains_consumed_output_and_explains_exit() {
-    app_liveness_diagnostic_fixture(true);
+    app_liveness_diagnostic_fixture(true, false);
 }
 
-fn app_liveness_diagnostic_fixture(consumed: bool) {
+#[test]
+fn app_resize_liveness_keeps_final_error_after_verbose_consumed_output() {
+    app_liveness_diagnostic_fixture(true, true);
+}
+
+fn app_liveness_diagnostic_fixture(consumed: bool, verbose: bool) {
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = KernelSessionService::new(&mut app)
@@ -54,7 +59,8 @@ fn app_liveness_diagnostic_fixture(consumed: bool) {
             pty_args: vec![
                 "-lc".to_string(),
                 format!(
-                    "printf '%s\\n' '{TERMINAL_DIAGNOSTIC} api_key={SYNTHETIC_API_KEY} token={SYNTHETIC_TOKEN}'; exit 1"
+                    "printf '%s\\n' '{}'; printf '%s\\n' '{TERMINAL_DIAGNOSTIC} api_key={SYNTHETIC_API_KEY} token={SYNTHETIC_TOKEN}'; exit 1",
+                    if verbose { "startup progress ".repeat(128) } else { String::new() },
                 ),
             ],
             pty_env: std::collections::BTreeMap::new(),
@@ -138,7 +144,14 @@ fn app_liveness_diagnostic_fixture(consumed: bool) {
             .expect("app-level liveness reconciliation should retain the PTY diagnostic")
             .to_string()
     };
-    assert!(diagnostic.contains(TERMINAL_DIAGNOSTIC), "{diagnostic}");
+    assert!(
+        diagnostic.contains(TERMINAL_DIAGNOSTIC),
+        "MP-08 / MP-10 / MP-11 final error lost: {diagnostic}"
+    );
+    assert!(
+        diagnostic.chars().count() <= 256,
+        "exit diagnostic must stay bounded"
+    );
     assert!(diagnostic.contains("api_key"), "{diagnostic}");
     assert!(diagnostic.contains("token"), "{diagnostic}");
     assert_eq!(diagnostic.matches("[redacted]").count(), 2, "{diagnostic}");
