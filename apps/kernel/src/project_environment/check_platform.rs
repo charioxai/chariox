@@ -16,7 +16,6 @@ pub(super) fn check_platform(
             identity,
             version_constraint,
             platform,
-            detect_only,
             install_source,
             ..
         } => {
@@ -32,25 +31,16 @@ pub(super) fn check_platform(
                     "Software is unavailable on this platform; GUI programs are Check-only in V1",
                 );
             }
-            let lower = identity.to_ascii_lowercase();
-            if matches!(lower.as_str(), "chatgpt" | "notion" | "canva")
-                || *detect_only && identity.ends_with(".app")
-            {
+            if let Some(_name) = super::check_gui_identity::application_name(identity) {
                 #[cfg(target_os = "macos")]
                 {
-                    let name = match lower.as_str() {
-                        "chatgpt" => "ChatGPT",
-                        "notion" => "Notion",
-                        "canva" => "Canva",
-                        _ => identity.as_str(),
-                    };
                     let present = PathBuf::from("/Applications")
-                        .join(format!("{}.app", name.trim_end_matches(".app")))
+                        .join(format!("{}.app", _name))
                         .is_dir()
                         || std::env::var_os("HOME").is_some_and(|h| {
                             PathBuf::from(h)
                                 .join("Applications")
-                                .join(format!("{}.app", name.trim_end_matches(".app")))
+                                .join(format!("{}.app", _name))
                                 .is_dir()
                         });
                     facts.present = Some(present);

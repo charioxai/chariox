@@ -10,6 +10,7 @@ mod check_assets;
 mod check_health;
 mod check_inventory;
 mod check_platform;
+mod check_gui_identity;
 mod check_runner;
 mod check_store;
 mod check_tools;
