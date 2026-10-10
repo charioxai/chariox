@@ -280,7 +280,6 @@ impl super::KernelRuntimeOwnedState {
     pub(super) fn prepare_compacted_session_context_handoff(
         &self,
         source_run: &RuntimeProviderRun,
-        target_model: &str,
     ) {
         let Some(agent_id) = source_run.agent_instance_id() else {
             return;
@@ -293,7 +292,7 @@ impl super::KernelRuntimeOwnedState {
             None,
             source_run.provider(),
             source_run.account_profile(),
-            Some(target_model),
+            None,
             true,
         );
     }
@@ -407,6 +406,11 @@ impl super::KernelRuntimeOwnedState {
             .pending_agent_context_handoffs
             .peek_matching(session_id, agent_id, target_run)
         {
+            // A compacted session still needs its records if another model
+            // was selected before this turn. Budget the packet for this run.
+            if handoff.target_model.is_none() {
+                handoff.target_model = Some(target_run.model().to_string());
+            }
             // A substitute is prepared after the failed turn was recorded and
             // receives that turn's prompt as its request.
             handoff.target_1m_context_disabled =

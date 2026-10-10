@@ -75,8 +75,7 @@ impl KernelRuntimeState {
         });
         match result {
             Ok(_) => {
-                self.owned
-                    .prepare_compacted_session_context_handoff(&run, target_model);
+                self.owned.prepare_compacted_session_context_handoff(&run);
                 crate::logging::info_with_fields(
                     "daemon.provider_context_handoff",
                     "compacted the session before a smaller context window",

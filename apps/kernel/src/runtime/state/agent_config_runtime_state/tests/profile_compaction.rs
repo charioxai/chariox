@@ -111,7 +111,7 @@ async fn compact_fixture_with_lease(
     let release = root.path().join("release");
     let mut run = RuntimeProviderRun::new("compact-run", &request, ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::Managed, process_label: "fixture".into(), pty_target: None, pty_program: Some("/bin/sh".into()),
-        pty_args: vec!["-c".into(), format!("while IFS= read -r line; do printf '%s' \"$line\" > '{}'; n=0; while [ ! -f '{}' ] && [ $n -lt 30 ]; do sleep .1; n=$((n+1)); done; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done", marker.display(), release.display())],
+        pty_args: vec!["-c".into(), format!("while IFS= read -r line; do case \"$line\" in *'/compact'*) printf '%s' \"$line\" > '{}';; esac; n=0; while [ ! -f '{}' ] && [ $n -lt 30 ]; do sleep .1; n=$((n+1)); done; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done", marker.display(), release.display())],
         pty_env: Default::default(), pty_env_remove: vec![], working_directory: None, structured_endpoint: None,
     });
     run.set_execution_config(AgentExecutionMode::Plan, AgentPermissionLevel::Required);
@@ -1093,6 +1093,23 @@ async fn profile_compaction_preserves_history_for_the_next_native_session_turn()
     let packet = handoff.render_hidden(24_000);
     assert!(packet.contains("Continuity Ledger"));
     assert!(packet.contains("not an accepted user decision"));
+    // A user may select another model before the first post-compaction turn.
+    // Native compaction already removed records regardless of that selection.
+    target.set_model("sonnet");
+    let next_selection = runtime
+        .owned
+        .pending_agent_context_handoffs
+        .peek_matching(&session, &agent, &target)
+        .expect("an intervening model selection must retain compacted history");
+    assert!(next_selection
+        .render_hidden(24_000)
+        .contains("Continuity Ledger"));
+    let dispatch = runtime
+        .owned
+        .context_handoff_for_dispatch(&session, &agent, &target, "next-turn", false)
+        .expect("the actual next run must receive the compacted records");
+    assert_eq!(dispatch.target_model.as_deref(), Some("sonnet"));
+    assert!(dispatch.render_hidden(24_000).contains("Continuity Ledger"));
     runtime
         .owned
         .provider_store
