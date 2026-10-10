@@ -166,12 +166,16 @@ pub(super) async fn run_writer<S>(
                 Err(mpsc::error::TryRecvError::Empty) => break,
             }
         }
+        let mut earlier_request = active.as_ref().is_some_and(|transfer| transfer.request);
         let urgent = pending.iter().position(|message| {
+            let request = is_request(message);
+            let ordered = !request || !earlier_request;
+            earlier_request |= request;
             control(message)
                 || active.as_ref().is_some_and(|transfer| {
                     transfer.small_sent - transfer.small_acked + message.len() <= CHUNK_BYTES
                         && independent_small(message)
-                        && (!transfer.request || !is_request(message))
+                        && ordered
                 })
         });
         if let Some(index) = urgent {
@@ -438,6 +442,110 @@ mod tests {
             .unwrap();
         acknowledgements.abort();
         let _ = acknowledgements.await;
+        let _ = client.close(None).await;
+    }
+
+    // MP-08 / MP-10 / MP-11: pending requests also form a FIFO barrier.
+    #[tokio::test]
+    async fn queued_bulk_request_orders_later_requests_but_not_control_or_responses() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client_task = tokio::spawn(async move {
+            tokio_tungstenite::connect_async(format!("ws://{address}"))
+                .await
+                .unwrap()
+                .0
+        });
+        let (stream, _) = listener.accept().await.unwrap();
+        let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let mut client = client_task.await.unwrap();
+        let (tx, rx) = mpsc::channel(8);
+        let (ack_tx, ack_rx) = mpsc::channel(8);
+        let (_control_tx, control_rx) = mpsc::channel(8);
+        let response = serde_json::json!({"kind":"daemon_peer_response", "payload":"x".repeat(3 * WINDOW_BYTES)}).to_string();
+        tx.send(Message::Text(response.clone().into()))
+            .await
+            .unwrap();
+        let writer = tokio::spawn(run_writer(socket, rx, true, ack_rx, control_rx));
+        let first = client.next().await.unwrap().unwrap();
+        let bulk_request = serde_json::json!({"kind":"daemon_request", "relay_request_id":"A", "payload":"x".repeat(2 * WINDOW_BYTES)}).to_string();
+        for message in [
+            Message::Text(bulk_request.into()),
+            Message::Text(r#"{"kind":"daemon_request","relay_request_id":"B"}"#.into()),
+            Message::Text(r#"{"kind":"daemon_peer_response","request_id":"independent"}"#.into()),
+            Message::Ping(vec![7].into()),
+        ] {
+            tx.try_send(message).unwrap();
+        }
+        drop(tx);
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        let mut message = first;
+        let mut response_complete = false;
+        let mut independent = false;
+        let mut ping = false;
+        let mut requests = Vec::new();
+        loop {
+            match message {
+                Message::Ping(_) => {
+                    ping = true;
+                    client.flush().await.unwrap();
+                }
+                Message::Text(text) => {
+                    assert!(text.len() <= CHUNK_BYTES);
+                    let (complete, receipt) = receiver.receive(&text).unwrap();
+                    // The test controls ordered delivery receipts without decoding
+                    // provider data or substituting a mock transport.
+                    if let Some(receipt) = receipt {
+                        let TransportFrame::TransportAck {
+                            transfer_id,
+                            offset,
+                        } = serde_json::from_str(&receipt).unwrap()
+                        else {
+                            panic!("receipt expected");
+                        };
+                        ack_tx.send((transfer_id, offset)).await.unwrap();
+                    }
+                    if let Some(text) = complete {
+                        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                        if value["kind"] == "daemon_request" {
+                            assert!(response_complete, "request cannot cross the queued bulk request before the active response drains");
+                            requests.push(value["relay_request_id"].as_str().unwrap().to_string());
+                            assert_eq!(
+                                requests,
+                                ["A", "B"][..requests.len()],
+                                "queued requests must retain FIFO order"
+                            );
+                        } else if text == response {
+                            assert!(
+                                independent && ping,
+                                "responses and control must pass the request barrier"
+                            );
+                            response_complete = true;
+                        } else {
+                            assert_eq!(value["request_id"], "independent");
+                            assert!(
+                                !response_complete,
+                                "independent response must overtake bulk drain"
+                            );
+                            independent = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            if requests.len() == 2 {
+                break;
+            }
+            message = tokio::time::timeout(std::time::Duration::from_secs(3), client.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(3), writer)
+            .await
+            .unwrap()
+            .unwrap();
         let _ = client.close(None).await;
     }
 
