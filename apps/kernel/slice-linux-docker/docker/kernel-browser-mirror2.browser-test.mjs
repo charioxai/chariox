@@ -539,3 +539,14 @@ test("MP-08: review #941-1 a text control's own range (select-all, a drag) set t
     }
     await assert.rejects(input(snapshot.sequence, { kind: "selection", anchor_id: id("t"), anchor_offset: 0, focus_id: id("t"), focus_offset: 99 }), "MP-11: an offset beyond the value is refused");
   }));
+
+test("MP-08: review #320-2 modified deletion keys edit the focused control (Ctrl+Backspace, Ctrl+Delete, line deletion; input and textarea)", () => mirrored(
+  '<input id="i" value="hello big world"><textarea id="t">one two\nthree</textarea>', async ({ next, evaluate, input }) => {
+    await next();
+    for (const [name, at, keys, expected] of [["i", 15, ["Ctrl+Backspace"], "hello big "], ["t", 4, ["Ctrl+Delete"], "one \nthree"], ["t", 10, ["Shift+Home", "Backspace"], "one \n"]]) {
+      await evaluate(`(()=>{const e=document.getElementById("${name}");e.focus();e.setSelectionRange(${at},${at});return true})()`);
+      const focused = await next(600);
+      for (const key of keys) await input(focused.sequence, { kind: "key", key });
+      assert.equal(await evaluate(`document.getElementById("${name}").value`), expected, `MP-08: ${keys.join(" ")} in #${name}`);
+    }
+  }));

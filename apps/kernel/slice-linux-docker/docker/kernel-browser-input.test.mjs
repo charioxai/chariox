@@ -177,7 +177,7 @@ test('MP-08/MP-10 viewer click routes to the owned display after the document fe
 // MP-08/MP-10: viewer keys on the owned display use XTest after the document,
 // text-target and focus fences; anything else stays on CDP.
 test('MP-08/MP-10 viewer keys route to the owned display only for a focused, non-sensitive page',async()=>{
-  const run=async({sensitive=false,focused=true,native=()=>true,key='a'})=>{
+  const run=async({sensitive=false,focused=true,native=()=>true,key='a',raw=false})=>{
     const sent=[],keys=[];let dispatched=0;
     const connection={send:async(method,params)=>{sent.push({method,params});
       if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f',loaderId:'doc'}}};
@@ -186,12 +186,17 @@ test('MP-08/MP-10 viewer keys route to the owned display only for a focused, non
       return {};}};
     const browser={resolvePageTarget:async()=>({connection,sessionId:'s'}),inputCapture:{run:async(_c,_s,fn)=>fn()}};
     const result=await inputHostTab(browser,tab,{kind:'key',key},{nativeKey:(...a)=>{keys.push(a);return native(...a)},onDispatch:()=>dispatched++}).then(()=>'ok',e=>e.code??e.message);
-    return {result,keys,dispatched,cdp:sent.filter(x=>x.method==='Input.dispatchKeyEvent').length};
+    return {result,keys,dispatched,cdp:sent.filter(x=>x.method==='Input.dispatchKeyEvent').length,...(raw?{sent}:{})};
   };
   assert.deepEqual(await run({}),{result:'ok',keys:[[97,false]],dispatched:1,cdp:0});
   assert.deepEqual(await run({key:'Shift+Tab'}),{result:'ok',keys:[[0xff09,true]],dispatched:1,cdp:0});
   assert.deepEqual(await run({key:'Shift+ArrowLeft'}),{result:'ok',keys:[[0xff51,true]],dispatched:1,cdp:0},'MP-08: review #941-2 Shift extends the selection');
-  for (const key of ['Shift+Enter','Shift+Backspace','Shift+a','Ctrl+ArrowLeft','Shift+Shift+Home']) assert.equal((await run({key})).result,'MD-2: unsupported key',key);
+  for (const key of ['Shift+Enter','Shift+Backspace','Shift+a','Ctrl+ArrowLeft','Shift+Shift+Home','Ctrl+a','Ctrl+Shift+Backspace','Ctrl+Ctrl+Delete']) assert.equal((await run({key})).result,'MD-2: unsupported key',key);
+  for (const key of ['Ctrl+Backspace','Ctrl+Delete']) {
+    const {result,keys,cdp,sent}=await run({key,raw:true});
+    assert.deepEqual([result,keys,cdp],['ok',[],2],`MP-08: review #320-2 ${key} deletes a word through CDP (XTest presses no Ctrl)`);
+    assert.deepEqual(sent.filter(x=>x.method==='Input.dispatchKeyEvent').map(x=>[x.params.type,x.params.key,x.params.modifiers,x.params.windowsVirtualKeyCode]),[['keyDown',key.slice(5),2,key==='Ctrl+Delete'?46:8],['keyUp',key.slice(5),2,key==='Ctrl+Delete'?46:8]]);
+  }
   assert.deepEqual(await run({key:'Enter'}),{result:'ok',keys:[[0xff0d,false]],dispatched:1,cdp:0});
   const refused=await run({sensitive:true});
   assert.deepEqual([refused.keys.length,refused.cdp],[0,0],'MP-11: a sensitive text target is refused before any dispatch');

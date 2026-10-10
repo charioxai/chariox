@@ -171,3 +171,31 @@ test('MP-10: review #320-1 the viewer clears the kernel\'s selection once the ke
     assert.deepEqual((await shown())[2], [1, 4], 'MP-10: clearing does not drop a focused text control\'s own range');
   } finally { await page.close(); }
 });
+
+test('MP-08: review #320-2 modified deletions in a focused text control are forwarded as the kernel\'s editing keys (word, line, cut; input and textarea)', async () => {
+  const page = await viewer();
+  try {
+    const form = (value, at) => ({ value, checked: false, selected_index: -1, selection_start: at, selection_end: at });
+    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'input', form: form('hello world', 11) }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'textarea', form: form('one two\nthree', 4) }]), focused: 'n4' });
+    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to'));
+    const key = key => ({ kind: 'key', key });
+    await page.keyboard.press('Control+Backspace'); await frames();
+    assert.deepEqual(await sent(), [key('Ctrl+Backspace')], 'MP-08: word deletion backward');
+    await apply(page, delta(2, [], { focused: 'n5' })); await sent();
+    await page.keyboard.press('Control+Delete'); await frames();
+    assert.deepEqual(await sent(), [key('Ctrl+Delete')], 'MP-08: word deletion forward');
+    // macOS line deletions (Cmd+Backspace, Ctrl+K) arrive as these input types.
+    for (const [inputType, keys] of [['deleteSoftLineBackward', ['Shift+Home', 'Backspace']], ['deleteHardLineForward', ['Shift+End', 'Delete']]]) {
+      await page.evaluate(inputType => window.r.frame.contentDocument.querySelector('textarea').dispatchEvent(new InputEvent('beforeinput', { inputType, bubbles: true, cancelable: true, composed: true })), inputType); await frames();
+      assert.deepEqual(await sent(), keys.map(key), `MP-08: ${inputType}`);
+    }
+    // A range (select-all) is deleted as a whole by any modified deletion, and by cut.
+    for (const shortcut of ['Control+Backspace', 'Control+X']) {
+      await page.keyboard.press('Control+A'); await frames(); await sent();
+      await page.keyboard.press(shortcut); await frames();
+      assert.deepEqual(await sent(), [{ kind: 'selection', anchor_id: 'n5', anchor_offset: 0, focus_id: 'n5', focus_offset: 13 }, key('Delete')], `MP-08: ${shortcut} on a range`);
+      await apply(page, delta(Number(await page.evaluate(() => window.r.sequence)) + 1, [{ op: 'form', id: 'n5', form: { selection_start: 4, selection_end: 4 } }])); await sent();
+    }
+  } finally { await page.close(); }
+});

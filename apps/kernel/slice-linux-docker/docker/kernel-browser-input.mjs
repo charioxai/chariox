@@ -114,15 +114,17 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         const printable = typeof input.key === "string" && /^[^\p{C}]$/u.test(input.key);
         // Shift only with focus/selection keys: Shift+Tab moves focus back, Shift+Arrow/Home/End extend the selection.
         const shift = !printable && typeof input.key === "string" && /^Shift\+(Tab|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End)$/.test(input.key);
-        const name = shift ? input.key.slice(6) : input.key;
-        if (!printable && !shift && !["Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
+        // Ctrl only with word deletion (CDP only: the native path presses no Ctrl).
+        const ctrl = !printable && typeof input.key === "string" && /^Ctrl\+(Backspace|Delete)$/.test(input.key);
+        const name = shift ? input.key.slice(6) : ctrl ? input.key.slice(5) : input.key;
+        if (!printable && !shift && !ctrl && !["Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
         const key = { key: name === "Space" ? " " : name, code: name,
-          ...(shift ? { modifiers: 8 } : {}),
+          ...(shift ? { modifiers: 8 } : ctrl ? { modifiers: 2 } : {}),
           windowsVirtualKeyCode: { Tab:9, Enter:13, Space:32, Escape:27, Backspace:8, Delete:46, ArrowLeft:37, ArrowUp:38, ArrowRight:39, ArrowDown:40, Home:36, End:35 }[name] };
         // MP-08/MP-10: a viewer key on the owned display goes through XTest
         // after the same document, text-target and mirror fences, and only
         // while the page itself has focus (never browser UI); otherwise CDP.
-        const keysym = printable ? (/^[\x20-\x7e]$/.test(input.key) ? input.key.charCodeAt(0) : null) : keysyms[name];
+        const keysym = printable ? (/^[\x20-\x7e]$/.test(input.key) ? input.key.charCodeAt(0) : null) : ctrl ? null : keysyms[name];
         if (nativeKey && !resolved && keysym != null) {
           await check();
           const text = printable || ["Enter", "Space"].includes(input.key);

@@ -8,6 +8,10 @@ export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from '.
 export const browserMirror2MinimumProtocolVersion = 489
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
+const DELETIONS: Record<string, string[]> = {
+  deleteContentBackward: ['Backspace'], deleteContentForward: ['Delete'], deleteWordBackward: ['Ctrl+Backspace'], deleteWordForward: ['Ctrl+Delete'],
+  deleteSoftLineBackward: ['Shift+Home', 'Backspace'], deleteHardLineBackward: ['Shift+Home', 'Backspace'], deleteSoftLineForward: ['Shift+End', 'Delete'], deleteHardLineForward: ['Shift+End', 'Delete'],
+}
 type Styled = { kind: 'css' | 'attr'; raw: string; node: Element; keys: string[] } | { kind: 'adopted'; raw: string[]; node: Document | ShadowRoot; keys: string[] }
 
 function bytesOf(data: string): Uint8Array { return Uint8Array.from(atob(data), c => c.charCodeAt(0)) }
@@ -133,7 +137,16 @@ export class BrowserMirror2Renderer {
       }
     })
     let composed: string | null = null
-    on('beforeinput', event => { const input = event as InputEvent; event.preventDefault(); if (input.isComposing || input.inputType.includes('Composition') || input.data === composed || !input.data) return; this.syncRange(); this.enqueue({ kind: 'text', text: input.data }) })
+    // Deletions the key handler leaves native (modified Backspace/Delete, cut) travel as the
+    // kernel's editing keys; a range (synced first) goes as a whole.
+    const ranged = (): boolean => { const field = this.active() as HTMLInputElement | null; return typeof field?.selectionStart === 'number' ? field.selectionStart !== field.selectionEnd : doc.getSelection()?.isCollapsed === false }
+    on('beforeinput', event => {
+      const input = event as InputEvent; event.preventDefault()
+      if (input.isComposing || input.inputType.includes('Composition')) return
+      if (input.inputType.startsWith('delete')) { this.syncRange(); for (const key of ranged() ? ['Delete'] : DELETIONS[input.inputType] ?? []) this.enqueue({ kind: 'key', key }); return }
+      if (input.data === composed || !input.data) return
+      this.syncRange(); this.enqueue({ kind: 'text', text: input.data })
+    })
     on('compositionend', event => { event.preventDefault(); const data = (event as CompositionEvent).data; if (data) { composed = data; setTimeout(() => { composed = null }, 0); this.syncRange(); this.enqueue({ kind: 'text', text: data }) } })
     on('selectionchange', () => { if (this.applying) return; const selection = doc.getSelection(); if (!selection || selection.isCollapsed) return; const a = this.ids.get(selection.anchorNode!), b = this.ids.get(selection.focusNode!); if (a && b && this.records.get(a)?.kind === 'text' && this.records.get(b)?.kind === 'text') this.enqueue({ kind: 'selection', anchor_id: a, anchor_offset: selection.anchorOffset, focus_id: b, focus_offset: selection.focusOffset }) })
   }
