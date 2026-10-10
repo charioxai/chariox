@@ -119,11 +119,11 @@ test("P02b cached review waits for refresh and caches successful Save", async ()
 test("P03 TUI exposes a safe Web link and saved diff after review", async () => {
   const environment: any = { schema_version: 1, local_project_id: "project", revision: 0, content_digest: "base", folders: [], project_requirements: [], proposals: [], operations: [], delivered_capabilities: { enabled_environment_operations: ["get", "save"] } }
   let copied = ""
-  const controller = createProjectEnvironmentReadController({ send: async r => "CloudRelayStatus" in (r as any) ? { CloudRelayStatus: { profile: { api_url: "https://owned.example/api" } } } : { ProjectEnvironment: { environment } }, render() { }, pageSize: () => 100, copyLink: link => { copied = link } })
+  const controller = createProjectEnvironmentReadController({ send: async r => "CloudRelayStatus" in (r as any) ? { CloudRelayStatus: { profile: { api_url: "https://owned.example/api" } } } : "RelayStatus" in (r as any) ? { RelayStatus: { status: { daemon_id: "owned-kernel" } } } : { ProjectEnvironment: { environment } }, render() { }, pageSize: () => 100, copyLink: link => { copied = link } })
   await controller.open("project")
   controller.handleKey({ name: "w" })
   await new Promise(r => setTimeout(r, 0))
-  assert.equal(copied, "https://owned.example/waiting-room?environmentProjectId=project")
+  assert.equal(copied, "https://owned.example/waiting-room?environmentProjectId=project&environmentKernelId=owned-kernel")
   assert(controller.visibleLines().some(l => l.includes("Web-first")))
 })
 

@@ -79,14 +79,17 @@ export function createProjectEnvironmentReadController(deps: {
       if (!current || refreshing) return
       const g = generation, projectId = current.local_project_id
       try {
-        const response = await deps.send(cloudRelayStatusRequest()) as { CloudRelayStatus?: { profile?: { api_url?: string } } }
+        const [response, relay] = await Promise.all([deps.send(cloudRelayStatusRequest()), deps.send(relayStatusRequest())]) as [{ CloudRelayStatus?: { profile?: { api_url?: string } } }, { RelayStatus?: { status?: { daemon_id?: string } } }]
         if (g !== generation) return
         const api = response.CloudRelayStatus?.profile?.api_url
+        const kernelId = relay.RelayStatus?.status?.daemon_id
+        if (!kernelId) throw new Error("Kernel identity unavailable for its Web Environment link")
         if (!api) throw new Error("Connect this kernel to Cloud to obtain its Web Environment link")
         const origin = new URL(api)
         if (!["https:", "http:"].includes(origin.protocol) || origin.username || origin.password) throw new Error("Web Environment origin unavailable")
         const link = new URL("/waiting-room", origin.origin)
         link.searchParams.set("environmentProjectId", projectId)
+        link.searchParams.set("environmentKernelId", kernelId)
         webLink = link.href; deps.copyLink?.(webLink); lines = viewLines(current); offset = 0
       } catch (error) { if (g === generation) lines = [error instanceof Error ? error.message : "Web link unavailable", ...viewLines(current!)] }
       if (g === generation) deps.render()
