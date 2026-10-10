@@ -398,3 +398,21 @@ test("MP-08: review #941-3 focus inside an attached cross-origin frame names the
     assert.equal(await focusOf(top), top, "MP-08: focus leaving the frame reaches the viewer");
   }, { "/two": { type: "text/html", body: '<!doctype html><input id="a"><input id="b"><script>onmessage=e=>document.getElementById(e.data).focus()</script>' } }));
 
+test("MP-10: review #941-4 a CDP-read cross-origin sheet keeps its already-loaded imports (own base, media condition, images and fonts)", () => mirrored(
+  '<link rel="stylesheet" href="http://localhost:PORT/cdn/main.css"><div class="x" style="width:20px;height:20px">a</div>', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const snapshot = await next(), delivered = [...snapshot.resources];
+    const css = JSON.stringify([...snapshot.ops, ...snapshot.nodes]);
+    assert.match(css, /rgb\(1, 1, 1\)/, "MP-10: the importing sheet's own rules");
+    assert.match(css, /@media screen ?\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\.x ?\{[^}]*rgb\(3, 1, 4\)/, `MP-10: the imported rules under their media condition (${css.slice(0, 2000)})`);
+    const image = () => delivered.some(r => Buffer.from(r.data_base64, "base64").toString().includes("#030104")), font = () => delivered.some(r => r.mime_type === "font/woff2");
+    for (let i = 0; i < 6 && !(image() && font()); i++) delivered.push(...(await next(1000)).resources);
+    assert(image(), `MP-10: the imported sheet's image (own base) arrived (${delivered.map(r => r.key)})`);
+    assert(font(), `MP-10: the imported sheet's font (own base) arrived (${delivered.map(r => r.mime_type)})`);
+  }, {
+    "/cdn/main.css": { type: "text/css", body: '@import url("../themes/theme.css") screen;\n.y{color:rgb(1,1,1)}' },
+    "/themes/theme.css": { type: "text/css", body: '@font-face{font-family:T;src:url(t.woff2) format("woff2")}.x{background-image:url(icon.svg);font-family:T;color:rgb(3,1,4)}' },
+    "/themes/t.woff2": { type: "font/woff2", headers: { "Access-Control-Allow-Origin": "*" }, body: "wOF2" + "\u0001".repeat(60) },
+    "/themes/icon.svg": { type: "image/svg+xml", body: svg("#030104") },
+  }));
+

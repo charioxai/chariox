@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
-import { Mirror2, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea } from './kernel-browser-mirror2.mjs';
+import { Mirror2, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, cssImports } from './kernel-browser-mirror2.mjs';
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
 const onlyKernelUrls = css => { const all = css.match(/url\s*\(/gi)?.length ?? 0, allowed = css.match(/url\("(?:mr:r[0-9]{1,6}|#[\w-]*)"\)/g)?.length ?? 0; return all === allowed; };
@@ -180,4 +180,13 @@ test('MP-10: protocol 489 bodies from 512 bytes deflate in the subscription cont
   assert.equal(reset.reset, true);
   assert.equal(inflateRawSync(Buffer.from(reset.packet_base64, 'base64'), { finishFlush: zlib.Z_SYNC_FLUSH }).toString(), JSON.stringify({ wire: 2, sequence: 5, ops: big(5).ops, reset: true, subscription_id: 's' }), 'MP-10: a reset packet inflates on its own');
   mirror.dispose({ ...stream, frames: new Map() }); stream.deflate?.close();
+});
+
+test("MP-10: review #941-4 leading @import rules keep their layer/supports/media conditions; later or brace-bearing ones are skipped", () => {
+  const text = '@charset "utf-8";/* c */@layer a, b;@import url("../a.css") screen;\n@import "b.css" layer(x) supports(not (display: grid)) print and (min-width: 10px);@import url(c.css) layer;@import url(d.css) screen{} x;.y{}@import url(e.css);';
+  assert.deepEqual(cssImports(text), [
+    { url: "../a.css", open: "@media screen{", close: "}" },
+    { url: "b.css", open: "@layer x{@supports (not (display: grid)){@media print and (min-width: 10px){", close: "}}}" },
+    { url: "c.css", open: "@layer {", close: "}" },
+  ]);
 });

@@ -47,6 +47,32 @@ export function mirrorResourceType(bytes, kind) {
   return null;
 }
 
+// Leading @import rules of a sheet's source (only @charset/@layer statements may
+// precede them), with their layer/supports/media conditions as wrapping blocks.
+// The wrapped text is parsed by the CSSOM again before it is sanitized.
+export function cssImports(text) {
+  const out = []; let rest = text;
+  for (let i = 0; i < 64; i++) {
+    rest = rest.replace(/^(?:\s+|\/\*[\s\S]*?\*\/|@charset\s+"[^"]*"\s*;|@layer\s+[^;{}]*;)*/i, '');
+    const match = /^@import\s+(?:url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s"']*))\s*\)|"([^"]*)"|'([^']*)')([^;]*);/i.exec(rest);
+    if (!match) break;
+    rest = rest.slice(match[0].length);
+    let condition = match[6].trim(), open = '', close = '';
+    if (/[{}]/.test(condition)) continue;
+    const layer = /^layer(?:\(([^()]*)\))?(?=\s|$)/i.exec(condition);
+    if (layer) { open += `@layer ${layer[1]?.trim() ?? ''}{`; close += '}'; condition = condition.slice(layer[0].length).trim(); }
+    if (/^supports\(/i.test(condition)) {
+      let depth = 0, end = -1;
+      for (let j = 9; j < condition.length && end < 0; j++) if (condition[j] === '(') depth++; else if (condition[j] === ')') { if (depth) depth--; else end = j; }
+      if (end < 0) continue;
+      open += `@supports (${condition.slice(9, end)}){`; close += '}'; condition = condition.slice(end + 1).trim();
+    }
+    if (condition) { open += `@media ${condition}{`; close += '}'; }
+    out.push({ url: match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5], open, close });
+  }
+  return out;
+}
+
 function dataUrlBytes(url) {
   const match = /^data:([^,]*?)(;base64)?,(.*)$/s.exec(url);
   if (!match) return null;
@@ -413,7 +439,9 @@ export class Mirror2 {
       if (entry.state !== 'ok') {
         let body = null;
         if (entry.url.startsWith('data:')) body = dataUrlBytes(entry.url);
-        else if (!loaded.has(entry.key)) { entry.state = 'waiting'; continue; }
+        // Resources a no-cors cross-origin stylesheet loaded (its imports, images, fonts) are
+        // absent from the page's Resource Timing; the inspector's resource tree lists them.
+        else if (!loaded.has(entry.key) && !(await frames()).has(entry.url)) { entry.state = 'waiting'; continue; }
         else {
           const frameId = (await frames()).get(entry.url);
           if (frameId) try { const reply = await world.connection.send('Page.getResourceContent', { frameId, url: entry.url }, world.sessionId); body = reply.base64Encoded ? Buffer.from(reply.content, 'base64') : Buffer.from(reply.content, 'utf8'); } catch { body = null; }
@@ -467,14 +495,27 @@ export class Mirror2 {
   }
   // Cross-origin sheets: CDP reads the text regardless of CORS; the page's
   // CSSOM in the isolated world normalizes it, then the same sanitizer runs.
+  // A constructed sheet drops @import: imports the page already loaded are read
+  // the same way (depth-first, bounded), each under its conditions and sanitized
+  // against its own URL.
   async crossOriginSheet(world, url) {
     const { frameTree } = await world.connection.send('Page.getResourceTree', {}, world.sessionId);
     const frameOf = new Map(); const collect = node => { for (const r of node.resources ?? []) frameOf.set(r.url, node.frame.id); for (const child of node.childFrames ?? []) collect(child); }; collect(frameTree);
-    const frameId = frameOf.get(url); if (!frameId) return null;
-    const reply = await world.connection.send('Page.getResourceContent', { frameId, url }, world.sessionId);
-    const text = reply.base64Encoded ? Buffer.from(reply.content, 'base64').toString('utf8') : reply.content;
-    if (typeof text !== 'string' || text.length > 16 * 1024 * 1024) return null;
-    return this.evaluate(world, `(()=>{const sheet=new CSSStyleSheet();sheet.replaceSync(${JSON.stringify(text)});let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\\n';return ${world.ref}.sanitize(out,${JSON.stringify(url)});})()`);
+    const sheets = []; let bytes = 0;
+    const read = async (href, open, close, depth) => {
+      const frameId = frameOf.get(href); if (!frameId || sheets.length >= 64) return false;
+      const reply = await world.connection.send('Page.getResourceContent', { frameId, url: href }, world.sessionId);
+      const text = reply.base64Encoded ? Buffer.from(reply.content, 'base64').toString('utf8') : reply.content;
+      if (typeof text !== 'string' || (bytes += text.length) > 16 * 1024 * 1024) return false;
+      if (depth < 8) for (const rule of cssImports(text)) {
+        let next; try { next = new URL(rule.url, href).href; } catch { continue; }
+        await read(next, open + rule.open, rule.close + close, depth + 1).catch(() => false);
+      }
+      sheets.push({ text, url: href, open, close });
+      return true;
+    };
+    if (!await read(url, '', '', 0)) return null;
+    return this.evaluate(world, `(sheets=>{const parse=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\\n';return out};let out='';for(const s of sheets){let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);out+=${world.ref}.sanitize(body,s.url)}return out})(${JSON.stringify(sheets)})`);
   }
   // Opaque regions (canvas/video/foreign frames) as masked lossless stills,
   // refreshed at most once a second until phase 3 binds them to video rows.
