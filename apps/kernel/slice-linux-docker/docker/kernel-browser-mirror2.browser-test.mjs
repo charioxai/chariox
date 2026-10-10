@@ -708,3 +708,40 @@ test("MP-10: every attribute travels except the denied ones (named slots, constr
   const ops = (await next(1000)).ops.filter(op => op.op === "attr");
   assert.deepEqual(ops.map(op => [op.name, op.value]), [["data-state", "open"]], "MP-10: attribute changes travel; credential-like names stay");
 }));
+
+// Audit 2026-10-10 §4.8: packets whose replies were lost (a dropped socket) are sent again instead of a gap and a reset.
+test("MP-10: a credit that still names an older base after a packet's reply was lost gets that packet again (original bytes, in order), not a newer sequence", () => mirrored('<p id="x">one</p>', async ({ next, evaluate, host }) => {
+  const first = await next();
+  assert.equal(first.reset, true);
+  const subscription_id = [...host.mirror.streams.keys()][0], generation = host.generation;
+  const credit = after => host.request({ op: "mirror_next", subscription_id, generation, after_sequence: after, drift_nodes: [], wait_ms: 1000 });
+  // Two packets are issued but their replies never reach the viewer (it still names sequence 1).
+  await evaluate("x.firstChild.data='two';true"); const lost2 = await credit(first.sequence);
+  await evaluate("x.firstChild.data='three';true"); const lost3 = await credit(first.sequence);
+  assert.deepEqual([lost2.sequence, lost3.sequence], [2, 3]);
+  await new Promise(resolve => setTimeout(resolve, 1700));
+  await evaluate("x.firstChild.data='four';true");
+  const again = [await credit(first.sequence), await credit(first.sequence)];
+  assert.deepEqual(again, [lost2, lost3], "MP-10: the lost packets come back byte for byte, in order");
+  assert.equal((await credit(3)).sequence, 4, "MP-10: then the stream continues");
+}));
+
+// Audit 2026-10-10 §4.6: observer instance eviction and resource-key budget never leave a viewer silently stale.
+test("MP-10: a subscription whose observer instance was evicted resyncs (reset with the change) instead of receiving empty deltas", () => mirrored('<p id="x">one</p>', async ({ next, evaluate, host }) => {
+  assert.equal((await next()).reset, true);
+  const stream = [...host.mirror.streams.values()][0];
+  await host.mirror.v2.evaluate(stream.world, "(()=>{for(let i=0;i<20;i++)globalThis.__charioxMirror2.get('leaked-'+i);return true})()");
+  await evaluate("x.firstChild.data='changed';true");
+  let packet = await next(1000);
+  for (let i = 0; i < 3 && !JSON.stringify(packet).includes("changed"); i++) packet = await next(1000);
+  assert.equal(packet.reset, true, "MP-10: the evicted subscription takes a fresh snapshot");
+  assert.match(JSON.stringify(packet.nodes), /changed/);
+}));
+
+test("MP-10: past the resource-key budget the least recently used URL mapping goes; new images keep getting keys", () => mirrored(
+  `<div id="g"></div><script>const g=document.getElementById("g");for(let i=0;i<4200;i++){const img=document.createElement("img");img.width=1;img.height=1;img.src="data:image/gif;base64,R0lGODlhAQABAAAAACw=#"+i;g.append(img)}</script>`, async ({ next }) => {
+    const snapshot = await next(), images = snapshot.nodes.filter(row => row[2] === "img");
+    assert.equal(images.length, 4200);
+    assert.equal(images.filter(row => typeof row[4]?.res === "string").length, 4200, "MP-10: every image has a key");
+    assert.equal(new Set(images.map(row => row[4].res)).size, 4200, "MP-10: keys are never reused");
+  }));

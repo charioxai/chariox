@@ -47,11 +47,15 @@ export function installMirror2(sanitizeMirrorCss) {
   if (globalThis.__charioxMirror2) return true;
   // One independent observer per subscription (viewer): its own ids, mutation
   // journal and listeners, so one viewer's snapshot never resets another's.
+  // Least recently used first; over the bound (twice the service's subscriptions:
+  // only leaked instances) the oldest goes, and its subscription resyncs.
   const instances = new Map();
   globalThis.__charioxMirror2 = Object.freeze({
     get: id => {
       let instance = instances.get(id);
-      if (!instance) { if (instances.size >= 8) { const [oldest, old] = instances.entries().next().value; old.dispose(); instances.delete(oldest); } instance = create(); instances.set(id, instance); }
+      if (instance) instances.delete(id);
+      else { if (instances.size >= 16) { const [oldest, old] = instances.entries().next().value; old.dispose(); instances.delete(oldest); } instance = create(); }
+      instances.set(id, instance);
       return instance;
     },
     drop: id => { instances.get(id)?.dispose(); instances.delete(id); return true; },
@@ -82,7 +86,9 @@ export function installMirror2(sanitizeMirrorCss) {
     // Hosts of closed shadow roots (found by the kernel's trusted DOMSnapshot pass):
     // this world cannot read their content, so they are opaque regions.
     const closedHosts = new WeakSet();
-    const urlKeys = new Map();
+    // Resource keys by URL, least recently used first: over the budget the oldest mapping goes (a later
+    // use gets a new key). Keys are never reused within a document, below the frame key slot.
+    const urlKeys = new Map(); let keySerial = 0, snapshotted = false;
     let selectedDoc = null; // the document whose selection changed last
     let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, lastStateCheck = 0, stateCursor = 0;
     const dirty = { children: new Set(), attrs: new Map(), text: new Set(), form: new Set(), state: new Set(), scroll: new Set(), replace: new Set(), sheets: new Set(), frames: new Set(), masks: new Set() };
@@ -95,9 +101,10 @@ export function installMirror2(sanitizeMirrorCss) {
       let url; try { url = new URL(raw, base); } catch { return null; }
       if (!['http:', 'https:', 'data:'].includes(url.protocol) || url.href.length > 4 * 1024 * 1024) return null;
       if (url.protocol === 'data:' && !/^data:(image\/(png|jpeg|gif|webp|svg\+xml)|font\/|application\/(font|x-font)|application\/octet-stream)/i.test(url.href)) return null;
-      const known = urlKeys.get(url.href); if (known) return known.key;
-      if (urlKeys.size >= RESOURCE_BUDGET) return null;
-      const key = `r${urlKeys.size + 1}`; urlKeys.set(url.href, { key, kind }); newResources.push({ key, url: url.href, kind }); return key;
+      const known = urlKeys.get(url.href); if (known) { urlKeys.delete(url.href); urlKeys.set(url.href, known); return known.key; }
+      if (keySerial >= 999999) return null;
+      if (urlKeys.size >= RESOURCE_BUDGET) urlKeys.delete(urlKeys.keys().next().value);
+      const key = `r${++keySerial}`; urlKeys.set(url.href, { key, kind }); newResources.push({ key, url: url.href, kind }); return key;
     };
     // With `clean`, each sheet's own rules are sanitized against that sheet's base
     // (an imported sheet's url() is relative to the imported sheet).
@@ -345,7 +352,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const resetTargets = () => { targets = new WeakSet(); return true; };
     // Full snapshot: forget every id. Resource keys stay stable per document.
     const snapshot = () => {
-      observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map();
+      observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map(); snapshotted = true;
       for (const key of Object.keys(dirty)) dirty[key].clear();
       for (const id of [...nodes.keys()]) { const node = nodes.get(id); if (node) ids.delete(node); }
       nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); stateNodes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear();
@@ -414,6 +421,7 @@ export function installMirror2(sanitizeMirrorCss) {
       ops.push({ op: 'children', id, children: list, nodes: out.splice(0) });
     };
     const drain = () => {
+      if (!snapshotted) return { resync: 'evicted' }; // a new instance for a running subscription
       if (overflow) return { resync: 'overflow' };
       budget = { nodes: nodes.size, bytes: 0 };
       const batch = records; records = [];

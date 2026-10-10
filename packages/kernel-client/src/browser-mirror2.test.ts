@@ -152,6 +152,25 @@ test('MP-08/MP-10: a retired subscription surfaces a failure; transient failures
   assert.deepEqual(flaky.failures, [], 'MP-10: a short failure streak is not terminal')
 })
 
+// Audit 2026-10-10 §4.8: a lost credit reply (dropped socket) is not a reset; the kernel resends from the applied base.
+test('MP-10: one failed credit re-credits from the applied sequence (the kernel resends lost packets); a second consecutive failure asks for a reset', async () => {
+  let sequence = 0, failures = 0
+  const viewer = flow(async command => {
+    if (command.op === 'mirror_subscribe') return { subscription_id: 's' }
+    if (command.op === 'mirror_close') return { closed: true }
+    if (command.after_sequence === 0) return packet(++sequence, true)
+    if (failures < 1 && sequence === 2) { failures++; throw Error('local_transport_error: connection closed') }
+    if (sequence >= 4) await new Promise(resolve => setTimeout(resolve, 200))
+    return packet(++sequence, false)
+  })
+  const view = await viewer.start()
+  await until(() => viewer.applied.length >= 4)
+  await view.close()
+  const afters = viewer.requests.filter(command => command.op === 'mirror_next').map(command => command.after_sequence)
+  assert.deepEqual(afters.filter(after => after === 0).length, 1, `MP-10: one snapshot only, no reset after the lost reply: ${JSON.stringify(afters)}`)
+  assert.deepEqual(viewer.applied.slice(0, 4), [1, 2, 3, 4])
+})
+
 test('MP-10: removing an inline style forgets it, so a later resource cannot restore it', () => {
   const element = () => { const attributes = new Map<string, string>(); return { nodeType: 1, attributes, setAttribute: (name: string, value: string) => attributes.set(name, value), removeAttribute: (name: string) => attributes.delete(name), addEventListener: () => {}, style: {} } }
   const iframe = element(), container = { ownerDocument: { createElement: () => iframe }, append: () => {} }

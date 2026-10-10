@@ -14,6 +14,9 @@ import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror
 import { MirrorCssEvents } from './kernel-browser-mirror2-css.mjs';
 
 const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
+// A packet still unacknowledged this long after it was issued, while a later credit names an older
+// base, was lost with its reply (a dropped socket): it is sent again, in order, with its original bytes.
+const RESEND_MS = 1500, HISTORY_BYTES = 8 * 1024 * 1024;
 const MAX_WAIT_MS = 2000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
 // Protocol 489: resource bytes travel in slices (base64 characters, a multiple
 // of 4) of at most a packet budget, smaller while the viewer is typing or
@@ -228,6 +231,8 @@ export class Mirror2 {
     const replayKey = typeof command.command_id === 'string' && command.command_id.length <= 128 ? command.command_id : null;
     const replayed = replayKey && stream.replies?.get(replayKey);
     if (replayed) return replayed;
+    const lost = this.lost(stream, command, scope);
+    if (lost) return lost;
     const arrival = Date.now(), wait = command.wait_ms ?? 0;
     // A reset credit (lost base) must not queue behind a waiting long poll.
     // Credits that arrived before it stop waiting (their hurry count is older).
@@ -250,10 +255,12 @@ export class Mirror2 {
     const after = command.after_sequence;
     // The viewer's credits name what it applied: resource completion counts only once acknowledged.
     if (after > 0 && after <= stream.issued) stream.acked = Math.max(stream.acked ?? 0, after);
+    // Bytes the viewer acknowledged are kept by it for the document's lifetime: the kernel drops its copy.
+    if (stream.acked > (stream.prunedAt ?? 0)) { stream.prunedAt = stream.acked; for (const entry of stream.resources.values()) if (entry.sent && entry.sentAt <= stream.acked && entry.resource) { entry.resource = entry.preview = null; entry.url = ''; } }
     const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
     if (reset) this.host.timing?.(`mirror2_reset ${resetReason}`, started);
-    if (stream.document_id !== tab.document_id) { stream.acked = 0; stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
+    if (stream.document_id !== tab.document_id) { stream.acked = 0; stream.prunedAt = 0; stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
     // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
     if (stream.frameSlot >= 900) reset = true;
     // Frame slots restart with a snapshot, so rebased child keys are re-learned.
@@ -361,8 +368,24 @@ export class Mirror2 {
     if (sent.scroll !== stream.ownScrolls.get(null)) stream.ownScrolls.delete(null);
     for (const op of packet.ops ?? []) if (op.op === 'scroll') stream.ownScrolls.delete(op.id);
     const wire = await this.encode(stream, packet);
+    this.remember(stream, sequence, wire, reset);
     mark('serialize'); this.host.timing?.('mirror2_total', started);
     return wire;
+  }
+  // Issued packets by sequence (bounded), for lost-reply resends.
+  remember(stream, sequence, wire, reset) {
+    if (reset || !stream.history) { stream.history = new Map(); stream.historyBytes = 0; stream.resent = 0; }
+    const bytes = JSON.stringify(wire).length; stream.history.set(sequence, { wire, at: Date.now(), bytes }); stream.historyBytes += bytes;
+    for (const [old, entry] of stream.history) { if (stream.history.size <= 16 && stream.historyBytes <= HISTORY_BYTES || old === sequence) break; stream.history.delete(old); stream.historyBytes -= entry.bytes; }
+  }
+  lost(stream, command, scope) {
+    const after = command.after_sequence;
+    if (!Number.isSafeInteger(after) || after <= 0 || after >= stream.issued || this.service.streams.get(command.subscription_id) !== stream) return null;
+    const next = Math.max(after, stream.resent ?? 0) + 1, entry = stream.history?.get(next);
+    if (!entry || Date.now() - entry.at < RESEND_MS) return null;
+    this.service.require(command.subscription_id, scope, command.generation);
+    stream.resent = next; this.host.timing?.('mirror2_resend', timestamp());
+    return entry.wire;
   }
   // Protocol 489: the body (without media) deflates in the subscription's
   // context, so repeated structure (typeahead rows, form ops) costs a few bytes.

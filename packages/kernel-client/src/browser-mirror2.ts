@@ -561,7 +561,7 @@ export class Mirror2Inflater {
 type Binding = { tab_id: string; generation: number; device_scale_factor: 1 | 2 }
 const GAP_MS = 500
 // Credit-gated push: `credits` long-poll requests stay outstanding; packets
-// apply strictly in sequence. A gap or failed credit asks for a fresh snapshot.
+// apply strictly in sequence. A lasting gap or repeated failure asks for a fresh snapshot.
 type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'>
 // A failure streak that outlives this with no packet is terminal (the runtime then
 // shows protected video and retries later); shorter streaks back off.
@@ -637,7 +637,9 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
         await drain()
       })
       .catch(error => {
-        if (reset) resetOutstanding = false; wantReset = true; failures++; failingSince ||= performance.now()
+        // One failed credit (its reply lost with a dropped socket) re-credits from the applied base: the
+        // kernel resends what it lost. A failed reset, or a second failure in a row, asks for a snapshot.
+        if (reset) resetOutstanding = false; failures++; if (reset || failures > 1) wantReset = true; failingSince ||= performance.now()
         if (!closed && (fatal(error) || terminal(error) || performance.now() - failingSince > failingMs)) { closed = true; inflater?.close(); renderer.close(); handlers.failure(error); void closeRemote() }
       })
       .finally(() => { inflight--; if (!closed) setTimeout(fill, failures ? Math.min(4000, 250 * 2 ** (failures - 1)) : 0) })
