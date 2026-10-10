@@ -62,7 +62,7 @@ export class BrowserPopupEvidence {
       if(source.actionId===actionId){source.actionId=null;source.opens=[];source.dispatches=0;}
       for(const [target,evidence]of this.targets)if(evidence.actionId===actionId)this.targets.delete(target);
       throw error;
-    }
+    }finally{source.dispatches=0;}
   }
   inventory(tabs) {
     const live=new Set(tabs.map(tab=>tab.target_id));

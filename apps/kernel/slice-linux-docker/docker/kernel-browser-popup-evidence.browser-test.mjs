@@ -14,9 +14,9 @@ async function launchChromium({executable,root,dpr}) {
  return {connection,browser,async close(){await connection.send('Browser.close').catch(()=>{});for(let i=0;i<50&&child.exitCode===null&&child.signalCode===null;i++)await new Promise(r=>setTimeout(r,20));if(child.exitCode===null&&child.signalCode===null&&Number.isSafeInteger(child.pid)&&child.pid>1)child.kill('SIGKILL')}};
 }
 import {BrowserPopupEvidence} from './kernel-browser-popup-evidence.mjs';
-for(const dpr of [1,2])test(`MP-08 DPR${dpr}: delayed popup retains activation evidence and subsequent native input clears it`,async()=>{
+for(const framed of [false,true])for(const dpr of [1,2])test(`MP-08 DPR${dpr} ${framed?'child frame':'top frame'}: delayed popup retains activation evidence and subsequent native input clears it`,async()=>{
  const root=await mkdtemp(path.join(tmpdir(),'displayopus-popup-'));
- const server=createServer((req,res)=>{res.setHeader('content-type','text/html');res.end('<button style="position:absolute;left:0;top:0;width:200px;height:100px" onclick="setTimeout(()=>window.open(\'/popup\'),150)">Open asynchronously</button>')});
+ const server=createServer((req,res)=>{res.setHeader('content-type','text/html');res.end(framed&&req.url==='/'?'<iframe src="/frame" style="position:absolute;left:0;top:0;width:400px;height:200px;border:0"></iframe>':'<button style="position:absolute;left:0;top:0;width:200px;height:100px" onclick="setTimeout(()=>window.open(\'/popup\'),150)">Open asynchronously</button>')});
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const evidence=new BrowserPopupEvidence();let chrome;
  try{
   chrome=await launchChromium({executable:process.env.CHARIOX_KERNEL_BROWSER_EXECUTABLE,root,dpr});const {browser,connection}=chrome;
