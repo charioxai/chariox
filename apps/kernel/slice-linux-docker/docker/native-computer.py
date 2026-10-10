@@ -67,7 +67,7 @@ def input_action(action, processes=None, connection=None):
         # by the owned channel. Keep per-key X sync and restoration, while
         # agent/Vault paths retain their pacing and fresh focus/clipboard fences.
         if connection is not None and processes is None:
-            keyboard.type_text(action['text'],pace_seconds=0)
+            keyboard.type_text(action['text'],pace_seconds=0,connection=connection)
         else:
             keyboard.type_text(action['text'],before_press=guard)
         return

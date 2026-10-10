@@ -80,6 +80,32 @@ def helper(connection):
 
 
 class KeyboardTextTests(unittest.TestCase):
+    def test_mp08_warm_human_text_borrows_without_reopening_or_closing_x11(self):
+        connection=Display()
+        module=helper(connection)
+        with patch.object(module._x11_module,'open_display',side_effect=AssertionError('warm text reopened X11')),patch.object(connection,'close') as close,patch.object(module.time,'sleep'),patch.object(module.signal,'signal'):
+            module.type_text('ab',pace_seconds=0,connection=connection)
+        self.assertEqual(connection.text,'ab')
+        close.assert_not_called()
+
+    def test_mp11_failed_borrowed_text_leaves_the_channel_connection_owned(self):
+        connection=Display()
+        module=helper(connection)
+        with patch.object(module._x11_module,'open_display',side_effect=AssertionError('warm text reopened X11')),patch.object(connection,'close') as close,patch.object(module,'universal_text_keysym',return_value=None),patch.object(module.signal,'signal'):
+            with self.assertRaisesRegex(ValueError,'unsupported text character'):
+                module.type_text('a',pace_seconds=0,connection=connection)
+        close.assert_not_called()
+        self.assertEqual(connection.text,'')
+
+    def test_mp11_one_shot_text_still_closes_its_owned_x11_connection(self):
+        connection=Display()
+        module=helper(connection)
+        with patch.object(module._x11_module,'open_display',return_value=connection) as opened,patch.object(connection,'close') as close,patch.object(module.time,'sleep'),patch.object(module.signal,'signal'):
+            module.type_text('ab')
+        opened.assert_called_once()
+        close.assert_called_once()
+        self.assertEqual(connection.text,'ab')
+
     def test_mp11_finding1_focus_change_stops_a_multi_character_native_event(self):
         connection=Display()
         connection.grab_server=lambda:None
