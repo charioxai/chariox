@@ -168,6 +168,18 @@ mod tests {
     }
 
     #[test]
+    fn a_claude_mode_qualified_alias_does_not_create_a_window_downshift() {
+        let run = claude_run_for_provider("claude-p", "claude-sonnet-5-5", Some(155_175));
+        assert!(!needs_compaction(
+            &run,
+            "claude-p",
+            "work",
+            "claude-p/sonnet"
+        ));
+        assert!(needs_compaction(&run, "claude-p", "work", "claude-p/haiku"));
+    }
+
+    #[test]
     fn claude_headless_is_not_compacted_through_structured_io() {
         let run = claude_run_for_provider("claude-headless", "sonnet[1m]", Some(320_000));
         assert!(!needs_compaction(&run, "claude-headless", "work", "haiku"));

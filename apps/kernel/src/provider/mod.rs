@@ -191,17 +191,19 @@ pub(crate) fn model_context_window_tokens(provider: &str, model: &str) -> u64 {
     match canonical_provider_family(provider) {
         Some("codex") => 258_400,
         Some("claude") => {
-            let model = model
-                .trim()
-                .trim_start_matches("claude/")
-                .to_ascii_lowercase();
+            let normalized = model.trim().to_ascii_lowercase();
+            let model = match normalized.split_once('/') {
+                Some((namespace, model))
+                    if canonical_provider_family(namespace) == Some("claude") =>
+                {
+                    model
+                }
+                _ => normalized.as_str(),
+            };
             // Current first-party Claude Code defaults, verified with `/context`.
             // Older explicit IDs stay 200k unless extended context is selected.
             if model.ends_with("[1m]")
-                || matches!(
-                    model.as_str(),
-                    "default" | "sonnet" | "opus" | "opusplan" | "fable"
-                )
+                || matches!(model, "default" | "sonnet" | "opus" | "opusplan" | "fable")
                 || [
                     "claude-sonnet-5",
                     "claude-opus-4-7",
@@ -450,6 +452,24 @@ mod tests {
         ProviderClientInterface, ProviderLaunchResult, ProviderUtilityExecutionPolicy,
         RuntimeProviderRun,
     };
+
+    #[test]
+    fn claude_provider_mode_namespaces_keep_the_same_context_window() {
+        for provider in ["claude", "claude-p", "claude-headless"] {
+            for model in ["sonnet", "claude-sonnet-5-5", "haiku"] {
+                let qualified = format!("{provider}/{model}");
+                assert_eq!(
+                    super::model_context_window_tokens(provider, &qualified),
+                    super::model_context_window_tokens(provider, model),
+                    "MP-08 MP-10 MP-11 {qualified} must retain its native window"
+                );
+            }
+        }
+        assert_eq!(
+            super::model_context_window_tokens("claude", "codex/sonnet"),
+            200_000
+        );
+    }
 
     #[test]
     fn claude_context_windows_match_official_cli_context_probes() {
