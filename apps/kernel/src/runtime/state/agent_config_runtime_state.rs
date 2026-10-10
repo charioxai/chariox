@@ -986,6 +986,8 @@ impl KernelRuntimeState {
                 permission_level_override,
             )?;
         }
+        self.append_agent_durable_event("agent.updated", &agent, None)
+            .await?;
         self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
         Ok(agent)
     }
