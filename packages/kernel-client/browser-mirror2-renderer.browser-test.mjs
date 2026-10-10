@@ -113,3 +113,36 @@ test('MP-10: review #941-2 a multiple select shows every selected option (snapsh
     assert.deepEqual(await selected(), ['y', 'z'], 'MP-10: the select\'s own form state does not collapse the set');
   } finally { await page.close(); }
 });
+
+test('MP-08: review #941-1 a text control\'s own range (select-all, mouse drag) is forwarded before the text or key that replaces it (input and textarea)', async () => {
+  const page = await viewer();
+  try {
+    const form = (value, at) => ({ value, checked: false, selected_index: -1, selection_start: at, selection_end: at });
+    const values = { n4: 'hello world', n5: 'one two\nthree' };
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'font:16px monospace;width:300px;display:block' }, form: form(values.n4, 11) },
+      { id: 'n5', parent: 'n3', kind: 'element', tag: 'textarea', attrs: { style: 'font:16px monospace;width:300px;height:80px;display:block' }, form: form(values.n5, 13) }]));
+    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to'));
+    const range = id => page.evaluate(id => { const e = window.r.frame.contentDocument.querySelectorAll('input,textarea')[id === 'n4' ? 0 : 1]; return [e.selectionStart, e.selectionEnd, e.selectionDirection]; }, id);
+    // Real pointer events (CDP): a drag with the button held, right to left.
+    const cdp = await page.context().newCDPSession(page);
+    const drag = async id => {
+      const box = await page.evaluate(id => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelectorAll('input,textarea')[id === 'n4' ? 0 : 1].getBoundingClientRect(); return { x: f.x + t.x, y: f.y + t.y + 9 }; }, id);
+      const mouse = (type, x, buttons) => cdp.send('Input.dispatchMouseEvent', { type, x: box.x + x, y: box.y, button: 'left', buttons, clickCount: 1 });
+      await mouse('mousePressed', 60, 1); for (const x of [50, 40, 30, 22]) await mouse('mouseMoved', x, 1); await mouse('mouseReleased', 22, 0); await frames();
+    };
+    let sequence = 1;
+    for (const id of ['n4', 'n5']) for (const gesture of ['select-all', 'drag']) {
+      // The kernel focuses the control with its caret at the end.
+      await apply(page, delta(++sequence, [{ op: 'form', id, form: { selection_start: values[id].length, selection_end: values[id].length } }], { focused: id })); await sent();
+      if (gesture === 'select-all') await page.keyboard.press('Control+A'); else await drag(id);
+      await frames();
+      const [start, end, direction] = await range(id);
+      assert(start < end && direction === (gesture === 'drag' ? 'backward' : 'forward'), `MP-08: the viewer selected a range of ${id} (${gesture}): ${start},${end},${direction}`);
+      if (id === 'n4') await page.keyboard.type('x'); else await page.keyboard.press('Backspace');
+      await frames();
+      const [anchor, focus] = direction === 'backward' ? [end, start] : [start, end];
+      assert.deepEqual(await sent(), [{ kind: 'selection', anchor_id: id, anchor_offset: anchor, focus_id: id, focus_offset: focus }, id === 'n4' ? { kind: 'text', text: 'x' } : { kind: 'key', key: 'Backspace' }], `MP-08: the ${gesture} range of ${id} reaches the kernel first`);
+    }
+  } finally { await page.close(); }
+});

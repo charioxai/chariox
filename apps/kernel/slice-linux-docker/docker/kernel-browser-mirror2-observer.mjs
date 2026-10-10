@@ -556,6 +556,12 @@ export function installMirror2(sanitizeMirrorCss) {
     const focus = request => { const node = live(request.node_id); if (node.nodeType !== 1) throw new Error('mirror2 element required'); node.focus({ preventScroll: true }); let active = node.ownerDocument.activeElement; while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement; if (active !== node) throw new Error('mirror2 focus redirected'); return true; };
     const select = request => {
       const a = live(request.anchor_id), b = live(request.focus_id);
+      const offsets = [request.anchor_offset, request.focus_offset];
+      // A text control's own range (select-all, a drag inside it): offsets into its value.
+      if (a === b && a.nodeType === 1 && ['input', 'textarea'].includes(a.localName) && a.selectionStart !== null) {
+        if (!offsets.every(offset => Number.isInteger(offset) && offset >= 0 && offset <= a.value.length)) throw new Error('mirror2 invalid selection');
+        a.setSelectionRange(Math.min(...offsets), Math.max(...offsets), offsets[0] > offsets[1] ? 'backward' : 'forward'); return true;
+      }
       if (a.nodeType !== 3 || b.nodeType !== 3 || a.ownerDocument !== b.ownerDocument || !Number.isInteger(request.anchor_offset) || !Number.isInteger(request.focus_offset) || request.anchor_offset < 0 || request.anchor_offset > a.length || request.focus_offset < 0 || request.focus_offset > b.length) throw new Error('mirror2 invalid selection');
       const range = a.ownerDocument.createRange(), pa = a.ownerDocument.createRange(), pb = a.ownerDocument.createRange(); pa.setStart(a, request.anchor_offset); pa.collapse(true); pb.setStart(b, request.focus_offset); pb.collapse(true);
       if (pa.compareBoundaryPoints(Range.START_TO_START, pb) > 0) { range.setStart(b, request.focus_offset); range.setEnd(a, request.anchor_offset); } else { range.setStart(a, request.anchor_offset); range.setEnd(b, request.focus_offset); }

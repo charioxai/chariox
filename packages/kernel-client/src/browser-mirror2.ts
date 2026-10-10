@@ -83,6 +83,17 @@ export class BrowserMirror2Renderer {
       }
     } finally { this.sending = false }
   }
+  // A text control's own range (select-all, a drag inside it) reaches the kernel
+  // before the key or text that replaces it; ranges it already has are not resent.
+  private ranges = new WeakMap<Element, string>()
+  private rangeOf(field: HTMLInputElement): string { return `${field.selectionStart},${field.selectionEnd},${field.selectionDirection}` }
+  private syncRange(): void {
+    const field = this.active() as HTMLInputElement | null, id = field ? this.ids.get(field) : undefined
+    if (!field || !id || this.records.get(id)?.kind !== 'element' || !['input', 'textarea'].includes(field.localName) || field.selectionStart === null || field.selectionEnd === null || this.ranges.get(field) === this.rangeOf(field)) return
+    this.ranges.set(field, this.rangeOf(field))
+    const [anchor, focus] = field.selectionDirection === 'backward' ? [field.selectionEnd, field.selectionStart] : [field.selectionStart, field.selectionEnd]
+    this.enqueue({ kind: 'selection', anchor_id: id, anchor_offset: anchor, focus_id: id, focus_offset: focus })
+  }
   private scrolling(): boolean { return performance.now() - this.localScrollAt < 500 || this.queue.some(q => q.action.kind === 'scroll_to') }
   private idOf(node: Node | null | undefined): string | undefined {
     for (let n: Node | null | undefined = node, depth = 0; n && depth < 512; depth++) { const id = this.ids.get(n); if (id) return id; n = n.parentNode ?? (n as ShadowRoot).host }
@@ -112,6 +123,7 @@ export class BrowserMirror2Renderer {
     on('scroll', this.scrolled)
     on('keydown', event => {
       const { key, shiftKey, ctrlKey, metaKey, altKey } = event as KeyboardEvent
+      this.syncRange()
       if (ctrlKey || metaKey || altKey) return
       // Page keys scroll the viewer's own copy natively; the scroll listener sends the position.
       if (['Tab', 'Enter', 'Escape', 'Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(key)) {
@@ -121,8 +133,8 @@ export class BrowserMirror2Renderer {
       }
     })
     let composed: string | null = null
-    on('beforeinput', event => { const input = event as InputEvent; event.preventDefault(); if (input.isComposing || input.inputType.includes('Composition') || input.data === composed || !input.data) return; this.enqueue({ kind: 'text', text: input.data }) })
-    on('compositionend', event => { event.preventDefault(); const data = (event as CompositionEvent).data; if (data) { composed = data; setTimeout(() => { composed = null }, 0); this.enqueue({ kind: 'text', text: data }) } })
+    on('beforeinput', event => { const input = event as InputEvent; event.preventDefault(); if (input.isComposing || input.inputType.includes('Composition') || input.data === composed || !input.data) return; this.syncRange(); this.enqueue({ kind: 'text', text: input.data }) })
+    on('compositionend', event => { event.preventDefault(); const data = (event as CompositionEvent).data; if (data) { composed = data; setTimeout(() => { composed = null }, 0); this.syncRange(); this.enqueue({ kind: 'text', text: data }) } })
     on('selectionchange', () => { if (this.applying) return; const selection = doc.getSelection(); if (!selection || selection.isCollapsed) return; const a = this.ids.get(selection.anchorNode!), b = this.ids.get(selection.focusNode!); if (a && b && this.records.get(a)?.kind === 'text' && this.records.get(b)?.kind === 'text') this.enqueue({ kind: 'selection', anchor_id: a, anchor_offset: selection.anchorOffset, focus_id: b, focus_offset: selection.focusOffset }) })
   }
   // Viewer scrolls (documents and shadow roots: element scroll events do not cross a shadow boundary).
@@ -232,7 +244,7 @@ export class BrowserMirror2Renderer {
     if ((field.getRootNode() as Document | ShadowRoot).activeElement === field) this.caret(field, form)
   }
   private caret(field: HTMLInputElement, form: Mirror2Form): void {
-    if (form.selection_start !== null && form.selection_end !== null) try { field.setSelectionRange(form.selection_start, form.selection_end) } catch { /* not a text control */ }
+    if (form.selection_start !== null && form.selection_end !== null) try { field.setSelectionRange(form.selection_start, form.selection_end); this.ranges.set(field, this.rangeOf(field)) } catch { /* not a text control */ }
   }
   // The focused leaf across open shadow roots and mirrored frame documents.
   private active(): Element | null {

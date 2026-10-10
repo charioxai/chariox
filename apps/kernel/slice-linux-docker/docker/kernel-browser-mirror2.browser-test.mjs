@@ -525,3 +525,17 @@ test("MP-10: review #941-2 every selected option of a multiple select reaches th
     for (let i = 0; i < 3 && !children; i++) children = (await next(1500)).ops.find(op => op.op === "children");
     assert.deepEqual(rows(children.nodes).map(r => r.form?.checked), [false, true, true], "MP-10: replaced options carry their selectedness");
   }));
+
+test("MP-08: review #941-1 a text control's own range (select-all, a drag) set through mirror input is replaced by the next text (input and textarea, backward); out-of-range refused", () => mirrored(
+  '<input id="i" value="hello world"><textarea id="t">one two\nthree</textarea>', async ({ next, evaluate, input }) => {
+    const snapshot = await next(), id = name => elements(snapshot).find(([, , attrs]) => attrs.id === name)[0];
+    for (const [name, anchor, focus, direction, typed, expected] of [["i", 0, 11, "forward", "x", "x"], ["t", 13, 4, "backward", "2", "one 2"]]) {
+      await evaluate(`(()=>{const e=document.getElementById("${name}");e.focus();e.setSelectionRange(e.value.length,e.value.length);return true})()`);
+      const focused = await next(600);
+      await input(focused.sequence, { kind: "selection", anchor_id: id(name), anchor_offset: anchor, focus_id: id(name), focus_offset: focus });
+      assert.deepEqual(await evaluate(`(e=>[e.selectionStart,e.selectionEnd,e.selectionDirection])(document.getElementById("${name}"))`), [Math.min(anchor, focus), Math.max(anchor, focus), direction]);
+      await input(focused.sequence, { kind: "text", text: typed });
+      assert.equal(await evaluate(`document.getElementById("${name}").value`), expected, `MP-08: the range of #${name} is replaced`);
+    }
+    await assert.rejects(input(snapshot.sequence, { kind: "selection", anchor_id: id("t"), anchor_offset: 0, focus_id: id("t"), focus_offset: 99 }), "MP-11: an offset beyond the value is refused");
+  }));
