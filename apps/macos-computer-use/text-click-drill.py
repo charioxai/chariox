@@ -8,6 +8,7 @@ import re
 import signal
 import subprocess
 import time
+from fence_pointer import PointerLease, run_pointer_script
 
 BUILD = Path(os.environ.get('CUMAC_BUILD_DIR', str(Path.home() / '.chariox/dev/cumac/build')))
 HELPER = BUILD / 'Chariox Computer Helper.app'
@@ -85,16 +86,6 @@ def launch_helper(evidence, label, arguments):
     return receipt
 
 
-def warp_pointer(point):
-    # Move only during our frontmost fixture drill, without posting a click.
-    script = ('ObjC.import("CoreGraphics"); Number($.CGWarpMouseCursorPosition('
-              + json.dumps(point) + '));')
-    result = subprocess.run(['osascript', '-l', 'JavaScript', '-e', script],
-                            capture_output=True, text=True, check=True, timeout=3)
-    if result.stdout.strip() != '0':
-        raise RuntimeError('pointer-warp-failed')
-
-
 def selection(evidence):
     rows = re.findall(r'fixture selection location=(\d+) length=(\d+)', read(evidence, 'fixture.out'))
     return rows[-1] if rows else None
@@ -107,11 +98,15 @@ def verify_caret(evidence, label, scope, pid, x, y, expected, at_pointer):
         raise RuntimeError('fixture-lost-frontmost; no helper mutation attempted')
     requested = {'x': float(x), 'y': float(y)}
     saved_pointer = before['pointer']
+    lease = None
     warped = None
     try:
         if at_pointer:
-            warp_pointer(requested)
-            warped_state = desktop()
+            lease = PointerLease(desktop, run_pointer_script, saved_pointer)
+            lease.bind(pid, int(scope[scope.index('--window-id') + 1]))
+            lease.warp(requested)
+            warped = lease.last
+            warped_state = lease.require()
             (evidence / f'{label}-warp.json').write_text(json.dumps(warped_state, indent=2) + '\n')
             warped = warped_state['pointer']
             # CGWarpMouseCursorPosition can quantize fractional screen points
@@ -125,7 +120,9 @@ def verify_caret(evidence, label, scope, pid, x, y, expected, at_pointer):
             arguments = ['--click-at-pointer', '--click']
         else:
             arguments = ['--click-at', x, y, '--click']
-        if desktop()['frontmostPID'] != pid:
+        if lease:
+            lease.require()
+        elif desktop()['frontmostPID'] != pid:
             raise RuntimeError('fixture-lost-frontmost; no helper mutation attempted')
         receipt = launch_helper(evidence, label, scope + ['--target', 'text', *arguments])
         deadline = time.monotonic() + 1
@@ -135,7 +132,7 @@ def verify_caret(evidence, label, scope, pid, x, y, expected, at_pointer):
         wanted = warped if at_pointer else requested
         point_matches = (observed and max(abs(float(observed[i + 2]) - wanted[k])
                                         for i, k in enumerate(['x', 'y'])) < 0.01)
-        after = desktop()
+        after = lease.require() if lease else desktop()
         passed = bool(observed and observed[1] == expected and point_matches
                       and selection(evidence) == (expected, '0') and after['frontmostPID'] == pid)
         (evidence / f'{label}.json').write_text(json.dumps({
@@ -145,8 +142,8 @@ def verify_caret(evidence, label, scope, pid, x, y, expected, at_pointer):
         return passed, receipt
     finally:
         # Do not undo a person's pointer movement if they took over mid-drill.
-        if warped is not None and desktop()['pointer'] == warped:
-            warp_pointer(saved_pointer)
+        if lease and warped is not None:
+            lease.restore()
 
 
 def fixture_probes(output):
