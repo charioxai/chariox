@@ -398,12 +398,12 @@ impl KernelRuntimeState {
         } else if action == "pause" || action == "edit" {
             self.stop_goal_turn(&task).await?;
         }
-        self.owned.session_snapshot(session.id())?;
+        let snapshot = self.owned.session_snapshot(session.id())?;
         self.owned
             .terminal_stream
             .notify_terminal_projection_change(session.id());
         Ok(Some(LocalDaemonResponse::SessionState {
-            session: self.owned.session_snapshot(session.id())?,
+            session: snapshot,
             agent_activity: self.agent_activity_for_session(&session),
             agent_activity_revision: self.owned.session_projection.change_sequence(),
         }))

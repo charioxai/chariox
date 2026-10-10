@@ -244,7 +244,7 @@ pub(super) fn evaluate(
         .and_then(|s| s.strip_suffix("```"))
         .unwrap_or(result)
         .trim();
-    let assessment = if valid {
+    let assessment = if valid && result.len() <= RESULT_LIMIT {
         serde_json::from_str::<Assessment>(result).ok()
     } else {
         None
@@ -274,7 +274,9 @@ pub(super) fn evaluate(
         }
         Some(Assessment::Waiting { reason, registration_ids, deadline_ms }) if !reason.trim().is_empty() => {
             let interval = t.goal.as_ref().map_or(10, |g| g.check_in_minutes) as u64 * 60_000;
-            let deadline = deadline_ms.min(now.saturating_add(interval));
+            let deadline = deadline_ms.min(now.saturating_add(interval))
+                .min(t.wait.as_ref().map_or(u64::MAX, |w| w.deadline_ms))
+                .min(wakes::source_deadline(tx, &t, &registration_ids)?.unwrap_or(u64::MAX));
             let regs = registrations(tx, &t.task_id)?;
             let valid_sources = !registration_ids.is_empty() && deadline > now
                 && registration_ids.iter().all(|id| regs.iter().any(|r| &r.id == id && r.live))
@@ -298,8 +300,11 @@ pub(super) fn evaluate(
         }
         _ => blocked(&mut t, "Goal evaluation omitted its required answer/evidence or owner action; explicitly resume"),
     }
-    let receipt =
-        serde_json::from_str(result).unwrap_or_else(|_| serde_json::json!({"invalid":true}));
+    let receipt = if result.len() > RESULT_LIMIT {
+        serde_json::json!({"invalid":true,"reason":"completion_check result exceeds 8192 bytes"})
+    } else {
+        serde_json::from_str(result).unwrap_or_else(|_| serde_json::json!({"invalid":true}))
+    };
     completion::evaluation_mut(&mut t).unwrap().result = Some(receipt);
     t.revision += 1;
     migration::audit(

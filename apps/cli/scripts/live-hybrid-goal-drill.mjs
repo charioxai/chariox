@@ -33,7 +33,7 @@ for (const key of ['CHARIOX_KERNEL_PORT','CHARIOX_MCP_PORT','CHARIOX_CODEX_PORT'
 const url = `ws://127.0.0.1:${env.CHARIOX_KERNEL_PORT}/kernel`, socketPath = path.join(stateRoot, 'tui.sock')
 const kernelLog = createWriteStream(path.join(stateRoot, 'kernel.log'), { mode: 0o600 })
 await new Promise(resolve => kernelLog.once('open',resolve))
-const kernel = spawn(kernelBinary, [], { cwd: workspace, env, stdio: ['ignore', kernelLog, kernelLog] })
+let kernel = spawn(kernelBinary, [], { cwd: workspace, env, stdio: ['ignore', kernelLog, kernelLog] })
 let tui, automation, client, sessionId, result, failure, db
 const processRoots = []
 await registerRoot(kernel.pid)
@@ -86,7 +86,7 @@ try {
     try { client = new LocalIpcClient(url, { localAuthEnvironment:env }); await client.send({ ListSessions:null }); break } catch { await client?.close().catch(()=>{}); if (Date.now()>until) throw new Error('kernel unavailable'); await sleep(1000) }
   }
   if (args.has('--pair-gate')) {
-    await writeFile(path.join(evidence,'live-runtime.json'),JSON.stringify({kernel_url:url,chariox_home:env.CHARIOX_HOME,host_home:env.HOME,kernel_pid:kernel.pid}))
+    await writeFile(path.join(evidence,'live-runtime.json'),JSON.stringify({kernel_url:url,chariox_home:env.CHARIOX_HOME,host_home:env.HOME,kernel_pid:kernel.pid,daemon_socket:env.CHARIOX_DAEMON_SOCKET}))
     await waitUntil(async()=>{try { await readFile(required('--pair-gate')); return true } catch { return false }},Boolean,'normal hosted pairing before session ownership',600_000)
   }
   const linked = await client.send(linkProviderAccountProfileRequest('codex','amgoal-live',profile))
@@ -104,7 +104,7 @@ try {
   await waitUntil(async()=>{try { automation = await connectAutomation(); return true } catch { return false }},Boolean,'real TUI startup')
   const initial = await waitUntil(()=>automation.send('snapshot'),s=>s.session?.id && s.session?.agentCount===1,'real TUI attached')
   sessionId = initial.session.id
-  await writeFile(path.join(evidence,'live-runtime.json'), JSON.stringify({kernel_url:url,chariox_home:env.CHARIOX_HOME,host_home:env.HOME,kernel_pid:kernel.pid,tui_pid:tui.pid,session_id:sessionId}))
+  await writeFile(path.join(evidence,'live-runtime.json'), JSON.stringify({kernel_url:url,chariox_home:env.CHARIOX_HOME,host_home:env.HOME,kernel_pid:kernel.pid,daemon_socket:env.CHARIOX_DAEMON_SOCKET,tui_pid:tui.pid,session_id:sessionId,source_head:args.get('--source-head')??null}))
   if (args.has('--start-gate')) await waitUntil(async()=>{try { await readFile(required('--start-gate')); return true } catch { return false }},Boolean,'owner-driven hosted client attachment',600_000)
   const submitted = await automation.send('submit_prompt',{prompt:`/goal ${args.get('--goal-interval')==='default'?'':`--interval ${args.get('--goal-interval')??1} `}${objective.trim()}`})
   await writeFile(path.join(evidence,'submit-status.json'),JSON.stringify({statusLine:submitted.statusLine,footer:submitted.footer}))
@@ -120,7 +120,7 @@ try {
     if (args.get('--expect') === 'resume-red') throw Error('counter RED reproduction unexpectedly passed')
     result={status:'PASS',control:'real owner pause/resume',before_sequence:paused.goal.continuation_sequence,after_sequence:resumed.goal.continuation_sequence}
   }
-  const deadline = Date.now()+timeoutMs; let lastSignature, sawWaiting=false, sawCheckIn=false
+  const deadline = Date.now()+timeoutMs; let lastSignature, sawWaiting=false, sawCheckIn=false, restarted=false
   while (!result && Date.now()<deadline) {
     await resourceSample()
     const session = unwrap(await client.send(getSessionStateRequest(sessionId)))
@@ -132,27 +132,55 @@ try {
       const signature = JSON.stringify([task.revision,task.state,task.prompt_id,task.goal.check_count])
       if (signature!==lastSignature) {
         const screen = await automation.send('snapshot')
-        await writeFile(path.join(evidence,`goal-${task.revision}.json`),JSON.stringify({date:new Date().toISOString(),ansi_bytes:ptyLog.bytesWritten,task,tui:{statusLine:screen.statusLine,agents:screen.session.agents}},null,2))
+        await writeFile(path.join(evidence,`goal-${task.revision}.json`),JSON.stringify({date:new Date().toISOString(),ansi_bytes:ptyLog.bytesWritten,task,plain_tasks:session.agent_tasks.filter(t=>!t.goal&&t.completion_check).map(t=>({task_id:t.task_id,agent_id:t.agent_id,state:t.state,completion_check:t.completion_check})),tui:{statusLine:screen.statusLine,agents:screen.session.agents}},null,2))
         lastSignature=signature
+      }
+      if (['source-loss-restart','source-delete-restart'].includes(args.get('--expect')) && task.state==='waiting' && task.no_progress_wakes>=Number(args.get('--min-guard')??0) && !restarted) {
+        assert(task.goal.next_check_in_ms>Date.now()+5000, 'restart must precede the check-in deadline')
+        if(args.get('--expect')==='source-delete-restart') {
+          const delegated=new Set(task.obligations.filter(o=>o.kind==='delegate'&&o.status==='open').map(o=>o.resource_id))
+          const victims=session.agents.filter(a=>delegated.has(a.id))
+          assert(victims.length>0,'required actual source agent must exist')
+          for(const a of victims) await automation.send('submit_prompt',{prompt:`/agent delete ${a.agent_ref??a.id}`})
+          await writeFile(path.join(evidence,'source-deletion.json'),JSON.stringify({date:new Date().toISOString(),source_agents:victims.map(a=>({id:a.id,ref:a.agent_ref})),ansi_bytes:ptyLog.bytesWritten},null,2))
+        }
+        const own=await ownProcesses(), providers=[]
+        for(const r of own){try {const comm=(await readFile(`/proc/${r.pid}/comm`,'utf8')).trim(); const a=(await readFile(`/proc/${r.pid}/cmdline`,'utf8')).split('\0'); if(comm==='codex' && a[1]==='app-server') providers.push(r)}catch{}}
+        assert(providers.length>=2,'real root and source provider processes must exist')
+        await writeFile(path.join(evidence,'before-source-loss.json'),JSON.stringify({date:new Date().toISOString(),task,provider_pids:providers.map(p=>({pid:p.pid,born:p.born})),ansi_bytes:ptyLog.bytesWritten},null,2))
+        for(const r of providers) await signalOwn(r,'SIGKILL')
+        const kr=own.find(r=>r.pid===kernel.pid);assert(kr,'own exact kernel root required');await signalOwn(kr,'SIGKILL')
+        await new Promise(resolve=>kernel.once('exit',resolve))
+        kernel=spawn(kernelBinary,[],{cwd:workspace,env,stdio:['ignore',kernelLog,kernelLog]});await registerRoot(kernel.pid)
+        await client.close();client=new LocalIpcClient(url,{localAuthEnvironment:env})
+        const recovered=await waitUntil(async()=>{try {return unwrap(await client.send(getSessionStateRequest(sessionId)))?.agent_tasks?.find(t=>t.goal)}catch{}},Boolean,'same persisted goal after real restart',45000)
+        await writeFile(path.join(evidence,'after-restart.json'),JSON.stringify({date:new Date().toISOString(),task:recovered,ansi_bytes:ptyLog.bytesWritten},null,2))
+        assert.equal(recovered.goal.id,task.goal.id);assert.equal(recovered.goal.objective,task.goal.objective);assert(recovered.no_progress_wakes>=task.no_progress_wakes,'restart must not erase progress guard')
+        let observation=0; const settled=await waitUntil(async()=>{const state=unwrap(await client.send(getSessionStateRequest(sessionId)));const t=state?.agent_tasks?.find(t=>t.goal);if(t)await writeFile(path.join(evidence,`restart-state-${observation++}.json`),JSON.stringify({date:new Date().toISOString(),task:t,agents:state.agents.map(a=>({id:a.id,state:a.state,is_processing:a.is_processing})),ansi_bytes:ptyLog.bytesWritten},null,2));return t},t=>t?.state==='blocked', 'source-loss visible owner recovery',180000)
+        await writeFile(path.join(evidence,'source-loss-recovery.json'),JSON.stringify({date:new Date().toISOString(),task:settled,ansi_bytes:ptyLog.bytesWritten},null,2))
+        result={status:settled.state==='blocked'?'PASS':'FAIL',cell:'real source loss and kernel restart before due',goal_id:task.goal.id,guard_before:task.no_progress_wakes,guard_after:recovered.no_progress_wakes,disposition:settled.state,reason:settled.reason,scope:'all provider sources were lost; separate required-subset kill and overdue multi-interval coalescing are not established'}
+        assert.equal(result.status,'PASS','lost sources must visibly block or reconcile, not silently wait');restarted=true;break
       }
       sawWaiting ||= task.state==='waiting'
       const events = db.prepare("SELECT sequence,source_id,json_extract(payload,'$.kind') AS kind,json_extract(payload,'$.state') AS state,json_extract(payload,'$.prompt_id') AS prompt_id FROM agent_inbox WHERE room_id=? AND agent_id=? ORDER BY sequence").all(sessionId,task.agent_id)
       sawCheckIn ||= events.some(e=>e.kind==='deadline_reached' && ['accepted','acknowledged','handled'].includes(e.state))
       await writeFile(path.join(evidence,'public-inbox-timeline.json'),JSON.stringify(events,null,2))
-      if (task.state==='blocked') throw new Error(`first failing seam: ${task.reason}`)
+      if (task.state==='blocked' && !task.goal.paused) throw new Error(`first failing seam: ${task.reason}`)
       if (task.state==='done') {
         assert(task.goal.check_count>=2,'goal must evaluate multiple work turns')
         assert(task.goal.continuation_sequence>0,'independent work must continue')
         assert(sawWaiting,'goal must visibly wait on real sources')
         assert(sawCheckIn,'a real periodic check-in must be delivered')
         assert(task.goal.final_answer && task.goal.evidence.length,'verified goal conclusion required')
+        if(args.get('--require-plain-check')==='true')assert(session.agent_tasks.some(t=>!t.goal&&t.state==='done'&&t.completion_check?.check_count>=1&&t.completion_check.final_answer&&t.completion_check.evidence.length),'real plain/delegate done candidate must complete a native confirmation without goal mode')
         result={status:'PASS',session_id:sessionId,goal_id:task.goal.id,check_count:task.goal.check_count,continuations:task.goal.continuation_sequence,saw_waiting:sawWaiting,saw_check_in:sawCheckIn,final_answer:task.goal.final_answer,evidence:task.goal.evidence}; break
       }
     }
     await sleep(2000)
   }
   assert(result,'goal drill did not reach its required disposition')
-  if (args.has('--finish-gate')) await waitUntil(async()=>{try { await readFile(required('--finish-gate')); return true } catch { return false }},Boolean,'real hosted final-state capture',600_000)
+  if(['source-loss-restart','source-delete-restart'].includes(args.get('--expect')))assert(restarted,'requested real source fault and restart must actually run')
+  if (args.has('--finish-gate')) await waitUntil(async()=>{try { await readFile(required('--finish-gate')); return true } catch { return false }},Boolean,'real hosted final-state capture',Number(args.get('--finish-timeout-minutes')??10)*60_000)
 } catch(error) { failure=error; result={status:'FAIL',first_failing_seam:error.message} }
 finally {
   const owned = await ownProcesses()

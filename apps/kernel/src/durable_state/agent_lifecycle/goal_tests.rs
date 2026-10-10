@@ -632,3 +632,92 @@ fn a12_plain_timeout_receipt_is_idempotent_and_owner_resume_fences_late_check() 
     });
     assert_eq!(f.task(), resumed);
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12: rejection must bound the stored receipt too.
+#[test]
+fn a12_oversized_json_receipt_never_crosses_public_result_limit() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    f.settle("p", true);
+    let t = check(
+        &f,
+        serde_json::json!({"status":"blocked","reason":"x".repeat(9000)}),
+    );
+    assert_eq!(t.state, ExecutionState::Blocked);
+    let receipt = t.goal.unwrap().evaluation.unwrap().result.unwrap();
+    assert!(
+        receipt.to_string().len() <= goals::RESULT_LIMIT,
+        "rejected result must not retain oversized JSON"
+    );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12: confirmation cannot extend work's wait.
+#[test]
+fn a12_check_preserves_an_earlier_work_deadline() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    f.register();
+    f.subscribe();
+    f.apply(Operation::Yield {
+        task: "p".into(),
+        prompt: "p".into(),
+        registrations: vec!["reg".into()],
+        cursor: 0,
+        deadline: 10_000,
+        reason: "earlier source deadline".into(),
+        now: 2,
+    });
+    f.settle("p", true);
+    let t = check(
+        &f,
+        serde_json::json!({"status":"waiting", "reason":"depends on delegate", "registration_ids":["reg"], "deadline_ms":60_004}),
+    );
+    assert_eq!(t.state, ExecutionState::Waiting);
+    assert_eq!(t.wait.unwrap().deadline_ms, 10_000);
+    assert_eq!(t.goal.unwrap().next_check_in_ms, Some(10_000));
+}
+
+#[test]
+fn a12_check_preserves_an_earlier_registered_timer_deadline() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    f.apply(Operation::CreateWake {
+        task: "p".into(),
+        prompt: "p".into(),
+        wake: AgentWake {
+            id: "timer".into(),
+            task_id: "p".into(),
+            room_id: "room".into(),
+            agent_id: "parent".into(),
+            registration_id: "completion-timer".into(),
+            kind: "timer".into(),
+            label: "source deadline".into(),
+            state: String::new(),
+            created_at_ms: 2,
+            verified_at_ms: None,
+            next_due_ms: Some(10_000),
+            interval_ms: None,
+            command: vec![],
+            match_text: None,
+            matched_at_ms: None,
+            pid: None,
+            exit_code: None,
+            fire_count: 0,
+            missed_fires: 0,
+            last_fired_at_ms: None,
+            last_sequence: None,
+            last_delivery: None,
+            last_delivered_at_ms: None,
+            last_acknowledged_at_ms: None,
+            alerted_sequence: None,
+        },
+    });
+    f.apply(Operation::VerifyWakes { now: 3 });
+    f.settle("p", true);
+    let t = check(
+        &f,
+        serde_json::json!({"status":"waiting","reason":"depends on timer", "registration_ids":["completion-timer"],"deadline_ms":60_004}),
+    );
+    assert_eq!(t.state, ExecutionState::Waiting);
+    assert_eq!(t.wait.unwrap().deadline_ms, 10_000);
+}
