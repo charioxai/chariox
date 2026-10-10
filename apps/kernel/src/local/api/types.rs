@@ -278,4 +278,8 @@ pub use workspace::*;
 /// and unchanged header fields, bodies deflate in the subscription's context,
 /// form ops carry changed properties, resources travel in ordered slices and
 /// `mirror_input` answers `{"accepted": true}`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 489;
+/// MP-08/MP-10: version 492 bridges committed control state and focus from the
+/// mirror viewer (`set`, `blur`; the unused `composition` action is retired) and
+/// adds sampled UA state (`state` op), the document `fragment` header and
+/// custom-element definitions to mirror v2 packets.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 492;

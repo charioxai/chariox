@@ -201,12 +201,21 @@ pub enum KernelBrowserMirrorAction {
         focus_id: String,
         focus_offset: u32,
     },
-    Composition {
+    /// Protocol 492: the viewer's focus left this control; the kernel blurs it
+    /// only while it is still the live focus.
+    Blur {
+        node_id: String,
+    },
+    /// Protocol 492: a control state committed by the viewer's own UI (a select
+    /// pick, a date/time/color/range picker, a multiple select's option).
+    Set {
+        node_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        node_id: Option<String>,
-        text: String,
-        selection_start: u32,
-        selection_end: u32,
+        value: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checked: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selected_index: Option<i32>,
     },
     Coordinate {
         input: KernelBrowserInput,

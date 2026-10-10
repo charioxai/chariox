@@ -566,9 +566,8 @@ export class Mirror2 {
     const action = input.action, generation = this.host.generation;
     const validId = id => typeof id === 'string' && /^n[1-9][0-9]{0,15}$/.test(id);
     if (!action || typeof action.kind !== 'string') throw new Error('MP-11: invalid mirror input');
-    if (['click', 'focus', 'scroll'].includes(action.kind) && !validId(action.node_id) || action.kind === 'selection' && (!validId(action.anchor_id) || !validId(action.focus_id))) throw new Error('MP-11: invalid mirror input');
-    if (['text', 'composition'].includes(action.kind) && (typeof action.text !== 'string' || action.text.length > 16384 || action.node_id !== undefined && !validId(action.node_id))) throw new Error('MP-11: invalid mirror input');
-    if (action.kind === 'composition' && (!Number.isInteger(action.selection_start) || !Number.isInteger(action.selection_end) || action.selection_start < 0 || action.selection_end < action.selection_start || action.selection_end > action.text.length)) throw new Error('MP-11: invalid mirror input');
+    if (['click', 'focus', 'scroll', 'blur', 'set'].includes(action.kind) && !validId(action.node_id) || action.kind === 'selection' && (!validId(action.anchor_id) || !validId(action.focus_id))) throw new Error('MP-11: invalid mirror input');
+    if (action.kind === 'text' && (typeof action.text !== 'string' || action.text.length > 16384 || action.node_id !== undefined && !validId(action.node_id))) throw new Error('MP-11: invalid mirror input');
     // A target whose attributes changed after the viewer's view is refused (re-sync).
     for (const id of [action.node_id, action.anchor_id, action.focus_id]) if (id && (stream.attrSequence.get(id) ?? 0) > input.sequence) throw new Error('MP-11: changed mirror input target');
     stream.inputAt = Date.now();
@@ -611,11 +610,18 @@ export class Mirror2 {
         else stream.ownScrolls.set(action.node_id ?? null, JSON.stringify(await call(`${m}.scrollTo(${JSON.stringify({ node_id: action.node_id ?? null, x: action.x, y: action.y })})`)));
       } };
     }
-    if (action.kind === 'focus') { const entry = frameOf(action.node_id); return { perform: async () => { if (entry) await inFrame(entry, `${m}.focus(${JSON.stringify({ node_id: localId(action.node_id) })})`); else await call(`${m}.focus(${JSON.stringify({ node_id: action.node_id })})`); } }; }
+    // The target (or live focused leaf) and its ancestry must be part of the viewer's applied epoch.
+    const seen = ids => { for (const id of ids) { const at = stream.introduced?.get(id); if (!at || at > input.sequence || (stream.identity.get(id) ?? 0) > input.sequence) throw new Error('MP-11: changed mirror input target'); } };
+    if (['focus', 'blur', 'set'].includes(action.kind)) {
+      const entry = frameOf(action.node_id), request = { ...action, node_id: entry ? localId(action.node_id) : action.node_id }, expression = `${m}.${action.kind}(${JSON.stringify(request)})`;
+      return { perform: async () => {
+        // Protocol 492: a committed control state names a control the viewer saw, inside a document it saw.
+        if (action.kind === 'set') { if (entry) { seen((await inFrame(entry, `${m}.ancestry(${JSON.stringify(request.node_id)})`)).map(id => rebaseId(id, entry.slot))); seen(await call(`${m}.ancestry(${JSON.stringify(entry.owner)})`)); } else seen(await call(`${m}.ancestry(${JSON.stringify(action.node_id)})`)); }
+        await (entry ? inFrame(entry, expression) : call(expression));
+      } };
+    }
     if (action.kind === 'selection') { const entry = frameOf(action.anchor_id); return { perform: async () => { if (entry) await inFrame(entry, `${m}.select(${JSON.stringify({ ...action, anchor_id: localId(action.anchor_id), focus_id: localId(action.focus_id) })})`); else await call(`${m}.select(${JSON.stringify(action)})`); } }; }
     // Live focus inside a mirrored cross-origin frame is validated in that frame.
-    // The live focused leaf and its ancestry must be part of the viewer's applied epoch.
-    const seen = ids => { for (const id of ids) { const at = stream.introduced?.get(id); if (!at || at > input.sequence || (stream.identity.get(id) ?? 0) > input.sequence) throw new Error('MP-11: changed mirror input target'); } };
     const activeTarget = async editable => {
       const owner = await call(`${m}.activeForeign()`); const entry = owner && stream.frames.get(owner); if (owner && !entry) throw new Error('MP-11: unavailable native text focus');
       if (!entry) return seen(await call(`${m}.activeTarget(${editable})`));
@@ -628,14 +634,13 @@ export class Mirror2 {
       const guard = async () => { assertEpoch(); assertNotCancelled(signal); if (checked) return; await activeTarget(false); checked = true; };
       return { input: { kind: 'key', key: action.key }, guard, observedFrameInput: true, frameSensitive };
     }
-    if (action.kind === 'text' || action.kind === 'composition') {
+    if (action.kind === 'text') {
       const guard = async () => { assertEpoch(); assertNotCancelled(signal); await activeTarget(true); };
       const entry = frameOf(action.node_id);
       return { guard, observedFrameInput: true, frameSensitive, perform: async send => {
         if (action.node_id) { if (entry) await inFrame(entry, `${m}.focus(${JSON.stringify({ node_id: localId(action.node_id) })})`); else await call(`${m}.focus(${JSON.stringify({ node_id: action.node_id })})`); }
         assertNotCancelled(signal); assertEpoch();
-        if (action.kind === 'text') return send('Input.insertText', { text: action.text });
-        return send('Input.imeSetComposition', { text: action.text, selectionStart: action.selection_start, selectionEnd: action.selection_end });
+        return send('Input.insertText', { text: action.text });
       } };
     }
     throw new Error('MP-08: unsupported mirror action');

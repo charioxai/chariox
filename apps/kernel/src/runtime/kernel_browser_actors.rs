@@ -202,7 +202,7 @@ impl KernelBrowserActors {
             outer
         };
         let request = match input["kind"].as_str() {
-            Some("text" | "composition") => {
+            Some("text") => {
                 request.with_arguments(EnvironmentActionArguments::KeyboardText {
                     utf8_byte_count: input["text"].as_str().unwrap_or_default().len() as u32,
                     character_count: input["text"].as_str().unwrap_or_default().chars().count()

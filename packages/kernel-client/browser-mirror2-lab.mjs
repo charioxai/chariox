@@ -114,7 +114,7 @@ if (process.argv[2] !== 'child') {
     const rpc=async request=>{const reply=await fetch('/kernel',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(request)});const text=await reply.text();if(!reply.ok)throw Error(text);return JSON.parse(text)};
     window.packets=[];window.failures=[];
     window.start=async (binding,wire)=>{
-      if(wire===2){const {attachBrowserMirror2}=await import('/mirror2.js');window.mirror=await attachBrowserMirror2({protocolVersion:489,request:rpc},document.querySelector('#mirror'),binding,{failure:e=>window.failures.push(String(e?.message??e)),packet:p=>window.packets.push({at:performance.now(),sequence:p.sequence,reset:p.reset,fallback:p.fallback??null})});}
+      if(wire===2){const {attachBrowserMirror2}=await import('/mirror2.js');window.mirror=await attachBrowserMirror2({protocolVersion:492,request:rpc},document.querySelector('#mirror'),binding,{failure:e=>window.failures.push(String(e?.message??e)),packet:p=>window.packets.push({at:performance.now(),sequence:p.sequence,reset:p.reset,fallback:p.fallback??null})});}
       else{const {attachBrowserMirror}=await import('/mirror1.js');window.mirror=await attachBrowserMirror({protocolVersion:443,request:rpc},document.querySelector('#mirror'),binding,e=>window.failures.push(String(e?.message??e)));window.pump=(async()=>{for(;;){try{const p=await window.mirror.next();window.packets.push({at:performance.now(),sequence:p.sequence,reset:p.reset,fallback:p.nodes.find(n=>n.reason==='observer_bounds_or_unavailable')?'observer_bounds_or_unavailable':null})}catch(e){window.failures.push(String(e?.message??e));break}await new Promise(r=>setTimeout(r,250))}})();}
     };</script></body></html>`;
   const server = createServer(async (req, res) => {

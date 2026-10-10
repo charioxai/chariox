@@ -313,7 +313,8 @@ export function installMirror2(sanitizeMirrorCss) {
         const anchor = mirrored(selected.anchorNode), focus = mirrored(selected.focusNode);
         if (anchor && focus && kindOf.get(anchor) === 'text' && kindOf.get(focus) === 'text') { selection = { anchor_id: anchor, anchor_offset: selected.anchorOffset, focus_id: focus, focus_offset: selected.focusOffset }; break; }
       }
-      const focusId = focused ? mirrored(focused) : null;
+      // Nothing focused (the page's body or root element) is null: the viewer blurs too (protocol 492).
+      const focusId = focused && focused !== focused.ownerDocument.body && focused !== focused.ownerDocument.documentElement ? mirrored(focused) : null;
       return { scroll: [scrollX, scrollY], focused: focusId && kindOf.get(focusId) !== 'mask' ? focusId : null, selection, revision };
     };
     const take = () => { const resources = newResources, sheets = pendingSheets; newResources = []; pendingSheets = []; return { resources, sheets }; };
@@ -561,6 +562,23 @@ export function installMirror2(sanitizeMirrorCss) {
     // The target and every mirrored ancestor, leaf first (the kernel checks each against the viewer's epoch).
     const ancestry = id => { const out = []; for (let at = id; at && out.length < 4096; at = parentOf.get(at)) out.push(at); return out; };
     const focus = request => { const node = live(request.node_id); if (node.nodeType !== 1) throw new Error('mirror2 element required'); node.focus({ preventScroll: true }); let active = node.ownerDocument.activeElement; while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement; if (active !== node) throw new Error('mirror2 focus redirected'); return true; };
+    // Protocol 492: the viewer's focus left this control; only while it is still the live focus.
+    const blur = request => { const node = live(request.node_id); let active = node.ownerDocument.activeElement; while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement; if (active !== node) return false; node.blur(); return true; };
+    // Protocol 492: control state committed by the viewer's own UI (select pick, date/color/range
+    // picker, a multiple select's option). Written here; the page sees input + change.
+    const PICKED = new Set('date time datetime-local month week color range'.split(' '));
+    const set = request => {
+      const node = live(request.node_id), keys = ['value', 'checked', 'selected_index'].filter(key => request[key] !== undefined).join();
+      const control = node.localName === 'option' ? node.closest('select') : node;
+      if (node.nodeType !== 1 || !control || control.matches(':disabled') || node.matches?.(':disabled') || control.readOnly) throw new Error('mirror2 control unavailable');
+      if (/password|one-time-code|cc-/i.test(control.autocomplete || '') || control.closest('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')) throw new Error('mirror2 protected control');
+      if (node.localName === 'select' && !node.multiple && keys === 'selected_index' && Number.isInteger(request.selected_index) && request.selected_index >= -1 && request.selected_index < node.options.length) node.selectedIndex = request.selected_index;
+      else if (node.localName === 'option' && control.localName === 'select' && control.multiple && keys === 'checked' && typeof request.checked === 'boolean') node.selected = request.checked;
+      else if (node.localName === 'input' && PICKED.has(node.type) && keys === 'value' && typeof request.value === 'string' && request.value.length <= 256) node.value = request.value;
+      else throw new Error('mirror2 control state refused');
+      control.dispatchEvent(new Event('input', { bubbles: true, composed: true })); control.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    };
     const select = request => {
       const a = live(request.anchor_id), b = live(request.focus_id);
       const offsets = [request.anchor_offset, request.focus_offset];
@@ -661,6 +679,6 @@ export function installMirror2(sanitizeMirrorCss) {
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ cssStale: () => cssStale, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, nearImages, preview, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, ancestry, focus, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
+    return Object.freeze({ cssStale: () => cssStale, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, nearImages, preview, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
   }
 }

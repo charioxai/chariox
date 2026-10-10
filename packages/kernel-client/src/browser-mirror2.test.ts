@@ -27,7 +27,7 @@ test('MP-11: v2 refuses active elements, handlers, navigable URLs and fetching C
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'use', ns: 'svg', attrs: { href: 'https://x/#icon' } })), new Map()), /unsafe mirror/)
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'foreignObject', ns: 'svg' })), new Map()), /unsafe mirror/)
   assert.match(mirror2SandboxCsp, /script-src 'none'/); assert.match(mirror2SandboxCsp, /connect-src 'none'/); assert.match(mirror2SandboxCsp, /img-src blob: data:;/)
-  assert.equal(browserMirror2MinimumProtocolVersion, 489)
+  assert.equal(browserMirror2MinimumProtocolVersion, 492)
 })
 
 test('MP-11: masks carry no content and leaves never parent nodes', () => {
@@ -113,7 +113,7 @@ const flow = (script: (command: Record<string, unknown>) => Promise<unknown>) =>
   const packets: Mirror2Packet[] = []
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (packet: Mirror2Packet) => { if (failNext) { failNext = always; throw Error('MP-11: nested mirror unavailable') } applied.push(packet.sequence); packets.push(packet) } })
   const requests: Array<Record<string, unknown>> = []
-  const transport = { protocolVersion: 489, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
+  const transport = { protocolVersion: 492, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
   return { applied, packets, failures, requests, failOnce: () => { failNext = true }, failAlways: () => { failNext = true; always = true }, start: (failingMs?: number) => attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: error => failures.push(error) }, { credits: 1, waitMs: 0, renderer, ...(failingMs ? { failingMs } : {}) }) }
 }
 // Protocol 489: a reset carries the binding and header; a delta only what changed.
@@ -284,7 +284,7 @@ function fakeDocument(): { doc: FakeNode; container: unknown } {
   }
   Object.assign(doc, { createElement: make, createElementNS: (_: string, tag: string) => make(tag), createTextNode: (text: string) => Object.assign(make('#text', 3), { data: text, textContent: text }), createDocumentFragment: () => make('#fragment', 11) })
   const html = make('html'), head = make('head'); html.childNodes.push(head); Object.assign(doc, { documentElement: html, head })
-  const iframe = Object.assign(make('iframe'), { contentDocument: doc, contentWindow: { scrollTo: () => {}, scrollX: 0, scrollY: 0 } })
+  const iframe = Object.assign(make('iframe'), { ownerDocument: { activeElement: null }, contentDocument: doc, contentWindow: { scrollTo: () => {}, scrollX: 0, scrollY: 0 } })
   return { doc, container: { ownerDocument: { createElement: () => iframe }, append: () => {} } }
 }
 

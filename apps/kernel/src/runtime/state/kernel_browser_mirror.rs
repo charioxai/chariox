@@ -33,9 +33,9 @@ impl KernelRuntimeState {
                 }
                 let action = serde_json::to_value(action)
                     .map_err(|_| host_error("MP-11: invalid mirror action".into()))?;
-                if action["text"]
-                    .as_str()
-                    .is_some_and(|text| text.len() > 16384)
+                if ["text", "value"]
+                    .iter()
+                    .any(|name| action[name].as_str().is_some_and(|text| text.len() > 16384))
                 {
                     return Err(host_error("MP-11: mirror input text exceeds bound".into()));
                 }

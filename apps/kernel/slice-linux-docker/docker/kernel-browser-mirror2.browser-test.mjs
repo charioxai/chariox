@@ -630,3 +630,32 @@ test("MP-08: review #320-2 a printable key on the focused select runs the kernel
     for (let i = 0; i < 3 && !forms.length; i++) forms.push(...(await next(1000)).ops.filter(op => op.op === "form" && op.id === id));
     assert.equal(forms[0]?.form.selected_index, 1, "MP-08: the viewer receives the kernel's typeahead result");
   }));
+
+// Protocol 492 (audit 2026-10-10 §4.2): committed control state and focus transitions from the viewer.
+const controls = '<select id="s"><option>Apple</option><option>Banana</option></select><input id="d" type="date"><input id="c" type="color"><input id="r" type="range"><select id="m" multiple><option>a</option><option>b</option></select><input id="t" value="text"><input id="cc" type="date" autocomplete="cc-exp"><select id="off" disabled><option>x</option><option>y</option></select><script>window.events=[];for(const e of document.querySelectorAll("select,input"))for(const t of ["input","change"])e.addEventListener(t,ev=>events.push(ev.target.id+":"+t))</script>';
+test("MP-08: protocol 492 `set` commits a viewer-picked control state in the kernel page (select, date, color, range, multiple option) with input+change; text, protected, disabled and out-of-range refused", () => mirrored(controls, async ({ next, evaluate, input }) => {
+  const snapshot = await next(), id = name => elements(snapshot).find(([, , attrs]) => attrs.id === name)[0];
+  const option = elements(snapshot).filter(([, tag]) => tag === "option")[3][0];
+  for (const action of [{ node_id: id("s"), selected_index: 1 }, { node_id: id("d"), value: "2026-10-10" }, { node_id: id("c"), value: "#ff8800" }, { node_id: id("r"), value: "70" }, { node_id: option, checked: true }]) await input(snapshot.sequence, { kind: "set", ...action });
+  assert.deepEqual(await evaluate("[s.value,d.value,c.value,r.value,[...m.selectedOptions].map(o=>o.text).join()]"), ["Banana", "2026-10-10", "#ff8800", "70", "b"]);
+  assert.deepEqual(await evaluate("events"), ["s:input", "s:change", "d:input", "d:change", "c:input", "c:change", "r:input", "r:change", "m:input", "m:change"], "MP-08: the page's own handlers see the commit");
+  for (const action of [{ node_id: id("t"), value: "typed" }, { node_id: id("s"), selected_index: 2 }, { node_id: id("s"), value: "Apple" }, { node_id: id("cc"), value: "2027-01-01" }, { node_id: id("off"), selected_index: 1 }, { node_id: id("d"), value: "2026-10-11", checked: true }])
+    await assert.rejects(input(snapshot.sequence, { kind: "set", ...action }), /refused|unavailable|protected|failed/, JSON.stringify(action));
+  assert.deepEqual(await evaluate("[t.value,s.value,cc.value,off.value]"), ["text", "Banana", "", "x"]);
+  // The next packet carries the kernel's committed state (the viewer stays in sync even if it differed).
+  const forms = []; for (let i = 0; i < 3 && forms.length < 2; i++) forms.push(...(await next(1000)).ops.filter(op => op.op === "form" && [id("s"), id("d")].includes(op.id)));
+  assert.deepEqual(forms.map(op => op.form.selected_index ?? op.form.value).sort(), [1, "2026-10-10"].sort());
+}));
+
+test("MP-08: protocol 492 `blur` leaves the kernel's focus only while the viewer's control is still the live focus", () => mirrored('<input id="a" value="one"><input id="b" value="two">', async ({ next, evaluate, input }) => {
+  await evaluate("a.focus();true");
+  const snapshot = await next(), id = name => elements(snapshot).find(([, , attrs]) => attrs.id === name)[0];
+  assert.equal(snapshot.focused, id("a"));
+  await input(snapshot.sequence, { kind: "blur", node_id: id("a") });
+  assert.equal(await evaluate("document.activeElement.localName"), "body", "MP-08: the viewer's blur reached the kernel");
+  const blurred = await next(600);
+  assert.equal(blurred.focused, null, "MP-08: no focused node travels back");
+  await evaluate("b.focus();true");
+  await input(blurred.sequence, { kind: "blur", node_id: id("a") });
+  assert.equal(await evaluate("document.activeElement.id"), "b", "MP-08: a stale blur never takes focus from another control");
+}));

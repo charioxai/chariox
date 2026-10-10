@@ -1,12 +1,12 @@
-//! MP-08/MP-10/MP-11: protocol 447/489 mirroring shape and rejection contract.
+//! MP-08/MP-10/MP-11: protocol 447/492 mirroring shape and rejection contract.
 use super::*;
 use crate::local::{
     KernelBrowserCommand as C, KernelBrowserInput, KernelBrowserMirrorAction as A,
     KernelBrowserRequest,
 };
 #[test]
-fn browser_mirror_protocol_489_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 489);
+fn browser_mirror_protocol_492_shapes_and_hash() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 492);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         96
@@ -90,11 +90,26 @@ fn browser_mirror_protocol_489_shapes_and_hash() {
             focus_id: "n2".into(),
             focus_offset: 3,
         }),
-        binding(A::Composition {
-            node_id: Some("n1".into()),
-            text: "abc".into(),
-            selection_start: 0,
-            selection_end: 3,
+        binding(A::Blur {
+            node_id: "n1".into(),
+        }),
+        binding(A::Set {
+            node_id: "n1".into(),
+            value: None,
+            checked: None,
+            selected_index: Some(1),
+        }),
+        binding(A::Set {
+            node_id: "n2".into(),
+            value: Some("2026-10-10".into()),
+            checked: None,
+            selected_index: None,
+        }),
+        binding(A::Set {
+            node_id: "n3".into(),
+            value: None,
+            checked: Some(true),
+            selected_index: None,
         }),
         binding(A::Coordinate {
             input: KernelBrowserInput::Click { x: 1, y: 2 },
@@ -113,11 +128,11 @@ fn browser_mirror_protocol_489_shapes_and_hash() {
         assert!(serde_json::from_value::<LocalDaemonRequest>(value.clone()).is_ok());
     }
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("browser-mirror-489.json")).unwrap();
+        serde_json::from_str(include_str!("browser-mirror-492.json")).unwrap();
     assert_eq!(serde_json::json!(values), expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&values).unwrap())),
-        "8ec146f5fa2b9f4a992eaf2c4e0a0c2666ffd35dafd06a5d7a8b0d30692ddf80"
+        "12802036db2d247dc5826229a6028e08cbe29b88410886e76a644ce2ac1ae823"
     );
     let next = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
         command: C::MirrorNext {
@@ -139,6 +154,9 @@ fn browser_mirror_refuses_authority_scripts_and_missing_document_shapes() {
         serde_json::json!({"KernelBrowser":{"command":{"op":"mirror_subscribe","tab_id":"t","generation":1,"device_scale_factor":1,"user_id":"foreign"}}}),
         serde_json::json!({"KernelBrowser":{"command":{"op":"mirror_input","tab_id":"t","generation":1,"subscription_id":"s","sequence":1,"action":{"kind":"click","node_id":"n1"}}}}),
         serde_json::json!({"KernelBrowser":{"command":{"op":"mirror_input","tab_id":"t","generation":1,"document_id":"d","subscription_id":"s","sequence":1,"action":{"kind":"evaluate","script":"unsafe"}}}}),
+        // Protocol 492 retired the never-sent composition action; `set` names only control state.
+        serde_json::json!({"KernelBrowser":{"command":{"op":"mirror_input","tab_id":"t","generation":1,"document_id":"d","subscription_id":"s","sequence":1,"action":{"kind":"composition","text":"a","selection_start":0,"selection_end":1}}}}),
+        serde_json::json!({"KernelBrowser":{"command":{"op":"mirror_input","tab_id":"t","generation":1,"document_id":"d","subscription_id":"s","sequence":1,"action":{"kind":"set","node_id":"n1","value":"x","script":"unsafe"}}}}),
     ] {
         assert!(serde_json::from_value::<LocalDaemonRequest>(value).is_err());
     }

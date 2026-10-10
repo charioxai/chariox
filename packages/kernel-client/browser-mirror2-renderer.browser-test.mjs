@@ -195,7 +195,7 @@ test('MP-08: review #320-2 modified deletions in a focused text control are forw
       await page.keyboard.press('Control+A'); await frames(); await sent();
       await page.keyboard.press(shortcut); await frames();
       assert.deepEqual(await sent(), [{ kind: 'selection', anchor_id: 'n5', anchor_offset: 0, focus_id: 'n5', focus_offset: 13 }, key('Delete')], `MP-08: ${shortcut} on a range`);
-      await apply(page, delta(Number(await page.evaluate(() => window.r.sequence)) + 1, [{ op: 'form', id: 'n5', form: { selection_start: 4, selection_end: 4 } }])); await sent();
+      await apply(page, delta(Number(await page.evaluate(() => window.r.sequence)) + 1, [{ op: 'form', id: 'n5', form: { selection_start: 4, selection_end: 4 } }], { focused: 'n5' })); await sent();
     }
   } finally { await page.close(); }
 });
@@ -255,21 +255,76 @@ test('MP-08: review #320-1 a drag that selects in a control the kernel has not f
     const [start, end] = await page.evaluate(() => { const e = window.r.frame.contentDocument.activeElement; return [e.selectionStart, e.selectionEnd]; });
     assert(start < end, 'MP-08: the drag selected inside the second control');
     const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to'));
-    assert.deepEqual(await sent(), [{ kind: 'selection', anchor_id: 'n5', anchor_offset: start, focus_id: 'n5', focus_offset: end }], 'MP-08: the range (and with it the kernel focus) goes when the drag ends');
+    assert.deepEqual(await sent(), [{ kind: 'focus', node_id: 'n5' }, { kind: 'selection', anchor_id: 'n5', anchor_offset: start, focus_id: 'n5', focus_offset: end }], 'MP-08: the focus (protocol 492) and the range go when the drag ends');
     await page.keyboard.type('x'); await frames();
     assert.deepEqual(await sent(), [{ kind: 'text', text: 'x' }], 'MP-08: the edit follows without resending the range');
   } finally { await page.close(); }
 });
 
-test('MP-08: review #320-2 printable typeahead keys on a focused select go to the kernel; the viewer keeps the kernel\'s option until it echoes', async () => {
+// Protocol 492 (audit 2026-10-10 §4.2): focus transitions and committed control state, not keystrokes.
+const page2 = (extra = []) => [{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'height:600px' } }, ...extra];
+const textForm = (value, at) => ({ value, checked: false, selected_index: -1, selection_start: at, selection_end: at });
+test('MP-08: protocol 492 a viewer select, date or range commits its own pick as `set` (typeahead, arrows, typed date); a click on it is not forwarded and opens no kernel popup', async () => {
   const page = await viewer();
   try {
-    const option = (id, value) => ({ id, parent: 'n4', kind: 'element', tag: 'option', attrs: { value } });
-    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
-      { id: 'n4', parent: 'n3', kind: 'element', tag: 'select', form: { value: 'Apple', checked: false, selected_index: 0, selection_start: null, selection_end: null } },
-      option('n5', 'Apple'), { id: 'n6', parent: 'n5', kind: 'text', text: 'Apple' }, option('n7', 'Banana'), { id: 'n8', parent: 'n7', kind: 'text', text: 'Banana' }, option('n9', 'Cherry'), { id: 'n10', parent: 'n9', kind: 'text', text: 'Cherry' }]), focused: 'n4' });
-    await page.keyboard.press('b'); await page.keyboard.press('Shift+C'); await frames();
-    assert.deepEqual(await page.evaluate(() => window.sent.filter(action => action.kind !== 'scroll_to')), [{ kind: 'key', key: 'b' }, { kind: 'key', key: 'C' }], 'MP-08: the typeahead keys reach the kernel');
-    assert.equal(await page.evaluate(() => window.r.frame.contentDocument.querySelector('select').value), 'Apple', 'MP-08: no viewer-local typeahead');
+    const option = (id, value) => [{ id, parent: 'n4', kind: 'element', tag: 'option', attrs: { value } }, { id: `${id}0`, parent: id, kind: 'text', text: value }];
+    await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'select', form: { value: 'Apple', checked: false, selected_index: 0, selection_start: null, selection_end: null } }, ...option('n5', 'Apple'), ...option('n6', 'Banana'), ...option('n7', 'Cherry'),
+      { id: 'n8', parent: 'n3', kind: 'element', tag: 'input', attrs: { type: 'date' }, form: textForm('', null) }, { id: 'n9', parent: 'n3', kind: 'element', tag: 'input', attrs: { type: 'range', min: '0', max: '10' }, form: textForm('5', null) }])), focused: 'n4' });
+    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to'));
+    await page.keyboard.press('b'); await page.keyboard.press('ArrowDown'); await frames();
+    assert.deepEqual(await sent(), [{ kind: 'set', node_id: 'n4', selected_index: 1 }, { kind: 'set', node_id: 'n4', selected_index: 2 }], 'MP-08: the typeahead picks reach the kernel as committed state');
+    const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelector('select').getBoundingClientRect(); return [f.x + t.x + 5, f.y + t.y + 5]; });
+    await page.mouse.click(box[0], box[1]); await page.keyboard.press('Escape'); await frames();
+    assert.deepEqual((await sent()).filter(action => action.kind === 'click'), [], 'MP-08: no click on the select reaches the kernel (its popup stays closed)');
+    await apply(page, delta(2, [], { focused: 'n8' })); await sent();
+    await page.keyboard.type('10102026'); await frames();
+    assert.deepEqual((await sent()).at(-1), { kind: 'set', node_id: 'n8', value: '2026-10-10' }, 'MP-08: the typed date commits as one value');
+    await apply(page, delta(3, [], { focused: 'n9' })); await sent();
+    await page.keyboard.press('ArrowRight'); await frames();
+    assert.deepEqual(await sent(), [{ kind: 'set', node_id: 'n9', value: '6' }], 'MP-08: the range step commits locally, no arrow key forwarded');
+  } finally { await page.close(); }
+});
+
+test('MP-08: protocol 492 a viewer focus change reaches the kernel as `focus`, also when a drag repeats a cached range (#320 R8-1); kernel-applied focus sends nothing', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'font:16px monospace;width:300px;display:block' }, form: textForm('first field', 11) },
+      { id: 'n5', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'font:16px monospace;width:300px;display:block' }, form: textForm('second field', 12) }])), focused: 'n4' });
+    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to'));
+    assert.deepEqual(await sent(), [], 'MP-08: the kernel\'s own focus is not echoed');
+    const cdp = await page.context().newCDPSession(page);
+    const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelectorAll('input')[1].getBoundingClientRect(); return { x: f.x + t.x, y: f.y + t.y + 9 }; });
+    const mouse = (type, x, buttons) => cdp.send('Input.dispatchMouseEvent', { type, x: box.x + x, y: box.y, button: 'left', buttons, clickCount: 1 });
+    const drag = async () => { await mouse('mousePressed', 70, 1); for (const x of [80, 95, 110, 125]) await mouse('mouseMoved', x, 1); await mouse('mouseReleased', 125, 0); await frames(); };
+    await drag();
+    const first = await sent();
+    assert.deepEqual(first[0], { kind: 'focus', node_id: 'n5' }, 'MP-08: the viewer\'s focus moved to the second control');
+    // The kernel's focus goes back to the first control; the same drag repeats the same (cached) range.
+    await apply(page, delta(2, [], { focused: 'n4' })); assert.deepEqual(await sent(), []);
+    await drag(); await page.keyboard.type('x'); await frames();
+    const second = await sent();
+    assert.deepEqual([second[0], second.at(-1)], [{ kind: 'focus', node_id: 'n5' }, { kind: 'text', text: 'x' }], `MP-08: the text goes where the viewer typed: ${JSON.stringify(second)}`);
+  } finally { await page.close(); }
+});
+
+test('MP-08: protocol 492 the kernel\'s blur (focused: null) blurs the viewer\'s control (#941 R8-1); the viewer leaving a control to nothing sends `blur`, the viewer window losing focus does not', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'input', form: textForm('query', 5) }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'p' }, { id: 'n6', parent: 'n5', kind: 'text', text: 'plain text' }])), focused: 'n4' });
+    const active = () => page.evaluate(() => window.r.frame.contentDocument.activeElement.localName);
+    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to'));
+    assert.equal(await active(), 'input');
+    await apply(page, delta(2, [], { focused: null }));
+    assert.equal(await active(), 'body', 'MP-08: the kernel blurred its field; the viewer\'s caret goes too');
+    assert.deepEqual(await sent(), [], 'MP-08: the kernel-driven blur is not echoed');
+    await apply(page, delta(3, [], { focused: 'n4' }));
+    await page.evaluate(() => { const outside = document.createElement('input'); outside.id = 'outside'; document.body.append(outside); outside.focus(); }); await frames();
+    assert.deepEqual(await sent(), [], 'MP-08: the viewer window losing focus keeps the kernel\'s focus');
+    await apply(page, delta(4, [], { focused: 'n4' }));
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'outside', 'MP-08: a later packet does not pull the viewer\'s focus back into the mirror');
+    await page.evaluate(() => window.r.frame.contentDocument.querySelector('input').focus()); await frames(); await sent();
+    const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelector('p').getBoundingClientRect(); return [f.x + t.x + 3, f.y + t.y + 3]; });
+    await page.mouse.click(box[0], box[1]); await frames();
+    assert.deepEqual((await sent()).filter(action => action.kind === 'blur'), [{ kind: 'blur', node_id: 'n4' }], 'MP-08: clicking plain text leaves the control in the kernel too');
   } finally { await page.close(); }
 });

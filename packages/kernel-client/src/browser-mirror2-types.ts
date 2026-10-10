@@ -1,4 +1,4 @@
-// MP-08/MP-10/MP-11 — DOM mirror v2 wire (local protocol 489); kernel remains browser authority.
+// MP-08/MP-10/MP-11 — DOM mirror v2 wire (local protocol 492); kernel remains browser authority.
 export type Mirror2Kind = 'document' | 'shadow' | 'element' | 'text' | 'frame' | 'mask' | 'tile'
 export type Mirror2Form = { value: string; checked: boolean; selected_index: number; selection_start: number | null; selection_end: number | null }
 export type Mirror2Record = {
@@ -40,4 +40,6 @@ export type Mirror2Action =
   | { kind: 'text'; text: string; node_id?: string }
   | { kind: 'key'; key: string }
   | { kind: 'selection'; anchor_id: string; anchor_offset: number; focus_id: string; focus_offset: number }
-  | { kind: 'composition'; text: string; selection_start: number; selection_end: number; node_id?: string }
+  // Protocol 492: focus left this control; a control state committed by the viewer's own UI.
+  | { kind: 'blur'; node_id: string }
+  | { kind: 'set'; node_id: string; value?: string; checked?: boolean; selected_index?: number }

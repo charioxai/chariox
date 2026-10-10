@@ -1,17 +1,20 @@
-// MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 489). The page's own
+// MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 492). The page's own
 // sanitized stylesheets and attributes are rebuilt in a script-free sandbox;
 // deltas apply in place. No origin I/O: resources arrive as kernel bytes.
 import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp } from './browser-mirror2-security.js'
 import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
-export const browserMirror2MinimumProtocolVersion = 489
+export const browserMirror2MinimumProtocolVersion = 492
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 const DELETIONS: Record<string, string[]> = {
   deleteContentBackward: ['Backspace'], deleteContentForward: ['Delete'], deleteWordBackward: ['Ctrl+Backspace'], deleteWordForward: ['Ctrl+Delete'],
   deleteSoftLineBackward: ['Shift+Home', 'Backspace'], deleteHardLineBackward: ['Shift+Home', 'Backspace'], deleteSoftLineForward: ['Shift+End', 'Delete'], deleteHardLineForward: ['Shift+End', 'Delete'],
 }
+// Controls whose state the viewer's own UI commits (its popup or picker); protocol 492 `set` carries the result.
+const PICKED = new Set('date time datetime-local month week color range'.split(' '))
+const picked = (el: Element): boolean => el.localName === 'select' || el.closest('select') !== null || el.localName === 'input' && PICKED.has((el as HTMLInputElement).type)
 type Styled = { kind: 'css' | 'attr'; raw: string; node: Element; keys: string[] } | { kind: 'adopted'; raw: string[]; node: Document | ShadowRoot; keys: string[] }
 
 function bytesOf(data: string): Uint8Array { return Uint8Array.from(atob(data), c => c.charCodeAt(0)) }
@@ -40,6 +43,7 @@ export class BrowserMirror2Renderer {
   documentId = ''
   private counts = { tile: 0, mask: 0 } // public diagnostics on the frame element (data-mirror-*)
   private pendingInputs = 0
+  private focusSent: string | null = null // the focus the kernel has (applied from it, or sent to it)
   private queue: Array<{ action: Mirror2Action; epoch: { sequence: number; document_id: string } }> = []
   private sending = false
   // Viewer-owned scroll (plan 4.1): kernel echoes wait until the viewer settles.
@@ -119,7 +123,23 @@ export class BrowserMirror2Renderer {
     on('pointermove', event => { const e = event as PointerEvent; if (origin && (e.buttons & 1) && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > 4) dragged = true })
     const selecting = (el: Element): boolean => { if (el.closest('input,textarea,button,select,[contenteditable]')) return false; const s = doc.getSelection(); return Boolean(s && !s.isCollapsed && (el.contains(s.anchorNode) || el.contains(s.focusNode))) }
     // A drag inside a text control focused it here only: its range goes now (the kernel focuses the control with it).
-    on('click', event => { event.preventDefault(); const hit = element(event); if (!hit || dragged || selecting(hit.el)) { if (dragged) this.syncRange(); dragged = false; return } this.enqueue({ kind: 'click', node_id: hit.id, ...offset(hit.el, event as MouseEvent) }) })
+    // A select or picker opens the viewer's own UI; its committed state goes as `set` (the kernel's popup never opens).
+    on('click', event => { const hit = element(event); if (hit && picked(hit.el)) return; event.preventDefault(); if (!hit || dragged || selecting(hit.el)) { if (dragged) this.syncRange(); dragged = false; return } this.enqueue({ kind: 'click', node_id: hit.id, ...offset(hit.el, event as MouseEvent) }) })
+    // Protocol 492: focus transitions and committed control state, not inferred from clicks or keys.
+    on('focusin', event => { const id = this.ids.get(event.composedPath()[0] as Node); if (this.applying || !id || this.records.get(id)?.kind !== 'element' || id === this.focusSent) return; this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) })
+    // Focus left to nothing (not to another control, not the viewer window losing focus): the kernel blurs too.
+    on('focusout', event => {
+      const node = event.composedPath()[0] as Element, id = this.ids.get(node)
+      if (this.applying || !id || (event as FocusEvent).relatedTarget) return
+      setTimeout(() => { const active = this.active(); if (this.disposed || this.applying || !this.doc?.hasFocus() || active === node || active && active !== active.ownerDocument.body && active !== active.ownerDocument.documentElement && active.localName !== 'iframe' || this.focusSent !== id) return; this.focusSent = null; this.enqueue({ kind: 'blur', node_id: id }) }, 0)
+    })
+    on('change', event => {
+      const control = event.composedPath()[0] as HTMLSelectElement & HTMLInputElement, id = this.ids.get(control)
+      if (this.applying || !id || this.records.get(id)?.kind !== 'element' || !picked(control)) return
+      if (control.localName === 'input') this.enqueue({ kind: 'set', node_id: id, value: control.value })
+      else if (!control.multiple) this.enqueue({ kind: 'set', node_id: id, selected_index: control.selectedIndex })
+      else for (const option of Array.from(control.options)) { const option_id = this.ids.get(option), state = option_id ? this.records.get(option_id)?.form : undefined; if (option_id && state && state.checked !== option.selected) this.enqueue({ kind: 'set', node_id: option_id, checked: option.selected }) }
+    })
     on('auxclick', event => event.preventDefault())
     on('dragstart', event => event.preventDefault())
     on('submit', event => event.preventDefault())
@@ -133,8 +153,8 @@ export class BrowserMirror2Renderer {
       if (isComposing || keyCode === 229) return
       this.syncRange()
       if (ctrlKey || metaKey || altKey) return
-      // A select's typeahead is the kernel's (a select emits no text input to forward).
-      if (this.active()?.localName === 'select' && /^[^\p{C}]$/u.test(key)) { event.preventDefault(); this.enqueue({ kind: 'key', key }); return }
+      // A select or picker keeps its keys (typeahead, arrows, its popup): the committed state goes as `set`.
+      const active = this.active(); if (active && picked(active) && !['Tab', 'Enter'].includes(key)) return
       // Page keys scroll the viewer's own copy natively; the scroll listener sends the position.
       if (['Tab', 'Enter', 'Escape', 'Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(key)) {
         event.preventDefault()
@@ -382,9 +402,14 @@ export class BrowserMirror2Renderer {
       }
       this.sequence = packet.sequence; this.documentId = packet.document_id
       if (!this.pendingInputs) {
-        const focused = packet.focused ? this.dom.get(packet.focused) as HTMLElement | undefined : undefined
+        // The viewer page's own control outside the mirror keeps its focus (the kernel's is not pulled in).
+        const outside = this.frame.ownerDocument.activeElement, elsewhere = !!outside && outside !== this.frame && outside !== this.frame.ownerDocument.body
+        const focused = packet.focused && !elsewhere ? this.dom.get(packet.focused) as HTMLElement | undefined : undefined, active = this.active() as HTMLElement | null
+        this.focusSent = packet.focused
         // A control built while detached could not take its caret: restore it once focused.
-        if (focused && this.active() !== focused) { focused.focus?.({ preventScroll: true }); const form = this.records.get(packet.focused!)?.form; if (form) this.caret(focused as HTMLInputElement, form) }
+        if (focused && active !== focused) { focused.focus?.({ preventScroll: true }); const form = this.records.get(packet.focused!)?.form; if (form) this.caret(focused as HTMLInputElement, form) }
+        // The kernel's focus left (blur, a protected field): the viewer's control blurs too.
+        else if (!packet.focused && !elsewhere && active && this.ids.has(active) && active !== active.ownerDocument.body && active !== active.ownerDocument.documentElement) active.blur()
         // Once the kernel's selection clears (or moves to another document) its old range goes too.
         // Only there: a viewer's own range the kernel never had stays, and so does a focused text
         // control's range (removeAllRanges would collapse it).
@@ -507,7 +532,7 @@ type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'fram
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
 export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; packet?(packet: Mirror2Packet): void }, { credits = 4, waitMs = 2000, failingMs = FAILING_MS, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
-  if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 489')
+  if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 492')
   const request = async (command: unknown): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } }) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
