@@ -43,7 +43,7 @@ export function createProviderAccountRecoveryController(options: {
       top: Math.max(0, Math.floor(size.height / 5)), width,
       border: true, padding: 1, flexDirection: "column", backgroundColor: theme.background,
     })
-    panel.add(new TextRenderable(options.renderer, { content: message.includes("sign-in not checked") ? "Check provider account sign-in" : "Provider account needs sign-in", fg: theme.text }))
+    panel.add(new TextRenderable(options.renderer, { content: message.includes("sign-in not checked") ? "Check provider account sign-in" : message.includes("has exhausted") ? "Choose provider account with quota" : "Provider account needs sign-in", fg: theme.text }))
     panel.add(new TextRenderable(options.renderer, { content: message, fg: theme.text, wrapMode: "word" }))
     options.actions().forEach((action, index) => {
       const button = new TextRenderable(options.renderer, {
@@ -60,7 +60,7 @@ export function createProviderAccountRecoveryController(options: {
     assignBox(value: BoxRenderable | undefined) { box = value; render() },
     ownsInput: () => message !== null || closing,
     show(messageText: string) {
-      if (!/selected \S+ account .*not authenticated|needs sign-in\.|sign-in not checked\./i.test(messageText)) return
+      if (!/selected \S+ account .*not authenticated|needs sign-in\.|sign-in not checked\.|has exhausted its allowance/i.test(messageText)) return
       message = messageText
       selected = 0
       render()

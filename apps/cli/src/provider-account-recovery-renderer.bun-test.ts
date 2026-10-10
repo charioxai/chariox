@@ -30,5 +30,9 @@ test("MP-08 / MP-11 account recovery shows the full reason and consumes duplicat
     assert.deepEqual(invoked, ["switch"])
     await new Promise(resolve => setTimeout(resolve, 10))
     assert.equal(controller.ownsInput(), false)
+    controller.show("chariox has exhausted its allowance; resets 2026-10-10 12:00 UTC. Select another signed-in account with quota.")
+    await h.renderOnce()
+    assert.match(h.captureCharFrame(), /Choose provider account with quota/)
+    assert.match(h.captureCharFrame(), /2026-10-10 12:00 UTC/)
   } finally { controller.close(); h.renderer.destroy() }
 })

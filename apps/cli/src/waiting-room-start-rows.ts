@@ -5,7 +5,7 @@ import {
 } from "./provider-catalog.js"
 import type { SliceRecord } from "./cli-types.js"
 import { type ProviderAccountProfile } from "@chariox/kernel-client"
-import { providerAccountDisplayLabel } from "./waiting-room-provider-accounts.js"
+import { providerAccountCapacity, providerAccountDisplayLabel } from "./waiting-room-provider-accounts.js"
 import { formatWaitingRoomSliceSelection, waitingRoomSlices } from "./waiting-room-slices.js"
 import {
   formatWaitingRoomLaunchKernelValue,
@@ -118,7 +118,8 @@ export function waitingRoomStartRows(
           ? "Start machine and session"
           : choice.accountProfile && choice.accountProfile.auth_state !== "authenticated"
             ? `${choice.accountProfile.auth_state === "unknown" ? "Check sign-in" : "Sign in"} ${choice.accountProfile.label}`
-            : "Start New Session",
+            : choice.accountProfile && providerAccountCapacity(choice.accountProfile, Date.now(), choice.model?.id).state === "exhausted"
+              ? "Choose account with quota" : "Start New Session",
       value: "Press Enter",
       titleWidth: options.titleWidth,
       indent: 0,

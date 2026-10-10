@@ -1,6 +1,7 @@
 import {
   providerAccountCapacity,
   providerAccountCapacityLabel,
+  providerAccountCapacityResetLabel,
   type ProviderAccountProfile,
 } from "@chariox/kernel-client"
 
@@ -68,7 +69,8 @@ export function defaultProviderAccountProfileId(
 }
 
 export function providerAccountDisplayLabel(profile: ProviderAccountProfile, model?: string | null): string {
-  return `${providerAccountCapacityLabel(profile, Date.now(), model)} · ${profile.auth_state === "authenticated" ? "signed in" : profile.auth_state === "unknown" ? "sign-in not checked" : "needs sign-in"}`
+  const reset = providerAccountCapacityResetLabel(profile, Date.now(), model)
+  return `${providerAccountCapacityLabel(profile, Date.now(), model)}${reset ? ` · ${reset}` : ""} · ${profile.auth_state === "authenticated" ? "signed in" : profile.auth_state === "unknown" ? "sign-in not checked" : "needs sign-in"}`
 }
 
 export function selectedProviderAccountStartBlockReason(
@@ -76,12 +78,19 @@ export function selectedProviderAccountStartBlockReason(
   provider: string,
   profileId: string | undefined,
   remoteExecution?: Readonly<Record<string, unknown>> | null,
+  model?: string | null,
 ): string | null {
   // Worker credentials are resolved by the worker kernel, outside this inventory.
   if (remoteExecution && remoteExecution.kind !== "local") return null
   if (profiles === undefined) return null
   const profile = selectedProviderAccount(profiles, provider, profileId)
-  if (profile?.auth_state === "authenticated") return null
+  if (profile?.auth_state === "authenticated") {
+    if (providerAccountCapacity(profile, Date.now(), model).state !== "exhausted") return null
+    const reset = providerAccountCapacityResetLabel(profile, Date.now(), model)
+    const alternative = providerAccountsForProvider(profiles, provider).find(candidate => candidate.auth_state === "authenticated"
+      && providerAccountCapacity(candidate, Date.now(), model).state !== "exhausted")
+    return `${profile.label} has exhausted its allowance${reset ? `; ${reset}` : ""}. Select ${alternative ? `another signed-in account ${alternative.label}` : "another account with quota, or wait for its allowance to reset"}.`
+  }
   const label = profile?.label ?? profileId ?? "default"
   const alternative = providerAccountsForProvider(profiles, provider)
     .find((candidate) => candidate.auth_state === "authenticated")

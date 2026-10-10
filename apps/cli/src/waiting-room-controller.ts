@@ -325,7 +325,7 @@ export function deriveWaitingRoomActivationDecision(options: {
       return { action: "error", message: managedEnvironment }
     }
     const accountBlock = managedEnvironment ? null : selectedProviderAccountStartBlockReason(
-      options.remote?.providerAccounts, launch.provider, launch.accountProfile,
+      options.remote?.providerAccounts, launch.provider, launch.accountProfile, null, launch.model,
     )
     if (accountBlock) return { action: "error", message: accountBlock }
     const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
@@ -371,7 +371,7 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
     return { action: "error", message: managedEnvironment }
   }
   const accountBlock = managedEnvironment ? null : selectedProviderAccountStartBlockReason(
-    options.remote?.providerAccounts, choice.providerId, options.state.accountProfileId,
+    options.remote?.providerAccounts, choice.providerId, options.state.accountProfileId, null, choice.model?.id,
   )
   if (accountBlock) return { action: "error", message: accountBlock }
   const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
@@ -469,6 +469,8 @@ export function deriveWaitingRoomControlActivationDecision(options: {
           message: selectedProviderAccountStartBlockReason(remote.providerAccounts, options.state.providerId, options.state.accountProfileId)!,
         }
       }
+      const quotaBlock = account && selectedProviderAccountStartBlockReason(remote.providerAccounts, options.state.providerId, options.state.accountProfileId, null, options.state.modelId)
+      if (quotaBlock && account?.auth_state === "authenticated") return { action: "info", message: quotaBlock }
       return { action: "none" }
     }
     case "relay":

@@ -116,7 +116,7 @@ export async function bootstrapSession(
   const validateNewSessionAccount = async (): Promise<void> => {
     if (!deps.listProviderAccountProfiles || !options.provider) return
     const profiles = await deps.listProviderAccountProfiles(client)
-    const reason = selectedProviderAccountStartBlockReason(profiles, options.provider, options.accountProfile)
+    const reason = selectedProviderAccountStartBlockReason(profiles, options.provider, options.accountProfile, null, options.model)
     if (reason) throw new Error(reason)
   }
   switch (decision.action) {
