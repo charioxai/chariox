@@ -226,7 +226,9 @@ export function installMirror2(sanitizeMirrorCss) {
       }
       return out;
     };
-    const sheetSignature = sheet => { try { return `${sheet.cssRules.length}:${sheet.disabled}`; } catch { return 'x'; } };
+    // Rule count ('x' when cross-origin rules are unreadable) and, independently, the disabled state.
+    const ruleCount = sheet => { try { return String(sheet.cssRules.length); } catch { return 'x'; } };
+    const sheetSignature = sheet => `${ruleCount(sheet)}:${sheet.disabled}`;
     const styleRecord = (node, record) => {
       record.tag = 'style'; record.attrs = {};
       const media = node.getAttribute('media'); if (media && media.length <= 4096) record.attrs.media = media;
@@ -442,15 +444,17 @@ export function installMirror2(sanitizeMirrorCss) {
       if (activeId && kindOf.get(activeId) === 'element' && ['input', 'textarea'].includes(active.localName) && !dirty.form.has(active)) formOp(active, activeId, ops);
       for (const node of dirty.scroll) { const id = node && mirrored(node); if (id && node !== document.documentElement && kindOf.get(id) === 'element') ops.push({ op: 'scroll', id, scroll: [node.scrollLeft, node.scrollTop] }); }
       // CSSOM edits (insertRule/replaceSync, rule.style writes) produce no mutation record: readable
-      // <style> and <link> sheets are compared every 2 s (unreadable ones: signature 'x').
+      // <style> and <link> sheets are compared every 2 s (unreadable rules: count 'x').
       const now = performance.now(), full = now - lastSheetCheck > 2000; if (full) lastSheetCheck = now;
       // Linked sheets can be megabytes (GitHub ~4 MB): ~256 KB of them per check, least recently checked first.
       const links = new Set(); if (full) { let room = 256 * 1024; for (const [id, entry] of [...styleNodes].filter(([, e]) => e.node.localName === 'link').sort((a, b) => (a[1].checkedAt ?? 0) - (b[1].checkedAt ?? 0))) { if (links.size && (entry.text?.length ?? 0) > room) continue; room -= entry.text?.length ?? 0; links.add(id); entry.checkedAt = now; } }
       for (const [id, entry] of styleNodes) {
         const sheet = entry.node.sheet, signature = sheet ? sheetSignature(sheet) : '';
-        if (dirty.sheets.has(entry.node) || signature !== entry.signature || full && (entry.node.localName === 'style' || links.has(id)) && sheet && signature !== 'x' && sheet.cssRules.length <= 4000) {
+        const unread = signature.startsWith('x:');
+        if (dirty.sheets.has(entry.node) || signature !== entry.signature || full && (entry.node.localName === 'style' || links.has(id)) && sheet && !unread && sheet.cssRules.length <= 4000) {
           let text = ''; let media = entry.node.getAttribute('media'); if (media && media.length > 4096) media = null;
-          if (sheet) { try { text = css(sheet, sheet.href ?? entry.node.baseURI); } catch { if (sheet.href && signature !== entry.signature) pendingSheets.push({ id, url: sheet.href }); text = entry.text; } if (sheet.disabled) media = 'not all'; }
+          // An unreadable sheet is re-read through CDP when it (re)loaded, not when only its disabled state changed.
+          if (sheet) { try { text = css(sheet, sheet.href ?? entry.node.baseURI); } catch { if (sheet.href && (dirty.sheets.has(entry.node) || !entry.signature.startsWith('x:'))) pendingSheets.push({ id, url: sheet.href }); text = entry.text; } if (sheet.disabled) media = 'not all'; }
           entry.signature = signature;
           if (text !== entry.text) { entry.text = text; ops.push({ op: 'css', id, css: text }); }
           // Effective media: CSSOM `sheet.disabled` changes it without any mutation or event.

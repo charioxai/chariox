@@ -476,3 +476,17 @@ test("MP-10: review #941-4 a CDP-read cross-origin sheet keeps its declared laye
     "/cdn/b.css": { type: "text/css", body: "#q{color:rgb(0, 0, 255)}" },
     "/cdn/c.css": { type: "text/css", body: "#r{color:rgb(0, 128, 0)}" },
   }));
+
+test("MP-10: review #941-5 CSSOM sheet.disabled toggles of unreadable cross-origin sheets reach the viewer (disable and enable)", () => mirrored(
+  '<link id="a" rel="stylesheet" href="http://localhost:PORT/a.css"><link id="b" rel="stylesheet" href="http://localhost:PORT/b.css"><p>t</p>', async ({ next, evaluate }) => {
+    for (let i = 0; i < 40 && !await evaluate("[...document.styleSheets].length === 2"); i++) await new Promise(resolve => setTimeout(resolve, 50));
+    await evaluate("document.getElementById('b').sheet.disabled=true;true");
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const snapshot = await next(); let id = 0; const styles = [];
+    for (const row of snapshot.nodes) { id += row[0]; if (row[2] === "style") styles.push([`n${id}`, row[3]?.media ?? null]); }
+    assert.deepEqual(styles.map(([, media]) => media), [null, "not all"], "MP-10: the snapshot carries the disabled sheet as media=not all");
+    await evaluate("document.getElementById('a').sheet.disabled=true;document.getElementById('b').sheet.disabled=false;true");
+    const ops = [];
+    for (let i = 0; i < 4 && ops.length < 2; i++) ops.push(...(await next(1500)).ops.filter(op => op.op === "attr" && op.name === "media"));
+    assert.deepEqual(ops.map(op => [op.id, op.value]).sort(), [[styles[0][0], "not all"], [styles[1][0], null]].sort());
+  }, { "/a.css": { type: "text/css", body: "p{color:rgb(1,2,3)}" }, "/b.css": { type: "text/css", body: "p{background:rgb(4,5,6)}" } }));
