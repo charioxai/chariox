@@ -20,6 +20,7 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::managed_bootstrap::ConfirmedManagedKernelRegistration;
 use crate::runtime::cloud_api_client::{post_cloud_json, post_cloud_to_file};
+use crate::runtime_diagnostics::{record, Event};
 
 use super::managed_kernel_quiescence::{hmac_signature, identity_values, QuiescenceBinding};
 
@@ -103,7 +104,9 @@ impl ManagedReleaseUpdateClient {
 
     pub(crate) async fn run(self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
         loop {
+            record(Event::UpdatePoll);
             if let Err(error) = self.poll_once().await {
+                record(Event::UpdatePollFailed);
                 crate::logging::warn_with_fields(
                     "managed_kernel.release_update",
                     "release update poll failed; retrying",
@@ -124,6 +127,7 @@ impl ManagedReleaseUpdateClient {
     async fn poll_once(&self) -> Result<(), DaemonError> {
         // systemd errors are not evidence that an update has settled.
         if !update_unit_settled()? {
+            record(Event::UpdateUnitRunning);
             return Ok(());
         }
         let running = running_release_digest(&self.receipt_path)?;
@@ -132,6 +136,7 @@ impl ManagedReleaseUpdateClient {
         // MP-07: after a stopped unit or reboot, the durable attempt owns
         // recovery. Waiting silently would strand both Cloud and the journal.
         if recovery_pending {
+            record(Event::UpdateRecovery);
             let attempt = attempt
                 .as_ref()
                 .ok_or_else(|| update_error("release recovery has no durable update attempt"))?;
@@ -166,7 +171,13 @@ impl ManagedReleaseUpdateClient {
             )
         });
         if report == Some(UpdateReport::Pending) {
+            record(Event::UpdatePending);
             return Ok(());
+        }
+        match report {
+            Some(UpdateReport::Applied) => record(Event::UpdateApplied),
+            Some(UpdateReport::Failed) => record(Event::UpdateFailed),
+            _ => {}
         }
         // Reclaim the persisted, settled attempt before polling. Cloud can
         // hand out a successor in that response; cleanup failure must not claim
@@ -193,6 +204,7 @@ impl ManagedReleaseUpdateClient {
             self.signed(values)?,
         )
         .await?;
+        record(Event::UpdateCloudAcknowledged);
         if response.protocol_version != 1 {
             return Err(update_error(
                 "Cloud returned an unsupported release update protocol",
@@ -219,6 +231,7 @@ impl ManagedReleaseUpdateClient {
     }
 
     async fn start_update(&self, update: UpdateCommand) -> Result<(), DaemonError> {
+        record(Event::UpdateDownload);
         let archive = Path::new(DOWNLOAD_ROOT).join(format!("{}.tar.gz", update.update_id));
         let attempt = UpdateAttempt {
             update_id: update.update_id.clone(),
@@ -250,6 +263,7 @@ impl ManagedReleaseUpdateClient {
             |error| update_error(format!("record release update attempt: {error}")),
         )
         .await?;
+        record(Event::UpdateDownloaded);
         prepared.delegate();
         self.start_update_unit(&update, &archive)
     }
@@ -257,15 +271,22 @@ impl ManagedReleaseUpdateClient {
     fn start_update_unit(&self, update: &UpdateCommand, archive: &Path) -> Result<(), DaemonError> {
         let tooling = std::fs::canonicalize(CURRENT_RELEASE)
             .map_err(|error| update_error(format!("resolve current release: {error}")))?;
-        let status = Command::new("sudo")
-            .args([
-                "-n",
-                "systemd-run",
-                "--unit",
-                UPDATE_UNIT,
-                "--collect",
-                "--quiet",
-            ])
+        record(Event::UpdateUnitStarting);
+        let mut command = Command::new("sudo");
+        command.args([
+            "-n",
+            "systemd-run",
+            "--unit",
+            UPDATE_UNIT,
+            "--collect",
+            "--quiet",
+        ]);
+        if let Some(directory) = std::env::var_os("CHARIOX_RUNTIME_DIAGNOSTICS_DIR") {
+            let mut setting = std::ffi::OsString::from("CHARIOX_RUNTIME_DIAGNOSTICS_DIR=");
+            setting.push(directory);
+            command.arg("--setenv").arg(setting);
+        }
+        let status = command
             .args(["/bin/sh", "-c"])
             .arg(update_script(
                 &tooling,
@@ -282,6 +303,7 @@ impl ManagedReleaseUpdateClient {
                 "release update unit did not start: {status}"
             )));
         }
+        record(Event::UpdateUnitStarted);
         crate::logging::info_with_fields(
             "managed_kernel.release_update",
             "started Cloud-authorized release update",

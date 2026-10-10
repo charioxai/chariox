@@ -89,6 +89,24 @@ cleanup() {
   rm -rf -- "$staging_root"
 }
 
+# MP-07/MP-10: a helper may exit under set -e, bypassing its caller's
+# explicit failure branch. Recover while staged trust inputs still exist.
+finish() {
+  finish_status=$?
+  trap - EXIT
+  if [ "$finish_status" -ne 0 ] && [ "$transaction_active" -eq 1 ] \
+    && [ "$rolling_back" -eq 0 ]; then
+    # Isolate helpers that use exit on an invalid authority. Preserve the
+    # durable journal on failed recovery; never turn a failure into success.
+    record_diagnostic_phase update_unexpected_exit
+    if ! (recover_transaction); then
+      echo "managed kernel exit recovery remains pending" >&2
+    fi
+  fi
+  cleanup
+  exit "$finish_status"
+}
+
 path_exists() {
   [ -e "$1" ] || [ -L "$1" ]
 }
@@ -133,7 +151,7 @@ select_supervisor_service() {
   fi
 }
 
-assert_path1_units_have_no_dropins() {
+assert_path1_service_overrides() {
   [ "$managed_provider_topology" = path1 ] || return 0
   path1_preflight_failure=0
   path1_drop_in_failure=0
@@ -163,7 +181,10 @@ assert_path1_units_have_no_dropins() {
       path1_drop_in_failure=1
       continue
     }
-    if [ -n "$drop_in_paths" ]; then
+    # MP-07/MP-10/MP-11: admit only the exact root-owned observation setting
+    # installed by the signed campaign installer; reject every other override.
+    if [ -n "$drop_in_paths" ] && ! node "$script_root/path1-campaign-diagnostics-policy.mjs" \
+      "$install_root" "$unit" "$drop_in_paths"; then
       path1_drop_in_failure=1
       path1_preflight_failure=1
       echo "Path-1 service $unit has systemd drop-ins: $drop_in_paths" >&2
@@ -486,8 +507,19 @@ remove_release_override() {
   node "$script_root/managed-kernel-upgrade-state.mjs" remove-state-file "$release_override_path"
 }
 
+# MP-07/MP-10/MP-11: observation failure never changes release settlement.
+record_diagnostic_phase() {
+  if [ -n "${CHARIOX_RUNTIME_DIAGNOSTICS_DIR:-}" ]; then
+    if ! python3 "$script_root/runtime-diagnostics.py" event \
+      --directory "$CHARIOX_RUNTIME_DIAGNOSTICS_DIR" --event "$1" >/dev/null 2>&1; then
+      echo "managed kernel upgrade diagnostic event publication failed" >&2
+    fi
+  fi
+}
+
 write_phase() {
-  node "$script_root/managed-kernel-upgrade-state.mjs" atomic-text "$1" "$transaction_root/phase"
+  node "$script_root/managed-kernel-upgrade-state.mjs" atomic-text "$1" "$transaction_root/phase" || return $?
+  record_diagnostic_phase "$1"
 }
 
 plan_home_migration() {
@@ -698,7 +730,7 @@ rollback_transaction() {
   verify_slice_build_context_facade "$previous_slice_build_context" || return 1
   validate_active_builder_pin "$transaction_root" previous "$previous_target" || return 1
   systemctl daemon-reload || return 1
-  assert_path1_units_have_no_dropins || return 1
+  assert_path1_service_overrides || return 1
   start_path1_runtime_services || return 1
   start_managed_app_storage || return 1
   health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') || return 1
@@ -829,11 +861,12 @@ terminate() {
     fi
   fi
   cleanup
+  case "$$" in ''|0|1|*[!0-9]*) exit 1 ;; esac
   kill -s "$signal" "$$"
   exit 1
 }
 
-trap cleanup EXIT
+trap finish EXIT
 trap 'terminate HUP' HUP
 trap 'terminate INT' INT
 trap 'terminate TERM' TERM
@@ -909,7 +942,7 @@ fi
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
 select_supervisor_service
-assert_path1_units_have_no_dropins
+assert_path1_service_overrides
 if [ "$recover_only" -eq 1 ]; then
   for recovery_journal in "$transaction_root" "$terminal_transaction"; do
     if path_exists "$recovery_journal"; then
@@ -962,7 +995,7 @@ if [ "$managed_provider_topology" = path1 ]; then
   require_root_owned_ancestor_chain "$trusted_builder_runtime_key" "trusted builder runtime key"
   if path_exists "$trusted_builder_runtime_key"; then
     require_root_owned_private_regular_file "$trusted_builder_runtime_key" "trusted builder runtime key"
-    if ! cmp -s "$trusted_builder_public_key" "$trusted_builder_runtime_key"; then
+    if ! compare_builder_pins "$trusted_builder_public_key" "$trusted_builder_runtime_key"; then
       echo "installed trusted builder key differs from the independent input" >&2
       exit 1
     fi
@@ -1103,6 +1136,7 @@ node "$script_root/managed-kernel-upgrade-state.mjs" publish-transaction \
   "$pending_transaction" "$transaction_root"
 pending_transaction=
 transaction_active=1
+record_diagnostic_phase prepared
 
 if ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then
   if rollback_transaction; then
@@ -1113,6 +1147,7 @@ if ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then
   exit 1
 fi
 write_phase stopped
+record_diagnostic_phase activation_builder_pin_start
 if ! activate_builder_pin "$transaction_root" target; then
   if rollback_transaction; then
     echo "managed builder pin activation failed; restored previous managed kernel release" >&2
@@ -1121,6 +1156,7 @@ if ! activate_builder_pin "$transaction_root" target; then
   fi
   exit 1
 fi
+record_diagnostic_phase activation_home_migration_start
 if ! resume_home_migration; then
   if rollback_transaction; then
     echo "managed kernel home migration failed; restored previous managed kernel release" >&2
@@ -1129,30 +1165,39 @@ if ! resume_home_migration; then
   fi
   exit 1
 fi
+record_diagnostic_phase activation_receipt_start
 if ! atomic_receipt "$transaction_root/target-receipt.json"; then
   activation_failed=1
 elif [ -f "$transaction_root/target-release-override.json" ]; then
+  record_diagnostic_phase activation_release_override_start
   atomic_release_override "$transaction_root/target-release-override.json" || activation_failed=1
 else
+  record_diagnostic_phase activation_release_override_start
   remove_release_override || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
+  record_diagnostic_phase activation_app_prepare_start
   prepare_managed_app_release_switch "$published_release" || activation_failed=1
   if [ "${activation_failed:-0}" -eq 0 ]; then
+    record_diagnostic_phase activation_current_link_start
     atomic_symlink "releases/$release_name" "$current_link" || activation_failed=1
   fi
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
+  record_diagnostic_phase activation_data_volume_links_start
   sync_path1_data_volume_unit_links || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
+  record_diagnostic_phase activation_app_storage_start
   sync_managed_app_storage || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
+  record_diagnostic_phase activation_slice_facade_start
   atomic_symlink "$signed_slice_build_context_target" "$slice_build_context_link" \
     || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
+  record_diagnostic_phase activation_slice_facade_check_start
   verify_signed_slice_build_context_facade || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -ne 0 ]; then
@@ -1165,7 +1210,7 @@ if [ "${activation_failed:-0}" -ne 0 ]; then
 fi
 write_phase activated
 if ! systemctl daemon-reload \
-  || ! assert_path1_units_have_no_dropins \
+  || ! assert_path1_service_overrides \
   || ! start_path1_runtime_services \
   || ! start_managed_app_storage \
   || ! health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') \

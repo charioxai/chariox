@@ -136,6 +136,8 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   const sourceCommit = createHash("sha1").update(`commit-${label}`).digest("hex")
   const sourceTree = createHash("sha1").update(`tree-${label}`).digest("hex")
   if (builderKeys) {
+    const diagnostics = "deploy/managed-kernel/runtime-diagnostics.py"
+    await put(join(context, diagnostics), await readFile(join(repositoryRoot, diagnostics)))
     for (const sourceFile of [
       "chariox-data-volume-admission.mjs",
       "slice-data-volume-device.mjs",
@@ -249,6 +251,7 @@ async function makeHarness(context, {
   targetManifestSchema = 3,
   currentAppArtifacts = true,
   updaterPath = upgrade,
+  builderInputLF = false,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-upgrade-"))
   await mkdir(join(root, "tmp"), { mode: 0o700 })
@@ -258,10 +261,10 @@ async function makeHarness(context, {
   await put(trustedKey, rawPublicKey(publicKey).toString("base64"), 0o600)
   const builderKeys = path1Release ? generateKeyPairSync("ed25519") : null
   const trustedBuilderKey = join(root, "trusted-builder-public-key")
-  if (builderKeys) await put(trustedBuilderKey, rawPublicKey(builderKeys.publicKey).toString("base64"), 0o600)
+  if (builderKeys) await put(trustedBuilderKey, rawPublicKey(builderKeys.publicKey).toString("base64") + (builderInputLF ? "\n" : ""), 0o600)
   const targetBuilderKeys = rotateBuilder ? generateKeyPairSync("ed25519") : builderKeys
   const nextTrustedBuilderKey = join(root, "next-trusted-builder-public-key")
-  if (targetBuilderKeys) await put(nextTrustedBuilderKey, rawPublicKey(targetBuilderKeys.publicKey).toString("base64"), 0o600)
+  if (targetBuilderKeys) await put(nextTrustedBuilderKey, rawPublicKey(targetBuilderKeys.publicKey).toString("base64") + (builderInputLF ? "\n" : ""), 0o600)
   const current = await makeRelease(
     root, "current", currentProtocol, privateKey, publicKey, currentTransitionPolicy,
     path1Release || workerCapableCurrent || receiptKind === "allocation_worker", builderKeys, currentManifestSchema,
@@ -446,6 +449,9 @@ if [ "$1" = "show" ]; then
       fi
       ;;
     *--property=DropInPaths*chariox-path1-managed-bootstrap.service)
+      if [ -f "$HARNESS_STATE/campaign-drop-in-path" ]; then
+        cat "$HARNESS_STATE/campaign-drop-in-path"
+      fi
       if [ -f "$HARNESS_STATE/home-drop-in" ] \
         || { [ -f "$HARNESS_STATE/disk-home-drop-in" ] && [ -f "$HARNESS_STATE/systemd-reloaded" ]; }; then
         printf '%s\n' /etc/systemd/system/chariox-path1-managed-bootstrap.service.d/50-hardening.conf
@@ -495,7 +501,7 @@ if [ "$1" = "start" ]; then
     printf '{"schemaVersion":2}\n' > "$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/managed/bootstrap-grant-binding.json"
   fi
   if [ -f "$HARNESS_STATE/check-builder-pin-on-start" ]; then
-    cmp -s "$CHARIOX_MANAGED_UPGRADE_ROOT/etc/chariox/trusted-builder-public-key" \
+    "${process.execPath}" "${repositoryRoot}/deploy/managed-kernel/managed-kernel-upgrade-state.mjs" compare-builder-pins "$CHARIOX_MANAGED_UPGRADE_ROOT/etc/chariox/trusted-builder-public-key" \
       "$CHARIOX_MANAGED_UPGRADE_ROOT/usr/lib/chariox/current/usr/lib/chariox/builder-public-key" || exit 1
     printf 'matched\n' >> "$HARNESS_STATE/builder-pin-starts"
   fi
@@ -546,6 +552,7 @@ if [ "$1" = "start" ] \
   case "\${2:-}" in
     chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
       rm -f -- "$HARNESS_STATE/crash-after-supervisor-start"
+      case "\${PPID:-}" in ''|0|1|*[!0-9]*) exit 1 ;; esac
       kill -KILL "$PPID"
       exit 1
       ;;
@@ -574,13 +581,26 @@ printf '%s\n' "$*" >> "$HARNESS_STATE/mountpoint.log"
 `, 0o755)
   await put(join(bin, "node"), `#!/bin/sh
 set -eu
+# Every crash target is the direct updater parent started by this fixture.
+crash_updater() {
+  case "\${PPID:-}" in ''|0|1|*[!0-9]*) exit 1 ;; esac
+  kill -KILL "$PPID"
+}
+if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \\
+  && [ "\${2:-}" = "atomic-text" ] \\
+  && [ "\${3:-}" = stopped ] \\
+  && [ -f "$HARNESS_STATE/fail-after-stopped" ]; then
+  "${process.execPath}" "$@"
+  rm -f "$HARNESS_STATE/fail-after-stopped"
+  exit 23
+fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \\
   && [ "\${2:-}" = "sync-directory" ] \\
   && [ "\${3:-}" = "$CHARIOX_MANAGED_UPGRADE_ROOT/usr/lib/chariox/releases" ] \\
   && [ -f "$HARNESS_STATE/crash-after-release-publication" ]; then
   "${process.execPath}" "$@"
   rm -f "$HARNESS_STATE/crash-after-release-publication"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \\
@@ -589,7 +609,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \\
   && [ -f "$HARNESS_STATE/crash-after-builder-pin" ]; then
   "${process.execPath}" "$@"
   rm -f "$HARNESS_STATE/crash-after-builder-pin"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -603,7 +623,7 @@ if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
   && [ -f "$HARNESS_STATE/crash-after-home-root-rename" ]; then
   /bin/mv -- "\${5}" "\${6}"
   rm -f -- "$HARNESS_STATE/crash-after-home-root-rename"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
@@ -612,7 +632,7 @@ if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
   "${process.execPath}" "$@"
   rm -f -- "\${3%/*}/home-migration-complete" \
     "$HARNESS_STATE/crash-before-home-completion-marker"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -622,7 +642,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   "${process.execPath}" "$@"
   if [ ! -f "$CHARIOX_MANAGED_UPGRADE_ROOT/usr/lib/chariox/current/usr/libexec/chariox-app-storage" ]; then
     rm -f "$HARNESS_STATE/crash-after-pre-apps-current"
-    kill -KILL "$PPID"
+    crash_updater
     exit 1
   fi
   exit 0
@@ -631,7 +651,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ "\${2:-}" = "atomic-symlink" ] \
   && [ -f "$HARNESS_STATE/crash-before-symlink" ]; then
   rm -f "$HARNESS_STATE/crash-before-symlink"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -640,7 +660,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ -f "$HARNESS_STATE/crash-after-facade-symlink" ]; then
   rm -f "$HARNESS_STATE/crash-after-facade-symlink"
   "${process.execPath}" "$@"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -648,7 +668,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ -f "$HARNESS_STATE/crash-after-phase-\${3:-}" ]; then
   "${process.execPath}" "$@"
   rm -f "$HARNESS_STATE/crash-after-phase-\${3:-}"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -656,7 +676,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ -f "$HARNESS_STATE/crash-after-phase-prepared" ]; then
   "${process.execPath}" "$@"
   rm -f "$HARNESS_STATE/crash-after-phase-prepared"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -666,7 +686,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   if [ -f "$marker" ]; then
     "${process.execPath}" "$@"
     rm -f "$marker"
-    kill -KILL "$PPID"
+    crash_updater
     exit 1
   fi
 fi
@@ -716,7 +736,7 @@ exec /usr/bin/stat "$@"
     spawnSync(updaterPath, args, { encoding: "utf8", env: { ...env, ...extraEnv } })
   return {
     root, installRoot, receiptPath, receipt, bindingDigest, persistent, charioxIdentity,
-    current, target, trustedKey, trustedBuilderKey, nextTrustedBuilderKey, state, run,
+    current, target, trustedKey, trustedBuilderKey, nextTrustedBuilderKey, state, env, run,
   }
 }
 

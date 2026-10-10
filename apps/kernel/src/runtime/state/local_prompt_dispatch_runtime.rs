@@ -4601,8 +4601,12 @@ impl KernelRuntimeState {
             let _permit = provider_runtime_lanes
                 .acquire(&dispatch.provider_run_id)
                 .await;
+            crate::runtime_diagnostics::record(crate::runtime_diagnostics::Event::ProviderDispatchStart);
             if let Err(error) = state.enqueue_prompt_dispatch(&dispatch).await {
+                crate::runtime_diagnostics::record(crate::runtime_diagnostics::Event::ProviderDispatchFailed);
                 let _ = state.fail_prompt_dispatch(dispatch, error).await;
+            } else {
+                crate::runtime_diagnostics::record(crate::runtime_diagnostics::Event::ProviderDispatchReturned);
             }
         });
     }

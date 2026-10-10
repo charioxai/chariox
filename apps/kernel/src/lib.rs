@@ -35,6 +35,7 @@ pub(crate) mod provider_output_policy;
 pub mod pty;
 mod publication_provider_accounts;
 pub mod runtime;
+pub(crate) mod runtime_diagnostics;
 pub mod runtime_transport;
 pub mod scheduler;
 pub mod script;
