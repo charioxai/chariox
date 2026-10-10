@@ -4,6 +4,7 @@ struct ProtectedFrame {
     let pixels: [UInt8]
     let stamp: CaptureStamp
     let masked: Bool
+    var capturedAt: TimeInterval = ProcessInfo.processInfo.systemUptime
 }
 
 // Private helper source contract only. The kernel must supply the attachment
@@ -23,6 +24,10 @@ struct ProtectedFrame {
     private let now: () -> TimeInterval
     init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) { self.now = now }
 
+    var active: Bool {
+        viewers = viewers.filter { $0.value.expires > now() }
+        return !viewers.isEmpty
+    }
     func subscribe(owner: String, generation: String) throws -> String {
         viewers = viewers.filter { $0.value.expires > now() }
         guard !owner.isEmpty, owner.utf8.count <= 256, !generation.isEmpty,
@@ -66,6 +71,9 @@ struct ProtectedFrame {
                 "generation": frame.stamp.generation, "sequence": publication.sequence,
                 "width": frame.stamp.surface.width, "height": frame.stamp.surface.height,
                 "device_scale_factor": frame.stamp.surface.scale, "colour": "srgb",
+                "point_origin": ["x": frame.stamp.surface.bounds.minX, "y": frame.stamp.surface.bounds.minY],
+                "point_width": frame.stamp.surface.bounds.width, "point_height": frame.stamp.surface.bounds.height,
+                "capture_timestamp_ms": frame.capturedAt * 1000,
                 "protection_revision": frame.stamp.protection, "protected": frame.masked]
             if publication.exact {
                 packet["kind"] = "png"

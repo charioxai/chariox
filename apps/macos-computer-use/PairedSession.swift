@@ -41,6 +41,17 @@ import Darwin
             return (["id": request["id"] ?? NSNull(), "epoch": epoch, "ok": false,
                 "error": ["code": "unsupported", "reason": "owned-release-failed"]], false)
         }
+        if method == "heartbeat" {
+            do {
+                try checkAuthority()
+                try capture.checkHealth(authority: { try self.checkAuthority() })
+                return pairedReply(request, epoch: epoch)
+            } catch {
+                revoked = true; capture.clear()
+                return (["id": request["id"] ?? NSNull(), "epoch": epoch, "ok": false,
+                         "error": ["code": "browser_action_cancelled"]], true)
+            }
+        }
         if method == "host.protect" { capture.protect(params); return pairedReply(request, epoch: epoch) }
         if method == "host.computer", ["start", "state"].contains(params["op"] as? String ?? "") {
             do {
@@ -74,7 +85,7 @@ import Darwin
                     let frame = try await capture.attachment.sample(id: id, owner: owner,
                         after: params["after_sequence"] as? UInt64, repair: params["repair"] as? Bool == true,
                         authority: { try self.checkAuthority() }, capture: {
-                            try await self.capture.raster(scope, surface: surface, generation: self.epoch,
+                            try await self.capture.raster(scope, surface: surface, generation: self.epoch, useStream: true,
                                                           authority: { try self.checkAuthority() })
                         })
                     reply["result"] = ["frame_sent": frame != nil, "display_frame": frame as Any? ?? NSNull()]
