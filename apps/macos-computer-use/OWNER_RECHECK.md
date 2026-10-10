@@ -1,3 +1,57 @@
+# R9 owner grant and unattended M0-M3 suite
+
+The retained r6 helper remains unchanged while the morning re-grant waits.
+Its executable SHA-256 remains
+`b02c5ba5aa6619698ae045a7fff4f4403b7fcf79ff6f09a981143a6ff8282028`.
+Do not rebuild, sign or replace that bundle. Its historical replay below cannot
+validate r8/r9 source, protocol 497, physical-human fencing or fatal input reset.
+
+The full source suite requires one grant on one next combined, matching build.
+Batch all current M0/M1/M2/M3 helper changes into that coordinator-approved build
+under `/Users/miguel/.chariox/dev/cumac/build`. Publish its exact public helper/
+kernel SHA-256 and CDHash pins before the owner grants it. Do not rebuild it after
+the grant. This is a future gated recipe, not an owner-staging or acceptance PASS.
+No new matching bundle was built, signed or launched in r9.
+
+After that single grant, the runner does all fixture setup and cleanup. It runs:
+
+1. M0 exact-build caret/TextEdit and foreign/same-process cover fences, including
+   pointer takeover and permanently retired restoration leases.
+2. M1 paired identity/lease/Stop/revoke and strict in-flight cancellation. Include
+   oversized text, unsupported key and pre-dispatch permission refusals followed
+   by usable input. Missing release confirmation must still refuse Stop/Start.
+3. M2 protected paired capture, independent PNG/damage/repair checks and the real
+   hosted encrypted Web/local-TUI/remote-TUI native viewer gate described below.
+4. M3 experimental fixture input with `CHARIOX_MACOS_COMPUTER_INPUT=1`, observer
+   health, physical-human actor projection, denied agent input with unchanged
+   independent selection, explicit owner release and resumed input. Run fatal
+   owned-press death last and require owner-reset-required plus Stop/Start denial.
+
+Use `prepare-seat.py --input-drill` for the M3 public fixture and
+`native-input-drill.mjs:runNativeInputDrill` with the coordinator's actual admitted
+agent/owner transports and independent native event/fixture receipts. It creates
+no identity, credentials or endpoint. The coordinator must supply the verified
+fatal press hook that observes public-fixture key-down while the bounded 100 ms
+Action is pending and kills only the exact paired helper. Preserve the failure
+receipt on any failed check or cleanup. A mocked hook is component evidence only.
+No implementation of that real transport/fatal-hook orchestration was executed
+here; this dependency remains BLOCKED and is not silently replaced by a mock.
+
+The observer performs nonprompting listen-event preflight. If Input Monitoring
+is separately needed, report the missing opt-in and stop the M3 gate. No agent
+requests TCC, changes Keychain or retries mutation to turn a failure into PASS.
+Fatal death intentionally leaves an unresolved OS press if cleanup cannot be
+proved. No new Action may follow; owner physical release and explicit restart
+are required before reuse. Restart alone does not prove the press was released.
+
+Whole-kernel test execution belongs on the coordinator's b3 lane. This Mac
+ran focused checks and guarded kernel test-source compilation only. No b3 run,
+hosted transport, live tap, GUI input/capture, real provider or new grant is claimed.
+See `docs/COMPUTER_USE_MACOS_M3_CHECKPOINT.md` for source scope and remaining gates.
+
+The old pinned-binary instructions below are retained as historical replay.
+They are not the full M0-M3 recipe and do not authorize replacing its pinned build.
+
 # R8 owner recheck and unattended acceptance
 
 All r6 helper changes entered one rebuild from M2 source checkpoint

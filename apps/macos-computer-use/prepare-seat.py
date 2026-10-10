@@ -35,6 +35,7 @@ def make_scope(output, state):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--evidence', type=Path, required=True)
+    parser.add_argument('--input-drill', action='store_true')
     args = parser.parse_args()
     evidence = args.evidence.resolve()
     if not evidence.is_relative_to(Path.home() / '.codex/evidence'):
@@ -42,7 +43,7 @@ def main():
     evidence.mkdir(parents=True, exist_ok=True)
     d.wait_for_gui(); d.require_gui()
     subprocess.run(['open', '-n', '--stdout', str(evidence / 'fixture.out'), '--stderr', str(evidence / 'fixture.err'),
-                    str(d.BUILD / 'Chariox Computer Fixture.app'), '--args', '--unattended', '--text-drill'], check=True)
+                    str(d.BUILD / 'Chariox Computer Fixture.app'), '--args', '--unattended', '--text-drill', *(['--input-drill'] if args.input_drill else [])], check=True)
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         output = d.read(evidence, 'fixture.out')

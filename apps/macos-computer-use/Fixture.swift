@@ -14,6 +14,14 @@ final class Fixture: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--unattended") {
             Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { _ in NSApp.terminate(nil) }
         }
+        if CommandLine.arguments.contains("--input-drill") {
+            NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .leftMouseDown, .leftMouseUp,
+                .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp, .scrollWheel]) { event in
+                // Public drill oracle logs event class only, never human keys or text.
+                print("fixture input event=\(event.type.rawValue)"); fflush(stdout)
+                return event
+            }
+        }
         if CommandLine.arguments.contains("--text-drill") { startTextDrill(); return }
         let ordinary = NSTextField(frame: NSRect(x: 20, y: 295, width: 310, height: 28))
         ordinary.placeholderString = "Public Unicode test text"; ordinary.setAccessibilityIdentifier("ordinary")
