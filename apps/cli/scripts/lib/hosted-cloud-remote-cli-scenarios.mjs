@@ -166,13 +166,18 @@ export async function runHostedRemoteCliPairingAssertions({
   terminateChild,
   waitForSession,
   waitForHistoryText,
+  apiUrl,
+  ownerAccountSlug,
+  ownerAccountId,
+  prepareRemoteTerminal = prepareHostedRemoteTerminal,
 }) {
   const remoteId = `${process.pid}-${Date.now()}`
   const localAlias = `hosted-pairing-local-cli-${remoteId}`
   const remoteAlias = `hosted-pairing-cli-${remoteId}`
-  const remoteWorkspace = `/tmp/chariox-hosted-pairing-cli-${remoteId}`
+  const remoteRoot = `/var/tmp/chariox-kauthval-hosted-remote-cli-${remoteId}`
+  const remoteWorkspace = `${remoteRoot}/workspace`
   const localSocket = path.join(os.tmpdir(), `chariox-hosted-local-cli-${remoteId}.sock`)
-  const remoteSocket = `/tmp/chariox-hosted-pairing-cli-${remoteId}.sock`
+  const remoteSocket = `${remoteRoot}/automation.sock`
   const localMarker = `HOSTED_PAIRING_LOCAL_CLI_OK_${remoteId.replace(/[^a-zA-Z0-9]/g, "_")}`
   const remoteMarker = `HOSTED_PAIRING_REMOTE_CLI_OK_${remoteId.replace(/[^a-zA-Z0-9]/g, "_")}`
   const pairing = unwrap(
@@ -211,18 +216,21 @@ export async function runHostedRemoteCliPairingAssertions({
     ].join(" "),
   ].join("; ")
 
+  let receiver
   let localCli = null
   let localAutomation = null
   let remoteCli = null
   try {
+    // MP-08 / MP-10 / MP-11: this real-provider receiving terminal must
+    // complete its own CLIENT login, independently of other drill cells.
+    receiver = await prepareRemoteTerminal({remoteRoot, remoteCliRepo, apiUrl, ownerAccountSlug, ownerAccountId,
+      runSsh, shellQuote, sshArgs, spawnProcess, terminateChild})
     log("local-cli-pairing-start", {
       alias: localAlias,
       provider: remoteCliPairingProvider,
       model: remoteCliPairingModel,
     })
-    localCli = spawnProcess("script", [
-      "-q",
-      "/dev/null",
+    const localCommand = [
       "env",
       "CHARIOX_TEST_TUI=1",
       "bun",
@@ -246,7 +254,11 @@ export async function runHostedRemoteCliPairingAssertions({
       remoteCliPairingEffort,
       "--client-id",
       `hosted-local-pairing-cli-${remoteId}`,
-    ], {
+    ]
+    const localScriptArgs = process.platform === "linux"
+      ? ["-q", "-c", localCommand.map(shellQuote).join(" "), "/dev/null"]
+      : ["-q", "/dev/null", ...localCommand]
+    localCli = spawnProcess("script", localScriptArgs, {
       cwd: repoRoot,
       env: process.env,
       name: "local-cli-pairing",
@@ -271,7 +283,7 @@ export async function runHostedRemoteCliPairingAssertions({
       provider: remoteCliPairingProvider,
       model: remoteCliPairingModel,
     })
-    remoteCli = spawnProcess("ssh", sshArgs(remoteCommand, { tty: true }), {
+    remoteCli = spawnProcess("ssh", sshArgs(`${receiver.environment}; ${remoteCommand}`, { tty: true }), {
       cwd: repoRoot,
       env: process.env,
       name: "remote-cli-pairing",
@@ -398,7 +410,7 @@ export async function runHostedRemoteCliPairingAssertions({
     await terminateChild(localCli)
     await terminateChild(remoteCli)
     await rm(localSocket, { force: true }).catch(() => {})
-    await runSsh(`rm -f ${shellQuote(remoteSocket)}; rm -rf ${shellQuote(remoteWorkspace)}`).catch(() => {})
+    await receiver?.cleanup()
   }
 }
 

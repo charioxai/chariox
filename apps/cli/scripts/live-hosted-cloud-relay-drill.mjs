@@ -237,6 +237,9 @@ async function main() {
 
     if (runRemoteCliPairing) {
       await runHostedRemoteCliPairingAssertions({
+        apiUrl,
+        ownerAccountSlug,
+        ownerAccountId: ownerProfile.accountId,
         requests,
         homeClient: localClient,
         verificationClient: remoteClient,

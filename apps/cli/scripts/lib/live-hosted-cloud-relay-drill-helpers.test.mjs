@@ -7,7 +7,8 @@ import { createCloudDrillClient, loadCloudRelayDrillModules } from "./live-cloud
 import { createHostedCommandDeps, manualCloudDeviceLogin } from "./live-hosted-cloud-relay-drill-helpers.mjs"
 import { assert as drillAssert, cleanupHostedCloudTerminal, connectSessionScopedCloudClient, installSendRetry, terminateChild, unwrap } from "./live-hosted-cloud-relay-drill-helpers.mjs"
 import { runHostedMultiUserAssertions } from "./hosted-cloud-multi-user-scenarios.mjs"
-import { runHostedRemoteCliAssertions } from "./hosted-cloud-remote-cli-scenarios.mjs"
+import net from "node:net"
+import { runHostedRemoteCliAssertions, runHostedRemoteCliPairingAssertions } from "./hosted-cloud-remote-cli-scenarios.mjs"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { fileURLToPath } from "node:url"
@@ -237,3 +238,46 @@ test("MP-08 / MP-10 / MP-11: receiver device login feeds actual CLI pairing boot
   assert.equal(logouts, 1)
   assert.deepEqual(calls, ["/auth/device/start", "/auth/device/poll", "/relay/token", "/auth/logout"])
 })
+
+
+test("MP-08 / MP-10 / MP-11: real-provider pairing prepares its own receiving CLIENT and cleans it on launch failure", async () => {
+  let prepared = false, cleaned = false, command, server;
+  try {
+    await assert.rejects(runHostedRemoteCliPairingAssertions({
+      requests: modules.requests,
+      homeClient: {send: async () => ({TerminalPairingLinkCreated: {pairing: {pairing_link: "synthetic-pairing", terminal_id: "terminal"}}})},
+      workspace: "/workspace", kernelUrl: "ws://local", cliRoot: "/cli", repoRoot: "/repo",
+      remoteCliRepo: "/receiver", remoteCliHost: "receiver", remoteCliPairingProvider: "opencode",
+      remoteCliPairingModel: "opencode-go/gpt-5.6-luna", remoteCliPairingEffort: "default",
+      apiUrl: "https://cloud.test", ownerAccountSlug: "owner", ownerAccountId: "account",
+      log: () => {}, assert, unwrap, shellQuote: value => `'${value}'`,
+      sshArgs: value => {command = value; return []},
+      runSsh: async () => ({code: 0}), terminateChild: async () => {},
+      spawnProcess: (program, args) => {
+        if (program === "ssh") throw new Error("synthetic remote launch boundary");
+        const socket = process.platform === "linux"
+          ? args[2].match(/'--automation-socket' '([^']+)'/)[1]
+          : args[args.indexOf("--automation-socket") + 1];
+        server = net.createServer(connection => connection.on("data", chunk => {
+          const request = JSON.parse(chunk.toString());
+          connection.write(JSON.stringify({id: request.id, ok: true,
+            data: {session: {id: "session", focusedAgentId: "agent"}}}) + "\n");
+        })).listen(socket);
+        return {};
+      },
+      prepareRemoteTerminal: async options => {
+        prepared = true;
+        assert.equal(options.apiUrl, "https://cloud.test");
+        assert.equal(options.ownerAccountId, "account");
+        assert.match(options.remoteRoot, /^\/var\/tmp\/chariox-kauthval-hosted-remote-cli-\d+-\d+$/);
+        return {environment: "export CHARIOX_HOME='/isolated-pairing-receiver'",
+          cleanup: async () => {cleaned = true}};
+      },
+    }), /synthetic remote launch boundary/);
+    assert.equal(prepared, true);
+    assert.equal(cleaned, true);
+    assert.match(command, /CHARIOX_HOME='\/isolated-pairing-receiver'/);
+    assert.match(command, /--terminal-pairing-link 'synthetic-pairing'/);
+    assert.doesNotMatch(command, /--relay-token/);
+  } finally { await new Promise(resolve => server ? server.close(resolve) : resolve()); }
+});
