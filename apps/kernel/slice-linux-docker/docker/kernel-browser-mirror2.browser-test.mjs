@@ -847,3 +847,15 @@ test("MP-10: residue 2.5-16 an open shadow root attached late to an ordinary (no
     const shadow = rows(children.nodes).length ? children.nodes : [];
     assert(JSON.stringify(shadow).includes("shadow text") && children.nodes.some(row => row[2] === 2), `MP-10: the shadow root and its content travel (${JSON.stringify(children)})`);
   }));
+
+test("MP-11: every Vault-filled non-password field is masked like the pixel path (month, date, tel, textarea); a filled password field is not a mask", () => mirrored(
+  '<form><input id="m" type="month" value="2031-04"><input id="d" type="date" value="2031-04-30"><input id="t" type="tel" value="5550100"><textarea id="a">note1234</textarea><input id="p" type="password" value="pw998877"><p>after</p></form>', async ({ next, host }) => {
+    const tab = [...host.tabs.values()][0], { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+    const { root } = await connection.send("DOM.getDocument", { depth: 0 }, sessionId), targets = [];
+    for (const id of ["m", "d", "t", "a", "p"]) { const { nodeId } = await connection.send("DOM.querySelector", { nodeId: root.nodeId, selector: `#${id}` }, sessionId); const { node } = await connection.send("DOM.describeNode", { nodeId }, sessionId); targets.push({ kind: "browser", target_id: tab.target_id, document_id: tab.document_id, node_ref: `backend:${node.backendNodeId}` }); }
+    await host.protect({ values: ["2031-04", "2031-04-30", "5550100", "note1234", "pw998877"], targets });
+    const packet = await next(0, true), wire = JSON.stringify(packet);
+    assert.equal(packet.nodes.filter(row => row[2] === 4).length, 4, "MP-11: month, date, tel and textarea are masks");
+    for (const value of ["2031-04", "5550100", "note1234", "pw998877"]) assert(!wire.includes(value), `MP-11: ${value} never travels`);
+    assert(rows(packet.nodes).some(r => r.tag === "input" && r.attrs.id === "p" && /^•+$/.test(r.form?.value)), "MP-11: the password field stays a field showing dots");
+  }));

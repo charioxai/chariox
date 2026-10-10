@@ -79,7 +79,6 @@ export function installMirror2(sanitizeMirrorCss) {
     // Owner rule (MP-11, 2026-10-09): mask only the fields the kernel filled from
     // the Vault, and only while they are plain text fields (a password field shows
     // dots; its value never leaves). No page-text, attribute or CSS value scanning.
-    const PLAIN = new Set('text search email url number tel'.split(' '));
     let serial = 0, targets = new WeakSet(), records = [], overflow = false, revision = 0;
     const ids = new WeakMap(), nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map(), resOf = new Map();
     const styleNodes = new Map(), roots = new Map(), pendingHosts = new Map(), foreign = new Set(), shapes = new Map();
@@ -134,7 +133,8 @@ export function installMirror2(sanitizeMirrorCss) {
     // Layout size (untransformed: the mirrored DOM applies the same transforms); SVG/text boxes use the rendered box.
     const layoutSize = node => node.nodeType === 1 && node.offsetWidth !== undefined ? [node.offsetWidth, node.offsetHeight] : (node.nodeType === 1 ? box(node) : textBox(node)).slice(2);
     const textBox = node => { const range = node.ownerDocument.createRange(); range.selectNodeContents(node); const r = range.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
-    const plainText = node => node.localName === 'input' ? PLAIN.has(node.type) : node.localName === 'textarea' || node.isContentEditable;
+    // Every non-password input counts, as on the pixel path (a filled month/date shows its value too).
+    const plainText = node => node.localName === 'input' ? node.type !== 'password' : node.localName === 'textarea' || node.isContentEditable;
     const secretElement = node => targets.has(node) && plainText(node);
     const listened = new WeakSet(), listening = new AbortController();
     // Loaded resource URLs: a PerformanceObserver still sees entries once the page's
