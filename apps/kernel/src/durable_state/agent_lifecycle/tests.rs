@@ -2947,3 +2947,30 @@ fn a02_requested_reply_survives_deferred_and_rejected_idle_delivery() {
         assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
     }
 }
+
+// MP-08/MP-10/MP-11 G02: a pre-I/O admission failure retains a retryable wait.
+#[test]
+fn a02_g02_pre_io_failure_does_not_fabricate_uncertain_delivery() {
+    let f = Fixture::new();
+    let e = waiting_with_deadline_wake(&f);
+    let failure = Err(error("provider run ended before enqueue"));
+    let state = delivery_attempt_receipt_state(false, &failure, true);
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: e.sequence,
+        state: state.into(),
+        now: 6,
+    });
+    assert_eq!(
+        f.store.agent_inbox("room", "parent", 0).unwrap()[0].state,
+        "pending"
+    );
+    assert_eq!(f.task().state, ExecutionState::Waiting);
+    assert_eq!(f.task().no_progress_wakes, 0);
+    assert_eq!(
+        delivery_attempt_receipt_state(true, &failure, true),
+        "uncertain",
+        "an admitted I/O boundary still forbids replay"
+    );
+}

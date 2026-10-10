@@ -108,21 +108,54 @@ impl KernelRuntimeState {
                 serde_json::json!({"wake_id":wake.id,"registration_id":wake.registration_id,"first_fire_at_ms":wake.next_due_ms,"interval_ms":interval,"scheduler_confirmed":verified.is_some(),"verified_at_ms":verified})
             }
             "chariox.events.process" => {
+                let agent = self.owned.agent_store.get_agent(&task.agent_id)?;
+                if agent.remote_execution().is_some() {
+                    let argv: Vec<String> = serde_json::from_value(args["argv"].clone())
+                        .ok()
+                        .filter(|a: &Vec<String>| {
+                            !a.is_empty()
+                                && a.len() <= 64
+                                && !a[0].is_empty()
+                                && a.iter()
+                                    .all(|s| s.len() <= 4096 && !s.chars().any(char::is_control))
+                        })
+                        .ok_or_else(|| ledger::error("argv of 1-64 arguments required"))?;
+                    let pattern = args["match_text"].as_str().map(metadata);
+                    if pattern
+                        .as_ref()
+                        .is_some_and(|p| p.is_empty() || p.len() > 200)
+                    {
+                        return Err(ledger::error("match_text of 1-200 bytes required"));
+                    }
+                    let mut wake = new_wake(task, "process", label(args)?, now);
+                    wake.command = argv;
+                    wake.match_text = pattern;
+                    let wake = self
+                        .start_home_leased_process(
+                            wake,
+                            args["cwd"].as_str().map(str::to_string),
+                            &task.task_id,
+                            &task.prompt_id,
+                        )
+                        .await?;
+                    return Ok(
+                        serde_json::json!({"wake_id":wake.id,"registration_id":wake.registration_id,"pid":wake.pid,"verified_at_ms":wake.verified_at_ms,"execution":"leased_worker"}),
+                    );
+                }
                 if !cfg!(target_os = "linux") {
                     return Err(ledger::error("watched processes require Linux process-group ownership verification on this release"));
                 }
-                // Only an agent that may already run any command unattended,
-                // locally, can ask the kernel to run one for it.
-                let agent = self.owned.agent_store.get_agent(&task.agent_id)?;
-                let Some(run) = run.filter(|_| agent.remote_execution().is_none()) else {
-                    return Err(ledger::error("watched processes require a local build agent with unattended command permission; run the command in your own shell instead"));
+                let Some(run) = run else {
+                    return Err(ledger::error(
+                        "watched processes require an active unrestricted build agent",
+                    ));
                 };
                 if run.execution_mode() != crate::provider::AgentExecutionMode::Build
                     || run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
                     || run.write_access_mode()
                         != crate::provider::ProviderWriteAccessMode::Unrestricted
                 {
-                    return Err(ledger::error("watched processes require a local build agent with unattended command permission; run the command in your own shell instead"));
+                    return Err(ledger::error("watched processes require an unrestricted build agent with unattended command permission"));
                 }
                 let root = run
                     .working_directory()
@@ -180,7 +213,7 @@ impl KernelRuntimeState {
                     task: task.task_id.clone(),
                     prompt: Some(task.prompt_id.clone()),
                 })?;
-                let terminated = self.owned.agent_wakes.processes.terminate(id);
+                let terminated = self.cancel_agent_watched_process(id).await?;
                 self.refresh_wake_projection(&task.room_id);
                 let wake = store
                     .agent_wakes(Some(&task.room_id), Some(&task.agent_id))?

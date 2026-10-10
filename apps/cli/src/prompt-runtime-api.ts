@@ -22,7 +22,7 @@ import { expectVariant } from "./ipc-response.js"
 import { launchProviderRun } from "./provider-api.js"
 import { describeCliError } from "./runtime.js"
 import { resizeSessionTerminal } from "./session-runtime-api.js"
-import { resolvePromptRecoveryProviderLaunch } from "@chariox/kernel-client/session-lifecycle-state"
+import { resolveAgentLaunchAccountProfile, resolvePromptRecoveryProviderLaunch } from "@chariox/kernel-client/session-lifecycle-state"
 import {
   expectPromptSubmittedPayload,
   promptSubmissionOutcomeName,
@@ -80,7 +80,7 @@ export async function submitPromptWithRecovery(
       client,
       sessionId,
       recoveryLaunch.launch.provider,
-      options.accountProfile,
+      resolveAgentLaunchAccountProfile(recoveryLaunch.targetAgent, options.accountProfile),
       recoveryLaunch.launch.model,
       recoveryLaunch.launch.effort,
       recoveryLaunch.targetAgentId,

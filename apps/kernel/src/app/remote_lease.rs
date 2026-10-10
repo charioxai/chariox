@@ -11,6 +11,7 @@ use crate::session::CreateSessionRequest;
 
 mod caller_binding;
 mod git_observation;
+mod leased_process;
 mod mcp_availability;
 mod native_provider;
 mod project_environment;

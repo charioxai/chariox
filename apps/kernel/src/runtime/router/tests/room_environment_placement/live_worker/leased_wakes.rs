@@ -1457,3 +1457,88 @@ async fn idle_leased_agent_admits_its_first_turn_after_worker_restart() {
         "the new worker holds the actual first-turn receipt"
     );
 }
+
+// MP-08/MP-09/MP-10/MP-11 A10: supplementary real-relay process source regression.
+#[test]
+fn mp10_a10_leased_process_runs_on_worker_and_only_home_owns_task() {
+    run_test(leased_process_runs_on_worker_and_only_home_owns_task);
+}
+
+async fn leased_process_runs_on_worker_and_only_home_owns_task() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let agent =
+        spawn_on_agent_worker_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
+    run_turn(
+        &fixture,
+        &room,
+        &attachment,
+        &agent,
+        "MP-10 A10 leased watched process",
+    )
+    .await;
+    let store = store(&fixture).await;
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .pop()
+        .unwrap();
+    let run = worker.run_for(&fixture, &agent, &task.prompt_id).await;
+    let token = run.runtime_mcp_auth_token().unwrap().to_string();
+    let result=worker.router.dispatch_authenticated_runtime_tool_call(&token,"chariox.events.process",
+        json!({"task_id":task.task_id,"origin_prompt_id":task.prompt_id,"argv":["/bin/sleep","2"],"label":"MP-10 A10 physical worker source"})).await;
+    let mut settled = None;
+    if let Ok(result) = &result {
+        if let Some(id) = result.payload["wake_id"].as_str() {
+            settled = Some(
+                eventually("home receives the worker's physical exit", || {
+                    store
+                        .agent_wakes(Some(&room), Some(&agent))
+                        .unwrap()
+                        .into_iter()
+                        .find(|w| w.id == id && w.state == "exited")
+                })
+                .await,
+            );
+        }
+    }
+    let worker_tasks = worker
+        .router
+        .app
+        .lock()
+        .await
+        .durable_state_store()
+        .agent_tasks(None, None)
+        .unwrap();
+    let worker_receipts = worker
+        .router
+        .app
+        .lock()
+        .await
+        .durable_state_store()
+        .leased_process_receipts()
+        .unwrap();
+    let home_receipts = store.leased_process_receipts().unwrap();
+    worker.stop().await;
+    fixture.stop().await;
+    assert!(
+        result.is_ok(),
+        "leased process must be admitted at home and executed on worker: {result:?}"
+    );
+    let settled = settled.expect("physical worker exit is projected at home");
+    assert_eq!(settled.exit_code, Some(0));
+    assert!(
+        worker_tasks.is_empty(),
+        "worker process receipt must not create another task authority"
+    );
+    assert_eq!(worker_receipts.len(), 1);
+    assert!(
+        home_receipts.is_empty(),
+        "home must not execute the command"
+    );
+    assert!(worker_receipts[0].process_start_ticks.is_some());
+    assert_eq!(worker_receipts[0].wake.id, settled.id);
+}

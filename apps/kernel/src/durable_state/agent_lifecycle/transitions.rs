@@ -2,6 +2,13 @@
 use super::*;
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
+        Operation::LeasedProcess(mutation) => super::leased_processes::apply(tx, mutation),
+        Operation::CreateLeasedWake {
+            task,
+            prompt,
+            wake,
+            binding,
+        } => super::leased_processes::create_home_wake(tx, task, prompt, wake, binding),
         Operation::Begin {
             owner,
             room,

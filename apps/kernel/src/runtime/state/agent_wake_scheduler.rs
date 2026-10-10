@@ -16,13 +16,14 @@ const VERIFY_WAIT_MS: u64 = 5_000;
 const STALL_FAULT_ENV: &str = "CHARIOX_WAKE_SCHEDULER_STALL_FILE";
 
 pub(crate) struct AgentWakeMonitor {
-    started_at_ms: u64,
+    pub(super) started_at_ms: u64,
     scheduler_tick_ms: AtomicU64,
     sweep_ms: AtomicU64,
     scheduler_stall_alerted: AtomicBool,
     sweep_stall_alerted: AtomicBool,
     tick_failure_alerted: AtomicBool,
     stall_fault: Option<PathBuf>,
+    pub(super) leased_polls: std::sync::Mutex<BTreeSet<String>>,
     pub(super) processes: super::agent_process_watch::WatchedProcesses,
 }
 
@@ -37,6 +38,7 @@ impl AgentWakeMonitor {
             tick_failure_alerted: AtomicBool::new(false),
             stall_fault: std::env::var_os(STALL_FAULT_ENV).map(PathBuf::from),
             processes: Default::default(),
+            leased_polls: Default::default(),
         }
     }
 }
@@ -83,7 +85,13 @@ fn iso(ms: u64) -> String {
 impl KernelRuntimeState {
     pub(crate) async fn run_agent_wake_scheduler(&self) {
         let mut recovered = false;
+        let mut worker_recovered = false;
         loop {
+            if !worker_recovered {
+                worker_recovered = self
+                    .recover_worker_leased_processes(crate::session::unix_epoch_ms())
+                    .is_ok();
+            }
             let monitor = &self.owned.agent_wakes;
             let paused = monitor.stall_fault.as_ref().is_some_and(|p| p.exists());
             if !paused
@@ -133,6 +141,13 @@ impl KernelRuntimeState {
     /// Fires due wakes and (from the scheduler only) arms new ones.
     async fn tick_agent_wakes(&self, now: u64, verify: bool) -> Result<(), DaemonError> {
         let store = &self.owned.durable_state_store;
+        for wake in store.agent_wakes(None, None)? {
+            if matches!(wake.state.as_str(), "starting" | "running" | "cancelling")
+                && store.leased_wake_binding(&wake.id)?.is_some()
+            {
+                self.ensure_leased_process_poll(&wake);
+            }
+        }
         let timers = store.agent_armed_timers()?;
         if verify && timers.iter().any(|w| w.verified_at_ms.is_none()) {
             store.agent_lifecycle(Operation::VerifyWakes { now })?;
@@ -275,6 +290,11 @@ impl KernelRuntimeState {
                     && matches!(wake.state.as_str(), "starting" | "running" | "cancelling")
                     && wake.created_at_ms < monitor.started_at_ms
                     && !monitor.processes.contains(&wake.id)
+                    && self
+                        .owned
+                        .durable_state_store
+                        .leased_wake_binding(&wake.id)
+                        .is_ok_and(|binding| binding.is_none())
             })
             .collect();
         if lost.is_empty() {

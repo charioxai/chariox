@@ -1032,6 +1032,22 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::LeasedWatchedProcess {
+            leased_agent_id,
+            action,
+        } => match router
+            .relay_leased_watched_process(&leased_agent_id, action)
+            .await
+        {
+            Ok(receipt) => RelayPeerResponse::LeasedWatchedProcess { receipt },
+            Err(error) => {
+                return RelayRequestOutcome {
+                    display_event: None,
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                }
+            }
+        },
         RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id,
             home_prompt_id,
@@ -2503,6 +2519,9 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
             leased_agent_id, ..
         }
         | RelayPeerRequest::SubmitLeasedPrompt {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::LeasedWatchedProcess {
             leased_agent_id, ..
         }
         | RelayPeerRequest::GetLeasedPromptReceipt {

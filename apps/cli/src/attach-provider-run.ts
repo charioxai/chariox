@@ -1,5 +1,6 @@
 import {
   resolveAttachTimeProviderLaunch,
+  resolveAgentLaunchAccountProfile,
   type SessionLifecycleLaunchSelection,
 } from "@chariox/kernel-client/session-lifecycle-state"
 
@@ -83,7 +84,7 @@ export async function settleAttachProviderRun(
           providerRun: await deps.launchProviderRun(
             session.id,
             decision.launch.provider,
-            accountProfile,
+            createdSession ? accountProfile : resolveAgentLaunchAccountProfile(decision.targetAgent, accountProfile),
             decision.launch.model,
             decision.launch.effort,
             decision.targetAgentId,

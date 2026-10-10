@@ -1291,3 +1291,160 @@ fn a03_workflow_run_receipt_admits_a_live_completion_registration() {
         );
     }
 }
+
+// MP-08/MP-10/MP-11 A10: a late retry cannot adopt or relaunch another source.
+#[test]
+fn leased_process_receipts_pin_birth_lease_and_terminal_outcome() {
+    let f = Fixture::new();
+    let wake = f.create("leased-source", "process", None, None);
+    let intent = LeasedProcessReceipt {
+        binding: LeasedProcessBinding {
+            worker_kernel_id: "worker".into(),
+            worker_machine_id: "machine".into(),
+            execution_lease_id: "lease".into(),
+            leased_agent_id: "leased".into(),
+            home_prompt_id: "p".into(),
+            worker_provider_run_id: "run".into(),
+        },
+        wake,
+        command_digest: "command".into(),
+        worker_boot_id: "boot".into(),
+        process_start_ticks: None,
+        matched_line: None,
+        output_tail: String::new(),
+        revision: 1,
+        backing_room: "backing".into(),
+        backing_agent: "executor".into(),
+    };
+    f.apply(Operation::LeasedProcess(LeasedProcessMutation::Intent(
+        intent.clone(),
+    )));
+    let mut running = intent.clone();
+    running.wake.pid = Some(200);
+    running.process_start_ticks = Some(10);
+    running.wake.state = "running".into();
+    f.apply(Operation::LeasedProcess(LeasedProcessMutation::Update {
+        id: running.wake.id.clone(),
+        expected_revision: 1,
+        receipt: running.clone(),
+    }));
+    f.apply(Operation::LeasedProcess(LeasedProcessMutation::Intent(
+        intent.clone(),
+    )));
+    let current = f
+        .store
+        .leased_process_receipt(&intent.wake.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.wake.pid, Some(200));
+    assert_eq!(current.revision, 2);
+    let mut forged = intent.clone();
+    forged.binding.execution_lease_id = "replacement".into();
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::LeasedProcess(LeasedProcessMutation::Intent(
+            forged
+        )))
+        .is_err());
+    let mut forged = current.clone();
+    forged.wake.pid = Some(201);
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::LeasedProcess(LeasedProcessMutation::Update {
+            id: intent.wake.id.clone(),
+            expected_revision: 2,
+            receipt: forged
+        }))
+        .is_err());
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::LeasedProcess(LeasedProcessMutation::Update {
+            id: intent.wake.id.clone(),
+            expected_revision: 1,
+            receipt: current.clone()
+        }))
+        .is_err());
+    let mut lost = current;
+    lost.wake.state = "lost".into();
+    lost.output_tail = "worker source lost".into();
+    f.apply(Operation::LeasedProcess(LeasedProcessMutation::Update {
+        id: intent.wake.id.clone(),
+        expected_revision: 2,
+        receipt: lost,
+    }));
+    f.apply(Operation::LeasedProcess(LeasedProcessMutation::Intent(
+        intent.clone(),
+    )));
+    assert_eq!(
+        f.store
+            .leased_process_receipt(&intent.wake.id)
+            .unwrap()
+            .unwrap()
+            .wake
+            .state,
+        "lost"
+    );
+    assert_eq!(
+        f.store.agent_tasks(None, None).unwrap().len(),
+        1,
+        "execution receipts do not add task authority"
+    );
+}
+
+// MP-08/MP-10/MP-11 A10: late confirmation is limited to the retained leased source.
+#[test]
+fn leased_wait_confirms_its_original_launch_without_granting_local_start_authority() {
+    let f = Fixture::new();
+    let local = f.create("local-source", "process", None, None);
+    let mut leased = local.clone();
+    leased.id = "remote-source".into();
+    leased.registration_id = "completion-remote-source".into();
+    let binding = LeasedProcessBinding {
+        worker_kernel_id: "worker".into(),
+        worker_machine_id: "machine".into(),
+        execution_lease_id: "lease".into(),
+        leased_agent_id: "leased".into(),
+        home_prompt_id: "p".into(),
+        worker_provider_run_id: "run".into(),
+    };
+    f.apply(Operation::CreateLeasedWake {
+        task: "p".into(),
+        prompt: "p".into(),
+        wake: leased.clone(),
+        binding,
+    });
+    f.apply(Operation::Yield {
+        task: "p".into(),
+        prompt: "p".into(),
+        registrations: vec![local.registration_id, leased.registration_id],
+        cursor: 0,
+        deadline: 1000,
+        reason: "both original sources".into(),
+        now: 20,
+    });
+    f.apply(Operation::Settle {
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "p".into(),
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 21,
+    });
+    assert_eq!(f.task().state, ExecutionState::Waiting);
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::ProcessStarted {
+            id: local.id,
+            pid: 200,
+            now: 22
+        })
+        .is_err());
+    f.apply(Operation::ProcessStarted {
+        id: leased.id.clone(),
+        pid: 201,
+        now: 22,
+    });
+    assert_eq!(f.task().state, ExecutionState::Waiting);
+    assert_eq!(f.wake(&leased.id).state, "running");
+}

@@ -448,7 +448,11 @@ impl KernelRuntimeState {
             })
             .transpose()?
             .unwrap_or(false);
-        let state = ledger::delivery_receipt_state(Some(result), structured);
+        let state = ledger::delivery_attempt_receipt_state(
+            event.submit_epoch.is_some(),
+            result,
+            structured,
+        );
         if state != "submitting" {
             self.record_agent_delivery_receipt(
                 &dispatch.session_id,

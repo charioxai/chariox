@@ -226,7 +226,9 @@ impl KernelRuntimeState {
                             first_error.get_or_insert(error);
                             continue;
                         }
-                        self.owned.agent_wakes.processes.terminate(resource);
+                        if let Err(error) = self.cancel_agent_watched_process(resource).await {
+                            first_error.get_or_insert(error);
+                        }
                     }
                     // MP-11 A07: cancellation withdraws the owner popup; a
                     // hand-off already gone settles as lost.
@@ -273,7 +275,9 @@ impl KernelRuntimeState {
                 {
                     first_error.get_or_insert(error);
                 } else {
-                    self.owned.agent_wakes.processes.terminate(&wake.id);
+                    if let Err(error) = self.cancel_agent_watched_process(&wake.id).await {
+                        first_error.get_or_insert(error);
+                    }
                 }
             }
             if !physical_pending && !self.owned.agent_task_resources_unsettled(&task)? {

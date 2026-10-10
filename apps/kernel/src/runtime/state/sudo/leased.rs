@@ -6,7 +6,7 @@ use super::*;
 use crate::transport::relay_peer::{LeasedSudoGrant, RelayPeerRequest, RelayPeerResponse};
 
 /// Peer protocol that carries `UpdateLeasedSudo`; older workers are refused.
-pub(crate) const LEASED_SUDO_PEER_PROTOCOL_VERSION: u32 = 83;
+pub(crate) const LEASED_SUDO_PEER_PROTOCOL_VERSION: u32 = 102;
 /// A worker refusal meaning it lost the window (restart): the home ends it.
 const LEASED_SUDO_LOST: &str = "worker no longer holds this sudo window";
 

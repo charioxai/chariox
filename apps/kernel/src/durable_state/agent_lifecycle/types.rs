@@ -127,6 +127,13 @@ pub struct AgentWake {
 }
 #[derive(Clone)]
 pub(crate) enum Operation {
+    LeasedProcess(super::LeasedProcessMutation),
+    CreateLeasedWake {
+        task: String,
+        prompt: String,
+        wake: AgentWake,
+        binding: super::LeasedProcessBinding,
+    },
     Begin {
         owner: String,
         room: String,
@@ -337,6 +344,7 @@ pub(crate) enum Operation {
 }
 #[derive(Debug)]
 pub(crate) enum Outcome {
+    LeasedProcess(Option<super::LeasedProcessReceipt>),
     Task(AgentTaskExecution),
     Event(InboxEvent),
     Settled {

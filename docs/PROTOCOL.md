@@ -546,6 +546,18 @@ Those lifecycle semantics belong to PR2.
 
 ## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
 
+MP-08 / MP-09 / MP-10 / MP-11 A10: the agent-model union uses local protocol
+493 and relay peer protocol 102. Leased watched processes use the existing
+signed, lease-scoped peer connection. Home owns the task, registration and inbox;
+worker owns a durable launch receipt and the common watched-process supervisor.
+Start is pinned to the current home prompt, worker run, placement and lease.
+Queries and cancellation retain that exact launch identity across turns. A lost
+Start response is reconciled by query, never by another execution. Worker restart
+or lost supervision produces source loss; a persisted PID is not a live handle.
+Older workers fail admission before creating a launch. Kernel-managed cwd,
+permission approval, output protection and pinned process signals apply on worker.
+
+
 With `CHARIOX_ROOM_AGENT_TOOLS=1`, local protocol 452 projects independent
 `agent_tasks` in the shared session snapshot. The kernel owns their SQLite
 ledger, attributed inbox, obligations and exact provider acceptance receipts.

@@ -7,7 +7,7 @@ use crate::session::{
 };
 
 impl KernelRuntimeState {
-    pub(super) async fn approve_agent_process(
+    pub(in crate::runtime::state) async fn approve_agent_process(
         &self,
         run: &crate::provider::RuntimeProviderRun,
         wake: &AgentWake,

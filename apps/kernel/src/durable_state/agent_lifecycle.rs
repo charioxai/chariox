@@ -2,6 +2,9 @@
 //! No provider I/O occurs here. Intent commits precede every dispatch.
 mod delegation;
 mod delivery;
+mod leased_processes;
+pub(crate) use leased_processes::LeasedProcessMutation;
+pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
 mod migration;
 mod quarantine;
 mod replies;
@@ -73,6 +76,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
             .map_err(sql)?;
     }
     wakes::initialize(db)?;
+    leased_processes::initialize(db)?;
     workflow_tasks::initialize(db)?;
     migration::migrate(db)
 }
@@ -570,6 +574,19 @@ pub(crate) fn delivery_receipt_state(
         Some(Ok(true)) => "accepted",
         Some(Ok(false) | Err(DaemonError::ProviderPromptSteerRejected { .. })) | None => "rejected",
         Some(Err(_)) => "uncertain",
+    }
+}
+
+/// MP-08/MP-10/MP-11 G02: classify against the durable provider-I/O fence.
+pub(crate) fn delivery_attempt_receipt_state(
+    bound_to_provider_io: bool,
+    result: &Result<bool, DaemonError>,
+    structured: bool,
+) -> &'static str {
+    if !bound_to_provider_io && result.is_err() {
+        "rejected"
+    } else {
+        delivery_receipt_state(Some(result), structured)
     }
 }
 

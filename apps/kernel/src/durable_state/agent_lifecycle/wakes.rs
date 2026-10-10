@@ -379,7 +379,20 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Err(error("process start receipt does not match its intent"));
             }
             let mut t = load(tx, &wake.task_id)?;
-            if t.state != ExecutionState::Working {
+            // MP-08/MP-10/MP-11 A10: a delayed worker receipt confirms an
+            // already authorized launch retained by this exact wait, never a new launch.
+            let retained_leased_wait = t.state == ExecutionState::Waiting
+                && t.wait
+                    .as_ref()
+                    .is_some_and(|wait| wait.registration_ids.contains(&wake.registration_id))
+                && tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM agent_leased_wake_bindings WHERE id=?1)",
+                        [&id],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(sql)?;
+            if t.state != ExecutionState::Working && !retained_leased_wait {
                 return Err(error(
                     "process start authority ended; physical cancellation must settle",
                 ));

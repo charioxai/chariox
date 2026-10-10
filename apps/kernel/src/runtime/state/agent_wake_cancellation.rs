@@ -21,6 +21,15 @@ impl KernelRuntimeOwnedState {
                 "Wake alert: armed wakes could not be retired from the durable ledger during teardown; watched processes are still stopped",
             );
         }
+        // Worker receipt sources share the same guarded supervisor and teardown.
+        if let Ok(receipts) = store.leased_process_receipts() {
+            for receipt in receipts
+                .into_iter()
+                .filter(|r| r.backing_room == room && agent.is_none_or(|a| a == r.backing_agent))
+            {
+                self.agent_wakes.processes.terminate(&receipt.wake.id);
+            }
+        }
         match store.agent_wakes(Some(room), agent) {
             Ok(wakes) => {
                 for wake in wakes.iter().filter(|w| w.kind == "process") {

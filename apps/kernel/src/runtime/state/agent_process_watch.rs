@@ -291,11 +291,13 @@ impl KernelRuntimeState {
         }
         let _admission = self.owned.begin_managed_activity_admission()?;
         let store = &self.owned.durable_state_store;
-        store.agent_lifecycle(Operation::CreateWake {
-            task: task.into(),
-            prompt: prompt.into(),
-            wake: wake.clone(),
-        })?;
+        if store.leased_process_receipt(&wake.id)?.is_none() {
+            store.agent_lifecycle(Operation::CreateWake {
+                task: task.into(),
+                prompt: prompt.into(),
+                wake: wake.clone(),
+            })?;
+        }
         if let Err(error) = self.authorize_current_external_command() {
             self.settle_failed_process_launch(
                 &wake,
@@ -342,7 +344,14 @@ impl KernelRuntimeState {
         let output = Arc::new(Output::default());
         let protection = self.owned.room_secret_observations.clone();
         let room = wake.room_id.clone();
-        let protect = room_protector(protection, room);
+        let protect = room_protector(
+            protection,
+            if store.leased_process_receipt(&wake.id)?.is_some() {
+                run.session_id().to_string()
+            } else {
+                room
+            },
+        );
         let readers = [
             child
                 .stdout
@@ -377,7 +386,7 @@ impl KernelRuntimeState {
                 }
             },
         ));
-        let started = store.agent_lifecycle(Operation::ProcessStarted {
+        let started = self.apply_agent_process_receipt(Operation::ProcessStarted {
             id: wake.id.clone(),
             pid,
             now: crate::session::unix_epoch_ms(),
@@ -560,7 +569,7 @@ impl KernelRuntimeState {
     ) -> crate::durable_state::agent_lifecycle::Outcome {
         let mut alerted = false;
         loop {
-            match self.owned.durable_state_store.agent_lifecycle(op.clone()) {
+            match self.apply_agent_process_receipt(op.clone()) {
                 Ok(outcome) => return outcome,
                 Err(_) => {
                     if !alerted {
