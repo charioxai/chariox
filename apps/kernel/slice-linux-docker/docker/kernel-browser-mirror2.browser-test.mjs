@@ -569,3 +569,19 @@ test("MP-10: review #941-2 a select that becomes multiple (and back) keeps every
       assert.deepEqual(viewer(), expected, `MP-10: the viewer matches the source after ${script}`);
     }
   }));
+
+test("MP-10: review #941-3 an adopted stylesheet keeps its media condition (snapshot nonmatching, later matching and nonmatching; document and shadow root): viewer colors match the source", () => mirrored(
+  '<p id="d">doc</p><div id="h"></div><script>const mk=(t,media)=>{const s=new CSSStyleSheet({media});s.replaceSync(t);return s};window.theme=mk("p{color:rgb(255, 0, 0)}","print");document.adoptedStyleSheets=[mk("p{color:rgb(0, 0, 255)}"),theme];const r=document.getElementById("h").attachShadow({mode:"open"});r.innerHTML="<p>s</p>";window.itheme=mk("p{color:rgb(255, 0, 0)}","print");r.adoptedStyleSheets=[mk("p{color:rgb(0, 128, 0)}"),itheme]</script>', async ({ next, evaluate }) => {
+    const roots = adoptedRoots(await next());
+    const source = () => evaluate('[getComputedStyle(document.getElementById("d")).color,getComputedStyle(document.getElementById("h").shadowRoot.firstChild).color]');
+    assert.deepEqual(await source(), ["rgb(0, 0, 255)", "rgb(0, 128, 0)"]);
+    assert.deepEqual(await adoptedColors(evaluate, [...roots.values()]), await source(), "MP-10: print-only sheets are inactive in the viewer");
+    for (const [script, expected] of [["theme.media.mediaText='screen';itheme.media.appendMedium('all')", ["rgb(255, 0, 0)", "rgb(255, 0, 0)"]], ["theme.media.mediaText='print';itheme.media.mediaText='(max-width: 10px)'", ["rgb(0, 0, 255)", "rgb(0, 128, 0)"]]]) {
+      await evaluate(`${script};true`);
+      assert.deepEqual(await source(), expected);
+      const ops = [];
+      for (let i = 0; i < 4 && ops.length < 2; i++) ops.push(...(await next(1500)).ops.filter(op => op.op === "adopted"));
+      for (const op of ops) roots.set(op.id, op.sheets);
+      assert.deepEqual(await adoptedColors(evaluate, [...roots.values()]), expected, `MP-10: the viewer follows ${script}`);
+    }
+  }));

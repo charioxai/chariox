@@ -216,12 +216,12 @@ export function installMirror2(sanitizeMirrorCss) {
       if (!Object.keys(changed).length) return;
       sentForms.set(node, form); ops.push({ op: 'form', id, form: changed });
     };
-    // Adopted sheets have no mutation records: identity + rule count + disabled state each drain,
-    // and their rule text on the periodic full check (replaceSync, rule edits).
-    // A disabled sheet keeps its ordered slot as an empty sheet.
+    // Adopted sheets have no mutation records: identity + rule count + disabled state + media each
+    // drain, and their rule text on the periodic full check (replaceSync, rule edits).
+    // A disabled sheet keeps its ordered slot as an empty sheet; a sheet's media list is its @media condition.
     const sheetIds = new WeakMap(), adoptedTexts = new WeakMap(); let sheetSerial = 0;
-    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base); adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sanitizeMirrorCss(text, base, resource)); } catch { sheets.push(''); } } return sheets; };
-    const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { let id = sheetIds.get(sheet); if (!id) sheetIds.set(sheet, id = ++sheetSerial); return `${id}:${sheetSignature(sheet)}`; }).join(',');
+    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base), media = sheet.media.mediaText; adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sanitizeMirrorCss(media ? `@media ${media}{${text}}` : text, base, resource)); } catch { sheets.push(''); } } return sheets; };
+    const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { let id = sheetIds.get(sheet); if (!id) sheetIds.set(sheet, id = ++sheetSerial); return `${id}:${sheetSignature(sheet)}:${sheet.media.mediaText}`; }).join(',');
     const adoptedEdited = () => {
       const edited = new Map(), out = new Set();
       for (const [id, root] of roots) for (const sheet of root.adoptedStyleSheets ?? []) {
