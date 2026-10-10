@@ -510,8 +510,10 @@ remove_release_override() {
 # MP-07/MP-10/MP-11: observation failure never changes release settlement.
 record_diagnostic_phase() {
   if [ -n "${CHARIOX_RUNTIME_DIAGNOSTICS_DIR:-}" ]; then
-    python3 "$script_root/runtime-diagnostics.py" event \
-      --directory "$CHARIOX_RUNTIME_DIAGNOSTICS_DIR" --event "$1" >/dev/null 2>&1 || :
+    if ! python3 "$script_root/runtime-diagnostics.py" event \
+      --directory "$CHARIOX_RUNTIME_DIAGNOSTICS_DIR" --event "$1" >/dev/null 2>&1; then
+      echo "managed kernel upgrade diagnostic event publication failed" >&2
+    fi
   fi
 }
 
