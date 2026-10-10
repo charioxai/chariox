@@ -260,9 +260,30 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
             .strip_prefix("This session is being continued from a previous conversation that ran out of context.")
             .and_then(|body| body.trim_start().strip_prefix("The summary below covers the earlier portion of the conversation."))
             .is_some_and(|body| body.trim_start().starts_with("Summary:"));
-        text == "[Request interrupted by user]"
+        self.user_prompt_is_compaction_control(text)
+            || text == "[Request interrupted by user]"
             || (text.starts_with("<task-notification>") && text.ends_with("</task-notification>"))
             || continuation
+    }
+
+    pub(crate) fn user_prompt_is_compaction_control(self, text: &str) -> bool {
+        if !self.provider.trim().eq_ignore_ascii_case("claude") {
+            return false;
+        }
+        let text = text.trim();
+        let command = text
+            .strip_prefix("<command-name>/compact</command-name>")
+            .and_then(|body| {
+                body.trim_start()
+                    .strip_prefix("<command-message>compact</command-message>")
+            })
+            .and_then(|body| body.trim_start().strip_prefix("<command-args>"))
+            .is_some_and(|body| body.ends_with("</command-args>"));
+        let output = text
+            .strip_prefix("<local-command-stdout>")
+            .and_then(|body| body.strip_suffix("</local-command-stdout>"))
+            .is_some_and(|body| body.trim() == "Compacted");
+        command || output
     }
 
     pub(crate) fn status_settles(self, text: &str) -> bool {
