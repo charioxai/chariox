@@ -409,9 +409,11 @@ fn enqueue_dynamic_relay_reconnect_if_changed(
     config: &crate::config::DaemonConfig,
 ) -> Result<RelayReconnectDecision, DaemonError> {
     match relay_config_continuity(active_relay_url, active_relay_token, config) {
-        RelayConfigContinuity::Continue => Ok(RelayReconnectDecision::Unchanged),
-        RelayConfigContinuity::Reauthenticate => {
-            defer_or_enqueue_relay_close(outgoing_tx, reconnect_gate, "relay token changed")
+        // The connector reauthenticates token renewal with DaemonHeartbeat on
+        // this socket. An incoming request must not race that registration by
+        // closing the peer connection immediately after its response.
+        RelayConfigContinuity::Continue | RelayConfigContinuity::Reauthenticate => {
+            Ok(RelayReconnectDecision::Unchanged)
         }
         RelayConfigContinuity::Reconnect(reason) => {
             defer_or_enqueue_relay_close(outgoing_tx, reconnect_gate, reason)
@@ -474,8 +476,53 @@ fn test_peer_response_kind(
 mod tests {
     use super::*;
 
+    // MP-08 / MP-10 / MP-11: token renewal must reuse existing heartbeat reauthentication.
     #[test]
-    fn dynamic_relay_reconnect_waits_for_in_flight_daemon_response() {
+    fn renewed_token_never_closes_the_socket_after_an_inflight_peer_response() {
+        let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(2);
+        let gate = RelayReconnectGate::default();
+        assert!(gate.begin_daemon_request());
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".into());
+        config.relay_token = Some("renewed-test-only-token".into());
+        assert_eq!(
+            enqueue_dynamic_relay_reconnect_if_changed(
+                &outgoing_tx,
+                &gate,
+                "wss://relay.example.test",
+                "old-test-only-token",
+                &config
+            )
+            .unwrap(),
+            RelayReconnectDecision::Unchanged,
+            "the connector already sends renewed authorization in DaemonHeartbeat"
+        );
+        send_outgoing_envelope(
+            &outgoing_tx,
+            RelayEnvelope::DaemonIncomingPeerResponse {
+                relay_request_id: "profile-control-test".into(),
+                encrypted_response: None,
+                error: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(gate.finish_daemon_request(&outgoing_tx).unwrap(), None);
+        assert!(matches!(
+            priority_rx.try_recv(),
+            Ok(RelayEnvelope::DaemonIncomingPeerResponse { .. })
+        ));
+        assert!(
+            priority_rx.try_recv().is_err(),
+            "renewal must never queue Close after the reply"
+        );
+        assert!(
+            gate.begin_daemon_request(),
+            "following peer control remains admissible"
+        );
+        assert_eq!(gate.finish_daemon_request(&outgoing_tx).unwrap(), None);
+    }
+    #[test]
+    fn dynamic_relay_url_change_reconnect_waits_for_in_flight_daemon_response() {
         let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(2);
         let reconnect_gate = RelayReconnectGate::default();
         assert!(reconnect_gate.begin_daemon_request());
@@ -489,7 +536,7 @@ mod tests {
         )
         .expect("peer response should enqueue");
         let mut config = crate::config::DaemonConfig::for_tests();
-        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_url = Some("wss://replacement-relay.example.test".to_string());
         config.relay_token = Some("new-token".to_string());
 
         let reason = enqueue_dynamic_relay_reconnect_if_changed(
@@ -503,7 +550,7 @@ mod tests {
 
         assert_eq!(
             reason,
-            RelayReconnectDecision::Deferred("relay token changed")
+            RelayReconnectDecision::Deferred("relay url or token missing changed")
         );
         assert!(matches!(
             priority_rx.try_recv(),
@@ -525,7 +572,7 @@ mod tests {
             .expect("deferred reconnect should enqueue")
             .expect("last daemon response should release deferred reconnect");
 
-        assert_eq!(deferred_reason, "relay token changed");
+        assert_eq!(deferred_reason, "relay url or token missing changed");
         assert!(matches!(
             priority_rx.try_recv(),
             Ok(RelayEnvelope::DaemonResponse { .. })
@@ -537,11 +584,11 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_relay_reconnect_is_immediate_without_active_daemon_requests() {
+    fn dynamic_relay_url_change_reconnect_is_immediate_without_active_daemon_requests() {
         let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let reconnect_gate = RelayReconnectGate::default();
         let mut config = crate::config::DaemonConfig::for_tests();
-        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_url = Some("wss://replacement-relay.example.test".to_string());
         config.relay_token = Some("new-token".to_string());
 
         let decision = enqueue_dynamic_relay_reconnect_if_changed(
@@ -555,7 +602,7 @@ mod tests {
 
         assert_eq!(
             decision,
-            RelayReconnectDecision::Queued("relay token changed")
+            RelayReconnectDecision::Queued("relay url or token missing changed")
         );
         assert!(matches!(
             priority_rx.try_recv(),
