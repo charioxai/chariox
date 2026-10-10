@@ -117,3 +117,47 @@ hosted Settings revocation, actual receiving TUI/default SDK refusal and the
 DPR 1/2 two-hour renewal gate require separate live evidence.
 
 MP-08 / MP-10 / MP-11: Cloud terminal pairing uses the receiving CLIENT identity (`cli:<public-key-thumbprint>`) for its join and renewal. The invitation terminal label does not replace that identity. Self-hosted terminal labels retain their existing behavior.
+
+## MP-08 / MP-10 / MP-11 fresh receiving CLIENT acceptance (protocol 496)
+
+Current ownership and provider-portability requests require local protocol 496;
+relay peers use protocol 105. The earlier protocol numbers above describe
+historical implementation checkpoints. Acceptance receipts must identify the
+actual kernel, relay, compiled CLI and Cloud sources, along with binary hashes.
+A protocol match alone does not establish source provenance.
+
+Run receiving-terminal cells on a fresh, separate Linux machine with its own
+CLIENT profile. Transfer public client assets only; leave provider credentials
+on their execution kernels. Verify the receiver's approved SSH host pin before
+access. Use a compatible public Node distribution for the login helper: copying
+a distribution's small `/usr/bin/node` launcher also requires its matching
+`libnode` and dependencies and is insufficient as a portable client kit. Verify
+archive and payload checksums, then run each installed runtime on the receiver.
+Keep disposable profiles and temporary files outside source checkouts.
+
+The real-provider pairing scenario in
+`apps/cli/scripts/lib/hosted-cloud-remote-cli-scenarios.mjs` prepares an independent
+receiving CLIENT through `prepareHostedRemoteTerminal`. Preserve a fail-first
+run of the earlier scenario without that preparation, then require normal
+browser device approval and successful attachment using the real compiled TUI.
+An owner's key-bound grant must never be copied into the receiving profile.
+
+`OWN-TUI-2H` requires two uninterrupted hours through hosted WSS under the
+campaign's 8 Mbit/s uplink and at least 60 ms RTT. Keep the original command and
+event sockets, the session identity, and the receiving key stable. Drive real
+provider turns from the TUI and the real Web entry at DPR 1 and 2 after 20, 60
+and 100 minutes. For public-document tasks, verify completed provider-tool
+history as well as the visible reply. Record socket closures and replacements,
+console output, screenshots, latency measurements and resource samples. Prompt
+composer feedback is a separate metric from provider latency and browser
+mirroring performance.
+
+After the soak, revoke only the disposable receiving CLIENT through Settings.
+Require its TUI to retire within the existing 420-second grant bound, deny a
+fresh pairing with its cached CLIENT authority, and prove both kernels and
+owner Web/provider work survive. Independently signed-in nonowners must neither
+enumerate owner kernels nor attach with an owner pairing link. End the sessions,
+log out disposable CLIENT profiles, unlink disposable kernels, stop every
+owned process and stack, remove shaping and peer allowances, and record cleanup
+before releasing the receiver. Rental expiry is a hard stop; a shortened run
+does not pass `OWN-TUI-2H`.
