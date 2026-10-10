@@ -21,6 +21,17 @@ import type {
   WaitingRoomState,
 } from "./waiting-room-types.js"
 
+test("MP-08 / MP-11 existing slice activation uses worker-owned authentication", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: { action: "create", launch: { provider: "codex", model: "gpt-5.4", effort: "low", accountProfile: "same-profile", sliceRef: "slice-existing" } },
+    remoteState: { providerAccounts: [{ provider: "codex", profile_id: "same-profile", label: "Source signed out", is_default: true, auth_state: "not_configured" }] },
+  })
+  await harness.controller.activate()
+  assert.equal(harness.createdLaunches.length, 1)
+  assert.equal(harness.createdLaunches[0]?.launch.sliceRef, "slice-existing")
+})
+
 test("waiting room activation connects detached kernel before control actions", async () => {
   const harness = createHarness({
     kernelConnected: false,

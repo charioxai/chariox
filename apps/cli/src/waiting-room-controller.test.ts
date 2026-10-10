@@ -56,6 +56,30 @@ test("MP-08/MP-11 TUI blocks unsigned default while offering the signed-in accou
   }
 })
 
+test("MP-08 / MP-11 existing slice launch defers authentication to its worker", () => {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace", currentWorktreePath: "/workspace",
+    options: [{ id: "existing:/workspace", kind: "existing", label: "main", path: "/workspace", branch: "main", isCurrent: true }],
+  })
+  try {
+    const catalog = fallbackProviderCatalog()
+    const state = { ...waitingRoomState(), providerId: "codex" as const, accountProfileId: "home-default", sliceSelectionId: "slice-existing" }
+    const remote = {
+      providerAccounts: [{ provider: "codex", profile_id: "home-default", label: "Home", is_default: true, auth_state: "not_configured" }] as ProviderAccountProfile[],
+      slices: [slice("slice-existing", "Existing")],
+    }
+    const options = { state, catalog, remote, currentProvider: "codex" as const, currentModel: "gpt-5.4" }
+    for (const decision of [deriveWaitingRoomCreateSessionDecision(options), deriveWaitingRoomActivationDecision({ ...options, sessions: [] })]) {
+      assert.equal(decision.action, "create")
+      if (decision.action === "create") assert.equal(decision.launch.sliceRef, "slice-existing")
+    }
+    assert.deepEqual(deriveWaitingRoomControlActivationDecision({ state, remote, workspacePath: "/workspace", worktreePath: "/workspace" }), { action: "none" })
+    // A new slice still needs the source credentials that will be materialized.
+    assert.equal(deriveWaitingRoomCreateSessionDecision({ ...options, state: { ...state, sliceSelectionId: "new" } }).action, "error")
+    assert.equal(deriveWaitingRoomCreateSessionDecision({ ...options, state: { ...state, sliceSelectionId: "none" } }).action, "error")
+  } finally { __setWaitingRoomWorktreeInventoryForTest(null) }
+})
+
 test("waiting room activation stages existing worktree selections for session creation", async () => {
   __setWaitingRoomWorktreeInventoryForTest({
     workspacePath: "/workspace",

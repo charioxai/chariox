@@ -14,7 +14,7 @@ import {
 } from "./waiting-room-remote-rows.js"
 import { waitingRoomLaunchPlacement } from "@chariox/kernel-client/waiting-room-runtime-placement"
 import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
-import { waitingRoomSliceSelectionUnavailable, waitingRoomSlices } from "./waiting-room-slices.js"
+import { waitingRoomSliceSelectionUnavailable, waitingRoomSelectedSlice, waitingRoomSlices } from "./waiting-room-slices.js"
 import { normalizeWaitingRoomState } from "./waiting-room-state.js"
 import { cycleWaitingRoomValue } from "./waiting-room-value-cycling.js"
 import {
@@ -324,7 +324,7 @@ export function deriveWaitingRoomActivationDecision(options: {
     if (typeof managedEnvironment === "string") {
       return { action: "error", message: managedEnvironment }
     }
-    const accountBlock = managedEnvironment ? null : selectedProviderAccountStartBlockReason(
+    const accountBlock = managedEnvironment || choice.sliceRef ? null : selectedProviderAccountStartBlockReason(
       options.remote?.providerAccounts, launch.provider, launch.accountProfile, null, launch.model,
     )
     if (accountBlock) return { action: "error", message: accountBlock }
@@ -370,7 +370,7 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
   if (typeof managedEnvironment === "string") {
     return { action: "error", message: managedEnvironment }
   }
-  const accountBlock = managedEnvironment ? null : selectedProviderAccountStartBlockReason(
+  const accountBlock = managedEnvironment || choice.sliceRef ? null : selectedProviderAccountStartBlockReason(
     options.remote?.providerAccounts, choice.providerId, options.state.accountProfileId, null, choice.model?.id,
   )
   if (accountBlock) return { action: "error", message: accountBlock }
@@ -461,6 +461,16 @@ export function deriveWaitingRoomControlActivationDecision(options: {
   const remote = options.remote ?? {}
   switch (options.state.focus) {
     case "new": {
+      const placement = waitingRoomLaunchPlacement(options.state, remote)
+      const slices = waitingRoomSlices(remote, {
+        worktreeSelectionId: options.state.worktreeSelectionId,
+        projectSelectionId: options.state.projectSelectionId,
+        developmentMode: options.state.managedDevelopmentMode,
+        repositorySelection: options.state.managedRepositorySelection,
+        selectedMachineRef: placement.machineRef,
+        selectedKernelRef: placement.kernelRef,
+      })
+      if (waitingRoomSelectedSlice(options.state.sliceSelectionId, slices)) return { action: "none" }
       const account = selectedProviderAccount(remote.providerAccounts, options.state.providerId, options.state.accountProfileId)
       if (account && account.auth_state !== "authenticated" && !waitingRoomConfiguresNewManagedMachine(options.state.selectedMachineRef)) {
         return {

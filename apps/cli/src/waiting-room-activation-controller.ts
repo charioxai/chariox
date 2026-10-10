@@ -294,7 +294,7 @@ export function createWaitingRoomActivationController(
         await deps.prepareSessionOwnerClient?.(preparedLaunch)
         prepared.assertActive()
       }
-      const accountBlock = selectedProviderAccountStartBlockReason(
+      const accountBlock = preparedLaunch.sliceRef ? null : selectedProviderAccountStartBlockReason(
         deps.getRemoteState().providerAccounts, preparedLaunch.provider,
         preparedLaunch.accountProfile ?? deps.getAccountProfile() ?? undefined,
         null, preparedLaunch.model,
