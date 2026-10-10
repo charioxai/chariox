@@ -1,6 +1,5 @@
-// MD-5: bounded CDP PNG masking, using the Room's trusted region locator.
-// Unsupported/racing layout receives an opaque whole-frame mask. Page code
-// never participates in drawing/removing the masks. No desktop dependency.
+// MP-08/MP-11: exact Vault fill masks through the shared trusted collector.
+// Unavailable/racing geometry refuses capture for retry. No generic masks.
 import { deflateSync, inflateSync } from "node:zlib";
 import { locateBrowserRegions } from "./browser-observation-regions.mjs";
 
@@ -39,9 +38,16 @@ function paeth(a, b, c) {
   const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
   return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
 }
-export function decodePng(data, scale = 1) {
+export function decodePng(data, scale = 1, viewport = null) {
+  // MP-08/MP-11: controller artifacts have a negotiated viewport distinct
+  // from the host display and supply their trusted artifact byte bound.
+  // Bind their header before allocating/inflating; keep host defaults.
+  const maxBytes = viewport?.maxBytes ?? 4 * 1024 * 1024;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('MD-5: invalid frame byte bound');
+  if (viewport && (![viewport.width, viewport.height].every(value => Number.isSafeInteger(value) && value > 0)
+      || !Number.isSafeInteger((viewport.width * 4 + 1) * viewport.height))) throw new Error('MD-5: invalid frame viewport');
   const png = Buffer.from(data, "base64");
-  if (!png.subarray(0, 8).equals(signature) || png.length > 4 * 1024 * 1024) throw new Error("MD-5: unsupported frame");
+  if (!png.subarray(0, 8).equals(signature) || png.length > maxBytes) throw new Error("MD-5: unsupported frame");
   let width, height, channels, ended = false;
   const compressed = [];
   for (let offset = 8; offset + 12 <= png.length;) {
@@ -53,7 +59,8 @@ export function decodePng(data, scale = 1) {
       if (body.length !== 13 || width) throw new Error("MD-5: invalid frame header");
       width = body.readUInt32BE(0); height = body.readUInt32BE(4);
       channels = body[9] === 6 ? 4 : body[9] === 2 ? 3 : 0;
-      if (!width || !height || width > 1280 * scale || height > 800 * scale || body[8] !== 8 || !channels || body[10] || body[11] || body[12]) throw new Error("MD-5: unsupported frame format");
+      const fits = viewport ? width === viewport.width && height === viewport.height : width <= 1280 * scale && height <= 800 * scale;
+      if (!width || !height || !fits || body[8] !== 8 || !channels || body[10] || body[11] || body[12]) throw new Error("MD-5: unsupported frame format");
     } else if (type === "IDAT") {
       if (!width || ended) throw new Error("MD-5: invalid frame chunk order");
       compressed.push(body);
@@ -114,20 +121,19 @@ export function maskPixels({width,height,pixels}, regions) {
   }
   return {width,height,pixels};
 }
-export function maskPng(data, regions, scale = 1) {
-  const frame=maskPixels(decodePng(data,scale),regions);
+export function maskPng(data, regions, scale = 1, viewport = null) {
+  const frame=maskPixels(decodePng(data,scale,viewport),regions);
   return encodePng(frame.width,frame.height,frame.pixels);
 }
-export async function captureProtectedPage(browser, tab, values, targets, capture, scale = 1, clip = null) {
-  const pixelScale = scale * (clip?.scale ?? 1);
-  const width = Math.round((clip?.width ?? 1280) * pixelScale), height = Math.round((clip?.height ?? 800) * pixelScale);
-  const fallback = () => !clip && scale === 1 ? wholeFrameMask() : opaqueFrame(width, height);
-  if (!values.length) return capture();
+export async function captureProtectedPage(browser, tab, values, targets, capture, scale = 1, clip = null, onMaskedRegions = () => {}, viewport = null) {
+  if (!targets.length && !browser.fillTargets?.size) return capture();
   try {
     const locate = () => locateBrowserRegions(targets.filter(target => target.target_id === tab.target_id), browser, values, { contentTarget: tab.target_id, contentScale: scale });
     const before = await locate(), data = await capture(), after = await locate();
     // Moving/navigating content cannot be bound to this exact frame.
-    if (JSON.stringify(before) !== JSON.stringify(after)) return fallback();
-    return maskPng(data, before.map(([x,y,w,h]) => [(x-(clip?.x??0))*pixelScale,(y-(clip?.y??0))*pixelScale,w*pixelScale,h*pixelScale]), scale);
-  } catch { return fallback(); }
+    if (JSON.stringify(before) !== JSON.stringify(after)) throw Error("MP-11: fill target moved during capture");
+    const masked=maskPng(data, before.map(([x,y,w,h]) => [(x-(clip?.x??0)*scale)*(clip?.scale??1),(y-(clip?.y??0)*scale)*(clip?.scale??1),w*(clip?.scale??1),h*(clip?.scale??1)]), scale, viewport);
+    onMaskedRegions(before);
+    return masked;
+  } catch { throw Error("MP-11: fill target capture unavailable; retry"); }
 }

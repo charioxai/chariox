@@ -412,45 +412,10 @@ async function secureFillElement(connection, sessionId, objectId, action) {
         if (!ownerWindow || ownerWindow.location.href !== expectedDocumentUrl) {
           return { ok: false, reason: "target_url_changed" };
         }
-        const isMaskedEditableInput = () => {
-          const inputPrototype = ownerWindow.HTMLInputElement?.prototype;
-          const elementPrototype = ownerWindow.Element?.prototype;
-          const getAttribute = elementPrototype?.getAttribute;
-          const hasAttribute = elementPrototype?.hasAttribute;
-          if (
-            !inputPrototype ||
-            !Object.prototype.isPrototypeOf.call(inputPrototype, this) ||
-            typeof getAttribute !== "function" ||
-            typeof hasAttribute !== "function"
-          ) {
-            return false;
-          }
-          return String(getAttribute.call(this, "type") || "text").toLowerCase() === "password" &&
-            !hasAttribute.call(this, "disabled") &&
-            !hasAttribute.call(this, "readonly") &&
-            String(getAttribute.call(this, "aria-disabled") || "false").toLowerCase() !== "true" &&
-            String(getAttribute.call(this, "aria-readonly") || "false").toLowerCase() !== "true";
-        };
-        const restoreMaskAfterHandler = () => {
-          if (isMaskedEditableInput()) return true;
-          const inputPrototype = ownerWindow.HTMLInputElement?.prototype;
-          const elementPrototype = ownerWindow.Element?.prototype;
-          const getAttribute = elementPrototype?.getAttribute;
-          const typeSetter = inputPrototype && Object.getOwnPropertyDescriptor(inputPrototype, "type")?.set;
-          if (
-            inputPrototype &&
-            Object.prototype.isPrototypeOf.call(inputPrototype, this) &&
-            typeof getAttribute === "function" &&
-            typeof typeSetter === "function" &&
-            String(getAttribute.call(this, "type") || "text").toLowerCase() !== "password"
-          ) {
-            typeSetter.call(this, "password");
-          }
-          return false;
-        };
-        if (!isMaskedEditableInput()) {
-          return { ok: false, reason: "target_not_masked" };
-        }
+        const isEditable = () => (this.localName === 'input' || this.localName === 'textarea' || this.isContentEditable) &&
+          !this.hasAttribute('disabled') && !this.hasAttribute('readonly') &&
+          this.getAttribute('aria-disabled') !== 'true' && this.getAttribute('aria-readonly') !== 'true';
+        if (!isEditable()) return {ok:false,reason:'target_not_editable'};
         // MP-08/MP-10: submission eligibility is checked before secret mutation.
         // Some sign-in steps use a separate JavaScript button and no native form.
         const form = submit ? this.form || this.closest?.("form") : null;
@@ -468,9 +433,7 @@ async function secureFillElement(connection, sessionId, objectId, action) {
         if (!(activeElement === this || this.contains?.(activeElement))) {
           return { ok: false, reason: "target_not_focusable" };
         }
-        if (!isMaskedEditableInput()) {
-          return { ok: false, reason: "target_not_masked" };
-        }
+        if (!isEditable()) return {ok:false,reason:'target_not_editable'};
         const currentValue = this.isContentEditable
           ? String(this.textContent || "")
           : String(this.value || "");
@@ -488,9 +451,7 @@ async function secureFillElement(connection, sessionId, objectId, action) {
           setter.call(this, nextValue);
         }
         this.dispatchEvent(new ownerWindow.Event("input", { bubbles: true, composed: true }));
-        if (!restoreMaskAfterHandler()) return { ok: false, reason: "target_not_masked" };
         this.dispatchEvent(new ownerWindow.Event("change", { bubbles: true }));
-        if (!restoreMaskAfterHandler()) return { ok: false, reason: "target_not_masked" };
         if (submit) {
           // Form controls named submit/requestSubmit must not shadow DOM methods.
           try { submitForm.call(form); }
@@ -523,11 +484,8 @@ async function secureFillElement(connection, sessionId, objectId, action) {
         "browser secret target could not receive focus before insertion",
       );
     }
-    if (outcome?.reason === "target_not_masked") {
-      throw new BrowserActionError(
-        "browser_secret_target_not_masked",
-        "browser secret target must remain an editable password field during insertion",
-      );
+    if (outcome?.reason === "target_not_editable") {
+      throw new BrowserActionError("browser_secret_target_not_editable", "browser secret target must be an editable field");
     }
     if (outcome?.reason === "form_not_found") {
       throw new BrowserActionError(

@@ -3,6 +3,10 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 const ASSETS: &[(&str, &[u8])] = &[
     (
+        "kernel-browser-mirror-sanitize.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-sanitize.mjs"),
+    ),
+    (
         "kernel-browser-mirror-styles.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-styles.mjs"),
     ),
@@ -49,6 +53,18 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "browser-observation-regions.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-observation-regions.mjs"),
+    ),
+    (
+        "browser-protection-regions.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-protection-regions.mjs"),
+    ),
+    (
+        "native-fill-targets.py",
+        include_bytes!("../../slice-linux-docker/docker/native-fill-targets.py"),
+    ),
+    (
+        "browser-desktop-protection.py",
+        include_bytes!("../../slice-linux-docker/docker/browser-desktop-protection.py"),
     ),
     (
         "kernel-browser-pixels.mjs",
