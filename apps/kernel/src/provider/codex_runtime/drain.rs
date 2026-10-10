@@ -30,7 +30,7 @@ pub fn drain_codex_events(
     } else {
         client
     };
-    let client = if state.ephemeral {
+    let client = if state.metadata_only_discovery || run.metadata_only_discovery() {
         client.with_metadata_only_discovery()
     } else {
         client
@@ -239,6 +239,7 @@ mod tests {
         );
         let mut state = CodexRuntimeState::new(endpoint, "ephemeral-thread".into(), socket, 1);
         state.ephemeral = true;
+        state.metadata_only_discovery = true;
         state.set_read_only_discovery_permissions(true);
         state.active_turn_id = Some("turn".into());
         state.buffered_notifications = vec![
@@ -458,6 +459,7 @@ mod tests {
             .expect("thread/start should succeed");
         let mut state = CodexRuntimeState::new(endpoint, thread.thread.id, socket, next_request_id);
         state.set_read_only_discovery_permissions(true);
+        state.ephemeral = true; // MP-08 / MP-11: lifetime must not erase source-read capability.
         let thread_id = state.thread_id().to_string();
         client
             .turn_start(

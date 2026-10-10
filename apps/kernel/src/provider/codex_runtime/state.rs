@@ -40,6 +40,7 @@ pub struct CodexRuntimeState {
     /// event drain reconstructs a client for server requests.
     read_only_discovery_permissions: bool,
     pub(super) ephemeral: bool,
+    pub(super) metadata_only_discovery: bool,
     pub(super) socket: CodexSocket,
     pub(super) next_request_id: u64,
     pub(super) buffered_notifications: Vec<CodexNotification>,
@@ -88,6 +89,7 @@ impl CodexRuntimeState {
             thread_ready: true,
             read_only_discovery_permissions: false,
             ephemeral: false,
+            metadata_only_discovery: false,
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),
@@ -112,6 +114,7 @@ impl CodexRuntimeState {
             thread_ready: false,
             read_only_discovery_permissions: false,
             ephemeral: false,
+            metadata_only_discovery: false,
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),
