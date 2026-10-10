@@ -1,3 +1,4 @@
+import { localKernelConnectionLabel } from "../local-connection-indicator.js"
 import { appendFileSync } from "node:fs"
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
@@ -156,6 +157,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
     process.stderr.write(formatNativeTuiRuntimeBanner({
+      connectionLabel: localKernelConnectionLabel(client, session.host_daemon_id),
       surface: "claude native-tui",
       session,
       agent,
@@ -407,6 +409,7 @@ async function runClaudeRemoteRendered(
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
     process.stderr.write(formatNativeTuiRuntimeBanner({
+      connectionLabel: localKernelConnectionLabel(client, session.host_daemon_id),
       surface: "claude remote-native-tui",
       session,
       agent,

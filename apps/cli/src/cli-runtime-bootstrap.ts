@@ -174,7 +174,7 @@ export async function bootstrapCliRuntime(
   const cliOptions = deps.parseArgs(options.argv)
   const preferences = await deps.loadPreferences()
   deps.applyProviderPreferenceDefaults(cliOptions, preferences)
-  const kernelEndpoint = cliOptions.relayUrl
+  let kernelEndpoint = cliOptions.relayUrl
     ?? cliOptions.kernelUrl
     ?? cliOptions.socketPath
     ?? deps.defaultKernelEndpoint()
@@ -205,6 +205,8 @@ export async function bootstrapCliRuntime(
       throw error
     }
   }
+  // MP-08 / MP-11: keep relay targets on their authenticated carrier. A
+  // discovery record and a matching daemon ID do not authenticate TCP peers.
   const inferredTargets = await deps.inferWorkspaceTargetsFromLaunchDirectory(options.cwd)
   const workspace = cliOptions.workspace ?? inferredTargets.workspace
   const worktree = cliOptions.worktree ?? inferredTargets.worktree

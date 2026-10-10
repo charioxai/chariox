@@ -1,5 +1,5 @@
+import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { LocalIpcClient } from "./ipc.js"
-import { loadLocalKernelPresences, localKernelEndpoint } from "./local-kernel-presence.js"
 import { resolveKernelClientConnection } from "./relay-api.js"
 import { beginMutableLocalIpcClientPivot, type MutableLocalIpcClient, type MutableLocalIpcClientPivot } from "./mutable-local-ipc-client.js"
 import { getWaitingRoomInventory, type WaitingRoomInventory } from "./waiting-room-inventory-api.js"
@@ -12,18 +12,19 @@ type KernelClientTarget = {
 }
 
 async function openWaitingRoomKernelClient(controlClient: LocalIpcClient, target: KernelClientTarget) {
-  const localPresence = loadLocalKernelPresences().find(presence => presence.kernelId === target.kernelRef)
-  const connection = localPresence ? null : await resolveKernelClientConnection(controlClient, target)
+  // MP-08 / MP-11: resolve through the current authority; never probe a
+  // discovered TCP endpoint before its listener has been authenticated.
+  const relayIdentity = createCliRelayIdentityStore().getOrCreate()
+  const connection = await resolveKernelClientConnection(controlClient, { ...target, publicKeyThumbprint: relayIdentity.publicKeyThumbprint })
   if (!target.isActive()) return null
-  const client = localPresence
-    ? new LocalIpcClient(localKernelEndpoint(localPresence))
-    : new LocalIpcClient(connection!.relayUrl, {
-        relayAuthToken: connection!.relayToken,
-        targetDaemonId: connection!.targetDaemonId ?? undefined,
-        targetDaemonAlias: connection!.targetDaemonAlias ?? undefined,
-      })
-  return { client, label: localPresence?.kernelAlias ?? connection?.targetDaemonAlias ?? connection?.kernelId ?? target.kernelRef,
-    machineId: localPresence?.machineId ?? connection?.machineId, kernelId: localPresence?.kernelId ?? connection?.kernelId }
+  const client = new LocalIpcClient(connection.relayUrl, {
+    relayAuthToken: connection.relayToken,
+    relayIdentity,
+    targetDaemonId: connection.targetDaemonId ?? undefined,
+    targetDaemonAlias: connection.targetDaemonAlias ?? undefined,
+  })
+  return { client, label: connection.targetDaemonAlias ?? connection.kernelId ?? target.kernelRef,
+    machineId: connection.machineId, kernelId: connection.kernelId }
 }
 
 export async function withWaitingRoomWorkspaceClient<T>(

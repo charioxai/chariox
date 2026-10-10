@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 // MP-11 F7: exercise the real Rust serialization boundary without provider credentials.
 import { spawnSync } from "node:child_process"
+import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+
+const localProtocol = Number(readFileSync(new URL("../../kernel/src/local/api/types.rs", import.meta.url), "utf8")
+  .match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
 
 export function runPublicProviderRunProtocolDrill(binary, run = spawnSync) {
   if (!binary) throw new Error("MP-11 F7 requires --test-binary pointing to a prebuilt kernel lib-test executable")
@@ -21,7 +25,7 @@ export function runPublicProviderRunProtocolDrill(binary, run = spawnSync) {
     const passed = result.status === 0 && /test result: ok\. 1 passed; 0 failed;/.test(result.stdout ?? "")
     return { check, passed, exitCode: result.status }
   })
-  return { mpItem: "MP-11", finding: "F7", localProtocol: 472, scope: "synthetic public DTO/response/event serialization and private persistence", results, passed: results.every(result => result.passed) }
+  return { mpItem: "MP-11", finding: "F7", localProtocol, scope: "synthetic public DTO/response/event serialization and private persistence", results, passed: results.every(result => result.passed) }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

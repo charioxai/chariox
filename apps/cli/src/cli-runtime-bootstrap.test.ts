@@ -223,6 +223,23 @@ test("terminal pairing closes bootstrap transport and rejects a legacy unbound t
   assert.equal(closeCount, 1)
 })
 
+test("MP-08 a relay-addressed kernel elsewhere keeps the relay client", async () => {
+  const relayClient = fakeClient()
+  const deps = createDeps({
+    parseArgs: () => cliOptions({ relayUrl: "wss://relay.example", relayToken: "token", targetDaemonAlias: "home" }),
+    createClient: () => relayClient,
+    bootstrapAttachedSession: async (client, attachedOptions, _workspace, _worktree, preferences) => {
+      assert.equal(client, relayClient)
+      return attachedBootstrap(client, attachedOptions, preferences)
+    },
+  })
+
+  const result = await bootstrapCliRuntime({ argv: [], cwd: "/repo" }, deps)
+
+  assert.equal(result.kind, "ready")
+  assert.equal(result.kernelEndpoint, "wss://relay.example")
+})
+
 test("buildDetachedBootstrap creates a waiting-room bootstrap shell", () => {
   const client = fakeClient()
   const options = cliOptions({ detached: true })

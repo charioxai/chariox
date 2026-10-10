@@ -193,7 +193,7 @@ pub(crate) async fn execute_resolve_kernel_client_connection_request(
                 target_daemon_alias: kernel.kernel_id.clone(),
                 client_id,
                 session_id: request.session_id.clone(),
-                public_key_thumbprint: None,
+                public_key_thumbprint: request.public_key_thumbprint.clone(),
             },
         )
         .await?;
@@ -491,6 +491,7 @@ mod tests {
             machine_ref: Some("machine-new".to_string()),
             client_id: Some("client-1".to_string()),
             session_id: None,
+            public_key_thumbprint: None,
         }
     }
 

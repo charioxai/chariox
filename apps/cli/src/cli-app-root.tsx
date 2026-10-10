@@ -1,3 +1,4 @@
+import { localKernelConnectionLabel } from "./local-connection-indicator.js"
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
 import { AppDevLoop } from "./app-dev-loop.js"
@@ -689,6 +690,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     sessionChromeUpdateController: responseShellSessionChromeUpdateController,
     assignStatusIndicatorBox, assignFooterSummaryBox,
   } = createCliResponseShellComposition({
+    connectionLabel: () => localKernelConnectionLabel(client, sessionState().host_daemon_id ?? relayStatusState()?.daemon_id),
     renderer,
     scheduleTimer: startTimeout,
     clearTimer: clearTimeout,

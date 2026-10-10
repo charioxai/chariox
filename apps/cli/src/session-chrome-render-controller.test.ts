@@ -131,3 +131,19 @@ function session(): RuntimeSession {
     agents: [{ id: "agent-1" }, { id: "agent-2" }],
   } as unknown as RuntimeSession
 }
+
+
+test("MP-08 detached TUI projects a connection label only when supplied for a local kernel", () => {
+  const calls: string[] = []
+  let label: string | null = "Relay connection"
+  const deps = Object.assign(createDeps({ calls, attached: false, terminalWidth: 160 }), {
+    getConnectionLabel: () => label,
+  })
+  const controller = createSessionChromeRenderController(deps)
+  controller.apply()
+  assert.match(calls.find(call => call.startsWith("summary:")) ?? "", / • Relay connection:none$/)
+  calls.length = 0
+  label = null
+  controller.apply()
+  assert.doesNotMatch(calls.find(call => call.startsWith("summary:")) ?? "", /connection/)
+})

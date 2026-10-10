@@ -269,3 +269,33 @@ for (const persistent of [false, true]) {
     assert.equal(fixture.connectionCount(), 2)
   })
 }
+
+test("MP-08 concurrent relay waiting-room subscribes keep one key per subscription without an identity", async t => {
+  const daemon = createIdentity()
+  const subscribeKeys: string[] = []
+  const fixture = await createRelayFixture((socket, frame) => {
+    if (frame.kind === "client_connect") {
+      socket.send(clientConnectedFrame(frame.target, daemon))
+      return
+    }
+    if (frame.kind !== "client_subscribe" || !frame.client_public_key) return
+    subscribeKeys.push(frame.client_public_key)
+    // The kernel acknowledges each subscribe to its own key and immediately
+    // streams the inventory snapshot to that key.
+    socket.send(clientResponseFrame(frame.request_id, daemon.encrypt(frame.client_public_key, JSON.stringify({ Subscribed: {} }))))
+    socket.send(clientEventFrame(frame.subscription_id, frame.client_public_key, daemon, subscribeKeys.length, {
+      event: "runtime_notices", session_id: "__waiting_room_inventory__", notices: [],
+    }))
+  })
+  const client = createClient(fixture.url)
+  t.after(() => closeFixture(fixture.server, client))
+  const nextEvent = createEventQueue(client)
+
+  const results = await Promise.allSettled([
+    client.subscribeToWaitingRoomInventory(),
+    client.subscribeToWaitingRoomInventory(),
+  ])
+  assert.deepEqual(results.map(result => result.status === "rejected" ? String(result.reason) : "ok"), ["ok", "ok"])
+  await withTimeout(nextEvent(), "inventory snapshot")
+  assert.equal(new Set(subscribeKeys).size, subscribeKeys.length, "each subscribe binds its own ephemeral key")
+})

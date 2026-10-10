@@ -22,6 +22,7 @@ import { providerRunRecoveryActions } from "@chariox/kernel-client/provider-run-
 import { formatSessionHomeKernelLabel } from "@chariox/kernel-client/session-runtime-labels"
 
 export type NativeTuiRuntimeBannerInput = {
+  readonly connectionLabel?: string | null
   readonly surface: string
   readonly session: RuntimeSession
   readonly agent: AgentInstance
@@ -44,6 +45,7 @@ export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput)
     `  chariox session: ${formatSession(input.session)}`,
     `  chariox agent:   ${formatAgent(input.agent)}`,
     `  home kernel:    ${formatHomeKernel(input.session)}`,
+    ...(input.connectionLabel ? [`  connection:     ${input.connectionLabel}`] : []),
     ...formatSessionOwnerLines(input.session),
     `  worktree:       ${input.worktree || input.agent.worktree_id || input.session.worktree_id || "-"}`,
     `  placement:      ${formatAgentPlacement(input.agent, slice)}`,

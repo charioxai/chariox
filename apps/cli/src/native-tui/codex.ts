@@ -1,3 +1,4 @@
+import { localKernelConnectionLabel } from "../local-connection-indicator.js"
 import { spawn } from "node:child_process"
 import { appendFileSync } from "node:fs"
 import path from "node:path"
@@ -189,6 +190,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
     process.stderr.write(formatNativeTuiRuntimeBanner({
+      connectionLabel: localKernelConnectionLabel(client, session.host_daemon_id),
       surface: "codex native-tui",
       session,
       agent,

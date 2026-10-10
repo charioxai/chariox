@@ -76,6 +76,8 @@ pub struct ResolveKernelClientConnectionRequest {
     pub client_id: Option<String>,
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key_thumbprint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

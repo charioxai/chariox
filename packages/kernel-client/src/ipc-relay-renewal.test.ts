@@ -60,7 +60,8 @@ for (const outcome of ["renew", "revoked", "wrong-key", "transient", "target-los
         }
       })
     })
-    const client=new LocalIpcClient(`ws://127.0.0.1:${address.port}`,{relayAuthToken:token(),targetDaemonId:"kernel",relayIdentity:identity,kernelPingIntervalMs:60_000,controlRequestRetryDeadlineMs:0})
+    const diagnostics: {cause: string; operation?: string; code?: string | null; retryable?: boolean}[]=[]
+    const client=new LocalIpcClient(`ws://127.0.0.1:${address.port}`,{relayAuthToken:token(),targetDaemonId:"kernel",relayIdentity:identity,kernelPingIntervalMs:60_000,controlRequestRetryDeadlineMs:0,onTransportDiagnostic:diagnostic=>diagnostics.push(diagnostic)})
     const closed: string[]=[], notices: string[]=[]
     client.onKernelEvent(event=>{if(event.event==="transport_closed")closed.push(event.message);else {if(event.event==="runtime_notices") for(const notice of event.notices)if(typeof notice.message==="string")notices.push(notice.message);events++}})
     try {
@@ -100,12 +101,17 @@ for (const outcome of ["renew", "revoked", "wrong-key", "transient", "target-los
         assert.ok(events>30,"subscription events continue")
         assert.equal(closed.some(message=>/authorization.*(?:revoked|refused)/i.test(message)),false)
         if(outcome!=="target-lost") assert.deepEqual(closed,[])
+        // MP-08/MP-10: a failed attempt records its step and code, never its message or grant.
+        if(outcome==="transient") assert.deepEqual(diagnostics.filter(d=>d.cause==="renewal_failed").map(d=>[d.code,d.retryable]),[["cloud_unavailable",true]])
+        else if(outcome==="target-lost") assert.ok(diagnostics.filter(d=>d.cause==="renewal_failed").every(d=>d.retryable===true&&d.code==="connection_closed"),"temporary target loss is a retryable renewal failure")
+        else assert.equal(diagnostics.some(d=>d.cause==="renewal_failed"),false)
       } else {
         assert.equal(renewals,1,"refusal must not retry revoked authority")
         assert.equal(closed.length,1)
         assert.match(closed[0]!,/authorization.*(?:revoked|refused|invalid)/i)
         await assert.rejects(client.send({GetDaemonHealth:null}),/authorization/i)
         const stopped=events;await sleep(100);assert.equal(events,stopped)
+        if(outcome==="revoked") assert.deepEqual(diagnostics.filter(d=>d.cause==="renewal_failed"||d.cause==="authorization_ended").map(d=>[d.cause,d.retryable??null]),[["renewal_failed",false],["authorization_ended",null]])
       }
     } finally {
       client.destroy();for(const timer of timers)clearInterval(timer)
