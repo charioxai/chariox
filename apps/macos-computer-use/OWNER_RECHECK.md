@@ -50,3 +50,12 @@ contains the revised mid-input/capture-damage suite; it remains unpublished.
 Never substitute pairing-drill.mjs here, since it rebuilds helpers and initializes
 and removes runtime state. Retain durable identities, profiles, keys, backups,
 legacy relay state and reviewer infrastructure. No recursive state cleanup.
+
+
+## R8 review source fixes
+
+The #920 @bc53791b1 pointer runner now binds the exact foreground fixture and
+last pointer position before every warp/jitter step. Focus/window loss or human
+pointer movement aborts mutation and prevents restoration over owner activity.
+Five headless regressions pass; this is source evidence only. The retained r6
+helper still awaits its pending re-grant and was not rebuilt or re-signed.
