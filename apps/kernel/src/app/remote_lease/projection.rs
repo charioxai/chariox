@@ -82,7 +82,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let home_prompt_id = leased_agent.active_home_prompt_id.clone().or_else(|| {
             replay_settled_completion
                 .then_some(())
-                .and_then(|()| leased_agent.replayable_completion.as_ref())
+                .and(leased_agent.replayable_completion.as_ref())
                 .filter(|completion| completion.provider_run_id == provider_run_id)
                 .and_then(|completion| completion.home_prompt_id.clone())
         });
@@ -100,15 +100,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         let mut output_chunks = pumped_output_records
             .into_iter()
-            .chain(
-                self.app
-                    .terminal
-                    .drain_output_records(
-                        &leased_agent.backing_session_id,
-                        &leased_agent.backing_attachment_id,
-                    )
-                    .into_iter(),
-            )
+            .chain(self.app.terminal.drain_output_records(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_attachment_id,
+            ))
             .filter(|record| {
                 record.provider_run_id == provider_run_id
                     && record.kind != TerminalOutputKind::PromptEcho
@@ -309,9 +304,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             )
             .filter(|turn| {
                 turn.provider_run_id == provider_run_id
-                    && termination_prompt_id
-                        .as_deref()
-                        .is_none_or(|prompt_id| turn.prompt_id == prompt_id)
+                    && termination_prompt_id.is_none_or(|prompt_id| turn.prompt_id == prompt_id)
             })
             .and_then(|turn| turn.provider_termination);
         let mut completions = self
@@ -1316,8 +1309,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             }
                         }
                     };
+                    // The completion is committed: a focus refresh failure
+                    // must not lose it (A10: its home task still settles).
                     if started_next.is_none() {
-                        self.app.sync_focused_provider_run_if_idle(session_id)?;
+                        if let Err(error) = self.app.sync_focused_provider_run_if_idle(session_id) {
+                            crate::logging::warn_with_fields(
+                                "daemon.remote_prompt_dispatch",
+                                "focus refresh after a leased completion failed",
+                                serde_json::json!({"session_id": session_id, "error": error.to_string()}),
+                            );
+                        }
                     }
                     outcome.completions.push(PromptCompletion {
                         completed,
@@ -1555,9 +1556,9 @@ fn leased_provider_run_history_chunk_key(
     chunk: &RelayProjectedOutputChunk,
 ) -> String {
     format!(
-        "{}:{provider_run_id}:{}:{}:{}",
+        "{}:{provider_run_id}:{:?}:{}:{}",
         leased_agent.backing_session_id,
-        format!("{:?}", chunk.kind),
+        chunk.kind,
         chunk.merge_key.as_deref().unwrap_or(""),
         stable_bytes_hash(&chunk.bytes)
     )

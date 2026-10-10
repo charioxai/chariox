@@ -21,6 +21,7 @@ pub(super) struct RelaySubscriber {
 pub(super) struct RelaySubscriptionTask {
     pub(super) relay_subscription_id: String,
     pub(super) client_public_key: String,
+    pub(super) display_id: Option<String>,
     pub(super) handle: JoinHandle<()>,
 }
 
@@ -56,6 +57,10 @@ pub(super) fn relay_subscription_task_key(
     format!("{scope}\u{1f}{session_id}\u{1f}{attachment_id}\u{1f}{relay_subscription_id}")
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing handle_relay_subscribe operation signature and explicit context arguments"
+)]
 pub(super) async fn handle_relay_subscribe(
     router: &Arc<CommandRouter>,
     outgoing_tx: &RelayOutgoingSender,
@@ -70,6 +75,23 @@ pub(super) async fn handle_relay_subscribe(
     subscription_scope: Option<String>,
     resume_from_event_id: Option<u64>,
 ) -> Result<(), DaemonError> {
+    if subscription_scope.as_deref() == Some("kernel_browser_display") {
+        return super::browser_display::handle_subscribe(
+            router,
+            outgoing_tx,
+            subscription_tasks,
+            super::browser_display::DisplaySubscription {
+                request_id: relay_request_id,
+                relay_id: relay_subscription_id,
+                display_id: session_id,
+                generation: attachment_id,
+                identity: caller_identity,
+                public_key: client_public_key,
+                resume: resume_from_event_id,
+            },
+        )
+        .await;
+    }
     let subscriber = RelaySubscriber {
         user_id: relay_subscription_caller_user_id(caller_identity.as_ref()),
         connection_class: crate::runtime::command::relay_connection_class(caller_identity.as_ref()),
@@ -271,6 +293,7 @@ pub(super) async fn handle_relay_subscribe(
     subscription_tasks.lock().await.insert(
         task_key,
         RelaySubscriptionTask {
+            display_id: None,
             relay_subscription_id,
             client_public_key,
             handle: task,
@@ -340,6 +363,10 @@ pub(super) async fn handle_relay_unsubscribe(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing run_relay_subscription_loop operation signature and explicit context arguments"
+)]
 pub(super) async fn run_relay_subscription_loop(
     router: Arc<CommandRouter>,
     outgoing_tx: RelayOutgoingSender,
@@ -607,8 +634,13 @@ pub(super) async fn run_relay_subscription_loop(
                             return;
                         }
                     }
+                    let skip_snapshot = can_skip_session_snapshot(
+                        &snapshot,
+                        previous_snapshot_ref,
+                        emitted_projection_delta || workflow_run_only,
+                    );
                     previous_snapshot = Some(snapshot.clone());
-                    if emitted_projection_delta || workflow_run_only {
+                    if skip_snapshot {
                         continue;
                     }
                     if emit_relay_event(
@@ -1146,6 +1178,7 @@ mod tests {
         tasks.lock().await.insert(
             first_key.clone(),
             RelaySubscriptionTask {
+                display_id: None,
                 relay_subscription_id: "relay-subscription-1".to_string(),
                 client_public_key: "client-public-key-1".to_string(),
                 handle: first_handle,
@@ -1158,6 +1191,7 @@ mod tests {
         tasks.lock().await.insert(
             second_key,
             RelaySubscriptionTask {
+                display_id: None,
                 relay_subscription_id: "relay-subscription-2".to_string(),
                 client_public_key: "client-public-key-2".to_string(),
                 handle: second_handle,
@@ -1203,6 +1237,7 @@ mod tests {
             sleep(Duration::from_secs(60)).await;
         });
         let task = RelaySubscriptionTask {
+            display_id: None,
             relay_subscription_id: "relay-subscription-1".to_string(),
             client_public_key: "client-public-key-1".to_string(),
             handle,

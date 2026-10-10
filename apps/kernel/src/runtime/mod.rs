@@ -85,6 +85,9 @@ pub(crate) mod history_executor;
 pub(crate) mod history_requests;
 pub(crate) mod interactive_command_dispatcher;
 pub(crate) mod invite_tokens;
+mod kernel_browser_actors;
+mod kernel_browser_assets;
+pub(crate) mod kernel_browser_host;
 pub(crate) mod kernel_lifecycle_executor;
 pub(crate) mod kernel_process_identity;
 pub(crate) mod kernel_runtime_role_policy;
@@ -101,6 +104,7 @@ pub(crate) mod metaagent_event_control;
 pub(crate) mod metaagent_guides;
 pub(crate) mod metaagent_trace;
 pub(crate) mod native_interaction_bridge;
+pub(crate) mod notes;
 pub(crate) mod owned_process_signals;
 pub(crate) mod pairing_invite_executor;
 pub mod process_health;
@@ -139,6 +143,7 @@ pub mod terminal_output_executor;
 pub(crate) mod terminal_pairings;
 pub(crate) mod user_config_executor;
 pub(crate) mod user_config_policy;
+pub(crate) mod user_domain_access;
 pub(crate) mod waiting_room_activity;
 pub(crate) mod waiting_room_control;
 pub(crate) mod waiting_room_public_projection;
@@ -159,3 +164,8 @@ pub(crate) mod workspace_worktrees;
 pub(crate) mod kernel_access;
 
 pub(crate) mod relay_peer_authority;
+
+pub(crate) mod room_tool_admission;
+
+pub(crate) mod room_dispatch_registration;
+mod user_app_views;

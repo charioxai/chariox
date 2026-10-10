@@ -43,6 +43,10 @@ pub(crate) async fn execute_waiting_room_inventory_request(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing execute_waiting_room_request operation signature and explicit context arguments"
+)]
 pub(crate) async fn execute_waiting_room_request(
     runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,

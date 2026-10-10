@@ -536,6 +536,69 @@ fn session_metadata_only_changes_can_skip_session_snapshot() {
 }
 
 #[test]
+fn sudo_window_changes_cannot_be_hidden_by_projection_deltas() {
+    let mut previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Created);
+    let window = crate::local::KernelSudoTurn {
+        entry_id: "sudo:window-a".into(),
+        session_id: "session-a".into(),
+        agent_id: "agent-a".into(),
+        owner_user_id: "local".into(),
+        terminal_id: "owner-a".into(),
+        requester: None,
+        prompt_id: Some("work-a".into()),
+        provider_run_id: Some("run-a".into()),
+        task_id: Some("work-a".into()),
+        duration_minutes: 60,
+        expires_at_ms: Some(3_600_000),
+        revision: 1,
+        warning_sent: false,
+        deadline: None,
+        placement: None,
+    };
+    previous.session.set_sudo_windows(vec![window.clone()]);
+    assert!(can_skip_session_snapshot(&previous, Some(&previous), true));
+    for change in ["warning", "extension", "expiry"] {
+        let mut current = previous.clone();
+        let mut changed = window.clone();
+        match change {
+            "warning" => changed.warning_sent = true,
+            "extension" => {
+                changed.revision = 2;
+                changed.expires_at_ms = Some(7_200_000);
+            }
+            "expiry" => {}
+            _ => unreachable!(),
+        }
+        current.session.set_sudo_windows(if change == "expiry" {
+            vec![]
+        } else {
+            vec![changed]
+        });
+        current
+            .session
+            .add_active_interaction(RuntimeInteraction::new(
+                "owner-decision",
+                "agent-a",
+                RuntimeInteractionKind::Permission,
+                RuntimeInteractionLevel::Warning,
+                None,
+                "Owner decision",
+                vec![RuntimeInteractionChoice::new(
+                    "cancel", "Cancel", "cancel", None,
+                )],
+                None,
+                None,
+                None,
+            ));
+        assert!(runtime_interactions_changed_event(&current, Some(&previous)).is_some());
+        assert!(
+            !can_skip_session_snapshot(&current, Some(&previous), true),
+            "{change}: an interaction delta cannot replace the changed sudo window"
+        );
+    }
+}
+
+#[test]
 fn runtime_interactions_only_changes_can_skip_session_snapshot() {
     let previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Created);
     let mut current = previous.clone();
@@ -783,4 +846,41 @@ fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
         assert!(workflow_run_updated_events(&current, Some(&previous)).is_empty());
         assert!(workflow_run_updated_events(&current, None).is_empty());
     }
+}
+
+#[test]
+fn user_domain_refusals_protocol_443_snapshot() {
+    use crate::error::UserDomainRefusalReason as Reason;
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 481);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        87
+    );
+    let values = [
+        Reason::NotFocusedAgent,
+        Reason::ForeignOwner,
+        Reason::StaleEpoch,
+        Reason::StaleReference,
+        Reason::NotGranted,
+        Reason::SensitiveRequiresFocus,
+    ];
+    let actual: Vec<_> = values.into_iter().map(|reason|serde_json::json!({"reason":reason,"error":map_kernel_error(&DaemonError::UserDomainRefused {reason})})).collect();
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(include_bytes!("user-domain-refusals-443.json"))
+        ),
+        "a0404cb11a870cd5a843adb8060aa7a0892e9a7365c2f823f1455b02bc789102"
+    );
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("user-domain-refusals-443.json")).unwrap();
+    assert_eq!(serde_json::json!(actual), expected);
+    // Neither unknown controller text nor a generic local error can acquire authority.
+    let generic = map_kernel_error(&DaemonError::LocalTransport {
+        operation: "kernel_browser",
+        message: "user_domain_not_granted".into(),
+    });
+    assert_eq!(generic.code, "local_transport_error");
+    assert!(generic.retryable);
 }

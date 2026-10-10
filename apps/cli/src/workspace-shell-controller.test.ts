@@ -204,3 +204,27 @@ test("workspace shell submit controller binds submit dependencies", async () => 
   assert.equal(result.ok, true)
   assert.equal(result.context, context)
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11 G03: recovery can replace an attachment before an effect or pending command settles.
+test("workspace commands use the recovered attachment and cannot restore a stale one", async () => {
+  let attachment = "recovered-attachment"
+  let context = createDefaultShellContext({ sessionId: "s1", attachmentId: "retired-attachment" })
+  const current = session({ attachment_ids: [attachment] })
+  const result = await submitWorkspaceShellCommand("@ session status", {
+    client: {} as LocalIpcClient,
+    attachmentId: () => attachment,
+    workspaceShellContext: () => context,
+    setWorkspaceShellContext: next => { context = next },
+    executeShellLine: async (_line, admitted) => {
+      assert.equal(admitted.attachmentId, "recovered-attachment", "do not send the retired attachment after reconnect")
+      attachment = "second-recovery"
+      return { ok: true, context: admitted }
+    },
+    nextEntryId: () => 1, setWorkspaceShellEntries: () => {},
+    sessionState: () => current, refreshSessionState: async () => current, applySessionState: () => {},
+    selectedWorkflowId: () => null, setSelectedWorkflowId: () => {}, setSelectedWorkflowNodeId: () => {},
+    rebuildTranscript: () => {}, flashFooter: () => {},
+  })
+  assert.equal(result.context.attachmentId, "second-recovery", "a late old command result must not overwrite recovery")
+  assert.equal(context.attachmentId, "second-recovery")
+})

@@ -105,8 +105,7 @@ async fn start_terminal_provider_auth(
         && !matches!(provider, "claude" | "opencode")
     {
         return Err(provider_login_error(format!(
-            "provider `{}` does not expose a provider-native login command",
-            provider
+            "provider `{provider}` does not expose a provider-native login command"
         )));
     }
     if operation == crate::runtime::state::ProviderAuthProcessOperation::Logout

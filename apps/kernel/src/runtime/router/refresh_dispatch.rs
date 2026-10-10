@@ -15,7 +15,7 @@ use crate::runtime::session_collaboration_executor::execute_session_collaboratio
 use crate::runtime::slice_command_executor::execute_slice_request;
 use crate::runtime::user_config_executor::execute_user_config_request;
 
-use super::CommandRouter;
+use super::{priority_dispatch::boxed_handler, CommandRouter};
 
 impl CommandRouter {
     pub(super) fn dispatch_refresh_tracked(
@@ -27,7 +27,7 @@ impl CommandRouter {
         // temporaries while polling its selected child. The normal dispatcher
         // can then overflow an ordinary thread even when its future is boxed.
         match request {
-            request @ LocalDaemonRequest::ConfigureRelay(_) => Box::pin(async move {
+            request @ LocalDaemonRequest::ConfigureRelay(_) => boxed_handler(|| async move {
                 execute_relay_config_request(
                     &self.runtime_state,
                     Arc::clone(&self.relay_state),
@@ -51,7 +51,7 @@ impl CommandRouter {
             | LocalDaemonRequest::AcceptCloudSessionInvite(_)
             | LocalDaemonRequest::RevokeCloudSessionInvite(_)
             | LocalDaemonRequest::ListCloudSessionMembers(_)
-            | LocalDaemonRequest::ListCloudCollaborators(_)) => Box::pin(async move {
+            | LocalDaemonRequest::ListCloudCollaborators(_)) => boxed_handler(|| async move {
                 execute_cloud_relay_request(
                     &self.runtime_state,
                     &self.config_projection,
@@ -72,7 +72,7 @@ impl CommandRouter {
             | LocalDaemonRequest::SetProviderAccountCredential(_)
             | LocalDaemonRequest::GetCredentialVaultStatus(_)
             | LocalDaemonRequest::LockCredentialVault(_)
-            | LocalDaemonRequest::ManageCredentialVault(_)) => Box::pin(async move {
+            | LocalDaemonRequest::ManageCredentialVault(_)) => boxed_handler(|| async move {
                 execute_user_config_request(
                     &self.config_projection,
                     &self.runtime_state,
@@ -87,7 +87,9 @@ impl CommandRouter {
             | LocalDaemonRequest::PreviewPromptSetting(_)
             | LocalDaemonRequest::ResetPromptSetting(_)
             | LocalDaemonRequest::ResetAllPromptSettings(_)) => {
-                Box::pin(async move { execute_prompt_settings_request(&command, request).await })
+                boxed_handler(
+                    || async move { execute_prompt_settings_request(&command, request).await },
+                )
             }
             request @ (LocalDaemonRequest::ListSlices(_)
             | LocalDaemonRequest::CreateSlice(_)
@@ -105,7 +107,7 @@ impl CommandRouter {
             | LocalDaemonRequest::GetSliceStateStatus(_)
             | LocalDaemonRequest::ResetSliceState(_)
             | LocalDaemonRequest::CreateSliceBackup(_)
-            | LocalDaemonRequest::RestoreSliceBackup(_)) => Box::pin(async move {
+            | LocalDaemonRequest::RestoreSliceBackup(_)) => boxed_handler(|| async move {
                 execute_slice_request(
                     &self.runtime_state,
                     &self.config_projection,
@@ -116,7 +118,7 @@ impl CommandRouter {
                 )
                 .await
             }),
-            request @ LocalDaemonRequest::DeleteKernel(_) => Box::pin(async move {
+            request @ LocalDaemonRequest::DeleteKernel(_) => boxed_handler(|| async move {
                 execute_kernel_lifecycle_request(
                     &self.config_projection,
                     &self.runtime_state,
@@ -126,7 +128,7 @@ impl CommandRouter {
             }),
             request @ (LocalDaemonRequest::ApproveRemoteMachine(_)
             | LocalDaemonRequest::ForgetRemoteMachine(_)
-            | LocalDaemonRequest::RenameRemoteMachine(_)) => Box::pin(async move {
+            | LocalDaemonRequest::RenameRemoteMachine(_)) => boxed_handler(|| async move {
                 execute_remote_machine_registry_request(
                     &self.app,
                     &self.config_projection,
@@ -145,7 +147,7 @@ impl CommandRouter {
             | LocalDaemonRequest::ShowWorkspaceLink(_)
             | LocalDaemonRequest::AttachWorkspaceLink(_)
             | LocalDaemonRequest::DetachWorkspaceLink(_)
-            | LocalDaemonRequest::GetWorkspaceLiveSyncStatus(_)) => Box::pin(async move {
+            | LocalDaemonRequest::GetWorkspaceLiveSyncStatus(_)) => boxed_handler(|| async move {
                 execute_session_collaboration_request(
                     &self.runtime_state,
                     &self.config_projection,
@@ -161,7 +163,7 @@ impl CommandRouter {
             | LocalDaemonRequest::ListTerminals(_)
             | LocalDaemonRequest::ListPairedClients(_)
             | LocalDaemonRequest::RecordPairedClient(_)
-            | LocalDaemonRequest::RevokePairedClient(_)) => Box::pin(async move {
+            | LocalDaemonRequest::RevokePairedClient(_)) => boxed_handler(|| async move {
                 execute_pairing_request(
                     &self.runtime_state,
                     &self.config_projection,
@@ -176,7 +178,7 @@ impl CommandRouter {
             | LocalDaemonRequest::RecordPromptInputHistory(_)
             | LocalDaemonRequest::QueryRecall(_)
             | LocalDaemonRequest::SearchRecall(_)
-            | LocalDaemonRequest::SemanticSearchRecall(_)) => Box::pin(async move {
+            | LocalDaemonRequest::SemanticSearchRecall(_)) => boxed_handler(|| async move {
                 execute_history_request(
                     self.history_store.clone(),
                     self.operational_history_store.clone(),
@@ -187,21 +189,25 @@ impl CommandRouter {
                 .await
             }),
             LocalDaemonRequest::PumpTerminalOutput(request) => {
-                Box::pin(async move { self.terminal_output_executor.execute(request).await })
-            }
-            request @ LocalDaemonRequest::TeardownProviderProcesses(_) => Box::pin(async move {
-                let caller_user_id = crate::runtime::command::command_caller_user_id(&command);
-                execute_provider_process_request(
-                    &self.runtime_state,
-                    &self.session_projection,
-                    &self.agent_runtime_projection,
-                    &self.provider_process_projection,
-                    &self.provider_run_projection,
-                    &caller_user_id,
-                    request,
+                boxed_handler(
+                    || async move { self.terminal_output_executor.execute(request).await },
                 )
-                .await
-            }),
+            }
+            request @ LocalDaemonRequest::TeardownProviderProcesses(_) => {
+                boxed_handler(|| async move {
+                    let caller_user_id = crate::runtime::command::command_caller_user_id(&command);
+                    execute_provider_process_request(
+                        &self.runtime_state,
+                        &self.session_projection,
+                        &self.agent_runtime_projection,
+                        &self.provider_process_projection,
+                        &self.provider_run_projection,
+                        &caller_user_id,
+                        request,
+                    )
+                    .await
+                })
+            }
             request => match command.priority {
                 KernelCommandPriority::Interactive => {
                     Box::pin(self.dispatch_interactive(command, request))

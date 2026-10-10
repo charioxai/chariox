@@ -175,7 +175,7 @@ fn agent_outline_pages_older_turns_with_cursor() {
                 "session-1",
                 &format!("attachment-{index}"),
                 "agent-1",
-                &format!("prompt {index}"),
+                format!("prompt {index}"),
             ),
             context,
         );

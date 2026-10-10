@@ -255,6 +255,7 @@ impl DaemonConfig {
                 .and_then(|value| value.parse::<u64>().ok())
                 .filter(|value| *value > 0)
                 .unwrap_or(60_000),
+            room_agent_tools: env::var("CHARIOX_ROOM_AGENT_TOOLS").as_deref() == Ok("1"),
             accept_remote_leases,
             kernel_runtime_role,
             remote_lease_capacity,
@@ -423,6 +424,15 @@ fn default_kernel_alias(machine_alias: Option<&str>, port: u16) -> Option<String
     }
 }
 
+fn load_env_cloud_relay_profile() -> Option<PersistedCloudRelayProfile> {
+    let payload = env::var("CHARIOX_CLOUD_RELAY_CONFIG_JSON").ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&payload).ok()?;
+    let profile_value = value.get("cloud_relay").cloned().unwrap_or(value);
+    serde_json::from_value::<PersistedCloudRelayProfile>(profile_value)
+        .ok()
+        .map(PersistedCloudRelayProfile::canonicalized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -516,13 +526,4 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("requires a token"));
     }
-}
-
-fn load_env_cloud_relay_profile() -> Option<PersistedCloudRelayProfile> {
-    let payload = env::var("CHARIOX_CLOUD_RELAY_CONFIG_JSON").ok()?;
-    let value = serde_json::from_str::<serde_json::Value>(&payload).ok()?;
-    let profile_value = value.get("cloud_relay").cloned().unwrap_or(value);
-    serde_json::from_value::<PersistedCloudRelayProfile>(profile_value)
-        .ok()
-        .map(PersistedCloudRelayProfile::canonicalized)
 }

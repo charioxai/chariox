@@ -19,7 +19,7 @@ use tokio::sync::{mpsc, oneshot};
 mod health;
 #[cfg(test)]
 mod tests;
-pub(crate) use health::{FirstInstallHealth, HealthyAppWorker};
+pub(crate) use health::FirstInstallHealth;
 
 /// Provisional generation. Only this owner can consume its channel's report.
 pub(crate) struct StartingAppWorker {

@@ -49,7 +49,7 @@ pub(super) fn mount(parent: &Dir, path: &Path, view: &mut View, source: &File) -
         } else {
             0
         },
-        propagation: libc::MS_PRIVATE as u64,
+        propagation: libc::MS_PRIVATE,
         userns_fd: 0,
     };
     if unsafe {

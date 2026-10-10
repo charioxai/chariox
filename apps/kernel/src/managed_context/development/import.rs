@@ -1018,6 +1018,10 @@ fn write_materialization_transaction(
     write_materialization_transaction_value(staging_root, &transaction)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing update_materialization_transaction operation signature and explicit context arguments"
+)]
 fn update_materialization_transaction(
     staging_root: &Path,
     materialization_root: &Path,
@@ -1102,10 +1106,10 @@ fn directory_identity(path: &Path) -> Result<MaterializationIdentity, DaemonErro
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return Ok(MaterializationIdentity {
+        Ok(MaterializationIdentity {
             device: metadata.dev(),
             inode: metadata.ino(),
-        });
+        })
     }
     #[cfg(not(unix))]
     {

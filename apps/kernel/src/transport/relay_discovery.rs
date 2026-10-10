@@ -11,7 +11,7 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::time::timeout;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 
 use chariox_relay::protocol::{
     RelayEnvelope, RelayKernelPresence, RelayMachinePresence, RelayMetadataQuery,
@@ -19,6 +19,23 @@ use chariox_relay::protocol::{
 
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
+
+/// Prepare a metadata-only admission using the existing paired Cloud path.
+/// Keep the kernel's runtime token and Cloud profile out of the returned
+/// temporary config so callers can reuse this admission for one inventory scan.
+pub(crate) async fn metadata_config(config: &DaemonConfig) -> Result<DaemonConfig, DaemonError> {
+    let mut discovery = config.clone();
+    if let Some(profile) = config.cloud_relay.as_ref() {
+        let issued = crate::runtime::cloud_api_client::issue_cloud_relay_inventory_discovery_token(
+            profile,
+            &config.daemon_id,
+        )
+        .await?;
+        discovery.relay_token = Some(issued.token);
+        discovery.cloud_relay = None;
+    }
+    Ok(discovery)
+}
 
 static RELAY_METADATA_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RELAY_METADATA_ATTEMPTS: usize = 3;
@@ -523,11 +540,32 @@ async fn query_relay_once_with_test_trace(
     query_relay_once_inner(config, query, Some(trace)).await
 }
 
-async fn query_relay_once_inner(
+// MP-08 / MP-10 / MP-11: keep relay TLS discovery out of every caller's
+// inline future frame; the body keeps admission, receipts and timeouts deferred.
+type RelayMetadataFuture<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<RelayEnvelope, DaemonError>> + Send + 'a>,
+>;
+
+#[inline(never)]
+fn query_relay_once_inner<'a>(
+    config: &'a DaemonConfig,
+    query: RelayMetadataQuery,
+    #[cfg(test)] trace: Option<&'a mut TemporaryPeerTestTrace>,
+) -> RelayMetadataFuture<'a> {
+    #[cfg(test)]
+    let pending = query_relay_once_body(config, query, trace);
+    #[cfg(not(test))]
+    let pending = query_relay_once_body(config, query);
+    Box::pin(pending)
+}
+
+async fn query_relay_once_body(
     config: &DaemonConfig,
     query: RelayMetadataQuery,
     #[cfg(test)] mut trace: Option<&mut TemporaryPeerTestTrace>,
 ) -> Result<RelayEnvelope, DaemonError> {
+    let discovery_config = metadata_config(config).await?;
+    let config = &discovery_config;
     let relay_url = config
         .relay_url
         .clone()
@@ -551,29 +589,32 @@ async fn query_relay_once_inner(
     let mut socket_trace = trace
         .as_deref()
         .map(|trace| TemporaryPeerTestTrace::socket(trace.identity));
-    let (mut socket, _) = timeout(request_timeout, connect_async(&relay_url))
-        .await
-        .map_err(|_| {
-            #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
-                trace.record("discovery_connect_timed_out", None);
-                trace.record("discovery_connect_future_cancelled", None);
-            }
-            DaemonError::LocalTransport {
-                operation: "connect relay metadata socket",
-                message: format!("timed out after {}ms", config.relay_request_timeout_ms),
-            }
-        })?
-        .map_err(|error| {
-            #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
-                trace.record("discovery_connect_failed", None);
-            }
-            DaemonError::LocalTransport {
-                operation: "connect relay metadata socket",
-                message: error.to_string(),
-            }
-        })?;
+    let (mut socket, _) = timeout(
+        request_timeout,
+        super::relay_socket_connect::connect(&relay_url),
+    )
+    .await
+    .map_err(|_| {
+        #[cfg(test)]
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.record("discovery_connect_timed_out", None);
+            trace.record("discovery_connect_future_cancelled", None);
+        }
+        DaemonError::LocalTransport {
+            operation: "connect relay metadata socket",
+            message: format!("timed out after {}ms", config.relay_request_timeout_ms),
+        }
+    })?
+    .map_err(|error| {
+        #[cfg(test)]
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.record("discovery_connect_failed", None);
+        }
+        DaemonError::LocalTransport {
+            operation: "connect relay metadata socket",
+            message: error.to_string(),
+        }
+    })?;
     #[cfg(test)]
     {
         let local_addr = relay_discovery_test_local_addr(&socket);
@@ -742,6 +783,35 @@ mod tests {
 
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
+
+    #[tokio::test]
+    async fn hosted_metadata_does_not_fall_back_to_runtime_admission() {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("wss://127.0.0.1:1".into());
+        config.relay_token = Some("synthetic-kernel-runtime-token".into());
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            machine_id: Some("paired-machine".into()),
+            ..Default::default()
+        });
+        let error = query_relay_once(&config, RelayMetadataQuery::ListLiveMachines)
+            .await
+            .expect_err("failed scoped discovery must reject before opening a relay socket");
+        assert!(matches!(
+            error,
+            DaemonError::LocalTransport {
+                operation: "issue cloud relay inventory discovery token",
+                ..
+            }
+        ));
+        assert_eq!(
+            config.relay_token.as_deref(),
+            Some("synthetic-kernel-runtime-token")
+        );
+        assert!(
+            config.cloud_relay.is_some(),
+            "runtime admission must remain intact"
+        );
+    }
 
     #[tokio::test]
     async fn metadata_query_rejects_response_for_another_request() {

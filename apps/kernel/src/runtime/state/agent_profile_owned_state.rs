@@ -29,6 +29,10 @@ impl owned::OwnedRemoteAgentProfileUpdate {
 }
 
 impl KernelRuntimeOwnedState {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing update_agent_profile operation signature and explicit context arguments"
+    )]
     pub(super) fn update_agent_profile(
         &self,
         session_id: &str,
@@ -77,10 +81,21 @@ impl KernelRuntimeOwnedState {
             "update agent profile",
         )?;
         let target_provider = provider.as_deref().unwrap_or(agent.provider()).to_string();
-        let target_model = model.as_deref().or(agent.model()).map(str::to_string);
-        let requested_account_profile = account_profile
+        // MP-08/MP-10/MP-11: account, model and effort belong to a provider
+        // family. Resolve all requested defaults before terminating any run.
+        let same_family = crate::provider::canonical_provider_family(&target_provider)
+            == crate::provider::canonical_provider_family(agent.provider())
+            && (crate::provider::canonical_provider_family(&target_provider).is_some()
+                || target_provider == agent.provider());
+        let target_model = model
             .as_deref()
-            .unwrap_or(agent.provider_account_profile());
+            .or_else(|| same_family.then(|| agent.model()).flatten())
+            .map(str::to_string);
+        let requested_account_profile = account_profile.as_deref().unwrap_or(if same_family {
+            agent.provider_account_profile()
+        } else {
+            "default"
+        });
         let target_account_profile = if crate::provider::canonical_provider_family(&target_provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
@@ -101,7 +116,7 @@ impl KernelRuntimeOwnedState {
         };
         let target_effort = match effort.as_ref() {
             Some(value) => value.as_deref(),
-            None => agent.effort(),
+            None => same_family.then(|| agent.effort()).flatten(),
         };
         let provider_model_or_account_changed = target_provider != agent.provider()
             || target_model.as_deref() != agent.model()

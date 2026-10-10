@@ -125,7 +125,7 @@ impl DaemonApp {
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, &agent_id)
                 .is_some();
-        let prompt = if will_queue {
+        let prompt = if will_queue || self.config().room_agent_tools {
             prompt
         } else {
             prompt.with_id(self.sessions.reserve_prompt_id())
@@ -392,6 +392,7 @@ impl DaemonApp {
         Ok(active)
     }
 
+    #[cfg(test)]
     pub(crate) fn prompt_owner_sync_external_active_prompt(
         &mut self,
         session_id: &str,
@@ -599,6 +600,87 @@ mod tests {
                 .map(|prompt| prompt.prompt()),
             Some("external prompt from prompt owner")
         );
+    }
+
+    #[test]
+    fn a02_room_admission_keeps_task_prompt_identity() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .unwrap();
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "task-client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let id = app.sessions.reserve_prompt_id();
+        let prompt = PromptQueueItem::new(
+            &id,
+            attachment.id(),
+            agent.id(),
+            "ordinary task",
+            PromptStatus::Queued,
+        );
+        let outcome = app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .unwrap();
+        let PromptSubmissionOutcome::Started { prompt } = outcome else {
+            panic!()
+        };
+        assert_eq!(prompt.id(), id);
+        let mut previous = id;
+        let mut queued_ids = Vec::new();
+        for _ in 0..2 {
+            let mut prepared = crate::app::KernelPreparedPromptSubmission {
+                session_id: session.id().into(),
+                prompt: PromptQueueItem::new(
+                    "pending-draft:repeated",
+                    attachment.id(),
+                    agent.id(),
+                    "next task",
+                    PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: false,
+            };
+            prepared
+                .prepare_task_prompt_identity(|| app.sessions.reserve_prompt_id())
+                .unwrap();
+            let allocated = prepared.prompt.id().to_string();
+            prepared
+                .prepare_task_prompt_identity(|| panic!("allocated IDs must stay stable"))
+                .unwrap();
+            assert_ne!(allocated, previous);
+            assert!(!allocated.starts_with("pending-draft:"));
+            let outcome = app
+                .prompt_owner_submit_prepared_prompt(session.id(), prepared.prompt, false)
+                .unwrap();
+            let PromptSubmissionOutcome::Queued { prompt } = outcome else {
+                panic!()
+            };
+            assert_eq!(prompt.id(), allocated);
+            queued_ids.push(allocated.clone());
+            previous = allocated;
+        }
+        for queued_id in queued_ids {
+            app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+                .unwrap();
+            let replacement_id = app.sessions.reserve_prompt_id();
+            let promoted = app
+                .prompt_owner_activate_next_queued_prompt_with_prompt_id(
+                    session.id(),
+                    agent.id(),
+                    Some(&queued_id),
+                    replacement_id,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(promoted.id(), queued_id);
+        }
     }
 
     #[test]

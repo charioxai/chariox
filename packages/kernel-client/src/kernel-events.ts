@@ -8,6 +8,7 @@ import type {
 } from "./kernel-types.js"
 
 export type KernelEvent =
+  | { event: "kernel_browser_frame"; subscription_id: string; frame: Record<string, unknown> }
   | {
     event: "terminal_output"
     records: Array<Record<string, unknown>>

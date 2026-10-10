@@ -30,6 +30,10 @@ pub(crate) struct BrowserImportRelayResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing KernelIncomingFrame typed actor payload layout"
+)]
 pub(crate) enum KernelIncomingFrame {
     Request {
         request_id: String,
@@ -79,6 +83,10 @@ pub(crate) enum KernelOutgoingFrame {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub(crate) enum KernelEvent {
+    KernelBrowserFrame {
+        subscription_id: String,
+        frame: Value,
+    },
     TerminalOutput {
         records: Vec<TerminalOutputRecord>,
     },
@@ -96,12 +104,20 @@ pub(crate) enum KernelEvent {
     SessionSnapshot {
         session: Box<RuntimeSession>,
         provider_run: Box<Option<PublicProviderRun>>,
+        #[allow(
+            clippy::box_collection,
+            reason = "Keeps the protocol enum payload bounded independently of map header size"
+        )]
         agent_activity: Box<BTreeMap<String, AgentRuntimeActivity>>,
         #[serde(default)]
         agent_activity_revision: u64,
     },
     AgentActivityChanged {
         session_id: String,
+        #[allow(
+            clippy::box_collection,
+            reason = "Keeps the protocol enum payload bounded independently of map header size"
+        )]
         agent_activity: Box<BTreeMap<String, AgentRuntimeActivity>>,
         #[serde(default)]
         agent_activity_revision: u64,
@@ -559,6 +575,21 @@ pub(crate) fn session_metadata_changed_event(
     })
 }
 
+/// MP-08/MP-10/MP-11: local and relay subscribers share the decision about
+/// replacing a full session snapshot with smaller projection events.
+pub(crate) fn can_skip_session_snapshot(
+    snapshot: &SessionSnapshotProjection,
+    previous_snapshot: Option<&SessionSnapshotProjection>,
+    emitted_projection_delta: bool,
+) -> bool {
+    // Smaller events do not carry window status. Keep the full snapshot when
+    // a window opens, warns, extends or ends alongside another projection delta.
+    emitted_projection_delta
+        && previous_snapshot.is_some_and(|previous| {
+            previous.session.sudo_windows() == snapshot.session.sudo_windows()
+        })
+}
+
 pub(crate) fn runtime_interactions_changed_event(
     snapshot: &SessionSnapshotProjection,
     previous_snapshot: Option<&SessionSnapshotProjection>,
@@ -624,6 +655,7 @@ fn changed_workflow_runs(
 
 pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
     match event {
+        KernelEvent::KernelBrowserFrame { .. } => "kernel_browser_frame",
         KernelEvent::TerminalOutput { .. } => "terminal_output",
         KernelEvent::RuntimeNotices { .. } => "runtime_notices",
         KernelEvent::AssistantMessageCompleted { .. } => "assistant_message_completed",
@@ -650,6 +682,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
 
 pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
     match event {
+        KernelEvent::KernelBrowserFrame { .. } => None,
         KernelEvent::TerminalOutput { records } => {
             records.first().map(|record| record.session_id.as_str())
         }
@@ -698,6 +731,7 @@ pub(crate) fn subscription_event_stream_id(session_id: &str, attachment_id: &str
 
 pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id: &str) -> bool {
     match event {
+        KernelEvent::KernelBrowserFrame { .. } => false,
         KernelEvent::TerminalOutput { records } => records.iter().any(|record| {
             record
                 .recipient_attachment_ids
@@ -802,6 +836,7 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::ExternalRequestFailed { code, retryable } => {
             kernel_error(code, error, *retryable)
         }
+        DaemonError::UserDomainRefused { reason } => kernel_error(reason.code(), error, false),
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_kernel_error(source);
             mapped.message = error.to_string();

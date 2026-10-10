@@ -250,7 +250,7 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         };
         self.provider_account_profiles.require_agent_authenticated(
-            &self.config_projection.snapshot(),
+            &self.provider_account_authority_owner_for_agent(&target_agent)?,
             &target_agent,
             "submit remote prompt",
         )?;
@@ -266,18 +266,19 @@ impl KernelRuntimeOwnedState {
             .is_some();
         let will_queue = prepared.force_queue || queued_while_active;
         let prompt = if let Some(source_attachment) = source_attachment.as_ref() {
-            prepared.prompt.clone().with_source_attribution(
-                source_attachment.client_id(),
-                source_attachment.owner_user_id(),
-            )
+            prepared
+                .prompt
+                .clone()
+                .with_source_attachment(source_attachment)
         } else {
             prepared.prompt.clone()
         };
-        let prompt = if will_queue {
+        let prompt = if will_queue || self.config_projection.snapshot().room_agent_tools {
             prompt
         } else {
             prompt.with_id(self.session_store.reserve_prompt_id())
         };
+        let sudo_deferred = self.sudo_work_defers(&session, &target_agent_id, prompt.id());
         let _admission = self.begin_managed_activity_admission()?;
         let outcome = self
             .prompt_state_owner
@@ -287,6 +288,7 @@ impl KernelRuntimeOwnedState {
                 prepared.force_queue,
                 allow_queue,
             )?;
+        self.note_sudo_deferred_prompt(sudo_deferred, &outcome, &session_id, &target_agent_id);
         let outcome_agent_id = match &outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt }
             | crate::session::PromptSubmissionOutcome::Queued { prompt } => {

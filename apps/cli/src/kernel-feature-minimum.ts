@@ -9,6 +9,8 @@ type FeatureMinimum = { feature: string; minimum: number }
 const features: Record<string, FeatureMinimum> = {
   RequestKernelAccess: { feature: "Local-kernel access", minimum: 470 },
   GetProjectEnvironment: { feature: "Project Environment", minimum: requests.projectEnvironmentMinimumProtocolVersion },
+  ...Object.fromEntries(["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"].map(name => [name, { feature: "User-domain App views", minimum: requests.userAppViewsMinimumProtocolVersion }])),
+  KernelBrowser: { feature: "Kernel browser", minimum: requests.kernelBrowserMinimumProtocolVersion },
   AcceptAppHostAction: { feature: "App host actions", minimum: requests.appHostActionMinimumProtocolVersion },
   RevokeAppFileGrants: { feature: "App file revocation", minimum: requests.appFileRevokeMinimumProtocolVersion },
   RestoreAppDataSnapshot: { feature: "App data snapshot restore", minimum: requests.appDataSnapshotRestoreMinimumProtocolVersion },

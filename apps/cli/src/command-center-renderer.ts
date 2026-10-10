@@ -31,6 +31,9 @@ export function renderCommandCenterOverlay({
   if (!box) {
     return
   }
+  // MP-08/MP-10/MP-11: a transparent closed overlay still intercepts mouse
+  // input above the prompt, including the sudo band's Extend/Revoke controls.
+  box.visible = open
   positionCommandCenterOverlay(box, promptHeight, overlayFootprint)
   for (const child of [...box.getChildren()]) {
     box.remove(child.id)

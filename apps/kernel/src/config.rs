@@ -164,6 +164,8 @@ pub struct DaemonConfig {
     pub relay_private_key: String,
     pub relay_heartbeat_ms: u64,
     pub relay_request_timeout_ms: u64,
+    /// Transitional all-agent room surface; /meta continues to drain.
+    pub room_agent_tools: bool,
     pub accept_remote_leases: bool,
     pub kernel_runtime_role: KernelRuntimeRole,
     /// Optional operator limit on leased turns running at once; further turns
@@ -276,6 +278,7 @@ impl DaemonConfig {
             relay_private_key,
             relay_heartbeat_ms: DEFAULT_RELAY_HEARTBEAT_MS,
             relay_request_timeout_ms: 60_000,
+            room_agent_tools: std::env::var("CHARIOX_ROOM_AGENT_TOOLS").as_deref() == Ok("1"),
             accept_remote_leases: true,
             kernel_runtime_role: KernelRuntimeRole::General,
             remote_lease_capacity: None,
@@ -731,6 +734,14 @@ fn load_user_config_from_path(path: &PathBuf) -> CharioxUserConfig {
         )
     });
     clamp_operational_history_config(&mut config);
+    if let Some(notice) = config.kernel_access.clamp_legacy() {
+        eprintln!("warning: {notice} ({})", path.display());
+        crate::logging::warn_with_fields(
+            "config.kernel_access",
+            notice,
+            serde_json::json!({ "user_config_path": path.display().to_string() }),
+        );
+    }
     reject_test_persistence_paths_in_default_user_config(path, &config);
     config
 }

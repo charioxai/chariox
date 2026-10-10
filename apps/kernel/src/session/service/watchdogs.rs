@@ -3,6 +3,10 @@ use super::*;
 const PUBLICATION_WATCHDOG_STARTUP_GRACE_MS: u64 = 300_000;
 
 impl SessionService {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing create_workflow_watchdog operation signature and explicit context arguments"
+    )]
     pub fn create_workflow_watchdog(
         &mut self,
         session_id: &str,
@@ -26,6 +30,10 @@ impl SessionService {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing create_workflow_schedule operation signature and explicit context arguments"
+    )]
     pub fn create_workflow_schedule(
         &mut self,
         session_id: &str,
@@ -690,8 +698,8 @@ impl SessionService {
             }
         })?;
         Ok(watchdog.enabled()
-            && !watchdog
+            && watchdog
                 .max_wakeups()
-                .is_some_and(|limit| watchdog.wakeups_executed() >= limit))
+                .is_none_or(|limit| watchdog.wakeups_executed() < limit))
     }
 }

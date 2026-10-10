@@ -1,0 +1,100 @@
+[
+  {
+    "Notes": {
+      "result": {
+        "event": "selection_changed",
+        "selection": {
+          "selection_id": "s",
+          "anchor": {
+            "window": {
+              "kind": "panel",
+              "window_id": "message-42"
+            },
+            "url": null,
+            "document_id": null,
+            "hint": "node-42",
+            "quote": {
+              "exact": "quote",
+              "prefix": "before",
+              "suffix": "after"
+            }
+          },
+          "box_css": null
+        }
+      }
+    }
+  },
+  {
+    "Notes": {
+      "result": {
+        "event": "note_changed",
+        "note": {
+          "note_id": "n",
+          "author": "alice",
+          "domain": "user",
+          "anchor": {
+            "window": {
+              "kind": "panel",
+              "window_id": "message-42"
+            },
+            "url": null,
+            "document_id": null,
+            "hint": "node-42",
+            "quote": {
+              "exact": "quote",
+              "prefix": "before",
+              "suffix": "after"
+            }
+          },
+          "comment": "explain",
+          "replies": [
+            {
+              "author": "agent:focused",
+              "comment": "answer",
+              "created_at_ms": 101
+            }
+          ],
+          "resolved": false,
+          "anchor_state": "attached",
+          "box_css": null,
+          "created_at_ms": 100,
+          "updated_at_ms": 101
+        }
+      }
+    }
+  },
+  {
+    "Notes": {
+      "result": {
+        "event": "notes_listed",
+        "notes": [
+          {
+            "note_id": "n",
+            "window": {
+              "kind": "panel",
+              "window_id": "message-42"
+            },
+            "resolved": false,
+            "anchor_state": "attached",
+            "updated_at_ms": 101
+          }
+        ]
+      }
+    }
+  },
+  {
+    "Notes": {
+      "result": {
+        "event": "prompt_draft",
+        "note_id": "n",
+        "text": "[Chariox note n]",
+        "attachment": {
+          "url": "chariox-terminal://prompt-attachment/n/note.txt",
+          "mime": "text/plain",
+          "filename": "Chariox note.txt",
+          "contents_base64": "bm90ZQ=="
+        }
+      }
+    }
+  }
+]

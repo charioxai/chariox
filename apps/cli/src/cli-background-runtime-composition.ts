@@ -305,10 +305,10 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
         if (!deps.isAttached()) {
           return
         }
-        const currentSession = deps.sessionState()
-        const latestSession = await deps.getSessionState(currentSession.id)
-        deps.applySessionState(latestSession)
-        await deps.refreshAgentPanes(latestSession)
+        if (!deps.sessionState().agents.some((agent: {id: string}) => agent.id === agentId)) return
+        // Use the shared hydrator's room and attachment checks after its read.
+        const latestSession = await deps.hydrateCurrentAttachedSession("external provider history")
+        if (!latestSession || deps.sessionState().id !== latestSession.id) return
         deps.syncVisibleTranscriptPreview()
         deps.appLogger?.debug?.("refreshed external provider history", {
           session_id: latestSession.id,

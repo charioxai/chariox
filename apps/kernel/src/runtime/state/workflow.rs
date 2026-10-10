@@ -178,7 +178,7 @@ impl KernelRuntimeOwnedState {
                 run.state(),
                 crate::provider::ProviderRunState::Starting
                     | crate::provider::ProviderRunState::Running
-            ) && self.provider_run_has_active_prompt(session_id, &run)?
+            ) && self.provider_run_has_active_prompt(session_id, run)?
             {
                 // An ordinary provider with an active prompt owns the session until that
                 // prompt settles. The workflow prompt remains FIFO-queued and the normal
@@ -313,6 +313,30 @@ impl KernelRuntimeOwnedState {
         workflow_node_run_id: &str,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
         let prepared = normalize_workflow_prepared_prompt(prepared);
+        let admitted = self.admit_agent_task(&prepared)?;
+        let result =
+            self.workflow_submit_admitted_prompt(&prepared, _workflow_run_id, workflow_node_run_id);
+        if admitted {
+            let session = self.session_store.get_session(&prepared.session_id)?;
+            let (active, queued) = self
+                .prompt_state_owner
+                .state_parts(&session, prepared.prompt.target_agent_id());
+            if active.is_none_or(|p| p.id() != prepared.prompt.id())
+                && !queued.iter().any(|p| p.id() == prepared.prompt.id())
+            {
+                // Failed/expired admission never becomes a supervised orphan.
+                self.withdraw_agent_task(prepared.prompt.id())?;
+            }
+        }
+        result
+    }
+
+    fn workflow_submit_admitted_prompt(
+        &self,
+        prepared: &crate::app::KernelPreparedPromptSubmission,
+        _workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<WorkflowPromptDispatches, DaemonError> {
         let mut dispatches = WorkflowPromptDispatches::default();
         let target_agent = self
             .agent_store
@@ -339,12 +363,15 @@ impl KernelRuntimeOwnedState {
         } else {
             None
         };
+        if self.workflow_expire_pending_entry(&prepared.session_id, _workflow_run_id)? {
+            return Ok(dispatches);
+        }
         let mut submission = match self.submit_local_prepared_prompt_for_provider_run(
-            &prepared,
+            prepared,
             workflow_provider_run_id.as_deref(),
         )? {
             Some(submission) => submission,
-            None => match self.submit_remote_prepared_prompt(&prepared)? {
+            None => match self.submit_remote_prepared_prompt(prepared)? {
                 Some(submission) => submission,
                 None => return Ok(dispatches),
             },

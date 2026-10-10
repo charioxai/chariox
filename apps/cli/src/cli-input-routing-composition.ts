@@ -1,3 +1,4 @@
+import { createAccessCommandController } from "./access-command-controller.js"
 import { parseKeypress } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
@@ -20,10 +21,11 @@ import {
   submitPromptWithRecovery,
 } from "./prompt-runtime-api.js"
 import { getSessionState } from "./session-api.js"
-import { sharedShellCommandForSlashCommand } from "./commands.js"
+import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands.js"
 import { createSlashCommandSubmitController } from "./slash-command-submit-controller.js"
 import { renderPromptTranscript } from "./transcript-render.js"
 import { createWaitingRoomKeyController } from "./waiting-room-key-controller.js"
+import { userAppViewsPrototypeEnabled } from "./user-app-views-flag.js"
 import { createWaitingRoomPromptBootstrapController } from "./waiting-room-prompt-bootstrap-controller.js"
 import { handleWaitingRoomSlashCommand } from "./waiting-room-slash-command-policy.js"
 import { createWorkspaceShellSubmitController } from "./workspace-shell-controller.js"
@@ -229,6 +231,12 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
         : {}),
     }
   }
+  const accessCommands = createAccessCommandController({
+    client: deps.client,
+    appendNotice: deps.appendNotice,
+  })
+  accessCommands.start()
+  onCleanup(() => accessCommands.stop())
   let handleSharedShellCommand = async (_rawCommand: string): Promise<boolean> => false
   let pendingProjectRenameId: string | null = null
   const slashCommandSubmitController = createSlashCommandSubmitController({
@@ -291,6 +299,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     ...(deps.openRoomViewer ? { openRoomViewer: deps.openRoomViewer } : {}),
     ...(deps.readSecret ? { readSecret: deps.readSecret } : {}),
     workspaceShellContext: deps.workspaceShellContext,
+    attachmentId: () => deps.attachmentState()?.id ?? null,
     setWorkspaceShellContext: (context) => {
       deps.setWorkspaceShellContext(context)
     },
@@ -319,6 +328,11 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   })
   const submitWorkspaceShellCommand = workspaceShellSubmitController.submit
   handleSharedShellCommand = async (rawCommand) => {
+    const access = parseSlashCommand(rawCommand)
+    if (access?.kind === "access") {
+      await accessCommands.handle(access.args)
+      return true
+    }
     const shellCommand = sharedShellCommandForSlashCommand(rawCommand)
     if (!shellCommand) {
       return false
@@ -579,6 +593,10 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   })
 
   const waitingRoomKeyController = createWaitingRoomKeyController({
+    ...(userAppViewsPrototypeEnabled() ? { beginCommand: () => {
+      deps.promptTextController.setText("/")
+      deps.promptInputRefController.focus()
+    } } : {}),
     isAttached: deps.isAttached,
     hotkeysOpen: deps.dialogOverlayOpen,
     promptFocused: deps.promptInputRefController.isFocused,

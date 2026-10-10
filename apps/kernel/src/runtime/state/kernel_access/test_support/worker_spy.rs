@@ -134,6 +134,11 @@ impl WorkerSpy {
                                     "model":null, "effort":null, "execution_mode":null, "permission_level":null,
                                     "backing_session_id":"worker-session", "backing_agent_id":"worker-agent", "backing_attachment_id":"worker-attachment", "created_at_ms":1
                                 })).unwrap() },
+                                RelayPeerRequest::CompleteLeasedPrompt { .. } => RelayPeerResponse::LeasedPromptCompleted {
+                                    provider_run_id: Some("worker-run".into()), provider_diagnostic: None, provider_termination: None,
+                                    git_observations: vec![], workspace_live_sync_change: None,
+                                    completion: crate::session::PromptCompletion { completed: crate::session::PromptQueueItem::new("worker-active", "worker-attachment", "leased-agent", "active", crate::session::PromptStatus::Completed), started_next: None },
+                                },
                                 RelayPeerRequest::CancelLeasedPrompt { .. } => RelayPeerResponse::LeasedPromptCancelled { cancellation: crate::session::PromptCancellation {
                                     prompt: crate::session::PromptQueueItem::new("worker-prompt", "worker-attachment", "worker-agent", "fixture", crate::session::PromptStatus::Cancelled),
                                     started_next: None,

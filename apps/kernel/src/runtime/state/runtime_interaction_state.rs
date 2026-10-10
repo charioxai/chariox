@@ -209,6 +209,7 @@ impl KernelRuntimeState {
         Ok(rx)
     }
 
+    #[cfg(test)]
     pub(crate) async fn resolve_runtime_interaction(
         &self,
         session_id: &str,
@@ -271,6 +272,7 @@ impl KernelRuntimeState {
         Ok(rx)
     }
 
+    #[cfg(test)]
     pub(in crate::runtime) async fn resolve_terminal_runtime_interaction(
         &self,
         session_id: &str,
@@ -311,6 +313,20 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         if connection_class
             .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
+            && interaction_id.starts_with("capability-request-")
+            && self
+                .owned
+                .pending_interactions
+                .write()
+                .get(interaction_id)
+                .is_some_and(|pending| pending.kernel_operation_owner.is_some())
+        {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "Only the owner's Chariox terminal can authorize resource acquisition",
+            ));
+        }
+        if connection_class
+            .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
             && self
                 .owned
                 .pending_interactions
@@ -322,6 +338,39 @@ impl KernelRuntimeState {
                 operation: "credential interaction",
                 message: "Only a Chariox terminal can answer a credential prompt".into(),
             });
+        }
+        if connection_class
+            .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
+            && self
+                .owned
+                .pending_interactions
+                .write()
+                .get(interaction_id)
+                .is_some_and(|pending| pending.user_domain_interaction.is_some())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime interaction",
+                message: "Only a Chariox terminal can answer a user-domain decision".into(),
+            });
+        }
+        // MP-11 A07: a hand-off is answered only by the owner's terminal, and
+        // only with safe choices here; values use protected entry.
+        if super::is_handoff_interaction_id(interaction_id) {
+            if connection_class != Some(crate::local::KernelConnectionClass::Terminal)
+                || custom_reply.is_some()
+                || passkey.is_some()
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "owner hand-off",
+                    message: "Only the owner's Chariox terminal can answer a hand-off".into(),
+                });
+            }
+            return self.answer_handoff_choice(
+                session_id,
+                interaction_id,
+                choice_id,
+                caller_user_id,
+            );
         }
         let authorization = self
             .authorize_critical_approval(

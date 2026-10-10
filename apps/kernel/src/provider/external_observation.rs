@@ -229,6 +229,7 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
         Self { provider }
     }
 
+    #[cfg(test)]
     pub(crate) fn configured_provider_ids() -> impl Iterator<Item = &'static str> {
         EXTERNAL_PROVIDER_OBSERVATION_SPECS
             .iter()

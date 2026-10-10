@@ -236,6 +236,7 @@ impl SessionStateStore {
         self.write().remove_restored_session(session_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn create_room_environment(
         &self,
         session_id: &str,

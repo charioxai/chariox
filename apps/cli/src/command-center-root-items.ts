@@ -14,6 +14,9 @@ export function buildCommandCenterRootItems(
   }
   const miscNodes = context.commandTree.find((node) => node.id === "misc")?.children?.map(mapNodeToItem) ?? []
   return [...rootNodes, ...miscNodes, {
+    id: "access", label: "/access", description: "List or revoke user-domain access",
+    kind: "command" as const, value: "/access",
+  }, {
     id: "approvals", label: "/approvals", description: "Open pending approvals (Ctrl+G or F8)",
     kind: "command" as const, value: "/approvals",
   }]

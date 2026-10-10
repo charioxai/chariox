@@ -97,7 +97,7 @@ import {
   validateScript,
   testConnector,
 } from "./extension-api.js"
-import { deleteKernel, exportDebugBundle, getDaemonHealth, listKernelAccessGrants, revokeKernelAccessGrant } from "./kernel-api.js"
+import { deleteKernel, exportDebugBundle, extendKernelSudo, getDaemonHealth, listKernelAccessGrants, revokeKernelAccessGrant } from "./kernel-api.js"
 import {
   mergeRelayCloudProfile,
   mergeUiPreferences,
@@ -195,6 +195,7 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
+  userAppViews?: { handle(args: string[], sessionId?: string): Promise<boolean> }
   appHostTerminal?: AppHostTerminal
   lastViewedAppHostOperationId?: () => string | undefined
   appFileInstaller?: AppFileInstaller
@@ -500,6 +501,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
     sendAppRequest: (request) => client.send(request),
+    ...(deps.userAppViews ? { userAppViews: deps.userAppViews } : {}),
     ...(deps.appFileInstaller ? { appFileInstaller: deps.appFileInstaller } : {}),
     ...(deps.appDevLoop ? { appDevLoop: deps.appDevLoop } : {}),
     ...(deps.appPublisherEnrollment ? { appPublisherEnrollment: deps.appPublisherEnrollment } : {}),
@@ -522,6 +524,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getDaemonHealth: () => getDaemonHealth(client),
     listKernelAccessGrants: () => listKernelAccessGrants(client),
     revokeKernelAccessGrant: (id) => revokeKernelAccessGrant(client, id),
+    sendExtendKernelSudo: (request) => extendKernelSudo(client, request),
     exportDebugBundle: (sessionId, label) => exportDebugBundle(client, sessionId, label),
     assignSessionAlias: (sessionId, alias) => aliasSession(client, sessionId, alias),
     aliasAgent: (sessionId, agentId, alias) => aliasAgent(client, sessionId, agentId, alias),

@@ -313,12 +313,10 @@ impl CharioxMcpRegistry {
     }
 
     fn primary_root(&self) -> Result<&PathBuf, DaemonError> {
-        self.roots
-            .first()
-            .ok_or_else(|| DaemonError::InvalidConfig {
-                field: "mcp registry roots",
-                message: "must include at least one root",
-            })
+        self.roots.first().ok_or(DaemonError::InvalidConfig {
+            field: "mcp registry roots",
+            message: "must include at least one root",
+        })
     }
 
     fn read_config(path: &Path) -> Result<CharioxMcpServerConfig, DaemonError> {

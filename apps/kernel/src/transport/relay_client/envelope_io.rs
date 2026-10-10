@@ -63,6 +63,34 @@ pub(super) async fn send_outgoing_event_envelope(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn md_display_small_events_bypass_batching_but_large_frames_keep_event_credit() {
+        let (sender, mut priority, mut events) = RelayOutgoingSender::channel(1);
+        let event = |large| {
+            let mut payload = encrypted_payload_for_test();
+            if large {
+                payload.ciphertext = "x".repeat(12 * 1024 + 1);
+            }
+            RelayEnvelope::DaemonEvent {
+                subscription_id: "not-an-authority-prefix".into(),
+                event_id: 1,
+                encrypted_event: payload,
+            }
+        };
+        sender.send_display_event(event(false)).await.unwrap();
+        assert!(priority.try_recv().is_ok());
+        assert!(events.try_recv().is_err());
+        sender.send_display_event(event(true)).await.unwrap();
+        assert!(events.try_recv().is_ok());
+        assert!(priority.try_recv().is_err());
+        sender.send_display_event(event(false)).await.unwrap();
+        assert!(tokio::time::timeout(
+            Duration::from_millis(10),
+            sender.send_display_event(event(false))
+        )
+        .await
+        .is_err());
+    }
 
     #[test]
     fn send_outgoing_envelope_fails_when_relay_queue_is_full() {

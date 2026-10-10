@@ -39,6 +39,7 @@ export type WaitingRoomKeyControllerDeps = {
   beginProjectRename?: (projectId: string, currentName: string) => void
   restoreProject?: (projectId: string) => void
   activateWaitingRoom: () => void
+  beginCommand?: () => void
   openManagedMachineDialog?: () => boolean
 }
 
@@ -60,6 +61,12 @@ export function createWaitingRoomKeyController(
         commandCenterQuery: deps.commandCenterQuery(),
       })) {
         return false
+      }
+
+      if (deps.beginCommand && !deps.commandCenterQuery().trim() && event.eventType !== "release"
+        && event.name === "/" && !event.ctrl && !event.meta && !event.alt && !event.super) {
+        deps.beginCommand()
+        return true
       }
 
       const keyNavigationOptions = {

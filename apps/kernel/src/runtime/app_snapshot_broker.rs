@@ -327,7 +327,7 @@ pub(crate) fn free_bytes(path: &Path) -> Option<u64> {
         return None;
     }
     let stat = unsafe { stat.assume_init() };
-    Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+    Some(stat.f_bavail * stat.f_frsize)
 }
 
 fn storage(_: std::io::Error) -> RemoteError {

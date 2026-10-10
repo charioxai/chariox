@@ -35,6 +35,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CancelBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::ExtendKernelSudo(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::OpenAppView(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -168,6 +171,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::RespondToInteraction(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::RespondToHandoff(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::RequestNativeProviderTurnInteraction(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -189,6 +195,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::RoomBrowserArtifact(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::CaptureVisibleRegion(request) => match &request.surface {
+            crate::local::ScreenshotSurface::Room { session_id, .. } => {
+                Some(SessionMembershipScope::SessionId(session_id.clone()))
+            }
+            _ => None,
+        },
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -342,6 +354,18 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ListAgents(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::RegisterWorkflowNotificationSource(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::AttachWorkflowNotification(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::DetachWorkflowNotification(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::ListWorkflowNotifications(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
         LocalDaemonRequest::CreateWorkflow(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -544,7 +568,17 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ClearWorkflowPromptQueue(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::AcceptAppHostAction(_)
+        // MD-stack: user-domain admission lives in each authenticated service.
+        LocalDaemonRequest::Notes(_)
+        | LocalDaemonRequest::KernelBrowser(_)
+        | LocalDaemonRequest::OpenUserAppView(_)
+        | LocalDaemonRequest::ListUserAppViews(_)
+        | LocalDaemonRequest::CloseUserAppView(_)
+        | LocalDaemonRequest::GetUserAppViewFrontend(_)
+        | LocalDaemonRequest::CallUserAppView(_)
+        | LocalDaemonRequest::SubscribeUserAppViews(_)
+        | LocalDaemonRequest::AnswerUserDomainInteraction(_)
+        | LocalDaemonRequest::AcceptAppHostAction(_)
         | LocalDaemonRequest::AdjustProjectEnvironment(_)
         | LocalDaemonRequest::CreateDisposableWorker(_)
         | LocalDaemonRequest::GetDisposableWorker(_)

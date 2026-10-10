@@ -7,7 +7,9 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, MissedTickBehavior};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+#[cfg(test)]
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 
 use chariox_relay::protocol::{
     ClientTarget, EncryptedRelayPayload, RelayDisplayTunnelHeader, RelayDisplayTunnelOpenRequest,
@@ -24,8 +26,8 @@ use crate::runtime_transport::{
     WAITING_ROOM_ROW_COALESCE_MS, WATCH_INTERVAL_MS,
 };
 use crate::transport::kernel_protocol::{
-    agent_activity_changed_event, event_is_relevant_to_attachment, provider_run_changed_event,
-    runtime_interactions_changed_event, session_metadata_changed_event,
+    agent_activity_changed_event, can_skip_session_snapshot, event_is_relevant_to_attachment,
+    provider_run_changed_event, runtime_interactions_changed_event, session_metadata_changed_event,
     subscription_event_stream_id, terminal_output_event_batches, workflow_run_only_changed,
     workflow_run_updated_events, KernelEvent, WAITING_ROOM_INVENTORY_SENTINEL_ID,
     WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
@@ -34,6 +36,7 @@ use crate::transport::relay_crypto;
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::RelayPeerEvent;
 
+mod browser_display;
 mod connection_config;
 mod connection_state;
 mod connector;
@@ -164,6 +167,21 @@ pub(crate) struct RelayOutgoingSender {
 }
 
 impl RelayOutgoingSender {
+    // MD-DISPLAY-02/04: only the admitted display producer selects this path.
+    // Small input acknowledgements avoid event batching; large repair/video
+    // envelopes stay on the bounded event lane so controls are not starved.
+    async fn send_display_event(
+        &self,
+        envelope: RelayEnvelope,
+    ) -> Result<(), mpsc::error::SendError<RelayEnvelope>> {
+        debug_assert!(matches!(envelope, RelayEnvelope::DaemonEvent { .. }));
+        let small = matches!(&envelope, RelayEnvelope::DaemonEvent { encrypted_event, .. } if encrypted_event.ciphertext.len() <= 12 * 1024);
+        if small {
+            self.priority_tx.send(envelope).await
+        } else {
+            self.send_event(envelope).await
+        }
+    }
     fn new(
         priority_tx: mpsc::Sender<RelayEnvelope>,
         event_tx: mpsc::Sender<RelayEnvelope>,
@@ -186,6 +204,10 @@ impl RelayOutgoingSender {
         (Self::new(priority_tx, event_tx), priority_rx, event_rx)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing try_send typed error contract"
+    )]
     pub(crate) fn try_send(
         &self,
         envelope: RelayEnvelope,

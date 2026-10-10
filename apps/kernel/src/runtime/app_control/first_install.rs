@@ -2,19 +2,35 @@
 //! protocol and RuntimeInteraction decision routing are a coordinated next step.
 use super::*;
 use crate::{
-    durable_state::app_installation_operations::{InstallOperation, InstallOperationError},
-    runtime::{
-        app_operation_budget::AppOperationBudget, app_package_preparation::PreparationError,
-    },
+    durable_state::app_installation_operations::InstallOperationError,
+    runtime::app_package_preparation::PreparationError,
+};
+
+#[cfg(test)]
+use crate::{
+    durable_state::app_installation_operations::InstallOperation,
+    runtime::app_operation_budget::AppOperationBudget,
 };
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum FirstInstallControlError {
     #[error("app_install_busy")]
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Busy,
     #[error("app_install_invalid")]
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Invalid,
     #[error("app_install_preparation:{0:?}")]
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Preparation(PreparationError),
     #[error(transparent)]
     Operation(#[from] InstallOperationError),
@@ -22,6 +38,7 @@ pub(crate) enum FirstInstallControlError {
 impl AppControlService {
     /// owner is the authenticated kernel caller, separate from future wire
     /// fields. Neither upload metadata nor an App can assert that identity.
+    #[cfg(test)]
     pub(crate) async fn prepare_first_install(
         &self,
         owner: String,

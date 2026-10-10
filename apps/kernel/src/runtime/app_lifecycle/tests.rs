@@ -79,7 +79,8 @@ fn wait(mut predicate: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
-fn stage(store: &DurableKernelStateStore) {
+/// Stages the fixture App release so its catalog can be listed or started.
+pub(crate) fn stage(store: &DurableKernelStateStore) {
     let (bytes, publisher) = fixture_event_package();
     let verified = verify(
         &bytes,
@@ -250,7 +251,6 @@ fn recovery_starts_without_view_serializes_restart_and_preserves_manual_stop_aft
             .desired_running
     );
     drop(old);
-    drop(service);
     drop(control);
     drop(executor);
     drop(store);

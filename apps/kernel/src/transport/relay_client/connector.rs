@@ -795,7 +795,16 @@ async fn run_daemon_relay_connector_inner(
             }),
         );
         let connect_started = Instant::now();
-        match timeout(RELAY_CONNECT_TIMEOUT, connect_async(&relay_url)).await {
+        match timeout(
+            RELAY_CONNECT_TIMEOUT,
+            tokio_tungstenite::connect_async_with_config(
+                &relay_url,
+                None,
+                std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() == Ok("1"),
+            ),
+        )
+        .await
+        {
             Err(_) => {
                 crate::logging::warn_with_fields(
                     "daemon.relay_client",
@@ -1033,11 +1042,11 @@ async fn run_daemon_relay_connector_inner(
                         changed = shutdown.changed() => {
                             if changed.is_ok() && *shutdown.borrow() {
                                 if static_relay.is_none() {
-                                    let _ = spawn_cloud_presence_publish(
+                                    drop(spawn_cloud_presence_publish(
                                         Arc::clone(&router),
                                         false,
                                         "daemon shutting down",
-                                    );
+                                    ));
                                 }
                                 let _ = send_outgoing_envelope(&outgoing_tx, RelayEnvelope::Close {
                                     reason: "daemon shutting down".to_string(),

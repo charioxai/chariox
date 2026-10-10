@@ -68,6 +68,7 @@ async function handleBrowserControllerRequestInner(
         },
       );
     }
+    if (request.method === "browser.notes.observe") return successResponse(request.id, await browser.observeNote(request.params));
     if (request.method === "browser.snapshot") {
       return successResponse(
         request.id,
@@ -137,6 +138,7 @@ async function handleBrowserControllerRequestInner(
     if (request.method.startsWith?.("browser.app.")) {
       const apps = browser.appTabs;
       if (request.method === "browser.app.open") return successResponse(request.id, await apps.open(request.params));
+      if (request.method === "browser.app.close") return successResponse(request.id, await apps.close(request.params));
       if (request.method === "browser.app.calls") return successResponse(request.id, await apps.takeCalls());
       if (request.method === "browser.app.respond") return successResponse(request.id, await apps.respond(request.params));
       if (request.method === "browser.app.reload") return successResponse(request.id, await apps.reload(request.params));
@@ -199,7 +201,9 @@ export class BrowserControllerStdioServer {
     processId = process.pid,
     browser = new BrowserCdpClient(),
     resourceInventory = observeBrowserResources,
+    handleRequest = handleBrowserControllerRequest,
   } = {}) {
+    this.handleRequest = handleRequest;
     this.input = input;
     this.output = output;
     this.processId = processId;
@@ -279,7 +283,7 @@ export class BrowserControllerStdioServer {
         continue;
       }
       let stopAction;
-      const controller = ["browser.action", "browser.upload", "browser.downloads.configure", "browser.permission", "browser.tab", "browser.navigate", "browser.history", "browser.dialog", "browser.cookies.import"].includes(request.method) ? new AbortController() : null;
+      const controller = ["browser.action", "browser.upload", "browser.downloads.configure", "browser.permission", "browser.tab", "browser.navigate", "browser.history", "browser.dialog", "browser.cookies.import", "host.browser", "host.secret"].includes(request.method) ? new AbortController() : null;
       const action = controller ? {controller,method:request.method,response:null,
         stopped:new Promise(resolve => { stopAction = resolve; })} : null;
       if (action) actions.set(request.id, action);
@@ -372,7 +376,7 @@ export class BrowserControllerStdioServer {
         // Queued cancellation must terminalize before physical browser dispatch.
         const response = action?.controller.signal.aborted
           ? errorResponse(request.id, "browser_action_cancelled", "browser action was cancelled")
-          : await handleBrowserControllerRequest(request, {
+          : await server.handleRequest(request, {
               processId: server.processId,
               browser: server.browser,
               resourceInventory: server.resourceInventory,

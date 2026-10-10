@@ -66,6 +66,8 @@ impl KernelRuntimeState {
         let forbidden = matches!(
             request,
             LocalDaemonRequest::RequestKernelAccess(_)
+                // Approvals belong to the user, including routine ones.
+                | LocalDaemonRequest::RespondToInteraction(_)
                 | LocalDaemonRequest::ManageCredentialVault(_)
                 // Raw credential configs can contain literal injection headers.
                 | LocalDaemonRequest::GetCredential(_)
@@ -99,23 +101,6 @@ impl KernelRuntimeState {
             if protected_config(&config.path))
             || matches!(request, LocalDaemonRequest::UnsetUserConfigValue(config)
                 if protected_config(&config.path));
-        // Routine approvals retain user authority. Critical and credential
-        // decisions remain human-only, including refusals and remember proofs.
-        let forbidden = if let LocalDaemonRequest::RespondToInteraction(response) = request {
-            response.passkey.is_some()
-                || response.passkey_remember_minutes.is_some()
-                || self
-                    .owned
-                    .pending_interactions
-                    .write()
-                    .get(&response.interaction_id)
-                    .is_none_or(|pending| {
-                        pending.passkey_prompt.is_some()
-                            || pending.terminal_credential_owner.is_some()
-                    })
-        } else {
-            forbidden
-        };
         if forbidden {
             let mut state = self
                 .owned
@@ -135,7 +120,7 @@ impl KernelRuntimeState {
                 state.suppressed_denials += 1;
             }
             return Err(error(
-                "external access cannot answer critical approvals, change authority, disclose secrets or reach a remote kernel",
+                "external access cannot answer approvals, change authority, disclose secrets or reach a remote kernel",
             ));
         }
         Ok(())

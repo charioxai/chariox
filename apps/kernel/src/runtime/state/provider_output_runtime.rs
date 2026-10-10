@@ -15,7 +15,7 @@ impl KernelRuntimeState {
         recipient_attachment_ids: Vec<String>,
         initial_liveness_already_checked: bool,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
-        self.publish_credential_copy_notices(session_id);
+        self.publish_credential_copy_notices(session_id).await;
         let owned = &self.owned;
         self.reap_structured_prompt_jobs_and_dispatch();
         let mut provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
@@ -229,13 +229,13 @@ impl KernelRuntimeState {
         // Settlement can include cancellation, queue advancement, and remote
         // substitute reconciliation. Keep that future off enclosing
         // launch/dispatch/output stack frames.
-        if !Box::pin(self.reconcile_provider_run_exit(session_id, provider_run_id)).await? {
-            if records.is_empty() {
-                let _ = self
-                    .settle_owned_pty_prompt_if_quiet(session_id, provider_run_id)
-                    .await?;
-                owned.ensure_quiet_provider_recheck_scheduled(provider_run_id);
-            }
+        if !Box::pin(self.reconcile_provider_run_exit(session_id, provider_run_id)).await?
+            && records.is_empty()
+        {
+            let _ = self
+                .settle_owned_pty_prompt_if_quiet(session_id, provider_run_id)
+                .await?;
+            owned.ensure_quiet_provider_recheck_scheduled(provider_run_id);
         }
         Ok(records)
     }

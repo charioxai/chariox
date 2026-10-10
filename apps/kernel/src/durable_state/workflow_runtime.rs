@@ -145,6 +145,7 @@ impl DurableKernelStateStore {
                 timestamp_ms,
                 payload_json,
                 owner_id: session.host_daemon_id().to_string(),
+                source_owner_id: session.owner_user_id().to_string(),
                 session_id: session.id().to_string(),
                 hot_entities: encoded.hot_entities,
                 workflow_runs: encoded.workflow_runs,
@@ -436,6 +437,7 @@ pub(super) struct WorkflowRuntimeTransitionWrite<'a> {
     pub(super) timestamp_ms: u64,
     pub(super) payload_json: &'a str,
     pub(super) owner_id: &'a str,
+    pub(super) source_owner_id: &'a str,
     pub(super) session_id: &'a str,
     pub(super) hot_entities: &'a [DurableWorkflowHotEntityWrite],
     pub(super) workflow_runs: &'a [DurableWorkflowRunWrite],
@@ -474,6 +476,12 @@ pub(super) fn write_workflow_runtime_transition(
         write.timestamp_ms,
         write.hot_entities,
         true,
+    )?;
+    super::workflow_notifications::capture_in(
+        transaction,
+        write.owner_id,
+        write.source_owner_id,
+        write.workflow_runs,
     )?;
     write_workflow_runs(
         transaction,
@@ -1074,6 +1082,45 @@ fn storage_error(operation: &'static str, error: rusqlite::Error) -> DaemonError
         operation,
         message: error.to_string(),
     }
+}
+
+/// Compares a provisional workflow transition with the actual normalized hot
+/// snapshot on the committing writer connection.
+pub(super) fn hot_state_matches(
+    tx: &Transaction<'_>,
+    owner: &str,
+    expected: &DurableWorkflowSessionWrite,
+) -> rusqlite::Result<bool> {
+    let count: i64 = tx.query_row(
+        "SELECT count(*) FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2",
+        params![owner, expected.session_id],
+        |row| row.get(0),
+    )?;
+    if usize::try_from(count).ok() != Some(expected.hot_entities.len()) {
+        return Ok(false);
+    }
+    for entity in &expected.hot_entities {
+        let current:Option<String>=tx.query_row("SELECT payload_json FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2 AND entity_kind=?3 AND entity_id=?4",params![owner,expected.session_id,entity.entity_kind,entity.entity_id],|row|row.get(0)).optional()?;
+        let matches = match (entity.entity_kind.as_str(), current.as_deref()) {
+            // A publication's runtime state changes in memory between writes.
+            ("publication", Some(current)) => {
+                comparable_publication(current).is_some()
+                    && comparable_publication(current)
+                        == comparable_publication(&entity.payload_json)
+            }
+            (_, current) => current == Some(entity.payload_json.as_str()),
+        };
+        if !matches {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn comparable_publication(payload: &str) -> Option<crate::session::WorkflowPublicationDefinition> {
+    serde_json::from_str::<crate::session::WorkflowPublicationDefinition>(payload)
+        .ok()
+        .map(|publication| publication.without_runtime_state())
 }
 
 #[cfg(test)]
@@ -1738,43 +1785,4 @@ mod tests {
         drop(store);
         let _ = std::fs::remove_file(path);
     }
-}
-
-/// Compares a provisional workflow transition with the actual normalized hot
-/// snapshot on the committing writer connection.
-pub(super) fn hot_state_matches(
-    tx: &Transaction<'_>,
-    owner: &str,
-    expected: &DurableWorkflowSessionWrite,
-) -> rusqlite::Result<bool> {
-    let count: i64 = tx.query_row(
-        "SELECT count(*) FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2",
-        params![owner, expected.session_id],
-        |row| row.get(0),
-    )?;
-    if usize::try_from(count).ok() != Some(expected.hot_entities.len()) {
-        return Ok(false);
-    }
-    for entity in &expected.hot_entities {
-        let current:Option<String>=tx.query_row("SELECT payload_json FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2 AND entity_kind=?3 AND entity_id=?4",params![owner,expected.session_id,entity.entity_kind,entity.entity_id],|row|row.get(0)).optional()?;
-        let matches = match (entity.entity_kind.as_str(), current.as_deref()) {
-            // A publication's runtime state changes in memory between writes.
-            ("publication", Some(current)) => {
-                comparable_publication(current).is_some()
-                    && comparable_publication(current)
-                        == comparable_publication(&entity.payload_json)
-            }
-            (_, current) => current == Some(entity.payload_json.as_str()),
-        };
-        if !matches {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn comparable_publication(payload: &str) -> Option<crate::session::WorkflowPublicationDefinition> {
-    serde_json::from_str::<crate::session::WorkflowPublicationDefinition>(payload)
-        .ok()
-        .map(|publication| publication.without_runtime_state())
 }

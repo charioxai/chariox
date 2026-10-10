@@ -633,6 +633,10 @@ impl DaemonApp {
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "Keep the explicit remote_prompt_capabilities_for_agent state or return type at the existing boundary"
+    )]
     pub(crate) fn remote_prompt_capabilities_for_agent(
         &self,
         agent: &AgentInstance,
@@ -2291,7 +2295,7 @@ mod tests {
         };
         assert!(!pre_artifact.relay_peer_protocol_compatible());
         let current = RemoteAgentBinding {
-            relay_peer_protocol_version: Some(73),
+            relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
             ..legacy
         };
         assert!(current.relay_peer_protocol_compatible());

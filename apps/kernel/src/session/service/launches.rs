@@ -8,6 +8,7 @@ pub(crate) struct WorkflowRuntimeInstanceProvisionCandidate {
     pub(crate) ordinal: u16,
     pub(crate) primary: bool,
     pub(crate) source_worktree_id: String,
+    pub(crate) creating_agent_id: Option<String>,
 }
 
 impl SessionService {
@@ -84,6 +85,10 @@ impl SessionService {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing invoke_workflow_endpoint_with_context operation signature and explicit context arguments"
+    )]
     fn invoke_workflow_endpoint_with_context(
         &mut self,
         session_id: &str,
@@ -146,6 +151,11 @@ impl SessionService {
             publication_invocation,
             vec![node_run],
             messages,
+        );
+        workflow_run = workflow_run.with_creator(
+            queued_prompt
+                .and_then(|p| p.created_by_agent_id())
+                .map(str::to_string),
         );
         workflow_run.set_invocation_context(
             workflow.revision(),
@@ -429,13 +439,32 @@ impl SessionService {
         now_ms: u64,
         grace_period_ms: u64,
     ) -> Result<usize, DaemonError> {
+        self.reconcile_live_orphaned_workflow_runs_with_tasks(
+            session_id,
+            now_ms,
+            grace_period_ms,
+            &BTreeSet::new(),
+        )
+    }
+
+    pub(crate) fn reconcile_live_orphaned_workflow_runs_with_tasks(
+        &mut self,
+        session_id: &str,
+        now_ms: u64,
+        grace_period_ms: u64,
+        supervised_tasks: &BTreeSet<(String, String)>,
+    ) -> Result<usize, DaemonError> {
         let session =
             self.store
                 .get_mut(session_id)
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
-        Ok(session.reconcile_live_orphaned_workflow_runs(now_ms, grace_period_ms))
+        Ok(session.reconcile_live_orphaned_workflow_runs_with_tasks(
+            now_ms,
+            grace_period_ms,
+            supervised_tasks,
+        ))
     }
 
     pub fn has_queued_workflow_prompt_for_watchdog(
@@ -455,6 +484,10 @@ impl SessionService {
         }))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing enqueue_workflow_prompt operation signature and explicit context arguments"
+    )]
     pub fn enqueue_workflow_prompt(
         &mut self,
         session_id: &str,
@@ -489,6 +522,32 @@ impl SessionService {
         watchdog_id: Option<String>,
         publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
     ) -> Result<WorkflowQueuedPrompt, DaemonError> {
+        self.enqueue_workflow_prompt_by_agent(
+            session_id,
+            workflow_id,
+            endpoint_id,
+            prompt,
+            queue_ref,
+            source,
+            watchdog_id,
+            publication_invocation,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn enqueue_workflow_prompt_by_agent(
+        &mut self,
+        session_id: &str,
+        workflow_id: &str,
+        endpoint_id: &str,
+        prompt: Option<String>,
+        queue_ref: Option<&str>,
+        source: WorkflowQueuedPromptSource,
+        watchdog_id: Option<String>,
+        publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
+        creator: Option<&str>,
+    ) -> Result<WorkflowQueuedPrompt, DaemonError> {
         let queued = self.prepare_workflow_prompt_with_publication_invocation(
             session_id,
             workflow_id,
@@ -499,6 +558,7 @@ impl SessionService {
             watchdog_id,
             publication_invocation,
         )?;
+        let queued = queued.with_creator(creator.map(str::to_string));
         let session =
             self.store
                 .get_mut(session_id)
@@ -542,6 +602,10 @@ impl SessionService {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "Keep the explicit enqueue_workflow_prompt_and_maybe_create_run state or return type at the existing boundary"
+    )]
     pub fn enqueue_workflow_prompt_and_maybe_create_run(
         &mut self,
         session_id: &str,
@@ -705,7 +769,11 @@ impl SessionService {
         let mut queued = session
             .workflow_queued_prompts()
             .iter()
-            .filter(|item| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter(|item| {
+                item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
+                    && !item.notification_expired_at(crate::session::types::unix_epoch_ms())
+            })
             .filter_map(|item| {
                 let queue = session.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
                 queue
@@ -745,6 +813,7 @@ impl SessionService {
                 ordinal,
                 primary: count == 0,
                 source_worktree_id: session.worktree_id().to_string(),
+                creating_agent_id: queued_prompt.created_by_agent_id().map(str::to_string),
             }));
         }
         Ok(None)

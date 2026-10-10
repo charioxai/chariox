@@ -1095,6 +1095,10 @@ pub(crate) async fn run_room_pointer_move(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing run_room_pointer_drag operation signature and explicit context arguments"
+)]
 pub(crate) async fn run_room_pointer_drag(
     from_x: u32,
     from_y: u32,

@@ -161,12 +161,18 @@ pub(crate) struct PromptManifestEntry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "Explicit turn names distinguish prompt assembly contexts"
+)]
 pub(crate) enum PromptAssemblyMode {
     NormalProviderTurn,
     NativeTuiProviderTurn,
     MetaagentProviderTurn,
+    #[allow(dead_code)] // Existing prompt-template vocabulary retained for continuation callers.
     WorkflowNodeTurn,
     UtilityTurn,
+    #[allow(dead_code)] // Existing prompt-template vocabulary retained for continuation callers.
     McpSkillContinuationTurn,
 }
 
@@ -470,10 +476,7 @@ impl PromptTemplateRegistry {
             return Err(DaemonError::ProviderProtocol {
                 provider_run_id: "prompt-assembly".to_string(),
                 operation: "prompt_template_read",
-                message: format!(
-                    "required prompt template `{template_id}` missing at {:?}",
-                    path
-                ),
+                message: format!("required prompt template `{template_id}` missing at {path:?}"),
             });
         }
         let body =
@@ -837,12 +840,9 @@ impl PromptAssemblyService {
         Ok(Self { registry })
     }
 
+    #[cfg(test)]
     pub(crate) fn new(registry: PromptTemplateRegistry) -> Self {
         Self { registry }
-    }
-
-    pub(crate) fn registry(&self) -> &PromptTemplateRegistry {
-        &self.registry
     }
 
     pub(crate) fn assemble_provider_turn(
@@ -1226,7 +1226,7 @@ fn prompt_io_error(operation: &'static str, path: &Path, error: std::io::Error) 
     DaemonError::ProviderProtocol {
         provider_run_id: "prompt-assembly".to_string(),
         operation,
-        message: format!("prompt template path {:?}: {error}", path),
+        message: format!("prompt template path {path:?}: {error}"),
     }
 }
 
@@ -1302,6 +1302,44 @@ mod tests {
                 structured_endpoint: Some("ws://127.0.0.1:43112".to_string()),
             },
         )
+    }
+
+    // MP-08 / MP-10 / MP-11 S01: provider context agrees with the exposed room tools.
+    #[test]
+    fn mp11_review_runtime_instructions_describe_regular_room_creation() {
+        let root = temp_prompt_root("room-creation-instructions");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry.materialize_bundled_defaults().unwrap();
+        let envelope = PromptAssemblyService::new(registry)
+            .assemble_provider_turn(
+                &test_run(false),
+                "Create my team",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .unwrap();
+        assert!(
+            envelope
+                .hidden_system_context
+                .contains("regular agents may spawn"),
+            "MP-11 S01: ordinary providers must receive room creation instructions"
+        );
+        assert!(!envelope
+            .hidden_system_context
+            .contains("but only a Meta agent may create agents"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // MP-08 / MP-10 / MP-11 (review 914 P3): room-mode sends report durable
+    // inbox admission and request no reply unless asked.
+    #[test]
+    fn mp11_review_runtime_instructions_describe_durable_room_messages() {
+        for expected in ["`durable`", "`urgent`", "`reply_requested`", "courtesy"] {
+            assert!(RUNTIME_BASE.contains(expected), "missing {expected}");
+        }
+        assert!(!RUNTIME_BASE.contains("may ask that agent to reply"));
+        assert!(!RUNTIME_BASE.contains("Its `started` or `queued` result is the authoritative"));
     }
 
     #[test]

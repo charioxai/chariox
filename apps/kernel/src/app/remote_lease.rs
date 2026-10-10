@@ -9,7 +9,9 @@ use crate::execution_lease::{ExecutionLease, LeasedAgent};
 use crate::provider::ProviderRunState;
 use crate::session::CreateSessionRequest;
 
+mod caller_binding;
 mod git_observation;
+mod leased_process;
 mod mcp_availability;
 mod native_provider;
 mod project_environment;
@@ -109,6 +111,7 @@ impl LeasedAgentCleanupPhase {
         }
     }
 
+    #[cfg(test)]
     fn operation(self) -> &'static str {
         match self {
             Self::Provider => "leased_agent.cleanup.provider",
@@ -243,7 +246,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .leased_agent_callers
             .get(leased_agent_id)
             .or_else(|| self.app.completed_leased_agent_callers.get(leased_agent_id))
-            .cloned()
+            .cloned();
+        // A newly created idle lease has no prompt receipt yet. After boot,
+        // its retained caller can prove absence, never execution authority.
+        // Current owners take precedence; malformed retained state fails closed.
+        let owner = if owner.is_none() && !self.app.leased_agents.contains_key(leased_agent_id) {
+            self.retained_leased_agent_caller(leased_agent_id)?
+        } else {
+            owner
+        };
+        let owner = owner
             .or_else(|| {
                 self.app
                     .worker_steer_receipts
@@ -404,6 +416,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(expired_lease_ids)
     }
 
+    #[cfg(test)]
     pub(crate) fn destroy_execution_lease_for_caller(
         &mut self,
         lease_id: &str,
@@ -413,6 +426,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         self.destroy_execution_lease(lease_id)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing create_leased_agent operation signature and explicit context arguments"
+    )]
     pub(crate) fn create_leased_agent(
         &mut self,
         lease_id: &str,
@@ -447,6 +464,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(crate) fn create_leased_agent_for_caller(
         &mut self,
         lease_id: &str,
@@ -476,6 +494,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing create_leased_agent_from_base_directory operation signature and explicit context arguments"
+    )]
     pub(crate) fn create_leased_agent_from_base_directory(
         &mut self,
         base_directory: &Path,
@@ -644,12 +666,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             backing_agent.id().to_string(),
             attachment.id().to_string(),
         );
-        if let Some(caller) = self.app.execution_lease_callers.get(lease_id).cloned() {
+        let caller = self.app.execution_lease_callers.get(lease_id).cloned();
+        if let Some(caller) = caller.as_ref() {
             self.app
                 .leased_agent_callers
-                .insert(agent.id.clone(), caller);
+                .insert(agent.id.clone(), caller.clone());
         }
         self.app.leased_agents.insert(agent_id, agent.clone());
+        if let Some(caller) = caller.as_ref() {
+            self.retain_leased_agent_caller(&agent.id, caller)?;
+        }
         Ok(agent)
     }
 
@@ -848,6 +874,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .insert(leased_agent_id.to_string(), point);
     }
 
+    #[cfg(test)]
     pub(crate) fn destroy_leased_agent_for_caller(
         &mut self,
         leased_agent_id: &str,
