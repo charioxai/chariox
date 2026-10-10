@@ -1,6 +1,9 @@
 //! MP-08/MP-11: restart-safe status and owner/target operation bindings.
 use super::*;
 
+#[cfg(test)]
+#[path = "outbound_owner_rebinding_tests.rs"]
+mod owner_rebinding_tests;
 #[path = "outbound_operation_retention.rs"]
 mod retention;
 
@@ -85,7 +88,14 @@ impl ManagedContextOutboundOperationStore {
             }
             validate_ticket(config, &saved.ticket)?;
             let saved_plan = saved.ticket.context_plan.package_binding();
-            if saved_plan.plan_digest != plan.plan_digest || saved.ticket.target != candidate.target
+            let saved_status = self.get(&saved_plan.context_id);
+            let settled = saved_status.as_ref().is_some_and(|status| {
+                status.phase == ManagedContextOutboundOperationPhase::Completed
+                    || (status.phase == ManagedContextOutboundOperationPhase::Failed
+                        && !status.retryable)
+            });
+            if saved_plan.plan_digest != plan.plan_digest
+                || (saved.ticket.target != candidate.target && !settled)
             {
                 return Err(outbound_service_error(
                     "owner operation destination changed",
@@ -94,16 +104,16 @@ impl ManagedContextOutboundOperationStore {
             }
             // Reuse a recoverable operation, or an unconsumed binding whose
             // start was refused before status admission (e.g. busy slots).
-            if self.get(&saved_plan.context_id).map_or(
-                saved.consumption_attempted == Some(false),
-                |status| {
-                    status.phase != ManagedContextOutboundOperationPhase::Completed
-                        && (status.phase != ManagedContextOutboundOperationPhase::Failed
-                            || status.retryable)
-                },
-            ) {
+            if saved_status.map_or(saved.consumption_attempted == Some(false), |status| {
+                status.phase != ManagedContextOutboundOperationPhase::Completed
+                    && (status.phase != ManagedContextOutboundOperationPhase::Failed
+                        || status.retryable)
+            }) {
                 return Ok(saved.ticket);
             }
+            // A settled attempt does not authorize the next Copy. Persist a
+            // fresh context for the currently selected peer, retaining the old
+            // per-context binding and requiring fresh Cloud admission.
         }
         check_operation_capacity(&parent, &format!("{}-owner.json", plan.context_id))?;
         let saved = PersistedOwnerTicket {
