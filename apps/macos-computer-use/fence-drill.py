@@ -1,3 +1,4 @@
+from fence_cleanup import finish_cleanup
 import importlib.util
 import json
 import os
@@ -103,8 +104,7 @@ finally:
     if 'point_a' in globals(): positions += [point_a, point_b]
     if any(all(abs(now[k] - point[k]) < 1 for k in ['x', 'y']) for point in positions):
         d.warp_pointer(saved)
-    time.sleep(.2)
-    report['owned_window_closed'] = not any(w['pid'] == pid or w['pid'] == cover_pid for w in d.desktop()['windows'])
+    finish_cleanup(report, lambda: not any(w['pid'] == pid or w['pid'] == cover_pid for w in d.desktop()['windows']))
     (E / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2))
 raise SystemExit(0 if report['status'] == 'PASS' else 1)

@@ -152,3 +152,26 @@ and full client/relay matrix remain pending. The older bundles retain CDHashes
 `d171e9751ee725169cdb777d6ffc3c46e6bdd86b` and
 `425753b7ce44dd772d2e428f3bc36b634d69eaeb`. R5's foreign-cover failure remains
 historical until the exact r6 helper clears it. Evidence remains outside Git.
+
+## R7 review fixes are source-only
+
+Reviews of #920 @5973ba185, #923 @43fd9f1a6 and #957 @777b256c4 arrived in r7.
+The source now refuses same-process covers, verifies the intended build launch
+receipt, latches failed owned release through the kernel as owner-reset-required,
+retires a permanently invalid geometry binding, fails capture on AX secure-field
+classification errors and fails the fence verdict on unclosed owned windows.
+These helper/kernel fixes are NOT in the retained r6 binaries. Do not rebuild
+those binaries while the pending grant waits. The exact r6 suite above is
+partial historical-failure replay, not live validation of these new review fixes.
+Batch all helper and matching kernel changes into the next rebuild after the
+display allocation. A failed owned-release latch survives Stop/Start/reset;
+the owner must physically release input and explicitly restart the kernel.
+Kernel restart is not proof that a physical release succeeded. Never silently
+retry the failed Action. Fatal crash/release recovery remains an M3 gate.
+
+M1's source only supplies identity/scoped bounded input. The paired protected
+capture/replay steps require the separately published
+[draft #957 at 777b256c4](https://github.com/charioxai/chariox/tree/777b256c41875202ad0921d33aac5c40541e946a/apps/macos-computer-use)
+and the coordinator's revised local M2 suite. That requirement does not imply
+that M1 implements protected capture or that the unpublished r7 source was
+already rebuilt or granted.

@@ -116,7 +116,14 @@ import ScreenCaptureKit
             guard count <= 128 else { throw tagged(.secure, "capture-ax-coverage-budget") }
             // Only the signed public fixture is admitted at this checkpoint.
             // Missing child coverage refuses instead of attempting OCR on raw pixels.
-            if (try? source.attribute(element, kAXSubroleAttribute) as? String) == kAXSecureTextFieldSubrole {
+            guard AXUIElementSetMessagingTimeout(element, 0.5) == .success else {
+                throw tagged(.secure, "capture-ax-coverage-timeout")
+            }
+            if try captureElementIsSecure(read: {
+                var value: CFTypeRef?
+                let status = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &value)
+                return (status, value)
+            }) {
                 masks.append(try source.bounds(element)); continue
             }
             var value: CFTypeRef?
