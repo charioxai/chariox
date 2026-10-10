@@ -205,7 +205,7 @@ export class BrowserCdpClient {
         }
       }))).filter(Boolean);
       await Promise.all(
-        writerTargets.map((target) => this.ensureWriterTargetSession(connection, target.targetId)),
+        writerTargets.map((target) => this.reconcileWriterTarget(connection, target.targetId)),
       );
       // A home kernel before protocol 379 sends no flag; a 379 worker behind it
       // defaults it to hidden (fullscreen), the new default.
@@ -1096,6 +1096,21 @@ export class BrowserCdpClient {
       throw error;
     }
     return sessionId;
+  }
+
+  // MP-08/MP-10/MP-11: short-lived workers can exit after Target.getTargets.
+  // This observation never substitutes for the cookie import's writer fence.
+  async reconcileWriterTarget(connection, targetId) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try { return await this.ensureWriterTargetSession(connection, targetId); }
+      catch (error) {
+        if (!targetGone(error)) throw error;
+        await this.forgetTarget(targetId);
+        const { targetInfos = [] } = await connection.send("Target.getTargets");
+        if (!targetInfos.some(target => target.targetId === targetId)) return null;
+        if (attempt === 1) throw error;
+      }
+    }
   }
 
   async ensureWriterTargetSession(connection, targetId) {
