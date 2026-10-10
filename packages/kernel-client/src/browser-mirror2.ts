@@ -116,7 +116,8 @@ export class BrowserMirror2Renderer {
       // Page keys scroll the viewer's own copy natively; the scroll listener sends the position.
       if (['Tab', 'Enter', 'Escape', 'Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(key)) {
         event.preventDefault()
-        this.enqueue({ kind: 'key', key: key === 'Tab' && shiftKey ? 'Shift+Tab' : key })
+        // Shift keeps its meaning for focus and selection keys (back-tab, extending a range).
+        this.enqueue({ kind: 'key', key: shiftKey && ['Tab', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(key) ? `Shift+${key}` : key })
       }
     })
     let composed: string | null = null

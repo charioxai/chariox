@@ -112,10 +112,12 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         await sendInput("Input.insertText", { text: input.text });
       } else if (input.kind === "key") {
         const printable = typeof input.key === "string" && /^[^\p{C}]$/u.test(input.key);
-        if (!printable && !["Tab", "Shift+Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
-        const name = input.key === "Shift+Tab" ? "Tab" : input.key;
+        // Shift only with focus/selection keys: Shift+Tab moves focus back, Shift+Arrow/Home/End extend the selection.
+        const shift = !printable && typeof input.key === "string" && /^Shift\+(Tab|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End)$/.test(input.key);
+        const name = shift ? input.key.slice(6) : input.key;
+        if (!printable && !shift && !["Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
         const key = { key: name === "Space" ? " " : name, code: name,
-          ...(input.key === "Shift+Tab" ? { modifiers: 8 } : {}),
+          ...(shift ? { modifiers: 8 } : {}),
           windowsVirtualKeyCode: { Tab:9, Enter:13, Space:32, Escape:27, Backspace:8, Delete:46, ArrowLeft:37, ArrowUp:38, ArrowRight:39, ArrowDown:40, Home:36, End:35 }[name] };
         // MP-08/MP-10: a viewer key on the owned display goes through XTest
         // after the same document, text-target and mirror fences, and only
@@ -127,7 +129,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           const focused = await evaluateText(text ? `${sensitive()} ? 'sensitive' : document.hasFocus()` : "document.hasFocus()");
           if (focused === "sensitive") throw new UserDomainRefusal("sensitive_requires_focus");
           await check(); await mirrorGuard?.();
-          if (focused === true && nativeKey(keysym, input.key === "Shift+Tab")) { onDispatch?.(); return; }
+          if (focused === true && nativeKey(keysym, shift)) { onDispatch?.(); return; }
         }
         await sendInput("Input.dispatchKeyEvent", { type: "keyDown", ...key,
           ...(["Enter", "Space"].includes(input.key) || printable ? { text: printable ? input.key : input.key === "Enter" ? "\r" : " ", unmodifiedText: printable ? input.key : input.key === "Enter" ? "\r" : " " } : {}) });

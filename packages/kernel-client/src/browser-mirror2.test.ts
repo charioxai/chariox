@@ -189,17 +189,20 @@ test('MP-10: resource slices reassemble in order; a reset restarts them', () => 
   assert.equal(renderer.assemble(whole), whole)
 })
 
-test('MP-08: Page Up/Page Down scroll the viewer natively (no preventDefault); other navigation keys go to the kernel', () => {
+test('MP-08: Page Up/Page Down scroll the viewer natively (no preventDefault); other navigation keys go to the kernel', async () => {
   const iframe = { setAttribute: () => {}, addEventListener: () => {}, style: {} }, container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
   const sent: unknown[] = []
   const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async action => { sent.push(action) }) as unknown as { bind(doc: unknown): void; documentId: string }
   const handlers = new Map<string, (event: unknown) => void>()
   renderer.bind({ addEventListener: (type: string, fn: (event: unknown) => void) => handlers.set(type, fn), getSelection: () => null })
   renderer.documentId = 'd'
-  const press = (key: string) => { let prevented = false; handlers.get('keydown')!({ key, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault: () => { prevented = true } }); return prevented }
+  const press = (key: string, shiftKey = false) => { let prevented = false; handlers.get('keydown')!({ key, shiftKey, ctrlKey: false, metaKey: false, altKey: false, preventDefault: () => { prevented = true } }); return prevented }
   assert.equal(press('PageDown'), false); assert.equal(press('PageUp'), false)
   assert.equal(press('Tab'), true)
-  assert.deepEqual(sent, [{ kind: 'key', key: 'Tab' }])
+  // Review #941-2: Shift extends the kernel selection (and Shift+Tab moves focus back).
+  for (const key of ['Tab', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'Enter']) assert.equal(press(key, true), true)
+  await new Promise(resolve => setTimeout(resolve, 0)) // inputs are sent in order
+  assert.deepEqual(sent.map(action => (action as { key: string }).key), ['Tab', 'Shift+Tab', 'Shift+ArrowLeft', 'Shift+ArrowRight', 'Shift+ArrowUp', 'Shift+ArrowDown', 'Shift+Home', 'Shift+End', 'Enter'])
 })
 
 test('MP-08/MP-10: replies that never apply keep the failure streak, so the mirror ends (video fallback) instead of retrying forever', async () => {

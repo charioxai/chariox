@@ -190,6 +190,8 @@ test('MP-08/MP-10 viewer keys route to the owned display only for a focused, non
   };
   assert.deepEqual(await run({}),{result:'ok',keys:[[97,false]],dispatched:1,cdp:0});
   assert.deepEqual(await run({key:'Shift+Tab'}),{result:'ok',keys:[[0xff09,true]],dispatched:1,cdp:0});
+  assert.deepEqual(await run({key:'Shift+ArrowLeft'}),{result:'ok',keys:[[0xff51,true]],dispatched:1,cdp:0},'MP-08: review #941-2 Shift extends the selection');
+  for (const key of ['Shift+Enter','Shift+Backspace','Shift+a','Ctrl+ArrowLeft','Shift+Shift+Home']) assert.equal((await run({key})).result,'MD-2: unsupported key',key);
   assert.deepEqual(await run({key:'Enter'}),{result:'ok',keys:[[0xff0d,false]],dispatched:1,cdp:0});
   const refused=await run({sensitive:true});
   assert.deepEqual([refused.keys.length,refused.cdp],[0,0],'MP-11: a sensitive text target is refused before any dispatch');

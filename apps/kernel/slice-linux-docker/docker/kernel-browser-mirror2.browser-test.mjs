@@ -425,3 +425,15 @@ test("MP-10: review #941-5 property-only changes of controls beyond the first re
     assert.deepEqual(forms.map(op => [op.id, op.form]), [[late, { checked: true }]]);
     for (let i = 0; i < 2; i++) assert.deepEqual((await next(1900)).ops.filter(op => op.op === "form"), [], "MP-10: unchanged controls stay silent");
   }));
+
+test("MP-08: review #941-2 Shift+Arrow/Home/End extend the kernel selection, so typing replaces the range (input and textarea)", () => mirrored(
+  '<input id="i" value="hello world"><textarea id="t">one two\nthree</textarea>', async ({ next, evaluate, input }) => {
+    await next();
+    for (const [selector, keys, typed, expected] of [["#i", ["Shift+ArrowLeft", "Shift+ArrowLeft", "Shift+ArrowLeft", "Shift+ArrowLeft", "Shift+ArrowLeft"], "there", "hello there"], ["#i", ["Home", "Shift+End"], "new", "new"], ["#t", ["Shift+ArrowUp", "Shift+Home"], "1", "1"], ["#t", ["Shift+ArrowLeft", "Shift+Home", "Shift+ArrowRight"], "ab", "1ab"]]) {
+      await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.focus();e.setSelectionRange(e.value.length,e.value.length);return true})()`);
+      const focused = await next(600);
+      for (const key of keys) await input(focused.sequence, { kind: "key", key });
+      await input(focused.sequence, { kind: "text", text: typed });
+      assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).value`), expected, `MP-08: ${keys.join(" ")} then "${typed}"`);
+    }
+  }));
