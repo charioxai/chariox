@@ -81,3 +81,17 @@ test('MP-10: review #320-1 an existing select keeps its recorded selection when 
     assert.deepEqual(await state(), [1, 'b'], 'MP-10: options replaced beneath the optgroup keep the recorded selection');
   } finally { await page.close(); }
 });
+
+test('MP-10: review #320-2 a frame document replaced by one without adopted stylesheets drops the old ones', async () => {
+  const page = await viewer();
+  try {
+    const frameDoc = (base, adopted) => [{ id: `n${base}`, parent: 'n4', kind: 'document', ...(adopted ? { adopted } : {}) }, { id: `n${base + 1}`, parent: `n${base}`, kind: 'element', tag: 'html' }, { id: `n${base + 2}`, parent: `n${base + 1}`, kind: 'element', tag: 'body' }, { id: `n${base + 3}`, parent: `n${base + 2}`, kind: 'element', tag: 'p' }];
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+      { id: 'n4', parent: 'n3', kind: 'frame', tag: 'iframe' }, ...frameDoc(5, ['p{color:rgb(1, 2, 3)}'])]));
+    const nested = () => page.evaluate(() => { const d = window.r.frame.contentDocument.querySelector('iframe').contentDocument; return [d.adoptedStyleSheets.length, getComputedStyle(d.querySelector('p')).color]; });
+    assert.deepEqual(await nested(), [1, 'rgb(1, 2, 3)']);
+    // The child navigates (the frame adapter rebuilds the frame's document through a children op).
+    await apply(page, delta(2, [{ op: 'children', id: 'n4', children: ['n9'], nodes: frameDoc(9) }]));
+    assert.deepEqual(await nested(), [0, 'rgb(0, 0, 0)'], 'MP-10: the new page is not styled by the old adopted sheets');
+  } finally { await page.close(); }
+});

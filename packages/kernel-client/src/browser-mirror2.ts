@@ -284,6 +284,7 @@ export class BrowserMirror2Renderer {
       const html = subtree[1] ? built.get(subtree[1].id) as Element | undefined : undefined
       if (html) { if (nested.documentElement) nested.documentElement.replaceWith(html); else nested.appendChild(html); this.csp(nested) }
       if (documentRecord.adopted?.length) this.setStyled(documentRecord.id, { kind: 'adopted', raw: documentRecord.adopted as string[], node: nested, keys: [] })
+      else nested.adoptedStyleSheets = [] // a replaced document's sheets do not style the new one
       this.bind(nested)
     }
   }
