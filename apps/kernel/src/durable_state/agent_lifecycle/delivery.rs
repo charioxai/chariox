@@ -54,15 +54,23 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             target,
             run,
             now,
+            work,
         } => {
             let mut e = get_event(tx, &room, &agent, sequence)?;
+            if work
+                .as_deref()
+                .is_some_and(|work| !super::work_correlated(&e, work))
+            {
+                return Err(error("event is outside the authorized work binding"));
+            }
             if e.state != "pending" {
                 return Err(error(
                     "delivery is already admitted; reconcile its exact receipt",
                 ));
             }
             let urgent_steer = e.urgent && target.is_some() && e.attempted_at_ms.is_none();
-            let earlier:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence<>?3 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (sequence<?3 AND json_extract(payload,'$.state')='pending' AND (?4=0 OR (json_extract(payload,'$.urgent')=1 AND json_extract(payload,'$.attempted_at_ms') IS NULL))) ELSE 1 END",params![room,agent,sql_integer(sequence)?,urgent_steer],|r|r.get(0)).map_err(sql)?;
+            let correlated = super::WORK_CORRELATED.replace("?3", "?5");
+            let earlier:i64=tx.query_row(&format!("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence<>?3 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (sequence<?3 AND json_extract(payload,'$.state')='pending' AND (?5 IS NULL OR {correlated}) AND (?4=0 OR (json_extract(payload,'$.urgent')=1 AND json_extract(payload,'$.attempted_at_ms') IS NULL))) ELSE 1 END"),params![room,agent,sql_integer(sequence)?,urgent_steer,work],|r|r.get(0)).map_err(sql)?;
             if earlier != 0 {
                 return Err(error("earlier recipient delivery must settle first"));
             }
@@ -82,7 +90,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             {
                 return Err(error("task continuation must settle before inbox delivery"));
             }
-            replies::bind(tx, &e, target.as_deref())?;
+            replies::bind(tx, &e, target.as_deref(), &prompt)?;
             e.state = "submitting".into();
             e.prompt_id = Some(prompt.clone());
             e.target_prompt_id = target;

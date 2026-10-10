@@ -678,6 +678,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     closeOtherDialog: closeActiveDialogOverlay,
     applySession: applySessionState,
     notify: (message) => flashFooter(message, "info"),
+    attachmentId: () => attachmentState()?.id ?? null,
   })
 
   const runUiBatch = uiBatchController.run
@@ -1032,6 +1033,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       assignDialogOverlayBox={assignDialogOverlayBox}
       assignKernelApprovalBox={kernelApprovals.assignBox}
       assignKernelApprovalBanner={kernelApprovals.assignBanner}
+      assignSudoBand={kernelApprovals.assignSudoBand}
       assignPasskeyPopupBox={kernelApprovals.assignPopupBox}
       kernelApprovalOwnsInput={kernelApprovals.ownsInput}
       handlePromptKeyDown={handlePromptKeyDown}

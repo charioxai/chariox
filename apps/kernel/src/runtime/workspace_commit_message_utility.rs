@@ -3,16 +3,6 @@ use crate::local::{WorkspaceCommitMessageUtilityInput, WorkspaceGitOverview};
 use crate::runtime::workspace_git_changes::workspace_git_diff_text;
 use crate::runtime::workspace_git_overview::inspect_workspace_git_overview;
 
-pub(crate) fn workspace_commit_message_utility_prompt(
-    input: &WorkspaceCommitMessageUtilityInput,
-) -> Result<String, DaemonError> {
-    let assembly = workspace_commit_message_utility_prompt_assembly(input)?;
-    Ok(format!(
-        "{}\n\n{}",
-        assembly.hidden_system_context, assembly.visible_user_prompt
-    ))
-}
-
 pub(crate) struct WorkspaceCommitMessageUtilityPrompt {
     pub(crate) visible_user_prompt: String,
     pub(crate) hidden_system_context: String,

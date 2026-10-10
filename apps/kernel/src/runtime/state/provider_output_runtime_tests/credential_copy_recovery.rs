@@ -250,7 +250,7 @@ async fn run_case(recovery: RecoveryCase) {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             if startup_failure {
-                runtime.publish_credential_copy_notices(session.id());
+                runtime.publish_credential_copy_notices(session.id()).await;
             } else {
                 let _ = runtime
                     .pump_owned_provider_output(

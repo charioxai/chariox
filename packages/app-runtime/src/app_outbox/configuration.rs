@@ -73,6 +73,8 @@ impl AppOutbox {
     /// Explicit, already authorized kernel configuration. Expected revision zero
     /// means create; all replacements/reactivations increment the current revision.
     /// No cached receipt or old snapshot can silently reactivate this binding.
+    // Keep the owner, revision, event and target explicit in this existing transaction API.
+    #[allow(clippy::too_many_arguments)]
     pub fn configure_in(
         tx: &Transaction<'_>,
         catalog: &EventCatalog,

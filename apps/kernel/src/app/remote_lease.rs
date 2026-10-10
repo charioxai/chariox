@@ -9,6 +9,7 @@ use crate::execution_lease::{ExecutionLease, LeasedAgent};
 use crate::provider::ProviderRunState;
 use crate::session::CreateSessionRequest;
 
+mod caller_binding;
 mod git_observation;
 mod mcp_availability;
 mod native_provider;
@@ -243,7 +244,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .leased_agent_callers
             .get(leased_agent_id)
             .or_else(|| self.app.completed_leased_agent_callers.get(leased_agent_id))
-            .cloned()
+            .cloned();
+        // A newly created idle lease has no prompt receipt yet. After boot,
+        // its retained caller can prove absence, never execution authority.
+        // Current owners take precedence; malformed retained state fails closed.
+        let owner = if owner.is_none() && !self.app.leased_agents.contains_key(leased_agent_id) {
+            self.retained_leased_agent_caller(leased_agent_id)?
+        } else {
+            owner
+        };
+        let owner = owner
             .or_else(|| {
                 self.app
                     .worker_steer_receipts
@@ -644,12 +654,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             backing_agent.id().to_string(),
             attachment.id().to_string(),
         );
-        if let Some(caller) = self.app.execution_lease_callers.get(lease_id).cloned() {
+        let caller = self.app.execution_lease_callers.get(lease_id).cloned();
+        if let Some(caller) = caller.as_ref() {
             self.app
                 .leased_agent_callers
-                .insert(agent.id.clone(), caller);
+                .insert(agent.id.clone(), caller.clone());
         }
         self.app.leased_agents.insert(agent_id, agent.clone());
+        if let Some(caller) = caller.as_ref() {
+            self.retain_leased_agent_caller(&agent.id, caller)?;
+        }
         Ok(agent)
     }
 

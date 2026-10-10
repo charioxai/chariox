@@ -18,6 +18,22 @@ const view: PasskeyPopupView = {
 }
 const noActions = { show() {}, approve() {}, refuse() {}, cycleRemember() {} }
 
+test("MP-08/MP-10/MP-11 sudo scope approval names the operation without renewing time", async () => {
+  const harness = await createTestRenderer({ width: 90, height: 30, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
+  harness.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(harness.renderer, noActions)
+  surface.assign(box)
+  try {
+    surface.render({ ...view, prompt: { ...prompt, kind: "sudo", title: "Authorize sudo operation scope", message: "Review this exact operation for the original owner work." } }, { width: 90, height: 30 })
+    await harness.renderOnce()
+    const frame = harness.captureCharFrame()
+    assert.match(frame, /Sudo operation scope/)
+    assert.match(frame, /Operation scope · fresh passkey required/)
+    assert.doesNotMatch(frame, /Tab duration|Tab remember|undefined|maximum/)
+  } finally { harness.renderer.destroy() }
+})
+
 test("the passkey popup is shaped like the hot-keys popup and shows only the kernel's facts", async () => {
   const harness = await createTestRenderer({ width: 90, height: 30, useThread: false })
   const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
@@ -178,18 +194,79 @@ test("Escape hides the popup and gives the prompt back; the passkey is gone", as
   } finally { h.dispose() }
 })
 
-test("sudo popup describes a fresh one-turn decision without grant lifetime controls", async () => {
+test("MP-08/MP-10/MP-11 A04 sudo popup shows the window duration and its 8-hour maximum", async () => {
   const harness = await createTestRenderer({ width: 90, height: 30, useThread: false })
   const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
   harness.renderer.root.add(box)
   const surface = createPasskeyPopupRenderer(harness.renderer, noActions)
   surface.assign(box)
   try {
-    surface.render({ ...view, prompt: { ...prompt, kind: "sudo" } }, { width: 90, height: 30 })
+    surface.render({ ...view, passkey: { ...view.passkey, accessLifetimeMinutes: 120 }, prompt: { ...prompt, kind: "sudo", lifetime_minutes: 60, max_lifetime_minutes: 480 } }, { width: 90, height: 30 })
     await harness.renderOnce()
     const frame = harness.captureCharFrame()
-    assert.match(frame, /One sudo turn/)
+    assert.match(frame, /Sudo window/)
+    assert.match(frame, /Window: 2 hours · maximum 8 hours/)
     assert.match(frame, /fresh passkey/i)
-    assert.doesNotMatch(frame, /External agent access|undefined|Tab lifetime|Tab remember|Remember for/)
+    assert.match(frame, /Tab duration/)
+    assert.doesNotMatch(frame, /External agent access|undefined|Tab lifetime|Tab remember|Remember for|One sudo turn/)
   } finally { harness.renderer.destroy() }
 })
+
+test("MP-08 / MP-10 / MP-11 access popup describes the whole local kernel without a session", async () => {
+  const harness = await createTestRenderer({ width: 90, height: 30 })
+  const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
+  harness.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(harness.renderer, noActions)
+  surface.assign(box)
+  try {
+    surface.render({ ...view, prompt: { ...prompt, kind: "access_grant", session_id: "kernel-access", session_alias: null,
+      lifetime_minutes: 480, max_lifetime_minutes: 1440 } }, { width: 90, height: 30 })
+    await harness.renderOnce()
+    const frame = harness.captureCharFrame()
+    assert.match(frame, /Local kernel/)
+    assert.doesNotMatch(frame, /Session:|Session kernel-access/)
+  } finally { harness.renderer.destroy() }
+})
+
+for (const kind of ["access_grant", "access_extension"] as const) {
+  test(`MP-08 / MP-10 / MP-11 legacy ${kind} popup keeps its session scope visible`, async () => {
+    const harness = await createTestRenderer({ width: 90, height: 30 })
+    const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
+    harness.renderer.root.add(box)
+    const surface = createPasskeyPopupRenderer(harness.renderer, noActions)
+    surface.assign(box)
+    try {
+      surface.render({ ...view, prompt: { ...prompt, kind } }, { width: 90, height: 30 })
+      await harness.renderOnce()
+      const frame = harness.captureCharFrame()
+      assert.match(frame, /Session: Payments \(session-1\)/)
+      assert.doesNotMatch(frame, /Local kernel/)
+    } finally { harness.renderer.destroy() }
+  })
+}
+
+for (const kind of ["access_grant", "access_extension"] as const) {
+  test(`MP-08 / MP-10 / MP-11 ${kind} labels the structured requester independently of message text`, async () => {
+    const h = await createTestRenderer({ width: 100, height: 50, useThread: false })
+    const box = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+    h.renderer.root.add(box)
+    const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+    surface.assign(box)
+    try {
+      surface.render({ ...view, prompt: { ...prompt, kind, session_id: "kernel-access", session_alias: null,
+        message: "Display text mentions Claude (pid 999) but cannot supply the requester label.",
+        requester: { executable: "/opt/codex\n\u001b[31m\u202e", pid: 42, process_start_id: "18446744073709551615", process_exec_version: 7, provider_harness: "codex" },
+        lifetime_minutes: 30, max_lifetime_minutes: 1440,
+      } }, { width: 100, height: 50 })
+      await h.renderOnce()
+      const frame = h.captureCharFrame()
+      assert.match(frame, /Requester: Codex · PID 42/)
+      assert.match(frame, /Executable: "\/opt\/codex\\n\\u001b\[31m\\u202e"/)
+      assert.match(frame, /Process start: 18446744073709551615 · exec version 7/)
+      assert.match(frame, /Display text mentions Claude/)
+      surface.render({ ...view, prompt: { ...prompt, kind, requester: null } }, { width: 100, height: 50 })
+      await h.renderOnce()
+      assert.match(h.captureCharFrame(), /Requester identity unavailable/)
+    } finally { h.renderer.destroy() }
+  })
+}

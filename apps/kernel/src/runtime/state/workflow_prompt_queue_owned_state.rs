@@ -772,6 +772,7 @@ impl KernelRuntimeOwnedState {
         Ok(admitted)
     }
 
+    #[cfg(test)]
     pub(super) fn workflow_enqueue_prompt_and_maybe_start(
         &self,
         session_id: &str,
@@ -799,6 +800,8 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    // MP-08/MP-10/MP-11: keep the independent causal/placement inputs explicit at this boundary.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn workflow_enqueue_prompt_by_agent_and_maybe_start(
         &self,
         session_id: &str,

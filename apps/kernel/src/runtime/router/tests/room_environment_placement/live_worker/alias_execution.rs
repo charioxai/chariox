@@ -21,6 +21,7 @@ async fn real_relay_denies_before_contact_and_moves_canonically() {
         "unused-until-public-slice-creation".into(),
         true,
         true,
+        None,
     )
     .await;
     let result = std::panic::AssertUnwindSafe(check_alias_execution(&fixture))

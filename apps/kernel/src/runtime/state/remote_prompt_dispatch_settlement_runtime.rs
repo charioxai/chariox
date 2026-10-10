@@ -55,6 +55,19 @@ impl KernelRuntimeState {
                 outcome => break outcome?,
             }
         };
+        match (&settlement, &result) {
+            (RemotePromptDispatchSettlement::Settled(_), Ok(run)) => {
+                self.bind_leased_agent_task(&dispatch, run);
+                self.record_leased_event_receipt(&dispatch, Some(run), "accepted")
+            }
+            (RemotePromptDispatchSettlement::Settled(_), Err(_)) => {
+                self.record_leased_event_receipt(&dispatch, None, "rejected")
+            }
+            (RemotePromptDispatchSettlement::BindingChanged(_), _) => {
+                self.record_leased_event_receipt(&dispatch, None, "uncertain")
+            }
+            (RemotePromptDispatchSettlement::Superseded, _) => {}
+        }
         let settled_prompt = match settlement {
             RemotePromptDispatchSettlement::Settled(prompt) => prompt,
             RemotePromptDispatchSettlement::Superseded => return Ok(()),

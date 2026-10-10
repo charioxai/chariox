@@ -54,7 +54,7 @@ pub(super) fn managed(config: Enrollment) -> Result<()> {
     {
         return Err(Error::Identity);
     }
-    if read(&service, "cgroup.procs")? != "" {
+    if !(read(&service, "cgroup.procs")?).is_empty() {
         return Err(Error::Busy);
     }
     write(&service, "cgroup.subtree_control", "+cpu +memory +pids")?;

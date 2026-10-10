@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let release = AppReleaseSummary {
         version: "1.0.0".into(),
         publisher_id: "publisher".into(),
@@ -86,7 +86,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
 
 #[test]
 fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let handle = format!("upload_{}", "a".repeat(64));
     let digest = format!("sha256:{:064x}", 1);
     let requests = vec![
@@ -168,7 +168,7 @@ fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
 
 #[test]
 fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let requests = vec![
         LocalDaemonRequest::GetAppWorker(AppWorkerRequest {
             installation_id: "todo".into(),
@@ -275,7 +275,7 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
 fn app_view_shapes_are_versioned_and_name_no_owner_or_asset() {
     use crate::runtime::browser_controller_app_view::{BrowserAppViewError, BrowserAppViewRequest};
     use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let request = LocalDaemonRequest::OpenAppView(OpenAppViewRequest {
         session_id: "session-1".into(),
         installation_id: "todo".into(),
@@ -333,7 +333,7 @@ fn app_view_shapes_are_versioned_and_name_no_owner_or_asset() {
 
 #[test]
 fn app_view_panel_choice_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let request = LocalDaemonRequest::SetAppViewPanel(crate::local::SetAppViewPanelRequest {
         session_id: "session-1".into(),
         installation_id: "todo".into(),
@@ -364,7 +364,7 @@ fn app_view_panel_choice_shape_is_versioned() {
 
 #[test]
 fn app_uninstall_shape_is_versioned_and_names_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let request = LocalDaemonRequest::UninstallApp(UninstallAppRequest {
         installation_id: "todo".into(),
         expected_generation: "3".into(),
@@ -408,7 +408,7 @@ fn app_uninstall_shape_is_versioned_and_names_no_owner() {
 
 #[test]
 fn app_logs_shape_is_versioned_and_names_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let request = LocalDaemonRequest::GetAppLogs(GetAppLogsRequest {
         installation_id: "todo".into(),
         after_sequence: Some("7".into()),
@@ -448,7 +448,7 @@ fn app_logs_shape_is_versioned_and_names_no_owner() {
 
 #[test]
 fn app_update_shape_is_versioned_fenced_and_names_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let request = LocalDaemonRequest::BeginAppUpdate(BeginAppUpdateRequest {
         session_id: "session-1".into(),
         request_id: "update-1".into(),
@@ -479,7 +479,7 @@ fn app_update_shape_is_versioned_fenced_and_names_no_owner() {
 
 #[test]
 fn app_inbox_shapes_are_versioned_and_name_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let requests = vec![
         LocalDaemonRequest::CreateAppInboxRoute(CreateAppInboxRouteRequest {
             installation_id: "todo".into(),
@@ -553,7 +553,7 @@ fn app_inbox_shapes_are_versioned_and_name_no_owner() {
 
 #[test]
 fn app_inbox_routes_from_generator_connections_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let connection = AppInboxConnection {
         generator_id: "dev.chariox.slack".into(),
         connection_id: "connection-1".into(),
@@ -610,7 +610,7 @@ fn app_inbox_routes_from_generator_connections_are_versioned() {
 
 #[test]
 fn app_connection_grants_are_versioned_and_name_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let requests = vec![
         LocalDaemonRequest::GrantAppConnection(GrantAppConnectionRequest {
             installation_id: "slack".into(),
@@ -660,7 +660,7 @@ fn app_connection_grants_are_versioned_and_name_no_owner() {
 
 #[test]
 fn an_app_set_is_versioned_and_carries_no_app_data() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let request = LocalDaemonRequest::GetAppSet(GetAppSetRequest {});
     assert_eq!(
         serde_json::from_slice::<LocalDaemonRequest>(&serde_json::to_vec(&request).unwrap())
@@ -701,7 +701,7 @@ fn an_app_set_is_versioned_and_carries_no_app_data() {
 
 #[test]
 fn deployment_app_consent_is_versioned_and_carries_no_approval() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let request = LocalDaemonRequest::PrepareDeploymentApps(PrepareDeploymentAppsRequest {
         session_id: "session-1".into(),
         request_id: "deploy-apps-1".into(),
@@ -773,7 +773,7 @@ fn deployment_app_consent_is_versioned_and_carries_no_approval() {
 
 #[test]
 fn app_file_grant_shapes_are_versioned_and_carry_no_host_path() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let request = LocalDaemonRequest::GrantAppFile(GrantAppFileRequest {
         session_id: "s".into(),
         operation_id: "file-pick-1".into(),
@@ -811,7 +811,7 @@ fn app_file_grant_shapes_are_versioned_and_carry_no_host_path() {
 
 #[test]
 fn app_file_grant_revoke_shapes_are_versioned_and_name_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let all = LocalDaemonRequest::RevokeAppFileGrants(RevokeAppFileGrantsRequest {
         installation_id: "docs".into(),
         operation_id: None,
@@ -859,7 +859,7 @@ fn app_file_grant_revoke_shapes_are_versioned_and_name_no_owner() {
 
 #[test]
 fn app_file_export_shapes_are_versioned_and_name_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let request = LocalDaemonRequest::SaveAppFileExport(SaveAppFileExportRequest {
         session_id: "s".into(),
         operation_id: "file-export-1".into(),
@@ -895,7 +895,7 @@ fn app_file_export_shapes_are_versioned_and_name_no_owner() {
 fn app_view_reload_shape_is_versioned_and_names_only_the_tab_and_assets() {
     use crate::runtime::browser_controller_app_view::{BrowserAppViewAsset, BrowserAppViewRequest};
     use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let command = RoomBrowserControllerCommand::AppView {
         request: BrowserAppViewRequest::Reload {
             target_id: "target-1".into(),
@@ -920,7 +920,7 @@ fn app_view_reload_shape_is_versioned_and_names_only_the_tab_and_assets() {
 #[test]
 fn app_host_copy_link_shapes_are_versioned_and_acceptance_cannot_supply_an_owner_or_payload() {
     use crate::local::{AcceptAppHostActionRequest, AppHostAction};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let request = LocalDaemonRequest::AcceptAppHostAction(AcceptAppHostActionRequest {
         session_id: "s".into(),
         operation_id: "o".into(),
@@ -966,7 +966,7 @@ fn app_host_copy_link_shapes_are_versioned_and_acceptance_cannot_supply_an_owner
 
 #[test]
 fn saved_snapshot_restore_protocol_410_shape_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let request = LocalDaemonRequest::RestoreAppDataSnapshot(RestoreAppDataSnapshotRequest {
         installation_id: "todo".into(),
         expected_generation: "3".into(),
@@ -1001,7 +1001,7 @@ fn saved_snapshot_restore_protocol_410_shape_and_hash() {
 
 #[test]
 fn receipt_expiry_protocol_416_refuses_with_a_stable_error_shape() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
     let response = LocalDaemonResponse::AppRequestFailed {
         code: AppRequestErrorCode::ReceiptExpired,
     };

@@ -597,6 +597,8 @@ pub(super) async fn handle_client_packet_route_envelope(
     Ok(ConnectionAction::Continue)
 }
 
+// Routing keeps the authenticated requester and target bindings explicit.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn route_daemon_peer_request(
     registry: &Arc<RwLock<RelayRegistry>>,
     routes: &Arc<RelayRouteIndex>,

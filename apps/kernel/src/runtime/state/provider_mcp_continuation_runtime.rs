@@ -15,9 +15,21 @@ impl KernelRuntimeState {
         let Some(token) = run.runtime_mcp_auth_token() else {
             return Vec::new();
         };
+        self.runtime_catalog_signature(token)
+    }
+
+    /// What catalog-change detection compares. MP-08/MP-10/MP-11 A04: a sudo
+    /// window lists its tool only while live and reloads the provider itself
+    /// before its first turn. Counting it would let a later unrelated change
+    /// arm a continuation that replays whichever ordinary prompt is active.
+    pub(crate) fn runtime_catalog_signature(
+        &self,
+        token: &str,
+    ) -> Vec<(String, String, serde_json::Value)> {
         let mut tools: Vec<_> = self
             .runtime_tool_specs_for_auth_token(token)
             .into_iter()
+            .filter(|tool| tool.name != sudo::SUDO_TOOL)
             .map(|tool| (tool.name, tool.description, tool.input_schema))
             .collect();
         tools.sort_by(|a, b| a.0.cmp(&b.0));

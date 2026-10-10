@@ -255,10 +255,20 @@ pub use workspace::*;
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
 /// Version 435 combines Apps, Browser artifacts, bounded Computer holds, and
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
+/// Version 451 grants the whole local kernel and routes access popups without sessions.
 /// Version 450 adds immutable room spawn/object creators and regular room tools
 /// behind the transitional room-agent-tools flag (MP-08/MP-10/MP-11 A01).
 /// Version 452 adds durable agent events, enforced turn dispositions and
 /// kernel-emitted workflow notifications (MP-08/09/10/11 A02).
 /// Version 459 adds kernel-owned timer/process wakes with proof-of-life and
 /// delivery receipts on `RuntimeSession.agent_wakes` (MP-08/09/10/11 A03).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 459;
+/// Version 460 replaces one-turn sudo with hour-scale windows bound to owner
+/// work, fresh-passkey extension, session status and no agent approvals
+/// (MP-08/MP-10/MP-11 A04).
+/// Version 470 adds structured OS requester identity to access decisions.
+/// Version 472 advertises identity-preserving terminal relay renewal with
+/// explicit capability negotiation and recoverable target-offline handshakes.
+/// Version 485 coordinates the A01-A04 agent-model contracts and A10
+/// home-ordered leased wakes with both-end sudo window fences
+/// (coordinator allocated; MP-08/MP-09/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 485;

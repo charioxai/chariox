@@ -35,6 +35,8 @@ struct SessionCommandEnvelope {
     terminal_caller: bool,
     connection_class: Option<KernelConnectionClass>,
     external_grant_id: Option<String>,
+    /// MP-08/MP-10/MP-11: the submitting turn a queued sudo command keeps.
+    sudo_binding: Option<(String, String)>,
     request: LocalDaemonRequest,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
@@ -93,6 +95,7 @@ impl SessionRuntime {
         command: KernelCommand,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let sudo_binding = self.store.sudo_binding(&command, &request);
         let session_id = self.resolve_session_lane_key(&request).await?;
         let lane_id = session_command_lane_id(&request, &session_id);
         let lane = self.session_lane(&lane_id, &session_id).await;
@@ -122,6 +125,7 @@ impl SessionRuntime {
             terminal_caller,
             connection_class,
             external_grant_id,
+            sudo_binding,
             request,
             result_tx,
         }) {
@@ -262,6 +266,7 @@ impl SessionRuntime {
             terminal_caller: false,
             connection_class: None,
             external_grant_id: None,
+            sudo_binding: None,
             request,
             result_tx,
         })
@@ -329,6 +334,7 @@ async fn run_session_command_lane(
                             .external_grant_id
                             .as_deref()
                             .map(|id| (id, &envelope.request)),
+                        envelope.sudo_binding,
                     )
                     .with_room_provider_origin(
                         envelope.caller_metaagent_id.as_deref(),

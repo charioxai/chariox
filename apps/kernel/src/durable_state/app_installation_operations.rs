@@ -110,15 +110,6 @@ pub(crate) struct ApprovedFirstInstall {
     approval: CapabilityApproval,
 }
 impl ApprovedFirstInstall {
-    pub(crate) fn owner(&self) -> &str {
-        &self.owner
-    }
-    pub(crate) fn request_id(&self) -> &str {
-        &self.request_id
-    }
-    pub(crate) fn attempt(&self) -> &str {
-        &self.attempt
-    }
     pub(crate) fn binding(&self) -> &StageTrustBinding {
         &self.binding
     }

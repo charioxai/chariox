@@ -7,7 +7,7 @@ import type { AppPublisherEnrollment } from "./app-publisher-file.js"
 import type { BootstrapState, RuntimeSession } from "./cli-types.js"
 import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
-import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
+import { createInitialCloudClientTokenIssuer } from "./cloud-client-token-issuer.js"
 import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
 import { bootstrapCloudRelayProfile } from "./cloud-relay.js"
 import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
@@ -97,7 +97,7 @@ import {
   validateScript,
   testConnector,
 } from "./extension-api.js"
-import { deleteKernel, exportDebugBundle, getDaemonHealth, listKernelAccessGrants, revokeKernelAccessGrant } from "./kernel-api.js"
+import { deleteKernel, exportDebugBundle, extendKernelSudo, getDaemonHealth, listKernelAccessGrants, revokeKernelAccessGrant } from "./kernel-api.js"
 import {
   mergeRelayCloudProfile,
   mergeUiPreferences,
@@ -142,7 +142,6 @@ import {
   configureRelay,
   connectKernelCloudRelay,
   getRelayStatus,
-  issueKernelCloudRelayClientToken,
   logoutCloudRelay,
   pairKernelCloudRelayClient,
   pairKernelCloudRelayMachine,
@@ -523,6 +522,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getDaemonHealth: () => getDaemonHealth(client),
     listKernelAccessGrants: () => listKernelAccessGrants(client),
     revokeKernelAccessGrant: (id) => revokeKernelAccessGrant(client, id),
+    sendExtendKernelSudo: (request) => extendKernelSudo(client, request),
     exportDebugBundle: (sessionId, label) => exportDebugBundle(client, sessionId, label),
     assignSessionAlias: (sessionId, alias) => aliasSession(client, sessionId, alias),
     aliasAgent: (sessionId, agentId, alias) => aliasAgent(client, sessionId, agentId, alias),
@@ -601,16 +601,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       pairKernelCloudRelayMachine(client, machineId, alias),
     issueCloudKernelRelayToken: async () => connectKernelCloudRelay(client),
     issueCloudMachineRelayToken: async () => connectKernelCloudRelay(client),
-    issueCloudClientRelayToken: async (_profile, targetDaemonAlias, tokenOptions) => {
-      const relayIdentity = createCliRelayIdentityStore().getOrCreate()
-      return issueKernelCloudRelayClientToken(
-        client,
-        targetDaemonAlias,
-        options.clientId ?? "chariox-cli",
-        tokenOptions?.sessionId ?? null,
-        relayIdentity.publicKeyThumbprint,
-      )
-    },
+    issueCloudClientRelayToken: createInitialCloudClientTokenIssuer(client, options.clientId ?? "chariox-cli"),
     createCloudSessionInvite: (sessionId, inviteOptions) =>
       createCloudSessionInvite(client, sessionId, inviteOptions),
     acceptCloudSessionInvite: (inviteToken) => acceptCloudSessionInvite(client, inviteToken),

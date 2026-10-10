@@ -1532,6 +1532,7 @@ pub(in crate::runtime::state) mod tests {
                     process_id: "managed:claude:test-process".to_string(),
                     pid: None,
                     identity: None,
+                    endpoint_identity: None,
                     endpoint_mode: provider_run.endpoint_mode(),
                     process_label: provider_run.process_label().to_string(),
                     started_at_ms: provider_run.started_at_ms(),
@@ -3580,7 +3581,13 @@ impl KernelRuntimeState {
             &dispatch.agent_id,
             &dispatch.hidden_system_context,
         );
-        if owned.config_projection.snapshot().room_agent_tools {
+        // A10: a leased backing run is supervised by its home kernel only; the
+        // worker keeps no task ledger or task context of its own for it.
+        if owned.config_projection.snapshot().room_agent_tools
+            && !owned
+                .provider_run_projection
+                .is_leased_provider_run(&dispatch.provider_run_id)
+        {
             if !dispatch.steering {
                 owned.durable_state_store.agent_lifecycle(
                     crate::durable_state::agent_lifecycle::Operation::Begin {
@@ -3597,13 +3604,12 @@ impl KernelRuntimeState {
                     },
                 )?;
             }
-            if let Some(task) = owned
-                .durable_state_store
-                .agent_tasks(Some(&dispatch.session_id), Some(&dispatch.agent_id))?
-                .into_iter()
-                .find(|t| t.prompt_id == dispatch.prompt_id)
-            {
-                hidden_system_context = join_hidden_context(&hidden_system_context, &format!("<chariox-task-context>For chariox.events tools use task_id `{}` and origin_prompt_id `{}`. Final answers are done candidates; finish tracked obligations or yield on live sources with a future deadline. If owner action is required call chariox.events.blocked. Message events request no courtesy reply unless explicitly opted in.</chariox-task-context>", task.task_id, dispatch.prompt_id));
+            if let Some(hint) = owned.agent_task_context_hint(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+            )? {
+                hidden_system_context = join_hidden_context(&hidden_system_context, &hint);
             }
         }
         if owned

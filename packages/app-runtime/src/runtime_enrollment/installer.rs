@@ -338,6 +338,8 @@ impl Roots {
         )
     }
 }
+// statvfs counter widths vary across Unix platforms.
+#[allow(clippy::unnecessary_cast)]
 fn require_disk(dir: &Dir, bytes: u64) -> Result<()> {
     if bytes > MAX_BUNDLE {
         return Err(EnrollmentError::Limit);

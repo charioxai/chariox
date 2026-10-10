@@ -26,8 +26,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             source,
             occurrence: id,
             success,
-            now: _,
+            now,
         } => {
+            // Source completion does not advance the task's separate progress clock.
+            let _completion_observed_at_ms = now;
             if let Some(answer) = public_answer.as_mut() {
                 crate::secret_redaction::redact_json_secrets(answer);
                 if encode(answer)?.len() > 8_192 {
@@ -119,6 +121,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         Operation::Sweep {
             now,
             busy_recipients,
+            held_work,
         } => {
             let mut changed = vec![];
             for mut t in tasks(tx)? {
@@ -230,6 +233,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     if busy_recipients
                         .iter()
                         .any(|(room, agent)| room == &e.room_id && agent == &e.agent_id)
+                        || held_work.iter().any(|(room, agent, work)| {
+                            room == &e.room_id
+                                && agent == &e.agent_id
+                                && !super::work_correlated(&e, work)
+                        })
                     {
                         tx.execute(
                             "DELETE FROM agent_inbox_refusals WHERE sequence=?1",

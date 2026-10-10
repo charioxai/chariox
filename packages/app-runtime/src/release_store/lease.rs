@@ -73,7 +73,8 @@ pub(super) fn stored_archive(store: &Dir, digest: &str) -> Result<StoredReleaseA
 /// retains a shared lease until the native worker and every broker call drain.
 /// An App, path, or mutable StagedRelease value cannot manufacture this proof.
 pub struct VerifiedReleaseLease {
-    root: Dir,
+    // Hold the root descriptor and its shared lock for this lease lifetime.
+    _root: Dir,
     payload: Dir,
     package_digest: String,
     manifest: Manifest,
@@ -89,9 +90,6 @@ impl VerifiedReleaseLease {
     }
     pub fn declarations(&self) -> &Declarations {
         &self.declarations
-    }
-    pub(crate) fn root(&self) -> &File {
-        &self.root.0
     }
     pub(crate) fn payload(&self) -> &File {
         &self.payload.0
@@ -123,7 +121,7 @@ pub(super) fn verified(
         return Err(ReleaseStoreError::UnsafeEntry);
     }
     Ok(VerifiedReleaseLease {
-        root,
+        _root: root,
         payload,
         package_digest: digest.into(),
         manifest: package.manifest().clone(),

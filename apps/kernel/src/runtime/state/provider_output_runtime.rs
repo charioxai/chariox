@@ -15,7 +15,7 @@ impl KernelRuntimeState {
         recipient_attachment_ids: Vec<String>,
         initial_liveness_already_checked: bool,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
-        self.publish_credential_copy_notices(session_id);
+        self.publish_credential_copy_notices(session_id).await;
         let owned = &self.owned;
         self.reap_structured_prompt_jobs_and_dispatch();
         let mut provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;

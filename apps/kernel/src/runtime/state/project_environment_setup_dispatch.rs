@@ -148,22 +148,6 @@ pub(super) async fn start_remote_setup_with_deadline(
     .await
 }
 
-pub(super) async fn get_remote_setup_status(
-    state: &KernelRuntimeState,
-    execution: &SetupExecution,
-) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
-    let (relay_config, target) = remote_relay_context(state, execution).await?;
-    send_setup_request_with_timeout(
-        state,
-        relay_config.clone(),
-        target,
-        get_remote_setup_status_request(execution)?,
-        RelaySetupResponseKind::Status,
-        setup_response_timeout(&relay_config, RelaySetupResponseKind::Status),
-    )
-    .await
-}
-
 pub(super) async fn get_remote_setup_status_with_deadline(
     state: &KernelRuntimeState,
     execution: &SetupExecution,

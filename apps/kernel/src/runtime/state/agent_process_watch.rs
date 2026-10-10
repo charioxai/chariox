@@ -502,22 +502,19 @@ impl KernelRuntimeState {
                 let outcome = state
                     .retain_process_outcome(op, &notice_room, &notice_agent)
                     .await;
-                match outcome {
-                    crate::durable_state::agent_lifecycle::Outcome::Wakes(wakes) => {
-                        for wake in wakes {
-                            let text = match (exited, wake.exit_code) {
-                                (true, Some(code)) => format!(
-                                    "Watched process '{}' exited with code {code}",
-                                    wake.label
-                                ),
-                                (true, None) => format!("Wake alert: watched process '{}' is lost/unsettled; survivors may still be running and require operator cleanup", wake.label),
-                                _ => format!("Watched process '{}' printed its match", wake.label),
-                            };
-                            state.wake_notice(&wake, text);
-                            state.schedule_wake_delivery(&wake);
-                        }
+                if let crate::durable_state::agent_lifecycle::Outcome::Wakes(wakes) = outcome {
+                    for wake in wakes {
+                        let text = match (exited, wake.exit_code) {
+                            (true, Some(code)) => format!(
+                                "Watched process '{}' exited with code {code}",
+                                wake.label
+                            ),
+                            (true, None) => format!("Wake alert: watched process '{}' is lost/unsettled; survivors may still be running and require operator cleanup", wake.label),
+                            _ => format!("Watched process '{}' printed its match", wake.label),
+                        };
+                        state.wake_notice(&wake, text);
+                        state.schedule_wake_delivery(&wake);
                     }
-                    _ => {}
                 }
                 if exited {
                     break;
@@ -1146,7 +1143,7 @@ mod tests {
         };
         let mut child = spawn(
             &w(),
-            &["python3".into(), "-c".into(), script.into()],
+            &["python3".into(), "-c".into(), script],
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],

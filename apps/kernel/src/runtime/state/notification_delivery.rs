@@ -93,21 +93,19 @@ impl KernelRuntimeState {
                 )
                 .await
                 .map(|run| run.is_some())
+            } else if let Err(error) = self.owned.append_steering_prompt_history(
+                &session,
+                &dispatch.provider_run_id,
+                dispatch.target_active_prompt_id.as_deref().unwrap(),
+                &dispatch.source_attachment_id,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+                &dispatch.prompt,
+                &dispatch.attachments,
+            ) {
+                Err(error)
             } else {
-                if let Err(error) = self.owned.append_steering_prompt_history(
-                    &session,
-                    &dispatch.provider_run_id,
-                    dispatch.target_active_prompt_id.as_deref().unwrap(),
-                    &dispatch.source_attachment_id,
-                    &dispatch.agent_id,
-                    &dispatch.prompt_id,
-                    &dispatch.prompt,
-                    &dispatch.attachments,
-                ) {
-                    Err(error)
-                } else {
-                    self.enqueue_prompt_dispatch_with_acceptance(dispatch).await
-                }
+                self.enqueue_prompt_dispatch_with_acceptance(dispatch).await
             };
             match accepted {
                 Ok(true) if structured => {

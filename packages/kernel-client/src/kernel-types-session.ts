@@ -3,6 +3,7 @@ import type {
   AgentInstance,
   AgentPromptState,
   AgentRuntimeActivity,
+  KernelSudoTurn,
   PromptQueueItem,
   RuntimeInteraction,
   SessionInvite,
@@ -49,6 +50,8 @@ export type RuntimeSession = {
   active_interactions?: RuntimeInteraction[]
   agent_tasks?: AgentTaskExecution[]
   agent_wakes?: AgentWake[]
+  // Protocol 460: live sudo windows for every client's status row.
+  sudo_windows?: KernelSudoTurn[]
   metaagent_tasks?: MetaagentTask[]
   queued_metaagent_tasks?: QueuedMetaagentTask[]
   agent_prompt_schedules?: AgentPromptSchedule[]

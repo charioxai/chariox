@@ -1038,6 +1038,23 @@ pub(super) async fn handle_daemon_peer_request(
                 };
             }
         },
+        RelayPeerRequest::UpdateLeasedSudo {
+            leased_agent_id,
+            home_prompt_id,
+            grant,
+        } => match router
+            .runtime_state()
+            .update_relay_leased_sudo(&leased_agent_id, &home_prompt_id, grant)
+            .await
+        {
+            Ok(()) => RelayPeerResponse::LeasedSudoUpdated,
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                };
+            }
+        },
         RelayPeerRequest::SteerLeasedPrompt {
             leased_agent_id,
             steer_id,
@@ -2404,6 +2421,9 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
             leased_agent_id, ..
         }
         | RelayPeerRequest::GetLeasedPromptReceipt {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::UpdateLeasedSudo {
             leased_agent_id, ..
         }
         | RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {

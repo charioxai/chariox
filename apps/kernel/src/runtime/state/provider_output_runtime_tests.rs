@@ -154,6 +154,7 @@ mod completion_settlement;
 mod detached_provider_run;
 mod diagnostics_timeouts;
 mod external_queue;
+mod focus_recovery_tests;
 mod history_projection;
 mod large_codex_resume;
 mod leased_output;

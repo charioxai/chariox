@@ -4,6 +4,7 @@ pub(super) fn bind(
     tx: &Transaction<'_>,
     event: &InboxEvent,
     target: Option<&str>,
+    prompt: &str,
 ) -> Result<(), DaemonError> {
     tx.execute(
         "DELETE FROM agent_urgent_reply_links WHERE sequence=?1",
@@ -11,12 +12,23 @@ pub(super) fn bind(
     )
     .map_err(sql)?;
     if event.reply_requested {
-        if let Some(target) = target {
-            let task = for_turn(tx, &event.room_id, &event.agent_id, target)?
-                .ok_or_else(|| error("urgent reply requires an admitted receiver task"))?;
+        let task = if let Some(target) = target {
+            Some(
+                for_turn(tx, &event.room_id, &event.agent_id, target)?
+                    .ok_or_else(|| error("urgent reply requires an admitted receiver task"))?
+                    .task_id,
+            )
+        } else {
+            // MP-08/MP-10/MP-11 R947-1: a leased retry has a fresh transport
+            // prompt, while the sender still awaits the original event source.
+            // The idle message task is admitted under this prompt after Attempt.
+            let source = format!("agent-event-{}-{}", event.agent_id, event.sequence);
+            (prompt != source).then(|| prompt.to_owned())
+        };
+        if let Some(task) = task {
             tx.execute(
                 "INSERT INTO agent_urgent_reply_links VALUES(?1,?2)",
-                params![sql_integer(event.sequence)?, task.task_id],
+                params![sql_integer(event.sequence)?, task],
             )
             .map_err(sql)?;
         }

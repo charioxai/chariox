@@ -403,6 +403,8 @@ impl PreparedFile {
         self.directory.sync()
     }
 
+    // Unix stat device/inode widths differ between Linux and macOS.
+    #[allow(clippy::unnecessary_cast)]
     fn matches_temporary(&self) -> bool {
         let mut current = std::mem::MaybeUninit::<libc::stat>::uninit();
         if unsafe {

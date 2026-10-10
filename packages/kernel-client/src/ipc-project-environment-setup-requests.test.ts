@@ -11,7 +11,7 @@ import {
 } from "./ipc-project-environment-setup-requests.js"
 
 test("project environment setup requests use the versioned kernel seam", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 459)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 485)
   assert.deepEqual(
     startProjectEnvironmentSetupRequest({
       operationId: "setup-1",
@@ -47,7 +47,7 @@ test("project environment setup requests use the versioned kernel seam", () => {
 
 // MP-08: one shared request builder for TUI and Web.
 test("MP-08 Project manifest query is value-free and versioned", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 459)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 485)
   assert.deepEqual(getProjectEnvironmentManifestRequest("project-1"), {
     GetProjectEnvironmentManifest: { projectId: "project-1" },
   })

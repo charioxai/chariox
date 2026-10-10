@@ -35,6 +35,7 @@ mod controller_worker_mcp;
 mod display;
 mod lease_release;
 mod leased_run_settle;
+mod leased_wakes;
 mod room_action_latency;
 mod room_home_local_slice;
 mod room_remote_agent_home_slice;
@@ -109,6 +110,22 @@ impl LiveWorker {
             "environment-worker".to_string(),
             true,
             false,
+            None,
+        )
+        .await
+    }
+
+    /// MP-08/MP-10/MP-11: the home owner's passkey verifies sudo windows.
+    async fn start_with_home_passkey(passkey: &str) -> Self {
+        Self::start_configured_with_home_vault_and_worker_id(
+            false,
+            false,
+            None,
+            false,
+            "environment-worker".to_string(),
+            true,
+            false,
+            Some(passkey),
         )
         .await
     }
@@ -127,10 +144,13 @@ impl LiveWorker {
             worker_kernel_id,
             true,
             false,
+            None,
         )
         .await
     }
 
+    // MP-08/MP-10/MP-11: keep the independent causal/placement inputs explicit at this boundary.
+    #[allow(clippy::too_many_arguments)]
     async fn start_configured_with_home_vault_and_worker_id(
         private_relay: bool,
         browser_controller: bool,
@@ -139,6 +159,7 @@ impl LiveWorker {
         mut worker_kernel_id: String,
         isolate_home_persistence: bool,
         canonical_slice: bool,
+        home_passkey: Option<&str>,
     ) -> Self {
         const HOME_TOKEN: &str = "environment-worker-fixture";
         // This isolated fixture's first slice is slice-1, owned by environment-home.
@@ -153,6 +174,13 @@ impl LiveWorker {
         let working_directory = WorkerWorkingDirectory::enter(worker_state.worktree.path());
         if let Some(backend) = home_vault_backend {
             home_state.config.user_config.credential_vault.backend = backend;
+        }
+        if let Some(passkey) = home_passkey {
+            let vault = home_state.root.join("owner-passkey-vault.json");
+            crate::secret::create_chariox_encrypted_vault_for_test(&vault, passkey).unwrap();
+            let vault_config = &mut home_state.config.user_config.credential_vault;
+            vault_config.backend = crate::config::CredentialVaultBackend::CharioxEncrypted;
+            vault_config.path = vault.display().to_string();
         }
         let managed_record =
             managed_slice_worker.then(|| managed_slice_fixture_record(&home_state.config));

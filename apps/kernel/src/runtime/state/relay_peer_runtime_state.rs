@@ -1370,11 +1370,13 @@ impl KernelRuntimeState {
         let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
             home_session_id,
             home_agent_id,
+            provider_run_id: worker_provider_run_id,
             provider_run,
             output_chunks,
             completions,
             ..
         } = &event;
+        let worker_provider_run_id = worker_provider_run_id.clone();
 
         let provider_auth_observation = provider_run.as_ref().and_then(|run| {
             remote_provider_auth_observation(
@@ -1400,8 +1402,24 @@ impl KernelRuntimeState {
         if outcome.provider_failed {
             self.finish_remote_provider_failure(&session_id, &outcome.completions)?;
         }
+        let leased_agent_id = self
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .ok()
+            .and_then(|agent| agent.remote_execution().map(|r| r.leased_agent_id.clone()));
         for completion in outcome.completions {
             self.inject_metaagent_turn_completion_event(&session_id, &agent_id, &completion)?;
+            if let Some(leased_agent_id) = leased_agent_id.as_deref() {
+                self.settle_leased_agent_task(
+                    &session_id,
+                    &agent_id,
+                    &completion.completed,
+                    leased_agent_id,
+                    &worker_provider_run_id,
+                )
+                .await;
+            }
         }
         if let Some((provider, account_profile, state)) = provider_auth_observation {
             self.apply_remote_slice_provider_auth_observation(

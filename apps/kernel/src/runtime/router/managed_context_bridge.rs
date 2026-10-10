@@ -64,6 +64,7 @@ pub(crate) struct RelayManagedContextChunkRequest {
 }
 
 impl CommandRouter {
+    #[cfg(test)]
     pub(crate) async fn relay_arm_managed_context_import(
         &self,
         request: RelayManagedContextArmRequest,
@@ -188,23 +189,6 @@ impl CommandRouter {
         })
     }
 
-    pub(crate) async fn relay_begin_managed_context_import(
-        &self,
-        identity: RelayCallerIdentity,
-        source_kernel_id: String,
-        transfer_id: String,
-        capability: String,
-    ) -> Result<RelayPeerResponse, DaemonError> {
-        self.relay_begin_managed_context_import_with_home_caller(
-            identity,
-            source_kernel_id,
-            transfer_id,
-            capability,
-            None,
-        )
-        .await
-    }
-
     pub(crate) async fn relay_begin_managed_context_import_with_home_caller(
         &self,
         identity: RelayCallerIdentity,
@@ -230,14 +214,6 @@ impl CommandRouter {
         })
         .await?;
         relay_status_response(status)
-    }
-
-    pub(crate) async fn relay_upload_managed_context_chunk(
-        &self,
-        request: RelayManagedContextChunkRequest,
-    ) -> Result<RelayPeerResponse, DaemonError> {
-        self.relay_upload_managed_context_chunk_with_home_caller(request, None)
-            .await
     }
 
     pub(crate) async fn relay_upload_managed_context_chunk_with_home_caller(
@@ -278,23 +254,6 @@ impl CommandRouter {
         relay_status_response(status)
     }
 
-    pub(crate) async fn relay_get_managed_context_import_status(
-        &self,
-        identity: RelayCallerIdentity,
-        source_kernel_id: String,
-        transfer_id: String,
-        capability: String,
-    ) -> Result<RelayPeerResponse, DaemonError> {
-        self.relay_get_managed_context_import_status_with_home_caller(
-            identity,
-            source_kernel_id,
-            transfer_id,
-            capability,
-            None,
-        )
-        .await
-    }
-
     pub(crate) async fn relay_get_managed_context_import_status_with_home_caller(
         &self,
         identity: RelayCallerIdentity,
@@ -320,23 +279,6 @@ impl CommandRouter {
         })
         .await?;
         relay_status_response(status)
-    }
-
-    pub(crate) async fn relay_finalize_managed_context_import(
-        &self,
-        identity: RelayCallerIdentity,
-        source_kernel_id: String,
-        transfer_id: String,
-        capability: String,
-    ) -> Result<RelayPeerResponse, DaemonError> {
-        self.relay_finalize_managed_context_import_with_home_caller(
-            identity,
-            source_kernel_id,
-            transfer_id,
-            capability,
-            None,
-        )
-        .await
     }
 
     pub(crate) async fn relay_finalize_managed_context_import_with_home_caller(

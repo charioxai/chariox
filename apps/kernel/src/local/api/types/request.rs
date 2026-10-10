@@ -8,6 +8,7 @@ pub enum LocalDaemonRequest {
     DetachWorkflowNotification(DetachWorkflowNotificationRequest),
     RequestKernelAccess(RequestKernelAccessRequest),
     RequestKernelSudo(RequestKernelSudoRequest),
+    ExtendKernelSudo(ExtendKernelSudoRequest),
     ListKernelAccessGrants(ListKernelAccessGrantsRequest),
     RevokeKernelAccessGrant(RevokeKernelAccessGrantRequest),
     BeginAppPublisherEnrollment(BeginAppPublisherEnrollmentRequest),

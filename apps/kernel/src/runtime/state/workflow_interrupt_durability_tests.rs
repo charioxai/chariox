@@ -286,6 +286,7 @@ async fn workflow_wait_cancellation(cancel_creator: bool) {
             target: None,
             run: None,
             now: now + 60_001,
+            work: None,
         })
         .unwrap();
     let Outcome::Task(promoted) = owned

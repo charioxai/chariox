@@ -379,6 +379,8 @@ mod unix {
             Ok(())
         }
 
+        // statvfs counter widths vary across Unix platforms.
+        #[allow(clippy::unnecessary_cast)]
         fn disk_state(&self) -> Result<(u64, u64)> {
             let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
             check(unsafe { libc::fstatvfs(self.root.0.as_raw_fd(), stats.as_mut_ptr()) })?;

@@ -82,7 +82,12 @@ mod kernel_access;
 mod sudo;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
-pub(crate) use sudo::{is_sudo_prompt, sudo_approval_receipt};
+#[cfg(test)]
+pub(crate) use sudo::leased::LEASED_SUDO_PEER_PROTOCOL_VERSION;
+pub(crate) use sudo::SudoWindowProjection;
+#[cfg(test)]
+pub(crate) use sudo::SUDO_WINDOW_LENGTH_FOR_TEST;
+pub(crate) use sudo::{is_sudo_control, is_sudo_prompt, sudo_window_minutes};
 mod passkey_prompts;
 #[cfg(test)]
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
@@ -166,7 +171,16 @@ struct KernelRuntimeOwnedState {
     passkey_prompts: Arc<passkey_prompts::PasskeyPromptBoard>,
     kernel_access: crate::runtime::kernel_access::AccessStore,
     sudo_turns: sudo::SudoStore,
-    sudo_process_cutoffs: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
+    /// Window timer proof of life: entry -> (armed revision, alerted revision).
+    sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
+    sudo_scopes: Arc<std::sync::Mutex<BTreeMap<String, std::collections::BTreeSet<String>>>>,
+    sudo_timer_changes: Arc<RuntimeChangeSignal>,
+    sudo_end_wakes: Arc<std::sync::Mutex<BTreeMap<String, (crate::local::KernelSudoTurn, String)>>>,
+    sudo_verified_at: Arc<std::sync::Mutex<BTreeMap<String, (std::time::Instant, u64)>>>,
+    /// Worker side of A10 leased sudo windows, keyed by backing agent.
+    leased_sudo_grants: Arc<std::sync::Mutex<BTreeMap<String, sudo::leased::WorkerSudoGrant>>>,
+    /// Home side of A10: windows whose first worker fence was confirmed.
+    leased_sudo_fenced: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
@@ -394,6 +408,7 @@ mod prompt_queue_owned_state;
 mod prompt_skill_context_state;
 mod prompt_transcript_owned_state;
 mod provider;
+mod provider_account_authority;
 mod provider_focus_owned_state;
 mod provider_launch_failure_runtime;
 mod provider_launch_owned_state;
@@ -483,6 +498,7 @@ mod workflow_queue_durable;
 mod workflow_source_request_runtime_state;
 use workflow_prompt_dispatches::*;
 pub(crate) mod notification_delivery;
+mod workflow_notification_grants;
 mod workflow_notification_peers;
 mod workflow_notification_router;
 mod workflow_prompt_failure_owned_state;
@@ -626,6 +642,7 @@ impl KernelRuntimeState {
             app_control,
             managed_kernel_registration,
             runtime_tool_call_activity,
+            sudo_windows,
         ) = {
             let started = Instant::now();
             loop {
@@ -641,6 +658,7 @@ impl KernelRuntimeState {
                         app.app_control_service(),
                         app.managed_kernel_registration(),
                         app.runtime_tool_call_activity.clone(),
+                        app.sudo_window_projection(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -783,8 +801,14 @@ impl KernelRuntimeState {
                     ),
                 passkey_prompts: Arc::default(),
                 kernel_access: Default::default(),
-                sudo_turns: Default::default(),
-                sudo_process_cutoffs: Default::default(),
+                sudo_turns: sudo_windows.store(),
+                sudo_timers: Default::default(),
+                sudo_scopes: Default::default(),
+                sudo_timer_changes: Default::default(),
+                sudo_verified_at: Default::default(),
+                sudo_end_wakes: Default::default(),
+                leased_sudo_grants: Default::default(),
+                leased_sudo_fenced: Default::default(),
                 config_projection,
                 session_store,
                 agent_store,
@@ -898,6 +922,8 @@ impl KernelRuntimeState {
         };
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
+        // Access grants are process-bound and never survive a kernel restart.
+        runtime.retire_notification_grants(None);
         runtime
     }
 

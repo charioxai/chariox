@@ -165,8 +165,11 @@ pub(crate) enum PromptAssemblyMode {
     NormalProviderTurn,
     NativeTuiProviderTurn,
     MetaagentProviderTurn,
+    // Preserve the dedicated continuation modes in the shared assembly contract.
+    #[allow(dead_code)]
     WorkflowNodeTurn,
     UtilityTurn,
+    #[allow(dead_code)]
     McpSkillContinuationTurn,
 }
 
@@ -837,12 +840,9 @@ impl PromptAssemblyService {
         Ok(Self { registry })
     }
 
+    #[cfg(test)]
     pub(crate) fn new(registry: PromptTemplateRegistry) -> Self {
         Self { registry }
-    }
-
-    pub(crate) fn registry(&self) -> &PromptTemplateRegistry {
-        &self.registry
     }
 
     pub(crate) fn assemble_provider_turn(
@@ -1329,6 +1329,17 @@ mod tests {
             .hidden_system_context
             .contains("but only a Meta agent may create agents"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    // MP-08 / MP-10 / MP-11 (review 914 P3): room-mode sends report durable
+    // inbox admission and request no reply unless asked.
+    #[test]
+    fn mp11_review_runtime_instructions_describe_durable_room_messages() {
+        for expected in ["`durable`", "`urgent`", "`reply_requested`", "courtesy"] {
+            assert!(RUNTIME_BASE.contains(expected), "missing {expected}");
+        }
+        assert!(!RUNTIME_BASE.contains("may ask that agent to reply"));
+        assert!(!RUNTIME_BASE.contains("Its `started` or `queued` result is the authoritative"));
     }
 
     #[test]

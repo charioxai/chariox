@@ -28,9 +28,12 @@ impl SessionRuntimeCommandExecutor {
     pub(super) fn with_external_command_authority(
         &self,
         authority: Option<(&str, &LocalDaemonRequest)>,
+        sudo_binding: Option<(String, String)>,
     ) -> Self {
         let mut executor = self.clone();
-        executor.store = self.store.with_external_command_authority(authority);
+        executor.store = self
+            .store
+            .with_external_command_authority(authority, sudo_binding);
         executor
     }
 
@@ -328,7 +331,12 @@ impl SessionRuntimeCommandExecutor {
                 // refuses host passkeys and credential-prompt answers.
                 let owner_caller = terminal_caller
                     || (caller_metaagent_id.is_none()
-                        && connection_class == Some(KernelConnectionClass::Host));
+                        && matches!(
+                            connection_class,
+                            Some(
+                                KernelConnectionClass::Host | KernelConnectionClass::ExternalAgent
+                            )
+                        ));
                 self.store
                     .respond_to_interaction(
                         request,

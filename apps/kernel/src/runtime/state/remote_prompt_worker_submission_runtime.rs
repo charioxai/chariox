@@ -291,6 +291,8 @@ pub(super) async fn query_remote_queued_steer_receipt(
     .await
 }
 
+// MP-08/MP-10/MP-11: keep the independent causal/placement inputs explicit at this boundary.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn query_remote_queued_steer_receipt_with_transport<F, Fut>(
     state: &KernelRuntimeState,
     agent_id: &str,
@@ -853,7 +855,32 @@ impl KernelRuntimeState {
         #[cfg(test)]
         let closure_prompt_id = prompt_id.clone();
         let expected_leased_agent_id = dispatch.leased_agent_id.clone();
-        let hidden_system_context = dispatch.hidden_system_context.clone();
+        let mut hidden_system_context = dispatch.hidden_system_context.clone();
+        match self.owned.agent_task_context_hint(
+            &dispatch.session_id,
+            &dispatch.agent_id,
+            &dispatch.prompt_id,
+        ) {
+            Ok(Some(hint)) if !hidden_system_context.contains(&hint) => {
+                hidden_system_context = format!("{}\n\n{hint}", hidden_system_context.trim())
+                    .trim()
+                    .to_string();
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return RemotePromptSubmissionAttempt {
+                    result: Err(error),
+                    request_transport_started: false,
+                }
+            }
+        }
+        // A10: an elevated leased turn's worker fence lands before its prompt.
+        if let Err(error) = self.fence_leased_turn(dispatch).await {
+            return RemotePromptSubmissionAttempt {
+                result: Err(error),
+                request_transport_started: false,
+            };
+        }
         let workflow_context = dispatch.workflow_context.clone();
         let git_context = remote_git_turn_context(dispatch);
         let callback_state = self.clone();

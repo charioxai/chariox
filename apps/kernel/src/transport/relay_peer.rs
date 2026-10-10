@@ -101,7 +101,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// `workflow_event_actions_enabled`, which a peer at v68 or below still requires.
 /// Version70 combines Apps Phase1 and autonomous Room observation contracts (MP-08/MP-10).
 /// Version 82 adds owner-private workflow notifications to the Browser/Computer peer union (MP-08/MP-11).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 82;
+/// Version 83 adds `UpdateLeasedSudo`: the home's live sudo window for one
+/// exact leased home prompt, enforced again on the worker (MP-08/09/10/11 A10).
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 83;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -469,6 +471,20 @@ pub struct RemoteGitTurnContext {
     pub prompt_summary: String,
 }
 
+/// A10: what a worker may know of a home sudo window: a revoke handle, its
+/// revision and the time left when the home sent it. It is a narrowing fence
+/// only; the home rechecks its own window on every forwarded privileged call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedSudoGrant {
+    pub entry_id: String,
+    pub revision: u64,
+    pub remaining_ms: u64,
+    /// The window's first fence. A worker that does not hold the window
+    /// refuses any later one, so a worker restart ends elevation visibly.
+    #[serde(default)]
+    pub initial: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LeasedPromptReceiptPhase {
@@ -757,6 +773,13 @@ pub enum RelayPeerRequest {
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_launch_credential: Option<RemoteProviderLaunchCredential>,
+    },
+    /// A10: install or replace the worker fence for one exact leased home
+    /// prompt's sudo window; `remaining_ms == 0` ends the window's fences.
+    UpdateLeasedSudo {
+        leased_agent_id: String,
+        home_prompt_id: String,
+        grant: LeasedSudoGrant,
     },
     GetLeasedPromptReceipt {
         leased_agent_id: String,
@@ -1139,6 +1162,7 @@ pub enum RelayPeerResponse {
     LeasedPromptCancelled {
         cancellation: PromptCancellation,
     },
+    LeasedSudoUpdated,
     LeasedProjectEnvironmentSetupTargetResolved {
         worker_id: String,
         platform: String,
@@ -1301,7 +1325,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 83);
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1338,7 +1362,7 @@ mod tests {
 
     #[test]
     fn remote_room_browser_capability_manifest_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 83);
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest {
@@ -1360,7 +1384,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 83);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1426,7 +1450,7 @@ mod tests {
 
     #[test]
     fn leased_project_setup_target_resolution_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 83);
         let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
             leased_agent_id: "leased-agent-1".to_string(),
             home_session_id: "home-session-1".to_string(),
@@ -1470,7 +1494,7 @@ mod tests {
 
     #[test]
     fn project_environment_setup_relay_shapes_round_trip_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 83);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1645,7 +1669,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 83);
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1950,7 +1974,7 @@ mod native_approval_protocol_tests {
     #[test]
     fn native_approval_origin_relay_shape_is_versioned() {
         use sha2::{Digest, Sha256};
-        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 485);
         let snapshot = serde_json::json!({"kind": "forward_native_turn_interaction",
             "context": {"home_session_id":"home-session", "home_agent_id":"home-agent",
                 "leased_agent_id":"lease", "worker_provider_run_id":"run", "home_prompt_id":"home-prompt-A"},
@@ -1977,7 +2001,7 @@ mod project_environment_adjustment_shapes {
     #[test]
     fn mp08_mp10_mp11_worker_environment_shapes_are_protocol_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 83);
         let request = RelayPeerRequest::ReadLeasedProjectEnvironment {
             context: RemoteSkillSyncContext {
                 home_kernel_id: "home".into(),
@@ -2015,7 +2039,7 @@ mod project_environment_export_shapes {
     #[test]
     fn mp08_mp10_mp11_source_export_and_target_reuse_shapes_require_peer_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 83);
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"export_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"interactive":true,"target_name":"second","target":{"context_id":"lease2","kernel_id":"worker2","public_key":"public2"}}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         let roundtrip = serde_json::to_value(request).unwrap();
@@ -2075,7 +2099,7 @@ mod workflow_notification_82_shapes {
     use sha2::{Digest, Sha256};
     #[test]
     fn mp08_mp10_completion_peer_82_snapshot() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 83);
         let sub = WorkflowNotificationSubscription {
             delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             subscription_id: "sub".into(),

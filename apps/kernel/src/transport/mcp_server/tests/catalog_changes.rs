@@ -203,7 +203,7 @@ async fn mcp_catalog_post_notifies_before_result_and_negotiates_supported_versio
         value["result"]["protocolVersion"], "2025-03-26",
         "MP-08/MP-10 unsupported protocol must negotiate an implemented version"
     );
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 459);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 485);
 }
 
 // MP-08/MP-10: fallback discovery does not depend on a provider GET stream.

@@ -63,7 +63,7 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         }
         self.provider_account_profiles.require_agent_authenticated(
-            &self.config_projection.snapshot(),
+            &self.provider_account_authority_owner_for_agent(&target_agent)?,
             &target_agent,
             "submit prompt",
         )?;
@@ -123,10 +123,12 @@ impl KernelRuntimeOwnedState {
         } else {
             prompt.with_id(self.session_store.reserve_prompt_id())
         };
+        let sudo_deferred = self.sudo_work_defers(&session, &target_agent_id, prompt.id());
         let _admission = self.begin_managed_activity_admission()?;
         let outcome = self
             .prompt_state_owner
             .submit_prepared_prompt_with_queue_policy(&session, prompt, force_queue, allow_queue)?;
+        self.note_sudo_deferred_prompt(sudo_deferred, &outcome, &session_id, &target_agent_id);
         self.agent_store
             .clear_local_prompt_error(&target_agent_id)?;
         let outcome_agent_id = match &outcome {
@@ -286,6 +288,44 @@ impl KernelRuntimeOwnedState {
         };
         if let Some(snapshot) = crate::git_observer::capture_turn_snapshot(context) {
             self.git_turn_snapshots.insert(snapshot);
+        }
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    /// A04 causal fence, for local and leased agents alike (A10): a held agent
+    /// starts only its sudo work's kernel-correlated prompts; anything else
+    /// queues visibly.
+    pub(super) fn sudo_work_defers(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &str,
+        prompt: &str,
+    ) -> bool {
+        self.prompt_state_owner.sudo_work_held(session, agent)
+            && !self.admit_sudo_work_prompt(session, agent, prompt)
+    }
+
+    pub(super) fn note_sudo_deferred_prompt(
+        &self,
+        deferred: bool,
+        outcome: &crate::session::PromptSubmissionOutcome,
+        session_id: &str,
+        agent: &str,
+    ) {
+        if deferred
+            && matches!(
+                outcome,
+                crate::session::PromptSubmissionOutcome::Queued { .. }
+            )
+        {
+            self.record_notice_for_agent(
+                session_id,
+                None,
+                Some(agent),
+                self.attachment_store.list_session_attachment_ids(session_id),
+                format!("Deferred prompt for agent {agent}: it is running sudo-bound work for its owner. The prompt stays queued and runs as a regular turn once that work ends, its window expires or it is revoked."),
+            );
         }
     }
 }
