@@ -192,3 +192,10 @@ test("MP-08 / MP-11 an unvalidated linked account asks for a check instead of an
   assert.match(selectedProviderAccountStartBlockReason([profile], "codex", "default") ?? "", /Refresh its status/)
   assert.equal(providerAccountSignInCommand(profile), "/provider accounts refresh codex linked")
 })
+
+test("MP-08 / MP-11 home inventory does not decide worker account authentication", () => {
+  const local = account("codex", "local", true)
+  local.auth_state = "not_configured"
+  assert.match(selectedProviderAccountStartBlockReason([local], "codex", "default", { kind: "local" }) ?? "", /needs sign-in/)
+  assert.equal(selectedProviderAccountStartBlockReason([local], "codex", "worker-account", { worker_kernel_id: "worker" }), null)
+})

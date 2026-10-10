@@ -394,7 +394,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       const agent = deps.sessionState().agents.find((candidate: { id: string; alias?: string | null }) =>
         alias ? candidate.alias?.toLowerCase() === alias.toLowerCase() : candidate.id === agentId,
       )
-      return agent ? selectedProviderAccountStartBlockReason(deps.providerAccountsState(), agent.provider, agent.account_profile ?? undefined) : null
+      return agent ? selectedProviderAccountStartBlockReason(deps.providerAccountsState(), agent.provider, agent.account_profile ?? undefined, agent.remote_execution) : null
     },
     getPendingAttachments: deps.pendingAttachments,
     waitForPendingAgentFocusTransition: deps.waitForPendingAgentFocusTransition,

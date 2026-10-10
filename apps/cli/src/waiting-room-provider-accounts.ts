@@ -75,7 +75,10 @@ export function selectedProviderAccountStartBlockReason(
   profiles: readonly ProviderAccountProfile[] | undefined,
   provider: string,
   profileId: string | undefined,
+  remoteExecution?: Readonly<Record<string, unknown>> | null,
 ): string | null {
+  // Worker credentials are resolved by the worker kernel, outside this inventory.
+  if (remoteExecution && remoteExecution.kind !== "local") return null
   if (profiles === undefined) return null
   const profile = selectedProviderAccount(profiles, provider, profileId)
   if (profile?.auth_state === "authenticated") return null
