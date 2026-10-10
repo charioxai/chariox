@@ -43,7 +43,7 @@ import {
   waitingRoomConfiguresNewManagedMachine,
   waitingRoomProjectDevelopmentSetup,
 } from "./waiting-room-managed-environments.js"
-import { selectedProviderAccount } from "./waiting-room-provider-accounts.js"
+import { selectedProviderAccount, selectedProviderAccountStartBlockReason } from "./waiting-room-provider-accounts.js"
 
 export type WaitingRoomLaunchConfig = {
   provider: BackendProviderId
@@ -324,6 +324,10 @@ export function deriveWaitingRoomActivationDecision(options: {
     if (typeof managedEnvironment === "string") {
       return { action: "error", message: managedEnvironment }
     }
+    const accountBlock = managedEnvironment ? null : selectedProviderAccountStartBlockReason(
+      options.remote?.providerAccounts, launch.provider, launch.accountProfile,
+    )
+    if (accountBlock) return { action: "error", message: accountBlock }
     const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
     if (!worktreeSelection.ok) {
       return { action: "error", message: worktreeSelection.message }
@@ -366,6 +370,10 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
   if (typeof managedEnvironment === "string") {
     return { action: "error", message: managedEnvironment }
   }
+  const accountBlock = managedEnvironment ? null : selectedProviderAccountStartBlockReason(
+    options.remote?.providerAccounts, choice.providerId, options.state.accountProfileId,
+  )
+  if (accountBlock) return { action: "error", message: accountBlock }
   const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
   if (!worktreeSelection.ok) {
     return { action: "error", message: worktreeSelection.message }
@@ -452,6 +460,17 @@ export function deriveWaitingRoomControlActivationDecision(options: {
 }): WaitingRoomControlActivationDecision {
   const remote = options.remote ?? {}
   switch (options.state.focus) {
+    case "new": {
+      const account = selectedProviderAccount(remote.providerAccounts, options.state.providerId, options.state.accountProfileId)
+      if (account && account.auth_state !== "authenticated" && !waitingRoomConfiguresNewManagedMachine(options.state.selectedMachineRef)) {
+        return {
+          action: "stage-command",
+          command: `/provider login ${account.provider} ${account.profile_id}`,
+          message: selectedProviderAccountStartBlockReason(remote.providerAccounts, options.state.providerId, options.state.accountProfileId)!,
+        }
+      }
+      return { action: "none" }
+    }
     case "relay":
       return { action: "cloud" }
     case "workspace":
@@ -485,6 +504,12 @@ export function deriveWaitingRoomControlActivationDecision(options: {
         options.state.providerId,
         options.state.accountProfileId,
       )
+      if (account && account.auth_state !== "authenticated") {
+        return {
+          action: "stage-command", command: `/provider login ${account.provider} ${account.profile_id}`,
+          message: selectedProviderAccountStartBlockReason(remote.providerAccounts, options.state.providerId, options.state.accountProfileId)!,
+        }
+      }
       return {
         action: "info",
         message: account

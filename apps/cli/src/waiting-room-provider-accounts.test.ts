@@ -49,12 +49,12 @@ test("a missing default stays unavailable instead of silently selecting the firs
   assert.equal(selectedProviderAccount(accounts, "codex", "default"), null)
 })
 
-test("provider account display uses only the public alias", () => {
+test("provider account display uses the public alias and sign-in state", () => {
   const profile = account("codex", "internal-profile", true)
   profile.label = "codex-1"
   profile.identity_summary = "owner@example.com"
 
-  assert.equal(providerAccountDisplayLabel(profile), "codex-1")
+  assert.equal(providerAccountDisplayLabel(profile), "codex-1 · signed in")
 })
 
 test("TUI marks hard exhaustion without hiding Claude and Codex accounts backed by credits", () => {
@@ -64,24 +64,24 @@ test("TUI marks hard exhaustion without hiding Claude and Codex accounts backed 
 
   assert.equal(
     providerAccountDisplayLabel(accountWithUsage("opencode", [allowance])),
-    "Account",
+    "Account · signed in",
     "unscoped exhaustion must not mark every OpenCode service exhausted",
   )
   assert.equal(
     providerAccountDisplayLabel(accountWithUsage("opencode", [
       { ...allowance, service_id: "opencode-go" },
     ]), "opencode-go/test-model"),
-    "Account · OpenCode Go (exhausted)",
+    "Account · OpenCode Go (exhausted) · signed in",
   )
   for (const provider of ["claude", "claude-headless", "claude-p", "codex"]) {
     assert.equal(
       providerAccountDisplayLabel(accountWithUsage(provider, [allowance])),
-      "Account",
+      "Account · signed in",
       `${provider} allowance exhaustion alone must remain selectable in the TUI`,
     )
     assert.equal(
       providerAccountDisplayLabel(accountWithUsage(provider, [allowance, credits])),
-      "Account (exhausted)",
+      "Account (exhausted) · signed in",
       `${provider} must be marked exhausted when allowance and credits are exhausted`,
     )
     assert.equal(
@@ -92,7 +92,7 @@ test("TUI marks hard exhaustion without hiding Claude and Codex accounts backed 
         state: "healthy",
         observed_at_ms: Date.now() - 86_400_001,
       }])),
-      "Account",
+      "Account · signed in",
       `${provider} must not discard a stale credit meter to claim total exhaustion`,
     )
   }

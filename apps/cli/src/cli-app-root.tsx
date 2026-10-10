@@ -57,6 +57,8 @@ import { commandTreeFromTerminalCommandCatalog } from "./terminal-command-catalo
 import { createAgentPaneRuntimeResetController } from "./agent-pane-runtime-reset-controller.js"
 import { createAgentPaneRuntimeStoreController } from "./agent-pane-runtime-store-controller.js"
 import { createFooterFlashController } from "./footer-flash-controller.js"
+import { createProviderAccountRecoveryController } from "./provider-account-recovery-controller.js"
+import { providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
 import { createHistoryLoadingRenderController } from "./history-loading-render-controller.js"
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
@@ -623,7 +625,31 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setFooterFlash,
     onFooterFlashChange: () => updateSessionChrome(),
   })
-  const flashFooter = footerFlashController.flash
+  const providerAccountRecovery = createProviderAccountRecoveryController({
+    renderer,
+    dimensions,
+    actions: () => {
+      const agent = sessionState().agents.find(candidate => candidate.id === focusedAgentId())
+      const provider = agent?.provider ?? waitingRoomState().providerId
+      const currentProfile = agent?.account_profile ?? waitingRoomState().accountProfileId
+      const alternative = providerAccountsForProvider(providerAccountsState(), provider)
+        .find(profile => profile.auth_state === "authenticated" && profile.profile_id !== currentProfile)
+      return [
+        { label: "Open Provider Accounts", run: () => { setFatalError(null); void executeCommandCenterCommand("/provider accounts"); promptInputRefController.focus() } },
+        { label: alternative ? `Switch account to ${alternative.label}` : "Switch account", run: () => {
+          setFatalError(null)
+          if (alternative) void Promise.resolve(applyAccountSelection(alternative.profile_id)).catch(error => flashFooter(formatError(error), "error"))
+          else { setWaitingRoomState({ ...waitingRoomState(), focus: "account" }); reconcileWaitingRoom(waitingRoomState()) }
+        } },
+        { label: "Retry", run: () => { setFatalError(null); void submitPrompt() } },
+      ]
+    },
+  })
+  const flashFooter = (message: string, tone: "info" | "error") => {
+    footerFlashController.flash(message, tone)
+    if (tone === "error") providerAccountRecovery.show(message)
+  }
+  onCleanup(providerAccountRecovery.close)
 
   const promptAttachmentIntakeController = createPromptAttachmentIntakeController({
     client,
@@ -879,6 +905,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
+    providerAccountRecoveryOwnsInput: providerAccountRecovery.ownsInput,
+    handleProviderAccountRecoveryKey: providerAccountRecovery.handleKey,
     appHostTerminal: createAppHostTerminal(renderer),
     lastViewedAppHostOperationId: kernelApprovals.lastViewedAppHostOperationId,
     client, options, appLogger, formatError, appFileInstaller, appDevLoop, appPublisherEnrollment,
@@ -1018,7 +1046,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}
       promptAreaBackground={promptAreaBackground()}
-      retainPromptFocus={() => { if (!kernelApprovals.ownsInput()) retainPromptFocus() }}
+      retainPromptFocus={() => { if (!kernelApprovals.ownsInput() && !providerAccountRecovery.ownsInput()) retainPromptFocus() }}
       handlePromptSelectionSurfaceMouseUp={handlePromptSelectionSurfaceMouseUp}
       responsePaneRenderRefStore={responsePaneRenderRefStore}
       historyLoadingRenderController={historyLoadingRenderController}
@@ -1033,6 +1061,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       assignKernelApprovalBox={kernelApprovals.assignBox}
       assignKernelApprovalBanner={kernelApprovals.assignBanner}
       assignPasskeyPopupBox={kernelApprovals.assignPopupBox}
+      assignProviderAccountRecoveryBox={providerAccountRecovery.assignBox}
       kernelApprovalOwnsInput={kernelApprovals.ownsInput}
       handlePromptKeyDown={handlePromptKeyDown}
       handlePromptContentChange={handlePromptContentChange}

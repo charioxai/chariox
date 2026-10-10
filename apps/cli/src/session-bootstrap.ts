@@ -20,8 +20,11 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
+import type { ProviderAccountProfile } from "@chariox/kernel-client"
+import { selectedProviderAccountStartBlockReason } from "./waiting-room-provider-accounts.js"
 
 type BootstrapDeps = {
+  listProviderAccountProfiles?: (client: LocalIpcClient) => Promise<ProviderAccountProfile[]>
   logger?: CharioxLogger | null
   getConfiguredProviderLaunchDefaults?: (client: LocalIpcClient) => Promise<{
     provider?: string
@@ -110,8 +113,15 @@ export async function bootstrapSession(
         account_profile: options.accountProfile,
       }
     : undefined
+  const validateNewSessionAccount = async (): Promise<void> => {
+    if (!deps.listProviderAccountProfiles || !options.provider) return
+    const profiles = await deps.listProviderAccountProfiles(client)
+    const reason = selectedProviderAccountStartBlockReason(profiles, options.provider, options.accountProfile)
+    if (reason) throw new Error(reason)
+  }
   switch (decision.action) {
     case "create":
+      await validateNewSessionAccount()
       session = await deps.createSession(client, workspace, worktree, options.alias, requestedAgentDefaults)
       createdSession = true
       break
@@ -121,6 +131,7 @@ export async function bootstrapSession(
     case "attach_existing": {
       const existing = selectAttachableSession(sessions, workspace, worktree)
       if (!existing) {
+        await validateNewSessionAccount()
         session = await deps.createSession(client, workspace, worktree, options.alias, requestedAgentDefaults)
         createdSession = true
         break

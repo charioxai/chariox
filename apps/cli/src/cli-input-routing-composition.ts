@@ -7,6 +7,7 @@ import { createFocusedInteractionChoiceController } from "./focused-interaction-
 import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
 import { routeInteractionPastes } from "./interaction-paste-routing.js"
 import { createNormalPromptSubmitController } from "./normal-prompt-submit-controller.js"
+import { selectedProviderAccountStartBlockReason } from "./waiting-room-provider-accounts.js"
 import { createPromptKeyDownController } from "./prompt-keydown-controller.js"
 import { createPromptSubmitCoordinator } from "./prompt-submit-coordinator.js"
 import { createPromptTurnNavigationController } from "./prompt-turn-navigation-controller.js"
@@ -163,6 +164,8 @@ export type CliInputRoutingCompositionDeps = {
   applyResponseLayout: AnyFn
   handleHotkeysToggleShortcut: AnyFn
   dialogOverlayOpen: AnyFn
+  providerAccountRecoveryOwnsInput?: () => boolean
+  handleProviderAccountRecoveryKey?: (event: import("./cli-stdin-key-controller.js").CliStdinKeyEvent) => boolean
   closeActiveDialogOverlay: AnyFn
   hasActiveTurnWork: AnyFn
   handleCommandCenterKey: AnyFn
@@ -387,6 +390,12 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   })
 
   const normalPromptSubmitController = createNormalPromptSubmitController({
+    promptBlockReason: (agentId, alias) => {
+      const agent = deps.sessionState().agents.find((candidate: { id: string; alias?: string | null }) =>
+        alias ? candidate.alias?.toLowerCase() === alias.toLowerCase() : candidate.id === agentId,
+      )
+      return agent ? selectedProviderAccountStartBlockReason(deps.providerAccountsState(), agent.provider, agent.account_profile ?? undefined) : null
+    },
     getPendingAttachments: deps.pendingAttachments,
     waitForPendingAgentFocusTransition: deps.waitForPendingAgentFocusTransition,
     getFocusedAgentId: deps.focusedAgentId,
@@ -523,7 +532,14 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     },
     hasActiveTurnWork: deps.hasActiveTurnWork,
   })
-  useKeyboard(globalKeyboardShortcutController.handleKey)
+  useKeyboard(event => {
+    if (!deps.kernelApprovalOwnsInput?.() && deps.handleProviderAccountRecoveryKey?.(event)) {
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+    globalKeyboardShortcutController.handleKey(event)
+  })
   const handleSigint = globalKeyboardShortcutController.handleSigint
 
   const promptKeyDownController = createPromptKeyDownController({
@@ -671,6 +687,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   }
 
   const stdinKeyController = createCliStdinKeyController({
+    providerAccountRecoveryOwnsInput: deps.providerAccountRecoveryOwnsInput,
     kernelApprovalOwnsInput: () => deps.kernelApprovalOwnsInput?.() ?? false,
     parseKeypress: (chunk, options) => parseKeypress(chunk, options),
     dialogOverlayOpen: deps.dialogOverlayOpen,

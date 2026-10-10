@@ -1,0 +1,18 @@
+# MP-08 / MP-11 selected-account authentication UX
+
+The kernel owns provider authentication and rejects unauthenticated work. Clients must project the account the agent will actually use, preserve drafts on a known authentication block, and offer recovery before the first provider turn.
+
+## Required real acceptance scenarios
+
+Use an isolated kernel with its product-created, unsigned default Codex account (`codex-1`) and a separate product-linked, authenticated account (`chariox`). Never sign out or enroll a shared account. Baseline sources are OSS `60c1ccb1eb28222ee019f57077e3a11d5290e174` and Cloud `9100f4622973103e6faf252f68258f2581780b73`.
+
+- `apps-tui-ux/ACCOUNT-AUTH-WEB-DPR1`: Real built web entry, DPR 1, hosted WSS with an approximately 8 Mbit/s uplink and at least 60 ms RTT. Show the unsigned default and signed-in alternative in the account picker. The selected machine/kernel must not imply that the default can start work. Sign in opens Provider Accounts without creating a session. Select the signed-in account, create a session through the UI, and submit its first prompt to the official Codex harness successfully.
+- `apps-tui-ux/ACCOUNT-AUTH-WEB-DPR2`: Repeat the entire web scenario at DPR 2.
+- `apps-tui-ux/ACCOUNT-AUTH-TUI`: The real compiled release CLI shows each account's state and offers Sign in for the unsigned default before session creation. Choose the signed-in alternative through normal keyboard controls, start a session, and submit a successful real Codex turn. Explicit CLI session creation with an unsigned account must also stop before creating work.
+- `apps-tui-ux/ACCOUNT-AUTH-RECOVERY`: Attach the real web and TUI clients to a session with the unsigned account. A known authentication block preserves the draft and attachments. Web hover/click and the TUI recovery panel expose the full reason and Open Provider Accounts, Switch account, and Retry actions. Switching to the signed-in account and retrying succeeds through the real provider. Dialog input must not submit the same key twice or interfere with kernel-owned approvals.
+
+Each scenario requires screenshots and public logs of the baseline failure and candidate success, exact source heads and binary hashes, plus owned-resource cleanup. Focused source tests supplement these drills; they do not close an acceptance row. A provider 401 must be reported to the coordinator immediately. No entire MP item closes from these scenarios alone.
+
+## Supplementary regression checks
+
+Cover default versus explicit account selection, same-provider alternatives, Claude adapter families, missing accounts, refreshed owner inventory, direct CLI creation, alias-routed prompts, draft/attachment preservation, full error rendering, and recovery action dispatch. No protocol shape change is required: authentication remains a kernel-owned check using existing account inventory and request contracts.

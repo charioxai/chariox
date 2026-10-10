@@ -344,6 +344,7 @@ test("normal prompt submit failure preserves active session runtime state", asyn
 })
 
 function createHarness(options: {
+  promptBlockReason?: NormalPromptSubmitControllerDeps["promptBlockReason"]
   attachment?: RuntimeAttachment | null
   pendingAttachments?: PendingPromptAttachment[]
   inlineLocalFiles?: boolean
@@ -382,6 +383,7 @@ function createHarness(options: {
   let clearPromptCount = 0
 
   const controller = createNormalPromptSubmitController({
+    ...(options.promptBlockReason ? { promptBlockReason: options.promptBlockReason } : {}),
     getPendingAttachments: () => options.pendingAttachments ?? [],
     waitForPendingAgentFocusTransition: async () => {},
     getFocusedAgentId: () => options.focusedAgentId === undefined ? "agent-1" : options.focusedAgentId,
@@ -575,3 +577,13 @@ function runtimeSession(
     ...overrides,
   }
 }
+
+ test("MP-08 / MP-11 unsigned focused account preserves draft and attachments before provider work", async () => {
+  const harness = createHarness({ pendingAttachments: [pendingAttachment("file-1")], promptBlockReason: () => "codex-1 needs sign-in. Sign in through Provider Accounts, or select signed-in account chariox." })
+  await harness.controller.submit("hi")
+  assert.equal(harness.clearPromptCount(), 0)
+  assert.deepEqual(harness.preparedAttachments(), [])
+  assert.deepEqual(harness.submissions(), [])
+  assert.deepEqual(harness.appendedPrompts(), [])
+  assert.match(harness.footerMessages().at(-1)?.message ?? "", /needs sign-in.*chariox/)
+})

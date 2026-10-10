@@ -33,6 +33,7 @@ import {
   getProviderCatalog,
   getProviderCommandCatalogs,
   launchProviderRun,
+  listProviderAccountProfiles,
   tryGetProviderRun,
 } from "./provider-api.js"
 import { getTerminalCommandCatalog } from "./terminal-command-catalog-api.js"
@@ -322,6 +323,7 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
   logger?: CharioxLogger | null,
 ): Promise<BootstrapState> {
   return bootstrapSession(client, options, workspace, worktree, preferences, {
+    listProviderAccountProfiles,
     logger: logger ?? null,
     getConfiguredProviderLaunchDefaults: async (ipcClient) => {
       const { config } = await getUserConfig(ipcClient)

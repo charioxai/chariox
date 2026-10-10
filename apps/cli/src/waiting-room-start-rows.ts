@@ -4,7 +4,8 @@ import {
   type CatalogModelOption,
 } from "./provider-catalog.js"
 import type { SliceRecord } from "./cli-types.js"
-import { providerAccountCapacityLabel, type ProviderAccountProfile } from "@chariox/kernel-client"
+import { type ProviderAccountProfile } from "@chariox/kernel-client"
+import { providerAccountDisplayLabel } from "./waiting-room-provider-accounts.js"
 import { formatWaitingRoomSliceSelection, waitingRoomSlices } from "./waiting-room-slices.js"
 import {
   formatWaitingRoomLaunchKernelValue,
@@ -115,7 +116,9 @@ export function waitingRoomStartRows(
         ? "Create machine and start session"
         : selectedEnvironment && !managedEnvironmentIsLaunchReady(selectedEnvironment)
           ? "Start machine and session"
-          : "Start New Session",
+          : choice.accountProfile && choice.accountProfile.auth_state !== "authenticated"
+            ? `Sign in ${choice.accountProfile.label}`
+            : "Start New Session",
       value: "Press Enter",
       titleWidth: options.titleWidth,
       indent: 0,
@@ -444,7 +447,7 @@ function formatAccountValue(profile: ProviderAccountProfile | null, model?: stri
   if (!profile) {
     return "Default (not discovered)"
   }
-  return providerAccountCapacityLabel(profile, Date.now(), model)
+  return providerAccountDisplayLabel(profile, model)
 }
 
 function formatTitleCase(value: string) {

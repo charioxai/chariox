@@ -234,7 +234,7 @@ test("waiting room start rows include selected slice provider account", () => {
   assert.equal(rows.find((row) => row.id === "account")?.value, "Default (not discovered)")
 })
 
-test("waiting room account row shows only the public alias", () => {
+test("waiting room account row shows the public alias and sign-in state", () => {
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "codex")
   const rows = waitingRoomStartRows(
@@ -279,7 +279,7 @@ test("waiting room account row shows only the public alias", () => {
     },
   )
 
-  assert.equal(rows.find((row) => row.id === "account")?.value, "codex-2")
+  assert.equal(rows.find((row) => row.id === "account")?.value, "codex-2 · signed in")
 })
 
 test("waiting room start rows do not conflate worker auth with the selected account", () => {

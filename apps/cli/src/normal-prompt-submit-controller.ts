@@ -22,6 +22,7 @@ import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controlle
 import { NO_FOCUS_AGENT_MESSAGE } from "./cli-runtime-tuning.js"
 
 export type NormalPromptSubmitControllerDeps = {
+  promptBlockReason?: (agentId: string | null, alias: string | null) => string | null
   getPendingAttachments: () => readonly PendingPromptAttachment[]
   waitForPendingAgentFocusTransition: () => Promise<void>
   getFocusedAgentId: () => string | null
@@ -105,6 +106,11 @@ export function createNormalPromptSubmitController(
           // The prompt area addresses the focus agent, and there is none:
           // keep the prompt and say how to pick or create one.
           deps.flashFooter(NO_FOCUS_AGENT_MESSAGE, "error")
+          return
+        }
+        const accountBlock = deps.promptBlockReason?.(targetAgentId, aliasRoute?.alias ?? null)
+        if (accountBlock) {
+          deps.flashFooter(accountBlock, "error")
           return
         }
         const attachments = await deps.preparePromptAttachmentsForSubmit(rawAttachments, {

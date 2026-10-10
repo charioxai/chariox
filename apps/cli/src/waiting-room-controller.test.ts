@@ -20,10 +20,41 @@ import type { SessionListEntry } from "./sessions.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import { NEW_MANAGED_MACHINE_REF } from "./waiting-room-managed-environments.js"
+import type { ProviderAccountProfile } from "@chariox/kernel-client"
 import {
   __setWaitingRoomWorktreeInventoryForTest,
   resolvePendingWaitingRoomWorktreePath,
 } from "./waiting-room-worktrees.js"
+
+test("MP-08/MP-11 TUI blocks unsigned default while offering the signed-in account", () => {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace", currentWorktreePath: "/workspace",
+    options: [{ id: "existing:/workspace", kind: "existing", label: "main", path: "/workspace", branch: "main", isCurrent: true }],
+  })
+  try {
+  const catalog = fallbackProviderCatalog()
+  const state = {
+    ...createWaitingRoomState([], catalog, "codex", "gpt-5.4", "low"),
+    worktreeSelectionId: "existing:/workspace",
+    accountProfileId: "codex-1",
+  }
+  const providerAccounts = [
+    { provider: "codex", profile_id: "codex-1", label: "codex-1", is_default: true, auth_state: "not_configured" },
+    { provider: "codex", profile_id: "chariox", label: "chariox", is_default: false, auth_state: "authenticated" },
+  ] as ProviderAccountProfile[]
+  const options = { state, catalog, currentProvider: "codex" as const, currentModel: "gpt-5.4", remote: { providerAccounts } }
+  for (const decision of [deriveWaitingRoomCreateSessionDecision(options), deriveWaitingRoomActivationDecision({ ...options, sessions: [] })]) {
+    assert.equal(decision.action, "error")
+    if (decision.action === "error") {
+      assert.match(decision.message, /codex-1.*Sign in/)
+      assert.match(decision.message, /chariox/)
+    }
+  }
+  assert.equal(deriveWaitingRoomCreateSessionDecision({ ...options, state: { ...state, accountProfileId: "chariox" } }).action, "create")
+  } finally {
+    __setWaitingRoomWorktreeInventoryForTest(null)
+  }
+})
 
 test("waiting room activation stages existing worktree selections for session creation", async () => {
   __setWaitingRoomWorktreeInventoryForTest({

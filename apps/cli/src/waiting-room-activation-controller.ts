@@ -25,6 +25,7 @@ import {
   waitingRoomExecutionMode,
   waitingRoomPermissionLevel,
 } from "./waiting-room-state.js"
+import { selectedProviderAccountStartBlockReason } from "./waiting-room-provider-accounts.js"
 
 export type WaitingRoomCreateSessionLaunch = WaitingRoomLaunchConfig & {
   account_profile: string | null
@@ -293,6 +294,11 @@ export function createWaitingRoomActivationController(
         await deps.prepareSessionOwnerClient?.(preparedLaunch)
         prepared.assertActive()
       }
+      const accountBlock = selectedProviderAccountStartBlockReason(
+        deps.getRemoteState().providerAccounts, preparedLaunch.provider,
+        preparedLaunch.accountProfile ?? deps.getAccountProfile() ?? undefined,
+      )
+      if (accountBlock) throw new Error(accountBlock)
       const sliceRef = await prepareSliceForLaunch(preparedLaunch, (sliceRef) => {
         createdSliceRef = sliceRef
       })
