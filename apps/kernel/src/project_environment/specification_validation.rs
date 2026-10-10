@@ -225,6 +225,11 @@ pub(super) fn validate_typed_requirement(r: &Requirement) -> Result<(), DaemonEr
         }
         RequirementSpec::Variables { name, locator } => {
             text(name)?;
+            if project_environment_protected_name(name) {
+                return Err(environment_error(
+                    "protected kernel/provider variable cannot be declared",
+                ));
+            }
             if let ProjectEnvironmentLocator::ConfigFile { path }
             | ProjectEnvironmentLocator::EnvFile { path, .. } = locator
             {

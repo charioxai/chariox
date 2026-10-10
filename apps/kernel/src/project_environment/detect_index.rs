@@ -65,7 +65,10 @@ pub(super) fn safe_metadata(value: &str) -> bool {
 pub(super) fn credential_content(text: &str) -> bool {
     super::index::contains_secret_configuration(text)
         || legacy_key_literal(text)
-        || text.split([':', '=']).take(100_000).any(|prefix| {
+        // Names are metadata. Only assignment keys and literal credential patterns are hits.
+        || text.split_inclusive([':', '=']).take(100_000).filter_map(|part| {
+            part.strip_suffix(':').or_else(|| part.strip_suffix('='))
+        }).any(|prefix| {
             let key = prefix
                 .rsplit(['{', ',', '\n'])
                 .next()
