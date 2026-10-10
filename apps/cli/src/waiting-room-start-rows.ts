@@ -117,7 +117,7 @@ export function waitingRoomStartRows(
         : selectedEnvironment && !managedEnvironmentIsLaunchReady(selectedEnvironment)
           ? "Start machine and session"
           : choice.accountProfile && choice.accountProfile.auth_state !== "authenticated"
-            ? `Sign in ${choice.accountProfile.label}`
+            ? `${choice.accountProfile.auth_state === "unknown" ? "Check sign-in" : "Sign in"} ${choice.accountProfile.label}`
             : "Start New Session",
       value: "Press Enter",
       titleWidth: options.titleWidth,

@@ -9,6 +9,8 @@ import {
   defaultProviderAccountProfileId,
   providerAccountFamily,
   providerAccountDisplayLabel,
+  providerAccountSignInCommand,
+  selectedProviderAccountStartBlockReason,
   providerAccountsForProvider,
   resolveProviderAccountSelection,
   selectedProviderAccount,
@@ -182,3 +184,11 @@ function usageMeter(
     ...(resetsAtMs === undefined ? {} : { resets_at_ms: resetsAtMs }),
   }
 }
+
+test("MP-08 / MP-11 an unvalidated linked account asks for a check instead of another login", () => {
+  const profile = account("codex", "linked", true)
+  profile.auth_state = "unknown"
+  assert.match(providerAccountDisplayLabel(profile), /sign-in not checked$/)
+  assert.match(selectedProviderAccountStartBlockReason([profile], "codex", "default") ?? "", /Refresh its status/)
+  assert.equal(providerAccountSignInCommand(profile), "/provider accounts refresh codex linked")
+})

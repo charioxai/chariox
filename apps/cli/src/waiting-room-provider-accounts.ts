@@ -68,7 +68,7 @@ export function defaultProviderAccountProfileId(
 }
 
 export function providerAccountDisplayLabel(profile: ProviderAccountProfile, model?: string | null): string {
-  return `${providerAccountCapacityLabel(profile, Date.now(), model)} · ${profile.auth_state === "authenticated" ? "signed in" : "needs sign-in"}`
+  return `${providerAccountCapacityLabel(profile, Date.now(), model)} · ${profile.auth_state === "authenticated" ? "signed in" : profile.auth_state === "unknown" ? "sign-in not checked" : "needs sign-in"}`
 }
 
 export function selectedProviderAccountStartBlockReason(
@@ -82,5 +82,14 @@ export function selectedProviderAccountStartBlockReason(
   const label = profile?.label ?? profileId ?? "default"
   const alternative = providerAccountsForProvider(profiles, provider)
     .find((candidate) => candidate.auth_state === "authenticated")
-  return `${label} needs sign-in. Sign in through Provider Accounts${alternative ? `, or select signed-in account ${alternative.label}` : ""}.`
+  const requirement = profile?.auth_state === "unknown"
+    ? "sign-in not checked. Refresh its status through Provider Accounts"
+    : "needs sign-in. Sign in through Provider Accounts"
+  return `${label} ${requirement}${alternative ? `, or select signed-in account ${alternative.label}` : ""}.`
+}
+
+export function providerAccountSignInCommand(profile: ProviderAccountProfile): string {
+  return profile.auth_state === "unknown"
+    ? `/provider accounts refresh ${profile.provider} ${profile.profile_id}`
+    : `/provider login ${profile.provider} ${profile.profile_id}`
 }

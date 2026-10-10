@@ -43,7 +43,7 @@ import {
   waitingRoomConfiguresNewManagedMachine,
   waitingRoomProjectDevelopmentSetup,
 } from "./waiting-room-managed-environments.js"
-import { selectedProviderAccount, selectedProviderAccountStartBlockReason } from "./waiting-room-provider-accounts.js"
+import { providerAccountSignInCommand, selectedProviderAccount, selectedProviderAccountStartBlockReason } from "./waiting-room-provider-accounts.js"
 
 export type WaitingRoomLaunchConfig = {
   provider: BackendProviderId
@@ -465,7 +465,7 @@ export function deriveWaitingRoomControlActivationDecision(options: {
       if (account && account.auth_state !== "authenticated" && !waitingRoomConfiguresNewManagedMachine(options.state.selectedMachineRef)) {
         return {
           action: "stage-command",
-          command: `/provider login ${account.provider} ${account.profile_id}`,
+          command: providerAccountSignInCommand(account),
           message: selectedProviderAccountStartBlockReason(remote.providerAccounts, options.state.providerId, options.state.accountProfileId)!,
         }
       }
@@ -506,7 +506,7 @@ export function deriveWaitingRoomControlActivationDecision(options: {
       )
       if (account && account.auth_state !== "authenticated") {
         return {
-          action: "stage-command", command: `/provider login ${account.provider} ${account.profile_id}`,
+          action: "stage-command", command: providerAccountSignInCommand(account),
           message: selectedProviderAccountStartBlockReason(remote.providerAccounts, options.state.providerId, options.state.accountProfileId)!,
         }
       }
