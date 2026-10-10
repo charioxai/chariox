@@ -78,6 +78,20 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(());
         };
+        // MP-08/MP-10/MP-11: Resume admits a new prompt for this same node.
+        // A delayed cancellation of its predecessor cannot stop that invocation
+        // or release the workspace claim it now owns.
+        let session = self.session_store.get_session(session_id)?;
+        let (active, queued) = self
+            .prompt_state_owner
+            .state_parts(&session, prompt.target_agent_id());
+        if active.into_iter().chain(queued).any(|current| {
+            current.id() != prompt.id()
+                && current.workflow_run_id() == Some(workflow_run_id)
+                && current.workflow_node_run_id() == Some(workflow_node_run_id)
+        }) {
+            return Ok(());
+        }
         let already_interrupted = self
             .session_store
             .read()
@@ -481,6 +495,159 @@ mod tests {
 
     // MP-08/MP-10: an abort during native provider startup can surface as a
     // dispatch error after the user's workflow interrupt already committed.
+    // MP-08/MP-10/MP-11: delayed settlement belongs to the cancelled invocation,
+    // even when the user has resumed the same workflow node in the meantime.
+    #[tokio::test]
+    async fn resumed_workflow_survives_previous_prompt_cancellation() {
+        assert_resumed_workflow_survives_previous_cancellation(false).await;
+    }
+
+    #[tokio::test]
+    async fn queued_resumed_workflow_survives_previous_prompt_cancellation() {
+        assert_resumed_workflow_survives_previous_cancellation(true).await;
+    }
+
+    async fn assert_resumed_workflow_survives_previous_cancellation(queued: bool) {
+        let fixture = running_workflow_fixture("resumed-late-cancellation").await;
+        let agent_id = fixture.prompt.target_agent_id();
+        {
+            let mut app = fixture.runtime.app.lock().await;
+            app.prompt_owner_submit_prepared_prompt(
+                &fixture.session_id,
+                fixture.prompt.clone(),
+                false,
+            )
+            .expect("original invocation should be admitted");
+        }
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        let old_prompt = fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .begin_cancelling_active_prompt(&session, agent_id)
+            .expect("original invocation should cancel");
+        fixture
+            .runtime
+            .owned
+            .session_store
+            .write()
+            .pause_workflow_run(&fixture.session_id, &fixture.workflow_run_id)
+            .unwrap();
+        fixture
+            .runtime
+            .owned
+            .workflow_cancel_prompt(&fixture.session_id, &old_prompt)
+            .unwrap();
+        fixture
+            .runtime
+            .owned
+            .finalize_local_prompt_cancellation_with_queued_advance(
+                &fixture.session_id,
+                agent_id,
+                None,
+            )
+            .unwrap();
+        fixture
+            .runtime
+            .owned
+            .session_store
+            .write()
+            .resume_workflow_run(&fixture.session_id, &fixture.workflow_run_id)
+            .unwrap();
+        {
+            let mut app = fixture.runtime.app.lock().await;
+            if queued {
+                app.prompt_owner_submit_prepared_prompt(
+                    &fixture.session_id,
+                    PromptQueueItem::new(
+                        "ordinary",
+                        &fixture.attachment_id,
+                        agent_id,
+                        "ordinary turn",
+                        PromptStatus::Queued,
+                    ),
+                    false,
+                )
+                .unwrap();
+            }
+            let resumed = PromptQueueItem::new(
+                "resume",
+                &fixture.attachment_id,
+                agent_id,
+                "resumed turn",
+                PromptStatus::Queued,
+            )
+            .with_workflow_context(&fixture.workflow_run_id, &fixture.workflow_node_run_id);
+            let admitted = app
+                .prompt_owner_submit_prepared_prompt(&fixture.session_id, resumed, queued)
+                .unwrap();
+            match admitted {
+                crate::session::PromptSubmissionOutcome::Started { prompt, .. }
+                | crate::session::PromptSubmissionOutcome::Queued { prompt, .. } => {
+                    assert_ne!(prompt.id(), old_prompt.id());
+                }
+            }
+        }
+        fixture
+            .runtime
+            .owned
+            .session_store
+            .write()
+            .start_workflow_node_run(
+                &fixture.session_id,
+                &fixture.workflow_run_id,
+                &fixture.workflow_node_run_id,
+            )
+            .unwrap();
+        fixture
+            .runtime
+            .owned
+            .acquire_workflow_node_workspace_claim(
+                &fixture.session_id,
+                &fixture.claim_id,
+                agent_id,
+                &fixture.workflow_run_id,
+                &fixture.workflow_node_run_id,
+            )
+            .unwrap();
+        let events_before = committed_workflow_event_count(&fixture, "workflow_prompt_cancelled");
+        fixture
+            .runtime
+            .owned
+            .workflow_cancel_prompt(&fixture.session_id, &old_prompt)
+            .unwrap();
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        let run = session.workflow_run(&fixture.workflow_run_id).unwrap();
+        assert_eq!(
+            run.status(),
+            crate::session::WorkflowRunStatus::Running,
+            "settlement of the previous invocation must not stop resumed work"
+        );
+        assert!(run.failure_events().is_empty());
+        assert!(
+            fixture
+                .runtime
+                .owned
+                .prompt_workspace_claims
+                .contains(&fixture.claim_id),
+            "the resumed invocation must retain its workspace claim"
+        );
+        assert_eq!(
+            committed_workflow_event_count(&fixture, "workflow_prompt_cancelled"),
+            events_before
+        );
+    }
+
     #[tokio::test]
     async fn paused_workflow_survives_late_provider_dispatch_failure() {
         assert_interrupted_workflow_survives_dispatch_failure(true).await;
