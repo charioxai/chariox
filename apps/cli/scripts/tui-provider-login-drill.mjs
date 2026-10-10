@@ -204,13 +204,14 @@ try {
   const press = async text => { tui.terminal.write(text); await sleep(200) }
   const typeText = async text => { for (const c of text) { tui.terminal.write(c); await sleep(12) } }
   const rows = async () => (await screen()).split('\n')
-  const click = async (x, y) => { await press(`\x1b[<0;${x + 1};${y + 1}M`); await press(`\x1b[<0;${x + 1};${y + 1}m`) }
 
   await waitFor(async () => (await screen()).trim().length > 0 && !(await shows('Loading')), 90_000, 'TUI')
   await sleep(3000)
   await capture('attached')
   await typeText(`/provider login claude ${label}`)
   await press('\r')
+  await sleep(1500)
+  await capture('login-command-submitted')
 
   // The kernel publishes the official CLI's authorization URL on the session.
   const sessionId = (JSON.stringify(await rpc.send({ ResolveSession: { session_ref: sessionAlias, workspace_id: null } })).match(/"session_id":"([^"]+)"/) ?? [])[1]
@@ -226,7 +227,7 @@ try {
   await sleep(1500)
   await capture('login-strip')
   const stripRows = await rows()
-  const first = stripRows.findIndex(row => row.includes('1. Open the link (click it):'))
+  const first = stripRows.findIndex(row => row.includes('1. Cmd-click the link'))
   const second = stripRows.findIndex(row => row.includes('2. Authorize Chariox in your browser.'))
   record('numbered steps, title and no jargon', first >= 0 && second > first && stripRows.some(r => r.includes(`Sign in to Claude · ${label}`))
     && stripRows.some(r => r.includes('3. Paste the code below and press Enter.')) && !stripRows.some(r => /Send response|interaction answered/.test(r)))
@@ -237,7 +238,7 @@ try {
   const countdownA = countdownOf(await screen())
   record('code field focused', stripRows.some(r => r.includes('> Code: <paste the code>▏')))
   const osc8 = output.includes(`;${loginUrl}\x1b\\`) || output.includes(`;${loginUrl}\x07`)
-  // Terminal.app (no TERM_PROGRAM over SSH) gets plain text; the click/plain view covers it.
+  // Terminal.app (no TERM_PROGRAM over SSH) ignores OSC 8; native text remains selectable.
   record('OSC 8 hyperlink carries the complete URL', profile === 'terminal-app' || osc8, { osc8 })
   await sleep(2500)
   const countdownB = countdownOf(await screen())
@@ -252,13 +253,22 @@ try {
     && (profile === 'terminal-app' || copied.includes(loginUrl)), { osc52Copies: copied.length, ignored: await page.evaluate(() => ignored) })
   await capture('after-copy')
 
-  // Mouse reporting stays on; a click on the link (SSH) shows the plain view.
+  // MP-08 / MP-10: activate the terminal-native hyperlink through a real mouse event.
+  // Terminal.app's physical Cmd-double-click remains a separate macOS cell.
   const linkRow = (await rows()).findIndex(r => r.includes(loginUrl.slice(0, 40)))
-  if (linkRow >= 0) await click(20, linkRow)
-  await sleep(800)
-  await capture('click-plain-view')
-  const logical = await page.evaluate(() => logicalLines())
-  record('click shows the link as one terminal-wrapped logical line', logical.some(l => l.trimEnd() === loginUrl) && await shows('1. Open this link (Cmd-click it, or select and copy it):'))
+  if (profile !== 'terminal-app') {
+    assert.ok(linkRow >= 0)
+    const coords = await page.evaluate(y => {
+      const rect = document.querySelector('.xterm-screen').getBoundingClientRect()
+      return {x: rect.x + 20 * rect.width / term.cols, y: rect.y + (y + 0.5) * rect.height / term.rows}
+    }, linkRow)
+    await page.mouse.move(coords.x, coords.y); await sleep(400)
+    await page.mouse.click(coords.x, coords.y)
+    await sleep(400)
+    record('terminal-native link activation carries the complete URL', await page.evaluate(url => openedLinks.includes(url), loginUrl))
+  }
+  await capture('native-link')
+  record('link activation retains the focused code field', (await rows()).some(r => r.includes('> Code: <paste the code>▏')))
 
   if (attach) {
     // MP-08/MP-11: shared kernel dry run. Fill only the TUI's masked field
@@ -271,18 +281,13 @@ try {
       await capture('split-paste-masked')
       record('split paste returns with the masked code without submitting it',
         (await rows()).some(r => r.includes(`Code: ${'*'.repeat(code.length)}▏`)) && !(await shows(code)))
-      // Also lets the before-fix client leave a plain view after losing paste.
-      if (await shows('1. Open this link')) await press('\r')
-    } else await press('\r')
+    }
     await sleep(800)
     await capture('returned')
     record('returns to the focused code field', (await rows()).some(r => r.includes(options['split-paste'] === 'yes' ? `> Code: ${'*'.repeat('dry#state'.length)}▏` : '> Code: <paste the code>▏')))
   } else {
-    // The code pasted in the plain view returns to Chariox and fills the field.
-    // Without a plain view (the client before this change) the user selects
-    // "2.Send response" first, as Miguel did.
+    // Paste into the already focused native-strip code field, then submit once.
     const code = 'invalidDrillCode0123456789#invalidDrillState'
-    if (!await shows('1. Open this link')) await press('2')
     await press(`\x1b[200~${code}\x1b[201~`)
     await sleep(1200)
     await capture('code-pasted')
@@ -314,7 +319,7 @@ try {
       await capture('code-rejected')
       const rejected = /OAuth error: Request failed with status code 4\d\d/.test(await screen()) || await shows('sign-in failed')
       // The provider drops its link after a rejection: the strip says what to do next.
-      const nextStep = await shows('This link expired. Press Esc, then 1 to cancel, and sign in again.') || await shows('1. Open the link (click it):')
+      const nextStep = await shows('This link expired. Press Esc, then 1 to cancel, and sign in again.') || await shows('1. Cmd-click the link')
       record('the provider rejection is visible with the next step', rejected && nextStep, { rejected, nextStep })
       // Esc leaves the field; 1 cancels through the kernel interaction.
       await press('\x1b'); await sleep(300); await press('1')
