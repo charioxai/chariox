@@ -216,15 +216,17 @@ export class Mirror2 {
     stream.world = world;
     mark('world');
     const after = command.after_sequence;
+    // The viewer's credits name what it applied: resource completion counts only once acknowledged.
+    if (after > 0 && after <= stream.issued) stream.acked = Math.max(stream.acked ?? 0, after);
     const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
     if (reset) this.host.timing?.(`mirror2_reset ${resetReason}`, started);
-    if (stream.document_id !== tab.document_id) { stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
+    if (stream.document_id !== tab.document_id) { stream.acked = 0; stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
     // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
     if (stream.frameSlot >= 900) reset = true;
     // Frame slots restart with a snapshot, so rebased child keys are re-learned.
     // A slice in flight may be lost with the base: a partial resource restarts.
-    if (reset) { stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0; for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent) entry.offset = 0; }
+    if (reset) { stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0; for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; } }
     let source, fallback = null;
     const read = async () => {
       if (reset) {
@@ -436,7 +438,7 @@ export class Mirror2 {
       const data = entry.resource.data_base64, offset = entry.offset ?? 0, room = budget - bytes;
       let end = data.length;
       if (end - offset > room) { if (room < MIN_SLICE) continue; end = offset + Math.floor(room / 4) * 4; }
-      bytes += end - offset; entry.offset = end; entry.sent = end === data.length;
+      bytes += end - offset; entry.offset = end; entry.sent = end === data.length; if (entry.sent) entry.sentAt = stream.issued + 1; // this packet's sequence (packets are serial)
       out.push(!offset && entry.sent ? entry.resource : { ...entry.resource, data_base64: data.slice(offset, end), offset, total: data.length });
     }
     return out;

@@ -270,3 +270,18 @@ test("MP-11: review #941-1(P1) text/keys are refused for a focused field the vie
     await input(swapped.sequence, { kind: "text", text: "!" });
     assert.equal(await evaluate("document.querySelector('#b').value"), "ok!");
   }));
+
+test("MP-10: review #941-2 a resource whose final packet the viewer never applied is sent again after its reset (applied ones are not)", () => mirrored(
+  '<img src="/one.svg">', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    assert.equal((await next()).reset, true);
+    const wanted = r => r.mime_type === "image/svg+xml" && Buffer.from(r.data_base64, "base64").toString().includes("#0d0e0f");
+    const until = async () => { for (let i = 0; i < 8; i++) { const packet = await next(1000); if (packet.resources.some(wanted)) return packet; } return null; };
+    assert(await until(), "MP-10: the image is delivered once");
+    // That packet was lost (or a gap blocked it): the viewer resets having applied only the snapshot.
+    assert.equal((await next(0, true)).reset, true);
+    assert(await until(), "MP-10: the unapplied image is sent again");
+    await next(600); // the viewer acknowledges it (its next credit names that sequence)
+    assert.equal((await next(0, true)).reset, true);
+    for (let i = 0; i < 3; i++) assert(!(await next(600)).resources.some(wanted), "MP-10: an applied image is not re-sent");
+  }, { "/one.svg": { type: "image/svg+xml", body: svg("#0d0e0f") } }));
