@@ -27,7 +27,11 @@ export function startPairedRelayRenewal(client: LocalIpcClient, input: {
   client.startRelayAuthRenewal(expiry, async () => {
     // A separate short-lived control client avoids asking this renewal to wait
     // on itself when the visible client's control socket needs reconnecting.
-    const authToken = expiry > Date.now() ? token : await input.bootstrapToken?.()
+    // MP-08 / MP-10 / MP-11: every pivot is gated by the receiving CLIENT.
+    // A kernel-issued grant must not keep renewing after that CLIENT is revoked.
+    const authToken = input.bootstrapToken
+      ? await input.bootstrapToken()
+      : expiry > Date.now() ? token : undefined
     if (!authToken) throw new Error("paired terminal bootstrap authority has expired")
     const issuer = input.createClient(input.endpoint, {relayAuthToken: authToken, targetDaemonId: input.target, relayIdentity: input.identity})
     try {

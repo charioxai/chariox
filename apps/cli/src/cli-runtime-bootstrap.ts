@@ -186,7 +186,8 @@ export async function bootstrapCliRuntime(
   const relayIdentity = cliOptions.relayUrl
     ? deps.getRelayIdentity(Boolean(pairingLink))
     : null
-  if (pairingLink && cliOptions.relayToken === "cloud-client-token-required") {
+  const receivingClientAuthority = Boolean(pairingLink && cliOptions.relayToken === "cloud-client-token-required")
+  if (receivingClientAuthority) {
     if (!relayIdentity || !cliOptions.relayUrl || !cliOptions.targetDaemonId || !deps.resolvePairingBootstrapToken) throw new Error("Cloud pairing requires the receiving terminal's client credentials and key")
     cliOptions.relayToken = await deps.resolvePairingBootstrapToken(cliOptions.relayUrl, cliOptions.targetDaemonId, relayIdentity)
   }
@@ -213,7 +214,7 @@ export async function bootstrapCliRuntime(
         startPairedRelayRenewal(client, {
           token: joined.relay_token, subject: joined.pairing.subject_id, endpoint: kernelEndpoint, target: joined.pairing.target_daemon_id,
           terminalId: cliOptions.clientId, identity: relayIdentity, createClient: deps.createClient,
-          ...(deps.resolvePairingBootstrapToken ? {bootstrapToken: () => deps.resolvePairingBootstrapToken!(joined.pairing.relay_url, joined.pairing.target_daemon_id, relayIdentity)} : {}),
+          ...(receivingClientAuthority && deps.resolvePairingBootstrapToken ? {bootstrapToken: () => deps.resolvePairingBootstrapToken!(joined.pairing.relay_url, joined.pairing.target_daemon_id, relayIdentity)} : {}),
         })
       }
     } catch (error) {

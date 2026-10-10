@@ -6,6 +6,7 @@ import test from "node:test"
 import WebSocket, { WebSocketServer } from "ws"
 
 import { LocalIpcClient } from "./ipc.js"
+import { CloudClientAuthError } from "./cloud-client-http.js"
 import type { BootstrapState, CliOptions } from "./cli-types.js"
 import type { CharioxPreferences } from "./preferences.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
@@ -415,7 +416,7 @@ test("Cloud pairing bootstrap keeps commands and events across repeated grant ex
   const daemon=createCliRelayIdentityStore(`${root}/daemon.json`).getOrCreate()
   const timers = new Set<ReturnType<typeof setTimeout>>()
   const streams = new Set<ReturnType<typeof setInterval>>()
-  let renewals=0, events=0, subscriptions=0
+  let renewals=0, events=0, subscriptions=0, receivingChecks=0, receivingRevoked=false
   const grant = () => {
     const expiresAtMs=Date.now()+400
     const payload=Buffer.from(JSON.stringify({sub:"paired-subject",public_key_thumbprint:identity.publicKeyThumbprint,allowed_targets:["home"],expires_at_ms:expiresAtMs})).toString("base64url")
@@ -457,7 +458,7 @@ test("Cloud pairing bootstrap keeps commands and events across repeated grant ex
   })
   let finalClient: LocalIpcClient | undefined
   try {
-    const result=await bootstrapCliRuntime({argv:["chariox-terminal-pair-v1.fixture"],cwd:"/repo"},createDeps({parseArgs:()=>cliOptions({clientId:"terminal-1",relayUrl,relayToken:"cloud-client-token-required",targetDaemonId:"home"}),getRelayIdentity:()=>identity,resolvePairingBootstrapToken:async()=>"bootstrap",createClient:(endpoint,opts)=>new LocalIpcClient(endpoint,opts)}))
+    const result=await bootstrapCliRuntime({argv:["chariox-terminal-pair-v1.fixture"],cwd:"/repo"},createDeps({parseArgs:()=>cliOptions({clientId:"terminal-1",relayUrl,relayToken:"cloud-client-token-required",targetDaemonId:"home"}),getRelayIdentity:()=>identity,resolvePairingBootstrapToken:async()=>{receivingChecks++;if(receivingRevoked)throw new CloudClientAuthError("client_revoked");return "bootstrap"},createClient:(endpoint,opts)=>new LocalIpcClient(endpoint,opts)}))
     assert.equal(result.kind,"ready")
     if(result.kind!=="ready")throw new Error("expected ready")
     finalClient=result.bootstrap.client
@@ -466,8 +467,15 @@ test("Cloud pairing bootstrap keeps commands and events across repeated grant ex
     const deadline=Date.now()+2_000
     while(Date.now()<deadline){assert.deepEqual(await finalClient.send({GetDaemonHealth:null}),{accepted:true});await new Promise(resolve=>setTimeout(resolve,25))}
     assert.ok(renewals>=5,"final paired client renews repeatedly")
+    // MP-08 / MP-10 / MP-11: kernel pivot renewal cannot outlive receiver CLIENT authority.
+    assert.ok(receivingChecks>=renewals+1,"every kernel pivot renewal rechecks the independently enrolled receiving CLIENT")
     assert.ok(events>40,"event lane remains active")
     assert.equal(subscriptions,1,"renewal preserves event subscription")
+    receivingRevoked=true
+    const issuedBeforeRevoke=renewals
+    await new Promise(resolve=>setTimeout(resolve,500))
+    await assert.rejects(finalClient.send({GetDaemonHealth:null}), /revoked|authorization|client/i)
+    assert.equal(renewals,issuedBeforeRevoke,"revoked receiving CLIENT cannot get another kernel pivot")
   } finally {
     await finalClient?.close()
     for(const timer of timers)clearTimeout(timer)
