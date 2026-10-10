@@ -253,10 +253,7 @@ impl<'a> KernelAgentService<'a> {
         let target_agent_id = prepared.prompt.target_agent_id().to_string();
         let source_attachment = crate::app::KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(&session_id, &attachment_id)?;
-        let prompt = prepared.prompt.with_source_attribution(
-            source_attachment.client_id(),
-            source_attachment.owner_user_id(),
-        );
+        let prompt = prepared.prompt.with_source_attachment(&source_attachment);
 
         let target_agent = self.app.agents.get_agent(&target_agent_id)?;
         if target_agent.session_id() != session_id {

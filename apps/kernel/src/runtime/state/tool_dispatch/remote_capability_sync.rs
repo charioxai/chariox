@@ -155,7 +155,7 @@ impl KernelRuntimeState {
     ) -> Result<crate::extension::RemoteExtensionManifest, DaemonError> {
         let mut manifest = self.remote_extension_manifest_without_apps_for_agent(agent)?;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        if agent.remote_execution().is_some() {
+        if agent.remote_execution().is_some() && !self.room_agent_tools_enabled() {
             let occupied = manifest
                 .tools
                 .iter()

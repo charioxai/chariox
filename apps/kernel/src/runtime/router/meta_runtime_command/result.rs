@@ -43,7 +43,10 @@ pub(super) fn meta_command_error(message: impl Into<String>) -> DaemonError {
     }
 }
 
-pub(super) fn meta_command_failure_result(command: &str, error: DaemonError) -> RuntimeToolResult {
+pub(super) fn meta_command_failure_result(
+    command: &str,
+    error: impl std::fmt::Display,
+) -> RuntimeToolResult {
     RuntimeToolResult {
         ok: false,
         payload: serde_json::json!({

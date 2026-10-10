@@ -63,6 +63,7 @@ pub(crate) struct AppControlService {
     wake_pump: super::app_wake_pump::AppWakePump,
     wake_scheduler: Arc<Semaphore>,
     views: super::app_views::AppViews,
+    user_views: super::user_app_views::UserAppViews,
     validation_pump: super::app_wake_pump::AppWakePump,
     /// Shown prompts: operation → (owner, the session showing it once known).
     validation_prompts:
@@ -127,6 +128,7 @@ impl AppControlService {
             wake_pump: Default::default(),
             wake_scheduler: Arc::new(Semaphore::new(1)),
             views: Default::default(),
+            user_views: Default::default(),
             validation_pump: Default::default(),
             validation_prompts: Default::default(),
             publishers,
@@ -188,6 +190,10 @@ impl AppControlService {
 
     pub(crate) fn wake_pump(&self) -> &super::app_wake_pump::AppWakePump {
         &self.wake_pump
+    }
+
+    pub(crate) fn user_views(&self) -> &super::user_app_views::UserAppViews {
+        &self.user_views
     }
 
     pub(crate) fn views(&self) -> &super::app_views::AppViews {

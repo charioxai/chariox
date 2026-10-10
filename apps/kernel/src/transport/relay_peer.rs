@@ -100,8 +100,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// `event_actions_enabled` and leased provider-run projections lose
 /// `workflow_event_actions_enabled`, which a peer at v68 or below still requires.
 /// Version70 combines Apps Phase1 and autonomous Room observation contracts (MP-08/MP-10).
-/// Version 82 adds owner-private workflow notifications to the Browser/Computer peer union (MP-08/MP-11).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 82;
+/// MP-08/MP-10/MP-11: version 86 combines the multidomain and main worker shapes.
+/// Older worker contracts are rejected before dispatch.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 86;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -1040,6 +1041,8 @@ pub enum RelayPeerResponse {
     Pong {
         value: String,
         daemon_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_peer_protocol_version: Option<u32>,
     },
     ManagedSliceRelayTokenInstalled {
         slice_id: String,
@@ -2147,6 +2150,57 @@ mod workflow_notification_82_shapes {
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
             "9851f534c590df1a98d61e1cd5090eab2f167e08da41ad42f37f14efd09a54ec"
+        );
+    }
+}
+
+#[cfg(test)]
+mod multidomain_union_tests {
+    #[test]
+    fn md_notes_room_observation_protocol_74_snapshot_and_hash() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(super::RELAY_PEER_PROTOCOL_VERSION, 86);
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 462);
+        let request = serde_json::json!({"kind":"room_browser_controller","session_id":"room-1","slice_id":"slice-1","command":{"kind":"note_observation","target_id":"target-1","document_id":"doc-1","quote":{"exact":"quote","prefix":"before","suffix":"after"}}});
+        let response = serde_json::json!({"kind":"room_browser_controller","session_id":"room-1","slice_id":"slice-1","result":{"kind":"note_observation","observation":{"target_id":"target-1","document_id":"doc-1","url":"https://example.test/","selection":null,"anchoring":null}}});
+        let decoded: super::RelayPeerRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), request);
+        let decoded: super::RelayPeerResponse = serde_json::from_value(response.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), response);
+        let snapshot = serde_json::json!({"request":request,"response":response});
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+            ),
+            "f56562dd26d9adb6d99f4173955085b8ac953b9f8064cfbbc3f93f9f01a8a7a0"
+        );
+    }
+}
+
+#[cfg(test)]
+mod notes_protocol_probe_tests {
+    #[test]
+    fn md_notes_protocol_probe_preserves_legacy_pong_and_pins_union_advertisement() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(super::RELAY_PEER_PROTOCOL_VERSION, 86);
+        let current = serde_json::json!({"kind":"pong","value":"md-notes-protocol","daemon_id":"worker-1","relay_peer_protocol_version":74});
+        let legacy =
+            serde_json::json!({"kind":"pong","value":"md-notes-protocol","daemon_id":"worker-1"});
+        for (value, expected) in [(&current, Some(74)), (&legacy, None)] {
+            let decoded: super::RelayPeerResponse = serde_json::from_value(value.clone()).unwrap();
+            assert!(
+                matches!(&decoded, super::RelayPeerResponse::Pong { relay_peer_protocol_version, .. } if *relay_peer_protocol_version == expected)
+            );
+            assert_eq!(serde_json::to_value(decoded).unwrap(), *value);
+        }
+        let snapshot = serde_json::json!({"current":current,"legacy":legacy});
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+            ),
+            "5c9e2f881c4ebce7f3ee9f4af71ec364547a4f51f451f46d457e5809885c29ac"
         );
     }
 }

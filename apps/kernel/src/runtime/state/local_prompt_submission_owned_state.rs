@@ -111,10 +111,10 @@ impl KernelRuntimeOwnedState {
         let force_queue = prepared.force_queue || provider_run_is_starting;
         let will_queue = force_queue || queued_while_active;
         let prompt = if let Some(source_attachment) = source_attachment.as_ref() {
-            prepared.prompt.clone().with_source_attribution(
-                source_attachment.client_id(),
-                source_attachment.owner_user_id(),
-            )
+            prepared
+                .prompt
+                .clone()
+                .with_source_attachment(source_attachment)
         } else {
             prepared.prompt.clone()
         };

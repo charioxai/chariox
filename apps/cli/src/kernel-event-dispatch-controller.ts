@@ -155,6 +155,9 @@ export function createKernelEventDispatchController(
         deps.recordDaemonActivity("kernel_runtime_interactions_changed")
         await applyRuntimeInteractionsChanged(event)
         return
+      case "kernel_browser_frame":
+        // MD-DISPLAY-04: raster presentation is consumed by an admitted display viewer.
+        return
       case "heartbeat":
         deps.recordDaemonActivity("kernel_heartbeat")
         return

@@ -454,9 +454,14 @@ impl AgentInstance {
     }
 
     pub fn has_extension_grant(&self, kind: ExtensionKind, name: &str) -> bool {
-        self.extension_grants
-            .iter()
-            .any(|grant| grant.kind == kind && grant.name == name)
+        self.extension_grants.iter().any(|grant| {
+            grant.kind == kind
+                && grant.name == name
+                && grant
+                    .app_grant
+                    .as_ref()
+                    .is_none_or(|cause| crate::session::unix_epoch_ms() < cause.expires_at_ms)
+        })
     }
 
     pub fn substitutes(&self) -> &[AgentSubstituteProfile] {

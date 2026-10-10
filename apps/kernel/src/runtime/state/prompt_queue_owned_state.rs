@@ -1609,7 +1609,7 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         prompt_text: &str,
     ) -> Result<crate::app::KernelQueuedPromptUpdate, DaemonError> {
-        let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
         let target_agent = self.agent_store.get_agent(agent_id)?;
         if target_agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -1627,7 +1627,7 @@ impl KernelRuntimeOwnedState {
         )?;
         let prompt = self
             .prompt_state_owner
-            .update_queued_prompt(&session, agent_id, prompt_id, prompt_text)
+            .update_queued_prompt(&session, agent_id, prompt_id, prompt_text, &attachment)
             .ok_or_else(|| DaemonError::LocalTransport {
                 operation: "update queued prompt",
                 message: format!(

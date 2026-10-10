@@ -82,6 +82,13 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
             Ok(())
         }
         Some("prompt") => Ok(()),
+        // MP-08/MP-11 A05: App bindings on the user's request or as a child subset.
+        Some("extension" | "extensions")
+            if matches!(tokens.get(1).map(String::as_str), Some("grant" | "revoke"))
+                && tokens.get(2).map(String::as_str) == Some("app") =>
+        {
+            Ok(())
+        }
         Some("session") if tokens.get(1).map(String::as_str) == Some("overview") => Ok(()),
         _ => Err(denied("command is outside the regular room surface")),
     }
@@ -103,6 +110,8 @@ pub(crate) fn command_doc(mut value: serde_json::Value) -> serde_json::Value {
                 "unavailable on the PR1 regular room surface"
             } else if destructive_agent {
                 "immutable direct spawned child"
+            } else if tokens.first().map(String::as_str) == Some("extension") {
+                "self on the user's request in this turn, or a direct child for an App you hold"
             } else {
                 "current room; workflow mutations require self or direct-child creator"
             }

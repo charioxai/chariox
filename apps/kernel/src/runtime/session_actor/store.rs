@@ -694,6 +694,7 @@ impl SessionRuntimeStore {
         &self,
         request: AttachToSessionRequest,
         caller_user_id: String,
+        terminal_caller: bool,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -704,7 +705,11 @@ impl SessionRuntimeStore {
             request.capability_level,
             caller_user_id,
         );
-        let result = match self.state.attach(attach_request).await {
+        let result = match self
+            .state
+            .attach_for_caller(attach_request, terminal_caller)
+            .await
+        {
             Ok(attachment) => self
                 .reconcile_room_environment_actors_if_started(attachment.session_id())
                 .map(|()| LocalDaemonResponse::SessionAttached { attachment }),

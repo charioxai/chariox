@@ -118,7 +118,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       panel.add(body)
       const session = prompt.session_alias ? `${prompt.session_alias} (${prompt.session_id})` : prompt.session_id
       section(text(`${prompt.session_id === "kernel-access" && (prompt.kind === "access_grant" || prompt.kind === "access_extension")
-        ? "Local kernel" : `Session: ${session}`} · expires ${expiry(prompt.expires_at_ms)}`, { muted: true }))
+        ? "Local kernel" : prompt.session_id ? `Session: ${session}` : "User domain"} · expires ${expiry(prompt.expires_at_ms)}`, { muted: true }))
       // Hidden input: only the length is ever rendered.
       const remember = text(prompt.kind === "critical_approval"
         ? `Remember for: ${view.passkey.rememberMinutes ? `${view.passkey.rememberMinutes} minutes` : "off"}`

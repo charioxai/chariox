@@ -125,6 +125,14 @@ impl KernelRuntimeState {
                 }
                 return direct_child(&actor, target);
             }
+            // MP-08/MP-11 A05: App bindings only for self or an immutable direct
+            // child; the binding path checks request causation and the subset.
+            LocalDaemonRequest::GrantAgentExtension(r) => {
+                return self.authorize_room_extension_target(&actor, &r.agent_ref)
+            }
+            LocalDaemonRequest::RevokeAgentExtension(r) => {
+                return self.authorize_room_extension_target(&actor, &r.agent_ref)
+            }
             LocalDaemonRequest::FocusAgent(_) | LocalDaemonRequest::CycleAgentFocus(_) => {
                 return Err(denied("agents cannot change user focus"))
             }
@@ -160,6 +168,28 @@ impl KernelRuntimeState {
             }
         }
         Ok(())
+    }
+}
+
+impl KernelRuntimeState {
+    fn authorize_room_extension_target(
+        &self,
+        actor: &crate::agent::AgentInstance,
+        reference: &str,
+    ) -> Result<(), DaemonError> {
+        let agents = self
+            .owned
+            .agent_store
+            .get_session_agents(actor.session_id());
+        let target = crate::runtime::room_tool_admission::resolve_agent(
+            &agents,
+            actor.session_id(),
+            reference,
+        )?;
+        if target.id() == actor.id() {
+            return Ok(());
+        }
+        direct_child(actor, target)
     }
 }
 

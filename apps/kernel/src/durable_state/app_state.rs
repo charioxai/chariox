@@ -481,6 +481,19 @@ pub(crate) fn fixture_tool_package() -> (Vec<u8>, chariox_app_package::TrustedPu
     tests::tool_package()
 }
 
+#[cfg(test)]
+pub(crate) fn fixture_browser_tool_package(
+    store: &DurableKernelStateStore,
+) -> (
+    Arc<EventCatalog>,
+    Vec<u8>,
+    chariox_app_package::TrustedPublisher,
+) {
+    let (bytes, publisher) = tests::browser_tool_package();
+    let catalog = tests::catalog_for_owner(store, "alice", (bytes.clone(), publisher.clone()));
+    (catalog, bytes, publisher)
+}
+
 /// Stages the tool fixture's release again as an update of `installation`
 /// (at generation 1) and approves it, without starting it.
 #[cfg(test)]

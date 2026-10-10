@@ -357,6 +357,7 @@ impl KernelRuntimeOwnedState {
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self.ensure_agent_owner(agent_id, caller_user_id, "destroy agent")?;
+        self.kernel_browser_host.revoke_agent(agent.id());
         let session_id = agent.session_id().to_string();
         let provider_run_ids = self
             .provider_store
