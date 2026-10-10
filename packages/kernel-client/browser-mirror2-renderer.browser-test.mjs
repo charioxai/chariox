@@ -367,3 +367,16 @@ test('MP-10: denylisted attributes render like the source: named slots, constrai
     assert.equal(await chooser, false, 'MP-10: a file input never opens the viewer\'s chooser');
   } finally { await page.close(); }
 });
+
+test('MP-08: protocol 492 a click on a focusable control is forwarded alone (the kernel\'s click focuses it): no focus round trip ahead of the click', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'width:200px' }, form: textForm('one', 3) }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'button', attrs: { style: 'width:100px;height:30px' } }, { id: 'n6', parent: 'n5', kind: 'text', text: 'go' }])));
+    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to').map(action => action.kind + ':' + action.node_id));
+    for (const selector of ['input', 'button']) {
+      const box = await page.evaluate(selector => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelector(selector).getBoundingClientRect(); return [f.x + t.x + 5, f.y + t.y + 5]; }, selector);
+      await page.mouse.click(box[0], box[1]); await frames(); await frames();
+      assert.deepEqual(await sent(), [`click:${selector === 'input' ? 'n4' : 'n5'}`], `MP-08: ${selector}`);
+    }
+  } finally { await page.close(); }
+});

@@ -46,6 +46,7 @@ export class BrowserMirror2Renderer {
   private counts = { tile: 0, mask: 0 } // public diagnostics on the frame element (data-mirror-*)
   private pendingInputs = 0
   private focusSent: string | null = null // the focus the kernel has (applied from it, or sent to it)
+  private pointerFocus: string | null = null // a focus taken by a pointer press: its click focuses in the kernel
   private queue: Array<{ action: Mirror2Action; epoch: { sequence: number; document_id: string } }> = []
   private sending = false
   // Viewer-owned scroll (plan 4.1): kernel echoes wait until the viewer settles.
@@ -121,14 +122,22 @@ export class BrowserMirror2Renderer {
     const offset = (el: Element, event: MouseEvent): { x: number; y: number } => { const r = el.getBoundingClientRect(); return { x: event.clientX - r.left, y: event.clientY - r.top } }
     // A click that ends a text drag selects; it is not forwarded as a click.
     let origin: { x: number; y: number } | null = null, dragged = false
-    on('pointerdown', event => { const e = event as PointerEvent; origin = { x: e.clientX, y: e.clientY }; dragged = false })
+    on('pointerdown', event => { const e = event as PointerEvent; origin = { x: e.clientX, y: e.clientY }; dragged = false; this.pointerFocus = null })
+    // A press whose gesture forwards no click (a drag, a select or picker, a release elsewhere) sends its focus now.
+    on('pointerup', () => { origin = null; setTimeout(() => { const id = this.pointerFocus; this.pointerFocus = null; if (id && !this.disposed) { this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) } }, 0) })
     on('pointermove', event => { const e = event as PointerEvent; if (origin && (e.buttons & 1) && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > 4) dragged = true })
     const selecting = (el: Element): boolean => { if (el.closest('input,textarea,button,select,[contenteditable]')) return false; const s = doc.getSelection(); return Boolean(s && !s.isCollapsed && (el.contains(s.anchorNode) || el.contains(s.focusNode))) }
     // A drag inside a text control focused it here only: its range goes now (the kernel focuses the control with it).
     // A select or picker opens the viewer's own UI; its committed state goes as `set` (the kernel's popup never opens).
-    on('click', event => { const hit = element(event); if (hit && picked(hit.el)) return; event.preventDefault(); if (!hit || dragged || selecting(hit.el)) { if (dragged) this.syncRange(); dragged = false; return } this.enqueue({ kind: 'click', node_id: hit.id, ...offset(hit.el, event as MouseEvent) }) })
+    on('click', event => {
+      const hit = element(event); if (hit && picked(hit.el)) return
+      event.preventDefault()
+      if (!hit || dragged || selecting(hit.el)) { if (dragged) { const id = this.pointerFocus; this.pointerFocus = null; if (id) { this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) } this.syncRange() } dragged = false; return }
+      // The kernel's click focuses what the viewer's press focused: no separate round trip before it.
+      this.pointerFocus = null; this.enqueue({ kind: 'click', node_id: hit.id, ...offset(hit.el, event as MouseEvent) })
+    })
     // Protocol 492: focus transitions and committed control state, not inferred from clicks or keys.
-    on('focusin', event => { const id = this.ids.get(event.composedPath()[0] as Node); if (this.applying || !id || this.records.get(id)?.kind !== 'element' || id === this.focusSent) return; this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) })
+    on('focusin', event => { const id = this.ids.get(event.composedPath()[0] as Node); if (this.applying || !id || this.records.get(id)?.kind !== 'element' || id === this.focusSent) return; if (origin) { this.pointerFocus = id; return } this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) })
     // Focus left to nothing (not to another control, not the viewer window losing focus): the kernel blurs too.
     on('focusout', event => {
       const node = event.composedPath()[0] as Element, id = this.ids.get(node)
