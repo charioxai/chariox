@@ -19,7 +19,7 @@ pub struct UserCredentialConfig {
     pub metadata: Option<UserCredentialMetadataConfig>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserCredentialMetadataConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by_kind: Option<String>,

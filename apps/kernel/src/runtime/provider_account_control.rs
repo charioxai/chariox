@@ -21,15 +21,25 @@ pub(crate) async fn execute_provider_account_request(
     let response = tokio::task::spawn_blocking(move || match request {
         LocalDaemonRequest::ListProviderAccountProfiles(request) => {
             Ok(LocalDaemonResponse::ProviderAccountProfilesListed {
-                profiles: registry.list(&owner_user_id, request.provider.as_deref())?,
+                profiles: registry
+                    .list(&owner_user_id, request.provider.as_deref())?
+                    .into_iter()
+                    .map(|profile| {
+                        crate::provider::reconcile_claude_vault_observation(
+                            &registry,
+                            &owner_user_id,
+                            profile,
+                        )
+                    })
+                    .collect::<Result<_, _>>()?,
             })
         }
         LocalDaemonRequest::GetProviderAccountProfile(request) => {
             Ok(LocalDaemonResponse::ProviderAccountProfile {
-                profile: registry.get(
+                profile: crate::provider::reconcile_claude_vault_observation(
+                    &registry,
                     &owner_user_id,
-                    &request.provider,
-                    &request.account_profile,
+                    registry.get(&owner_user_id, &request.provider, &request.account_profile)?,
                 )?,
             })
         }

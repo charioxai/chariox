@@ -47,6 +47,9 @@ impl KernelRuntimeState {
         agent_id: &str,
         operation: impl FnOnce(&mut DaemonApp) -> Result<T, DaemonError>,
     ) -> Result<T, DaemonError> {
+        let account = self
+            .prepare_prompt_provider_credentials(session_id, agent_id)
+            .await?;
         let session = self.owned.session_store.get_session(session_id)?;
         let config = self.owned.config_projection.snapshot();
         let has_environment = crate::project_environment::ProjectEnvironmentStore::new(
@@ -54,7 +57,10 @@ impl KernelRuntimeState {
         )
         .load(session.project_id())?
         .is_some();
-        let _vault = if has_environment {
+        let vault_path = super::runtime_vault_unlock_state::expand_vault_path(
+            &config.user_config.credential_vault.path,
+        );
+        let _vault = if has_environment && !account.covers_vault(&vault_path) {
             Some(
                 self.ensure_vault_unlocked_for_agent(
                     session_id,
@@ -66,7 +72,11 @@ impl KernelRuntimeState {
         } else {
             None
         };
-        self.with_authorized_app_side_effect(operation).await
+        self.with_authorized_app_side_effect(|app| {
+            account.validate(app)?;
+            operation(app)
+        })
+        .await
     }
 
     pub(crate) fn project_environment_for_shell(
@@ -298,6 +308,10 @@ impl KernelRuntimeState {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "project_environment_manifest/prompt_vault_lease_tests.rs"]
+mod prompt_vault_lease_tests;
 
 #[cfg(test)]
 mod tests {

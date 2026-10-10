@@ -7,6 +7,7 @@ use crate::session::unix_epoch_ms;
 
 const CLAUDE_HOOK_PERMISSION_TOMBSTONE_TTL_MS: u64 = 30_000;
 const CLAUDE_YOLO_RENDERED_PERMISSION_SUPPRESSION_MS: u64 = 2_500;
+
 const CLAUDE_HEADLESS_BYPASS_SELECTION_MARKER: &str = "startup-bypass-selection";
 const CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX: &str = "startup-workspace-trust:";
 const CLAUDE_HEADLESS_WORKSPACE_TRUST_DENIED_PREFIX: &str = "startup-workspace-trust-denied:";
@@ -22,6 +23,25 @@ pub(super) fn claude_native_marker(context_file: &str) -> Option<String> {
 pub(super) fn write_claude_native_marker(context_file: &str, value: &str) {
     let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
     let _ = fs::write(marker, value);
+    if value
+        .strip_prefix("accepted:")
+        .is_some_and(|id| !id.is_empty())
+    {
+        // The matching official hook/queue acknowledgement proves this exact
+        // provider instance initialized. Each launch has a fresh runtime root;
+        // this proof survives Stop and incremental PTY buffer rollover only.
+        let _ = fs::write(
+            std::path::Path::new(context_file).with_file_name("headless-composer-initialized"),
+            "accepted",
+        );
+    }
+}
+
+pub(super) fn claude_headless_composer_initialized(context_file: &str) -> bool {
+    fs::read_to_string(
+        std::path::Path::new(context_file).with_file_name("headless-composer-initialized"),
+    )
+    .is_ok_and(|value| value == "accepted")
 }
 
 fn claude_yolo_rendered_permission_marker_path(context_file: &str) -> Option<PathBuf> {
@@ -133,6 +153,23 @@ pub(super) fn claude_headless_workspace_trust_interaction_id(context_file: &str)
                 .map(ToOwned::to_owned)
         })
         .filter(|interaction_id| !interaction_id.is_empty())
+}
+
+pub(super) fn write_claude_workspace_trust_selection_marker(context_file: &str) {
+    write_claude_native_marker(
+        context_file,
+        &format!(
+            "{CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX}select-yes:{}",
+            unix_epoch_ms()
+        ),
+    );
+}
+
+pub(super) fn claude_workspace_trust_selection_started_at(context_file: &str) -> Option<u64> {
+    claude_headless_workspace_trust_interaction_id(context_file)?
+        .strip_prefix("select-yes:")?
+        .parse()
+        .ok()
 }
 
 pub(super) fn claude_headless_workspace_trust_interaction_marker(marker: &str) -> bool {
@@ -480,6 +517,28 @@ pub(super) fn claude_rendered_permission_visible(text: &str) -> bool {
         && (normalized.contains("3. No") || compact.contains("3.No"))
 }
 
+/// Select Yes using the rendered selector, including an explicit highlighted
+/// row. Without a highlight, Claude starts on the first displayed choice.
+pub(super) fn claude_workspace_trust_approval_input(text: &str) -> Option<&'static [u8]> {
+    let compact = normalize_claude_rendered_permission_text(text)
+        .to_ascii_lowercase()
+        .replace(' ', "");
+    // Official releases render this selector both with and without numbers.
+    let choices = compact.replace("1.", "").replace("2.", "");
+    let yes = choices.rfind("yes,itrustthisfolder")?;
+    let no = choices.rfind("no,exit")?;
+    let yes_selected = choices[..yes].ends_with('❯');
+    let no_selected = choices[..no].ends_with('❯');
+    if yes_selected {
+        return Some(b"\r");
+    }
+    if yes < no {
+        Some(if no_selected { b"\x1b[A" } else { b"\r" })
+    } else {
+        Some(b"\x1b[B")
+    }
+}
+
 pub(super) fn claude_headless_workspace_trust_visible(text: &str) -> bool {
     let normalized = normalize_claude_rendered_permission_text(text);
     let normalized_lower = normalized.to_ascii_lowercase();
@@ -590,7 +649,8 @@ pub(super) fn claude_headless_composer_visible(text: &str) -> bool {
     let compact = normalized_lower.replace(' ', "");
     let modern_idle_composer = compact.split('❯').skip(1).any(|after_prompt_glyph| {
         let footer = after_prompt_glyph.chars().take(256).collect::<String>();
-        footer.contains("⏵⏵") && footer.contains("shift+tabtocycle")
+        (footer.contains("⏵⏵") && footer.contains("shift+tabtocycle"))
+            || (footer.contains("manualmodeon") && footer.contains("←foragents"))
     });
     (normalized_lower.contains("try \"write a test for")
         || compact.contains("try\"writeatestfor")
@@ -699,5 +759,35 @@ mod approval_lifetime_tests {
             take_claude_permission_inputs(&context_file),
             vec![b"\r".to_vec()]
         );
+    }
+}
+
+#[cfg(test)]
+mod composer_initialization_tests {
+    use super::*;
+    // MP-08 / MP-10 / MP-11: PTY writes and malformed markers cannot prove
+    // provider initialization; acknowledgement does not warm a fresh launch.
+    #[test]
+    fn composer_initialization_requires_acknowledgement_in_the_same_runtime() {
+        let root = std::env::temp_dir().join(format!(
+            "claude-composer-proof-{:016x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(root.join("first")).unwrap();
+        std::fs::create_dir_all(root.join("replacement")).unwrap();
+        let context = root.join("first/context.json").display().to_string();
+        let fresh = root.join("replacement/context.json").display().to_string();
+        let mut evidence = vec![claude_headless_composer_initialized(&context)];
+        write_claude_native_marker(&context, "injected:pending");
+        evidence.push(claude_headless_composer_initialized(&context));
+        write_claude_native_marker(&context, "accepted:");
+        evidence.push(claude_headless_composer_initialized(&context));
+        write_claude_native_marker(&context, "accepted:matching-prompt");
+        evidence.push(claude_headless_composer_initialized(&context));
+        write_claude_native_marker(&context, "");
+        evidence.push(claude_headless_composer_initialized(&context));
+        evidence.push(claude_headless_composer_initialized(&fresh));
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(evidence, vec![false, false, false, true, true, false]);
     }
 }

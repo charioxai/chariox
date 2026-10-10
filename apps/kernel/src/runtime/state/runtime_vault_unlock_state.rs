@@ -20,6 +20,11 @@ impl VaultUnlockGuard {
         }
     }
 
+    // This explicit lease covers only the same configured Vault operation.
+    pub(super) fn covers_vault(&self, path: &std::path::Path) -> bool {
+        self.path.as_deref() == Some(path)
+    }
+
     fn not_required() -> Self {
         Self {
             path: None,
@@ -41,7 +46,7 @@ impl Drop for VaultUnlockGuard {
 }
 
 impl KernelRuntimeState {
-    pub(super) async fn prepare_provider_launch_request_with_vault(
+    pub(in crate::runtime) async fn prepare_provider_launch_request_with_vault(
         &self,
         request: crate::provider::LaunchProviderRequest,
         operation: &'static str,
@@ -50,11 +55,18 @@ impl KernelRuntimeState {
             .ensure_provider_account_vault_unlocked_for_launch(&request, operation)
             .await?;
         let config = self.owned.config_projection.snapshot();
-        self.owned
-            .prepare_provider_launch_request(request, config.runtime_mcp_url())
+        let mut request = self
+            .owned
+            .prepare_provider_launch_request(request, config.runtime_mcp_url())?;
+        let credentials = std::mem::take(&mut request.provider_credential_env);
+        drop(_vault_unlock);
+        let credentials = self
+            .checked_claude_credentials(&request, credentials)
+            .await?;
+        Ok(request.with_provider_credential_env(credentials))
     }
 
-    async fn ensure_provider_account_vault_unlocked_for_launch(
+    pub(super) async fn ensure_provider_account_vault_unlocked_for_launch(
         &self,
         request: &crate::provider::LaunchProviderRequest,
         operation: &'static str,
@@ -127,18 +139,31 @@ impl KernelRuntimeState {
         let _vault_unlock = self
             .ensure_provider_account_vault_unlocked_for_launch(&request, operation)
             .await?;
+        // MP-08 / MP-10 / MP-11: retirement during human unlock must precede
+        // credential resolution or a billed first-use check, not just PTY spawn.
+        self.authorize_current_external_command()?;
+        let current = self.owned.provider_store.get_run(run.id())?;
+        if current.state() == crate::provider::ProviderRunState::Ended {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: run.id().to_string(),
+                state: current.state(),
+                operation,
+            });
+        }
         let config = self.owned.config_projection.snapshot();
         let account_owner_user_id =
             crate::account_profile::provider_account_authority_owner_user_id(
                 &config,
                 run.owner_user_id(),
             );
-        crate::provider::resolve_provider_account_credentials(
+        let credentials = crate::provider::resolve_provider_account_credentials(
             &config,
             &account_owner_user_id,
             run.provider(),
             run.account_profile(),
-        )
+        )?;
+        drop(_vault_unlock);
+        self.checked_claude_credentials(&request, credentials).await
     }
 
     pub(super) async fn resolve_remote_provider_launch_credential(
@@ -188,12 +213,16 @@ impl KernelRuntimeState {
             agent.provider(),
             &profile.profile_id,
         )?;
+        drop(_vault_unlock);
+        environment = self
+            .checked_claude_credentials(&request, environment)
+            .await?;
         let token = environment
             .remove(crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
             .filter(|value| !value.trim().is_empty())
             .ok_or(DaemonError::InvalidConfig {
                 field: "provider account credential",
-                message: "remote Claude launch requires a Chariox-vault setup token; use `provider setup-token claude <account-profile>` on the home kernel",
+                message: "remote Claude launch requires sign-in; choose Log in in Provider Accounts on the home kernel",
             })?;
         Ok(Some(
             crate::transport::relay_peer::RemoteProviderLaunchCredential {
@@ -243,18 +272,38 @@ impl KernelRuntimeState {
         agent_id: Option<&str>,
         operation: &'static str,
     ) -> Result<VaultUnlockGuard, DaemonError> {
+        let Some((session_id, agent_id)) = self
+            .preflight_vault_unlock_for_command_context(command, session_id, agent_id, operation)
+            .await?
+        else {
+            return Ok(VaultUnlockGuard::not_required());
+        };
+        self.ensure_vault_unlocked_for_agent(&session_id, &agent_id, operation)
+            .await
+    }
+
+    /// Validate where an unlock interaction can be shown without acquiring a
+    /// Vault lease. Verification of caller-supplied input can then run while
+    /// the Vault stays locked; the actual write repeats this same preflight.
+    pub(crate) async fn preflight_vault_unlock_for_command_context(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        session_id: Option<&str>,
+        agent_id: Option<&str>,
+        operation: &'static str,
+    ) -> Result<Option<(String, String)>, DaemonError> {
         let user_config = self.owned.config_projection.snapshot().user_config;
         if user_config.credential_vault.backend
             != crate::config::CredentialVaultBackend::CharioxEncrypted
         {
-            return Ok(VaultUnlockGuard::not_required());
+            return Ok(None);
         }
         let vault_path = expand_vault_path(&user_config.credential_vault.path);
         if user_config.credential_vault.unlock_policy
             != crate::config::CredentialVaultUnlockPolicy::Always
             && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked
         {
-            return Ok(VaultUnlockGuard::unlocked_until_expiry());
+            return Ok(None);
         }
         let session_id = session_id
             .or(command.session_id.as_deref())
@@ -271,8 +320,7 @@ impl KernelRuntimeState {
                 operation,
             )
             .await?;
-        self.ensure_vault_unlocked_for_agent(session_id, &agent_id, operation)
-            .await
+        Ok(Some((session_id.to_owned(), agent_id)))
     }
 
     /// The unlock popup is an agent's runtime interaction. Without a named
@@ -1240,9 +1288,18 @@ mod mp11_always_tests {
                     },
                 )
                 .await;
+            // MP-11: this refusal must precede any provider invocation. A
+            // regression must fail locally, never call an installed real CLI.
+            let previous_claude_bin = std::env::var_os("CHARIOX_CLAUDE_BIN");
+            std::env::set_var("CHARIOX_CLAUDE_BIN", root.join("must-not-execute-claude"));
             let provider = crate::runtime::user_config_executor::execute_set_provider_account_credential_request(projection, &state, &command,
                 crate::local::SetProviderAccountCredentialRequest { session_id: None, agent_id: None, provider: "claude".into(), account_profile: profile.profile_id,
                     value: "synthetic-value".into(), run: false, overwrite: true }).await;
+            if let Some(previous) = previous_claude_bin {
+                std::env::set_var("CHARIOX_CLAUDE_BIN", previous);
+            } else {
+                std::env::remove_var("CHARIOX_CLAUDE_BIN");
+            }
             let refused = [set, delete, provider].into_iter().all(|result| {
                 result.is_err_and(|error| error.to_string().contains("requires a session_id"))
             });

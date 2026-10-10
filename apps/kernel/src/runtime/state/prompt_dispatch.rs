@@ -708,13 +708,14 @@ impl KernelRuntimeState {
                         return Ok(submission);
                     }
                 } else {
-                    self.with_app_side_effect(|app| {
-                        // The app mutex can outlive the grant. Reauthorize only
-                        // after acquiring it, before launching a cold provider.
-                        authorize()?;
-                        app.ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)
-                    })
-                    .await?;
+                    self.with_external_command_authority(authority)
+                        .with_project_prompt_environment(&session_id, &target_agent_id, |app| {
+                            // The app mutex can outlive the grant. Reauthorize only
+                            // after acquiring it, before launching a cold provider.
+                            authorize()?;
+                            app.ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)
+                        })
+                        .await?;
                 };
                 authorize()?;
                 if let Some(mut submission) =

@@ -13,12 +13,19 @@ export function formatProviderAuthStatus(status: ProviderAuthStatus): string {
 }
 
 export function formatProviderLoginStart(login: ProviderLoginStart, verb: "login" | "logout" | "reauth" | "setup-token"): string {
-  return [
+  const message = [
     `${login.provider} ${verb} started`,
-    verb === "setup-token" && login.login_id ? `run provider login-status ${login.login_id}; use provider login-input ${login.login_id} for a hidden response` : null,
+    login.login_id ? `login ${login.login_id}` : null,
     login.user_code ? `code ${login.user_code}` : null,
     login.verification_url ?? login.auth_url ?? null,
   ].filter(Boolean).join(" • ")
+  if (!login.login_id || !login.login_kind.startsWith("terminal")) return message
+  return [
+    message,
+    `provider login-status ${login.login_id} (authorization link and output)`,
+    `provider login-input ${login.login_id} (hidden input)`,
+    `provider login-cancel ${login.login_id}`,
+  ].join("\n")
 }
 
 export function formatProviderProcesses(processes: ProviderProcessInfo[]): string {

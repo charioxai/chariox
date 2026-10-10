@@ -872,6 +872,18 @@ history and debug output redact the value. No client currently requires this
 operation during normal session attachment, so minimum supported protocol
 versions do not change.
 
+MP-08/MP-10/MP-11: Claude login defaults to the official setup-token flow.
+The kernel projects its authorization link and secret code input through the
+existing human-only RuntimeInteraction; attached TUI/Web clients do not need
+a terminal command. Existing unchecked Vault tokens get one bounded official
+verification on first use: a tool-less Haiku turn with a 90-second deadline.
+Only authentication rejection starts the same authorization workflow;
+inconclusive checks, including permission-only denials, defer to ordinary
+provider execution. Later provider authentication failures use this same
+account login path. Pasting an existing token is an advanced `--paste` option.
+Login replacement never requires official logout or revocation of the previous
+credential. The existing request, response and interaction shapes are unchanged.
+
 Local daemon protocol v309 and relay peer protocol v43 add transient remote
 provider-launch credential delivery. The home kernel may resolve only the
 selected Claude account's vaulted setup token after validating the Room agent,

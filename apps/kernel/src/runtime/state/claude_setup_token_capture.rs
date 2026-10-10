@@ -102,6 +102,69 @@ impl ClaudeSetupTokenScreen {
         found.map_or(SetupTokenScan::Pending, SetupTokenScan::Found)
     }
 
+    /// MP-08/MP-10/MP-11: project only a complete official authorization URL,
+    /// never an arbitrary link or an unfinished PTY chunk.
+    pub fn authorization_url(&self) -> Option<String> {
+        let rows = self.rows();
+        for (index, row) in rows.iter().enumerate() {
+            for (offset, _) in row.match_indices("https://") {
+                let candidate = &row[offset..];
+                let end = candidate
+                    .find(char::is_whitespace)
+                    .unwrap_or(candidate.len());
+                if end == candidate.len() && rows[index + 1..].iter().all(|row| row.is_empty()) {
+                    continue;
+                }
+                let value = &candidate[..end];
+                let Ok(url) = url::Url::parse(value) else {
+                    continue;
+                };
+                if !value.contains(CREDENTIAL_PREFIX)
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && matches!(
+                        (url.host_str(), url.path()),
+                        (Some("claude.com"), "/cai/oauth/authorize")
+                            | (
+                                Some("claude.ai" | "platform.claude.com" | "console.anthropic.com"),
+                                "/oauth/authorize"
+                            )
+                    )
+                    && url.query().is_some()
+                {
+                    return Some(value.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    // MP-08/MP-10/MP-11: an echoed code is still the input phase. Only
+    // leaving the official prompt can establish progress past submission.
+    pub fn authorization_input_visible(&self) -> bool {
+        self.rows()
+            .iter()
+            .any(|row| row.contains("Paste code here if prompted >"))
+    }
+
+    pub fn authorization_checking(&self) -> bool {
+        // A transient clear during an Ink redraw is not submission evidence.
+        self.rows().iter().any(|row| {
+            row.contains("Exchanging code for token")
+                || row.contains("Logging in")
+                || row.contains("Long-lived authentication token created successfully")
+                || row.contains("Your OAuth token")
+        }) && !self.authorization_input_visible()
+    }
+
+    /// The official CLI keeps running after OAuth refusal and needs Enter to retry.
+    /// Project only this fixed phase, never provider error text or echoed codes.
+    pub fn authorization_retry_required(&self) -> bool {
+        let rows = self.rows();
+        rows.iter().any(|row| row.contains("OAuth error:"))
+            && rows.iter().any(|row| row.contains("Press Enter to retry"))
+    }
+
     fn rows(&self) -> Vec<Zeroizing<String>> {
         self.parser
             .screen()
@@ -162,6 +225,29 @@ fn redact_input_echoes(row: String, inputs: &[Zeroizing<String>], cursor_row: bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_token_authorization_url_rejects_untrusted_and_incomplete_output() {
+        // MP-11: only complete official OAuth links cross the client boundary.
+        for url in [
+            "https://example.com/oauth/authorize?code=true",
+            "https://claude.com.example.com/cai/oauth/authorize?code=true",
+            "https://user@claude.com/cai/oauth/authorize?code=true",
+            "http://claude.com/cai/oauth/authorize?code=true",
+            "https://claude.com/unrelated?code=true",
+            "https://claude.com/cai/oauth/authorize?token=sk-ant-oat01-hidden",
+        ] {
+            let mut screen = ClaudeSetupTokenScreen::default();
+            screen.process(format!("{url}\r\nPaste code > ").as_bytes());
+            assert!(screen.authorization_url().is_none());
+        }
+        let mut screen = ClaudeSetupTokenScreen::default();
+        let url = "https://claude.com/cai/oauth/authorize?code=true";
+        screen.process(url.as_bytes());
+        assert!(screen.authorization_url().is_none());
+        screen.process(b"\r\nPaste code > ");
+        assert_eq!(screen.authorization_url().as_deref(), Some(url));
+    }
 
     /// First half of a real Claude Code 2.1.281 `setup-token` session in a
     /// 40x1000 PTY, up to the code prompt. OAuth state values are replaced.

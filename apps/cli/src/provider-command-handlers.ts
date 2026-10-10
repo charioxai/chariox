@@ -78,12 +78,12 @@ export async function handleProviderSlashCommand(
     await startProviderLogin(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile, method.value)
     return
   }
-  if (action === "setup-token" && !parts.includes("--run")) {
+  if (action === "setup-token" && parts.includes("--paste")) {
     const args = parts.slice(2)
     const profile = args.find((value) => !value.startsWith("--")) ?? "default"
     if (parts[1] !== "claude" || args.filter((value) => !value.startsWith("--")).length > 1
-      || args.some((value) => value.startsWith("--") && value !== "--replace")) {
-      deps.flashFooter("usage: /provider setup-token claude [account-profile] [--replace]", "error")
+      || args.some((value) => value.startsWith("--") && !["--replace", "--paste"].includes(value))) {
+      deps.flashFooter("usage: /provider setup-token claude [account-profile] --paste [--replace] (advanced)", "error")
       return
     }
     if (!deps.readSecret || !deps.storeProviderSetupToken) {
@@ -94,15 +94,21 @@ export async function handleProviderSlashCommand(
     if (resolved === null) return
     const value = (await deps.readSecret("Claude setup token: ")).trim()
     if (!value) { deps.flashFooter("Claude setup token must not be empty", "error"); return }
-    const stored = await deps.storeProviderSetupToken(resolved ?? "default", value, args.includes("--replace"))
-    deps.flashFooter(`Claude setup token ${stored.replaced ? "replaced" : "stored"} in Chariox Vault`, "info")
+    try {
+      const stored = await deps.storeProviderSetupToken(resolved ?? "default", value, args.includes("--replace"))
+      deps.flashFooter(`Claude setup token verified and ${stored.replaced ? "replaced" : "stored"} in Chariox Vault`, "info")
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).replaceAll(value, "<redacted>")
+      deps.appendNotice(message)
+      deps.flashFooter("Claude setup token failed; see the notice above", "error")
+    }
     return
   }
   if (action === "setup-token") {
     const args = parts.slice(2)
     const profile = args.find((value) => !value.startsWith("--")) ?? "default"
-    if (parts[1] !== "claude" || !args.includes("--run") || args.filter((value) => !value.startsWith("--")).length > 1 || args.some((value) => value.startsWith("--") && !["--run", "--replace"].includes(value))) {
-      deps.flashFooter("usage: /provider setup-token claude [account-profile] --run [--replace]", "error")
+    if (parts[1] !== "claude" || args.filter((value) => !value.startsWith("--")).length > 1 || args.some((value) => value.startsWith("--") && !["--run", "--replace"].includes(value))) {
+      deps.flashFooter("usage: /provider setup-token claude [account-profile] [--replace] (advanced: --paste)", "error")
       return
     }
     if (!deps.runProviderSetupToken) { deps.flashFooter("Claude setup token capture is unavailable", "error"); return }
@@ -234,7 +240,9 @@ async function startProviderLogin(
   }
   const resolvedAccount = await resolveProviderAccountReference(deps, provider, accountProfile)
   if (resolvedAccount === null) return
-  const login = await deps.startProviderLogin(provider, resolvedAccount, method)
+  const login = provider.startsWith("claude") && (!method || method === "setup_token") && deps.runProviderSetupToken
+    ? await deps.runProviderSetupToken(resolvedAccount ?? "default", true)
+    : await deps.startProviderLogin(provider, resolvedAccount, method)
   const message = formatProviderLoginNotice(login, "login started", await providerAccountPublicLabel(deps, login.provider, login.account_profile))
   deps.appendNotice(message)
   deps.flashFooter(message, "info")
@@ -310,6 +318,10 @@ async function reauthProvider(
   accountProfile?: string,
   method?: string,
 ): Promise<void> {
+  if (provider.startsWith("claude") && (!method || method === "setup_token")) {
+    await startProviderLogin(deps, provider, accountProfile, method)
+    return
+  }
   if (!deps.logoutProvider || !deps.startProviderLogin) {
     deps.flashFooter("provider reauth is not available in this daemon", "error")
     return
@@ -362,11 +374,14 @@ async function handleProviderAccountsCommand(
       addOperands.filter(Boolean).join(" "),
     )
     if (result && addMethod) {
-      if (!deps.startProviderLogin) {
+      const scopedClaude = provider.startsWith("claude") && addMethod === "setup_token"
+      if (scopedClaude ? !deps.runProviderSetupToken : !deps.startProviderLogin) {
         deps.flashFooter("provider login is not available in this daemon", "error")
         return
       }
-      const login = await deps.startProviderLogin(provider, result.profile_id, addMethod)
+      const login = scopedClaude
+        ? await deps.runProviderSetupToken!(result.profile_id, false)
+        : await deps.startProviderLogin!(provider, result.profile_id, addMethod)
       const message = formatProviderLoginNotice(
         login,
         "enrollment started",
@@ -481,7 +496,7 @@ function formatProviderLoginNotice(
 ): string {
   return [
     `${providerAccountSubject(login.provider, accountLabel)} ${action}`,
-    login.login_kind.startsWith("terminal") && login.login_id
+    login.login_kind === "terminal_setup_token" ? "Open the authorization link when it appears" : login.login_kind.startsWith("terminal") && login.login_id
       ? `run /provider login-status ${login.login_id}; respond with /provider login-input ${login.login_id}`
       : null,
     login.user_code ? `code ${login.user_code}` : null,

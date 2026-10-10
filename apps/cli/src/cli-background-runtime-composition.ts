@@ -540,6 +540,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   const handleKernelSessionUnavailable = kernelSessionUnavailableController.handle
 
   const kernelEventDispatchController = createKernelEventDispatchController({
+    getSessionId: () => deps.sessionState().id,
     recordDaemonActivity,
     queueTerminalOutputRecords: deps.queueTerminalOutputRecords,
     drainTerminalOutputRecords: deps.drainTerminalOutputRecords,

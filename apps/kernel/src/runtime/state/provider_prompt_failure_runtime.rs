@@ -268,7 +268,7 @@ impl KernelRuntimeState {
             .is_some();
         if queued_prompt_pending {
             let started_next = self
-                .with_app_side_effect(|app| {
+                .with_project_prompt_environment(session_id, &agent_id, |app| {
                     app.ensure_prompt_provider_run_for_agent(session_id, &agent_id)?;
                     app.advance_next_queued_prompt(session_id, &agent_id)
                 })

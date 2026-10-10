@@ -39,9 +39,9 @@ export async function executeProviderCommand(
     const provider = providerArg?.trim()
     const accountProfile = rest.find((value) => !value.startsWith("--"))?.trim() || "default"
     const replace = rest.includes("--replace")
-    const run = rest.includes("--run")
-    if (provider !== "claude" || rest.filter((value) => !value.startsWith("--")).length > 1 || rest.some((value) => value.startsWith("--") && !["--replace", "--run"].includes(value))) {
-      return { ok: false, message: "usage: provider setup-token claude [account-profile] [--replace] [--run]" }
+    const run = !rest.includes("--paste")
+    if (provider !== "claude" || rest.filter((value) => !value.startsWith("--")).length > 1 || rest.some((value) => value.startsWith("--") && !["--replace", "--run", "--paste"].includes(value))) {
+      return { ok: false, message: "usage: provider setup-token claude [account-profile] [--replace] (advanced: --paste)" }
     }
     if (run) {
       const response = await deps.client.send(setProviderAccountCredentialRequest(
@@ -77,7 +77,7 @@ export async function executeProviderCommand(
     }>(response, "ProviderAccountCredentialStored")
     return {
       ok: true,
-      message: `${stored.provider}/${stored.account_profile} setup token ${stored.replaced ? "replaced" : "stored"} in Chariox Vault`,
+      message: `${stored.provider}/${stored.account_profile} setup token verified and ${stored.replaced ? "replaced" : "stored"} in Chariox Vault`,
       data: { provider: stored.provider, account_profile: stored.account_profile, replaced: stored.replaced },
     }
   }
@@ -98,14 +98,17 @@ export async function executeProviderCommand(
       const result = expectVariant<{ provider: string }>(response, "ProviderLoggedOut")
       return { ok: true, message: `${result.provider} logged out`, data: result }
     }
-    if (action === "reauth") {
+    if (action === "reauth" && !provider.startsWith("claude")) {
       const logoutResponse = await deps.client.send(logoutProviderRequest(provider))
       if ("ProviderLogoutStarted" in logoutResponse) {
         const logout = (logoutResponse.ProviderLogoutStarted as { logout: ProviderLoginStart }).logout
         return { ok: true, message: `${formatProviderLoginStart(logout, "logout")}\nFinish logout before starting reauthentication.`, data: { logout } }
       }
     }
-    const response = await deps.client.send(startProviderLoginRequest(provider))
+    const response = await deps.client.send(provider.startsWith("claude")
+      ? setProviderAccountCredentialRequest("claude", rest[0]?.trim() || "default", "", true,
+        { ...(context.sessionId ? { sessionId: context.sessionId } : {}), ...(context.agentId ? { agentId: context.agentId } : {}) }, true)
+      : startProviderLoginRequest(provider))
     const login = expectVariant<{ login: ProviderLoginStart }>(response, "ProviderLoginStarted").login
     const verb = action === "reauth" ? "reauth" : "login"
     return { ok: true, message: formatProviderLoginStart(login, verb), data: { login } }

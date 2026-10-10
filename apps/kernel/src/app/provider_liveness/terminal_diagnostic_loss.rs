@@ -11,6 +11,15 @@ const SYNTHETIC_TOKEN: &str = "app-liveness-token";
 
 #[test]
 fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
+    app_liveness_diagnostic_fixture(false);
+}
+
+#[test]
+fn app_resize_liveness_retains_consumed_output_and_explains_exit() {
+    app_liveness_diagnostic_fixture(true);
+}
+
+fn app_liveness_diagnostic_fixture(consumed: bool) {
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = KernelSessionService::new(&mut app)
@@ -105,6 +114,12 @@ fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
+    if consumed {
+        assert!(
+            !app.pty.drain_output(run.id()).unwrap().is_empty(),
+            "simulate the ordinary output pump consuming the last PTY frame"
+        );
+    }
     let resize_result = app.resize_terminal(session.id(), 80, 24);
     assert!(
         matches!(
@@ -130,6 +145,24 @@ fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
     assert!(!diagnostic.contains(SYNTHETIC_API_KEY), "{diagnostic}");
     assert!(!diagnostic.contains(SYNTHETIC_TOKEN), "{diagnostic}");
 
+    if consumed {
+        let messages = app
+            .terminal()
+            .notice_records()
+            .into_iter()
+            .map(|notice| notice.message)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            messages.contains("provider process exited with status 1"),
+            "MP-08/MP-10/MP-11 public notice must explain the real exit status"
+        );
+        assert!(
+            messages.contains(TERMINAL_DIAGNOSTIC),
+            "public notice must retain the sanitized terminal diagnostic"
+        );
+        assert!(!messages.contains(SYNTHETIC_API_KEY) && !messages.contains(SYNTHETIC_TOKEN));
+    }
     let session_state = app
         .sessions()
         .get_session(session.id())

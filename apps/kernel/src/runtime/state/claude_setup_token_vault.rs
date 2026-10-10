@@ -95,7 +95,7 @@ fn store_claude_setup_token(
             }
         }
     }
-    let stored = crate::provider::store_provider_account_credential(
+    let stored = crate::provider::store_verified_provider_account_credential(
         config,
         owner_user_id,
         "claude",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { AgentInstance, RuntimeSession } from "@chariox/kernel-client/kernel-types"
-import { createInitialShellContext, defaultKernelEndpoint, executeShellScript, executeShellScriptLines, parseShellCliArgs, shellUsage } from "./shell.js"
+import { createInitialShellContext, defaultKernelEndpoint, executeShellLine, executeShellScript, executeShellScriptLines, parseShellCliArgs, shellUsage } from "./shell.js"
 
 test("parseShellCliArgs parses kernel and context options", () => {
   assert.deepEqual(parseShellCliArgs([
@@ -230,3 +230,31 @@ function makeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     ...overrides,
   }
 }
+
+// MP-08/MP-10/MP-11: the standalone REPL starts without a session or renderer.
+test("MP-08/MP-10/MP-11 fresh shell exposes the setup-token status and hidden-input route", async () => {
+  for (const command of ["provider setup-token claude --run", "provider login claude", "provider reauth claude"]) {
+    const context = createInitialShellContext({})
+    assert.equal(context.sessionId, undefined)
+    assert.equal(context.agentId, undefined)
+    const requests: Record<string, unknown>[] = []
+    const output: string[] = []
+    const result = await executeShellLine(command, context, {
+      client: { send: async request => {
+        requests.push(request)
+        return { ProviderLoginStarted: { login: {
+          provider: "claude", account_profile: "default", login_kind: "terminal_setup_token",
+          login_id: "shell-login-1", auth_url: null, verification_url: null, user_code: null,
+        } } }
+      } },
+    }, text => output.push(text))
+    assert.equal(result.ok, true)
+    assert.deepEqual(requests, [{ SetProviderAccountCredential: {
+      provider: "claude", account_profile: "default", value: "", run: true,
+      overwrite: command.startsWith("provider setup-token") ? false : true,
+    } }])
+    assert.match(output.join(""), /provider login-status shell-login-1/)
+    assert.match(output.join(""), /provider login-input shell-login-1/)
+    assert.match(output.join(""), /provider login-cancel shell-login-1/)
+  }
+})

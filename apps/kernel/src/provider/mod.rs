@@ -42,18 +42,23 @@ mod types;
 mod workspace_live_sync_policy;
 mod workspace_write_fence;
 
+#[cfg(test)]
+pub(crate) use account_credential::store_provider_account_credential;
 pub(crate) use account_credential::{
-    launch_uses_vault_credential, provider_account_credential_id,
-    provider_account_credential_registered, provider_account_credential_uses_vault,
-    resolve_provider_account_credentials, resolve_provider_account_credentials_for_launch,
-    store_provider_account_credential, validate_provider_account_credential_input,
-    CLAUDE_OAUTH_TOKEN_ENV,
+    launch_uses_vault_credential, mark_provider_account_credential_verified,
+    provider_account_credential_id, provider_account_credential_registered,
+    provider_account_credential_uses_vault, provider_account_credential_verification,
+    reconcile_claude_vault_observation, resolve_provider_account_credentials,
+    resolve_provider_account_credentials_for_launch, store_verified_provider_account_credential,
+    validate_provider_account_credential_input, CLAUDE_OAUTH_TOKEN_ENV,
 };
-pub(crate) use claude::probe_claude_account_usage;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
     ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
     CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+};
+pub(crate) use claude::{
+    probe_claude_account_usage, verify_claude_account_credential, ClaudeCredentialCheckError,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;

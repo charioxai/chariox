@@ -139,7 +139,7 @@ impl ProviderRunActivationState {
             app.update_provider_run_projection(outcome.into_run());
         }
 
-        let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
+        let provider_credential_env = request.provider_credential_env.take_values();
         let outcome = app.providers.start_run_provider_only(request)?;
         app.sessions
             .set_active_provider_run(&session_id, Some(outcome.run().id().to_string()))?;

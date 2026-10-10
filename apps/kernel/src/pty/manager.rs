@@ -761,6 +761,18 @@ impl PtyManager {
     /// public output queue so launch-failure cleanup cannot erase the only
     /// useful Bubblewrap/provider diagnostic.
     pub(crate) fn early_exit_diagnostic(&mut self, provider_run_id: &str) -> Option<String> {
+        self.process_exit_diagnostic(provider_run_id)
+            .map(|diagnostic| {
+                if diagnostic.is_empty() {
+                    "managed provider process exited before endpoint readiness".to_string()
+                } else {
+                    diagnostic
+                }
+            })
+    }
+
+    /// Retain the actual process tail independently of consumed output records.
+    pub(crate) fn process_exit_diagnostic(&mut self, provider_run_id: &str) -> Option<String> {
         let state = self.poll_process_state(provider_run_id).ok()?;
         if !state.is_exited() {
             return None;
@@ -774,11 +786,7 @@ impl PtyManager {
         let bytes = snapshot_pty_diagnostic_tail(&process.diagnostic_tail);
         let raw = String::from_utf8_lossy(&bytes);
         let diagnostic = crate::provider::sanitize_provider_diagnostic(&raw);
-        Some(if diagnostic.is_empty() {
-            "managed provider process exited before endpoint readiness".to_string()
-        } else {
-            diagnostic
-        })
+        Some(diagnostic)
     }
 
     pub fn poll_process_state(

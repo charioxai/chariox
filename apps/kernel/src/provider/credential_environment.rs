@@ -7,12 +7,28 @@ use zeroize::{Zeroize, Zeroizing};
 /// This type deliberately has no serde implementation. It may live long enough
 /// to restart a provider process, but must never enter provider-run persistence,
 /// relay payloads, projections, or diagnostics.
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default)]
 pub(crate) struct ProviderCredentialEnvironment {
     values: BTreeMap<String, Zeroizing<String>>,
+    pub(crate) registration_revision: Option<u64>,
 }
 
+impl PartialEq for ProviderCredentialEnvironment {
+    fn eq(&self, other: &Self) -> bool {
+        self.values == other.values
+    }
+}
+impl Eq for ProviderCredentialEnvironment {}
+
 impl ProviderCredentialEnvironment {
+    /// MP-08/MP-10/MP-11: separate launch secrets while retaining run provenance.
+    pub(crate) fn take_values(&mut self) -> Self {
+        Self {
+            values: std::mem::take(&mut self.values),
+            registration_revision: self.registration_revision,
+        }
+    }
+
     pub(crate) fn insert(&mut self, name: impl Into<String>, value: Zeroizing<String>) {
         self.values.insert(name.into(), value);
     }
@@ -39,7 +55,10 @@ impl Clone for ProviderCredentialEnvironment {
             .iter()
             .map(|(name, value)| (name.clone(), Zeroizing::new(value.to_string())))
             .collect();
-        Self { values }
+        Self {
+            values,
+            registration_revision: self.registration_revision,
+        }
     }
 }
 

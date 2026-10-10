@@ -568,6 +568,22 @@ test("kernel event dispatch reconciles durable history after assistant completio
   ])
 })
 
+test("MP-08/MP-10/MP-11 ignores old subscription snapshots and unavailable events after a session switch", async () => {
+  const harness = createHarness()
+  await harness.controller.handleKernelEvent({
+    event: "session_snapshot",
+    session: session({ id: "previous-session" }) as unknown as Record<string, unknown>,
+    provider_run: providerRun("old-run") as unknown as Record<string, unknown>,
+    agent_activity: {},
+    agent_activity_revision: 1,
+  })
+  await harness.controller.handleKernelEvent({
+    event: "session_unavailable", session_id: "previous-session", message: "Old attachment was detached.",
+  })
+  assert.deepEqual(harness.snapshots, [])
+  assert.deepEqual(harness.calls, [])
+})
+
 function createHarness(options: {
   refreshAssistantMessageHistory?: (agentId: string) => Promise<boolean>
 } = {}) {
@@ -578,6 +594,7 @@ function createHarness(options: {
   }> = []
   const terminalRecords: TerminalOutputRecord[][] = []
   const controller = createKernelEventDispatchController({
+    getSessionId: () => "session-1",
     recordDaemonActivity: (activityType) => {
       calls.push(`activity:${activityType}`)
     },

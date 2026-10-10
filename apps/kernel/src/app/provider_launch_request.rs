@@ -156,6 +156,10 @@ impl DaemonApp {
             // MP-08 / MP-10 / MP-11: activation refreshes account credentials without
             // dropping the Project bindings already resolved by the runtime.
             let mut launch_environment = std::mem::take(&mut request.provider_credential_env);
+            if !provider_credential_env.is_empty() {
+                launch_environment.registration_revision =
+                    provider_credential_env.registration_revision;
+            }
             for (name, value) in provider_credential_env.iter() {
                 launch_environment.insert(name, zeroize::Zeroizing::new(value.to_string()));
             }
@@ -261,6 +265,92 @@ mod tests {
     use crate::provider::LaunchProviderRequest;
     use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
     use crate::session::CreateSessionRequest;
+
+    #[test]
+    fn account_activation_tags_the_fresh_credential_revision() {
+        crate::test_support::isolated_env_test!();
+        std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
+        let worktree = crate::test_support::TestWorktree::new("fresh-account-revision");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::ProcessMemory;
+        let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+        let profiles = app.provider_account_profile_registry();
+        let profile = profiles
+            .create_managed("local", "claude", "revision fixture")
+            .unwrap();
+        crate::provider::store_verified_provider_account_credential(
+            &config,
+            "local",
+            "claude",
+            &profile.profile_id,
+            "synthetic-old",
+            true,
+        )
+        .unwrap();
+        let mut credentials = crate::provider::resolve_provider_account_credentials(
+            &config,
+            "local",
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap();
+        let old_revision = credentials.registration_revision;
+        credentials.insert(
+            "APP_LABEL",
+            zeroize::Zeroizing::new("project-binding".into()),
+        );
+        crate::provider::store_verified_provider_account_credential(
+            &config,
+            "local",
+            "claude",
+            &profile.profile_id,
+            "synthetic-replacement",
+            true,
+        )
+        .unwrap();
+        let current = crate::provider::provider_account_credential_verification(
+            "local",
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap()
+        .revision;
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let prepared = app
+            .prepare_app_provider_launch_request(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "claude",
+                    "claude-p",
+                    &profile.profile_id,
+                    "sonnet",
+                )
+                .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
+                .with_provider_credential_env(credentials),
+                "MP-08/MP-10/MP-11 refresh account activation",
+            )
+            .unwrap();
+        app.shutdown_cleanup().unwrap();
+        assert!(current.is_some() && current != old_revision);
+        assert!(prepared
+            .provider_credential_env
+            .iter()
+            .any(
+                |(name, value)| name == crate::provider::CLAUDE_OAUTH_TOKEN_ENV
+                    && value == "synthetic-replacement"
+            ));
+        assert!(prepared
+            .provider_credential_env
+            .iter()
+            .any(|(name, value)| name == "APP_LABEL" && value == "project-binding"));
+        assert_eq!(
+            prepared.provider_credential_env.registration_revision, current,
+            "MP-08/MP-10/MP-11 refreshed account values and their revision must agree"
+        );
+    }
 
     #[test]
     fn mp08_mp10_mp11_account_activation_preserves_resolved_project_environment() {

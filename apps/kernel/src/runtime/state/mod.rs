@@ -151,7 +151,7 @@ pub(crate) struct KernelRuntimeState {
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     app: Arc<Mutex<DaemonApp>>,
-    provider_runtime_lanes: ProviderRunOperationLanes,
+    pub(in crate::runtime) provider_runtime_lanes: ProviderRunOperationLanes,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
     detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
     owned: KernelRuntimeOwnedState,
@@ -225,6 +225,7 @@ struct KernelRuntimeOwnedState {
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     provider_login_processes: ProviderLoginProcessStore,
     provider_auth_recovery_runs: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    claude_token_checks: Arc<claude_token_first_use::ClaudeTokenChecks>,
     event_connection_registry: crate::event_connection::EventConnectionRegistry,
     prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
     active_turns: ActiveTurnStore,
@@ -383,6 +384,7 @@ mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
 mod prompt_dispatch;
+mod prompt_provider_credentials;
 use external_command_authority::ExternalCommandAuthority;
 mod prompt_git_observer_runtime;
 mod prompt_queue_owned_state;
@@ -436,6 +438,8 @@ mod remote_queue_advance_tests;
 mod restart_recovery_runtime;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 mod agent_batch_runtime_state;
+mod claude_token_first_use;
+mod provider_login_workflow;
 mod runtime_interaction_owned_state;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
@@ -826,6 +830,7 @@ impl KernelRuntimeState {
                 provider_account_profiles,
                 provider_login_processes: ProviderLoginProcessStore::default(),
                 provider_auth_recovery_runs: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+                claude_token_checks: Arc::default(),
                 prompt_state_owner,
                 active_turns,
                 prompt_activity,
@@ -954,6 +959,10 @@ impl KernelRuntimeState {
             &self.owned.config_projection.snapshot(),
             runtime_owner_user_id,
         )
+    }
+
+    pub(in crate::runtime) fn provider_login_kernel_id(&self) -> String {
+        self.owned.config_projection.snapshot().daemon_id
     }
 
     pub(in crate::runtime) fn provider_login_process_store(&self) -> &ProviderLoginProcessStore {

@@ -518,11 +518,29 @@ mod tests {
             .expect("native Claude TUI must remain available for interactive sign-in");
         assert!(foreground.provider_credential_env.is_empty());
 
+        assert!(!app
+            .lock()
+            .await
+            .provider_account_profile_registry()
+            .has_native_claude_credentials(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                &profile.profile_id
+            )
+            .unwrap());
         std::fs::write(
             claude_config_dir.join(".credentials.json"),
             br#"{"claudeAiOauth":{"refreshToken":"portable-refresh-token"}}"#,
         )
         .expect("portable Claude credential fixture should write");
+        assert!(app
+            .lock()
+            .await
+            .provider_account_profile_registry()
+            .has_native_claude_credentials(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                &profile.profile_id
+            )
+            .unwrap());
         // One sign-in: the account's own login runs background agents on Linux
         // (its credential file) and macOS (its verified Keychain login) alike.
         app.lock()
@@ -547,8 +565,8 @@ mod tests {
             launch.provider_credential_env.is_empty(),
             "no Chariox-vault token is needed"
         );
-        // A setup token left in the vault from before is not read either, so
-        // the launch asks for no vault unlock; the native Claude TUI still may.
+        // Once a token is registered, every interface selects it. Native
+        // credential presence cannot override a setup-token repair.
         let credential_id = crate::provider::provider_account_credential_id(
             crate::session::DEFAULT_LOCAL_USER_ID,
             "claude",
@@ -577,7 +595,7 @@ mod tests {
             )
             .expect("vault use should resolve")
         };
-        assert!(!uses_vault(
+        assert!(uses_vault(
             crate::provider::ProviderClientInterface::Chariox
         ));
         assert!(uses_vault(
@@ -981,7 +999,7 @@ mod tests {
             crate::secret::VaultUnlockLease::KernelShutdown,
         )
         .expect("vault should initialize");
-        crate::provider::store_provider_account_credential(
+        crate::provider::store_verified_provider_account_credential(
             &config,
             crate::session::DEFAULT_LOCAL_USER_ID,
             "claude",
@@ -990,6 +1008,14 @@ mod tests {
             false,
         )
         .expect("provider credential should store");
+        // This test covers unlock policy; the token was already verified.
+        crate::test_support::authenticate_provider_account(
+            &app.provider_account_profile_registry(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap();
         crate::secret::lock_chariox_encrypted_vault(&vault_path).expect("vault should lock");
         crate::secret::clear_vault_secret_process_cache().expect("secret cache should clear");
 

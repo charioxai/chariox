@@ -265,6 +265,11 @@ pub(crate) fn observe_provider_auth_status(
         }
         Some("claude") => {
             let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
+            if let Some(kept) =
+                claude_vault_token_status(registry, owner_user_id, &profile, &status)?
+            {
+                return Ok(kept);
+            }
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             Ok(status)
         }
@@ -312,17 +317,14 @@ pub(crate) fn refresh_provider_account_profile_response(
         }
         Some("claude") => {
             let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
-            if status.auth_state != "authenticated"
-                && crate::provider::provider_account_credential_registered(
-                    owner_user_id,
-                    provider,
-                    &profile.profile_id,
-                )?
+            if let Some(kept) =
+                claude_vault_token_status(registry, owner_user_id, &profile, &status)?
             {
-                // Launches use the profile's vault setup token, which was
-                // verified with Claude when it was stored. Reading it back
-                // needs the vault, so keep that observation and its time.
-                return Ok(profile);
+                if auth_state_from_status(&kept.auth_state) != profile.auth_state {
+                    update_profile_auth_observation(registry, owner_user_id, &kept)?;
+                    return registry.get(owner_user_id, provider, &profile.profile_id);
+                }
+                return registry.get(owner_user_id, provider, &profile.profile_id);
             }
             let usage = if status.auth_state == "authenticated" {
                 let executable = resolve_claude_executable()?;
@@ -365,6 +367,50 @@ pub(crate) fn refresh_provider_account_profile_response(
     } else {
         Ok(updated)
     }
+}
+
+/// MP-08/MP-10/MP-11: launches select a registered Chariox Vault token even
+/// when native credentials coexist. Native status/usage describes a different
+/// credential, so preserve the selected token's verified/unchecked observation.
+fn claude_vault_token_status(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    profile: &crate::account_profile::ProviderAccountProfile,
+    native: &ProviderAuthStatus,
+) -> Result<Option<ProviderAuthStatus>, DaemonError> {
+    if !crate::provider::provider_account_credential_registered(
+        owner_user_id,
+        "claude",
+        &profile.profile_id,
+    )? {
+        return Ok(None);
+    }
+    use crate::account_profile::ProviderAccountAuthState;
+    let profile = crate::provider::reconcile_claude_vault_observation(
+        registry,
+        owner_user_id,
+        profile.clone(),
+    )?;
+    Ok(Some(ProviderAuthStatus {
+        auth_state: match profile.auth_state {
+            ProviderAccountAuthState::Authenticated => "authenticated",
+            ProviderAccountAuthState::Expired => "expired",
+            ProviderAccountAuthState::Error => "error",
+            ProviderAccountAuthState::NotConfigured => "unknown",
+            ProviderAccountAuthState::Unknown => "unknown",
+        }
+        .to_string(),
+        identity_summary: profile.identity_summary.clone(),
+        plan: profile.plan.clone(),
+        login_hint: Some(
+            if profile.auth_state == ProviderAccountAuthState::Authenticated {
+                "This account runs agents with its verified Chariox Vault setup token. Choose Log in to authorize a replacement.".to_string()
+            } else {
+                "This account has a Chariox Vault setup token. It will be checked automatically when first used. If Claude rejects it, an authorization link will appear.".to_string()
+            },
+        ),
+        ..native.clone()
+    }))
 }
 
 fn claude_auth_status(
@@ -954,7 +1000,9 @@ fn claude_auth_status_from_value(
             .get("subscriptionType")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string),
-        login_hint: Some("Run `claude auth login` to authenticate Claude Code.".to_string()),
+        login_hint: Some(
+            "Choose Log in in Provider Accounts to open the Claude authorization link.".to_string(),
+        ),
         detected_version,
     }
 }
@@ -1548,6 +1596,13 @@ exit 2
 
         assert_eq!(status.provider, "claude-p");
         assert_eq!(status.auth_state, "not_logged_in");
+        // MP-08/MP-10/MP-11: sign-in guidance stays in the OAuth UI.
+        assert!(status
+            .login_hint
+            .as_deref()
+            .unwrap()
+            .contains("authorization link"));
+        assert!(!status.login_hint.as_deref().unwrap().contains("Run `"));
         assert_eq!(status.account_profile, "work");
         assert_eq!(status.detected_version.as_deref(), Some("claude 1.2.3"));
     }

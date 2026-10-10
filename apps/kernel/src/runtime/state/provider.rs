@@ -106,7 +106,7 @@ impl KernelRuntimeOwnedState {
             }
         }
 
-        let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
+        let provider_credential_env = request.provider_credential_env.take_values();
         let outcome = self.provider_store.start_run_provider_only(request)?;
         self.session_store
             .set_active_provider_run(&session_id, Some(outcome.run().id().to_string()))?;
@@ -365,5 +365,59 @@ impl KernelRuntimeOwnedState {
             crate::provider::ProviderRunLivenessReconciliation::ExternalEndpoint(_)
             | crate::provider::ProviderRunLivenessReconciliation::StillRunning(_) => Ok(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn owned_provider_activation_keeps_credential_revision_for_auth_recovery() {
+        crate::test_support::isolated_env_test!();
+        let worktree = crate::test_support::TestWorktree::new("owned-credential-revision");
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request().with_agent_defaults(
+                crate::session::SessionAgentDefaults::new("dev-stub").with_model("sonnet"),
+            ))
+            .unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let state = super::super::provider_output_runtime_tests::owned_runtime_state(&app).await;
+        let mut credentials = crate::provider::ProviderCredentialEnvironment::default();
+        credentials.insert(
+            "ACCOUNT_INPUT",
+            zeroize::Zeroizing::new("synthetic-credential".into()),
+        );
+        credentials.registration_revision = Some(43);
+        let started = state
+            .owned
+            .start_provider_launch(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id())
+                .with_working_directory(worktree.path().to_path_buf())
+                .with_provider_credential_env(credentials),
+            )
+            .unwrap();
+        app.lock().await.shutdown_cleanup().unwrap();
+        assert_eq!(
+            started.run.account_credential_revision(),
+            Some(43),
+            "MP-08/MP-10/MP-11 owned activation must retain launch provenance"
+        );
+        assert_eq!(
+            started.provider_credential_env.registration_revision,
+            Some(43)
+        );
+        assert!(started
+            .provider_credential_env
+            .iter()
+            .any(|(name, value)| name == "ACCOUNT_INPUT" && value == "synthetic-credential"));
     }
 }
