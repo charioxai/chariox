@@ -746,6 +746,43 @@ OpenCode current runtime note:
 - PTY remains a liveness/process-management surface for the OpenCode server process, not the primary prompt/output transport
 - the same daemon-owned local request/response surface remains the client contract while the adapter becomes more provider-specific internally
 
+### MP-08 / MP-10 / MP-11: bounded relay transport (local 490, peer 100)
+
+Updated browser, TUI, kernel and temporary peer/metadata sockets opt in with
+`chariox_transport=chunks-v1` on the relay URL. This is socket-local framing
+around the existing opaque relay envelope; it grants no runtime or relay
+admission authority and does not change encryption or request correlation.
+Direct local kernel sockets retain their existing transport.
+
+Relay egress text envelopes larger than 16 KiB use JSON `transport_chunk`
+frames with `transfer_id`, `offset`, `total_bytes` and `payload`. Offsets and
+totals count UTF-8 bytes of the original envelope. Each serialized chunk is at
+most 16 KiB; at most 64 KiB of unacknowledged chunk bytes are written. The
+receiver immediately returns `transport_ack` with the same transfer ID and the
+exclusive byte offset received, then dispatches only the completely reassembled
+original envelope. Totals are bounded to 64 MiB, IDs increase per connection,
+and a receiver admits one contiguous transfer. Invalid bounds, duplicate or
+cross-transfer receipts, overlap, unknown chunk fields, and nested transport
+frames terminate the connection without retaining payloads in errors.
+
+Ping/Pong have a separate bounded writer control queue. Small correlation-addressed
+requests/responses and admission acknowledgments may interleave with bulk
+responses/events; requests retain their order relative to earlier bulk requests.
+Subscription events retain their original order. Close takes precedence over
+unfinished data. Receipts are ordinary inbound transport progress for the
+existing heartbeat check. The 30-second heartbeat interval, 15-second Pong
+deadline, token expiry and revocation enforcement remain unchanged; a silent
+peer cannot keep a transfer alive.
+
+An older relay ignores the opt-in and uses its existing envelopes. Updated
+receivers accept those envelopes, but the bounded-drain guarantee requires the
+updated relay. An unopted receiver on the updated relay still accepts small
+traffic; a large envelope closes explicitly with an updated-client requirement
+rather than sending chunk frames that receiver cannot decode. All deployed
+relay consumers must therefore be upgraded for large-envelope traffic. The
+local 490 and peer 100 snapshots bind this framing change; existing API-specific
+minimums remain applicable because no new daemon operation is introduced.
+
 ## 4.1.1 Unified Node-Transport Direction
 
 The intended node architecture now assumes that the kernel should eventually act as a general router for:

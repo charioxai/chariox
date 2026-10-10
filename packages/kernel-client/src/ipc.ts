@@ -1,3 +1,4 @@
+import { RelayFrameReceiver, relayTransportUrl } from "./relay-frame-transport.js"
 import { relayAuthorization, requireRenewedRelayAuthorization, RelayAuthorizationRenewal, reauthenticateRelaySocket, relayCloseError, relayAuthorizationRenewalCapability, relayAuthorizationRenewalMinimumProtocolVersion } from "./relay-authorization.js"
 import { issueCloudRelayClientTokenRequest } from "./ipc-relay-control-requests.js"
 import { isLocalRelayIssuerEndpoint, type RelayAuthorizationIssuer } from "./relay-authorization.js"
@@ -761,7 +762,7 @@ export class LocalIpcClient {
       return new WebSocket(`ws+unix:${socket}:/kernel`)
     }
     if (this.isRelayMode()) {
-      return new WebSocket(this.socketPath)
+      return new WebSocket(relayTransportUrl(this.socketPath))
     }
     if (this.localAuthToken && this.localAuthEndpoint) {
       return new WebSocket(this.localAuthEndpoint, {
@@ -790,6 +791,7 @@ export class LocalIpcClient {
 
     const nextConnectPromise = new Promise<WebSocket>((resolve, reject) => {
       const socket = this.openKernelWebSocket()
+      const relayFrames = new RelayFrameReceiver()
       let settled = false
       this.setConnectingWebSocket(lane, socket)
 
@@ -850,7 +852,13 @@ export class LocalIpcClient {
             if (this.getWebSocket(lane) !== socket) {
               return
             }
-            this.handleWebSocketMessage(data, lane)
+            try {
+              const text = this.isRelayMode() ? relayFrames.receive(String(data), frame => socket.send(frame)) : String(data)
+              if (text !== null) this.handleWebSocketMessage(Buffer.from(text), lane)
+            } catch {
+              this.rejectPending("invalid relay transport frame", lane)
+              socket.terminate()
+            }
           })
           socket.on("pong", () => {
             this.setMissedKernelPongs(lane, 0)
