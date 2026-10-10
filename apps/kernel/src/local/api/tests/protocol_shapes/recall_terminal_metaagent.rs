@@ -42,6 +42,7 @@ fn local_daemon_protocol_semantic_recall_search_shape_is_versioned() {
     );
 
     let event = crate::history::HistoryEvent {
+        public_history_owner_user_id: None,
         event_id: "event-1".to_string(),
         sequence: 7,
         timestamp_ms: 1234,

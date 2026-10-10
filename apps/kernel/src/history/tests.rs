@@ -567,6 +567,8 @@ fn active_workflow_prompt_context_survives_history_conversion_and_query() {
         app.session_state_store(),
         app.prompt_state_owner(),
         app.active_turns.clone(),
+        app.agents.clone(),
+        app.provider_run_projection_store(),
     )
     .resolve(&entry);
 

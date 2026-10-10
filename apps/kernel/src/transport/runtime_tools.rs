@@ -134,6 +134,7 @@ pub const META_RUN_COMMAND_TOOL: &str = "chariox.meta.run_command";
 pub const META_LIST_EVENTS_TOOL: &str = "chariox.meta.list_events";
 pub const META_READ_EVENT_TOOL: &str = "chariox.meta.read_event";
 pub const META_ACK_EVENT_TOOL: &str = "chariox.meta.ack_event";
+pub const META_HISTORY_SEARCH_TOOL: &str = "chariox.meta.history_search";
 pub const META_TURN_OVERVIEW_TOOL: &str = "chariox.meta.turn_overview";
 pub const META_TURN_BLOB_TOOL: &str = "chariox.meta.turn_blob";
 pub const META_SUBSCRIBE_TRACE_TOOL: &str = "chariox.meta.subscribe_trace";

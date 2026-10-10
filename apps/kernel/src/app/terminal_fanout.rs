@@ -269,6 +269,8 @@ impl DaemonApp {
             self.sessions.clone(),
             self.prompt_state_owner.clone(),
             self.active_turns.clone(),
+            self.agents.clone(),
+            self.provider_run_projection.clone(),
         )
         .resolve(entry)
     }

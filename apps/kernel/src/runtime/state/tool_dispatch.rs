@@ -176,7 +176,16 @@ impl KernelRuntimeState {
             });
         }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
-            specs.extend(crate::transport::runtime_tools::meta_runtime_tool_specs());
+            let room_tools = self.room_agent_tools_enabled();
+            specs.extend(
+                crate::transport::runtime_tools::meta_runtime_tool_specs()
+                    .into_iter()
+                    .filter(|spec| {
+                        room_tools
+                            || spec.name
+                                != crate::transport::runtime_tools::META_HISTORY_SEARCH_TOOL
+                    }),
+            );
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
             specs.extend(
                 crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs()
@@ -185,7 +194,9 @@ impl KernelRuntimeState {
                         spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL
                     }),
             );
-            specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
+            if !room_tools {
+                specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
+            }
             specs.extend(
                 provider_runs
                     .iter()
@@ -216,7 +227,9 @@ impl KernelRuntimeState {
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::extension_runtime_tool_specs());
-            specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
+            if !self.room_agent_tools_enabled() {
+                specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
+            }
             specs.extend(provider_runs.iter().flat_map(|run| {
                 run.remote_extension_manifest()
                     .home_proxy_runtime_tool_specs()
@@ -929,3 +942,7 @@ mod tests {
 #[cfg(test)]
 #[path = "tool_dispatch/hosted_worker_tests.rs"]
 mod hosted_worker_tests;
+
+#[cfg(test)]
+#[path = "tool_dispatch/history_search_tests.rs"]
+mod history_search_tests;

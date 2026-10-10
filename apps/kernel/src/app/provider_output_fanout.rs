@@ -18,6 +18,7 @@ use crate::terminal::{
 };
 pub(crate) struct ProviderOutputFanout {
     provider_store: ProviderProcessServiceStore,
+    provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
     prompt_state_owner: PromptStateOwner,
     active_turns: ActiveTurnStore,
     agent_store: AgentServiceStore,
@@ -39,6 +40,7 @@ impl ProviderOutputFanout {
     pub(crate) fn new(app: &DaemonApp) -> Self {
         Self {
             provider_store: app.providers.clone(),
+            provider_run_projection: app.provider_run_projection.clone(),
             prompt_state_owner: app.prompt_state_owner(),
             active_turns: app.active_turn_store(),
             agent_store: app.agents.clone(),
@@ -446,6 +448,8 @@ impl ProviderOutputFanout {
             self.session_store.clone(),
             self.prompt_state_owner.clone(),
             self.active_turns.clone(),
+            self.agent_store.clone(),
+            self.provider_run_projection.clone(),
         )
         .resolve(&entry);
         match self

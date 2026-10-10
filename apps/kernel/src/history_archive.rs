@@ -777,6 +777,7 @@ mod tests {
 
     fn test_event(event_id: &str) -> HistoryEvent {
         HistoryEvent {
+            public_history_owner_user_id: None,
             event_id: event_id.to_string(),
             sequence: 1,
             timestamp_ms: 1,
