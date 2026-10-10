@@ -73,6 +73,32 @@ async function setup(dpr, run) {
   } finally {await chrome?.close();server.closeAllConnections();await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
 }
 for(const dpr of [1,2]) {
+ test(`MP-08/MP-11 DPR${dpr}: unproved normalized fill completion retains coverage`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,ref,evaluate,collect,capture})=>{
+   const nodeRef=await ref('#plain');
+   const target=await recordBrowserFill(connection,{sessionId,targetId,documentId,nodeRef,browserGeneration:browser.browserGeneration},'alpha\nbeta',1);
+   browser.fillTargets.set('pending',target);
+   await evaluate(`document.querySelector('#plain').value='alpha\\nbeta'`);
+   const send=connection.send.bind(connection);
+   connection.send=async(method,...args)=>{if(method==='Runtime.callFunctionOn')throw Error('completion read unavailable');return send(method,...args);};
+   try{await assert.rejects(regions.finishBrowserFill(connection,target),/completion read unavailable/);}
+   finally{connection.send=send;}
+   assert((await collect()).length>0,'completion failure must not retire a normalized field');
+   const image=await capture('normalized-completion-unproved');
+   const offset=(90*dpr*image.width+100*dpr)*4;
+   assert.deepEqual([...image.pixels.subarray(offset,offset+3)],[0,0,0]);
+   assert.equal(browser.fillTargets.size,1);
+ }));
+ for(const [field,text,actual]of [['plain','alpha\nbeta','alphabeta'],['area','alpha\r\nbeta','alpha\nbeta']])
+ test(`MP-08/MP-11 DPR${dpr}: normalized ${field} Vault fill stays masked`,()=>setup(dpr,async({browser,targetId,documentId,ref,policy,evaluate,collect,capture,url})=>{
+   const node_ref=await ref('#'+field);
+   await browser.performAction({target_id:targetId,document_id:documentId,node_ref,action:{kind:'fill',text,expected_document_url:url}});
+   assert.equal((await evaluate(`document.querySelector('#${field}').value`)).result.value,actual);
+   assert((await collect()).length>0,'actual normalized fill must remain registered');
+   const image=await capture('normalized-'+field);
+   const [x,y]=field==='plain'?[100,90]:[100,240];
+   assert.deepEqual([...image.pixels.subarray(((y*dpr)*image.width+x*dpr)*4,((y*dpr)*image.width+x*dpr)*4+3)],[0,0,0]);
+   assert.equal(browser.fillTargets.size,1);
+ }));
  test(`MP-08/MP-11 DPR${dpr}: visible page presents and fences the actual capture`,()=>setup(dpr,async({browser,policy,fill,capture})=>{
    await fill('#plain');
    const before=await regions.measurePresented(browser,policy);
@@ -421,7 +447,7 @@ for(const dpr of [1,2]) {
    browser.fillTargets.set(`${targetId}:${node_ref}`,target);
    assert.equal((await collect()).length,1,'MP-11 an in-flight fill stays covered');
    await evaluate(`document.querySelector('#plain').value=${JSON.stringify(value)}`);
-   regions.finishBrowserFill?.(connection,target);
+   await regions.finishBrowserFill?.(connection,target);
    assert.equal((await collect()).length,1,'MP-11 the completed fill is still masked');
  }));
 

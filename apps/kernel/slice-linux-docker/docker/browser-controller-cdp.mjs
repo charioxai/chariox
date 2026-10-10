@@ -708,7 +708,9 @@ export class BrowserCdpClient {
         if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
           const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
           this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
-          try { return await performBrowserAction(options); } finally { finishBrowserFill(connection, target); }
+          const result=await performBrowserAction(options);
+          await finishBrowserFill(connection,target);
+          return result;
         }
         return performBrowserAction(options);
       });
