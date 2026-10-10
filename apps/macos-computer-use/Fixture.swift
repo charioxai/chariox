@@ -6,8 +6,11 @@ final class Fixture: NSObject, NSApplicationDelegate {
     let patch = NSView(frame: NSRect(x: 20, y: 20, width: 60, height: 60))
     let secondPatch = NSView(frame: NSRect(x: 460, y: 40, width: 30, height: 30))
     var ticks = 0
+    var drillText: NSTextView?
+    var lastSelection: NSRange?
     func applicationDidFinishLaunching(_ notification: Notification) {
         window.title = "Chariox public fixture"
+        if CommandLine.arguments.contains("--text-drill") { startTextDrill(); return }
         let ordinary = NSTextField(frame: NSRect(x: 20, y: 295, width: 310, height: 28))
         ordinary.placeholderString = "Public Unicode test text"; ordinary.setAccessibilityIdentifier("ordinary")
         let secure = NSSecureTextField(frame: NSRect(x: 20, y: 250, width: 310, height: 28))
@@ -32,6 +35,40 @@ final class Fixture: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         window.makeFirstResponder(ordinary)
         print("fixturePID=\(getpid()) windowID=\(window.windowNumber)"); fflush(stdout)
+    }
+    func startTextDrill() {
+        let scroll = NSScrollView(frame: NSRect(x: 20, y: 20, width: 500, height: 320))
+        scroll.hasVerticalScroller = true
+        let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 480, height: 1200))
+        text.setAccessibilityIdentifier("text")
+        text.font = .monospacedSystemFont(ofSize: 16, weight: .regular)
+        text.textContainerInset = NSSize(width: 8, height: 8)
+        text.isVerticallyResizable = false
+        text.string = (1...12).map { String(format: "line %02d public caret probe", $0) }.joined(separator: "\n")
+        scroll.documentView = text; window.contentView!.addSubview(scroll); drillText = text
+        window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        window.makeFirstResponder(text); text.setSelectedRange(NSRange(location: 0, length: 0))
+        guard let layout = text.layoutManager, let container = text.textContainer else { exit(1) }
+        layout.ensureLayout(for: container)
+        let expected = 4 * 27 + 17 // Mid-word in "caret" on line 5, UTF-16.
+        let glyph = layout.glyphIndexForCharacter(at: expected)
+        let rect = layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
+        let local = NSPoint(x: rect.midX + text.textContainerOrigin.x, y: rect.midY + text.textContainerOrigin.y)
+        let cocoa = window.convertPoint(toScreen: text.convert(local, to: nil))
+        let point = CGPoint(x: cocoa.x, y: CGDisplayBounds(CGMainDisplayID()).height - cocoa.y)
+        print("fixturePID=\(getpid()) windowID=\(window.windowNumber)")
+        print("clickX=\(point.x) clickY=\(point.y) expectedLocation=\(expected)")
+        print("fixture selection location=0 length=0"); fflush(stdout)
+        Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [self] _ in
+            let selected = text.selectedRange()
+            if selected != lastSelection {
+                lastSelection = selected
+                print("fixture selection location=\(selected.location) length=\(selected.length)"); fflush(stdout)
+            }
+        }
+        // The unattended drill cannot leave a window/process behind, even if
+        // its runner dies before reading a helper refusal.
+        Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { _ in NSApp.terminate(nil) }
     }
     @objc func click(_ sender: NSButton) {
         let count = Int(sender.title.split(separator: " ").last!) ?? 0

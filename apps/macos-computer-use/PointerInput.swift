@@ -1,16 +1,55 @@
 import AppKit
 
-enum InputPath: String { case axPress, axScrollValue, windowEvent, pidText }
+enum InputPath: String { case axPress, axScrollValue, axTextClick, pidText }
+
+enum TextClickResolution: Equatable {
+    case selection(Int), hid
+}
+
+func visibleWindowFrame(window: CGRect, element: CGRect, displays: [CGRect], point: CGPoint?) throws -> CGRect {
+    let visible = displays.map { window.intersection($0) }
+        .filter { !$0.intersection(element).isNull && !$0.intersection(element).isEmpty }
+    if let point {
+        guard point.x.isFinite, point.y.isFinite,
+              let frame = visible.first(where: { $0.intersection(element).contains(point) }) else { throw Refusal.target }
+        return frame
+    }
+    guard let frame = visible.max(by: {
+        let a = $0.intersection(element), b = $1.intersection(element)
+        return a.width * a.height < b.width * b.height
+    }) else { throw Refusal.target }
+    return frame
+}
+
+func resolveTextClick(at point: CGPoint, rangeAtPoint: (CGPoint) throws -> CFRange?) throws -> TextClickResolution {
+    guard point.x.isFinite, point.y.isFinite else { throw Refusal.target }
+    guard let range = try rangeAtPoint(point) else { return .hid }
+    // AX returns the composed-character range. Collapse at its start, never
+    // split a surrogate pair or select the character under the pointer.
+    guard range.location >= 0, range.length >= 0,
+          range.location <= Int.max - range.length else { throw Refusal.target }
+    return .selection(range.location)
+}
 
 struct ClickGeometry: Equatable {
     let windowBounds: CGRect
     let elementBounds: CGRect
-    var location: CGPoint { CGPoint(x: elementBounds.midX, y: elementBounds.midY) }
+    let visibleWindowBounds: CGRect
+    let requestedPoint: CGPoint?
+    init(windowBounds: CGRect, elementBounds: CGRect, visibleWindowBounds: CGRect? = nil,
+         requestedPoint: CGPoint? = nil) {
+        self.windowBounds = windowBounds; self.elementBounds = elementBounds
+        self.visibleWindowBounds = visibleWindowBounds ?? windowBounds
+        self.requestedPoint = requestedPoint
+    }
+    var visibleBounds: CGRect { elementBounds.intersection(windowBounds).intersection(visibleWindowBounds) }
+    var location: CGPoint { requestedPoint ?? CGPoint(x: visibleBounds.midX, y: visibleBounds.midY) }
 
     func checkedLocation(_ eventLocation: CGPoint, current: ClickGeometry) throws -> CGPoint {
         guard current == self, eventLocation == location,
               eventLocation.x.isFinite, eventLocation.y.isFinite,
-              windowBounds.contains(elementBounds), elementBounds.contains(eventLocation) else { throw Refusal.target }
+              !visibleBounds.isNull, !visibleBounds.isEmpty,
+              visibleBounds.contains(eventLocation) else { throw Refusal.target }
         return eventLocation
     }
 }
@@ -43,26 +82,24 @@ func inputPath(_ operation: Operation, role: String) throws -> InputPath {
     switch operation {
     case .click where role == kAXButtonRole: return .axPress
     case .scroll where role == kAXScrollAreaRole: return .axScrollValue
-    case .click where [kAXTextFieldRole, kAXTextAreaRole].contains(role): return .windowEvent
+    case .click where [kAXTextFieldRole, kAXTextAreaRole].contains(role): return .axTextClick
     case .text where [kAXTextFieldRole, kAXTextAreaRole].contains(role): return .pidText
     case .click, .scroll, .text: throw Refusal.target
     default: throw Refusal.arguments
     }
 }
 
-func windowClickEvents(window: UInt32, location: CGPoint, windowBounds: CGRect,
+func hidClickEvents(window: UInt32, location: CGPoint, windowBounds: CGRect,
                        eventNumber: Int) throws -> [CGEvent] {
     guard window > 0, eventNumber > 0, location.x.isFinite, location.y.isFinite,
           windowBounds.contains(location) else { throw Refusal.target }
-    // NSEvent supplies AppKit's window number. CGEvent's public pointer-window
-    // fields alone leave NSEvent(cgEvent:).windowNumber at zero.
-    let local = CGPoint(x: location.x - windowBounds.minX, y: windowBounds.maxY - location.y)
-    return try [NSEvent.EventType.leftMouseDown, .leftMouseUp].map { type in
-        guard let event = NSEvent.mouseEvent(with: type, location: local, modifierFlags: [],
-            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: Int(window), context: nil,
-            eventNumber: eventNumber, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)?.cgEvent
+    let source = CGEventSource(stateID: .privateState)
+    return try [CGEventType.leftMouseDown, .leftMouseUp].map { type in
+        guard let event = CGEvent(mouseEventSource: source, mouseType: type,
+                                  mouseCursorPosition: location, mouseButton: .left)
         else { throw Refusal.native }
-        event.location = location
+        event.setIntegerValueField(.mouseEventNumber, value: Int64(eventNumber))
+        event.setIntegerValueField(.mouseEventClickState, value: 1)
         event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window))
         event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(window))
         event.flags = []

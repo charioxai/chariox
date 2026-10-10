@@ -24,7 +24,12 @@ func launchIdentity() throws -> [String: Any] {
                 print(String(data: try JSONSerialization.data(withJSONObject: ownerWindowChoices(), options: [.sortedKeys]), encoding: .utf8)!)
                 return
             }
-            let request = try Request.parse(arguments)
+            var request = try Request.parse(arguments)
+            if request.clickAtPointer {
+                // Read the existing pointer once. This does not post a mouse event.
+                guard let point = CGEvent(source: nil)?.location, point.x.isFinite, point.y.isFinite else { throw Refusal.native }
+                request.clickPoint = point
+            }
             for receipt in try await run(request, source: MacSource()) { print(receipt) }
         } catch {
             // Never print framework errors or app-supplied AX data.

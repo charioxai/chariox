@@ -1,199 +1,131 @@
-# M0 delivery recheck, three minutes
+# One owner recheck, at most three minutes
 
-Owner only. Use the rebuilt bundles in the build directory for this recheck.
-The installed bundles are retained. This helper's ad-hoc cdhash changed, so the
-previous permission entry is insufficient. Do not rebuild after granting.
-Run only the three input operations below. No login/logout/re-login, account revocation,
-TCC reset command, certificate, Keychain or kernel changes are part of this check.
+Use the rebuilt helper at
+`/Users/miguel/.chariox/dev/cumac/build/Chariox Computer Helper.app`
+in **both** privacy lists. Its ad-hoc identity changed. Do not rebuild after
+granting. The installed bundles are retained; all commands below use the build
+bundles. This is one button, one scroll and one TextEdit click, with no replay.
 
-## 0:00-1:30, replace the helper entries in both permission lists
+## 0:00-1:30, grant the rebuilt helper
 
-In Terminal, prepare paths and open Finder at the rebuilt helper:
+Run in Terminal:
 
 ```bash
 cu_build="$HOME/.chariox/dev/cumac/build"
 cu_helper="$cu_build/Chariox Computer Helper.app"
-cu_evidence="$HOME/.codex/evidence/browser-computer-use-macos/owner-recheck-20261008"
+cu_evidence="$HOME/.codex/evidence/browser-computer-use-macos/owner-recheck-20261010-axtext"
 mkdir -p "$cu_evidence"
 codesign --verify --strict "$cu_helper"
 codesign -dvv "$cu_helper" 2> "$cu_evidence/signature.txt"
 shasum -a 256 "$cu_helper/Contents/MacOS/helper" > "$cu_evidence/sha256.txt"
+python3 -c 'import sys; open(sys.argv[1],"w").write("\n".join(f"line {n:02d} public caret probe" for n in range(1,13)))' "$cu_evidence/caret-probe.txt"
 open -R "$cu_helper"
 ```
 
-Open System Settings > Privacy & Security > Accessibility. Select the old
-**Chariox Computer Helper** entry and remove it with minus. Drag the rebuilt
-**Chariox Computer Helper.app** from that Finder window into the list, then
-enable it. Repeat removal, Finder drag and enable in Screen Recording, called
-Screen & System Audio Recording on some versions. Grant only this helper.
-Authenticate personally if requested. Use the build directory app in both lists;
-the plus picker previously failed, while Finder drag worked. Accept a helper
-quit/reopen request if shown. Every command below launches a fresh helper.
+In System Settings > Privacy & Security > Accessibility, remove the old
+Chariox Computer Helper entry with minus. Drag the rebuilt app from Finder into
+the list and enable it. Repeat removal, Finder drag and enable in Screen
+Recording, called Screen & System Audio Recording on some versions. Grant
+only this helper. Authenticate personally if requested. Accept quit/reopen if
+shown. Every command below starts a fresh background helper.
 
-## 1:30-2:20, fixture button and scroll
+## 1:30-2:10, fixture button and scroll
 
-Quit only the previous public fixture using its Stop fixture button if it is
-still running. Launch the rebuilt sibling fixture so its executable matches
-this helper's fixture allowlist:
+If an older public fixture is running, close it with its Stop fixture button.
+Launch the rebuilt sibling and use its fresh IDs:
 
 ```bash
 open -n --stdout "$cu_evidence/fixture.out" --stderr "$cu_evidence/fixture.err" "$cu_build/Chariox Computer Fixture.app"
-cat "$cu_evidence/fixture.out"
-```
-
-Use the printed `fixturePID` and `windowID`, never the earlier session's IDs.
-If stdout is not ready, rerun only `cat`. Set the two numbers below:
-
-```bash
-cu_pid=REPLACE_WITH_PRINTED_PID
-cu_window=REPLACE_WITH_PRINTED_WINDOW_ID
+sleep 1
+read cu_pid cu_window <<< "$(python3 -c 'import re,sys; m=re.search(r"fixturePID=(\d+) windowID=(\d+)",open(sys.argv[1]).read()); assert m; print(m[1],m[2])' "$cu_evidence/fixture.out")"
 cu_scope=(--enable-fixture --fixture-pid "$cu_pid" --window-id "$cu_window")
 cu_delay() {
   cu_label="$1"; shift
-  printf 'Five seconds: click the selected ordinary field and leave its window frontmost.\n'
+  printf 'Five seconds: focus the target and leave its window frontmost.\n'
   sleep 5
   open -n -g -W --stdout "$cu_evidence/$cu_label.out" --stderr "$cu_evidence/$cu_label.err" "$cu_helper" --args "${cu_scope[@]}" "$@"
   cat "$cu_evidence/$cu_label.out" "$cu_evidence/$cu_label.err"
 }
 ```
 
-Run each separately. During each countdown, click the fixture's ordinary text
-field, avoiding the secure field. Leave the fixture frontmost until completion.
-After the first command, look for **Clicks: 1**. Before the second, note the top
-visible row; after it, look for the rows to move toward later rows.
+Run separately. During each countdown, click the fixture's ordinary field and
+leave the fixture frontmost. Use only the ordinary field, not the secure one.
 
 ```bash
 cu_delay button --target button --click
-```
-
-```bash
 cu_delay scroll --target scroll --scroll
 ```
 
-Expected receipts are `path=AXPress; observed fixture counter increment` and
-`path=AXScrollValue; observed vertical scroll position increased`, each prefixed
-by `dispatched;`. Scroll is one normalized 0.05 step toward the bottom, rather
-than a pixel-wheel event. `application completion unproven` means the helper
-did not observe the expected change; a dispatch receipt alone is not PASS.
-Verify visible movement as well as the scrollbar receipt.
+Expected receipts:
 
-## 2:20-3:00, TextEdit coordinate click
+```text
+dispatched; path=AXPress; observed fixture counter increment
+dispatched; path=AXScrollValue; observed vertical scroll position increased
+```
 
-Use one disposable plain-text TextEdit document. Manually type `public click probe`
-if it has no synthetic text, so caret relocation is visible. Arrange one
-unambiguous TextEdit window and discover its fresh PID/window ID:
+The fixture should show Clicks: 1 and later rows. Close it with Stop fixture.
+
+## 2:10-3:00, TextEdit line-5 caret
+
+Open the generated 12-line plain-text document. Close other TextEdit document
+windows so discovery returns exactly one. Keep all 12 lines visible.
 
 ```bash
+open -a TextEdit "$cu_evidence/caret-probe.txt"
 open -n -g -W --stdout "$cu_evidence/textedit-choices.out" --stderr "$cu_evidence/textedit-choices.err" "$cu_helper" --args --enable-owner-window --list-windows
 cat "$cu_evidence/textedit-choices.out" "$cu_evidence/textedit-choices.err"
-```
-
-The second JSON line must contain only the Apple-signed `com.apple.TextEdit`
-window. Set the exact numbers. Run this single click separately; during the
-countdown click just before the synthetic text near its left edge, then move the physical
-pointer onto the title bar without clicking. Watch whether the helper relocates
-the insertion caret to the text area's center while the physical pointer stays
-on the title bar. Do not switch back to Terminal until completion.
-
-```bash
-cu_pid=REPLACE_WITH_TEXTEDIT_PID
-cu_window=REPLACE_WITH_TEXTEDIT_WINDOW_ID
+read cu_pid cu_window <<< "$(python3 -c 'import json,sys; rows=json.loads(open(sys.argv[1]).read().splitlines()[-1]); assert len(rows)==1; print(rows[0]["pid"],rows[0]["windowID"])' "$cu_evidence/textedit-choices.out")"
 cu_scope=(--enable-owner-window --owner-pid "$cu_pid" --window-id "$cu_window" --target focused)
-cu_delay textedit-click --click
+cu_delay textedit-click --click-at-pointer --click
 ```
 
-Expected receipt is `dispatched; path=CGEventWindow; application completion
-unproven`. The helper deliberately does not read TextEdit's selection or text.
-Record the visually observed caret movement and stationary physical pointer in
-`SESSION.md` under `cu_evidence`, alongside the fixture's counter and row changes.
-If there is no visible caret movement, record TextEdit click as UNPROVEN,
-not PASS. Do not add any helper text operation to this recheck.
-Stop and record a refusal or failure; do not replay, switch delivery paths or
-modify permissions again to hide a failed input result.
-If stderr reports `refused: ownedInput; unresolved owned input; owner reset
-required`, stop all helper input. The owner must reset the target application's
-input/tracking state and confirm it is clear before any further helper operation.
-This is an application input reset, not a login, credential or TCC reset.
+During the five-second countdown, click at the beginning of **line 01**, which
+has text. Then move the pointer, without clicking, over the middle of the
+letter **r** in **caret** on **line 05**. Leave TextEdit frontmost and keep the
+pointer there until the helper finishes. `--click-at-pointer` snapshots that
+requested global point once; the AX path posts no mouse events.
 
-## Delivery choice and remaining proof
+Expected second stdout line, with the point's actual coordinates:
 
-The original PID-only mouse events were ignored in the owner session on macOS
-26.5. In an agent-runnable, non-posting check, setting both public CG pointer
-window fields still converted to an AppKit event with `windowNumber=0`.
-The public [NSEvent mouse constructor](https://developer.apple.com/documentation/appkit/nsevent/mouseevent(with:location:modifierflags:timestamp:windownumber:context:eventnumber:clickcount:pressure:))
-preserves the selected AppKit window number, single-click state and matching
-pair number in the new tests. It also retains the public CG pointer-window
-fields and global point location before per-PID posting. No private event fields
-or cursor warp are used.
+```text
+dispatched; path=AXSelectedTextRange; observed AXSelectedTextRange location=125 length=0; point=X,Y
+```
 
-Buttons use supported [AXUIElementPerformAction](https://developer.apple.com/documentation/applicationservices/1462091-axuielementperformaction)
-with AXPress. Scroll areas use their [vertical scrollbar](https://developer.apple.com/documentation/applicationservices/kaxverticalscrollbarattribute),
-only when its numeric AXValue is settable and within 0...1. These are primary
-paths selected by role before dispatch, with no fallback. The plan's
-[Structured targets and observation protection](../../docs/COMPUTER_USE_MACOS_PLAN.md#structured-targets-and-observation-protection)
-prefers supported AX presses, and its
-[Minimal feasibility prototype](../../docs/COMPUTER_USE_MACOS_PLAN.md#minimal-feasibility-prototype-implemented-m0-and-owner-attended-gates)
-defines the explicit M0 scroll-value path and per-PID coordinate click scope.
-The [capture and display section](../../docs/COMPUTER_USE_MACOS_PLAN.md#capture-and-display)
-reserves system cursor movement for future session/HID input.
+The insertion caret must now be before that `r` on line 05. The range readback
+proves the application's selection without needing someone to watch delivery.
+Index 125 is UTF-16, four preceding 27-unit lines plus 17 units on line 05.
+A point over another letter within `caret` yields 123-127; record the exact
+index and point, but use 125 for the specified middle-letter check.
 
-New input retains frontmost, unique CG/AX window binding, focused-window,
-PID/AX ancestry, inside-window geometry, live hit-test, permission and secure
-fences. Completion polls recheck them after dispatch. An already owned mouse-up
-has the separate cleanup validation described below. Source/policy tests and
-the build do not prove real GUI delivery; this owner recheck remains required.
+Record the three receipts and verdicts in `SESSION.md` under `cu_evidence`.
+Close only this disposable TextEdit document. A refusal, a different path, or
+`application completion unproven` is not PASS. Stop there, without retrying or
+changing permissions again to hide the result. If the helper reports
+`refused: ownedInput; unresolved owned input; owner reset required`, stop all
+helper input until the owner clears the target application's tracking state.
 
-## 2026-10-08, review at 4667722815
+## What this single recheck resolves
 
-The P2 stale-coordinate finding in #920 is corrected. Coordinate click pairs
-retain the selected window bounds, element bounds and center used at
-construction. Each posting fence refuses changed bounds or event coordinates,
-hit-tests the actual event location, and rechecks geometry after the AX hit-test.
-At that revision the deferred mouse-up used the same fence and refused stale
-geometry too. The review at 871da04be below corrects that cleanup behavior.
+The unattended drill is `python3 apps/macos-computer-use/text-click-drill.py`.
+It launches its own NSTextView fixture, publishes a line-5 glyph point and
+expected index 125, and requires both the helper's public observed-selection
+receipt and the fixture's actual selection to agree. It closes only its own
+fixture. On this lane's Mac launch context, the rebuilt helper returned
+`refused: permission`; no AX or HID input was dispatched. This is BLOCKED,
+not caret PASS. The owner-only unresolved cell is **real TextEdit AX caret
+placement with range readback at line 5**. Button and scroll are regression
+cells in the same recheck, previously PASS on October 9.
 
-The injected regression first failed by recording a stale mouse-down after
-the element moved between construction and dispatch. It now passes for element
-and window movement and resizing, including resizes with an unchanged center,
-altered event locations, and movement between down and up. Unchanged geometry
-still delivers one pair to the recorder. These tests make no native input or
-permission calls. All five structural checks pass, and `build.sh` compiled and
-verified both ad-hoc bundles in `/Users/miguel/.chariox/dev/cumac/build`.
-
-This review pass did not launch either bundle or perform the owner steps above.
-TCC and login state were left unchanged. Real GUI delivery remains UNPROVEN;
-the owner recheck still applies to this rebuilt helper's changed cdhash.
-
-## 2026-10-08, review at 871da04be
-
-The P2 owned mouse-up cleanup finding in #920 is corrected. Saved geometry and
-event-coordinate checks still refuse a new press after movement or resizing.
-When an ordinary dispatch fence fails after a posted down, cleanup validates
-only the already owned up against the original running application and launch
-date, selected AppKit/CG window number and retained AX window identity. It
-rechecks app allowlisting, live CG PID/window ownership, frontmost/focused and
-unique window binding, AX PID, secure input and Accessibility permission.
-Posting permission is checked immediately before every normal or cleanup event.
-Cleanup can therefore release the original pair after geometry changes without
-admitting another press or retargeting a window. The original dispatch refusal
-is still returned; a cleanup post does not prove application completion.
-
-If cleanup validation or permission fails, the helper reports `refused:
-ownedInput; unresolved owned input; owner reset required` and exits with failure,
-ending the operation batch. The stop/reset rule above applies. Key-up cleanup
-keeps its strict typing fence and uses the same unresolved-state reporting.
-Fatal process death recovery remains deferred and unproven.
-
-The non-posting regression first failed with `FAIL geometry change stranded
-owned mouse-down without cleanup`. It now verifies exactly one owned up after
-each between-event window/element move or resize, and explicit unresolved input
-on ownership/security or posting-permission loss. The pre-down movement, resize
-and changed-coordinate tests still require zero posted events; an unchanged
-pair never invokes cleanup. Policy/event tests and all six structural checks
-pass. `build.sh` compiled and verified both ad-hoc bundles only in
-`/Users/miguel/.chariox/dev/cumac/build`.
-
-Neither bundle was launched. No TCC, Keychain, login, revocation, re-login,
-kernel, CI or push operations were performed. Real GUI delivery and tracking
-state recovery remain UNPROVEN; the owner recheck applies to the rebuilt
-helper's changed cdhash. No shared serialized protocol changed.
+The center of a partly visible text element now uses its element/window/active-
+display intersection; a fully invisible element still refuses. Unit tests cover
+that clamp, composed-character range mapping, fallback selection, stale-point
+refusal and owned mouse-up cleanup. AX range lookup uses Apple's public
+[AXRangeForPosition](https://developer.apple.com/documentation/applicationservices/kaxrangeforpositionparameterizedattribute)
+and [AXSelectedTextRange](https://developer.apple.com/documentation/applicationservices/kaxselectedtextrangeattribute).
+Only an unsupported/unavailable position range selects
+[HID posting](https://developer.apple.com/documentation/coregraphics/cgeventtaplocation/cghideventtap).
+Permission errors, malformed ranges and failed AX mutations stop the operation.
+HID retains window ownership, frontmost, secure-input, permission and saved-
+geometry fences plus the original-process owned release cleanup. It may move
+the system pointer; live HID delivery and fatal cleanup remain unproven and are
+not extra owner operations in this recheck.

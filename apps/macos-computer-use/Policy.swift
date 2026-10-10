@@ -13,6 +13,8 @@ struct Request {
     var pid: Int32 = 0
     var window: UInt32 = 0
     var target = "ordinary"
+    var clickPoint: CGPoint?
+    var clickAtPointer = false
     var operations: [Operation] = []
     static func parse(_ arguments: [String]) throws -> Request {
         var request = Request(), index = 0
@@ -36,6 +38,13 @@ struct Request {
             case "--capture": request.operations.append(.capture(try value()))
             case "--ax-read": request.operations.append(.read)
             case "--click": request.operations.append(.click)
+            case "--click-at-pointer":
+                guard !request.clickAtPointer, request.clickPoint == nil else { throw Refusal.arguments }
+                request.clickAtPointer = true
+            case "--click-at":
+                let x = Double(try value()), y = Double(try value())
+                guard let x, let y, x.isFinite, y.isFinite, request.clickPoint == nil, !request.clickAtPointer else { throw Refusal.arguments }
+                request.clickPoint = CGPoint(x: x, y: y)
             case "--scroll": request.operations.append(.scroll)
             case "--text": request.operations.append(.text(try value()))
             default: throw Refusal.arguments
@@ -44,6 +53,7 @@ struct Request {
         }
         guard !(ownerPID && fixturePID), !ownerPID || request.ownerWindow,
               !fixturePID || !request.ownerWindow else { throw Refusal.arguments }
+        guard (request.clickPoint == nil && !request.clickAtPointer) || request.operations == [.click] else { throw Refusal.arguments }
         return request
     }
 }
@@ -62,7 +72,7 @@ func checkOperationPermissions(_ operation: Operation, screenCaptureAccess: () -
 func run(_ request: Request, source: NativeSource) async throws -> [String] {
     guard request.enabled else { throw Refusal.disabled }
     guard request.pid > 0, request.window > 0,
-          (request.ownerWindow ? ["focused"] : ["ordinary", "secure", "button", "scroll"]).contains(request.target) else { throw Refusal.target }
+          (request.ownerWindow ? ["focused"] : ["ordinary", "secure", "button", "scroll", "text"]).contains(request.target) else { throw Refusal.target }
     guard request.target != "secure" else { throw Refusal.secure }
     for operation in request.operations {
         if case .text(let text) = operation { _ = try textUnits(text) }

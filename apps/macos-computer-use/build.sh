@@ -25,7 +25,7 @@ for kind in Helper Fixture; do
 EOF
   if [[ $kind == Helper ]]; then /usr/libexec/PlistBuddy -c 'Add :LSUIElement bool true' "$bundle/Contents/Info.plist"; fi
   if [[ $kind == Helper ]]; then
-    swiftc "${flags[@]}" Policy.swift Signing.swift PointerInput.swift Native.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
+    swiftc "${flags[@]}" Policy.swift Signing.swift PointerInput.swift Native.swift TextClick.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
   else
     swiftc "${flags[@]}" Fixture.swift -o "$bundle/Contents/MacOS/fixture"
   fi

@@ -239,9 +239,11 @@ must belong to that exact window; secure ancestors refuse. Public AX geometry
 must uniquely match the selected CG window, otherwise the helper refuses.
 No fallback to another window, application or display exists.
 
-M0 posts CGEvents to the selected PID only. These checks do not establish
-session/HID delivery, system cursor movement, session-tap observation or input
-self-tagging. The same limitation applies to fixture evidence.
+Text clicks now prefer AXRangeForPosition and AXSelectedTextRange readback.
+Only an unresolved position range uses a fenced session/HID click, which can
+move the system pointer. Unicode typing remains per-PID. Use the rebuilt helper
+and the shorter `OWNER_RECHECK.md` for the pending click check. Session-tap
+observation, input self-tagging and fatal release recovery remain unproven.
 
 This implements the single-window part of plan steps 3-4 as standalone OS
 diagnostics. App/display scope, private-region masking, OCR, mixed-display

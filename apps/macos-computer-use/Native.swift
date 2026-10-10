@@ -69,9 +69,14 @@ struct MacSource: NativeSource {
               AXValueGetValue(size as! AXValue, .cgSize, &extent), extent.width > 0, extent.height > 0 else { throw Refusal.target }
         return CGRect(origin: origin, size: extent)
     }
-    func point(_ target: AXUIElement) throws -> CGPoint {
-        let rect = try bounds(target)
-        return CGPoint(x: rect.midX, y: rect.midY)
+    func geometry(_ request: Request, element: AXUIElement) throws -> ClickGeometry {
+        let window = try windowBounds(request), elementBounds = try bounds(element)
+        var displays = [CGDirectDisplayID](repeating: 0, count: 32), count: UInt32 = 0
+        guard CGGetActiveDisplayList(32, &displays, &count) == .success, count > 0, count <= 32 else { throw Refusal.target }
+        let visible = try visibleWindowFrame(window: window, element: elementBounds,
+            displays: displays.prefix(Int(count)).map { CGDisplayBounds($0) }, point: request.clickPoint)
+        return ClickGeometry(windowBounds: window, elementBounds: elementBounds,
+                             visibleWindowBounds: visible, requestedPoint: request.clickPoint)
     }
     func selectedWindow(_ request: Request, app: AXUIElement) throws -> AXUIElement {
         let rect = try windowBounds(request)
@@ -114,8 +119,9 @@ struct MacSource: NativeSource {
         let window = try selectedWindow(request, app: app)
         let focused = try focusedElement(app: app, window: window)
         try bind(element, to: window, pid: request.pid)
-        let geometry = try ClickGeometry(windowBounds: bounds(window), elementBounds: bounds(element))
-        guard geometry.windowBounds.contains(geometry.elementBounds) else { throw Refusal.target }
+        let geometry = try geometry(request, element: element)
+        guard try bounds(window) == geometry.windowBounds else { throw Refusal.target }
+        _ = try geometry.checkedLocation(geometry.location, current: geometry)
         if request.ownerWindow {
             guard CFEqual(focused, element) else { throw Refusal.target }
         }
@@ -128,7 +134,7 @@ struct MacSource: NativeSource {
             if let clickGeometry {
                 guard let eventLocation, try windowBounds(request) == geometry.windowBounds else { throw Refusal.target }
                 location = try clickGeometry.checkedLocation(eventLocation, current: geometry)
-            } else { location = try point(element) }
+            } else { location = geometry.location }
             var hit: AXUIElement?
             guard AXUIElementCopyElementAtPosition(app, Float(location.x), Float(location.y), &hit) == .success,
                   let hit else { throw Refusal.target }
@@ -143,7 +149,7 @@ struct MacSource: NativeSource {
             if let clickGeometry {
                 // AX hit-testing can itself race a move or resize. Recheck its snapshot.
                 _ = try clickGeometry.checkedLocation(location, current:
-                    ClickGeometry(windowBounds: windowBounds(request), elementBounds: bounds(element)))
+                    self.geometry(request, element: element))
                 guard try bounds(window) == clickGeometry.windowBounds else { throw Refusal.target }
             }
         }
@@ -167,7 +173,6 @@ struct MacSource: NativeSource {
               application.processIdentifier == request.pid,
               let current = NSRunningApplication(processIdentifier: request.pid),
               current.launchDate == launchDate,
-              NSEvent(cgEvent: event)?.windowNumber == Int(request.window),
               event.getIntegerValueField(.mouseEventWindowUnderMousePointer) == Int64(request.window),
               event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent) == Int64(request.window)
         else { throw Refusal.target }
@@ -274,9 +279,10 @@ struct MacSource: NativeSource {
         var clickGeometry: ClickGeometry?
         switch operation {
         case .click:
-            let geometry = try ClickGeometry(windowBounds: windowBounds(request), elementBounds: bounds(element))
+            let geometry = try geometry(request, element: element)
+            if let receipt = try await performTextClick(request, element: element, geometry: geometry) { return receipt }
             clickGeometry = geometry
-            events = try windowClickEvents(window: request.window, location: geometry.location,
+            events = try hidClickEvents(window: request.window, location: geometry.location,
                                           windowBounds: geometry.windowBounds, eventNumber: Int.random(in: 1...Int(Int32.max)))
         case .text(let text):
             let units = try textUnits(text)
@@ -304,10 +310,12 @@ struct MacSource: NativeSource {
                 try mouseReleaseFence(request, application: admittedApp, launchDate: admittedLaunchDate,
                                       window: admittedWindow, event: event)
             }
-        }, releaseAllowed: { CGPreflightPostEventAccess() }, post: { $0.postToPid(request.pid) })
+        }, releaseAllowed: { CGPreflightPostEventAccess() }, post: {
+            if typing { $0.postToPid(request.pid) } else { $0.post(tap: .cghidEventTap) }
+        })
         try fence(request, element: element, typing: typing,
                   clickGeometry: clickGeometry, eventLocation: events.last?.location)
-        return inputReceipt(path: path == .windowEvent ? "CGEventWindow" : "CGEventPIDText")
+        return inputReceipt(path: typing ? "CGEventPIDText" : "CGEventHID")
     }
 }
 

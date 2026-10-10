@@ -158,7 +158,8 @@ and agent intended pointer separately through the shared actor projection.
 The viewer draws actor names, colors and action status above video. A small
 local helper overlay may show the agent pointer and Stop control; it must be
 excluded from captured pixels. Planned session/HID CGEvent mouse input moves the
-real system cursor. M0 uses per-PID posting and does not establish cursor movement.
+real system cursor. M0 prefers AX caret placement for text clicks; its scoped
+HID fallback can move the system cursor. No separate automation cursor is claimed.
 There is no second independently clickable Mac cursor.
 Use a labeled arrow for the human cursor initially; exact cross-app cursor shapes
 need separate validation. Cursor-only movement updates presence without a frame.
@@ -475,24 +476,33 @@ published as draft PR #920, with GitHub CI skipped.
 
 ## Minimal feasibility prototype, implemented M0 and owner-attended gates
 
-M0's standalone helper is implemented but unattended. Follow
-`apps/macos-computer-use/OWNER_SETUP.md` with the owner present for the fixture
-regression checks and one explicitly selected real TextEdit window. M0 uses
-supported AXPress for buttons, a bounded numeric AX vertical-scrollbar value
-step for scroll areas, and per-PID CGEvent delivery for text and coordinate
-clicks. Coordinate clicks carry an explicit AppKit window number as well as
-the public CG pointer-window fields. Scrollbar assignment is an explicit primary
-scroll operation, never text assignment or a fallback after failed posting.
-Every path retains the PID/window, frontmost, focused-window, secure-input and
-live hit-test fences. Receipts identify the path and report only an observed
-synthetic fixture counter increment or numeric scrollbar increase. Otherwise
-application completion remains unproven, with no replay. See
-`apps/macos-computer-use/OWNER_RECHECK.md` for the pending owner delivery recheck.
-It does not prove session/HID posting, system cursor
-movement, session-tap observation or self-tagging. Text requests admit at most
-20 UTF-16 units and refuse whole overflowing strings without splitting a
-grapheme or surrogate pair. The broader steps below remain later acceptance
-gates, not instructions to run capture unattended.
+M0's standalone helper uses supported AXPress for buttons and a bounded numeric
+AX vertical-scrollbar value step for scroll areas. Text-area/field clicks query
+AXRangeForPosition at the requested global point, focus the element, assign a
+zero-length AXSelectedTextRange at the returned character range's start, and
+read back the selection. This operation reads numeric range metadata only,
+never document text. Without a requested point, it uses the center of the
+element/window/display intersection. A fully invisible target still refuses.
+Only an unsupported or unavailable AX position range selects the session/HID
+CGEvent click fallback. Malformed ranges, permission errors, failed focus or
+selection mutations, and unproven readback never trigger a fallback or retry.
+Text typing retains per-PID CGEvent delivery and its 20-UTF-16-unit limit.
+
+Every path retains PID/window, frontmost, focused-window, secure-input and live
+hit-test fences. Clicks retain the geometry snapshot and actual point across
+resolution, mutation, posting and observation. An owned HID mouse-up retains
+the original process lifetime and AX/CG window ownership checks while allowing
+geometry changes, or reports unresolved owned input requiring owner reset.
+AX receipts prove a synthetic button-counter increment, numeric scrollbar
+increase, or selection-range readback. HID dispatch alone remains unproven.
+See `apps/macos-computer-use/OWNER_RECHECK.md` for the single pending owner
+recheck. The unattended NSTextView drill reached the public helper's permission
+gate but could not use the owner's Accessibility grant. Real TextEdit caret
+placement, live HID delivery and fatal input recovery remain unproven. No
+session-tap observation or self-tagging is claimed. Unicode typing refuses an
+entire overflowing string without splitting a grapheme or surrogate pair. The
+broader steps below remain later acceptance gates, not instructions to run
+capture unattended.
 
 1. Build the smallest native helper plus public fixture with ordinary and secure
    text fields, buttons and moving color patches. Use external compiler output
