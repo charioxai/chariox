@@ -1,4 +1,5 @@
 import process from "node:process"
+import { TUI_MOUSE_ENABLED } from "./terminal-mouse-policy.js"
 import { runSudoCommand } from "./sudo-command.js"
 import { runAccessCommand } from "./access-command.js"
 
@@ -70,8 +71,9 @@ async function main() {
       gatherStats: false,
       exitOnCtrlC: false,
       useKittyKeyboard: {},
+      ...(!TUI_MOUSE_ENABLED ? { useThread: false } : {}),
       // MP-08/MP-10: the terminal owns plain drag-selection and Cmd-C.
-      useMouse: process.env.CHARIOX_TUI_MOUSE === "on",
+      useMouse: TUI_MOUSE_ENABLED,
       enableMouseMovement: false,
       useAlternateScreen: true,
       autoFocus: true,

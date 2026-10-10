@@ -8,6 +8,9 @@ import { loadTerminalRenderLibrary } from "./terminal-render-library.js"
 export async function enableTerminalHyperlinks(renderer: CliRenderer): Promise<boolean> {
   const rendererPtr = (renderer as { rendererPtr?: unknown } | null)?.rendererPtr
   if (process.env.CHARIOX_TUI_HYPERLINKS === "off" || !rendererPtr || !process.versions.bun) return false
+  let destroyed = renderer.root.isDestroyed
+  const markDestroyed = () => { destroyed = true }
+  renderer.once("destroy", markDestroyed)
   try {
     // Terminal setup initializes native capabilities; apply after it.
     await (renderer as { setupTerminal?: () => Promise<void> }).setupTerminal?.()
@@ -17,6 +20,8 @@ export async function enableTerminalHyperlinks(renderer: CliRenderer): Promise<b
     let libPath = await loadTerminalRenderLibrary()
     if (libPath.includes("$bunfs") || /^B:[\\/]~BUN/i.test(libPath)) libPath = libPath.replace("../", "")
     const lib = dlopen(libPath, { setHyperlinksCapability: { args: [FFIType.ptr, FFIType.bool], returns: FFIType.void } })
+    if (destroyed) { lib.close(); return false }
+    renderer.off("destroy", markDestroyed)
     // Reapply synchronously: native capability replies may reset this flag
     // immediately before a frame. Awaiting another import in the callback
     // races that frame and leaves its unchanged link cells without OSC 8.
@@ -32,6 +37,7 @@ export async function enableTerminalHyperlinks(renderer: CliRenderer): Promise<b
     apply()
     return true
   } catch {
+    renderer.off("destroy", markDestroyed)
     return false
   }
 }

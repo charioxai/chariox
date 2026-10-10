@@ -3,6 +3,7 @@ import { createProviderLoginInteractionController } from "./provider-login-inter
 import { getRelayStatus } from "./relay-api.js"
 import { clipboardCopyMessage, copyTextToClipboard } from "./clipboard.js"
 import { openExternalUrl } from "./external-url.js"
+import { installTerminalNativeSelection } from "./terminal-native-selection.js"
 import { enableTerminalHyperlinks } from "./terminal-hyperlinks.js"
 import { providerAccountDisplayLabel, selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 import { createAppHostTerminal } from "./app-host-action.js"
@@ -224,6 +225,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     client_id: options.clientId,
   })
   const renderer = useRenderer()
+  onCleanup(installTerminalNativeSelection(renderer))
   void enableTerminalHyperlinks(renderer)
   const secretInput = createCliSecretInput(renderer)
   const providerLoginLink = createProviderLoginLinkOpener()

@@ -225,7 +225,7 @@ try {
   }
   const typeText = async text => { for (const c of text) { tui.terminal.write(c); await sleep(15) } }
   const rowOf = needle => page.evaluate(n => {
-    const rows = terminalScreen().split('\n'); const y = rows.findIndex(row => row.includes(n))
+    const rows = terminalScreen().split('\n'); const y = rows.findLastIndex(row => row.includes(n))
     return y < 0 ? null : { x: rows[y].indexOf(n), y }
   }, needle)
   const cellColors = ({ x, y }, width) => page.evaluate(({ x, y, width }) => {
@@ -286,7 +286,7 @@ try {
       await waitFor(() => page.evaluate(() => terminalScreen().includes('Write your next prompt here')),90_000)
       await typeText('Read the public README at https://github.com/charioxai/chariox, then return NATIVE COPY READY on one line and that repository URL alone on the next line. No explanation.')
       await press('\r')
-      await waitFor(() => page.evaluate(() => terminalScreen().includes('NATIVE COPY READY') && /\bIDLE\b/.test(terminalScreen())),180_000)
+      await waitFor(() => page.evaluate(() => terminalScreen().split('\n').some(row => row.replace(/^[│ ]+/,'').replace(/[█ ]+$/,'') === 'NATIVE COPY READY') && /\bIDLE\b/.test(terminalScreen())),180_000)
       selectionText = 'NATIVE COPY READY'
     } else await waitFor(() => page.evaluate(() => terminalScreen().includes('Provider Accounts')))
     await capture('native-01-open')
@@ -307,6 +307,23 @@ try {
     await page.click('#native-copy')
     const clipboard = await page.evaluate(() => navigator.clipboard.readText()).catch(() => null)
     await capture('native-03-copy')
+    let multilineSelected = null
+    if (options['native-session']) {
+      const link = await rowOf(url)
+      const end = await page.evaluate(({x,y,length}) => {
+        const rect=document.querySelector('.xterm-screen').getBoundingClientRect()
+        return {x:rect.x+(x+length+0.2)*rect.width/term.cols,y:rect.y+(y+0.5)*rect.height/term.rows}
+      }, {...link,length:url.length})
+      await page.mouse.move(coords.x,coords.y); await page.mouse.down()
+      await page.mouse.move(end.x,end.y,{steps:20}); await page.mouse.up()
+      multilineSelected = await page.evaluate(() => term.getSelection())
+      await page.click('#native-copy')
+      const multilineClipboard = await page.evaluate(() => navigator.clipboard.readText())
+      await capture('native-03b-multiline')
+      result = {...result,multilineSelected,multilineClipboard}
+      assert.equal(multilineSelected,selectionText+'\n'+url,'native multiline copy excludes gutters and padding')
+      assert.equal(multilineClipboard,multilineSelected)
+    }
     if (!options['native-session']) {
     // Keyboard navigation is the same public user flow in native mouse mode.
     for (let i=0;i<65;i++) {
@@ -322,7 +339,16 @@ try {
     }
     const mark = output.length
     const linkAt = await rowOf(url)
+    // A normal click on a blank terminal cell clears the previous native
+    // selection before following a link; no selection API or TUI mouse event.
+    const blank = await page.evaluate(() => {
+      const rect=document.querySelector('.xterm-screen').getBoundingClientRect()
+      return {x:rect.right-5,y:rect.bottom-5}
+    })
+    await page.mouse.click(blank.x,blank.y)
+    await sleep(200)
     let activated = false
+    const popupPromise = page.waitForEvent('popup',{timeout:30_000}).catch(() => null)
     if (linkAt) {
       const linkCoords = await page.evaluate(({x,y}) => {
         const rect = document.querySelector('.xterm-screen').getBoundingClientRect()
@@ -334,18 +360,25 @@ try {
       await page.keyboard.up('Control'); await sleep(500)
       activated = await page.evaluate(expected => openedLinks.includes(expected),url)
     }
-    await sleep(2000)
+    const popup = await popupPromise
     const popupDiagnostic = await page.evaluate(() => ({requested:window.openedWindow,links:openedLinks}))
-    const openedPage = page.context().pages().find(value => value !== page)
+    const openedPage = popup ?? page.context().pages().find(value => value !== page)
     let browserUrl = openedPage ? openedPage.url() : null
-    if (openedPage) { await openedPage.waitForURL('https://github.com/**',{timeout:30_000}).catch(() => {}); browserUrl = openedPage.url() }
+    let browserTitle = null
+    if (openedPage) {
+      await openedPage.waitForURL('https://github.com/**',{timeout:30_000}).catch(() => {})
+      browserUrl = openedPage.url()
+      await openedPage.waitForLoadState('domcontentloaded',{timeout:15_000}).catch(() => {})
+      browserTitle = await openedPage.title().catch(() => null)
+      await openedPage.screenshot({path:path.join(evidence,'native-05b-browser.png')}).catch(() => {})
+    }
     await capture('native-05-click')
     result = {items:['MP-08','MP-10','MP-11'],mode:'native-selection',source:options.source,
-      cli,cliSha256:await (cli.endsWith('.js') ? hashClient(path.dirname(cli)) : hashFile(cli)),mouseEnabled,selected,clipboard,
-      browserUrl,popupDiagnostic,realProvider: Boolean(options['native-session']), kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null,
+      cli,multilineSelected,cliSha256:await (cli.endsWith('.js') ? hashClient(path.dirname(cli)) : hashFile(cli)),mouseEnabled,selected,clipboard,
+      browserUrl,browserTitle,popupDiagnostic,realProvider: Boolean(options['native-session']), kernelSource:options['kernel-source'] ?? null,kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null,
       osc8:[...output.matchAll(/\x1b\]8;[^;\x1b\x07]*;([^\x1b\x07]*)/g)].some(match => match[1] === url),activated,
-      leftScreen:/\x1b\[\?1049l/.test(output),clickLeftScreen:/\x1b\[\?1049l/.test(output.slice(mark)),
-      acceptance:'Real built CLI/PTY/browser terminal regression with fixture login response. Native macOS Cmd-C/Cmd-click requires a physical desktop; Linux Ctrl-click is not macOS acceptance.'}
+      checkEndByte:output.length,leftScreen:/\x1b\[\?1049l/.test(output),clickLeftScreen:/\x1b\[\?1049l/.test(output.slice(mark)),
+      acceptance:options['native-session'] ? 'Real standalone TUI, owned kernel, product-linked official Codex turn, public repository and native terminal clipboard/browser action; local transport. Physical Mac and hosted WSS acceptance remain separate.' : 'Real built CLI/PTY/browser terminal regression with fixture login response. Native macOS Cmd-C/Cmd-click requires a physical desktop; Linux Ctrl-click is not macOS acceptance.'}
     console.log(JSON.stringify(result))
     await writeFile(path.join(evidence,'result.json'),JSON.stringify(result,null,2))
     assert.ok(!mouseEnabled && selected === selectionText && clipboard === selected && result.osc8 && activated && browserUrl?.startsWith(url) && !result.leftScreen,'native selection/copy/link must stay in TUI')
@@ -549,9 +582,10 @@ rows=json.loads(sys.argv[1]); stopped=[]; live=[]
 for pid,start in rows:
  assert isinstance(pid,int) and pid>1
  try:
+  fd=os.pidfd_open(pid)
   v=open('/proc/'+str(pid)+'/stat').read().rsplit(')',1)[1].split()
-  if v[19]!=start or v[0]=='Z': continue
-  fd=os.pidfd_open(pid); signal.pidfd_send_signal(fd,signal.SIGTERM); time.sleep(.1)
+  if v[19]!=start or v[0]=='Z': os.close(fd); continue
+  signal.pidfd_send_signal(fd,signal.SIGTERM); time.sleep(.1)
   try:
    v=open('/proc/'+str(pid)+'/stat').read().rsplit(')',1)[1].split()
    if v[19]==start and v[0]!='Z': signal.pidfd_send_signal(fd,signal.SIGKILL)

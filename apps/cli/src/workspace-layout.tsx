@@ -1,5 +1,6 @@
 import type { KeyBinding, RGBA } from "@opentui/core"
 import { For } from "solid-js"
+import { TUI_MOUSE_ENABLED } from "./terminal-mouse-policy.js"
 
 import { PaneGridBorderChars, theme } from "./theme.js"
 
@@ -98,7 +99,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                 paddingRight: 0,
               }}
               verticalScrollbarOptions={{
-                visible: true,
+                visible: TUI_MOUSE_ENABLED,
                 paddingLeft: 0,
                 trackOptions: {
                   backgroundColor: palette().backgroundElement,
@@ -152,7 +153,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                 paddingRight: 0,
               }}
               verticalScrollbarOptions={{
-                visible: true,
+                visible: TUI_MOUSE_ENABLED,
                 paddingLeft: 0,
                 trackOptions: {
                   backgroundColor: palette().backgroundElement,
