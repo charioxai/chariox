@@ -2329,6 +2329,11 @@ impl KernelRuntimeState {
             return Ok(false);
         }
         if verify_project_environment_inputs(&workspace_root, definition).is_err() {
+            crate::logging::warn_with_fields(
+                "project.environment_setup.inputs",
+                "project environment setup changed an attested input",
+                serde_json::Value::Null,
+            );
             return Ok(false);
         }
         Ok(true)

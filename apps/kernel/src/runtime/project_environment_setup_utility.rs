@@ -95,6 +95,9 @@ project evidence requires. Represent each required package, compiler, system too
 dependency, and command as a repeatable setup step with bounded validation. If project evidence\n\
 requires SSH or tmux, include the appropriate openssh-client/ssh and tmux system-tool steps with\n\
 bounded validation; do not assume they are present in the managed image. Return explicit relative path_entries for any named executable directories setup creates.\n\n\
+Prefer a project-pinned toolchain. Without a pin, reuse a working compiler that meets the\n\
+manifest minimum instead of installing a newer toolchain just for an independent CI job.\n\
+Do not select nightly solely because a CI job uses it.\n\n\
 Prepare the ordinary development environment for this worker using one compatible primary\n\
 toolchain for each required language. Separate ordinary build requirements from independent\n\
 CI-only jobs. Fuzzing, documentation publishing, interpreter checks, cross-target jobs, stress\n\
