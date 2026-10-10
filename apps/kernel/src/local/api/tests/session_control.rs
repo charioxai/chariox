@@ -2015,3 +2015,56 @@ fn envp02b_workspace_update_waits_for_environment_lock() {
     holder.join().unwrap();
     harness.block_on_test_task(task).unwrap().unwrap();
 }
+
+// MP-08 / MP-10 / MP-11: accepting a detected item explicitly reviews a new live folder.
+#[test]
+fn envp02b_accept_detected_requirement_from_new_attachment_preserves_history() {
+    let a = crate::test_support::TestWorktree::new("envp02b-attach-review-a");
+    let b = crate::test_support::TestWorktree::new("envp02b-attach-review-b");
+    std::fs::write(b.path().join(".env.example"), "PUBLIC_SAMPLE=example\n").unwrap();
+    let harness = envp02b_harness();
+    let paths = [
+        a.path().to_string_lossy().into_owned(),
+        b.path().to_string_lossy().into_owned(),
+    ];
+    let update = |paths: &[String]| {
+        serde_json::from_value(serde_json::json!({"UpdateProjectWorkspaces":{"project_id":"edit-project","workspace_ids":paths}})).unwrap()
+    };
+    harness.dispatch(update(&paths[..1])).unwrap();
+    let initial = envp02b_read(&harness);
+    harness.dispatch(envp02b_save(&initial, "Saved A")).unwrap();
+    let saved_a = envp02b_read(&harness);
+    harness.dispatch(update(&paths)).unwrap();
+    let target = harness.with_app(|app| serde_json::json!({"machine_id":app.config().host_machine_id,"target_instance_generation":app.config().daemon_id,"slice_ref":null}));
+    let LocalDaemonResponse::ProjectEnvironment {environment:detected} = harness.dispatch(serde_json::from_value(serde_json::json!({"DetectProjectEnvironment":{"projectId":"edit-project","operationId":"attach-b-detect","folderIds":[],"target":target,"provider":"codex","allowModelFolders":[]}})).unwrap()).unwrap() else { panic!("Detect expected") };
+    assert_eq!(
+        environment_draft_for_test(&detected),
+        environment_draft_for_test(&saved_a)
+    );
+    let proposal = detected.proposals.iter().find(|p| matches!(&p.requirement.scope,crate::project_environment::RequirementScope::Folder {folder_id} if folder_id != &saved_a.folders[0].folder_id)).expect("new B must have a static proposal");
+    let mut request = serde_json::to_value(envp02b_save(&detected, "Saved A")).unwrap();
+    request["SaveProjectEnvironmentRevision"]["acceptedProposalIds"] =
+        serde_json::json!([proposal.proposal_id]);
+    let LocalDaemonResponse::ProjectEnvironmentSaved {
+        environment: reviewed,
+        ..
+    } = harness
+        .dispatch(serde_json::from_value(request).unwrap())
+        .expect("accepting a current B proposal must create a reviewed B folder")
+    else {
+        panic!("Save expected")
+    };
+    assert_eq!(reviewed.revision, saved_a.revision + 1);
+    assert_eq!(reviewed.folders.len(), 2);
+    assert!(reviewed
+        .folders
+        .iter()
+        .flat_map(|f| &f.requirements)
+        .any(|r| r.requirement_id == proposal.requirement.requirement_id));
+    assert_eq!(
+        reviewed.parent_revision_digest.as_deref(),
+        Some(saved_a.content_digest.as_str())
+    );
+    assert_eq!(envp02b_read(&harness).folders, reviewed.folders);
+}
+

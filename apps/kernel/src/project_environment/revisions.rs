@@ -409,6 +409,7 @@ impl ProjectEnvironmentStore {
     pub(crate) fn save_revision_locked(
         &self,
         current: &ProjectEnvironment,
+        live: &ProjectEnvironment,
         request: &crate::local::SaveProjectEnvironmentRevisionRequest,
         user: &str,
     ) -> Result<(ProjectEnvironment, EnvironmentRevisionDiff), DaemonError> {
@@ -444,6 +445,8 @@ impl ProjectEnvironmentStore {
             });
         let mut draft = request.draft.clone();
         validate_draft(current, &draft)?;
+        let mut review_context = current.clone();
+        let mut review_draft = request.draft.clone();
         let mut selected = BTreeSet::new();
         let mut accepted_requirements = BTreeSet::new();
         if request.accepted_proposal_ids.len() + request.excluded_proposal_ids.len() > 4096 {
@@ -481,13 +484,32 @@ impl ProjectEnvironmentStore {
                     requirement.required = true;
                     match &requirement.scope {
                         RequirementScope::Project => draft.project_requirements.push(requirement),
-                        RequirementScope::Folder { folder_id } => draft
-                            .folders
-                            .iter_mut()
-                            .find(|f| &f.folder_id == folder_id)
-                            .ok_or_else(|| environment_error("proposal folder unavailable"))?
-                            .requirements
-                            .push(requirement),
+                        RequirementScope::Folder { folder_id } => {
+                            if !draft.folders.iter().any(|f| &f.folder_id == folder_id) {
+                                // Acceptance explicitly reviews a new current attachment. Never
+                                // rewrite an earlier snapshot or admit detached proposal roots.
+                                let mut folder = live.folders.iter().find(|f| &f.folder_id == folder_id && !f.local_workspace_binding.is_empty())
+                                    .cloned().ok_or_else(|| environment_error("Environment revision conflict; proposal folder is no longer attached; refresh and review"))?;
+                                folder.requirements.clear();
+                                let specification = EnvironmentFolderSpecification {
+                                    folder_id: folder.folder_id.clone(),
+                                    portable_folder_key: folder.portable_folder_key.clone(),
+                                    label: folder.label.clone(),
+                                    optional_git: folder.optional_git.clone(),
+                                    requirements: vec![],
+                                };
+                                draft.folders.push(specification.clone());
+                                review_draft.folders.push(specification);
+                                review_context.folders.push(folder);
+                            }
+                            draft
+                                .folders
+                                .iter_mut()
+                                .find(|f| &f.folder_id == folder_id)
+                                .expect("reviewed live folder")
+                                .requirements
+                                .push(requirement);
+                        }
                     }
                 }
                 history.decisions.insert(
@@ -496,7 +518,7 @@ impl ProjectEnvironmentStore {
                 );
             }
         }
-        validate_draft(current, &draft)?;
+        validate_draft(&review_context, &draft)?;
         for r in draft
             .project_requirements
             .iter_mut()
@@ -509,7 +531,7 @@ impl ProjectEnvironmentStore {
                 });
             }
         }
-        let mut saved = current.clone();
+        let mut saved = review_context.clone();
         saved.project_requirements = draft.project_requirements.clone();
         for f in &mut saved.folders {
             let d = draft
@@ -533,7 +555,7 @@ impl ProjectEnvironmentStore {
                 .decisions
                 .contains_key(&p.requirement.requirement_id)
         });
-        let mut diff = environment_revision_diff(current, &request.draft)?;
+        let mut diff = environment_revision_diff(&review_context, &review_draft)?;
         diff.target_digest = saved.content_digest.clone();
         // Include server-accepted proposals in the same review diff as field edits.
         for r in requirements(&draft).filter(|r| accepted_requirements.contains(&r.requirement_id))

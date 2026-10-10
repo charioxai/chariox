@@ -58,7 +58,8 @@ impl KernelRuntimeState {
             ));
         }
         let current = store.snapshot_locked(&project)?;
-        let (environment, diff) = store.save_revision_locked(&current, &request, user)?;
+        let live = store.snapshot_live_bindings_locked(&project)?;
+        let (environment, diff) = store.save_revision_locked(&current, &live, &request, user)?;
         Ok(LocalDaemonResponse::ProjectEnvironmentSaved { environment, diff })
     }
 }
