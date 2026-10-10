@@ -55,12 +55,14 @@ pub fn run_codex_utility_prompt(
     let (write_access_mode, execution_mode, permission_level) = if policy.is_read_only_discovery() {
         // Plan plus the tracked live-sync mode is Codex's enforced
         // read-only sandbox on every host platform, including macOS. Do
-        // not inherit a provider run's ordinary build/yolo capability for
-        // discovery.
+        // not inherit a provider run's ordinary build capability for discovery.
+        // Native reads run without an approval round trip inside this sandbox;
+        // the discovery client still declines command escalation, writes,
+        // network grants, and MCP calls.
         (
             ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
             AgentExecutionMode::Plan,
-            AgentPermissionLevel::Required,
+            AgentPermissionLevel::Yolo,
         )
     } else {
         (
