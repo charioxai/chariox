@@ -609,6 +609,7 @@ export class LocalIpcClient {
       : Date.now()
     const replayAfterWrite = !runsAgainOnReplay(request)
     let retryDelayMs = KERNEL_RECONNECT_BASE_DELAY_MS
+    const relayBinding: { socket: WebSocket | null; request: ReturnType<typeof normalizeRelayRequest> | null } = { socket: null, request: null }
 
     for (;;) {
       lifetime.throwIfAborted()
@@ -640,15 +641,15 @@ export class LocalIpcClient {
         const daemonPublicKey = this.isRelayMode()
           ? this.relayDaemonPublicKeyForSocket(lane, socket)
           : null
-        const relayRequest = this.isRelayMode()
-          ? normalizeRelayRequest(
-            requestId,
-            request,
-            this.relayTarget,
-            daemonPublicKey,
-            this.relayIdentity,
+        // MP-08/MP-11: a delayed reply from this carrier can settle the replay.
+        // Keep its ephemeral response key bound to the request until the socket changes.
+        if (this.isRelayMode() && relayBinding.socket !== socket) {
+          relayBinding.request = normalizeRelayRequest(
+            requestId, request, this.relayTarget, daemonPublicKey, this.relayIdentity,
           )
-          : null
+          relayBinding.socket = socket
+        }
+        const relayRequest = this.isRelayMode() ? relayBinding.request : null
         if (relayRequest) {
           pending.setRelayDecryptResponse((payload) => {
             if (this.getWebSocket(lane) !== socket) {
