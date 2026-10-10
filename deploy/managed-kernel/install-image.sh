@@ -35,6 +35,8 @@ managed_home=$install_root/home/chariox
 managed_state=$managed_home/.chariox
 legacy_home=$state_root/home
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$script_root/image-preparation-progress.sh"
+record_image_preparation_phase image_install_start
 staging_root=$(mktemp -d "${TMPDIR:-/tmp}/chariox-image-install.XXXXXX")
 chmod 0700 "$staging_root"
 cleanup() {
@@ -116,6 +118,7 @@ verify_selected_release() {
   fi
   node "$script_root/managed-kernel-upgrade-state.mjs" verify-immutable-release-tree "$1" 0
 }
+record_image_preparation_phase image_install_verify
 verify_selected_release "$image_root" "$expected_release_digest" "$trusted_public_key"
 
 require_regular_file "$image_root/usr/local/bin/chariox-kernel"
@@ -496,6 +499,7 @@ install -d -o root -g root -m 0755 \
   "$releases_root"
 if [ "$managed_provider_topology" = path1 ]; then
   trusted_builder_runtime_key=$install_root/etc/chariox/trusted-builder-public-key
+  record_image_preparation_phase image_install_pin
   require_real_ancestor_chain "$install_root/etc/chariox" "trusted builder key directory"
   ensure_directory_parent "$install_root/etc/chariox" "trusted builder key directory"
   if [ "$(stat -c %u "$install_root/etc/chariox")" != 0 ] \
@@ -526,6 +530,7 @@ if [ "$managed_provider_topology" = path1 ]; then
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$install_root/etc/chariox"
 fi
 rm -rf -- "$pending_release"
+record_image_preparation_phase image_install_publish
 if [ -e "$published_release" ] || [ -L "$published_release" ]; then
   if ! verify_selected_release "$published_release" "$expected_release_digest" "$trusted_public_key"; then
     echo "existing digest-named managed release is invalid; refusing to replace immutable release: $published_release" >&2
@@ -642,6 +647,7 @@ restore_previous_current() {
 }
 
 begin_access_policy_transaction
+record_image_preparation_phase image_install_activate
 activate_access_policy || exit 1
 
 if ! atomic_symlink "releases/$release_name" "$install_root/usr/lib/chariox/current"; then
@@ -671,3 +677,4 @@ if ! rm -f -- "$install_root/etc/systemd/system/multi-user.target.wants/chariox-
 fi
 
 access_policy_pending=0
+record_image_preparation_phase image_install_complete

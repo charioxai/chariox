@@ -235,4 +235,53 @@ diag.accept(pathlib.Path(sys.argv[2]), sys.argv[3].encode())
             with self.assertRaises(ValueError): diag.accept(observer, raw)
             self.assertEqual(outside.read_bytes(), raw)
 
+    def test_mp07_preparation_is_observed_before_install_and_failure_is_shippable(self):
+        import subprocess
+        helper=pathlib.Path(__file__).with_name('image-preparation-progress.sh')
+        events=['image_prepare_start','image_prepare_packages','image_install_start',
+                'image_install_verify','image_install_pin','image_install_publish',
+                'image_install_activate','image_install_complete','image_prepare_pin',
+                'image_prepare_providers','image_prepare_provider_probe','image_prepare_rootless',
+                'image_prepare_pull','image_prepare_build','image_prepare_freeze',
+                'image_prepare_complete','image_prepare_failed']
+        with tempfile.TemporaryDirectory() as a,tempfile.TemporaryDirectory() as b:
+            guest,observer=pathlib.Path(a),pathlib.Path(b)
+            env=dict(os.environ,CHARIOX_IMAGE_PREPARATION_DIAGNOSTICS_DIR=a)
+            command='script_root=${1%/*}; . "$1"; shift; for event do record_image_preparation_phase "$event"; done'
+            result=subprocess.run(['sh','-c',command,'test',str(helper),*events],env=env,text=True,capture_output=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout.splitlines(),['chariox-image-preparation: '+e for e in events])
+            rows=list(diag.records(guest))
+            self.assertEqual([json.loads(r)['event'] for r in rows],events)
+            receipt=diag.ship(guest,'https://observer.example/path1-diagnostics/round-20261010h',set(),lambda raw:{'sha256':diag.accept(observer,raw)})
+            self.assertEqual(receipt['records'],len(events))
+            result=subprocess.run(['sh','-c','. "$1"; record_image_preparation_phase "PRIVATE-canary"','test',str(helper)],env=env,text=True,capture_output=True)
+            self.assertNotEqual(result.returncode,0)
+            self.assertNotIn('PRIVATE-canary',result.stdout+result.stderr)
+            self.assertEqual(len(list(diag.records(guest))),len(events))
+
+    def test_mp07_preparation_progress_without_diagnostics_needs_no_node_or_python(self):
+        import subprocess
+        helper=pathlib.Path(__file__).with_name('image-preparation-progress.sh')
+        result=subprocess.run(['/bin/sh','-c','. "$1"; record_image_preparation_phase image_prepare_packages','test',str(helper)],env={'PATH':'/nonexistent'},text=True,capture_output=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(result.stdout,'chariox-image-preparation: image_prepare_packages\n')
+
+    def test_mp07_observed_wrapper_keeps_preparation_exit_and_public_terminal_phase(self):
+        import subprocess
+        source=pathlib.Path(__file__).with_name('observe-image-preparation.sh')
+        helper=pathlib.Path(__file__).with_name('image-preparation-progress.sh')
+        for code in (0,42):
+            with tempfile.TemporaryDirectory() as a:
+                root=pathlib.Path(a)
+                marker=root/'builder-marker';marker.write_text('managed-remote-kernels-image-builder-v1\n')
+                wrapper=root/'observe-image-preparation.sh'
+                wrapper.write_text(source.read_text().replace('/.chariox-managed-image-builder',str(marker)))
+                (root/helper.name).write_bytes(helper.read_bytes())
+                (root/'prepare-hetzner-image.sh').write_text('exit '+str(code)+'\n')
+                result=subprocess.run(['/bin/sh',str(wrapper),'unused-rootfs','unused-digest','unused-public-pin'],env={'PATH':'/usr/bin:/bin'},text=True,capture_output=True)
+                self.assertEqual(result.returncode,code,result.stderr)
+                self.assertEqual(result.stdout.splitlines(),['chariox-image-preparation: image_prepare_start',
+                    'chariox-image-preparation: image_prepare_'+('complete' if code==0 else 'failed')])
+
 if __name__=='__main__':unittest.main()

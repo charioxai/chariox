@@ -31,7 +31,12 @@ EVENTS = frozenset(('prompt_dispatch provider_dispatch_start provider_dispatch_r
     'builder_pin_journal_directory_failed builder_pin_journal_ancestor_failed builder_pin_journal_previous_missing builder_pin_journal_previous_file_failed builder_pin_journal_previous_digest_failed builder_pin_journal_previous_release_ancestor_failed builder_pin_journal_previous_release_file_failed builder_pin_journal_previous_compare_failed builder_pin_journal_target_missing builder_pin_journal_target_file_failed builder_pin_journal_target_digest_failed builder_pin_journal_target_release_ancestor_failed builder_pin_journal_target_release_file_failed builder_pin_journal_target_compare_failed builder_pin_runtime_ancestor_failed builder_pin_runtime_file_failed builder_pin_role_failed builder_pin_compare_failed builder_pin_atomic_failed '
     'activation_release_override_start activation_app_prepare_start activation_current_link_start '
     'activation_data_volume_links_start activation_app_storage_start activation_slice_facade_start '
-    'activation_slice_facade_check_start').split())
+    'activation_slice_facade_check_start '
+    'image_prepare_start image_prepare_packages image_prepare_pin image_prepare_providers '
+    'image_prepare_provider_probe image_prepare_rootless image_prepare_pull image_prepare_build '
+    'image_prepare_freeze image_prepare_complete image_prepare_failed '
+    'image_install_start image_install_verify image_install_pin image_install_publish '
+    'image_install_activate image_install_complete').split())
 MAX_RECORD = 1024
 MAX_JOURNAL = 8 * 1024 * 1024
 

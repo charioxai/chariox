@@ -38,6 +38,35 @@ environment hygiene without forking ordinary provider filesystem semantics.
 
 ## Release inputs
 
+MP-07/MP-10/MP-11: use `deploy/managed-kernel/observe-image-preparation.sh`
+with the same three arguments as `prepare-hetzner-image.sh` for a disposable
+image-builder campaign. Both preparation and installation emit fixed public
+phases before package provisioning, verification, pin admission, publication,
+provider probes, rootless startup, registry pull/build, and freezing. Plain
+progress uses shell builtins; preparation explicitly installs Node before the
+existing Node verifier and canonical builder-pin comparator. Do not replace
+canonical key identity with byte comparison or silently provision another pin.
+
+For off-machine capture, provision Python and download the exact reviewed tools
+before invoking the wrapper, then set
+`CHARIOX_IMAGE_PREPARATION_OBSERVER_URL=https://<own-host>/path1-diagnostics/<campaign>`.
+Start the matching receiver first. The wrapper starts a bounded transient
+systemd shipper before installation, journals only allowlisted public events,
+and flushes acknowledged receipts before stopping its own observer. It never
+ships command arguments, package output, general journals, credentials, or key
+bytes. Preparation errors retain their original exit status; missing final
+acknowledgement prevents a successful observed campaign. Preserve the independent
+outside watchdog and builder deadline. An abrupt builder loss can retain only
+the last acknowledged phase; neither a phase nor an observer receipt establishes
+release, session, or machine readiness. Collect the bootstrap download/package
+steps separately before these tools are available.
+
+Local nested-Docker preparation needs a dedicated host-filesystem bind mount
+for `/var/lib/chariox-docker`; an overlay-backed container root may reject the
+rootless overlay snapshotter. This is local drill setup, not a managed-image
+storage-policy change. A local preparation pass does not diagnose an unobserved
+paid timeout or close MP-07/MP-10 acceptance.
+
 Use the OpenShip builder to build `chariox-kernel`, `chariox-managed-bootstrap`,
 `chariox-relay`, `chariox-app-package`, and `chariox-app-storage` for `x86_64-unknown-linux-gnu` from an exact pushed
 OSS revision. The builder must hold a dedicated Ed25519 PKCS8 attestation key
