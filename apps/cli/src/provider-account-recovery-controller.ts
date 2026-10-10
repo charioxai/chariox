@@ -2,15 +2,18 @@ import { BoxRenderable, TextRenderable } from "@opentui/core"
 import type { CliStdinKeyEvent } from "./cli-stdin-key-controller.js"
 import { theme } from "./theme.js"
 
+export type ProviderAccountRecoveryTarget = {sessionId: string; agentId: string}
+
 type RecoveryAction = { label: string; run(): void }
 
 export function createProviderAccountRecoveryController(options: {
   renderer: ConstructorParameters<typeof BoxRenderable>[0]
   dimensions(): { width: number; height: number }
-  actions(): RecoveryAction[]
+  actions(target?: ProviderAccountRecoveryTarget): RecoveryAction[]
 }) {
   let box: BoxRenderable | undefined
   let message: string | null = null
+  let target: ProviderAccountRecoveryTarget | undefined
   let selected = 0
   let closing = false
   const clear = () => {
@@ -29,7 +32,7 @@ export function createProviderAccountRecoveryController(options: {
     box?.requestRender()
   }
   const invoke = (index: number) => {
-    const action = options.actions()[index]
+    const action = options.actions(target)[index]
     close()
     action?.run()
   }
@@ -45,7 +48,7 @@ export function createProviderAccountRecoveryController(options: {
     })
     panel.add(new TextRenderable(options.renderer, { content: message.includes("sign-in not checked") ? "Check provider account sign-in" : message.includes("has exhausted") ? "Choose provider account with quota" : "Provider account needs sign-in", fg: theme.text }))
     panel.add(new TextRenderable(options.renderer, { content: message, fg: theme.text, wrapMode: "word" }))
-    options.actions().forEach((action, index) => {
+    options.actions(target).forEach((action, index) => {
       const button = new TextRenderable(options.renderer, {
         content: `${selected === index ? ">" : " "} [${action.label}]`, fg: selected === index ? theme.primary : theme.text,
       })
@@ -59,8 +62,9 @@ export function createProviderAccountRecoveryController(options: {
   return {
     assignBox(value: BoxRenderable | undefined) { box = value; render() },
     ownsInput: () => message !== null || closing,
-    show(messageText: string) {
+    show(messageText: string, rejectedTarget?: ProviderAccountRecoveryTarget) {
       if (!/selected \S+ account .*not authenticated|needs sign-in\.|sign-in not checked\.|has exhausted its allowance/i.test(messageText)) return
+      target = rejectedTarget
       message = messageText
       selected = 0
       render()
@@ -71,9 +75,9 @@ export function createProviderAccountRecoveryController(options: {
       if (event.name === "escape") close()
       else if (event.name === "return" || event.name === "enter") invoke(selected)
       else if (event.name === "down" || event.name === "tab") {
-        selected = (selected + 1) % options.actions().length; render()
+        selected = (selected + 1) % options.actions(target).length; render()
       } else if (event.name === "up") {
-        selected = (selected + options.actions().length - 1) % options.actions().length; render()
+        selected = (selected + options.actions(target).length - 1) % options.actions(target).length; render()
       }
       return true
     },

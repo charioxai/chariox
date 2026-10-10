@@ -625,11 +625,12 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setFooterFlash,
     onFooterFlashChange: () => updateSessionChrome(),
   })
+  let blockedAccountTarget: {sessionId: string; agentId: string} | undefined
   const providerAccountRecovery = createProviderAccountRecoveryController({
     renderer,
     dimensions,
-    actions: () => {
-      const agent = sessionState().agents.find(candidate => candidate.id === focusedAgentId())
+    actions: target => {
+      const agent = (!target || target.sessionId === sessionState().id) ? sessionState().agents.find(candidate => candidate.id === (target?.agentId ?? focusedAgentId())) : undefined
       const provider = agent?.provider ?? waitingRoomState().providerId
       const currentProfile = agent?.account_profile ?? waitingRoomState().accountProfileId
       const alternative = providerAccountsForProvider(providerAccountsState(), provider)
@@ -639,7 +640,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
         { label: "Open Provider Accounts", run: () => { setFatalError(null); void executeCommandCenterCommand("/provider accounts"); promptInputRefController.focus() } },
         { label: alternative ? `Switch account to ${alternative.label}` : "Switch account", run: () => {
           setFatalError(null)
-          if (alternative) void Promise.resolve(applyAccountSelection(alternative.profile_id)).catch(error => flashFooter(formatError(error), "error"))
+          if (alternative) void Promise.resolve(applyAccountSelection(alternative.profile_id, target)).catch(error => flashFooter(formatError(error), "error"))
           else { setWaitingRoomState({ ...waitingRoomState(), focus: "account" }); reconcileWaitingRoom(waitingRoomState()) }
         } },
         { label: "Retry", run: () => { setFatalError(null); void submitPrompt() } },
@@ -648,7 +649,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
   const flashFooter = (message: string, tone: "info" | "error") => {
     footerFlashController.flash(message, tone)
-    if (tone === "error") providerAccountRecovery.show(message)
+    if (tone === "error") providerAccountRecovery.show(message, blockedAccountTarget)
+    blockedAccountTarget = undefined
   }
   onCleanup(providerAccountRecovery.close)
 
@@ -906,6 +908,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
+    onProviderAccountPromptBlocked: (target: {sessionId: string; agentId: string}) => { blockedAccountTarget = target },
     providerAccountRecoveryOwnsInput: providerAccountRecovery.ownsInput,
     handleProviderAccountRecoveryKey: providerAccountRecovery.handleKey,
     appHostTerminal: createAppHostTerminal(renderer),

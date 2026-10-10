@@ -25,7 +25,7 @@ test("MP-08 / MP-11 existing slice activation uses worker-owned authentication",
   const harness = createHarness({
     controlDecision: { action: "none" },
     activationDecision: { action: "create", launch: { provider: "codex", model: "gpt-5.4", effort: "low", accountProfile: "same-profile", sliceRef: "slice-existing" } },
-    remoteState: { providerAccounts: [{ provider: "codex", profile_id: "same-profile", label: "Source signed out", is_default: true, auth_state: "not_configured" }] },
+    remoteState: { providerAccounts: [{ provider: "codex", profile_id: "same-profile", label: "Source signed out", is_default: true, auth_state: "not_configured", owner_user_id: "local", origin: "linked", usage: {profile_id: "same-profile", provider: "codex", availability: "unavailable", source: "test"} }] },
   })
   await harness.controller.activate()
   assert.equal(harness.createdLaunches.length, 1)

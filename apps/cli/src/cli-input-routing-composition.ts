@@ -52,6 +52,7 @@ export type CliInputRoutingCompositionDeps = {
   setPromptHistoryIndex: AnyFn
   setPromptHistoryDraft: AnyFn
   clearCommandCenter: AnyFn
+  onProviderAccountPromptBlocked?: (target: {sessionId: string; agentId: string}) => void
   flashFooter: AnyFn
   appendNotice: AnyFn
   requestExit: AnyFn
@@ -394,7 +395,9 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       const agent = deps.sessionState().agents.find((candidate: { id: string; alias?: string | null }) =>
         alias ? candidate.alias?.toLowerCase() === alias.toLowerCase() : candidate.id === agentId,
       )
-      return agent ? selectedProviderAccountStartBlockReason(deps.providerAccountsState(), agent.provider, agent.account_profile ?? undefined, agent.remote_execution, agent.model) : null
+      const reason = agent ? selectedProviderAccountStartBlockReason(deps.providerAccountsState(), agent.provider, agent.account_profile ?? undefined, agent.remote_execution, agent.model) : null
+      if (reason && agent) deps.onProviderAccountPromptBlocked?.({sessionId: deps.sessionState().id, agentId: agent.id})
+      return reason
     },
     getPendingAttachments: deps.pendingAttachments,
     waitForPendingAgentFocusTransition: deps.waitForPendingAgentFocusTransition,

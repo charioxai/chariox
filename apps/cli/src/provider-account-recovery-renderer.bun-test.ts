@@ -9,14 +9,15 @@ test("MP-08 / MP-11 account recovery shows the full reason and consumes duplicat
   const box = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
   h.renderer.root.add(box)
   const invoked: string[] = []
-  const controller = createProviderAccountRecoveryController({ renderer: h.renderer, dimensions: () => ({ width: 100, height: 40 }), actions: () => [
+  const targets: unknown[] = []
+  const controller = createProviderAccountRecoveryController({ renderer: h.renderer, dimensions: () => ({ width: 100, height: 40 }), actions: target => { targets.push(target); return [
     { label: "Open Provider Accounts", run: () => invoked.push("accounts") },
     { label: "Switch account", run: () => invoked.push("switch") },
     { label: "Retry", run: () => invoked.push("retry") },
-  ] })
+  ] } })
   try {
     controller.assignBox(box)
-    controller.show("codex-1 needs sign-in. Sign in through Provider Accounts, or select signed-in account chariox.")
+    controller.show("codex-1 needs sign-in. Sign in through Provider Accounts, or select signed-in account chariox.", {sessionId: "session-1", agentId: "agent-b"})
     await h.renderOnce()
     const frame = h.captureCharFrame()
     assert.match(frame, /Provider account needs sign-in/)
@@ -25,6 +26,7 @@ test("MP-08 / MP-11 account recovery shows the full reason and consumes duplicat
     controller.handleKey({ name: "down" })
     controller.handleKey({ name: "return" })
     assert.deepEqual(invoked, ["switch"])
+    assert.deepEqual(targets.at(-1), {sessionId: "session-1", agentId: "agent-b"})
     assert.equal(controller.ownsInput(), true)
     assert.equal(controller.handleKey({ name: "return" }), true)
     assert.deepEqual(invoked, ["switch"])
