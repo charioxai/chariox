@@ -85,3 +85,14 @@ Rollback removes the explicit helper/scope configuration. Cleanup is limited
 to inventoried compiler output and runner-owned processes. Durable kernel homes,
 keys, backups, credential profiles and reviewer infrastructure are preserved.
 All builds stay under the approved build root with `-j2`; no CI or push.
+
+R7 reviews of #920 @5973ba185, #923 @43fd9f1a6 and #957 @777b256c4 arrived
+before handoff. Fail-first source fixes now reject same-process window covers,
+verify non-default build launches, preserve owner-reset-required after a failed
+owned release, retire invalid geometry pairings, withhold capture on failed
+secure-field classification, and require successful bounded owned-window
+cleanup for a fence PASS. The actual adapter harness passes 15 tests; the
+paired reply and secure-classification tests pass. These source changes are
+also retained on the affected M0/M1 branches. The r6 helper/kernel remain
+unchanged, so the pending re-grant suite cannot validate the new review fixes.
+Those exact new-binary live gates await the next combined rebuild and grant.
