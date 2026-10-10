@@ -840,7 +840,7 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     let connect_timeout = response_timeout
         .map(|deadline| deadline.min(transport_timeout))
         .unwrap_or(transport_timeout);
-    let (mut socket, _) = timeout(connect_timeout, connect_async(&relay_url))
+    let (mut socket, _) = timeout(connect_timeout, connect_relay_socket(&relay_url))
         .await
         .map_err(|_| DaemonError::LocalTransport {
             operation: "connect temporary relay peer socket",
