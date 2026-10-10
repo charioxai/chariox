@@ -1,5 +1,11 @@
 # Computer mode on a macOS kernel host
 
+R9 starts M3 on `cu/macos-m3` from published M2 `bd6429678`. Paired experimental
+fixture input, physical-human pause and fatal press uncertainty have headless
+source checks; grant-backed/native/hosted acceptance remains BLOCKED. See
+[the M3 checkpoint](COMPUTER_USE_MACOS_M3_CHECKPOINT.md). M2/M3 stay disabled
+until matching grant and protection gates pass. The retained r6 helper is intact.
+
 Status: M1 implemented on `cu/macos-m1` (base `computer/linux-host` `abff544fd`
 plus M0 `94311782d`), 2026-10-07; see "M1 shared seat and helper lifecycle".
 M0 implemented but unattended, 2026-10-07. Lane `cu/macos-m0`, based on
