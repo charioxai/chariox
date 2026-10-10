@@ -5,7 +5,7 @@ use crate::durable_state::agent_lifecycle::{
 };
 #[test]
 fn agent_task_projection_shape_is_bound_to_protocol452() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 484);
     let task = AgentTaskExecution {
         task_id: "task".into(),
         room_id: "room".into(),

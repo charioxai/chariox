@@ -148,7 +148,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             agent_id,
             command_trace.clone(),
-            command.external_grant_id(),
+            command,
             AgentCommand::SubmitPrompt {
                 request,
                 trace_id: command_trace.trace_id().to_string(),
@@ -224,7 +224,7 @@ impl AgentRuntime {
                         .dispatch_to_agent(
                             agent_id.clone(),
                             command_trace.clone(),
-                            command.external_grant_id(),
+                            &command,
                             AgentCommand::SubmitPrompt {
                                 request: submit_request,
                                 trace_id: command_trace.trace_id().to_string(),
@@ -319,7 +319,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             agent_id.clone(),
             CommandTrace::from_command(command),
-            command.external_grant_id(),
+            command,
             AgentCommand::CancelActivePrompt {
                 request,
                 target_agent_id: agent_id.clone(),
@@ -344,7 +344,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             request.target_agent_id.clone(),
             CommandTrace::from_command(command),
-            command.external_grant_id(),
+            command,
             AgentCommand::SteerQueuedPrompt { request },
         )
         .await
@@ -366,7 +366,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             request.target_agent_id.clone(),
             CommandTrace::from_command(command),
-            command.external_grant_id(),
+            command,
             AgentCommand::CancelQueuedPrompt { request },
         )
         .await
@@ -388,7 +388,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             request.target_agent_id.clone(),
             CommandTrace::from_command(command),
-            command.external_grant_id(),
+            command,
             AgentCommand::UpdateQueuedPrompt { request },
         )
         .await
@@ -420,7 +420,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             agent_id.clone(),
             CommandTrace::from_command(command),
-            command.external_grant_id(),
+            command,
             AgentCommand::CompletePrompt {
                 request,
                 target_agent_id: agent_id.clone(),

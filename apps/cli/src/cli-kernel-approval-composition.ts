@@ -9,7 +9,9 @@ import { createKernelApprovalRenderer } from "./kernel-approval-renderer.js"
 import type { LocalIpcClient } from "./ipc.js"
 import { createPasskeyPopupController, passkeyPromptsFromEvent } from "./passkey-popup-controller.js"
 import { createPasskeyPopupRenderer } from "./passkey-popup-renderer.js"
+import { extendKernelSudo, revokeKernelAccessGrant } from "./kernel-api.js"
 import { respondToInteraction, respondToKernelAccessDecision } from "./prompt-runtime-api.js"
+import { createSudoWindowBand } from "./sudo-window-band.js"
 import { routeRawPastes, type RawPasteEvent } from "./raw-paste-routing.js"
 
 /** The kernel's decisions on this terminal: the session's approval panel and,
@@ -32,6 +34,7 @@ export function createCliKernelApprovalComposition(deps: {
   closeOtherDialog(): void
   applySession(session: RuntimeSession): void
   notify(message: string): void
+  attachmentId(): string | null
 }) {
   const actualClient = () => (deps.client as LocalIpcClient & {currentClient?(): LocalIpcClient}).currentClient?.() ?? deps.client
   const userPromptClients = new Map<string, LocalIpcClient>()
@@ -87,6 +90,34 @@ export function createCliKernelApprovalComposition(deps: {
     applySession: deps.applySession,
     showPasskeyPrompt: (sessionId, interactionId) => popup.show(sessionId, interactionId),
   })
+  // MP-08/MP-10/MP-11 A04: every attached terminal shows the kernel's sudo
+  // windows with Extend (fresh passkey popup) and Revoke.
+  const report = (failure: unknown) => deps.notify(failure instanceof Error ? failure.message : String(failure))
+  const band = createSudoWindowBand(deps.renderer, {
+    extend: (window) => {
+      const attachment = deps.attachmentId()
+      if (!attachment) return
+      deps.notify("Extend sudo: enter your passkey in the popup (F8) and choose 1-8 hours")
+      void extendKernelSudo(deps.client, { session_id: window.session_id, attachment_id: attachment, entry_id: window.entry_id, revision: window.revision ?? 0 })
+        .then((turn) => deps.notify(`Sudo window ${turn.entry_id} extended`), report)
+    },
+    revoke: (window) => {
+      void revokeKernelAccessGrant(deps.client, window.entry_id)
+        .then(() => deps.notify(`Revoked sudo window ${window.entry_id}`), report)
+    },
+  })
+  const renderBand = () => {
+    const session = deps.session()
+    // MP-08/MP-10/MP-11: resolved kernel status is visible during startup too.
+    band.render(session.sudo_windows ?? [], Date.now(),
+      (agentId) => session.agents.find((agent) => agent.id === agentId)?.alias ?? agentId)
+  }
+  const bandTick = setInterval(renderBand, 15_000)
+  onCleanup(() => clearInterval(bandTick))
+  createEffect(() => {
+    deps.themeRevision()
+    renderBand()
+  })
   createEffect(() => {
     deps.themeRevision()
     deps.dimensions()
@@ -114,6 +145,7 @@ export function createCliKernelApprovalComposition(deps: {
       else deps.flashFooter("No pending approvals", "info")
     },
     assignBanner(value: BoxRenderable) { surface.assignBanner(value); controller.sync() },
+    assignSudoBand(value: BoxRenderable) { band.assign(value); renderBand() },
     /** The popup takes keys first: it sits over the panel. */
     handleKey: (event: KernelApprovalKey) => popup.handleKey(event) || controller.handleKey(event),
     ownsInput: () => popup.ownsInput() || controller.ownsInput(),

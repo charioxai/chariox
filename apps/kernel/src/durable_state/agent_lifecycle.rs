@@ -115,8 +115,18 @@ impl DurableKernelStateStore {
         room: &str,
         agent: &str,
     ) -> Result<Option<InboxEvent>, DaemonError> {
+        self.agent_work_delivery_front(room, agent, None)
+    }
+    /// A04 causal fence: with `work`, pending events of other origins wait
+    /// behind the elevated task's own correlated wakes instead of blocking them.
+    pub(crate) fn agent_work_delivery_front(
+        &self,
+        room: &str,
+        agent: &str,
+        work: Option<&str>,
+    ) -> Result<Option<InboxEvent>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.front")?;
-        let row:Option<(i64,String,String,String)>=db.query_row("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('pending','submitting','uncertain','blocked') ELSE 1 END ORDER BY sequence LIMIT 1",params![room,agent],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+        let row:Option<(i64,String,String,String)>=db.query_row(&format!("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (json_extract(payload,'$.state')='pending' AND (?3 IS NULL OR {WORK_CORRELATED})) ELSE 1 END ORDER BY sequence LIMIT 1"),params![room,agent,work],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
         row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
             .transpose()
     }
@@ -154,16 +164,28 @@ impl DurableKernelStateStore {
         row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
             .transpose()
     }
+    #[cfg(test)]
     pub(crate) fn agent_inbox(
         &self,
         room: &str,
         agent: &str,
         after: u64,
     ) -> Result<Vec<InboxEvent>, DaemonError> {
+        self.agent_work_inbox(room, agent, after, None)
+    }
+
+    pub(crate) fn agent_work_inbox(
+        &self,
+        room: &str,
+        agent: &str,
+        after: u64,
+        work: Option<&str>,
+    ) -> Result<Vec<InboxEvent>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.inbox")?;
-        let mut q=db.prepare("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 ORDER BY sequence LIMIT 128").map_err(sql)?;
+        let correlated = WORK_CORRELATED.replace("?3", "?4");
+        let mut q=db.prepare(&format!("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND (?4 IS NULL OR {correlated}) ORDER BY sequence LIMIT 128")).map_err(sql)?;
         let rows = q
-            .query_map(params![room, agent, sql_integer(after)?], |r| {
+            .query_map(params![room, agent, sql_integer(after)?, work], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, String>(1)?,
@@ -491,6 +513,17 @@ fn get_event(
     let (source,id,payload):(String,String,String)=tx.query_row("SELECT source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3",params![room,agent,sql_integer(seq)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(sql)?;
     decode_inbox(sql_integer(seq)?, room, agent, &source, &id, &payload)
 }
+/// SQL predicate: the event is a kernel-correlated wake of task `?3`.
+pub(super) const WORK_CORRELATED: &str = "(json_extract(payload,'$.kind')<>'message' AND (json_extract(payload,'$.payload.task_id')=?3 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?3)))";
+
+pub(crate) fn work_correlated(event: &InboxEvent, work: &str) -> bool {
+    event.kind != "message"
+        && (event.payload["task_id"].as_str() == Some(work)
+            || event.payload["task_ids"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(work))))
+}
+
 pub(crate) fn occurrence(
     room: &str,
     agent: &str,

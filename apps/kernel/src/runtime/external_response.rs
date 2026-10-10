@@ -143,6 +143,7 @@ response_policies! {
         WorkflowNotifications,
         CloudRelayLoggedOut,
         KernelSudoRequested,
+        KernelSudoExtended,
         KernelAccessGranted,
         KernelAccessGrantsListed,
         KernelAccessRevoked,

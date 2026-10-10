@@ -4,7 +4,7 @@ use crate::runtime::state::{critical_approval_audit_payload, PASSKEY_ALREADY_ANS
 use crate::transport::kernel_protocol::KernelEvent;
 
 #[test]
-fn sudo_protocol_415_attributes_one_turn_to_its_human_entry() {
+fn sudo_protocol_487_window_extension_and_session_status_shapes() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 487);
     let turn = crate::local::KernelSudoTurn {
         entry_id: "sudo:one".into(),
@@ -15,16 +15,39 @@ fn sudo_protocol_415_attributes_one_turn_to_its_human_entry() {
         requester: None,
         prompt_id: Some("turn-one".into()),
         provider_run_id: Some("run-one".into()),
+        task_id: Some("sudo:one".into()),
+        duration_minutes: 120,
+        expires_at_ms: Some(7_200_000),
+        revision: 2,
+        warning_sent: false,
+        deadline: Some(std::time::Instant::now()),
     };
-    let snapshot = serde_json::json!({"kind": PasskeyPromptKind::Sudo, "turn":turn,
-        "receipt":crate::runtime::state::sudo_approval_receipt(&turn, "other", "critical", "approve")});
+    let extend = LocalDaemonRequest::ExtendKernelSudo(crate::local::ExtendKernelSudoRequest {
+        session_id: "s".into(),
+        attachment_id: "terminal".into(),
+        entry_id: "sudo:one".into(),
+        revision: 2,
+    });
+    let mut session = crate::session::RuntimeSession::new(
+        "s",
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "daemon",
+    );
+    session.set_sudo_windows(vec![turn.clone()]);
+    let snapshot = serde_json::json!({"kind": PasskeyPromptKind::Sudo, "turn": turn, "extend": extend,
+        "extended": LocalDaemonResponse::KernelSudoExtended { turn: turn.clone() },
+        "sudo_windows": serde_json::to_value(&session).unwrap()["sudo_windows"]});
+    // The monotonic deadline is kernel memory only and never serialized.
+    assert!(snapshot["turn"].get("deadline").is_none());
+    assert!(snapshot["turn"].get("token").is_none());
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "8f52a7b4c7bdf054826de5653268cf097b60b1ce0ed8aee9da0ee4aec664d83d"
+        "256bc3e160c1813a1255ad56fbf2ab952598b25e81d9e7db13933eaec552f956"
     );
-    assert!(snapshot["turn"].get("expires_at_ms").is_none());
-    assert!(snapshot["turn"].get("token").is_none());
 }
 
 #[test]
@@ -309,7 +332,7 @@ fn external_sudo_requester_and_host_terminal_attribution_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&serde_json::to_value(&turn).unwrap()).unwrap())
         ),
-        "1cd52d9eafdcad1f6c0e3becedbf9654e87fc4bb3805149b9f9eca72b83a25e7"
+        "50fc270c940c3ed289e977949ad9e2c009ddc00771a6cb6d8484eca224b9af7a"
     );
 }
 

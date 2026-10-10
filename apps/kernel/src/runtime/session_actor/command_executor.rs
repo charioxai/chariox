@@ -40,9 +40,12 @@ impl SessionRuntimeCommandExecutor {
     pub(super) fn with_external_command_authority(
         &self,
         authority: Option<(&str, &LocalDaemonRequest)>,
+        sudo_binding: Option<(String, String)>,
     ) -> Self {
         let mut executor = self.clone();
-        executor.store = self.store.with_external_command_authority(authority);
+        executor.store = self
+            .store
+            .with_external_command_authority(authority, sudo_binding);
         executor
     }
 
