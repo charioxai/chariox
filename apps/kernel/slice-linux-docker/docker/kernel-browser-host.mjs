@@ -1,4 +1,4 @@
-import {displayGeometry as geometry,displayDeviceMetrics} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry,displayDeviceMetrics,hostViewport} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
 import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -44,8 +44,6 @@ function restorationUrl(url) {
   try { return navigationUrl(url); } catch { return "about:blank"; }
 }
 
-const viewport = { css_width: geometry.width, css_height: geometry.height, device_scale_factor: 1,
-  desktop_pixel_width: geometry.width, desktop_pixel_height: geometry.height };
 export function navigationUrl(raw) {
   if (typeof raw !== "string" || raw.length > 8192) throw new Error("invalid browser URL");
   const url = new URL(raw);
@@ -223,7 +221,7 @@ export class KernelBrowserHost {
     // Restored pages can finish navigation between CDP document reads. Retry
     // only this observation, never the mutation that led to reconciliation.
     for (let attempt = 0; attempt < 3; attempt++) {
-      try { state = await this.browser.reconcile(viewport, { browserBarVisible: false }); break; }
+      try { state = await this.browser.reconcile(hostViewport(), { browserBarVisible: false }); break; }
       catch (error) {
         if (error.code !== "stale_document_reference" || attempt === 2) throw error;
         await delay(25);
@@ -247,7 +245,7 @@ export class KernelBrowserHost {
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
     if (!this.restoring) await this.save();
     return redactObservation({ state: "ready", generation: this.generation,
-      tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport }, this.protection.values);
+      tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport:hostViewport() }, this.protection.values);
   }
   async open(url, tabId = `host-tab-${randomUUID()}`, { signal } = {}) {
     await this.closeCompositors();this.foreground.reset();
@@ -296,7 +294,7 @@ export class KernelBrowserHost {
   }
   async screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true) {
     const started = timestamp();
-    const scale = this.scales.get(tab.tab_id) ?? 1;
+    const scale = this.scales.get(tab.tab_id) ?? hostViewport().device_scale_factor;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
     const regionMasks = protectedCapture ? this.protection.targets.length || this.browser.fillTargets?.size
@@ -453,17 +451,16 @@ export class KernelBrowserHost {
       if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
         ![1, 2].includes(command.device_scale_factor) || (geometry.width===1920&&command.device_scale_factor!==1) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
-      const scale = this.scales.get(tab.tab_id);
-      if (scale && scale !== command.device_scale_factor) throw new Error("MD-DISPLAY: canonical tab geometry is already selected");
-      const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-      await connection.send("Emulation.setDeviceMetricsOverride", displayDeviceMetrics(geometry.width,geometry.height,command.device_scale_factor,this.chromium.scale??1), sessionId);
-      this.scales.set(tab.tab_id, command.device_scale_factor);
+      // The native page is already reconciled at the kernel's canonical
+      // density. Subscribers only receive it; they never mutate input geometry.
+      const scale = hostViewport().device_scale_factor;
+      this.scales.set(tab.tab_id, scale);
       const id = `host-display-${randomUUID()}`;
       const codec=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER&&command.codecs.includes('avc1.420033')?'avc1.420033':command.codecs.find(c=>['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(c))??'png';
-      const stream = new DisplayStream({ relay_binary:command.codecs.includes('chariox-relay-binary-v96'), subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor, codec, css_width:geometry.width, css_height:geometry.height, dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec) }, { timing:this.timing,encoder:new BrowserEncoder(this.browser,tab.target_id) });
+      const stream = new DisplayStream({ relay_binary:command.codecs.includes('chariox-relay-binary-v96'), subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: scale, codec, css_width:geometry.width, css_height:geometry.height, dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec) }, { timing:this.timing,encoder:new BrowserEncoder(this.browser,tab.target_id) });
       this.displays.set(id, stream);
       this.armDisplayExpiry(stream);
-      return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor };
+      return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: scale };
     }
     if (command.op === "close") {
       this.mirror.removeTab(tab.tab_id);
