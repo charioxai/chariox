@@ -1,5 +1,12 @@
 # Computer mode on a macOS kernel host
 
+R10 starts M4 on `cu/macos-m4` from published M3 `7d8468b30`. Bounded AX refs,
+protected local Vision and typed Vault-policy withholding reuse the existing
+shared Computer snapshot/OCR/target-action requests. Field-scoped Mac Vault
+mapping, opaque AX and native/hosted acceptance remain blocked. See
+[the M4 checkpoint](COMPUTER_USE_MACOS_M4_CHECKPOINT.md). No helper rebuild or
+version allocation occurred; the pending granted helper stays unchanged.
+
 R9 starts M3 on `cu/macos-m3` from published M2 `bd6429678`. Paired experimental
 fixture input, physical-human pause and fatal press uncertainty have headless
 source checks; grant-backed/native/hosted acceptance remains BLOCKED. See

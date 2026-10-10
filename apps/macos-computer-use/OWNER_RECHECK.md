@@ -1,3 +1,65 @@
+# R10 single combined grant and unattended M0-M4 suite
+
+The retained r6 helper still awaits the morning re-grant. Its SHA-256 is
+`b02c5ba5aa6619698ae045a7fff4f4403b7fcf79ff6f09a981143a6ff8282028`,
+verified again in r10. Do not rebuild, sign or launch it during source work.
+That binary cannot validate M3/M4 source. Its existing historical replay remains
+below, separate from the next combined source gate.
+
+Batch M0/M1/M2/M3/M4 helper changes into one future coordinator-approved build
+under `/Users/miguel/.chariox/dev/cumac/build`. Publish exact helper/kernel
+SHA-256 and CDHash pins, then obtain one owner grant for that matching build.
+Do not rebuild it between milestones or request a grant per milestone. The
+runner handles fixture setup, transport checks and owned cleanup unattended.
+This is a blocked future recipe, not owner staging or a new acceptance PASS.
+The r10 lane performed no combined build, signing, launch or grant.
+
+After the single matching grant, use the existing admitted coordinator transport
+and approved durable kernel home. Preserve the public pin and tested protected
+backup prerequisites below. Do not create an identity, endpoint or profile.
+
+1. M0 runs both caret runners and the foreign/same-process fence suite. Their
+   global pointer movement and restoration now share the permanently retiring
+   lease. Keyboard focus loss with an unchanged pointer must stop cleanup warps,
+   including when focus returns. Native-process focus/pointer/window takeover
+   must refuse before movement. Keep independent selection and cover receipts.
+2. M1 runs identity, lease, Stop/revoke, stale epochs and strict in-flight
+   cancellation/release checks. Ordinary refusals must leave the seat usable.
+3. M2 runs protected capture, exact PNG/damage/repair and the real hosted encrypted
+   Web/local-TUI/remote-TUI viewer suite below.
+4. M3 runs observer health, admitted input, physical/remote takeover, denied input
+   with unchanged independent selection, safe explicit release and resumed input.
+   Defer the fatal owned-press death check until every M4 check has finished.
+5. M4 uses the existing `snapshot`, `ocr` and `target_action` commands against the
+   matching signed public fixture. Independent native receipts must prove the
+   scoped button action; repeat stale refs after layout/focus changes, new
+   observations, another observer, Stop, process reuse and protection changes.
+   Refused stale/foreign refs must leave the counter/selection unchanged.
+   Verify OCR against independently known public text and protected pixels at
+   1x/2x and negative origins. Ambiguous OCR and unavailable query lookup refuse.
+   Password metadata/children must be absent and secure classification failure
+   must withhold output. Vault-filled plain text is the only added private-field
+   masking scope. Test a synthetic Vault canary in field pixels, AX labels, OCR,
+   exact repair and every real viewer. Missing authenticated Mac field mapping,
+   unknown provenance, opaque AX or private exclusions must withhold all output.
+6. Run the M3 fatal press/death/reset gate last using the verified real press
+   hook below. Require owner-reset-required and Stop/Start denial. Preserve its
+   failure receipt; no later input may run until physical release is proven.
+
+M4's public requests reuse the existing shared contract. No protocol version was
+allocated. Authenticated Mac Vault plain-text field mapping and private UI
+exclusions still need coordinator integration. The current registry's browser/
+X11 refs and combined active/retired values cannot supply that proof. M4 query,
+language and useful AX-absent fallback coverage are also incomplete. Until the
+missing prerequisites and real transport/fixture orchestration exist, mark the
+combined gate BLOCKED; headless tests and mocked hooks cannot make it PASS.
+Whole-kernel tests run on b3, not this Mac. No sudo, permission request API,
+Keychain operation, installed-bundle launch or relay/reviewer change is allowed.
+
+See `docs/COMPUTER_USE_MACOS_M4_CHECKPOINT.md` for the exact source scope and
+component evidence. The earlier recipes below retain their historical pins and
+limits; none authorizes replacing the retained helper or claiming M4 acceptance.
+
 # R9 owner grant and unattended M0-M3 suite
 
 The retained r6 helper remains unchanged while the morning re-grant waits.

@@ -80,11 +80,19 @@ import AppKit
         try source.fence(scope, element: node, typing: false)
     }
     private func validate(_ node: AXUIElement, expected: TargetMetadata, scope: Request, stamp: CaptureStamp, source: MacSource) throws -> Bool {
-            try source.checkPermission(.click)
-            try source.fence(scope, element: node, typing: false)
-            guard try nativeSurface(scope) == stamp.surface else { return false }
-            if try captureElementIsSecure(read: { self.read(node, kAXSubroleAttribute) }) { return false }
-            return try self.metadata(node, source: source) == expected
+        try source.checkPermission(.click)
+        try source.fence(scope, element: node, typing: false)
+        guard try nativeSurface(scope) == stamp.surface else { return false }
+        let root = try source.selectedWindow(scope, app: AXUIElementCreateApplication(scope.pid))
+        var ancestor = node
+        for _ in 0..<32 {
+            if try captureElementIsSecure(read: { self.read(ancestor, kAXSubroleAttribute) }) { return false }
+            if CFEqual(ancestor, root) { return try self.metadata(node, source: source) == expected }
+            let parent = try source.attribute(ancestor, kAXParentAttribute)
+            guard CFGetTypeID(parent) == AXUIElementGetTypeID() else { throw Refusal.target }
+            ancestor = parent as! AXUIElement
+        }
+        return false
     }
     private func read(_ node: AXUIElement, _ name: String) -> (AXError, CFTypeRef?) {
         var value: CFTypeRef?
