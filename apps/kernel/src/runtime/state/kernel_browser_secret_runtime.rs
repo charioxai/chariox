@@ -335,11 +335,28 @@ fn scrub_browser_result(
         protection.require(scope, false)?;
         return Ok(result);
     }
+    if pixels && display && result.is_object() {
+        // MP-08/MP-10/MP-11: this is a host-owned transport schema. Neither
+        // fixed keys nor enum/binding strings are document observations.
+        protection.require(scope, false)?;
+        if let Some(frame) = result.get_mut("display_frame") {
+            if !frame.is_null() && !frame.is_object() {
+                return Err(host_error("MD-DISPLAY: invalid protected frame".into()));
+            }
+            *frame = scrub_display_metadata(protection, scope, frame.take(), true)?;
+        }
+        if let Some(object) = result.as_object_mut() {
+            for (key, value) in object {
+                if key != "display_frame" {
+                    *value = scrub_display_metadata(protection, scope, value.take(), false)?;
+                }
+            }
+        }
+        return Ok(result);
+    }
     // Trusted masked pixel bytes are opaque; scrubbing base64 as text would
     // corrupt images for short Vault values. All metadata still gets scrubbed.
-    let pixel_path = if display {
-        "/display_frame"
-    } else if result.get("frame").is_some() {
+    let pixel_path = if result.get("frame").is_some() {
         "/frame/data_base64"
     } else {
         "/data_base64"
@@ -350,31 +367,61 @@ fn scrub_browser_result(
         None
     };
     let mut result = protection.scrub(scope, result)?;
-    if let Some(mut data) = data {
-        if display && !data.is_null() {
-            // Opaque bytes are protected by the host; textual document/tab metadata is scrubbed.
-            let frame = data
-                .as_object_mut()
-                .ok_or_else(|| host_error("MD-DISPLAY: invalid protected frame".into()))?;
-            let payload = frame.remove("data_base64");
-            let tiles = frame.remove("tiles");
-            let stripes = frame.remove("stripes");
-            data = protection.scrub(scope, data)?;
-            if let Some(payload) = payload {
-                data["data_base64"] = payload;
-            }
-            if let Some(tiles) = tiles {
-                data["tiles"] = tiles;
-            }
-            if let Some(stripes) = stripes {
-                data["stripes"] = stripes;
-            }
-        }
+    if let Some(data) = data {
         if let Some(slot) = result.pointer_mut(pixel_path) {
             *slot = data;
         }
     }
     Ok(result)
+}
+
+// Display keys come from the fixed host contract. Scrub document-derived
+// values while preserving opaque protected payloads and trusted frame fields.
+fn scrub_display_metadata(
+    protection: &super::room_secret_observation::RoomSecretObservations,
+    scope: &str,
+    mut value: Value,
+    schema: bool,
+) -> Result<Value, DaemonError> {
+    // Admission was checked once above; primitives cannot carry text. Avoid
+    // serialization/value-lock work for every tile coordinate and key flag.
+    if matches!(&value, Value::Null | Value::Bool(_) | Value::Number(_)) {
+        return Ok(value);
+    }
+    if !schema {
+        return protection.scrub(scope, value);
+    }
+    match &mut value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                if schema
+                    && matches!(
+                        key.as_str(),
+                        "kind"
+                            | "codec"
+                            | "format"
+                            | "colour"
+                            | "subscription_id"
+                            | "tab_id"
+                            | "document_id"
+                            | "data_base64"
+                    )
+                {
+                    continue;
+                }
+                let segment = schema && matches!(key.as_str(), "tiles" | "stripes");
+                *child = scrub_display_metadata(protection, scope, child.take(), segment)?;
+            }
+        }
+        Value::Array(array) => {
+            for child in array {
+                *child = scrub_display_metadata(protection, scope, child.take(), schema)?;
+            }
+        }
+        Value::String(_) => return protection.scrub(scope, value),
+        _ => {}
+    }
+    Ok(value)
 }
 
 fn require_vault_owner(user: &str) -> Result<(), DaemonError> {
@@ -442,26 +489,87 @@ mod tests {
     #[test]
     fn mp08_mp11_hydrated_stripes_survive_short_secret_scrubbing() {
         use super::super::room_secret_observation::RoomSecretObservations;
-        use crate::transport::{
-            kernel_browser_display::encode_display_event, kernel_protocol::KernelEvent,
-        };
+        use crate::transport::kernel_browser_display::encode_display_event;
         let root = crate::test_support::TestWorktree::new("stripe-scrub-boundary");
         let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
-        store.register("stripe", "AAAA").unwrap();
-        // Annex-B start codes encode with the same prefix as this valid short value.
+        for secret in ["AAAA", "stripes", "frame", "avc1", "srgb"] {
+            store.register("stripe", secret).unwrap();
+        }
+        // MP-08/MP-10/MP-11: schema and binding collisions must survive the
+        // production scrub -> event extraction -> CXD1 transport boundary.
         let packet = "AAAAAWU=";
-        let result = json!({"display_frame":{"kind":"stripes","title":"AAAA", "stripes":[{"data_base64":packet}]},"text":"AAAA"});
+        let frame = json!({"kind":"stripes","subscription_id":"frame-stripes",
+            "tab_id":"frame-tab", "document_id":"stripes-document", "generation":1,
+            "sequence":2, "width":1280, "height":800, "colour":"srgb",
+            "stripes":[{"codec":"avc1.420033","key":true,"data_base64":packet}]});
+        let result = json!({"display_frame":frame,"frame_sent":true,"generation":1,
+            "title":"AAAA stripes frame","url":"https://example.org/stripes/frame",
+            "text":"AAAA stripes frame"});
         let wire = scrub_browser_result(&store, "stripe", result, true, true, false).unwrap();
-        assert_ne!(wire["text"], "AAAA");
-        assert_ne!(wire["display_frame"]["title"], "AAAA");
-        assert_eq!(wire["display_frame"]["stripes"][0]["data_base64"], packet);
-        let encoded = encode_display_event(KernelEvent::KernelBrowserFrame {
-            subscription_id: "stripe".into(),
-            frame: wire["display_frame"].clone(),
-        })
-        .unwrap();
+        assert_eq!(wire["display_frame"], frame);
+        assert_eq!(wire["frame_sent"], true);
+        assert_eq!(wire["generation"], 1);
+        for key in ["title", "url", "text"] {
+            let text = wire[key].as_str().unwrap();
+            for secret in ["AAAA", "stripes", "frame"] {
+                assert!(!text.contains(secret));
+            }
+        }
+        let mut reply = json!({"KernelBrowser":{"result":wire}});
+        let (id, sequence, event) =
+            crate::transport::kernel_browser_display::take_display_event(&mut reply).unwrap();
+        assert_eq!(id, "frame-stripes");
+        assert_eq!(sequence, 2);
+        let encoded = encode_display_event(event).unwrap();
         assert!(encoded.ends_with(&[0, 0, 0, 1, 0x65]));
+        let length = u32::from_be_bytes(encoded[4..8].try_into().unwrap()) as usize;
+        let header: Value = serde_json::from_slice(&encoded[8..8 + length]).unwrap();
+        assert_eq!(header["frame"]["kind"], "stripes");
+        assert_eq!(header["frame"]["tab_id"], "frame-tab");
+        assert_eq!(header["frame"]["document_id"], "stripes-document");
+        let mut observed = frame.clone();
+        observed["title"] = json!("AAAA stripes frame");
+        observed["url"] = json!("https://example.org/stripes/frame");
+        let metadata = scrub_browser_result(
+            &store,
+            "stripe",
+            json!({"display_frame":observed,"observation":{"frame":"stripes"}}),
+            true,
+            true,
+            false,
+        )
+        .unwrap();
+        for key in ["title", "url"] {
+            for secret in ["AAAA", "stripes", "frame"] {
+                assert!(!metadata["display_frame"][key]
+                    .as_str()
+                    .unwrap()
+                    .contains(secret));
+            }
+        }
+        assert!(metadata["observation"].get("frame").is_none());
+        let scalar = scrub_browser_result(
+            &store,
+            "stripe",
+            json!("AAAA stripes frame"),
+            true,
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(!scalar.as_str().unwrap().contains("AAAA"));
+
+        assert!(scrub_browser_result(
+            &store,
+            "stripe",
+            json!({"display_frame":"invalid"}),
+            true,
+            true,
+            false
+        )
+        .is_err());
     }
+
     #[test]
     fn host_vault_is_owner_only_and_tool_never_accepts_secret_bytes() {
         assert!(require_vault_owner(crate::session::DEFAULT_LOCAL_USER_ID).is_ok());
