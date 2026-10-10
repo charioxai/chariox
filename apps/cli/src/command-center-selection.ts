@@ -76,6 +76,12 @@ export function nextCommandCenterIndex(
     if (normalized === "/" || input.startsWith("@")) {
       return 0
     }
+    const exactCommandIndex = items.findIndex((item) => (
+      item.kind === "command" && shouldSubmitExactCommandCenterMatch(item, input)
+    ))
+    if (exactCommandIndex >= 0) {
+      return exactCommandIndex
+    }
     const exactGroupIndex = items.findIndex((item) => (
       item.kind === "group"
       && (normalized === item.value.trim() || input === item.value)

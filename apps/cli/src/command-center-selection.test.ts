@@ -164,3 +164,14 @@ test("typed machine and agent commands bypass their palette group", () => {
     assert.equal(shouldSubmitExactCommandCenterMatch(group, prefix), false)
   }
 })
+
+// MP-08 / MP-10 / MP-11: live /machine list must not select the first kernels suggestion.
+test("typed exact command wins over a stale highlighted suggestion", () => {
+  const items: CommandCenterItem[] = [
+    {...commandItem, id: "kernels", value: "/machine kernels "},
+    {...commandItem, id: "list", value: "/machine list"},
+    {...commandItem, id: "group", kind: "group", value: "/machine "},
+  ]
+  assert.equal(nextCommandCenterIndex(0, items, "/machine list", "/account fleet-opencode"), 1)
+  assert.equal(nextCommandCenterIndex(0, items, "/machine kernels worker", "/machine list"), 0)
+})
