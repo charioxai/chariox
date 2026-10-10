@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn kernel_browser_protocol_443_request_snapshots() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 498);
     let cases = [
         (Command::Start, serde_json::json!({"op":"start"})),
         (Command::State, serde_json::json!({"op":"state"})),
@@ -89,7 +89,10 @@ fn kernel_browser_protocol_443_request_snapshots() {
             Command::Input {
                 tab_id: "t".into(),
                 generation: 2,
-                input: Input::Key { key: "Tab".into() },
+                input: Input::Key {
+                    key: "Tab".into(),
+                    modifiers: 0,
+                },
             },
             serde_json::json!({"op":"input","tab_id":"t","generation":2,"input":{"kind":"key","key":"Tab"}}),
         ),
@@ -130,7 +133,7 @@ fn kernel_browser_protocol_443_request_snapshots() {
 
 #[test]
 fn kernel_browser_protocol_443_response_snapshot() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 498);
     let result = serde_json::json!({"generation":2,"state":"ready","tabs":[{"tab_id":"host-tab-t","document_id":"d","url":"https://example.com/","title":"Example"}]});
     let response = LocalDaemonResponse::KernelBrowser {
         result: result.clone(),
@@ -143,12 +146,16 @@ fn kernel_browser_protocol_443_response_snapshot() {
 
 #[test]
 fn kernel_browser_display_protocol_475_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 498);
     let commands = [
         Command::DisplaySubscribe {
             tab_id: "t".into(),
             generation: 2,
-            codecs: vec!["avc1.420033".into(), "png".into(), "chariox-stripes-v1".into()],
+            codecs: vec![
+                "avc1.420033".into(),
+                "png".into(),
+                "chariox-stripes-v1".into(),
+            ],
             bitrate: 2_000_000,
             device_scale_factor: 2,
         },
@@ -213,7 +220,8 @@ fn kernel_browser_display_protocol_475_shapes_and_hash() {
             crate::transport::kernel_browser_display::encode_display_event(event.clone()).unwrap(),
         )
     };
-    let snapshot = serde_json::json!({"requests":values,"event":binary(&event),"scroll":binary(&scroll)});
+    let snapshot =
+        serde_json::json!({"requests":values,"event":binary(&event),"scroll":binary(&scroll)});
     assert_eq!(
         format!(
             "{:x}",
@@ -221,4 +229,45 @@ fn kernel_browser_display_protocol_475_shapes_and_hash() {
         ),
         "422dea57f036781e882a57634a1a3bba953505038853725eb2b2aa0768f4d7ed"
     );
+}
+
+// MP-08/MP-11: protocol498 bounds modifiers at deserialization, shared by
+// local, remote and provider input. Legacy keys still omit the zero mask.
+#[test]
+fn kernel_browser_protocol_498_bounded_modifiers() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 498);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        107
+    );
+    let input = Input::Key {
+        key: "a".into(),
+        modifiers: 2,
+    };
+    let wire = serde_json::to_value(&input).unwrap();
+    assert_eq!(
+        wire,
+        serde_json::json!({"kind":"key","key":"a","modifiers":2})
+    );
+    assert_eq!(
+        serde_json::from_value::<Input>(wire.clone()).unwrap(),
+        input
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "1cdc9ff0b2391e8a184cad088c6b2fab792fd2f95b0ee37265cb600687e3cc8c"
+    );
+    for value in [
+        serde_json::json!(-1),
+        serde_json::json!(16),
+        serde_json::json!(256),
+        serde_json::json!(1.5),
+        serde_json::json!(null),
+        serde_json::json!("2"),
+    ] {
+        assert!(serde_json::from_value::<Input>(
+            serde_json::json!({"kind":"key","key":"a","modifiers":value})
+        )
+        .is_err());
+    }
 }
