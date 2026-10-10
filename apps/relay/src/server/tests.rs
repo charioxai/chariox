@@ -1,3 +1,5 @@
+mod binary_event;
+mod client_renewal;
 mod daemon;
 mod display;
 mod metadata;

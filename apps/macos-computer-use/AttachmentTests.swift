@@ -8,10 +8,17 @@ import AppKit
         var pixels = [UInt8](repeating: 0, count: 130 * 80 * 4)
         for offset in stride(from: 3, to: pixels.count, by: 4) { pixels[offset] = 255 }
         let id = try source.subscribe(owner: "viewer-a", generation: "g1")
+        try source.attach(id: id, owner: "viewer-a", generation: "g1")
+        for (owner, epoch) in [("viewer-b", "g1"), ("viewer-a", "old")] {
+            do { try source.attach(id: id, owner: owner, generation: epoch); preconditionFailure("foreign/stale attachment admitted") } catch {}
+        }
         func frame() -> ProtectedFrame { ProtectedFrame(pixels: pixels, stamp: stamp, masked: false) }
         let first = try await source.sample(id: id, owner: "viewer-a", after: nil, repair: false,
                                             authority: {}, capture: { frame() })!
         precondition(first["kind"] as? String == "png" && first["sequence"] as? UInt64 == 1)
+        precondition(first["display_kind"] as? String == "native", "shared presenter needs a native discriminator")
+        precondition(first["css_width"] as? CGFloat == 65 && first["css_height"] as? CGFloat == 40)
+        precondition(first["document_id"] as? String != nil)
         precondition(first["surface_id"] as? String == "macos-seat" && first["colour"] as? String == "srgb")
         let quiet = try await source.sample(id: id, owner: "viewer-a", after: 1, repair: false,
                                             authority: {}, capture: { frame() })
@@ -73,6 +80,7 @@ import AppKit
         let expiring = CaptureAttachment(now: { clock })
         let expiredID = try expiring.subscribe(owner: "viewer-a", generation: "g1")
         clock = 71
+        do { try expiring.attach(id: expiredID, owner: "viewer-a", generation: "g1"); preconditionFailure("expired attachment admitted") } catch {}
         do {
             _ = try await expiring.sample(id: expiredID, owner: "viewer-a", after: nil, repair: true,
                 authority: {}, capture: { attempted += 1; return frame() })

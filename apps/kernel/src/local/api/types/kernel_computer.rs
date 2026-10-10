@@ -9,6 +9,21 @@ pub struct KernelDesktopTarget {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KernelComputerCommand {
+    /// Protocol 497: native observation on the shared encrypted transient route.
+    DisplaySubscribe {
+        target: KernelDesktopTarget,
+        codecs: Vec<String>,
+    },
+    DisplayNext {
+        target: KernelDesktopTarget,
+        subscription_id: String,
+        after_sequence: u64,
+        repair: bool,
+    },
+    DisplayClose {
+        target: KernelDesktopTarget,
+        subscription_id: String,
+    },
     Start {},
     State {},
     Actors {},

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { decodePng } from '../kernel/slice-linux-docker/docker/kernel-browser-pixels.mjs';
 
 export function verifyNativeCapture(before, after, scale, evidence) {
-  const binary = '/Users/miguel/.chariox/dev/cumac/build/r7-tests/capture-replay';
+  const binary = '/Users/miguel/.chariox/dev/cumac/build/r8-tests/capture-replay';
   const packets = JSON.parse(execFileSync(binary, [before, after, String(scale)], { maxBuffer: 3 * 1024 * 1024 }));
   const [base, damage, repair] = packets;
   assert.equal(base.kind, 'png'); assert.equal(repair.kind, 'png');
@@ -28,5 +28,5 @@ export function verifyNativeCapture(before, after, scale, evidence) {
   writeFileSync(path.join(evidence, 'native-capture-packets.json'), JSON.stringify(packets), { mode: 0o600 });
   return { name: 'live-protected-capture-native-damage-replay', passed: true,
     damage_kind: damage.kind, tile_count: damage.tiles?.length ?? 0, width: expected.width, height: expected.height,
-    scope: 'paired-r6-capture-and-r7-private-attachment-replay', encrypted_viewer_delivery: false };
+    scope: 'paired-protected-capture-and-r8-private-attachment-replay', encrypted_viewer_delivery: false };
 }

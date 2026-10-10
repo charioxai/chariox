@@ -152,7 +152,12 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
         request,
         LocalDaemonRequest::CaptureVisibleRegion(_)
             | LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
-                command: crate::local::KernelBrowserCommand::DisplayNext { .. }
+                command: crate::local::KernelBrowserCommand::Computer {
+                    command: crate::local::KernelComputerCommand::DisplaySubscribe { .. }
+                        | crate::local::KernelComputerCommand::DisplayNext { .. }
+                        | crate::local::KernelComputerCommand::DisplayClose { .. }
+                } | crate::local::KernelBrowserCommand::DisplayNext { .. }
+                    | crate::local::KernelBrowserCommand::DisplayAck { .. }
                     | crate::local::KernelBrowserCommand::ListGrants
                     | crate::local::KernelBrowserCommand::SubscribeGrants { .. }
                     | crate::local::KernelBrowserCommand::GrantRoomComputer { .. }
@@ -173,6 +178,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     !matches!(
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
+            | LocalDaemonRequest::ExtendKernelSudo(_)
             | LocalDaemonRequest::RequestKernelAccess(_)
             | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)

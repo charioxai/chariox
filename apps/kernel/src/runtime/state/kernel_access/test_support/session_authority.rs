@@ -26,7 +26,7 @@ pub(super) fn external_command(request: &LocalDaemonRequest, grant: &str) -> Ker
 }
 
 #[tokio::test]
-async fn kernel_access_main_requests_keep_session_scope_and_owner_decisions() {
+async fn kernel_access_main_requests_authorize_all_local_sessions_and_ordinary_global_operations() {
     let worktree = crate::test_support::TestWorktree::new("access-main-requests");
     let mut app =
         crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
@@ -54,24 +54,22 @@ async fn kernel_access_main_requests_keep_session_scope_and_owner_decisions() {
         .is_ok());
     assert!(state
         .authorize_external_request(&grant, &delete(other.id()))
-        .is_err());
-    // A session ID on a host offer does not delegate the owner's decision.
-    let host_offer =
-        LocalDaemonRequest::AcceptAppHostAction(crate::local::AcceptAppHostActionRequest {
-            session_id: allowed.id().into(),
-            operation_id: "owner-offer".into(),
-        });
+        .is_ok());
     assert!(state
-        .authorize_external_request(&grant, &host_offer)
-        .is_err());
-    let file_grants =
-        LocalDaemonRequest::RevokeAppFileGrants(crate::local::RevokeAppFileGrantsRequest {
-            installation_id: "owner-installation".into(),
-            operation_id: None,
-        });
+        .authorize_external_request(
+            &grant,
+            &LocalDaemonRequest::GetDaemonHealth(crate::local::GetDaemonHealthRequest)
+        )
+        .is_ok());
     assert!(state
-        .authorize_external_request(&grant, &file_grants)
-        .is_err());
+        .authorize_external_request(
+            &grant,
+            &LocalDaemonRequest::RevokeAppFileGrants(crate::local::RevokeAppFileGrantsRequest {
+                installation_id: "owner-installation".into(),
+                operation_id: None,
+            })
+        )
+        .is_ok());
 }
 
 #[tokio::test]
@@ -246,7 +244,7 @@ async fn revoked_remote_operation(spawn: bool, discovery_wait: bool) {
 }
 
 #[tokio::test]
-async fn kernel_access_grants_cannot_mint_durable_membership_or_scheduled_prompts() {
+async fn kernel_access_grants_allow_local_invites_and_scheduled_prompts() {
     let worktree = crate::test_support::TestWorktree::new("access-no-delegation");
     let mut app =
         crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
@@ -277,7 +275,7 @@ async fn kernel_access_grants_cannot_mint_durable_membership_or_scheduled_prompt
             },
         ),
     ] {
-        assert!(state.authorize_external_request(&grant, &request).is_err());
+        assert!(state.authorize_external_request(&grant, &request).is_ok());
     }
     assert!(state
         .authorize_external_request(
@@ -302,7 +300,6 @@ async fn kernel_access_targeted_revocation_preserves_other_owners_pending_reques
     .runtime_state();
     let pending = |owner: &str, id: &str| KernelAccessGrant {
         grant_id: id.into(),
-        session_id: "fixture".into(),
         owner_user_id: owner.into(),
         holder_pid: 1,
         holder_executable: "fixture".into(),

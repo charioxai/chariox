@@ -134,12 +134,13 @@ impl AgentRuntime {
             self.store
                 .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
                 .await?;
-            self.store
-                .focus_agent(&request.session_id, &agent_id, &caller_user_id)
-                .await?;
-            self.focus_projection
-                .update(&request.session_id, Some(&agent_id))
-                .await;
+            self.focus_alias_target_from_terminal(
+                command,
+                &request.session_id,
+                &agent_id,
+                &caller_user_id,
+            )
+            .await?;
             request.prompt = routed_prompt;
         }
         request.target_agent_id = Some(agent_id.clone());
@@ -586,9 +587,10 @@ impl AgentRuntimeStore {
         session_id: &str,
         agent_id: &str,
         caller_user_id: &str,
+        terminal_caller: bool,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.state
-            .focus_agent(session_id, agent_id, caller_user_id)
+            .focus_agent(session_id, agent_id, caller_user_id, terminal_caller)
             .await
     }
 

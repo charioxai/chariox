@@ -67,6 +67,11 @@ export class BrowserFrameSessions {
     this.pending = new Set();
   }
   clear() { this.sessions.clear(); }
+  // MP-11: the flat session that renders an isolated frame (its target id).
+  sessionFor(frameId, connection) {
+    for (const [id, entry] of this.sessions) if (entry.frameId === frameId && entry.connection === connection) return id;
+    return null;
+  }
   removeTarget(targetId) {
     return this.removeWhere((entry) => entry.targetId === targetId);
   }
@@ -107,7 +112,7 @@ export class BrowserFrameSessions {
         void this.release(connection, childSession, true);
         return true;
       }
-      const entry = { targetId, parentSessionId: message.sessionId, connection };
+      const entry = { targetId, frameId: params.targetInfo.targetId, parentSessionId: message.sessionId, connection };
       if (this.pending.size >= MAX_FRAMES || [...this.sessions.values()].filter((current) => current.targetId === targetId).length >= MAX_FRAMES) {
         void this.release(connection, childSession, true);
         return true;

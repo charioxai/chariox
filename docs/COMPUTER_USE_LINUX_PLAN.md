@@ -286,6 +286,16 @@ product-linked account and complete the same public real-user task set:
    native effects. Providers may not use shell/CDP or direct file reading to
    substitute for the graphical task. Synthetic randomized targets remain useful
    fail-first regressions and do not satisfy this acceptance task.
+Each cell must run the official provider with a product-linked profile and
+complete the same public-fixture task set:
+
+1. Observe an AT-SPI tree, target a graphical editor, enter/select/copy Unicode
+   text, use shortcuts, save/edit a document and verify its bytes independently.
+   Assert native focus, stale accessibility-target rejection and action receipts.
+2. Deliberately remove accessibility from a fixture region. Use OCR fallback
+   and on-demand exact MCP screenshot bytes to act on randomized visual targets;
+   retain delivered-image hashes, provider turn identity and independently checked
+   native effects. Repeat blinded targets; no shell/CDP or file-reading shortcut.
 3. Switch Browser↔Computer without changing the Chromium profile/tab registry,
    exercise browser chrome and the non-browser app, then reconnect that terminal
    to the same surface/generation and authoritative provider history.

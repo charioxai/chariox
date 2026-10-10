@@ -81,6 +81,20 @@ impl KernelRuntimeState {
                 "MP-08: owned Computer desktop currently requires Linux".into(),
             ));
         }
+        let display = matches!(
+            &command,
+            KernelComputerCommand::DisplaySubscribe { .. }
+                | KernelComputerCommand::DisplayNext { .. }
+                | KernelComputerCommand::DisplayClose { .. }
+        );
+        if display
+            && (std::env::var("CHARIOX_MACOS_COMPUTER_DISPLAY").as_deref() != Ok("1")
+                || caller.source != crate::runtime::command::KernelCommandSource::RelayClient)
+        {
+            return Err(host_error(
+                "M2: enabled encrypted relay display adapter required".into(),
+            ));
+        }
         let (user, actor) = self.kernel_browser_terminal_context(caller)?;
         self.refresh_user_domain_grants();
         let mut parameters = params(command)?;
@@ -91,6 +105,23 @@ impl KernelRuntimeState {
             .admit_terminal(&user, caller.terminal_lifetime.clone().unwrap_or_default());
         self.kernel_browser_operation_admitted(&user, Some(admission), "host.computer", parameters)
             .await
+    }
+    pub(crate) async fn kernel_computer_display_attach(
+        &self,
+        caller: &crate::runtime::command::KernelCommand,
+        subscription_id: String,
+        generation: String,
+    ) -> Result<serde_json::Value, DaemonError> {
+        if std::env::var("CHARIOX_MACOS_COMPUTER_DISPLAY").as_deref() != Ok("1") {
+            return Err(host_error("M2: native display disabled".into()));
+        }
+        let (user, actor) = self.kernel_browser_terminal_context(caller)?;
+        let admission = self
+            .owned
+            .kernel_browser_host
+            .admit_terminal(&user, caller.terminal_lifetime.clone().unwrap_or_default());
+        self.kernel_browser_operation_admitted(&user, Some(admission), "host.computer",
+            serde_json::json!({"op":"display_attach","surface_id":"macos-seat","generation":generation,"subscription_id":subscription_id,"observed_by":actor})).await
     }
     pub(super) async fn try_kernel_computer_tool(
         &self,

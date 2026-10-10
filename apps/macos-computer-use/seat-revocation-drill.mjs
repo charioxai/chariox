@@ -40,7 +40,7 @@ function computer(command, channel = socket) {
     pending.set(id, frame => {
       clearTimeout(timer); pending.delete(id);
       if (frame.response?.KernelBrowser) resolve(frame.response.KernelBrowser.result);
-      else reject(new Error(JSON.stringify(frame.error ?? { code: 'kernel_refused' })));
+      else { const error=frame.error ?? {code:'kernel_refused'}; reject(Object.assign(new Error(error.message ?? 'kernel refused'), {code:error.code})); }
     });
     const request = command.op === 'revoke_grants' ? { KernelBrowser: { command } } : { KernelBrowser: { command: { op: 'computer', command } } };
     channel.send(JSON.stringify({ type: 'request', request_id: id, command_id: id, request }));
@@ -66,7 +66,12 @@ try {
   assert.equal(snapshot.width, state.width); assert.equal(snapshot.height, state.height);
   writeFileSync(path.join(args.evidence, 'protected-fixture.png'), Buffer.from(snapshot.data_base64, 'base64'), { mode: 0o600 });
   report.checks.push({ name: 'live-paired-protected-screenshot', passed: true, width: snapshot.width, height: snapshot.height, protected: snapshot.protected });
-  await computer({ op: 'input', target, input: { kind: 'text', text: 'r7' } });
+  const damageInput = { ...input, input: { kind: 'click', button: 1,
+    x: Math.round((scope.revoke_point.x - scope.bounds.X) * scope.scale),
+    y: Math.round((scope.revoke_point.y - scope.bounds.Y) * scope.scale) } };
+  const damageReceipt = await computer(damageInput);
+  assert.ok(damageReceipt.receipts.some(value => value.includes(`location=${scope.revoke_location} length=0`)));
+  await sleep(100); assert.deepEqual(selected(), [scope.revoke_location, 0]);
   await sleep(100);
   const changed = await computer({ op: 'screenshot', target });
   assert.equal(changed.width, snapshot.width); assert.equal(changed.height, snapshot.height);
@@ -78,11 +83,9 @@ try {
   control = new WebSocket(`ws://127.0.0.1:${Number(args.port)}`, { headers: { authorization: `Bearer ${readFileSync(args['token-file'], 'utf8').trim()}` } });
   control.onmessage = event => { const frame = JSON.parse(event.data); pending.get(frame.request_id)?.(frame); };
   await new Promise((resolve, reject) => { control.onopen = resolve; control.onerror = () => reject(new Error('control connection failed')); });
-  const revokeInput = { ...input, input: { kind: 'click', button: 1,
-    x: Math.round((scope.revoke_point.x - scope.bounds.X) * scope.scale),
-    y: Math.round((scope.revoke_point.y - scope.bounds.Y) * scope.scale) } };
+  const revokeInput = input;
   const revoked = await revokeDuringInput({ dispatch: () => computer(revokeInput),
-    observe: selected, changed: value => value?.[0] === scope.revoke_location && value?.[1] === 0,
+    observe: selected, changed: value => value?.[0] === scope.expected_location && value?.[1] === 0,
     revoke: () => computer({ op: 'revoke_grants', agent_id: null }, control) });
   const before = selected();
   const denial = await computer(input).then(() => null, error => error.message);

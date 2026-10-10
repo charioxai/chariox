@@ -40,9 +40,28 @@ impl SessionRuntimeCommandExecutor {
     pub(super) fn with_external_command_authority(
         &self,
         authority: Option<(&str, &LocalDaemonRequest)>,
+        sudo_binding: Option<(String, String)>,
     ) -> Self {
         let mut executor = self.clone();
-        executor.store = self.store.with_external_command_authority(authority);
+        executor.store = self
+            .store
+            .with_external_command_authority(authority, sudo_binding);
+        executor
+    }
+
+    pub(super) fn with_room_request_origin(
+        &self,
+        actor: Option<&str>,
+        request: &LocalDaemonRequest,
+    ) -> Self {
+        let mut executor = self.clone();
+        executor.store = self.store.with_room_request_origin(actor, request);
+        executor
+    }
+
+    pub(super) fn with_room_provider_origin(&self, actor: Option<&str>, run: Option<&str>) -> Self {
+        let mut executor = self.clone();
+        executor.store = self.store.with_room_provider_origin(actor, run);
         executor
     }
 
@@ -72,6 +91,9 @@ impl SessionRuntimeCommandExecutor {
         terminal_caller: bool,
         connection_class: Option<KernelConnectionClass>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if let Some(actor) = caller_metaagent_id.as_deref() {
+            self.store.authorize_room_agent_request(actor, &request)?;
+        }
         let (result, projection_action) = if let Some(result) = projected_runtime_notices_response(
             &self.session_projection,
             &self.terminal_stream,
@@ -201,23 +223,29 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::RestoreProject(request) => {
                 Box::pin(async move { self.store.restore_project(request, caller_user_id).await })
             }
-            LocalDaemonRequest::AttachToSession(request) => {
-                Box::pin(async move { self.store.attach_to_session(request, caller_user_id).await })
-            }
+            LocalDaemonRequest::AttachToSession(request) => Box::pin(async move {
+                self.store
+                    .attach_to_session(request, caller_user_id, terminal_caller)
+                    .await
+            }),
             LocalDaemonRequest::DetachFromSession(request) => {
                 Box::pin(async move { self.store.detach_from_session(request).await })
             }
-            LocalDaemonRequest::FocusAgent(request) => {
-                Box::pin(async move { self.store.focus_agent(request, caller_user_id).await })
-            }
+            LocalDaemonRequest::FocusAgent(request) => Box::pin(async move {
+                self.store
+                    .focus_agent(request, caller_user_id, terminal_caller)
+                    .await
+            }),
             LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => Box::pin(async move {
                 self.store
                     .acknowledge_agent_output_seen(request, caller_user_id)
                     .await
             }),
-            LocalDaemonRequest::CycleAgentFocus(request) => {
-                Box::pin(async move { self.store.cycle_agent_focus(request, caller_user_id).await })
-            }
+            LocalDaemonRequest::CycleAgentFocus(request) => Box::pin(async move {
+                self.store
+                    .cycle_agent_focus(request, caller_user_id, terminal_caller)
+                    .await
+            }),
             LocalDaemonRequest::ResizeTerminal(request) => {
                 Box::pin(async move { self.store.resize_terminal(request).await })
             }
@@ -324,7 +352,12 @@ impl SessionRuntimeCommandExecutor {
                 // refuses host passkeys and credential-prompt answers.
                 let owner_caller = terminal_caller
                     || (caller_metaagent_id.is_none()
-                        && connection_class == Some(KernelConnectionClass::Host));
+                        && matches!(
+                            connection_class,
+                            Some(
+                                KernelConnectionClass::Host | KernelConnectionClass::ExternalAgent
+                            )
+                        ));
                 self.store
                     .respond_to_interaction(
                         request,

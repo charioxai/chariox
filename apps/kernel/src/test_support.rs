@@ -9,10 +9,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod environment;
 #[cfg(unix)]
 mod pre_exec_child;
+mod room_turn;
 mod runtime_mcp;
 pub(crate) use environment::{environment_test_isolated, isolate_environment_test};
 #[cfg(unix)]
 pub(crate) use pre_exec_child::PreExecChild;
+pub(crate) use room_turn::admit_room_test_turn;
 pub(crate) use runtime_mcp::TestRuntimeMcp;
 
 /// Run ambient-environment fixtures outside the parallel test process. A mutex

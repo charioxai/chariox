@@ -11,6 +11,26 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-controller-artifacts.mjs"),
     ),
     (
+        "kernel-browser-error-label.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-error-label.mjs"),
+    ),
+    (
+        "kernel-browser-codec-protection.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-codec-protection.py"),
+    ),
+    (
+        "kernel-browser-native-worker.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-worker.mjs"),
+    ),
+    (
+        "kernel-browser-native-credit.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-credit.mjs"),
+    ),
+    (
+        "kernel-browser-openh264.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-openh264.py"),
+    ),
+    (
         "browser-controller-image.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller-image.mjs"),
     ),
@@ -59,6 +79,74 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/linux-desktop-session.py"),
     ),
     (
+        "kernel-browser-stripes.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-stripes.py"),
+    ),
+    (
+        "kernel-browser-shared-raster.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-shared-raster.mjs"),
+    ),
+    (
+        "kernel-browser-geometry.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-geometry.mjs"),
+    ),
+    (
+        "kernel-browser-native-pipe.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-pipe.mjs"),
+    ),
+    (
+        "kernel-browser-owned-display.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-owned-display.mjs"),
+    ),
+    (
+        "kernel-browser-native.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native.mjs"),
+    ),
+    (
+        "kernel-browser-xshm.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-xshm.py"),
+    ),
+    (
+        "kernel-browser-raster-damage.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-raster-damage.py"),
+    ),
+    (
+        "kernel-browser-motion.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-motion.mjs"),
+    ),
+    (
+        "kernel-browser-tiles.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-tiles.mjs"),
+    ),
+    (
+        "kernel-browser-refiner.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-refiner.mjs"),
+    ),
+    (
+        "kernel-browser-pixel-worker.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-pixel-worker.mjs"),
+    ),
+    (
+        "kernel-browser-webcodecs.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-webcodecs.mjs"),
+    ),
+    (
+        "kernel-browser-compositor.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-compositor.mjs"),
+    ),
+    (
+        "kernel-browser-sample-lane.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-sample-lane.mjs"),
+    ),
+    (
+        "kernel-browser-foreground.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-foreground.mjs"),
+    ),
+    (
+        "kernel-browser-mirror-sanitize.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-sanitize.mjs"),
+    ),
+    (
         "kernel-browser-mirror-styles.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-styles.mjs"),
     ),
@@ -87,8 +175,16 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-display-capture.mjs"),
     ),
     (
+        "kernel-browser-contention.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-contention.mjs"),
+    ),
+    (
         "kernel-browser-timing.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-timing.mjs"),
+    ),
+    (
+        "kernel-browser-display-credit.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-display-credit.mjs"),
     ),
     (
         "kernel-browser-display.mjs",
@@ -105,6 +201,18 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "browser-observation-regions.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-observation-regions.mjs"),
+    ),
+    (
+        "browser-protection-regions.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-protection-regions.mjs"),
+    ),
+    (
+        "native-fill-targets.py",
+        include_bytes!("../../slice-linux-docker/docker/native-fill-targets.py"),
+    ),
+    (
+        "browser-desktop-protection.py",
+        include_bytes!("../../slice-linux-docker/docker/browser-desktop-protection.py"),
     ),
     (
         "kernel-browser-pixels.mjs",
@@ -195,6 +303,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-controller.mjs"),
     ),
     (
+        "kernel-browser-popup-evidence.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-popup-evidence.mjs"),
+    ),
+    (
         "kernel-browser-input.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-input.mjs"),
     ),
@@ -240,4 +352,60 @@ pub(super) fn materialize(root: &Path) -> Result<PathBuf, String> {
             .map_err(|_| "MD-2: cannot publish browser controller asset")?;
     }
     Ok(directory.join("kernel-browser-host.mjs"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::browser_controller_process::{
+        BrowserControllerProcessBackend, BrowserControllerProcessState,
+        BrowserControllerProcessStdioBackend,
+    };
+
+    #[test]
+    fn mp11_materialized_controller_loads_without_source_override() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-mp11-embedded-assets-{:032x}",
+            rand::random::<u128>()
+        ));
+        let script = materialize(&root).unwrap();
+        // Use only the embedded bundle, including Node's transitive imports.
+        // Health starts the actual stdio controller without launching Chromium.
+        let mut backend = BrowserControllerProcessStdioBackend::new(
+            "node",
+            vec![
+                script.display().to_string(),
+                "stdio".into(),
+                root.join("profile").display().to_string(),
+            ],
+            std::time::Duration::from_secs(5),
+        )
+        .for_host();
+        let result = backend.start();
+        let cleanup = backend.stop();
+        std::fs::remove_dir_all(root).unwrap();
+        cleanup.unwrap();
+        assert_eq!(result.unwrap().state, BrowserControllerProcessState::Ready);
+    }
+
+    /// MP-08/MP-11: the materialized host must load; every relative module
+    /// an embedded asset imports is embedded too.
+    #[test]
+    fn embedded_assets_include_every_relative_import() {
+        let names = super::ASSETS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>();
+        for (name, bytes) in super::ASSETS {
+            let text = String::from_utf8_lossy(bytes);
+            for quote in ['"', '\''] {
+                for part in text.split(&format!("{quote}./")).skip(1) {
+                    let import = part.split(quote).next().unwrap_or_default();
+                    if import.ends_with(".mjs") {
+                        assert!(names.contains(&import), "{name} imports missing {import}");
+                    }
+                }
+            }
+        }
+    }
 }

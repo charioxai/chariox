@@ -1,4 +1,5 @@
 from fence_cleanup import finish_cleanup
+from fence_pointer import PointerLease
 import importlib.util
 import json
 import os
@@ -18,10 +19,11 @@ cover = None
 cover_pid = None
 jitter = None
 report = {'status': 'FAIL', 'checks': []}
-saved = d.desktop()['pointer']
+pointer = None
 try:
     d.wait_for_gui()
     d.require_gui()
+    pointer = PointerLease(d.desktop, d.warp_pointer, d.desktop()["pointer"])
     permission = d.launch_helper(E, 'preflight', ['--drill-permissions'])
     if 'accessibility=granted' not in permission:
         report['status'] = 'BLOCKED'; raise RuntimeError('helper-regrant-required')
@@ -36,6 +38,7 @@ try:
         time.sleep(.1)
     if pid is None:
         raise RuntimeError('fixture not ready')
+    pointer.bind(pid, int(identity[2]))
     probes = d.fixture_probes(output)
     name, x, y, expected, reference = probes[1]
     scope = ['--enable-fixture', '--fixture-pid', str(pid), '--window-id', identity[2], '--target', 'text']
@@ -62,7 +65,7 @@ try:
     report['checks'].append({'name': 'nonactivating-foreign-cover-refusal', 'passed': 'refused: target (foreign-window-cover)' in receipt and selected_after == selected_before and covers and state['frontmostPID'] == pid,
                              'frontmostUnchanged': state['frontmostPID'] == pid, 'foreignWindowCoversPoint': covers,
                              'beforeSelection': selected_before, 'afterSelection': selected_after, 'receipt': receipt})
-    d.warp_pointer({'x': float(x), 'y': float(y)})
+    pointer.warp({'x': float(x), 'y': float(y)})
     receipt = d.launch_helper(E, 'nonactivating-cover-pointer', scope + ['--click-at-pointer', '--click'])
     time.sleep(.1)
     report['checks'].append({'name': 'pointer-foreign-cover-refusal',
@@ -75,12 +78,13 @@ try:
     # Move the real pointer between the helper's one-time snapshot and its later fence.
     point_a = {'x': float(x), 'y': float(y)}
     point_b = {'x': float(x) + 10, 'y': float(y)}
-    script = 'ObjC.import("AppKit");ObjC.import("CoreGraphics"); for(var i=0;i<400;i++){ $.CGWarpMouseCursorPosition(i%2?' + json.dumps(point_a) + ':' + json.dumps(point_b) + '); $.NSThread.sleepForTimeInterval(.002); }'
+    script = pointer.jitter_script([point_a, point_b])
     with (E / 'jitter.out').open('w') as out, (E / 'jitter.err').open('w') as err:
         jitter = subprocess.Popen(['osascript', '-l', 'JavaScript', '-e', script], stdout=out, stderr=err)
     time.sleep(.1)
     receipt = d.launch_helper(E, 'stale-pointer', scope + ['--click-at-pointer', '--click'])
     jitter.wait(timeout=4)
+    pointer.finish_jitter(d.read(E, "jitter.out"))
     report['checks'].append({'name': 'live-stale-pointer-tag', 'passed': 'refused: target (stale-pointer)' in receipt and d.selection(E) == stale_before, 'receipt': receipt,
                              'fixtureSelection': d.selection(E)})
     report['status'] = 'PASS' if all(c['passed'] for c in report['checks']) else 'FAIL'
@@ -95,15 +99,11 @@ finally:
     for process in [cover, jitter]:
         if process and process.poll() is None:
             process.terminate(); process.wait(timeout=3)
+    if pointer: pointer.restore()
     if pid:
         command = subprocess.run(['ps', '-p', str(pid), '-o', 'command='], capture_output=True, text=True).stdout.strip()
         if command == str(d.BUILD / 'Chariox Computer Fixture.app/Contents/MacOS/fixture') + ' --unattended --text-drill':
             os.kill(pid, signal.SIGTERM)
-    now = d.desktop()['pointer']
-    positions = ([{'x': float(x), 'y': float(y)}] if 'x' in globals() else [])
-    if 'point_a' in globals(): positions += [point_a, point_b]
-    if any(all(abs(now[k] - point[k]) < 1 for k in ['x', 'y']) for point in positions):
-        d.warp_pointer(saved)
     finish_cleanup(report, lambda: not any(w['pid'] == pid or w['pid'] == cover_pid for w in d.desktop()['windows']))
     (E / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2))

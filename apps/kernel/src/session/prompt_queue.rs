@@ -144,6 +144,9 @@ pub(crate) struct DurablePromptPrivateState {
     pub(crate) source_client_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) source_user_id: Option<String>,
+    /// MP-08/MP-11: submitted by the owner through a human terminal attachment.
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub(crate) owner_request: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) hidden_system_context: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -177,6 +180,7 @@ struct PromptPrivateMetadata {
     agent_prompt_schedule_id: Option<String>,
     source_client_id: Option<String>,
     source_user_id: Option<String>,
+    owner_request: bool,
     hidden_system_context: String,
     operation_id: Option<String>,
     operation_fingerprint: Option<String>,
@@ -218,6 +222,7 @@ impl DurablePromptPrivateState {
             agent_prompt_schedule_id: metadata.agent_prompt_schedule_id,
             source_client_id: metadata.source_client_id,
             source_user_id: metadata.source_user_id,
+            owner_request: metadata.owner_request,
             hidden_system_context: metadata.hidden_system_context,
             operation_id: metadata.operation_id,
             operation_fingerprint: metadata.operation_fingerprint,
@@ -406,6 +411,33 @@ impl PromptQueueItem {
         metadata.source_client_id = Some(source_client_id.into());
         metadata.source_user_id = Some(source_user_id.into());
         self
+    }
+
+    /// MP-08/MP-11: attribute the submitting attachment. Only a human terminal
+    /// attachment makes the prompt an owner request; automation never does.
+    pub(crate) fn with_source_attachment(
+        self,
+        attachment: &crate::attachment::RuntimeAttachment,
+    ) -> Self {
+        let mut prompt =
+            self.with_source_attribution(attachment.client_id(), attachment.owner_user_id());
+        if let Some(metadata) = prompt.private_metadata.as_mut() {
+            metadata.owner_request = matches!(
+                attachment.capability_level(),
+                crate::attachment::ClientCapabilityLevel::FullTerminal
+                    | crate::attachment::ClientCapabilityLevel::InteractiveStructured
+            );
+        }
+        prompt
+    }
+
+    /// MP-08/MP-11: typed prompt causation for user-requested capability grants.
+    pub(crate) fn owner_request(&self) -> bool {
+        self.private_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.owner_request)
+            && self.workflow_run_id.is_none()
+            && self.agent_prompt_schedule_id().is_none()
     }
 
     pub(crate) fn with_agent_prompt_schedule(mut self, schedule_id: impl Into<String>) -> Self {
@@ -840,6 +872,7 @@ impl PromptQueueItem {
             agent_prompt_schedule_id: private.agent_prompt_schedule_id.clone(),
             source_client_id: private.source_client_id.clone(),
             source_user_id: private.source_user_id.clone(),
+            owner_request: private.owner_request,
             hidden_system_context: private.hidden_system_context.clone(),
             operation_id: private.operation_id.clone(),
             operation_fingerprint: private.operation_fingerprint.clone(),

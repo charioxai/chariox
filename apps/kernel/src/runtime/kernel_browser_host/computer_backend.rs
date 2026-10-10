@@ -8,6 +8,9 @@ use crate::error::HostFailure;
 pub(super) type ComputerSeat = Arc<Mutex<dyn ComputerBackend>>;
 
 pub(crate) trait ComputerBackend: Send {
+    fn supports_native_display(&self) -> bool {
+        false
+    }
     fn ready(&mut self) -> bool;
     fn start(&mut self) -> Result<(), String>;
     fn stop(&mut self) -> Result<(), String>;

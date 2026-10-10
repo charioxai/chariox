@@ -11,13 +11,13 @@ use crate::transport::runtime_tools::{
     MetaAckEventArgs, MetaCommandListArgs, MetaCommandSearchArgs, MetaCompleteTaskArgs,
     MetaGuideListArgs, MetaGuideSearchArgs, MetaListEventsArgs, MetaMarkBlockedArgs,
     MetaPollTraceArgs, MetaReadEventArgs, MetaReadGuideArgs, MetaReadPlanArgs, MetaReadTaskArgs,
-    MetaResolveRuntimeInteractionArgs, MetaSessionOverviewArgs, MetaSubscribeEventsArgs,
-    MetaSubscribeTraceArgs, MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs,
-    MetaUnsubscribeTraceArgs, MetaUpdatePlanArgs, MetaUpdateTaskArgs, MetaWorkflowCodeApplyArgs,
-    MetaWorkflowCodeCanvasContractArgs, MetaWorkflowCodeCreateArgs, MetaWorkflowCodeDeleteArgs,
-    MetaWorkflowCodeExportArgs, MetaWorkflowCodeImportArgs, MetaWorkflowCodeListArgs,
-    MetaWorkflowCodePackageExportArgs, MetaWorkflowCodePackageImportArgs, MetaWorkflowCodeReadArgs,
-    MetaWorkflowCodeRunArgs, MetaWorkflowCodeSourceExportArgs, MetaWorkflowCodeSourceExportDirArgs,
+    MetaSessionOverviewArgs, MetaSubscribeEventsArgs, MetaSubscribeTraceArgs, MetaTurnBlobArgs,
+    MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs, MetaUnsubscribeTraceArgs, MetaUpdatePlanArgs,
+    MetaUpdateTaskArgs, MetaWorkflowCodeApplyArgs, MetaWorkflowCodeCanvasContractArgs,
+    MetaWorkflowCodeCreateArgs, MetaWorkflowCodeDeleteArgs, MetaWorkflowCodeExportArgs,
+    MetaWorkflowCodeImportArgs, MetaWorkflowCodeListArgs, MetaWorkflowCodePackageExportArgs,
+    MetaWorkflowCodePackageImportArgs, MetaWorkflowCodeReadArgs, MetaWorkflowCodeRunArgs,
+    MetaWorkflowCodeSourceExportArgs, MetaWorkflowCodeSourceExportDirArgs,
     MetaWorkflowCodeUpdateArgs, MetaWorkflowCodeValidateArgs, MetaWorkflowRegistryAddArgs,
     MetaWorkflowRegistryAddFromWorkflowArgs, MetaWorkflowRegistryDeleteArgs,
     MetaWorkflowRegistryGetArgs, MetaWorkflowRegistryListArgs, MetaWorkflowRegistryLoadArgs,
@@ -25,12 +25,11 @@ use crate::transport::runtime_tools::{
     META_COMPLETE_TASK_TOOL, META_EVENT_KINDS, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL,
     META_LIST_GUIDES_TOOL, META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL,
     META_POLL_TRACE_TOOL, META_READ_EVENT_TOOL, META_READ_GUIDE_TOOL, META_READ_PLAN_TOOL,
-    META_READ_TASK_TOOL, META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL,
-    META_SEARCH_COMMANDS_TOOL, META_SEARCH_GUIDES_TOOL, META_SESSION_OVERVIEW_TOOL,
-    META_SUBSCRIBE_EVENTS_TOOL, META_SUBSCRIBE_TRACE_TOOL, META_TURN_BLOB_TOOL,
-    META_TURN_OVERVIEW_TOOL, META_UNSUBSCRIBE_EVENTS_TOOL, META_UNSUBSCRIBE_TRACE_TOOL,
-    META_UPDATE_PLAN_TOOL, META_UPDATE_TASK_TOOL, META_WAIT_TRACE_TOOL,
-    META_WORKFLOW_CODE_APPLY_TOOL, META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL,
+    META_READ_TASK_TOOL, META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL, META_SEARCH_GUIDES_TOOL,
+    META_SESSION_OVERVIEW_TOOL, META_SUBSCRIBE_EVENTS_TOOL, META_SUBSCRIBE_TRACE_TOOL,
+    META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL, META_UNSUBSCRIBE_EVENTS_TOOL,
+    META_UNSUBSCRIBE_TRACE_TOOL, META_UPDATE_PLAN_TOOL, META_UPDATE_TASK_TOOL,
+    META_WAIT_TRACE_TOOL, META_WORKFLOW_CODE_APPLY_TOOL, META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL,
     META_WORKFLOW_CODE_CREATE_TOOL, META_WORKFLOW_CODE_DELETE_TOOL, META_WORKFLOW_CODE_EXPORT_TOOL,
     META_WORKFLOW_CODE_IMPORT_TOOL, META_WORKFLOW_CODE_LIST_TOOL,
     META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL, META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL,
@@ -44,6 +43,10 @@ use crate::transport::runtime_tools::{
 };
 
 impl KernelRuntimeState {
+    pub(crate) fn room_agent_tools_enabled(&self) -> bool {
+        self.owned.config_projection.snapshot().room_agent_tools
+    }
+
     pub(crate) fn metaagent_context_for_auth_token(
         &self,
         auth_token: &str,
@@ -78,7 +81,15 @@ impl KernelRuntimeState {
             .provider_store
             .get_runs_by_runtime_mcp_auth_token(auth_token);
         matches!(
-            metaagent_provider_runs_for_auth_token(self, &provider_runs).as_slice(),
+            provider_runs
+                .iter()
+                .filter(|run| run.agent_instance_id().is_some_and(|id| self
+                    .owned
+                    .agent_store
+                    .get_agent(id)
+                    .is_ok_and(|a| a.is_metaagent())))
+                .collect::<Vec<_>>()
+                .as_slice(),
             [_]
         )
     }
@@ -90,10 +101,11 @@ impl KernelRuntimeState {
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let (session, agent) = self.metaagent_for_provider_run(provider_run)?;
-        self.dispatch_meta_runtime_tool_call_for_session_agent(
-            &session, &agent, tool_name, arguments,
-        )
-        .await
+        self.with_room_provider_origin(provider_run.agent_instance_id(), Some(provider_run.id()))
+            .dispatch_meta_runtime_tool_call_for_session_agent(
+                &session, &agent, tool_name, arguments,
+            )
+            .await
     }
 
     pub(crate) async fn dispatch_meta_runtime_tool_call_for_agent(
@@ -105,7 +117,9 @@ impl KernelRuntimeState {
     ) -> Result<RuntimeToolResult, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
-        if agent.session_id() != session.id() || !agent.is_metaagent() {
+        if agent.session_id() != session.id()
+            || (!agent.is_metaagent() && !self.room_agent_tools_enabled())
+        {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_meta",
                 message:
@@ -126,31 +140,46 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        if !agent.is_metaagent()
+            && crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
+                .and_then(crate::transport::runtime_tools::room_name)
+                .is_none()
+        {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "tool is outside the regular room surface",
+            ));
+        }
         let tool_name = crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
             .unwrap_or(tool_name);
-        match tool_name {
+        let result = match tool_name {
             META_SESSION_OVERVIEW_TOOL => {
                 let args = serde_json::from_value::<MetaSessionOverviewArgs>(arguments)
                     .map_err(invalid_meta_args)?;
                 self.meta_session_overview(session, agent, args)
             }
             META_SEARCH_COMMANDS_TOOL => {
-                let args = serde_json::from_value::<MetaCommandSearchArgs>(arguments)
+                let mut args = serde_json::from_value::<MetaCommandSearchArgs>(arguments)
                     .map_err(invalid_meta_args)?;
+                if self.room_agent_tools_enabled() && args.scope.as_deref() == Some("room") {
+                    args.scope = None;
+                }
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
-                        "commands": crate::runtime::metaagent_command_registry::search_commands(args),
+                        "commands": crate::runtime::metaagent_command_registry::search_commands(args).into_iter().map(|doc| if self.room_agent_tools_enabled() {crate::runtime::room_tool_admission::command_doc(doc)} else {doc}).collect::<Vec<_>>(),
                     }),
                 })
             }
             META_LIST_COMMANDS_TOOL => {
-                let args = serde_json::from_value::<MetaCommandListArgs>(arguments)
+                let mut args = serde_json::from_value::<MetaCommandListArgs>(arguments)
                     .map_err(invalid_meta_args)?;
+                if self.room_agent_tools_enabled() && args.scope.as_deref() == Some("room") {
+                    args.scope = None;
+                }
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
-                        "commands": crate::runtime::metaagent_command_registry::list_commands(args),
+                        "commands": crate::runtime::metaagent_command_registry::list_commands(args).into_iter().map(|doc| if self.room_agent_tools_enabled() {crate::runtime::room_tool_admission::command_doc(doc)} else {doc}).collect::<Vec<_>>(),
                     }),
                 })
             }
@@ -162,7 +191,14 @@ impl KernelRuntimeState {
                 let command_for_error = args.command.clone();
                 Ok(
                     match crate::runtime::metaagent_command_registry::command_docs(args) {
-                        Some(payload) => RuntimeToolResult { ok: true, payload },
+                        Some(payload) => RuntimeToolResult {
+                            ok: true,
+                            payload: if self.room_agent_tools_enabled() {
+                                crate::runtime::room_tool_admission::command_doc(payload)
+                            } else {
+                                payload
+                            },
+                        },
                         None => RuntimeToolResult {
                             ok: false,
                             payload: serde_json::json!({
@@ -664,17 +700,13 @@ impl KernelRuntimeState {
                     .map_err(invalid_meta_args)?;
                 self.meta_workflow_registry_run(session, agent, args).await
             }
-            META_RESOLVE_RUNTIME_INTERACTION_TOOL => {
-                let args = serde_json::from_value::<MetaResolveRuntimeInteractionArgs>(arguments)
-                    .map_err(invalid_meta_args)?;
-                self.meta_resolve_runtime_interaction(session, agent, args)
-                    .await
-            }
             _ => Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_meta",
                 message: format!("unsupported metaagent tool `{tool_name}`"),
             }),
-        }
+        };
+        self.authorize_current_external_command()?;
+        result
     }
 
     fn persist_metaagent_event_record(
@@ -727,57 +759,6 @@ impl KernelRuntimeState {
         }
     }
 
-    fn persist_metaagent_interaction_resolution(
-        &self,
-        session: &crate::session::RuntimeSession,
-        metaagent: &crate::agent::AgentInstance,
-        target: &crate::agent::AgentInstance,
-        interaction: &crate::session::RuntimeInteraction,
-        choice_id: &str,
-        custom_reply: Option<&str>,
-        provider_run_id: Option<&str>,
-    ) {
-        let correlation_id = format!(
-            "metaagent:{}:runtime-interaction:{}",
-            metaagent.id(),
-            interaction.id()
-        );
-        if let Err(error) = self.owned.durable_state_store.append_event(
-            "metaagent.interaction.resolved",
-            Some(interaction.id().to_string()),
-            serde_json::json!({
-                "session_id": session.id(),
-                "user_id": metaagent.owner_user_id(),
-                "metaagent_id": metaagent.id(),
-                "target_agent_id": target.id(),
-                "interaction_id": interaction.id(),
-                "interaction_kind": format!("{:?}", interaction.kind()),
-                "choice_id": choice_id,
-                "input": custom_reply.map(|reply| serde_json::json!({
-                    "kind": "custom",
-                    "char_count": reply.chars().count(),
-                })),
-                "provider_run_id": provider_run_id,
-                "causation_id": interaction.id(),
-                "correlation_id": correlation_id,
-                "timestamp_ms": crate::session::unix_epoch_ms(),
-            }),
-        ) {
-            crate::logging::warn_with_fields(
-                "metaagent.audit",
-                "failed to persist metaagent interaction resolution audit",
-                serde_json::json!({
-                    "session_id": session.id(),
-                    "metaagent_id": metaagent.id(),
-                    "target_agent_id": target.id(),
-                    "interaction_id": interaction.id(),
-                    "choice_id": choice_id,
-                    "error": error.to_string(),
-                }),
-            );
-        }
-    }
-
     fn metaagent_for_provider_run(
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
@@ -788,8 +769,9 @@ impl KernelRuntimeState {
                 message: "Meta mode tools require an agent-bound provider run".to_string(),
             });
         };
+        self.authorize_room_provider_epoch(Some(agent_id), Some(provider_run.id()))?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
-        if !agent.is_metaagent() {
+        if !agent.is_metaagent() && !self.room_agent_tools_enabled() {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_meta",
                 message: "Meta mode tools are only available to agents currently in Meta mode"
@@ -800,6 +782,13 @@ impl KernelRuntimeState {
             .owned
             .session_store
             .get_session(provider_run.session_id())?;
+        if agent.session_id() != session.id()
+            || agent.owner_user_id() != provider_run.owner_user_id()
+        {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "provider run does not match room agent",
+            ));
+        }
         Ok((session, agent))
     }
 }

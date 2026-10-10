@@ -4,5 +4,6 @@
 <p>MD-DISPLAY-04 · kernel-owned tab · experimental display</p><canvas id="display"></canvas>
 <script type="module">
 import { BrowserDisplayPresenter, attachBrowserDisplay } from './presenter.mjs';
-window.MDDisplay = { BrowserDisplayPresenter, attachBrowserDisplay, canvas: document.querySelector('canvas') };
+import {attachNativeDisplay} from './native-presenter.mjs';
+window.MDDisplay = { attachNativeDisplay, BrowserDisplayPresenter, attachBrowserDisplay, canvas: document.querySelector('canvas') };
 </script>

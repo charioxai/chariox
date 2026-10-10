@@ -502,7 +502,7 @@ fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() 
         )
         .unwrap();
     }
-    for op in ["state", "start", "stop", "navigate", "close"] {
+    for op in ["state", "start", "navigate", "close"] {
         host.scope_browser_request(
             Some(&admission),
             "host.browser",
@@ -510,6 +510,15 @@ fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() 
         )
         .unwrap();
     }
+    // MP-08/MP-11 SB-02: Stop is global even with a scoped tab parameter.
+    assert!(host
+        .scope_browser_request(
+            Some(&admission),
+            "host.browser",
+            &json!({"op":"stop","tab_id":"tab"})
+        )
+        .unwrap_err()
+        .contains("not_focused_agent"));
     assert!(host
         .scope_browser_request(
             Some(&admission),
@@ -550,6 +559,125 @@ fn mdaccess_retained_notes_commits_share_grant_and_revoke_boundary() {
             "MP-11: revoked note commit"
         ))
         .is_err());
+}
+
+#[test]
+fn mp11_global_stop_requires_focus_even_with_retained_tabs() {
+    for owns_tab in [false, true] {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-mp11-stop-scope-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let script = root.join("controller.sh");
+        // A real stdio controller lifetime. Browser resources are fixture IDs;
+        // this tests kernel admission/shutdown, not Chromium/client acceptance.
+        std::fs::write(
+            &script,
+            r#"set -eu
+while IFS= read -r request; do
+  id=${request#*:}; id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*) result=$(printf '{"state":"ready","process_id":%s}' "$$") ;;
+    *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
+    *) result='{}' ;;
+  esac
+  printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$result"
+done
+"#,
+        )
+        .unwrap();
+        let host = KernelBrowserHost::new(root.clone());
+        let backend = BrowserControllerProcessStdioBackend::new(
+            "/bin/sh",
+            vec![script.display().to_string()],
+            Duration::from_secs(2),
+        )
+        .for_host();
+        host.inner
+            .lock()
+            .unwrap()
+            .browsers
+            .insert("owner".into(), Arc::new(Mutex::new(backend)));
+        host.backend("owner")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .start()
+            .unwrap();
+        host.set_focus("owner", Some("first"));
+        host.load("owner", "first").unwrap();
+        let first = host.admit("owner", "first").unwrap();
+        if owns_tab {
+            host.claim_resource(
+                Some(&first),
+                UserDomainResource::BrowserTab {
+                    tab_id: "first-tab".into(),
+                },
+                false,
+            )
+            .unwrap();
+        }
+        host.set_focus("owner", Some("second"));
+        host.load("owner", "second").unwrap();
+        let second = host.admit("owner", "second").unwrap();
+        host.claim_resource(
+            Some(&second),
+            UserDomainResource::BrowserTab {
+                tab_id: "second-tab".into(),
+            },
+            false,
+        )
+        .unwrap();
+        let mut refusals = Vec::new();
+        // Exercise the actual tabless Stop path, and reject tab_id smuggling.
+        for params in [
+            json!({"op":"stop"}),
+            json!({"op":"stop","tab_id":"first-tab"}),
+        ] {
+            refusals.push(host.protected_request_admitted(
+                "owner",
+                Some(&first),
+                "host.browser",
+                params,
+                json!({"values":[],"targets":[],"unknown":false}),
+            ));
+        }
+        let still_running = host
+            .backend("owner")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .health()
+            .unwrap()
+            .state
+            == BrowserControllerProcessState::Ready;
+        let second_can_stop =
+            host.scope_browser_request(Some(&second), "host.browser", &json!({"op":"stop"}));
+        let owner_can_stop =
+            host.scope_browser_request(None, "host.browser", &json!({"op":"stop"}));
+        let first_retained = host.has_grant("owner", "first");
+        host.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        for result in refusals {
+            assert!(
+                matches!(
+                    result,
+                    Err(crate::error::HostFailure::Refused(
+                        crate::error::UserDomainRefusalReason::NotFocusedAgent
+                    ))
+                ),
+                "MP-11: retained global Stop was admitted: {result:?}"
+            );
+        }
+        assert!(
+            still_running,
+            "MP-11: retained Stop shut down the shared controller"
+        );
+        second_can_stop.unwrap();
+        owner_can_stop.unwrap();
+        assert!(first_retained);
+    }
 }
 
 #[test]
@@ -811,5 +939,190 @@ done
             assert!(host.check_admission(Some(&admission)).is_err());
             host.shutdown().unwrap();
         }
+    }
+}
+
+#[test]
+fn md_display_held_capture_does_not_hold_input_ownership_or_steal_its_response() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-md-display-unlocked-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script,r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+ *'"op":"screenshot"'*)
+   printf 'started\n' > "$root/capture"
+   (while ! test -f "$root/release"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"generation":1,"frame_sent":false,"display_frame":null}}\n' "$id") & ;;
+ *'"op":"input"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"input_completed":true}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id";exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    // MP-11: observations cannot implicitly start a stopped controller.
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let (tx, rx) = std::sync::mpsc::channel();
+    let early = std::thread::scope(|scope| {
+        let capture = scope.spawn(|| {
+            host.protected_request(
+                "alice",
+                None,
+                "host.browser",
+                json!({"op":"screenshot","display_subscription_id":"s"}),
+                policy.clone(),
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !root.join("capture").exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(root.join("capture").exists());
+        let input=scope.spawn(|| { let result=host.protected_request("alice",None,"host.browser",json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"click","x":1,"y":1}}),policy.clone());tx.send(result).unwrap();});
+        let early = rx.recv_timeout(Duration::from_millis(100));
+        std::fs::write(root.join("release"), b"release").unwrap();
+        assert_eq!(capture.join().unwrap().unwrap()["frame_sent"], false);
+        input.join().unwrap();
+        early
+    });
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        early.expect("input waited behind display work").unwrap()["input_completed"],
+        true
+    );
+}
+
+#[test]
+fn mp08_display_held_input_does_not_starve_capture_or_steal_its_response() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-mp08-input-unlocked-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script,r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+ *'"op":"input"'*)
+   printf 'started\n' > "$root/capture"
+   (while ! test -f "$root/release"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"generation":1,"input_completed":true}}\n' "$id") & ;;
+ *'"op":"screenshot"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"frame_sent":false,"display_frame":null}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id";exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    // MP-11: observations cannot implicitly start a stopped controller.
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let (tx, rx) = std::sync::mpsc::channel();
+    let early = std::thread::scope(|scope| {
+        let capture = scope.spawn(|| {
+            host.protected_request(
+                "alice",
+                None,
+                "host.browser",
+                json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"scroll","x":1,"y":1,"delta_x":0,"delta_y":120}}),
+                policy.clone(),
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !root.join("capture").exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(root.join("capture").exists());
+        let input = scope.spawn(|| {
+            let result = host.protected_request(
+                "alice",
+                None,
+                "host.browser",
+                json!({"op":"screenshot","display_subscription_id":"s"}),
+                policy.clone(),
+            );
+            tx.send(result).unwrap();
+        });
+        let early = rx.recv_timeout(Duration::from_millis(100));
+        std::fs::write(root.join("release"), b"release").unwrap();
+        assert_eq!(capture.join().unwrap().unwrap()["input_completed"], true);
+        input.join().unwrap();
+        early
+    });
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        early.expect("capture waited behind input work").unwrap()["frame_sent"],
+        false
+    );
+}
+
+#[test]
+fn mirror_reads_and_cleanup_never_start_a_stopped_controller() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-mirror-no-start-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+printf 'started' > "$1/started"
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+  *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+  *) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("owner", &script, &root);
+    let outcomes: Vec<_> = ["mirror_subscribe", "mirror_next", "mirror_close"]
+        .into_iter()
+        .map(|op| {
+            let params = json!({"op":op,"tab_id":"a","subscription_id":"s","generation":1});
+            let outcome = host.protected_request(
+                "owner",
+                None,
+                "host.browser",
+                params,
+                json!({"values":[],"targets":[],"unknown":false}),
+            );
+            (op, outcome, root.join("started").exists())
+        })
+        .collect();
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    for (op, outcome, started) in outcomes {
+        assert!(!started, "MP-11: {op} started the browser controller");
+        assert!(
+            outcome.unwrap_err().contains("browser_unavailable"),
+            "MP-11: {op} must refuse while stopped"
+        );
     }
 }

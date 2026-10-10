@@ -15,3 +15,15 @@ test('MD-DISPLAY stage correlation excludes bootstrap and retains nested spans',
   assert.equal(result.stages.input_to_raf.p50_ms, 50);
   assert.equal(result.stages.draw_to_raf.p50_ms, 10);
 });
+test('MP-08/MP-10 typing stages exclude click spans', () => {
+  const span = (start, end) => ({stage:'capture',started_ms:start,ended_ms:end,duration_ms:end-start});
+  const result = summarizeStages({
+    probes:[{started_ms:100,drawn_ms:140,presented_ms:150}],
+    type_probes:[{started_ms:200,drawn_ms:215,presented_ms:220}],
+    host_timings:[span(105,125),span(205,210)],
+  });
+  assert.equal(result.stages.capture.n, 2);
+  assert.equal(result.typing.capture.n, 1);
+  assert.equal(result.typing.capture.p95_ms, 5);
+  assert.equal(result.typing.input_to_raf.p95_ms, 20);
+});

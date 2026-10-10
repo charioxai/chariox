@@ -267,6 +267,8 @@ pub enum WorkflowQueuedPromptStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowQueuedPrompt {
     id: String,
+    #[serde(default)]
+    created_by_agent_id: Option<String>,
     queue_id: String,
     workflow_id: String,
     endpoint_id: String,
@@ -298,10 +300,20 @@ pub(crate) struct WorkflowQueuedPromptInput {
 }
 
 impl WorkflowQueuedPrompt {
+    pub fn created_by_agent_id(&self) -> Option<&str> {
+        self.created_by_agent_id.as_deref()
+    }
+    pub(crate) fn with_creator(mut self, creator: Option<String>) -> Self {
+        assert!(self.created_by_agent_id.is_none());
+        self.created_by_agent_id = creator;
+        self
+    }
+
     pub(crate) fn new(input: WorkflowQueuedPromptInput) -> Self {
         let now = unix_epoch_ms();
         Self {
             id: input.id,
+            created_by_agent_id: None,
             queue_id: input.queue_id,
             workflow_id: input.workflow_id,
             endpoint_id: input.endpoint_id,
@@ -331,6 +343,36 @@ impl WorkflowQueuedPrompt {
     }
     pub fn prompt(&self) -> Option<&str> {
         self.prompt.as_deref()
+    }
+    pub(crate) fn notification_expired_at(&self, now: u64) -> bool {
+        self.publication_invocation.as_ref().is_some_and(|i| {
+            matches!(i.transport.as_str(), "app_event" | "workflow_notification")
+                && i.input
+                    .get("deadline_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .map_or(i.transport == "workflow_notification", |deadline| {
+                        deadline <= now
+                    })
+        })
+    }
+
+    pub(crate) fn notification_injection_pending(&self) -> bool {
+        self.publication_invocation.as_ref().is_some_and(|i| {
+            matches!(i.transport.as_str(), "app_event" | "workflow_notification")
+                && i.caller
+                    .get("delivery_mode")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("inject")
+                && matches!(
+                    self.status,
+                    WorkflowQueuedPromptStatus::Queued | WorkflowQueuedPromptStatus::Running
+                )
+        })
+    }
+    pub(crate) fn notification_invocation_mut(
+        &mut self,
+    ) -> Option<&mut WorkflowPublicationInvocationEnvelope> {
+        self.publication_invocation.as_mut()
     }
     pub fn publication_invocation(&self) -> Option<&WorkflowPublicationInvocationEnvelope> {
         self.publication_invocation.as_ref()

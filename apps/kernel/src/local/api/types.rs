@@ -48,6 +48,7 @@ mod terminal_interaction;
 mod user_domain_access;
 mod waiting_room;
 mod workflow;
+mod workflow_notification;
 mod workspace;
 
 pub use agent_lifecycle::*;
@@ -88,6 +89,7 @@ pub use terminal_interaction::*;
 pub use user_domain_access::*;
 pub use waiting_room::*;
 pub use workflow::*;
+pub use workflow_notification::*;
 pub use workspace::*;
 
 /// Version 319 adds Git credential enrollment for an existing managed environment.
@@ -261,9 +263,33 @@ pub use workspace::*;
 /// Version 413 adds terminal sudo turns and critical approval receipts.
 /// Version 415 adds external sudo requests and requester attribution.
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
+/// Version 435 combines Apps, Browser artifacts, bounded Computer holds, and
+/// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
 /// MP-08/MP-10/MP-11: version 443 combines main 435 with the multidomain
 /// host browser, App views, Notes, grants, captures and DOM mirror contract.
-/// MP-08/MP-11: reserved version446 adds owned Linux desktop targets and input.
-/// MP-08 / MP-10 / MP-11: Room AT-SPI and per-agent Computer revoke.
-/// MP-08 / MP-11: version 461 adds bulk Room Computer restore (`agent_id: null`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 461;
+/// Version 450 adds immutable room spawn/object creators and regular room tools
+/// behind the transitional room-agent-tools flag (MP-08/MP-10/MP-11 A01).
+/// Version 452 adds durable agent events, enforced turn dispositions and
+/// kernel-emitted workflow notifications (MP-08/09/10/11 A02).
+/// Version 460 replaces one-turn sudo with hour-scale windows bound to owner
+/// work, fresh-passkey extension, session status and no agent approvals
+/// (MP-08/MP-10/MP-11 A04).
+/// Version 462 adds user-requested capability grant causes, absolute grant
+/// expiry and the `not_requested` refusal (MP-08/MP-10/MP-11 A05).
+/// Version 469 combines 460 and 462; A06 Vault generation and login add no
+/// wire shape (MP-08/MP-10/MP-11).
+/// Version 451 grants the whole local kernel and routes access popups without sessions.
+/// Version 470 adds structured OS requester identity to access decisions.
+/// Version 472 advertises identity-preserving terminal relay renewal with
+/// explicit capability negotiation and recoverable target-offline handshakes.
+/// MP-08/MP-10/MP-11: version 447 adds bounded stripe display to the multidomain
+/// host browser, App views, Notes, grants, captures and DOM mirror contract.
+/// MP-08/MP-10: version 466 makes display frame events binary (raw payload
+/// segments) and adds lossless WebP tiles and scroll move rectangles.
+/// MP-08/MP-10: version 475 adds pushed display (`display_ack` drives the
+/// kernel push pump of a relay display subscription; `display_next` remains).
+/// MP-08/MP-10/MP-11: allocated491 combines native display and agent-tab
+/// provenance/activity with the shared agent-model protocol union.
+/// Protocol 497 adds native Computer display subscribe/next/close, native frame
+/// bindings and namespaced encrypted delivery registration.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 497;

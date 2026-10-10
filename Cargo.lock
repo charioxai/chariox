@@ -413,6 +413,7 @@ dependencies = [
  "argon2",
  "base64",
  "bytes",
+ "cc",
  "chariox-aegs-sdk",
  "chariox-app-package",
  "chariox-app-runtime",

@@ -8,6 +8,7 @@ pub(crate) struct WorkflowRuntimeInstanceProvisionCandidate {
     pub(crate) ordinal: u16,
     pub(crate) primary: bool,
     pub(crate) source_worktree_id: String,
+    pub(crate) creating_agent_id: Option<String>,
 }
 
 impl SessionService {
@@ -146,6 +147,11 @@ impl SessionService {
             publication_invocation,
             vec![node_run],
             messages,
+        );
+        workflow_run = workflow_run.with_creator(
+            queued_prompt
+                .and_then(|p| p.created_by_agent_id())
+                .map(str::to_string),
         );
         workflow_run.set_invocation_context(
             workflow.revision(),
@@ -489,6 +495,32 @@ impl SessionService {
         watchdog_id: Option<String>,
         publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
     ) -> Result<WorkflowQueuedPrompt, DaemonError> {
+        self.enqueue_workflow_prompt_by_agent(
+            session_id,
+            workflow_id,
+            endpoint_id,
+            prompt,
+            queue_ref,
+            source,
+            watchdog_id,
+            publication_invocation,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn enqueue_workflow_prompt_by_agent(
+        &mut self,
+        session_id: &str,
+        workflow_id: &str,
+        endpoint_id: &str,
+        prompt: Option<String>,
+        queue_ref: Option<&str>,
+        source: WorkflowQueuedPromptSource,
+        watchdog_id: Option<String>,
+        publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
+        creator: Option<&str>,
+    ) -> Result<WorkflowQueuedPrompt, DaemonError> {
         let queued = self.prepare_workflow_prompt_with_publication_invocation(
             session_id,
             workflow_id,
@@ -499,6 +531,7 @@ impl SessionService {
             watchdog_id,
             publication_invocation,
         )?;
+        let queued = queued.with_creator(creator.map(str::to_string));
         let session =
             self.store
                 .get_mut(session_id)
@@ -705,7 +738,11 @@ impl SessionService {
         let mut queued = session
             .workflow_queued_prompts()
             .iter()
-            .filter(|item| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter(|item| {
+                item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
+                    && !item.notification_expired_at(crate::session::types::unix_epoch_ms())
+            })
             .filter_map(|item| {
                 let queue = session.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
                 queue
@@ -745,6 +782,7 @@ impl SessionService {
                 ordinal,
                 primary: count == 0,
                 source_worktree_id: session.worktree_id().to_string(),
+                creating_agent_id: queued_prompt.created_by_agent_id().map(str::to_string),
             }));
         }
         Ok(None)

@@ -122,6 +122,11 @@ pub struct RuntimeSession {
     active_interactions: Vec<RuntimeInteraction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     metaagent_tasks: Vec<MetaagentTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    agent_tasks: Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
+    /// Protocol 460: live sudo windows projected for every client's status row.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sudo_windows: Vec<crate::local::KernelSudoTurn>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     queued_metaagent_tasks: VecDeque<QueuedMetaagentTask>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -162,6 +167,19 @@ pub struct RuntimeSession {
 }
 
 impl RuntimeSession {
+    pub(crate) fn set_agent_tasks(
+        &mut self,
+        tasks: Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
+    ) {
+        self.agent_tasks = tasks;
+    }
+    pub(crate) fn set_sudo_windows(&mut self, windows: Vec<crate::local::KernelSudoTurn>) {
+        self.sudo_windows = windows;
+    }
+    pub fn sudo_windows(&self) -> &[crate::local::KernelSudoTurn] {
+        &self.sudo_windows
+    }
+
     pub(crate) fn durable_workflow_hot_state(&self) -> DurableWorkflowHotState {
         DurableWorkflowHotState {
             workflows: self.workflows.clone(),
@@ -245,6 +263,8 @@ impl RuntimeSession {
             prompt_runtime: PromptRuntimeState::default(),
             active_interactions: Vec::new(),
             metaagent_tasks: Vec::new(),
+            agent_tasks: Vec::new(),
+            sudo_windows: Vec::new(),
             queued_metaagent_tasks: VecDeque::new(),
             agent_prompt_schedules: Vec::new(),
             agent_output_read_state: BTreeMap::new(),

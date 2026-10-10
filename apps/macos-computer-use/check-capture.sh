@@ -2,7 +2,7 @@
 # Focused headless executables only. Never builds/signs the helper bundle.
 set -euo pipefail
 cd "$(dirname "$0")"
-build=/Users/miguel/.chariox/dev/cumac/build/r7-tests
+build=/Users/miguel/.chariox/dev/cumac/build/r8-tests
 mkdir -p "$build/modules"
 common=(Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift Native.swift NativeSurface.swift TextClick.swift TextDrillReference.swift Pairing.swift)
 flags=(-j2 -parse-as-library -module-cache-path "$build/modules")

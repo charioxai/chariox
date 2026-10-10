@@ -287,6 +287,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::GetManagedContextLaunchTarget(_) => {
             LocalRequestMetadata::new("managed_context.launch_target.get", Normal)
         }
+        LocalDaemonRequest::ExtendKernelSudo(request) => {
+            LocalRequestMetadata::new("kernel_access.sudo_extend", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
         LocalDaemonRequest::SubmitPrompt(request) => {
             let mut metadata = LocalRequestMetadata::new("prompt.submit", Interactive)
                 .session(&request.session_id)
@@ -567,6 +572,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::RequestKernelAccess(_) => "kernel_access.request",
         LocalDaemonRequest::RequestKernelSudo(_) => "kernel_access.sudo_request",
+        LocalDaemonRequest::ExtendKernelSudo(_) => "kernel_access.sudo_extend",
         LocalDaemonRequest::ListKernelAccessGrants(_) => "kernel_access.list",
         LocalDaemonRequest::RevokeKernelAccessGrant(_) => "kernel_access.revoke",
         LocalDaemonRequest::KernelBrowser(_) => "kernel_browser",
@@ -895,6 +901,12 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SyncRemoteExtensionManifest(_) => "agent.extension.manifest_sync",
         LocalDaemonRequest::ListHomeExtensionAudit(_) => "agent.extension.audit",
         LocalDaemonRequest::ListAgents(_) => "agent.list",
+        LocalDaemonRequest::RegisterWorkflowNotificationSource(_) => {
+            "workflow.notifications.register"
+        }
+        LocalDaemonRequest::AttachWorkflowNotification(_) => "workflow.notifications.attach",
+        LocalDaemonRequest::DetachWorkflowNotification(_) => "workflow.notifications.detach",
+        LocalDaemonRequest::ListWorkflowNotifications(_) => "workflow.notifications.list",
         LocalDaemonRequest::CreateWorkflow(_) => "workflow.create",
         LocalDaemonRequest::CreateAgentWorkflow(_) => "workflow.create_from_agent",
         LocalDaemonRequest::ValidateWorkflowCode(_) => "workflow_code.validate",

@@ -8,6 +8,10 @@ pass fake-source checks. M0 includes an explicit owner-selected real-window
 path. No live capture, AX or CGEvent drill has run; owner evidence remains
 required. Linux owns the shared Computer contract; kernel integration and the
 remaining Mac adapters follow that contract in M1-M5.
+Status: design only, 2026-10-06. Lane `cumac/design`, based on `e325afa58`.
+Linux owns the first implementation of the shared Computer contract. Mac follows
+that contract with native capture, targeting and input adapters. This lane runs
+no prototype, TCC request, kernel, helper, signing operation or live drill.
 
 ## Decision and dependencies
 
@@ -162,6 +166,7 @@ local helper overlay may show the agent pointer and Stop control; it must be
 excluded from captured pixels. Planned M3 session/HID CGEvent mouse input moves
 the real system cursor. M0 clicks use AX only and post no mouse events; text
 clicks require AX caret placement. No separate automation cursor is claimed.
+excluded from captured pixels. CGEvent mouse input moves the real system cursor.
 There is no second independently clickable Mac cursor.
 Use a labeled arrow for the human cursor initially; exact cross-app cursor shapes
 need separate validation. Cursor-only movement updates presence without a frame.
@@ -379,6 +384,7 @@ an explicit drill-only allowlist. M0 admits the signed sibling public fixture
 in fixture mode. Owner mode and window discovery admit only `com.apple.TextEdit`,
 with that bundle ID and the running PID's SecCode satisfying
 `identifier "com.apple.TextEdit" and anchor apple`. Transport discovery alone grants nothing.
+an explicit fixture-only allowlist. Transport discovery alone grants nothing.
 Same-UID arbitrary code can already attack an unsandboxed user session; this
 helper is an admission boundary, not a sandbox against a compromised owner.
 Requests carry a cancellable kernel operation and current epochs, with bounded
@@ -412,12 +418,13 @@ stream or unlocked Vault. No agent action may dismiss or re-enable Stop.
 
 ## Protocol reservation
 
-Reserve the logical Computer surface/adapter change for coordinator allocation;
-numeric local-daemon and relay versions are UNALLOCATED. This document allocates
-none and changes no wire DTO, snapshot, hash or client minimum. The coordinator
-must reconcile the Linux Computer contract with the multidomain display union
-before assigning versions. Existing PR numbers and historical protocol versions
-are not allocations for this work.
+The coordinator allocated native M2 local protocol 497 / relay peer 106 on
+frozen display #950 `f04b4006b3b8b1b833560022128b0345db873e5a`, originally
+491/101. M2 now adds nested Computer subscribe/next/close and native metadata,
+updates snapshots/hashes and native client minimum 497, and reuses existing
+CXD1 encrypted transient delivery. See `PROTOCOL.md` and
+`COMPUTER_USE_MACOS_M2_CHECKPOINT.md` for the implemented observer contract.
+The feature remains disabled pending the protection and granted-binary gates.
 
 The shared implementation needs to express:
 
@@ -463,6 +470,7 @@ Split at responsibility boundaries when a PR exceeds its budget.
 | PR | Size | Deliverable and merge proof |
 | --- | --- | --- |
 | M0, feasibility helper | M, 800-950 | Native regression fixture and owner-selected real-window helper, disabled by default, signed launch identity, explicit owner setup, one scoped SCK frame and benign AX/CGEvent round trip in a real app; owner-attended evidence required |
+| M0, feasibility helper | S, 250-450 | Native fixture app, disabled by default, signed launch identity, explicit owner setup, one scoped SCK frame and benign AX/CGEvent round trip; owner-attended evidence required |
 | M1, shared adapter and lifecycle | M, 400-700 | Implement Linux-approved Computer adapter registration, private helper pairing, health/Stop/revoke and stale epochs; focused fake-backend tests and actual crash/denial proof |
 | M2, capture attachment | M, 500-800 | SCK filters/exclusions, HiDPI transforms, damage and protected exact repair; shared viewer shows public fixture pixels over encrypted kernel/relay events |
 | M3, input and takeover | M, 500-800 | Scoped mouse/scroll/keys/Unicode, seat serialization, local-human fence and owned reset; Linux-equivalent physical fixture and adversarial focus/takeover/death cases |
@@ -537,6 +545,11 @@ session-tap observation or self-tagging is claimed. Unicode typing refuses an
 entire overflowing string without splitting a grapheme or surrogate pair. The
 broader steps below remain later acceptance gates, not instructions to run
 capture unattended.
+when the feature is fully ready. No PR, push or CI is created by this design lane.
+
+## Minimal feasibility prototype, later and owner-attended
+
+The prototype is a future gate, not an instruction to run capture now.
 
 1. Build the smallest native helper plus public fixture with ordinary and secure
    text fields, buttons and moving color patches. Use external compiler output
@@ -584,3 +597,5 @@ running kernel, Keychain or reviewer state.
 M0 has no `LocalDaemonRequest`/`LocalDaemonResponse`, relay-event or terminal
 transport shape changes. Its standalone helper is not a client protocol, so
 the Protocol Change Rule requires no shared version bump for M0.
+This design lane creates only this document, its local commit and the requested
+external lane status. It touches no running kernel, Keychain or reviewer state.

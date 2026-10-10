@@ -7,6 +7,9 @@ use crate::local::LocalDaemonRequest;
 
 pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
     match error {
+        DaemonError::BrowserControllerActionCancelled { .. } => {
+            relay_error("browser_action_cancelled", &error.to_string(), false)
+        }
         DaemonError::UserDomainRefused { reason } => {
             relay_error(reason.code(), &error.to_string(), false)
         }

@@ -88,7 +88,11 @@ import Darwin
                 case "subscribe":
                     let id = try capture.attachment.subscribe(owner: owner, generation: epoch)
                     reply["result"] = ["subscription_id": id, "surface_id": "macos-seat", "generation": epoch,
-                        "width": surface.width, "height": surface.height, "device_scale_factor": surface.scale, "codec": "png"]
+                        "display_kind": "native", "width": surface.width, "height": surface.height, "device_scale_factor": surface.scale, "codec": "png"]
+                case "attach":
+                    guard let id = params["subscription_id"] as? String else { throw Refusal.arguments }
+                    try capture.attachment.attach(id: id, owner: owner, generation: epoch)
+                    reply["result"] = ["display_attached": true]
                 case "sample":
                     guard let id = params["subscription_id"] as? String else { throw Refusal.arguments }
                     let frame = try await capture.attachment.sample(id: id, owner: owner,

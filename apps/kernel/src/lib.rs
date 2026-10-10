@@ -1,4 +1,5 @@
 #![recursion_limit = "256"]
+
 pub mod account_profile;
 pub mod agent;
 pub mod app;
@@ -62,3 +63,6 @@ pub use error::DaemonError;
 mod lib_tests;
 #[cfg(test)]
 pub(crate) mod test_support;
+
+#[cfg(all(feature = "native-display", target_os = "linux"))]
+pub mod display_native;

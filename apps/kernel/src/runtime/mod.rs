@@ -79,6 +79,7 @@ pub(crate) mod disposable_worker_control;
 pub(crate) mod event_catalog_control;
 pub mod event_log;
 pub(crate) mod external_provider_session_control;
+pub(crate) mod external_response;
 pub(crate) mod fresh_remote_relay_inventory;
 pub(crate) mod history_executor;
 pub(crate) mod history_requests;
@@ -86,6 +87,7 @@ pub(crate) mod interactive_command_dispatcher;
 pub(crate) mod invite_tokens;
 mod kernel_browser_actors;
 mod kernel_browser_assets;
+mod kernel_browser_display_gate;
 pub(crate) mod kernel_browser_host;
 pub(crate) mod kernel_lifecycle_executor;
 pub(crate) mod kernel_process_identity;
@@ -142,7 +144,7 @@ pub mod terminal_output_executor;
 pub(crate) mod terminal_pairings;
 pub(crate) mod user_config_executor;
 pub(crate) mod user_config_policy;
-mod user_domain_access;
+pub(crate) mod user_domain_access;
 pub(crate) mod waiting_room_activity;
 pub(crate) mod waiting_room_control;
 pub(crate) mod waiting_room_public_projection;
@@ -163,4 +165,8 @@ pub(crate) mod workspace_worktrees;
 pub(crate) mod kernel_access;
 
 pub(crate) mod relay_peer_authority;
+
+pub(crate) mod room_tool_admission;
+
+pub(crate) mod room_dispatch_registration;
 mod user_app_views;

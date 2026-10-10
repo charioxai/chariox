@@ -12,6 +12,7 @@ type FakeTimer = {
 function createHarness(options: { batched?: boolean } = {}) {
   let batched = options.batched ?? false
   let updates = 0
+  let disposed = false
   const timers: FakeTimer[] = []
   const controller = createSessionChromeUpdateController<FakeTimer>({
     delayMs: 20,
@@ -24,6 +25,7 @@ function createHarness(options: { batched?: boolean } = {}) {
       timer.cleared = true
     },
     isBatched: () => batched,
+    isDisposed: () => disposed,
     applyUpdate() {
       updates += 1
     },
@@ -31,6 +33,7 @@ function createHarness(options: { batched?: boolean } = {}) {
 
   return {
     controller,
+    setDisposed(value: boolean) { disposed = value },
     setBatched(value: boolean) {
       batched = value
     },
@@ -99,4 +102,18 @@ test("session chrome update controller keeps flushes deferred during UI batches"
   setBatched(false)
   controller.flushDeferred()
   assert.equal(updates(), 1)
+})
+
+// MP-08/MP-10/MP-11 A01: a pending room update cannot render after TUI teardown.
+test("session chrome skips pending and new updates after renderer destruction", () => {
+  const { controller, setDisposed, timers, updates } = createHarness()
+  controller.request(true)
+  setDisposed(true)
+  timers[0]?.callback()
+  controller.flushDeferred()
+  controller.flush()
+  controller.request(false)
+  controller.request(true)
+  assert.equal(updates(), 0)
+  assert.equal(timers.length, 1)
 })

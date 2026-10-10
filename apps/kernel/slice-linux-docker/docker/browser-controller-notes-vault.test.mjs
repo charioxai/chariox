@@ -9,7 +9,7 @@ import { handleBrowserControllerRequest } from './browser-controller.mjs';
 
 const secret = 'synthetic-vault-secret';
 
-function fixture(text, start, end, { splitAt, shadow = false, child = false, protectedAttribute } = {}) {
+function fixture(text, start, end, { splitAt, shadow = false, child = false, protectedAttribute, protectedNodes = [] } = {}) {
   class ShadowRoot {}
   const root = shadow ? new ShadowRoot() : {};
   const protectedElement = protectedAttribute ? {
@@ -17,8 +17,8 @@ function fixture(text, start, end, { splitAt, shadow = false, child = false, pro
     getRootNode: () => ({})
   } : null;
   if (shadow) root.host = protectedElement;
-  root.nodes = (splitAt == null ? [text] : [text.slice(0, splitAt), text.slice(splitAt)]).map(data => ({
-    data, length: data.length, getRootNode: () => root, parentElement: shadow ? null : protectedElement,
+  root.nodes = (splitAt == null ? [text] : [text.slice(0, splitAt), text.slice(splitAt)]).map((data, i) => ({
+    data, length: data.length, getRootNode: () => root, parentElement: shadow ? null : (protectedNodes.length && !protectedNodes.includes(i) ? null : protectedElement),
   }));
   const body = shadow ? { nodes: [] } : root;
   const locate = offset => {
@@ -152,10 +152,27 @@ test('MD-N2 / MP-10: benign quotes preserve raw DOM offsets and Unicode context'
   assert.deepEqual(range, { start: at, end: at + 8 });
 });
 
-for (const protectedAttribute of ['data-chariox-secret','data-chariox-observation-protected']) {
+for (const protectedAttribute of ['data-chariox-secret','data-chariox-observation-protected','data-observation-protected']) {
   for (const shadow of [false,true]) test(`Notes withholds ${protectedAttribute} selection in ${shadow?'shadow':'light'} DOM`, async () => {
     const result=await fixture('synthetic-private-text',0,22,{shadow,protectedAttribute}).capture();
     assert.equal(result.ok,true);
     assert.equal(result.result.selection,null);
+  });
+}
+
+for (const protectedAttribute of ['data-chariox-secret','data-chariox-observation-protected','data-observation-protected']) {
+  test(`MP-11: Notes excludes ${protectedAttribute} from nearby prefix and suffix without Vault registration`, async () => {
+    const selected = 'public selection', privateText = 'synthetic-private-context';
+    for (const before of [false, true]) {
+      const text = before ? privateText + selected : selected + privateText;
+      const start = before ? privateText.length : 0;
+      const f = fixture(text, start, start + selected.length, {
+        splitAt: before ? privateText.length : selected.length,
+        protectedAttribute, protectedNodes: [before ? 0 : 1],
+      });
+      const result = await f.capture();
+      assert.equal(result.ok, true);
+      assert.deepEqual(result.result.selection.quote, { exact: selected, prefix: '', suffix: '' });
+    }
   });
 }

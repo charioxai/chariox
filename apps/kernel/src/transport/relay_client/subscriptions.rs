@@ -22,6 +22,8 @@ pub(super) struct RelaySubscriptionTask {
     pub(super) relay_subscription_id: String,
     pub(super) client_public_key: String,
     pub(super) display_id: Option<String>,
+    /// MP-08/MP-10: protocol 491 push pump of a display subscription.
+    pub(super) display_pump: Option<Arc<super::display_pump::DisplayPump>>,
     pub(super) handle: JoinHandle<()>,
 }
 
@@ -290,6 +292,7 @@ pub(super) async fn handle_relay_subscribe(
         task_key,
         RelaySubscriptionTask {
             display_id: None,
+            display_pump: None,
             relay_subscription_id,
             client_public_key,
             handle: task,
@@ -328,6 +331,9 @@ pub(super) async fn handle_relay_unsubscribe(
             .await;
     if let Some(task) = existing {
         task.handle.abort();
+        if let Some(pump) = &task.display_pump {
+            pump.stop();
+        }
     }
     let ack = match encrypt_json_response(
         router,
@@ -626,8 +632,13 @@ pub(super) async fn run_relay_subscription_loop(
                             return;
                         }
                     }
+                    let skip_snapshot = can_skip_session_snapshot(
+                        &snapshot,
+                        previous_snapshot_ref,
+                        emitted_projection_delta || workflow_run_only,
+                    );
                     previous_snapshot = Some(snapshot.clone());
-                    if emitted_projection_delta || workflow_run_only {
+                    if skip_snapshot {
                         continue;
                     }
                     if emit_relay_event(
@@ -1166,6 +1177,7 @@ mod tests {
             first_key.clone(),
             RelaySubscriptionTask {
                 display_id: None,
+                display_pump: None,
                 relay_subscription_id: "relay-subscription-1".to_string(),
                 client_public_key: "client-public-key-1".to_string(),
                 handle: first_handle,
@@ -1179,6 +1191,7 @@ mod tests {
             second_key,
             RelaySubscriptionTask {
                 display_id: None,
+                display_pump: None,
                 relay_subscription_id: "relay-subscription-2".to_string(),
                 client_public_key: "client-public-key-2".to_string(),
                 handle: second_handle,
@@ -1225,6 +1238,7 @@ mod tests {
         });
         let task = RelaySubscriptionTask {
             display_id: None,
+            display_pump: None,
             relay_subscription_id: "relay-subscription-1".to_string(),
             client_public_key: "client-public-key-1".to_string(),
             handle,

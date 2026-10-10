@@ -20,6 +20,9 @@ import Darwin
         let scope = try pairedScope(["pid": Int32(42), "window": UInt32(7), "owner_window": false, "target": "text"])!
         let surface = NativeSurface(bounds: CGRect(x: -200, y: -100, width: 300, height: 200), scale: 2)
         let click = try pairedInput(["kind": "click", "x": UInt32(100), "y": UInt32(50), "button": 1], scope: scope, surface: surface)
+        precondition(click.target == "text" && click.operations == [.click])
+        let path = try inputPath(.click, role: kAXTextAreaRole)
+        precondition(path == .axTextClick)
         precondition(click.clickPoint == CGPoint(x: -150, y: -75))
         for input: [String: Any] in [["kind": "click", "x": UInt32(600), "y": UInt32(0), "button": 1],
             ["kind": "keycode", "keycode": 42, "state": "down"], ["kind": "text", "text": String(repeating: "x", count: 21)]] {

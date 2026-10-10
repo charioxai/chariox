@@ -118,6 +118,9 @@ struct FakeSeat {
     calls: Vec<String>,
 }
 impl computer_backend::ComputerBackend for FakeSeat {
+    fn supports_native_display(&self) -> bool {
+        true
+    }
     fn ready(&mut self) -> bool {
         self.live
     }
@@ -306,4 +309,43 @@ fn m1_owner_admission_precedes_the_factory_and_concurrent_first_use_creates_once
         .collect::<Vec<_>>();
     assert!(Arc::ptr_eq(&seats[0], &seats[1]));
     assert_eq!(created.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn m2_native_display_requires_admitted_terminal_and_current_surface_without_creating_browser() {
+    let (host, seat) = seat_host();
+    computer(&host, json!({"op":"start"})).unwrap();
+    let life = crate::runtime::command::TerminalLifetime::default();
+    let admission = host.admit_terminal(OWNER, life.clone());
+    let command = json!({"op":"display_subscribe","surface_id":"macos-seat","generation":"1","codecs":["png"],"observed_by":"terminal:viewer"});
+    assert!(computer(&host, command.clone()).is_err());
+    let before = seat.lock().unwrap().calls.len();
+    let mut stale = command.clone();
+    stale["generation"] = "old".into();
+    assert!(host
+        .protected_request_admitted(OWNER, Some(&admission), "host.computer", stale, Value::Null)
+        .is_err());
+    assert!(!seat.lock().unwrap().calls[before..]
+        .iter()
+        .any(|method| method == "host.display"));
+    host.protected_request_admitted(
+        OWNER,
+        Some(&admission),
+        "host.computer",
+        command.clone(),
+        Value::Null,
+    )
+    .unwrap();
+    assert_eq!(seat.lock().unwrap().calls.last().unwrap(), "host.display");
+    assert!(host.inner.lock().unwrap().browsers.is_empty());
+    life.cancel();
+    assert!(host
+        .protected_request_admitted(
+            OWNER,
+            Some(&admission),
+            "host.computer",
+            command,
+            Value::Null
+        )
+        .is_err());
 }

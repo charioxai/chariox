@@ -105,6 +105,18 @@ impl KernelBrowserHost {
             .map_err(|_| "MP-11: desktop operation lock unavailable")?;
         self.check_admission(admission)?;
         self.require_running()?;
+        let display = params["op"]
+            .as_str()
+            .is_some_and(|op| op.starts_with("display_"));
+        if display
+            && (!backend.supports_native_display()
+                || admission.is_none_or(|a| a.agent.is_some())
+                || params["observed_by"]
+                    .as_str()
+                    .is_none_or(|owner| !owner.starts_with("terminal:")))
+        {
+            return Err("M2: admitted native terminal display required".into());
+        }
         let ready = backend.ready();
         if !ready
             && params["op"] == "start"
@@ -222,6 +234,30 @@ impl KernelBrowserHost {
         {
             return Err("MP-11: stale native desktop".into());
         }
+        if display {
+            let op = match params["op"].as_str() {
+                Some("display_subscribe")
+                    if params["codecs"].as_array().is_some_and(|codecs| {
+                        codecs.len() <= 8 && codecs.iter().any(|c| c == "png")
+                    }) =>
+                {
+                    "subscribe"
+                }
+                Some("display_next") => "sample",
+                Some("display_close") => "close",
+                Some("display_attach") => "attach",
+                _ => return Err("M2: native display negotiation refused".into()),
+            };
+            params["_attachment_owner"] = params["observed_by"].clone();
+            params["op"] = op.into();
+            let result = backend.request(
+                "host.display",
+                params,
+                admission.map(|a| a.cancellation.clone()),
+            )?;
+            self.check_admission(admission)?;
+            return Ok(result);
+        }
         let action = if mutation {
             let mut ledger = model
                 .lock()
@@ -272,6 +308,9 @@ impl KernelBrowserHost {
                 let _ = backend.stop();
             }
             action.finish(terminal);
+        }
+        if matches!(&result, Err(crate::error::HostFailure::Cancelled)) {
+            return result;
         }
         self.check_admission(admission)?;
         if result.is_ok() {

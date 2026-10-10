@@ -342,7 +342,7 @@ fn spawn_managed_slice_token_refresh(
                     relay_peer_protocol_version,
                 } if refreshed_slice_id == slice_id
                     && relay_peer_protocol_version
-                        >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION =>
+                        >= crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION =>
                 {
                     router
                         .install_managed_slice_relay_token(
@@ -414,7 +414,7 @@ fn managed_slice_token_confirmation_matches(
 ) -> bool {
     slice_id == expected_slice_id
         && nonce == expected_nonce
-        && peer_version >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+        && peer_version >= crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION
 }
 
 fn spawn_managed_slice_activation_confirmation(
@@ -795,14 +795,15 @@ async fn run_daemon_relay_connector_inner(
             }),
         );
         let connect_started = Instant::now();
-        match timeout(
-            RELAY_CONNECT_TIMEOUT,
+        match timeout(RELAY_CONNECT_TIMEOUT, async {
+            let request = chariox_relay::binary_event::connection_request(&relay_url)?;
             tokio_tungstenite::connect_async_with_config(
-                &relay_url,
+                request,
                 None,
                 std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() == Ok("1"),
-            ),
-        )
+            )
+            .await
+        })
         .await
         {
             Err(_) => {
@@ -831,7 +832,15 @@ async fn run_daemon_relay_connector_inner(
                 }
                 continue;
             }
-            Ok(Ok((socket, _))) => {
+            Ok(Ok((socket, handshake))) => {
+                let binary_events = handshake
+                    .headers()
+                    .get(chariox_relay::binary_event::VERSION_HEADER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .is_some_and(|version| {
+                        version >= chariox_relay::binary_event::PROTOCOL_VERSION
+                    });
                 let connect_ms = connect_started.elapsed().as_millis();
                 crate::logging::info_with_fields(
                     "daemon.relay_client",
@@ -851,8 +860,17 @@ async fn run_daemon_relay_connector_inner(
                 let writer_task = tokio::spawn(async move {
                     let mut priority_open = true;
                     let mut event_open = true;
-                    let mut event_write_coalescer =
-                        RelayEventWriteCoalescer::new(RELAY_EVENT_WRITE_COALESCE_MS);
+                    // MP-08/MP-10: a software display packet can exceed the
+                    // small-event priority threshold even for one typed key.
+                    // Keep its bounded event lane and control priority, but
+                    // don't add a whole33ms frame after capture/encoding.
+                    let event_delay =
+                        if std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() == Ok("1") {
+                            0
+                        } else {
+                            RELAY_EVENT_WRITE_COALESCE_MS
+                        };
+                    let mut event_write_coalescer = RelayEventWriteCoalescer::new(event_delay);
                     'writer_loop: while priority_open
                         || event_open
                         || !event_write_coalescer.is_empty()
@@ -868,7 +886,7 @@ async fn run_daemon_relay_connector_inner(
                                 envelope = priority_outgoing_rx.recv(), if priority_open => {
                                     match envelope {
                                         Some(envelope) => {
-                                            if !send_relay_envelope_frame(&mut writer, envelope, "priority").await {
+                                            if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events).await {
                                                 break;
                                             }
                                         }
@@ -879,7 +897,7 @@ async fn run_daemon_relay_connector_inner(
                                     match envelope {
                                         Some(envelope) => {
                                             if let Some(envelope) = event_write_coalescer.push_event(envelope, tokio::time::Instant::now()) {
-                                                if !send_relay_envelope_frame(&mut writer, envelope, "event").await {
+                                                if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events).await {
                                                     break;
                                                 }
                                             }
@@ -889,7 +907,7 @@ async fn run_daemon_relay_connector_inner(
                                 }
                                 _ = tokio::time::sleep_until(ready_at) => {
                                     if let Some(envelope) = event_write_coalescer.pop_ready(tokio::time::Instant::now()) {
-                                        if !send_relay_envelope_frame(&mut writer, envelope, "event").await {
+                                        if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events).await {
                                             break 'writer_loop;
                                         }
                                     }
@@ -908,7 +926,7 @@ async fn run_daemon_relay_connector_inner(
                             envelope = priority_outgoing_rx.recv(), if priority_open => {
                                 match envelope {
                                     Some(envelope) => {
-                                        if !send_relay_envelope_frame(&mut writer, envelope, "priority").await {
+                                        if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events).await {
                                             break;
                                         }
                                     }
@@ -919,7 +937,7 @@ async fn run_daemon_relay_connector_inner(
                                 match envelope {
                                     Some(envelope) => {
                                         if let Some(envelope) = event_write_coalescer.push_event(envelope, tokio::time::Instant::now()) {
-                                            if !send_relay_envelope_frame(&mut writer, envelope, "event").await {
+                                            if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events).await {
                                                 break;
                                             }
                                         }

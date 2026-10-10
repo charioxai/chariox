@@ -91,11 +91,14 @@ impl KernelRuntimeOwnedState {
                             return Err(error);
                         }
                     };
-                    let materialized = self.agent_store.materialize_workflow_runtime_agent(
-                        source_agent,
-                        session_id,
-                        &worktree_id,
-                    );
+                    let materialized = self
+                        .agent_store
+                        .materialize_workflow_runtime_agent_by_agent(
+                            source_agent,
+                            session_id,
+                            &worktree_id,
+                            candidate.creating_agent_id.as_deref(),
+                        );
                     materialized_agents.push(materialized.clone());
                     agent_id_map.insert(node.agent_id().to_string(), materialized.id().to_string());
                     materialized.id().to_string()
@@ -646,6 +649,7 @@ impl KernelRuntimeOwnedState {
                     sessions.mark_workflow_watchdog_queued(&plan.session_id, &plan.watchdog_id)?;
                     Ok(Some(()))
                 },
+                None,
             )?;
         }
         let should_start = self
@@ -681,6 +685,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         reason: &str,
         admit: impl FnOnce(&mut crate::session::SessionService) -> Result<Option<T>, DaemonError>,
+        committed: Option<&mut bool>,
     ) -> Result<Option<T>, DaemonError> {
         let _admission = self.begin_managed_activity_admission()?;
         let activity_mutation = self.begin_managed_activity_mutation();
@@ -708,6 +713,9 @@ impl KernelRuntimeOwnedState {
             Ok(Some(admitted))
         })?;
         if admitted.is_some() {
+            if let Some(committed) = committed {
+                *committed = true;
+            }
             activity_mutation.record();
             // Publication is deliberately after durable admission and activity capture.
             self.session_snapshot(session_id)?;
@@ -760,6 +768,7 @@ impl KernelRuntimeOwnedState {
         Ok(admitted)
     }
 
+    #[cfg(test)]
     pub(super) fn workflow_enqueue_prompt_and_maybe_start(
         &self,
         session_id: &str,
@@ -775,39 +784,116 @@ impl KernelRuntimeOwnedState {
         ),
         DaemonError,
     > {
-        self.workflow_reconcile_live_orphans(session_id);
-        let workflow = self
-            .session_store
-            .read()
-            .resolve_workflow_ref(session_id, workflow_ref)?;
-        let endpoint = self.session_store.read().resolve_workflow_endpoint_ref(
+        self.workflow_enqueue_prompt_by_agent_and_maybe_start(
             session_id,
-            workflow.id(),
+            workflow_ref,
             endpoint_ref,
-        )?;
-        self.workflow_validate_agents(session_id, &workflow)?;
-        let queued_prompt = self
-            .workflow_admit_prompt_transaction(
+            prompt,
+            queue_ref,
+            publication_invocation,
+            None,
+            None,
+        )
+    }
+
+    // Admission carries endpoint, publication and immutable caller bindings together.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn workflow_enqueue_prompt_by_agent_and_maybe_start(
+        &self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        prompt: Option<String>,
+        queue_ref: Option<&str>,
+        publication_invocation: Option<crate::session::WorkflowPublicationInvocationEnvelope>,
+        creator: Option<&str>,
+        obligation: Option<&str>,
+    ) -> Result<
+        (
+            crate::app::workflow_runtime::WorkflowLaunchOutcome,
+            WorkflowPromptDispatches,
+        ),
+        DaemonError,
+    > {
+        self.workflow_reconcile_live_orphans(session_id);
+        let prepared: Result<_, DaemonError> = (|| {
+            let workflow = self
+                .session_store
+                .read()
+                .resolve_workflow_ref(session_id, workflow_ref)?;
+            let endpoint = self.session_store.read().resolve_workflow_endpoint_ref(
                 session_id,
-                "workflow_prompt_enqueued",
-                |sessions| {
-                    sessions
-                        .enqueue_workflow_prompt_with_publication_invocation(
-                            session_id,
-                            workflow.id(),
-                            endpoint.id(),
-                            prompt,
-                            queue_ref,
-                            crate::session::WorkflowQueuedPromptSource::Manual,
-                            None,
-                            publication_invocation,
-                        )
-                        .map(Some)
-                },
-            )?
-            .expect("manual workflow prompt admission must mutate the session");
-        let (claimed, dispatches) =
-            self.workflow_start_next_queued_prompt_for_response(session_id)?;
+                workflow.id(),
+                endpoint_ref,
+            )?;
+            self.workflow_validate_agents(session_id, &workflow)?;
+            Ok((workflow, endpoint))
+        })();
+        let (workflow, endpoint) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                crate::runtime::room_dispatch_registration::receipt(
+                    &self.durable_state_store,
+                    obligation,
+                    false,
+                    None,
+                )?;
+                return Err(error);
+            }
+        };
+        let mut committed = false;
+        let mut resource_id = None;
+        let admitted = self.workflow_admit_prompt_transaction(
+            session_id,
+            "workflow_prompt_enqueued",
+            |sessions| {
+                let queued = sessions.enqueue_workflow_prompt_by_agent(
+                    session_id,
+                    workflow.id(),
+                    endpoint.id(),
+                    prompt,
+                    queue_ref,
+                    crate::session::WorkflowQueuedPromptSource::Manual,
+                    None,
+                    publication_invocation,
+                    creator,
+                )?;
+                resource_id = Some(queued.id().to_string());
+                Ok(Some(queued))
+            },
+            Some(&mut committed),
+        );
+        let queued_prompt = match admitted {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                // Later persistence/projection errors can have committed: retain their intent.
+                if !committed {
+                    crate::runtime::room_dispatch_registration::receipt(
+                        &self.durable_state_store,
+                        obligation,
+                        false,
+                        None,
+                    )?;
+                }
+                return Err(crate::runtime::room_dispatch_registration::dispatch_error(
+                    obligation,
+                    Some(committed),
+                    resource_id.as_deref(),
+                    error,
+                ));
+            }
+        }
+        .expect("manual workflow prompt admission must mutate the session");
+        let (claimed, dispatches) = self
+            .workflow_start_next_queued_prompt_for_response(session_id)
+            .map_err(|error| {
+                crate::runtime::room_dispatch_registration::dispatch_error(
+                    obligation,
+                    Some(true),
+                    Some(queued_prompt.id()),
+                    error,
+                )
+            })?;
         let Some(claimed_outcome) = claimed else {
             // This invocation dispatched nothing itself, but a concurrent
             // invocation may have already admitted our prompt into the primary

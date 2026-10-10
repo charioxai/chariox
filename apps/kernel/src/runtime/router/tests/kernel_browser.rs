@@ -4,6 +4,8 @@ use crate::local::{KernelBrowserCommand, KernelBrowserInput, KernelBrowserReques
 use serde_json::{json, Value};
 mod access;
 mod computer;
+mod capability_grants;
+mod focus_authority;
 
 fn run_test(test: fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {
     tokio::runtime::Builder::new_multi_thread()
@@ -97,7 +99,7 @@ async fn focus_check() {
             json!({"command":{"op":"stop"}})
         )
         .await
-        .is_ok());
+        .is_err());
     assert!(router
         .dispatch_authenticated_runtime_tool_call(
             first_token,

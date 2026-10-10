@@ -1,14 +1,14 @@
-//! MP-08/MP-11: allocated 461/92 grant and reachability shape guard.
+//! MP-08/MP-11: reserved 447/78 grant and reachability shape guard.
 use super::*;
 use crate::local::*;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn mdaccess_protocol_461_grant_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+fn mdaccess_protocol_443_grant_shapes_and_hash() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 497);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        92
+        106
     );
     let mut values = Vec::new();
     for command in [
@@ -55,8 +55,18 @@ fn mdaccess_protocol_461_grant_shapes_and_hash() {
         idle_since_ms: Some(2),
         idle_timeout_seconds: 1800,
         expiry_rule: "active turn or pending wake; then idle window".into(),
+        prompt_id: Some("p".into()),
+        delegated_by_agent_id: None,
+        expires_at_ms: Some(28_800_001),
     };
-    values.push(serde_json::to_value(LocalDaemonResponse::KernelBrowser { result: serde_json::json!({"event":"user_domain_grants_changed","cursor":4,"room_computer":[{"agent_id":"a","session_id":"s","allowed":false}],"grants":[grant],"notice":UserDomainNotice {agent_id:"a".into(),resource:UserDomainResource::BrowserTab {tab_id:"t".into()},at_ms:3}}) }).unwrap());
+    let delegated = UserDomainGrant {
+        agent_id: "child".into(),
+        prompt_id: None,
+        delegated_by_agent_id: Some("a".into()),
+        resources: vec![UserDomainResource::BrowserTab { tab_id: "t".into() }],
+        ..grant.clone()
+    };
+    values.push(serde_json::to_value(LocalDaemonResponse::KernelBrowser { result: serde_json::json!({"event":"user_domain_grants_changed","cursor":4,"room_computer":[{"agent_id":"a","session_id":"s","allowed":false}],"grants":[grant, delegated],"notice":UserDomainNotice {agent_id:"a".into(),resource:UserDomainResource::BrowserTab {tab_id:"t".into()},at_ms:3}}) }).unwrap());
     values.push(
         serde_json::to_value(LocalDaemonResponse::UserAppViewsListed {
             views: vec![UserAppView {
@@ -76,14 +86,14 @@ fn mdaccess_protocol_461_grant_shapes_and_hash() {
         .unwrap(),
     );
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("user-domain-access-461.json")).unwrap();
+        serde_json::from_str(include_str!("user-domain-access-497.json")).unwrap();
     assert_eq!(serde_json::Value::Array(values), expected);
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&expected).unwrap())
         ),
-        "e4016ed77b6b7523dab82a10cf486fe6f546f46e4a4ad535d5e0b722857eda3e"
+        "17622fa8ce455d816ada97f86b72d30124b1cd8804f4d31a7b08b3b917246045"
     );
     assert!(serde_json::from_value::<KernelBrowserRequest>(
         serde_json::json!({"command":{"op":"revoke_grants","agent_id":null,"owner":"forged"}})

@@ -416,13 +416,16 @@ impl KernelRuntimeState {
     pub(crate) async fn attach(
         &self,
         request: crate::attachment::AttachRequest,
+        terminal_caller: bool,
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
         let attachment = self.owned.attach(request)?;
-        if let Ok(session) = self.owned.session_snapshot(attachment.session_id()) {
-            self.owned.kernel_browser_host.set_focus(
-                &self.provider_account_authority_owner_user_id(attachment.owner_user_id()),
-                session.focused_agent_id(),
-            );
+        if terminal_caller {
+            if let Ok(session) = self.owned.session_snapshot(attachment.session_id()) {
+                self.owned.kernel_browser_host.set_focus(
+                    &self.provider_account_authority_owner_user_id(attachment.owner_user_id()),
+                    session.focused_agent_id(),
+                );
+            }
         }
         let runtime_state = self.clone();
         let app = Arc::clone(&self.app);
@@ -460,14 +463,19 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         caller_user_id: &str,
+        terminal_caller: bool,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self
             .owned
             .focus_agent(session_id, agent_id, caller_user_id)?;
-        self.owned.kernel_browser_host.set_focus(
-            &self.provider_account_authority_owner_user_id(caller_user_id),
-            Some(agent.id()),
-        );
+        // MP-11: session orchestration focus carries no human authorization.
+        // Only admission-authenticated terminals may create/refresh user-domain focus.
+        if terminal_caller {
+            self.owned.kernel_browser_host.set_focus(
+                &self.provider_account_authority_owner_user_id(caller_user_id),
+                Some(agent.id()),
+            );
+        }
         // The focus agent gets the App of the Room's focused App Tab.
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.bind_foreground_app(session_id).await;
@@ -533,12 +541,17 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         caller_user_id: &str,
+        terminal_caller: bool,
     ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
         let agent = self.owned.cycle_agent_focus(session_id, caller_user_id)?;
-        self.owned.kernel_browser_host.set_focus(
-            &self.provider_account_authority_owner_user_id(caller_user_id),
-            agent.as_ref().map(|agent| agent.id()),
-        );
+        // MP-11: session orchestration focus carries no human authorization.
+        // Only admission-authenticated terminals may create/refresh user-domain focus.
+        if terminal_caller {
+            self.owned.kernel_browser_host.set_focus(
+                &self.provider_account_authority_owner_user_id(caller_user_id),
+                agent.as_ref().map(|agent| agent.id()),
+            );
+        }
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.bind_foreground_app(session_id).await;
         Ok(agent)
@@ -714,6 +727,8 @@ impl KernelRuntimeState {
             Some(slice_id) => self.resolve_slice_worker_kernel_ref(slice_id).await?,
             None => machine_ref.to_string(),
         };
+        self.revoke_agent_app_capability_grants(&local_agent)
+            .await?;
         self.owned
             .kernel_browser_host
             .revoke_agent(local_agent.id());
@@ -846,6 +861,8 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         self.owned
             .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
+        self.revoke_agent_app_capability_grants(&agent).await?;
+        self.authorize_current_external_command()?;
         // Relay projection ingestion also owns the app lock. Keep the worker
         // acknowledgement and home deletion in one critical section so an
         // already-admitted snapshot cannot revive the run after it is ended.
@@ -959,6 +976,9 @@ impl KernelRuntimeState {
             .await?;
         self.stop_managed_environment_for_session_lifecycle(session_id)
             .await;
+        for agent in owned.agent_store.get_session_agents(session_id) {
+            self.revoke_agent_app_capability_grants(&agent).await?;
+        }
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
         self.sweep_kernel_access();
         owned.clear_session_prompt_runtime_state(session_id);

@@ -215,6 +215,9 @@ impl NativeInteractionOrigin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeInteraction {
+    /// Protocol 470: structured OS requester for external access decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    requester: Option<crate::local::KernelAccessRequester>,
     id: String,
     #[serde(flatten)]
     subject: RuntimeInteractionSubject,
@@ -288,7 +291,17 @@ impl RuntimeInteraction {
             requested_at_ms: unix_epoch_ms(),
             project_environment_review: None,
             provider_login: None,
+            requester: None,
         }
+    }
+
+    pub fn requester(&self) -> Option<&crate::local::KernelAccessRequester> {
+        self.requester.as_ref()
+    }
+
+    pub(crate) fn with_requester(mut self, requester: crate::local::KernelAccessRequester) -> Self {
+        self.requester = Some(requester);
+        self
     }
 
     pub fn native_origin(&self) -> Option<&NativeInteractionOrigin> {
@@ -354,6 +367,7 @@ impl RuntimeInteraction {
             requested_at_ms: unix_epoch_ms(),
             project_environment_review: None,
             provider_login: None,
+            requester: None,
         }
     }
 
@@ -386,6 +400,11 @@ impl RuntimeInteraction {
 
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+
+    pub(crate) fn with_message(mut self, message: String) -> Self {
+        self.message = message;
+        self
     }
 
     pub fn message(&self) -> &str {

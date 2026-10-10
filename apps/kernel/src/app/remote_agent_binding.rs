@@ -12,7 +12,8 @@ use crate::transport::relay_client::{
 };
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{
-    RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+    RelayPeerRequest, RelayPeerResponse, MINIMUM_RELAY_PEER_RUNTIME_VERSION,
+    RELAY_PEER_PROTOCOL_VERSION,
 };
 
 use super::remote_kernel_selection::{
@@ -146,7 +147,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
             });
         }
     };
-    if relay_peer_protocol_version < RELAY_PEER_PROTOCOL_VERSION {
+    if relay_peer_protocol_version < MINIMUM_RELAY_PEER_RUNTIME_VERSION {
         cleanup_remote_binding_setup_off_lock(
             &relay_config,
             &plan.relay_state,
@@ -162,7 +163,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
                 "remote worker `{}` uses relay peer protocol {}, but this home kernel requires {}. Upgrade and restart the worker kernel, then retry the remote agent.",
                 worker_kernel.kernel_id,
                 relay_peer_protocol_version,
-                RELAY_PEER_PROTOCOL_VERSION
+                MINIMUM_RELAY_PEER_RUNTIME_VERSION
             ),
         });
     }
@@ -812,7 +813,7 @@ impl DaemonApp {
                     use_connected_relay,
                 );
             };
-        if relay_peer_protocol_version < RELAY_PEER_PROTOCOL_VERSION {
+        if relay_peer_protocol_version < MINIMUM_RELAY_PEER_RUNTIME_VERSION {
             cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
             return Err(DaemonError::LocalTransport {
                 operation: "create remote execution lease",
@@ -820,7 +821,7 @@ impl DaemonApp {
                     "remote worker `{}` uses relay peer protocol {}, but this home kernel requires {}. Upgrade and restart the worker kernel, then retry the remote agent.",
                     worker_kernel.kernel_id,
                     relay_peer_protocol_version,
-                    RELAY_PEER_PROTOCOL_VERSION
+                    MINIMUM_RELAY_PEER_RUNTIME_VERSION
                 ),
             });
         }

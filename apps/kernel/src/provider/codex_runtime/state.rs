@@ -76,6 +76,22 @@ impl std::fmt::Debug for CodexRuntimeState {
 }
 
 impl CodexRuntimeState {
+    #[cfg(test)]
+    pub(crate) fn active_turn_binding_fixture(
+        endpoint: String,
+        socket: CodexSocket,
+    ) -> crate::provider::ProviderRuntimeBinding {
+        let mut state = Self::new(endpoint, "notification-thread".into(), socket, 1);
+        state.active_turn_id = Some("notification-turn".into());
+        crate::provider::ProviderRuntimeBinding::Codex(CodexRuntimeBinding {
+            state,
+            selection: CodexRunSelection {
+                model: None,
+                variant: None,
+            },
+        })
+    }
+
     pub(super) fn new(
         endpoint: String,
         thread_id: String,

@@ -1297,11 +1297,10 @@ async fn owned_multi_agent_reattach_resumes_focused_run_before_focus_cycle() {
     }
 
     state
-        .attach(AttachRequest::new(
-            &session_id,
-            "client-b",
-            ClientCapabilityLevel::FullTerminal,
-        ))
+        .attach(
+            AttachRequest::new(&session_id, "client-b", ClientCapabilityLevel::FullTerminal),
+            true,
+        )
         .await
         .expect("reattach should resume the focused provider run");
     {
@@ -1325,7 +1324,7 @@ async fn owned_multi_agent_reattach_resumes_focused_run_before_focus_cycle() {
     }
 
     let cycled = state
-        .cycle_agent_focus(&session_id, DEFAULT_LOCAL_USER_ID)
+        .cycle_agent_focus(&session_id, DEFAULT_LOCAL_USER_ID, true)
         .await
         .expect("cycling focus after reattach should not park an already parked run")
         .expect("another agent should be focused");

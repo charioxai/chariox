@@ -128,6 +128,7 @@ impl<'a> ProviderProcessTracker<'a> {
                 process_id: process_id.clone(),
                 pid,
                 identity,
+                endpoint_identity: None,
                 endpoint_mode: run.endpoint_mode(),
                 process_label: run.process_label().to_string(),
                 started_at_ms: run.started_at_ms(),
@@ -151,6 +152,28 @@ impl<'a> ProviderProcessTracker<'a> {
             }),
         );
         Ok(())
+    }
+
+    pub(crate) fn bind_endpoint_identity(
+        tracking_store: &crate::app::ProviderProcessTrackingStore,
+        run: &RuntimeProviderRun,
+    ) {
+        let mut tracking = tracking_store.write();
+        let Some(key) = tracking.run_processes.get(run.id()).cloned() else {
+            return;
+        };
+        let Some(process) = tracking.processes.get_mut(&key) else {
+            return;
+        };
+        if process.endpoint_identity.is_none() {
+            process.endpoint_identity = process
+                .identity
+                .as_ref()
+                .zip(run.structured_endpoint())
+                .and_then(|(launcher, endpoint)| {
+                    super::provider_endpoint_identity::capture(launcher, endpoint)
+                });
+        }
     }
 
     pub(crate) fn remove_run(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {

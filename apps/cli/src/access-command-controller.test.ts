@@ -63,5 +63,28 @@ test("MP-08 / MP-11 bulk revoke and bulk restore print visible notices", async()
   await h.controller.handle(["grant","all"])
   assert.deepEqual(h.requests.at(-1),{KernelBrowser:{command:{op:"grant_room_computer",agent_id:null}}})
   assert.match(h.lines.at(-1)!,/^Restored Room Computer control for all agents\./)
+})
+
+test("MP-08 TUI tab inventory lists every kernel tab with opener/title/URL without control", async () => {
+  const requests: any[] = [], lines: string[] = []
+  const controller = createAccessCommandController({client: {localDaemonProtocolVersion: 486, async send<T>(r: any) {
+    requests.push(r)
+    if (r.KernelBrowser.command.op === "subscribe_grants") return new Promise(() => {})
+    if (r.KernelBrowser.command.op === "list_grants") return {KernelBrowser: {result: snapshot}} as T
+    return {KernelBrowser: {result: {generation: 1, tabs: [{tab_id: "agent-tab", url: "https://developer.mozilla.org", title: "MDN", opened_by: {kind: "agent", display_label: "Mara"}}, {tab_id: "human-tab", url: "https://en.wikipedia.org", title: "Wikipedia", opened_by: null}]}}} as T
+  }}, appendNotice: line => lines.push(line)})
+  try {
+    await controller.handle(["tabs"])
+    assert.match(lines.at(-1)!, /agent-tab.*MDN.*https:\/\/developer.mozilla.org.*Mara/)
+    assert.match(lines.at(-1)!, /human-tab.*Wikipedia.*https:\/\/en.wikipedia.org/)
+    assert(requests.every(r => ["state", "list_grants", "subscribe_grants"].includes(r.KernelBrowser.command.op)))
+  } finally {controller.stop()}
+})
+
+// MP-08/MP-11: published PR937 cannot promise opener provenance.
+test("MP-08 TUI agent tabs require allocated protocol 486", async () => {
+  const h = fixture()
+  await assert.rejects(h.controller.handle(["tabs"]), /protocol 486/)
+  assert(h.requests.every(r => r.KernelBrowser.command.op !== "state"))
   h.controller.stop()
 })

@@ -36,6 +36,11 @@ struct ProtectedFrame {
         viewers[id] = Viewer(owner: owner, generation: generation, now: now())
         return id
     }
+    func attach(id: String, owner: String, generation: String) throws {
+        guard let viewer = viewers[id], viewer.owner == owner, viewer.generation == generation,
+              viewer.expires > now(), !viewer.busy else { throw tagged(.disabled, "capture-subscription-unavailable") }
+        viewer.expires = now() + 60
+    }
     func invalidate() {
         revision &+= 1
         for viewer in viewers.values { viewer.damage.invalidate() }
@@ -69,6 +74,9 @@ struct ProtectedFrame {
             if publication.rects.isEmpty { return nil }
             var packet: [String: Any] = ["subscription_id": id, "surface_id": "macos-seat",
                 "generation": frame.stamp.generation, "sequence": publication.sequence,
+                "display_kind": "native", "document_id": "\(frame.stamp.generation):\(frame.stamp.protection)",
+                "css_width": CGFloat(frame.stamp.surface.width) / frame.stamp.surface.scale,
+                "css_height": CGFloat(frame.stamp.surface.height) / frame.stamp.surface.scale,
                 "width": frame.stamp.surface.width, "height": frame.stamp.surface.height,
                 "device_scale_factor": frame.stamp.surface.scale, "colour": "srgb",
                 "point_origin": ["x": frame.stamp.surface.bounds.minX, "y": frame.stamp.surface.bounds.minY],
@@ -89,7 +97,7 @@ struct ProtectedFrame {
                         bytes += png.count
                         if bytes > 32 * 1024 { break }
                         tiles.append(["x": rect.x, "y": rect.y, "width": rect.width,
-                                      "height": rect.height, "data_base64": png.base64EncodedString()])
+                                      "height": rect.height, "format": "png", "data_base64": png.base64EncodedString()])
                     }
                 }
                 if tiles.count == publication.rects.count {
