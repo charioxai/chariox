@@ -9,7 +9,7 @@ export const mirror2MathTags = new Set('math mi mo mn ms mtext mrow mfrac msqrt 
 const DENY_ATTR = new Set('src srcset href xlink:href action formaction srcdoc ping data codebase nonce integrity poster background lowsrc dynsrc manifest autofocus target download http-equiv is sizes imagesrcset imagesizes chariox-target'.split(' '))
 const STATE_KEYS = new Set(['popover_open', 'modal', 'indeterminate', 'defined'])
 const validState = (state: unknown): boolean => Boolean(state) && typeof state === 'object' && !Array.isArray(state) && Object.entries(state as object).every(([name, value]) => STATE_KEYS.has(name) && typeof value === 'boolean')
-const INPUT_TYPES = new Set('text search email url number tel checkbox radio range button submit reset date time color hidden'.split(' '))
+const INPUT_TYPES = new Set('text search email url number tel checkbox radio range button submit reset date time datetime-local month week color hidden file image'.split(' '))
 const MIME = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/svg+xml', 'font/woff', 'font/woff2', 'font/ttf', 'font/otf'])
 const fail = (why: string): never => { throw Error(`MP-11: unsafe mirror ${why}`) }
 const finite = (values: unknown[]): boolean => values.every(v => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 1e7)

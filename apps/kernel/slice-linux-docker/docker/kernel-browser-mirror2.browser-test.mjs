@@ -695,3 +695,16 @@ test("MP-10: protocol 492 popover/modal/indeterminate/definition state and the f
   const closed = new Map(); for (let i = 0; i < 3 && closed.size < 2; i++) for (const op of (await next(2000)).ops.filter(op => op.op === "state")) closed.set(op.id, op.state);
   assert.deepEqual(Object.fromEntries(closed), { [of(r => r.attrs.id === "p")]: { popover_open: false }, [of(r => r.attrs.id === "d")]: { modal: false } });
 }));
+
+// Audit 2026-10-10 §4.4: attribute denylist instead of the rendered/CSS-referenced allowlist.
+const attributesPage = '<x-card id="card"><h2 slot="title">Title</h2><p>body</p></x-card><form><input id="v" required pattern="[a-z]+" minlength="2" maxlength="5" step="2" list="l" data-small="ok" data-big="' + "x".repeat(2000) + '" data-csrf-token="t0k3n" csrf="t0k3n" onclick="x()"><datalist id="l"><option value="ab"></option></datalist><input id="img" type="image" alt="Go"><input id="mo" type="month"><input id="fi" type="file"></form><script>document.getElementById("card").attachShadow({mode:"open"}).innerHTML="<slot name=title></slot><slot></slot>"</script>';
+test("MP-10: every attribute travels except the denied ones (named slots, constraint validation, data-*, input types); long values, credential-like names and handlers do not", () => mirrored(attributesPage, async ({ next, evaluate }) => {
+  const snapshot = await next(), rows = elements(snapshot);
+  const attrs = name => rows.find(([, , a]) => a.id === name)?.[2];
+  assert.deepEqual(rows.find(([, tag, a]) => tag === "slot" && a.name)?.[2], { name: "title" }, "MP-10: a named slot keeps its name");
+  assert.deepEqual(attrs("v"), { id: "v", required: "", pattern: "[a-z]+", minlength: "2", maxlength: "5", step: "2", list: "l", "data-small": "ok" });
+  assert.deepEqual([attrs("img").type, attrs("mo").type, attrs("fi").type], ["image", "month", "file"], "MP-10: input types are kept");
+  await evaluate("document.getElementById('v').setAttribute('data-state','open');document.getElementById('v').setAttribute('data-other-token','x');true");
+  const ops = (await next(1000)).ops.filter(op => op.op === "attr");
+  assert.deepEqual(ops.map(op => [op.name, op.value]), [["data-state", "open"]], "MP-10: attribute changes travel; credential-like names stay");
+}));

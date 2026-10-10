@@ -264,12 +264,10 @@ export class Mirror2 {
       if (reset) {
         await this.protectTargets(world, tab, policy);
         await this.markClosedHosts(world);
-        let snap = await this.evaluate(world, `${world.ref}.snapshot()`);
+        const snap = await this.evaluate(world, `${world.ref}.snapshot()`);
         if (snap.resync) return snap;
-        // Sheets this CSSOM cannot read come through CDP; attribute names they
-        // reference were pruned from this snapshot: take it once more.
-        let sheetOps = await this.sheetOps(world, snap.sheets);
-        if (sheetOps.length && await this.evaluate(world, `${world.ref}.cssStale()`)) { snap = await this.evaluate(world, `${world.ref}.snapshot()`); if (snap.resync) return snap; sheetOps = await this.sheetOps(world, snap.sheets); }
+        // Sheets this CSSOM cannot read come through CDP.
+        const sheetOps = await this.sheetOps(world, snap.sheets);
         // Cross-origin frames: child DOM under the owner, or an opaque region.
         const frames = await this.frames.attach(world, stream, snap.nodes.filter(r => r.foreign).map(r => r.id), policy, tab);
         this.opaque(snap.nodes, frames.opaque);

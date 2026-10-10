@@ -81,12 +81,10 @@ export class MirrorFrames {
   // Attach every foreign frame named in this packet's records; others become
   // opaque regions. Returns rebased child snapshot records (document under owner).
   // Child snapshot with the frame's Vault fill targets protected by identity.
-  // CDP-read sheets that reference attributes the snapshot pruned: snapshot once more.
   async snapshot(child, loaderId, policy, tab, slot) {
     await this.mirror.protectTargets(child, tab, policy, `frame:${child.frame.id}:${loaderId}:`);
-    let snap = await this.mirror.evaluate(child, `${child.ref}.snapshot()`), ops = await this.sheetOps(child, slot, snap.sheets);
-    if (ops.length && await this.mirror.evaluate(child, `${child.ref}.cssStale()`)) { snap = await this.mirror.evaluate(child, `${child.ref}.snapshot()`); ops = await this.sheetOps(child, slot, snap.sheets); }
-    return { ...snap, sheetOps: ops };
+    const snap = await this.mirror.evaluate(child, `${child.ref}.snapshot()`);
+    return { ...snap, sheetOps: await this.sheetOps(child, slot, snap.sheets) };
   }
   // Stylesheets the child's CSSOM cannot read: CDP reads them in the child's own
   // session; the CSS op is rebased into the frame slot like its records.

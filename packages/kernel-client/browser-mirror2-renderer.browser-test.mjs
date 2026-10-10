@@ -347,3 +347,23 @@ test('MP-10: protocol 492 the viewer takes the kernel\'s UA state (open popover,
     assert.equal((await seen()).target, 'rgb(0, 0, 0)', 'MP-10: a cleared fragment unmarks the target');
   } finally { await page.close(); }
 });
+
+test('MP-10: denylisted attributes render like the source: named slots, constraint-validation pseudo-classes, image/month/file inputs (file never opens a chooser)', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'style', css: 'input:invalid{outline:2px solid rgb(255, 0, 0)} input:valid{outline:0px none rgb(0, 0, 0)}' },
+      { id: 'n5', parent: 'n3', kind: 'element', tag: 'x-card' }, { id: 'n6', parent: 'n5', kind: 'element', tag: 'h2', attrs: { slot: 'title' } }, { id: 'n7', parent: 'n6', kind: 'text', text: 'Title' }, { id: 'n8', parent: 'n5', kind: 'element', tag: 'p' }, { id: 'n9', parent: 'n8', kind: 'text', text: 'body' },
+      { id: 'n10', parent: 'n5', kind: 'shadow' }, { id: 'n11', parent: 'n10', kind: 'element', tag: 'slot' }, { id: 'n12', parent: 'n10', kind: 'element', tag: 'slot', attrs: { name: 'title' } },
+      { id: 'n13', parent: 'n3', kind: 'element', tag: 'input', attrs: { required: '', pattern: '[a-z]+' }, form: textForm('', 0) },
+      { id: 'n14', parent: 'n3', kind: 'element', tag: 'input', attrs: { type: 'image', alt: 'Go' } }, { id: 'n15', parent: 'n3', kind: 'element', tag: 'input', attrs: { type: 'month' }, form: textForm('2026-10', null) },
+      { id: 'n16', parent: 'n3', kind: 'element', tag: 'input', attrs: { type: 'file' }, form: textForm('', null) }])));
+    const seen = () => page.evaluate(() => { const d = window.r.frame.contentDocument, card = d.querySelector('x-card'), slots = card.shadowRoot.querySelectorAll('slot'), inputs = d.querySelectorAll('input'); return { first: slots[1].assignedElements().map(e => e.localName), rest: slots[0].assignedElements().map(e => e.localName), invalid: getComputedStyle(inputs[0]).outlineColor, image: inputs[1].type, month: [inputs[2].type, inputs[2].value], file: inputs[3].type }; });
+    assert.deepEqual(await seen(), { first: ['h2'], rest: ['p'], invalid: 'rgb(255, 0, 0)', image: 'image', month: ['month', '2026-10'], file: 'file' });
+    await apply(page, delta(2, [{ op: 'form', id: 'n13', form: { value: 'abc', selection_start: 3, selection_end: 3 } }]));
+    assert.equal((await seen()).invalid, 'rgb(0, 0, 0)', 'MP-10: the field becomes valid with the kernel\'s value');
+    const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelectorAll('input')[3].getBoundingClientRect(); return [f.x + t.x + 5, f.y + t.y + 5]; });
+    const chooser = page.waitForEvent('filechooser', { timeout: 700 }).then(() => true, () => false);
+    await page.mouse.click(box[0], box[1]);
+    assert.equal(await chooser, false, 'MP-10: a file input never opens the viewer\'s chooser');
+  } finally { await page.close(); }
+});

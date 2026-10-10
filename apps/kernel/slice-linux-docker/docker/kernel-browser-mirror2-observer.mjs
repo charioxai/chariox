@@ -67,11 +67,11 @@ export function installMirror2(sanitizeMirrorCss) {
     const SVG_TAGS = new Set('svg g path circle ellipse rect line polyline polygon text tspan textPath use defs symbol clipPath mask marker pattern linearGradient radialGradient stop title desc a image switch view filter feBlend feColorMatrix feComponentTransfer feComposite feConvolveMatrix feDiffuseLighting feDisplacementMap feDistantLight feDropShadow feFlood feFuncA feFuncB feFuncG feFuncR feGaussianBlur feMerge feMergeNode feMorphology feOffset fePointLight feSpecularLighting feSpotLight feTile feTurbulence style'.split(' '));
     const MATH_TAGS = new Set('math mi mo mn ms mtext mrow mfrac msqrt mroot msub msup msubsup munder mover munderover mtable mtr mtd mspace mstyle mpadded mphantom menclose semantics annotation merror'.split(' '));
     const DENY_ATTR = new Set('src srcset href xlink:href action formaction srcdoc ping data codebase nonce integrity poster background lowsrc dynsrc manifest autofocus target download http-equiv is sizes imagesrcset imagesizes chariox-target'.split(' '));
-    // HTML attributes that the UA renders or exposes (presentational, form,
-    // accessibility, tooltips); any other attribute ships only if a selector or
-    // attr() of the page's own CSS references it (CSS is the only reader).
+    // Attribute denylist (audit 2026-10-10): every other attribute travels. Names the UA renders or
+    // exposes keep values up to 64 KB; any other value up to 1 KB. Credential-like names never travel.
     const RENDERED = new Set('class id style title lang dir hidden tabindex role alt for placeholder width height colspan rowspan span type value checked selected disabled readonly multiple open start reversed size rows cols wrap label popover inert contenteditable slot part exportparts href align valign bgcolor border cellpadding cellspacing color face nowrap hspace vspace clear noshade frame rules text link vlink alink compact abbr scope summary datetime cite min max low high optimum media headers'.split(' '));
-    const INPUT_TYPES = new Set('text search email url number tel checkbox radio range button submit reset date time color hidden'.split(' '));
+    const INPUT_TYPES = new Set('text search email url number tel checkbox radio range button submit reset date time datetime-local month week color hidden file image'.split(' '));
+    const denied = lower => DENY_ATTR.has(lower) || lower.startsWith('on') || !RENDERED.has(lower) && !lower.startsWith('aria-') && /csrf|xsrf|token|nonce|secret|passw/.test(lower);
     // Owner rule (MP-11, 2026-10-09): mask only the fields the kernel filled from
     // the Vault, and only while they are plain text fields (a password field shows
     // dots; its value never leaves). No page-text, attribute or CSS value scanning.
@@ -84,15 +84,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const closedHosts = new WeakSet();
     const urlKeys = new Map();
     let selectedDoc = null; // the document whose selection changed last
-    let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, lastStateCheck = 0, stateCursor = 0, cssAttrs = null;
-    const referenced = text => { const out = []; for (const m of String(text).matchAll(/\[\s*(?:[\w-]*\|)?([a-zA-Z_:][-a-zA-Z0-9_:.]*)|attr\(\s*([a-zA-Z_:][-a-zA-Z0-9_:.]*)/g)) out.push((m[1] ?? m[2]).toLowerCase()); return out; };
-    const keepAttr = (html, lower) => !html || !cssAttrs || RENDERED.has(lower) || lower.startsWith('aria-') || cssAttrs.has(lower);
-    // New attribute names in CSS mean earlier records lack attributes: resnapshot.
-    // Attribute names referenced by sheets read through CDP (cross-origin): kept
-    // across this observer's snapshots; a new one marks the current records stale.
-    const learned = new Set(); let cssStale = false;
-    const learnCss = text => { for (const name of referenced(text)) if (!RENDERED.has(name) && !name.startsWith('aria-')) { learned.add(name); if (cssAttrs && !cssAttrs.has(name)) cssStale = true; } };
-    const noteCss = text => { if (!cssAttrs) return false; let grew = false; for (const name of referenced(text)) if (!cssAttrs.has(name) && !RENDERED.has(name) && !name.startsWith('aria-')) { cssAttrs.add(name); grew = true; } return grew; };
+    let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, lastStateCheck = 0, stateCursor = 0;
     const dirty = { children: new Set(), attrs: new Map(), text: new Set(), form: new Set(), state: new Set(), scroll: new Set(), replace: new Set(), sheets: new Set(), frames: new Set(), masks: new Set() };
     let waiters = [];
     const wake = () => { const list = waiters; waiters = []; for (const resolve of list) resolve(true); };
@@ -192,9 +184,9 @@ export function installMirror2(sanitizeMirrorCss) {
       const attrs = {}, html = node.namespaceURI === HTML;
       for (const attribute of node.attributes) {
         const name = attribute.name, lower = name.toLowerCase(), value = attribute.value;
-        if (!/^[a-zA-Z_:][-a-zA-Z0-9_:.]*$/.test(name) || name.length > 256 || lower.startsWith('on') || value.length > 65536) continue;
+        if (!/^[a-zA-Z_:][-a-zA-Z0-9_:.]*$/.test(name) || name.length > 256 || value.length > 65536) continue;
         if (lower === 'style') { const style = inlineStyle(node, base); if (style) attrs.style = style; continue; }
-        if (DENY_ATTR.has(lower) || !keepAttr(html, lower)) continue;
+        if (denied(lower) || !RENDERED.has(lower) && !lower.startsWith('aria-') && value.length > 1024) continue;
         // Password and hidden values never leave (form state carries dots / nothing).
         if (lower === 'value' && html && node.localName === 'input' && (node.type === 'password' || node.type === 'hidden')) continue;
         // Presentation attributes may reference paint servers by fragment only.
@@ -211,8 +203,8 @@ export function installMirror2(sanitizeMirrorCss) {
       if (node.hasAttribute('contenteditable')) attrs.contenteditable = ['true', 'false', 'plaintext-only'].includes(node.contentEditable) ? node.contentEditable : (node.isContentEditable ? 'true' : 'false');
       return attrs;
     };
-    // A password field renders dots of the same length; a hidden input is never shown.
-    const formValue = node => node.type === 'password' ? '\u2022'.repeat(Math.min(String(node.value ?? '').length, 65536)) : node.type === 'hidden' ? '' : String(node.value ?? '').slice(0, 65536);
+    // A password field renders dots of the same length; a hidden input is never shown; a file input's path never leaves.
+    const formValue = node => node.type === 'password' ? '\u2022'.repeat(Math.min(String(node.value ?? '').length, 65536)) : node.type === 'hidden' || node.type === 'file' ? '' : String(node.value ?? '').slice(0, 65536);
     const formState = node => ({ value: formValue(node), checked: node.localName === 'option' ? node.selected : !!node.checked, selected_index: node.selectedIndex ?? -1, selection_start: node.selectionStart ?? null, selection_end: node.selectionEnd ?? null });
     // Last form state sent per field: a form op travels only when it changed (a
     // focused field would otherwise answer every credit at once: a busy loop),
@@ -359,11 +351,7 @@ export function installMirror2(sanitizeMirrorCss) {
       nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); stateNodes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear();
       pendingSheets = []; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.entries()].map(([url, { key, kind }]) => ({ key, url, kind }));
-      cssAttrs = null;
       const out = [], root = serialize(document, null, out);
-      cssAttrs = new Set(learned); cssStale = false;
-      for (const record of out) { if (record.css) noteCss(record.css); if (record.attrs?.style) noteCss(record.attrs.style); for (const text of record.adopted ?? []) noteCss(text); }
-      for (const record of out) if (record.attrs && !record.ns) for (const name of Object.keys(record.attrs)) if (!keepAttr(true, name.toLowerCase())) delete record.attrs[name];
       adoptedDirty = false;
       return { root, nodes: out, ...take(), ...header() };
     };
@@ -456,8 +444,8 @@ export function installMirror2(sanitizeMirrorCss) {
         if (node.localName === 'input' && names.has('type') || node.localName === 'select' && names.has('multiple')) { dirty.replace.add(node); continue; }
         const attrs = attributes(node, node.baseURI);
         for (const name of names) {
-          if (!keepAttr(node.namespaceURI === HTML, name.toLowerCase()) && name !== 'href') continue;
           if (name === 'href' || name === 'xlink:href') { ops.push({ op: 'attr', id, name: 'href', value: attrs.href ?? null }); continue; }
+          if (denied(name.toLowerCase())) continue; // never travels (the viewer's own src/handlers stay)
           ops.push({ op: 'attr', id, name, value: Object.hasOwn(attrs, name) ? attrs[name] : null });
         }
       }
@@ -511,9 +499,6 @@ export function installMirror2(sanitizeMirrorCss) {
         if (signature !== rootSignatures.get(id) || edited.has(id)) { rootSignatures.set(id, signature); ops.push({ op: 'adopted', id, sheets: adopted(root) }); }
       }
       for (const key of Object.keys(dirty)) dirty[key].clear();
-      let grew = false;
-      for (const op of ops) { if (op.op === 'css') grew = noteCss(op.css) || grew; else if (op.op === 'adopted') for (const text of op.sheets) grew = noteCss(text) || grew; else if (op.op === 'children') for (const record of op.nodes) { if (record.css) grew = noteCss(record.css) || grew; for (const text of record.adopted ?? []) grew = noteCss(text) || grew; } }
-      if (grew || cssStale) return { resync: 'css_attributes' };
       return { ops, changed: rebound, ...take(), ...header() };
     };
     // Opaque regions visible now, in top-level viewport CSS pixels.
@@ -687,7 +672,7 @@ export function installMirror2(sanitizeMirrorCss) {
       if (changed()) return finish();
       waiters.push(finish); setTimeout(finish, Math.min(Math.max(ms, 1), 2000));
     });
-    const sanitize = (text, base) => { const out = sanitizeMirrorCss(String(text), String(base), resource); learnCss(out); return out; };
+    const sanitize = (text, base) => sanitizeMirrorCss(String(text), String(base), resource);
     // URLs this document actually fetched (Resource Timing): the kernel reads
     // only those bytes, never a URL that a stylesheet merely mentions.
     const loaded = () => { const names = new Set([...timed, ...performance.getEntriesByType('resource').map(entry => entry.name)]); for (const img of document.images) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].filter(url => urlKeys.has(url)).map(url => urlKeys.get(url).key); };
@@ -717,6 +702,6 @@ export function installMirror2(sanitizeMirrorCss) {
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ cssStale: () => cssStale, sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, nearImages, preview, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, nearImages, preview, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
   }
 }
