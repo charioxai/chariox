@@ -165,6 +165,9 @@ struct MacSource: NativeSource {
                 guard try bounds(window) == clickGeometry.windowBounds else { throw tagged(.target, "window-changed-after-hit") }
             }
         }
+        // AX hit-testing is app-scoped. A foreign nonactivating panel can leave
+        // both focus and AX hits unchanged; prove visibility using current CG order.
+        try checkWindowOcclusion(request, point: geometry.location, windowBounds: geometry.windowBounds)
     }
     func bind(_ element: AXUIElement, to ancestor: AXUIElement, pid: pid_t) throws {
         var actual: pid_t = 0, candidate = element

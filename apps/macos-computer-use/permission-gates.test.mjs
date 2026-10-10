@@ -109,3 +109,12 @@ test('pointer clicks use one AppKit snapshot and reject a changed live pointer b
   const fence = native.slice(native.indexOf('func fence('), native.indexOf('func bind('));
   assert.match(fence, /checkPointerSnapshot\(request, currentPoint: currentPointerPoint\(\)\)[\s\S]*selectedWindow/);
 });
+
+// The r5 nonactivating cover left AX hit-testing and frontmost PID unchanged.
+test('every native mutation fence checks fresh WindowServer ownership after AX hit-testing', () => {
+  const fence = native.slice(native.indexOf('func fence('), native.indexOf('func bind('));
+  assert.match(fence, /checkWindowOcclusion\(request, point: geometry.location, windowBounds: geometry.windowBounds\)/);
+  const source = readFileSync(new URL('./WindowFence.swift', import.meta.url), 'utf8');
+  assert.match(source, /CGWindowListCopyWindowInfo\(\[.optionOnScreenOnly\]/);
+  assert.match(source, /foreign-window-cover/);
+});
