@@ -1087,6 +1087,7 @@ pub(super) async fn handle_daemon_peer_request(
             Ok(()) => RelayPeerResponse::LeasedSudoUpdated,
             Err(error) => {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(map_relay_error(&error)),
                 };

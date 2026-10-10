@@ -168,6 +168,7 @@ fn a02_yield_commits_at_native_settlement_and_recovers_racing_result() {
     f.yield_now();
     assert_eq!(f.task().state, ExecutionState::Working);
     f.apply(Operation::SourceOutcome {
+        now: 6,
         public_answer: None,
         room: "room".into(),
         source: "child".into(),
@@ -475,6 +476,7 @@ fn a02_source_occurrence_preceding_subscription_is_recovered() {
     let f = Fixture::new();
     f.begin("p");
     f.apply(Operation::SourceOutcome {
+        now: 6,
         public_answer: None,
         room: "room".into(),
         source: "peer".into(),
@@ -846,6 +848,7 @@ fn a02_first_delegate_task_binding_is_not_replaced_by_independent_work() {
         .iter()
         .all(|registration| registration.source_id == "first-child-task"));
     f.apply(Operation::SourceOutcome {
+        now: 6,
         public_answer: None,
         room: "room".into(),
         source: "independent-child-task".into(),
@@ -854,6 +857,7 @@ fn a02_first_delegate_task_binding_is_not_replaced_by_independent_work() {
     });
     assert_eq!(f.task().obligations[0].status, "open");
     f.apply(Operation::SourceOutcome {
+        now: 6,
         public_answer: None,
         room: "room".into(),
         source: "first-child-task".into(),
@@ -878,6 +882,7 @@ fn a02_owner_cancel_closes_sources_without_faking_physical_completion() {
     assert_eq!(f.task().obligations[0].dispatch_state, "cancel_requested");
     assert!(!f.store.agent_registrations("p").unwrap()[0].live);
     f.apply(Operation::SourceOutcome {
+        now: 6,
         public_answer: None,
         room: "room".into(),
         source: "child".into(),
@@ -938,6 +943,7 @@ fn a02_one_source_occurrence_reaches_multiple_tasks_without_conflict() {
         });
     }
     f.apply(Operation::SourceOutcome {
+        now: 6,
         public_answer: None,
         room: "room".into(),
         source: "peer".into(),
@@ -951,6 +957,7 @@ fn a02_one_source_occurrence_reaches_multiple_tasks_without_conflict() {
         serde_json::json!(["p", "second"])
     );
     f.apply(Operation::SourceOutcome {
+        now: 6,
         public_answer: None,
         room: "room".into(),
         source: "peer".into(),
@@ -1058,6 +1065,7 @@ fn a02_corrupt_source_is_quarantined_without_poisoning_other_tasks() {
     )
     .unwrap();
     f.apply(Operation::SourceOutcome {
+        now: 6,
         public_answer: None,
         room: "room".into(),
         source: "child".into(),
@@ -1302,6 +1310,7 @@ fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
         now: 5,
     });
     f.apply(Operation::SourceOutcome {
+        now: 6,
         room: "room".into(),
         source: "q".into(),
         occurrence: "task-terminal-q".into(),
@@ -1343,6 +1352,7 @@ fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
         0
     );
     f.apply(Operation::SourceOutcome {
+        now: 6,
         room: "room".into(),
         source: "q".into(),
         occurrence: "task-terminal-q".into(),
@@ -2423,6 +2433,7 @@ fn a02_security_f1_full_recipient_cannot_abort_source_outcome() {
     });
     security_fill_inbox(&f, "parent", "pending");
     f.apply(Operation::SourceOutcome {
+        now: 6,
         room: "room".into(),
         source: "child".into(),
         occurrence: "completion".into(),
@@ -2505,6 +2516,7 @@ fn a02_security_f1_done_task_closes_registrations() {
 fn a02_security_f2_reused_child_id_cannot_recover_old_answer() {
     let f = Fixture::new();
     f.apply(Operation::SourceOutcome {
+        now: 6,
         room: "room".into(),
         source: "child".into(),
         occurrence: "deleted-child-result".into(),
@@ -2541,6 +2553,7 @@ fn a02_security_f4_unattributed_child_task_cannot_bind_delegation() {
     });
     assert!(f.task().obligations[0].completion_task_id.is_none());
     f.apply(Operation::SourceOutcome {
+        now: 6,
         room: "room".into(),
         source: "peer-request".into(),
         occurrence: "peer-answer".into(),
@@ -2572,6 +2585,7 @@ fn a02_security_f4_parent_task_binds_after_peer_task_and_fast_completion() {
             now: 2,
         });
         f.apply(Operation::SourceOutcome {
+            now: 6,
             room: "room".into(),
             source: prompt.into(),
             occurrence: format!("{prompt}-result"),
@@ -2579,6 +2593,7 @@ fn a02_security_f4_parent_task_binds_after_peer_task_and_fast_completion() {
             public_answer: Some(serde_json::json!(prompt)),
         });
         f.apply(Operation::SourceOutcome {
+            now: 6,
             room: "room".into(),
             source: "child".into(),
             occurrence: format!("{prompt}-agent-result"),
@@ -2704,6 +2719,7 @@ fn a02_security_g11_workflow_run_receipt_reconciles_fast_and_late_completion() {
             now: 1,
         });
         let completed = || Operation::SourceOutcome {
+            now: 6,
             public_answer: None,
             room: "room".into(),
             source: "completed-run".into(),

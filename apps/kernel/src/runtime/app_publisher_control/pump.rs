@@ -106,7 +106,8 @@ impl AppPublisherControl {
                 }
                 match result {
                     Ok(
-                        jobs::Outcome::Terminal | jobs::Outcome::Review(PublisherReview::Terminal),
+                        jobs::Outcome::Terminal
+                        | jobs::Outcome::Review(PublisherReview::Terminal(_)),
                     ) => entry.step = Step::Done,
                     Ok(jobs::Outcome::Review(PublisherReview::Prompt(challenge)))
                         if !entry.cancelled.load(Ordering::Acquire) =>

@@ -94,6 +94,7 @@ async fn a02_r8_blocked_subscriber_does_not_suppress_waiting_subscriber() {
     );
     store
         .agent_lifecycle(Operation::SourceOutcome {
+            now: crate::session::unix_epoch_ms(),
             room: session.id().into(),
             source: "shared-completion".into(),
             occurrence: "finished".into(),
@@ -290,6 +291,7 @@ async fn older_wait_after_newer_cancellation(deadline: bool) {
     } else {
         store
             .agent_lifecycle(Operation::SourceOutcome {
+                now: crate::session::unix_epoch_ms(),
                 room: session.id().into(),
                 source: "shared-completion".into(),
                 occurrence: "finished".into(),

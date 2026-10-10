@@ -285,11 +285,10 @@ pub use api::{
     KERNEL_RESOURCE_TELEMETRY_SCHEMA,
 };
 pub use api::{
+    HandoffOutcome, HandoffResponseAction, HandoffStatus, HandoffValue,
     KernelAccessProviderHarness, KernelAccessRequester, KernelConnectionClass, PasskeyPrompt,
     PasskeyPromptKind,
-    HandoffOutcome, HandoffResponseAction, HandoffStatus, HandoffValue,
 };
-pub use api::{KernelAccessProviderHarness, KernelAccessRequester};
 pub use api::{
     KernelBrowserCommand, KernelBrowserInput, KernelBrowserMirrorAction, KernelBrowserRequest,
 };

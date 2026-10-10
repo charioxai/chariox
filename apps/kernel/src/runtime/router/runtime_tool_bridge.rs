@@ -128,36 +128,36 @@ impl CommandRouter {
                     }
                 }
             }
-        if tool_name == "chariox_kernel_request" {
-            // A10: a leased run passes its worker fence, then the home rechecks.
-            if let Some(run) = self.runtime_mcp_catalog_run(auth_token) {
-                if let Some(result) = self
-                    .runtime_state
-                    .try_forward_leased_kernel_request(&run, arguments.clone())
-                    .await?
-                {
-                    return Ok(result);
+            if tool_name == "chariox_kernel_request" {
+                // A10: a leased run passes its worker fence, then the home rechecks.
+                if let Some(run) = self.runtime_mcp_catalog_run(auth_token) {
+                    if let Some(result) = self
+                        .runtime_state
+                        .try_forward_leased_kernel_request(&run, arguments.clone())
+                        .await?
+                    {
+                        return Ok(result);
+                    }
                 }
+                let turn = self.runtime_state.sudo_for_auth_token(auth_token)?;
+                return self.dispatch_sudo_kernel_request(turn, arguments).await;
             }
-            let turn = self.runtime_state.sudo_for_auth_token(auth_token)?;
-            return self.dispatch_sudo_kernel_request(turn, arguments).await;
-        }
-        if crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
-            == Some(crate::transport::runtime_tools::META_RUN_COMMAND_TOOL)
-        {
-            let mut router = self.clone();
-            if let Some(run) = self.runtime_mcp_catalog_run(auth_token) {
-                router.runtime_state = self
-                    .runtime_state
-                    .with_room_provider_origin(run.agent_instance_id(), Some(run.id()));
+            if crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
+                == Some(crate::transport::runtime_tools::META_RUN_COMMAND_TOOL)
+            {
+                let mut router = self.clone();
+                if let Some(run) = self.runtime_mcp_catalog_run(auth_token) {
+                    router.runtime_state = self
+                        .runtime_state
+                        .with_room_provider_origin(run.agent_instance_id(), Some(run.id()));
+                }
+                return router
+                    .dispatch_meta_run_command(auth_token, arguments)
+                    .await;
             }
-            return router
-                .dispatch_meta_run_command(auth_token, arguments)
-                .await;
-        }
-        self.runtime_state
-            .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
-            .await
+            self.runtime_state
+                .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
+                .await
         })
     }
 

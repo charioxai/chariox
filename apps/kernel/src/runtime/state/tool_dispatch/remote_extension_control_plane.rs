@@ -434,7 +434,8 @@ impl KernelRuntimeState {
         };
         let session_id = provider_run.session_id().to_string();
         // MP-11 SB-03: retain the authenticated run across capability waits.
-        let state = self.with_room_provider_origin(provider_run.agent_instance_id(), Some(provider_run.id()));
+        let state = self
+            .with_room_provider_origin(provider_run.agent_instance_id(), Some(provider_run.id()));
         state.authorize_current_external_command()?;
         let (result, _) = state
             .dispatch_capability_runtime_tool_call_for_agent(

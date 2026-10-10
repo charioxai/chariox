@@ -355,6 +355,7 @@ impl KernelRuntimeState {
                 self.owned
                     .durable_state_store
                     .agent_lifecycle(Operation::SourceOutcome {
+                        now: crate::session::unix_epoch_ms(),
                         public_answer: public_answer.clone(),
                         room: task.room_id.clone(),
                         source: task.agent_id.clone(),
@@ -365,6 +366,7 @@ impl KernelRuntimeState {
             self.owned
                 .durable_state_store
                 .agent_lifecycle(Operation::SourceOutcome {
+                    now: crate::session::unix_epoch_ms(),
                     public_answer: public_answer.clone(),
                     room: task.room_id.clone(),
                     source: task.prompt_id.clone(),
@@ -379,6 +381,7 @@ impl KernelRuntimeState {
             self.owned
                 .durable_state_store
                 .agent_lifecycle(Operation::SourceOutcome {
+                    now: crate::session::unix_epoch_ms(),
                     public_answer: public_answer.clone(),
                     room: task.room_id.clone(),
                     source: task.task_id.clone(),
@@ -566,6 +569,7 @@ impl KernelRuntimeState {
                     self.owned
                         .durable_state_store
                         .agent_lifecycle(Operation::SourceOutcome {
+                            now: crate::session::unix_epoch_ms(),
                             public_answer,
                             room: task.room_id.clone(),
                             source: obligation.completion_source().unwrap_or(source).into(),

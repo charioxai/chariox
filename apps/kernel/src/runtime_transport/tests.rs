@@ -289,6 +289,9 @@ async fn connection_closing_for_backpressure_admits_no_more_requests() {
             runtime: &runtime,
             router: &router,
             connection_state: &Arc::new(Mutex::new(ConnectionState {
+                local_terminal_id: "amint-closing-connection".into(),
+                terminal_lifetime: Default::default(),
+                browser_terminal_contexts: Default::default(),
                 subscription: None,
                 watch_task: None,
             })),

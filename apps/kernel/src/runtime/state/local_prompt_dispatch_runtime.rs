@@ -290,7 +290,9 @@ impl KernelRuntimeState {
             &dispatch.hidden_system_context,
         );
         if owned.config_projection.snapshot().room_agent_tools
-            && !owned.provider_run_projection.is_leased_provider_run(&dispatch.provider_run_id)
+            && !owned
+                .provider_run_projection
+                .is_leased_provider_run(&dispatch.provider_run_id)
         {
             if !dispatch.steering {
                 owned.durable_state_store.agent_lifecycle(
@@ -309,7 +311,9 @@ impl KernelRuntimeState {
                 )?;
             }
             if let Some(hint) = owned.agent_task_context_hint(
-                &dispatch.session_id, &dispatch.agent_id, &dispatch.prompt_id,
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
             )? {
                 hidden_system_context = join_hidden_context(&hidden_system_context, &hint);
             }

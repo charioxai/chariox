@@ -86,6 +86,7 @@ pub(super) fn reconcile_event(tx: &Transaction<'_>, event: &InboxEvent) -> Resul
             super::supervision::apply(
                 tx,
                 Operation::SourceOutcome {
+                    now: crate::session::unix_epoch_ms(),
                     room: event.room_id.clone(),
                     source,
                     occurrence,

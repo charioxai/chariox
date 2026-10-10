@@ -90,10 +90,6 @@ impl VerifiedReleaseLease {
     pub fn declarations(&self) -> &Declarations {
         &self.declarations
     }
-    #[cfg(test)]
-    pub(crate) fn root(&self) -> &File {
-        &self._root.0
-    }
     pub(crate) fn payload(&self) -> &File {
         &self.payload.0
     }

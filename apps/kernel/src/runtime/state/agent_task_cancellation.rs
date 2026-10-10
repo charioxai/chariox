@@ -115,6 +115,7 @@ impl KernelRuntimeState {
                             Err(_) => {
                                 self.owned.durable_state_store.agent_lifecycle(
                                     Operation::SourceOutcome {
+                                        now: crate::session::unix_epoch_ms(),
                                         public_answer: None,
                                         room: task.room_id.clone(),
                                         source: obligation
@@ -177,6 +178,7 @@ impl KernelRuntimeState {
                         {
                             self.owned.durable_state_store.agent_lifecycle(
                                 Operation::SourceOutcome {
+                                    now: crate::session::unix_epoch_ms(),
                                     public_answer: None,
                                     room: task.room_id.clone(),
                                     source: resource.clone(),
@@ -278,6 +280,7 @@ impl KernelRuntimeState {
                 self.owned
                     .durable_state_store
                     .agent_lifecycle(Operation::SourceOutcome {
+                        now: crate::session::unix_epoch_ms(),
                         public_answer: None,
                         room: task.room_id.clone(),
                         source: task.task_id.clone(),

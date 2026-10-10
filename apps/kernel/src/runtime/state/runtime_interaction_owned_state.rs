@@ -72,7 +72,10 @@ impl KernelRuntimeOwnedState {
             .kernel_operation_owner
             .clone()
             .filter(|owner| Some(owner.as_str()) == caller_user_id)?;
-        let interaction = if let Some(interaction) = pending.kernel_wide_interaction.or(pending.user_domain_interaction) {
+        let interaction = if let Some(interaction) = pending
+            .kernel_wide_interaction
+            .or(pending.user_domain_interaction)
+        {
             interaction
         } else {
             self.session_store
@@ -217,24 +220,6 @@ impl KernelRuntimeOwnedState {
                 )
             })?
         };
-        if sudo.is_some()
-            && interaction_id.starts_with("capability-request-")
-            && pending.kernel_operation_owner.is_some()
-        {
-            return Err(interaction_error(
-                "sudo cannot authorize resource acquisition",
-            ));
-        }
-        if sudo.is_some()
-            && (pending.terminal_credential_owner.is_some()
-                || pending.passkey_prompt.as_ref().is_some_and(|prompt| {
-                    prompt.kind != crate::local::PasskeyPromptKind::CriticalApproval
-                }))
-        {
-            return Err(interaction_error(
-                "sudo cannot answer authority or credential prompts",
-            ));
-        }
         if pending.session_id != session_id || !pending.belongs_to(&self.session_store) {
             return Err(interaction_reference_error(
                 session_id,
