@@ -116,13 +116,7 @@ mod escaped {
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
-            if let Ok(pid) = std::fs::read_to_string(self.0.join("pid")) {
-                if let Ok(pid) = pid.trim().parse::<i32>() {
-                    unsafe {
-                        libc::kill(-pid, libc::SIGKILL);
-                    }
-                }
-            }
+            // MP-08 / MP-10 / MP-11: capture owns process teardown; fixtures never signal groups.
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
@@ -153,6 +147,9 @@ mod escaped {
     }
 
     fn running(pid: i32) -> bool {
+        if super::super::platform::signal_pid(pid.into()).is_err() {
+            return false;
+        }
         #[cfg(target_os = "linux")]
         {
             std::fs::read_to_string(format!("/proc/{pid}/stat"))
