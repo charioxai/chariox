@@ -108,8 +108,15 @@ export function installMirror2(sanitizeMirrorCss) {
       let out = '', chunk = '';
       const flush = () => { out += clean && chunk ? clean(chunk, base) : chunk; chunk = ''; };
       for (const rule of sheet.cssRules) {
-        if (rule.type === 3) { // @import: inline the imported sheet when readable.
-          if (depth < 8 && rule.styleSheet) { let inner = ''; try { inner = sheetText(rule.styleSheet, rule.styleSheet.href ?? base, depth + 1, clean); } catch { inner = ''; } const media = rule.media?.mediaText; flush(); out += media ? `@media ${media}{${inner}}\n` : `${inner}\n`; }
+        if (rule.type === 3) { // @import: inline the imported sheet when readable, under its layer and conditions.
+          if (depth < 8 && rule.styleSheet) {
+            let inner = ''; try { inner = sheetText(rule.styleSheet, rule.styleSheet.href ?? base, depth + 1, clean); } catch { inner = ''; }
+            const media = rule.media?.mediaText, layer = rule.layerName, supports = rule.supportsText;
+            if (media) inner = `@media ${media}{${inner}}`;
+            if (supports) inner = `@supports (${supports}){${inner}}`;
+            if (layer !== null && layer !== undefined) inner = `@layer ${layer}{${inner}}`; // '' is an anonymous layer
+            flush(); out += `${inner}\n`;
+          }
           continue;
         }
         chunk += rule.cssText + '\n';

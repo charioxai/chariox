@@ -437,3 +437,27 @@ test("MP-08: review #941-2 Shift+Arrow/Home/End extend the kernel selection, so 
       assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).value`), expected, `MP-08: ${keys.join(" ")} then "${typed}"`);
     }
   }));
+
+// The mirrored sheets in document order (snapshot style records, then css ops replacing their text),
+// and the colors they give `ids` in a fresh document of the source browser, beside the source's own.
+const mirroredCss = packets => { const css = new Map(); for (const packet of packets) { let id = 0; for (const row of packet.nodes ?? []) { id += row[0]; if (row[2] === "style") css.set(`n${id}`, row[4]?.css ?? ""); } for (const op of packet.ops) if (op.op === "css") css.set(op.id, op.css); } return [...css.values()].join("\n"); };
+const colors = async (evaluate, ids, css) => {
+  const read = `${JSON.stringify(ids)}.map(id=>getComputedStyle(d.getElementById(id)).color)`;
+  const source = await evaluate(`(()=>{const d=document;return ${read}})()`);
+  const mirror = await evaluate(`new Promise(resolve=>{const f=document.createElement("iframe");f.srcdoc="<!doctype html>"+${JSON.stringify(ids.map(id => `<p id="${id}">${id}</p>`).join(""))};f.onload=()=>{const d=f.contentDocument,s=d.createElement("style");s.textContent=${JSON.stringify(css)};d.head.append(s);resolve(${read});f.remove()};document.body.append(f)})`);
+  return { source, mirror };
+};
+const layered = '<link rel="stylesheet" href="/css/main.css"><p id="q">q</p><p id="r">r</p><p id="s">s</p><p id="u">u</p>';
+const layeredSheets = (prefix = "") => ({
+  [`${prefix}/css/main.css`]: { type: "text/css", headers: { "Access-Control-Allow-Origin": "*" }, body: '@import url("t/theme.css") layer(theme);\n@import url("t/anon.css") layer;\n@import url("t/sup.css") layer(x.y) supports(display: grid) screen;\np{color:rgb(0, 0, 255)}' },
+  [`${prefix}/css/t/theme.css`]: { type: "text/css", headers: { "Access-Control-Allow-Origin": "*" }, body: "#q{color:rgb(255, 0, 0)}" },
+  [`${prefix}/css/t/anon.css`]: { type: "text/css", headers: { "Access-Control-Allow-Origin": "*" }, body: "#r{color:rgb(255, 0, 0)}" },
+  [`${prefix}/css/t/sup.css`]: { type: "text/css", headers: { "Access-Control-Allow-Origin": "*" }, body: "#s{color:rgb(255, 0, 0)}#u{color:rgb(0, 128, 0) !important}" },
+});
+test("MP-10: review #941-3 readable @import keeps its cascade layer (named, anonymous) and supports/media conditions: viewer colors match the source", () => mirrored(
+  layered, async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const { source, mirror } = await colors(evaluate, ["q", "r", "s", "u"], mirroredCss([await next()]));
+    assert.deepEqual(source, ["rgb(0, 0, 255)", "rgb(0, 0, 255)", "rgb(0, 0, 255)", "rgb(0, 128, 0)"], "MP-10: the fixture's layered rules lose to the unlayered one");
+    assert.deepEqual(mirror, source, "MP-10: the mirrored CSS gives the same colors");
+  }, layeredSheets()));
