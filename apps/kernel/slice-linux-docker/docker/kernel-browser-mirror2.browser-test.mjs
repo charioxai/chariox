@@ -314,3 +314,14 @@ test("MP-10: review #941-4 property-only changes of unfocused controls reach the
     // Unchanged controls stay silent.
     for (let i = 0; i < 3; i++) assert.deepEqual((await next(1900)).ops.filter(op => op.op === "form"), []);
   }));
+
+test("MP-10: review #941-5 CSSOM edits through a readable linked stylesheet with an unchanged rule count reach the viewer", () => mirrored(
+  '<link rel="stylesheet" href="/a.css"><p>text</p>', async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal((await next()).reset, true);
+    const css = async needle => { for (let i = 0; i < 5; i++) for (const op of (await next(1000)).ops) if (op.op === "css" && op.css.includes(needle)) return true; return false; };
+    await evaluate("document.styleSheets[0].cssRules[0].style.color='rgb(1, 2, 3)';true");
+    assert(await css("rgb(1, 2, 3)"), "MP-10: a declaration edit reaches the viewer");
+    await evaluate("const s=document.styleSheets[0];s.deleteRule(0);s.insertRule('p{color:rgb(4, 5, 6)}',0);true");
+    assert(await css("rgb(4, 5, 6)"), "MP-10: a replaced rule reaches the viewer");
+  }, { "/a.css": { type: "text/css", body: "p{color:rgb(9, 9, 9)}" } }));
