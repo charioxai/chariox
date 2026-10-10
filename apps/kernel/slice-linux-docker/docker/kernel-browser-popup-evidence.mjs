@@ -17,11 +17,13 @@ export class BrowserPopupEvidence {
     const connection=await browser.ensureConnection();
     if(this.connection!==connection){this.clear();this.connection=connection;this.off=connection.subscribe(message=>this.observe(message));}
     let source=this.sources.get(tab.target_id);
-    if(source)return source;
     const sessionId=await browser.ensureTargetSession(connection,tab.target_id);
-    source={sessionId,sessions:new Set([sessionId]),actionId:null,dispatches:0,expires:0,opens:[]};
+    if(source?.sessionId!==sessionId)source=null;
+    source??={sessionId,sessions:new Set(),actionId:null,dispatches:0,expires:0,opens:[]};
     const sessions=[sessionId,...[...(browser.frameSessions?.sessions??[])].filter(([,entry])=>entry.targetId===tab.target_id).map(([id])=>id)];
+    source.sessions=new Set([...source.sessions].filter(id=>sessions.includes(id)));
     for(const id of sessions){
+      if(source.sessions.has(id))continue;
       // MP-08/MP-11: child CDP sessions enable Page, but binding events require Runtime.
       await connection.send('Runtime.enable',{},id);
       const {frameTree}=await connection.send('Page.getFrameTree',{},id);
