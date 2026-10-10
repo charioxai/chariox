@@ -48,20 +48,18 @@ pub(crate) async fn execute_pair_cloud_relay_machine_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let mut profile = required_cloud_relay_profile(config_projection)?;
     let pairing = request_account_pairing_token(&profile, "machine").await?;
-    let mut body = serde_json::json!({
-        "accountId": profile.account_id,
-        "token": pairing.token,
-        "machineId": request.machine_id,
-        "userId": profile.user_id,
-        "runtimeProfile": machine_runtime_profile_payload(
+    let body = machine_pairing_body(
+        &profile,
+        &config_projection.snapshot().relay_public_key,
+        &pairing.token,
+        &request,
+        machine_runtime_profile_payload(
             config_projection,
             provider_catalog_projection,
             runtime_state.provider_account_profile_registry(),
-        ).await,
-    });
-    if let Some(alias) = request.alias.as_deref() {
-        body["alias"] = serde_json::Value::String(alias.to_string());
-    }
+        )
+        .await,
+    );
     post_cloud_json::<serde_json::Value>(profile.api_url.clone(), "/machines/pair", body).await?;
     profile.machine_id = Some(request.machine_id);
     if request.alias.is_some() {
@@ -71,6 +69,41 @@ pub(crate) async fn execute_pair_cloud_relay_machine_request(
     Ok(LocalDaemonResponse::CloudRelayMachinePaired {
         profile: cloud_profile_from_persisted(&saved),
     })
+}
+
+fn machine_pairing_body(
+    profile: &crate::config::PersistedCloudRelayProfile,
+    relay_public_key: &str,
+    token: &str,
+    request: &PairCloudRelayMachineRequest,
+    mut runtime_profile: serde_json::Value,
+) -> serde_json::Value {
+    // MP-08: this profile is an optional startup hint. Large provider catalogs
+    // must be queried from the kernel, not embedded in machine admission.
+    const PROFILE_LIMIT_BYTES: usize = 192 * 1024;
+    let fits = |value: &serde_json::Value| {
+        serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= PROFILE_LIMIT_BYTES)
+    };
+    if !fits(&runtime_profile) {
+        if let Some(profile) = runtime_profile.as_object_mut() {
+            profile.remove("providerCatalog");
+        }
+        if !fits(&runtime_profile) {
+            runtime_profile = serde_json::json!({"profileVersion": 1});
+        }
+    }
+    let mut body = serde_json::json!({
+        "accountId": profile.account_id,
+        "token": token,
+        "machineId": request.machine_id,
+        "userId": profile.user_id,
+        "runtimeProfile": runtime_profile,
+        "publicKeyThumbprint": crate::runtime::terminal_pairings::public_key_thumbprint(relay_public_key),
+    });
+    if let Some(alias) = request.alias.as_deref() {
+        body["alias"] = serde_json::Value::String(alias.to_string());
+    }
+    body
 }
 
 async fn machine_runtime_profile_payload(
@@ -103,4 +136,71 @@ async fn machine_runtime_profile_payload(
         "os": std::env::consts::OS,
         "homeDir": std::env::var("HOME").ok(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn body(runtime_profile: serde_json::Value) -> serde_json::Value {
+        let config = crate::config::DaemonConfig::for_tests();
+        machine_pairing_body(
+            &crate::config::PersistedCloudRelayProfile {
+                account_id: "account-fixture".into(),
+                user_id: "user-fixture".into(),
+                ..Default::default()
+            },
+            "synthetic-public-key",
+            "synthetic-pairing-token",
+            &PairCloudRelayMachineRequest {
+                machine_id: config.host_machine_id.clone(),
+                alias: Some("MP-08 fresh machine".into()),
+            },
+            runtime_profile,
+        )
+    }
+
+    #[test]
+    fn machine_pairing_registers_the_product_relay_key_thumbprint() {
+        let value = body(json!({"profileVersion": 1}));
+        assert_eq!(
+            value["publicKeyThumbprint"],
+            crate::runtime::terminal_pairings::public_key_thumbprint("synthetic-public-key")
+        );
+        assert_eq!(value["alias"], "MP-08 fresh machine");
+        assert!(value.get("relayPrivateKey").is_none());
+    }
+
+    #[test]
+    fn machine_pairing_bounds_optional_profile_metadata_without_truncating_catalogs() {
+        let small = json!({"profileVersion": 1, "providerCatalog": {"all": [], "connected": []}});
+        assert_eq!(body(small.clone())["runtimeProfile"], small);
+        let large = json!({
+            "profileVersion": 1,
+            "providerCatalog": {"all": [{"id": "opencode", "models": {"model": {
+                "variants": {"default": {"providerOptions": "x".repeat(2 * 1024 * 1024)}}
+            }}}]},
+            "userConfig": {"providers": {"default": "opencode"}},
+            "os": "linux",
+        });
+        let value = body(large);
+        assert!(
+            serde_json::to_vec(&value).unwrap().len() <= 256 * 1024,
+            "MP-08 normal pairing must fit Cloud's bounded JSON request"
+        );
+        assert!(
+            value["runtimeProfile"].get("providerCatalog").is_none(),
+            "an oversized optional catalog must be omitted, never partially advertised"
+        );
+        assert_eq!(
+            value["runtimeProfile"]["userConfig"]["providers"]["default"],
+            "opencode"
+        );
+        assert_eq!(value["runtimeProfile"]["os"], "linux");
+        let oversized_config = body(
+            json!({"profileVersion":1, "userConfig":{"providers":{"model":"x".repeat(1024*1024)}}}),
+        );
+        assert!(serde_json::to_vec(&oversized_config).unwrap().len() <= 256 * 1024);
+    }
 }
