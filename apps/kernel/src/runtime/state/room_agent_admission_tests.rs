@@ -301,3 +301,70 @@ async fn room_admission_existing_peer_workflow_is_runnable_without_child_authori
         Some(peer.id())
     );
 }
+
+// MP-08 / MP-10 / MP-11 A10-S02: home admission follows the current lease, never a local provider-store row.
+#[tokio::test]
+async fn room_admission_current_leased_epoch_accepts_only_its_actor_and_run() {
+    let root = TestRoot::new();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (room, actor) = KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            root.path().to_string_lossy(),
+            root.path().to_string_lossy(),
+        ))
+        .unwrap();
+    let peer = KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(room.id(), "dev-stub"))
+        .unwrap();
+    let state = CommandRouter::with_interactive_capacity_from_app(Arc::new(Mutex::new(app)), 1)
+        .runtime_state();
+    state
+        .owned
+        .agent_store
+        .bind_remote_execution(
+            actor.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker".into(),
+                worker_machine_id: "machine".into(),
+                execution_lease_id: "lease".into(),
+                leased_agent_id: "leased-actor".into(),
+                active_worker_provider_run_id: Some("worker-run".into()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    let run = crate::provider::projected_leased_provider_run_id("leased-actor", "worker-run");
+    assert!(
+        state
+            .authorize_room_provider_epoch(Some(actor.id()), Some(&run))
+            .is_ok(),
+        "current home-owned lease must authorize its provider epoch"
+    );
+    assert!(state
+        .authorize_room_provider_epoch(Some(peer.id()), Some(&run))
+        .is_err());
+    let stale = crate::provider::projected_leased_provider_run_id("leased-actor", "previous-run");
+    assert!(state
+        .authorize_room_provider_epoch(Some(actor.id()), Some(&stale))
+        .is_err());
+    state
+        .owned
+        .agent_store
+        .set_remote_execution_active_worker_provider_run_id(
+            actor.id(),
+            Some("replacement-run".into()),
+        )
+        .unwrap();
+    assert!(
+        state
+            .authorize_room_provider_epoch(Some(actor.id()), Some(&run))
+            .is_err(),
+        "a replaced worker run cannot revive through projection"
+    );
+}

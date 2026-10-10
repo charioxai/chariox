@@ -36,13 +36,28 @@ impl KernelRuntimeState {
         }
         if let (Some(actor), Some(run)) = (actor, run) {
             let agent = self.owned.agent_store.get_agent(actor)?;
-            let current = self
-                .owned
-                .provider_store
-                .get_run_for_agent(agent.session_id(), agent.id());
-            if !current.is_some_and(|current| {
-                current.id() == run && current.owner_user_id() == agent.owner_user_id()
-            }) {
+            // MP-08 / MP-10 / MP-11 A10-S02: a home-owned remote agent has
+            // a projected worker epoch, not a local provider-store run. The
+            // forwarding seam already checks the authenticated current lease.
+            let current = if let Some(remote) = agent.remote_execution() {
+                remote
+                    .active_worker_provider_run_id
+                    .as_deref()
+                    .is_some_and(|worker| {
+                        crate::provider::projected_leased_provider_run_id(
+                            &remote.leased_agent_id,
+                            worker,
+                        ) == run
+                    })
+            } else {
+                self.owned
+                    .provider_store
+                    .get_run_for_agent(agent.session_id(), agent.id())
+                    .is_some_and(|current| {
+                        current.id() == run && current.owner_user_id() == agent.owner_user_id()
+                    })
+            };
+            if !current {
                 return Err(denied("room tool caller provider run is stale"));
             }
         }
