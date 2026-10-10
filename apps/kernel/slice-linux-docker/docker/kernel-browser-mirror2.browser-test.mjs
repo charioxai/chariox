@@ -379,3 +379,22 @@ test("MP-10: review #941-2 scrolling inside an open shadow root reaches every vi
   assert.deepEqual(await scrolls(a, idA, 600), [[0, 600]], "MP-10: viewer A follows viewer B's shadow scroll");
 }));
 
+test("MP-08: review #941-3 focus inside an attached cross-origin frame names the frame's leaf (focus, native Tab, programmatic, leaving)", () => mirrored(
+  '<input id="top"><iframe src="http://localhost:PORT/two" style="width:300px;height:100px"></iframe>', async ({ next, evaluate, input }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const snapshot = await next();
+    const id = name => elements(snapshot).find(([, , attrs]) => attrs.id === name)?.[0];
+    const [a, b, top] = [id("a"), id("b"), id("top")];
+    assert(a && b && Number(a.slice(1)) >= 1e9, "MP-10: the frame's inputs are mirrored");
+    let focused = snapshot.focused, sequence = snapshot.sequence;
+    const focusOf = async want => { for (let i = 0; i < 4 && focused !== want; i++) { const packet = await next(1000); sequence = packet.sequence; if (Object.hasOwn(packet, "focused")) focused = packet.focused; } return focused; };
+    await input(sequence, { kind: "focus", node_id: a });
+    assert.equal(await focusOf(a), a, "MP-08: the viewer is told the child field has focus, not the iframe");
+    await input(sequence, { kind: "key", key: "Tab" });
+    assert.equal(await focusOf(b), b, "MP-08: native Tab inside the frame moves the viewer's focus");
+    await evaluate("frames[0].postMessage('a','*');true");
+    assert.equal(await focusOf(a), a, "MP-08: programmatic focus inside the frame reaches the viewer");
+    await evaluate("document.querySelector('#top').focus();true");
+    assert.equal(await focusOf(top), top, "MP-08: focus leaving the frame reaches the viewer");
+  }, { "/two": { type: "text/html", body: '<!doctype html><input id="a"><input id="b"><script>onmessage=e=>document.getElementById(e.data).focus()</script>' } }));
+

@@ -241,7 +241,7 @@ export class Mirror2 {
         // Cross-origin frames: child DOM under the owner, or an opaque region.
         const frames = await this.frames.attach(world, stream, snap.nodes.filter(r => r.foreign).map(r => r.id), policy, tab);
         this.opaque(snap.nodes, frames.opaque);
-        return { ...snap, sheets: [], nodes: [...snap.nodes, ...frames.records], ops: [...frames.ops, ...sheetOps], resources: [...snap.resources, ...(frames.resources ?? [])] };
+        return this.frames.project(stream, { ...snap, sheets: [], nodes: [...snap.nodes, ...frames.records], ops: [...frames.ops, ...sheetOps], resources: [...snap.resources, ...(frames.resources ?? [])] });
       }
       return processDelta(await this.evaluate(world, `${world.ref}.drain()`));
     };
@@ -258,7 +258,7 @@ export class Mirror2 {
         } else ops.push(op);
       }
       const children = await this.frames.drain(stream, policy, tab);
-      return { ...delta, ops: [...ops, ...children.ops], resources: [...resources, ...children.resources], changed: [...delta.changed, ...children.changed] };
+      return this.frames.project(stream, { ...delta, ops: [...ops, ...children.ops], resources: [...resources, ...children.resources], changed: [...delta.changed, ...children.changed] });
     };
     let resources = [];
     try {

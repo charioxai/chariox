@@ -35,6 +35,10 @@ export function rebaseOp(op, slot) {
   return out;
 }
 
+// A child's focused leaf and selection in viewer ids (its page sees only the owner focused).
+const rebaseFocus = (header, slot) => ({ focused: header.focused ? rebaseId(header.focused, slot) : null,
+  selection: header.selection ? { ...header.selection, anchor_id: rebaseId(header.selection.anchor_id, slot), focus_id: rebaseId(header.selection.focus_id, slot) } : null });
+
 export class MirrorFrames {
   constructor(mirror) { this.mirror = mirror; this.failures = []; }
   // Private diagnostics (fixed CDP step labels only), bounded.
@@ -105,7 +109,7 @@ export class MirrorFrames {
         const child = await this.world(world, frame);
         const loaderId = await this.loaderId(child);
         const snap = await this.snapshot(child, loaderId, policy, tab, slot);
-        const entry = { slot, owner: id, child, loaderId, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll) };
+        const entry = { slot, owner: id, child, loaderId, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll), focus: rebaseFocus(snap, slot) };
         stream.frames.set(id, entry); stream.frameSlots.set(slot, entry);
         const records = snap.nodes.map(r => rebaseRecord(r, slot));
         records[0] = { ...records[0], parent: id };
@@ -129,6 +133,7 @@ export class MirrorFrames {
         out.ops.push(...delta.ops.map(op => rebaseOp(op, entry.slot)), ...await this.sheetOps(entry.child, entry.slot, delta.sheets));
         // Morphed child nodes (a new page node under a viewer id) are changed input targets too.
         out.changed.push(...delta.changed.map(id => rebaseId(id, entry.slot)));
+        entry.focus = rebaseFocus(delta, entry.slot);
         // The child's window position is its header, not an op: forward its changes.
         if (JSON.stringify(delta.scroll) !== entry.scroll) { entry.scroll = JSON.stringify(delta.scroll); out.ops.push({ op: 'scroll', id: entry.documentId, scroll: delta.scroll }); }
         out.resources.push(...delta.resources.map(d => ({ ...d, key: rebaseKey(d.key, entry.slot), slot: entry.slot })));
@@ -140,7 +145,7 @@ export class MirrorFrames {
           const frame = owners.get(owner); if (!frame) continue;
           const slot = ++stream.frameSlot, child = await this.world(this.mirror.parentWorld(stream), frame), loaderId = await this.loaderId(child);
           const snap = await this.snapshot(child, loaderId, policy, tab, slot);
-          const next = { slot, owner, child, loaderId, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll) };
+          const next = { slot, owner, child, loaderId, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll), focus: rebaseFocus(snap, slot) };
           stream.frames.set(owner, next); stream.frameSlots.set(slot, next);
           const records = snap.nodes.map(r => rebaseRecord(r, slot)); records[0] = { ...records[0], parent: owner };
           out.ops.push({ op: 'children', id: owner, children: [records[0].id], nodes: records }, ...snap.sheetOps);
@@ -150,6 +155,11 @@ export class MirrorFrames {
       }
     }
     return out;
+  }
+  // Focus inside an attached child (the page's focus is its owner): the child's leaf and selection.
+  project(stream, source) {
+    const entry = source && !source.resync && source.focused ? stream.frames.get(source.focused) : null;
+    return entry ? { ...source, focused: entry.focus.focused ?? source.focused, selection: entry.focus.selection ?? source.selection } : source;
   }
   // Viewport boxes of child opaque regions, in top-level coordinates.
   async opaqueBoxes(stream, parent) {
