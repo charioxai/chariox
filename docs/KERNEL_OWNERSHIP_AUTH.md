@@ -115,3 +115,5 @@ paths. No serialized shape is added; the rebase retains main's protocol 487 and
 the ownership feature's minimum 478. Focused regressions remain supplementary:
 hosted Settings revocation, actual receiving TUI/default SDK refusal and the
 DPR 1/2 two-hour renewal gate require separate live evidence.
+
+MP-08 / MP-10 / MP-11: Cloud terminal pairing uses the receiving CLIENT identity (`cli:<public-key-thumbprint>`) for its join and renewal. The invitation terminal label does not replace that identity. Self-hosted terminal labels retain their existing behavior.

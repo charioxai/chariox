@@ -251,8 +251,10 @@ test("enrolled Cloud pairing obtains receiver bootstrap authority before the key
   assert.deepEqual(createOptions.map((entry) => entry.relayAuthToken), ["bootstrap-token", boundRelayToken])
   assert.equal(createOptions[0]?.relayIdentity, identity)
   assert.equal(createOptions[1]?.relayIdentity, identity)
-  const join = capturedRequests[0] as { JoinTerminalPairingLink: { public_key_thumbprint: string } }
+  const join = capturedRequests[0] as { JoinTerminalPairingLink: { terminal_id: string; public_key_thumbprint: string } }
   assert.equal(join.JoinTerminalPairingLink.public_key_thumbprint, identity.publicKeyThumbprint)
+  // MP-08 / MP-10 / MP-11: link labels cannot replace the receiving CLIENT.
+  assert.equal(join.JoinTerminalPairingLink.terminal_id, `cli:${identity.publicKeyThumbprint}`)
 })
 
 test("terminal pairing closes bootstrap transport and rejects a legacy unbound token", async (t) => {
@@ -440,7 +442,7 @@ test("Cloud pairing bootstrap keeps commands and events across repeated grant ex
           response={TerminalPairingLinkJoined:{terminal:{terminal_id:"paired-subject",terminal_type:"cli",paired_at_ms:1,revoked:false},pairing:{intent:"client",subject_id:"paired-subject",relay_url:relayUrl,target_daemon_id:"home",public_key_thumbprint:identity.publicKeyThumbprint,paired_at_ms:1},relay_token:g.token}}
         }
         if(request.IssueCloudRelayClientToken) {
-          assert.deepEqual(request.IssueCloudRelayClientToken,{target_daemon_alias:"home",client_id:"terminal-1",session_id:null,public_key_thumbprint:identity.publicKeyThumbprint})
+          assert.deepEqual(request.IssueCloudRelayClientToken,{target_daemon_alias:"home",client_id:`cli:${identity.publicKeyThumbprint}`,session_id:null,public_key_thumbprint:identity.publicKeyThumbprint})
           renewals++
           const g=grant()
           response={CloudRelayClientTokenIssued:{profile:{api_url:"http://cloud.test",email:"owner@example.test",account_id:"account",user_id:"owner",account_slug:"account",realm_id:"realm",relay_url:relayUrl,issuer_id:"fixture"},token:{relay_url:relayUrl,relay_token:g.token,token_expires_at:new Date(g.expiresAtMs).toISOString()}}}
