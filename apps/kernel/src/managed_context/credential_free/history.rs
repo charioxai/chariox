@@ -1,0 +1,146 @@
+//! MP-08 / MP-11: one bounded Git stream inspects all objects, including
+//! unreachable history and every tree name. Limits are bytes/time, never counts.
+use super::super::development::vault_artifacts::VaultItem;
+use super::*;
+use std::io::{BufRead, BufReader};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
+use zeroize::Zeroizing;
+
+pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError> {
+    let paths = git(root, &["rev-list", "--objects", "HEAD"], MAX_FILE)?;
+    let paths = std::str::from_utf8(&paths)
+        .map_err(|_| refused())?
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .map(|(oid, path)| (oid.to_owned(), path.to_owned()))
+        .collect::<BTreeMap<_, _>>();
+    let mut child = Command::new("git")
+        .args(["cat-file", "--batch-all-objects", "--batch"])
+        .current_dir(root)
+        .env_clear()
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .env("HOME", root)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| refused())?;
+    let stdout = child.stdout.take().ok_or_else(refused)?;
+    let child = Arc::new(Mutex::new(child));
+    let (done, deadline) = mpsc::channel::<()>();
+    let watched = child.clone();
+    let watchdog = std::thread::spawn(move || {
+        if deadline.recv_timeout(Duration::from_secs(120)).is_err() {
+            let mut owned = watched.lock().expect("owned Git child");
+            if owned.id() > 1 {
+                let _ = owned.kill();
+            }
+        }
+    });
+    let start = Instant::now();
+    let result = (|| {
+        let mut input = BufReader::new(stdout);
+        let mut items = BTreeSet::new();
+        let mut scanned = 0u64;
+        loop {
+            let mut header = String::new();
+            let read = (&mut input)
+                .take(256)
+                .read_line(&mut header)
+                .map_err(|_| refused())?;
+            if read == 0 {
+                break;
+            }
+            if !header.ends_with('\n') {
+                return Err(refused());
+            }
+            let fields = header.split_whitespace().collect::<Vec<_>>();
+            if fields.len() != 3 {
+                return Err(refused());
+            }
+            let size: u64 = fields[2].parse().map_err(|_| refused())?;
+            if size > MAX_FILE {
+                return Err(admission_error(
+                    "Copy history object exceeds the 16 MiB per-file limit",
+                ));
+            }
+            scanned = scanned.saturating_add(size).saturating_add(read as u64);
+            if scanned > MAX_SCAN {
+                return Err(admission_error(
+                    "Copy history exceeds the 1 GiB scan-byte limit",
+                ));
+            }
+            if start.elapsed() > Duration::from_secs(120) {
+                return Err(admission_error(
+                    "Copy history scan exceeded the 120 second time limit",
+                ));
+            }
+            let mut bytes = Zeroizing::new(vec![0; size as usize]);
+            input.read_exact(&mut bytes).map_err(|_| refused())?;
+            let mut newline = [0u8];
+            input.read_exact(&mut newline).map_err(|_| refused())?;
+            if newline != [b'\n'] {
+                return Err(refused());
+            }
+            if fields[1] == "tree" {
+                let oid_width = fields[0].len() / 2;
+                let mut remaining = bytes.as_slice();
+                while !remaining.is_empty() {
+                    let nul = remaining.iter().position(|b| *b == 0).ok_or_else(refused)?;
+                    let name = std::str::from_utf8(&remaining[..nul])
+                        .map_err(|_| refused())?
+                        .split_once(' ')
+                        .ok_or_else(refused)?
+                        .1;
+                    if validate_bytes(name, b"").is_err() {
+                        items.insert(VaultItem {
+                            path: format!("git-history/{}/{name}", fields[0]),
+                            kind: "history path".into(),
+                        });
+                    }
+                    remaining = remaining.get(nul + 1 + oid_width..).ok_or_else(refused)?;
+                }
+            } else if matches!(fields[1], "blob" | "commit" | "tag") {
+                let path = paths
+                    .get(fields[0])
+                    .cloned()
+                    .unwrap_or_else(|| format!("git-history/{}", fields[0]));
+                if validate_bytes(&path, &bytes).is_err() {
+                    items.insert(VaultItem {
+                        path,
+                        kind: format!("history {}", fields[1]),
+                    });
+                }
+            } else {
+                return Err(refused());
+            }
+        }
+        Ok(items.into_iter().collect())
+    })();
+    let status = loop {
+        let mut owned = child.lock().expect("owned Git child");
+        if (result.is_err() || start.elapsed() > Duration::from_secs(120)) && owned.id() > 1 {
+            let _ = owned.kill();
+        }
+        match owned.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {
+                drop(owned);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => break Err(refused()),
+        }
+    };
+    let _ = done.send(());
+    let _ = watchdog.join();
+    if !status?.success() {
+        return Err(admission_error(
+            "Copy history scan failed or exceeded its 120 second time limit",
+        ));
+    }
+    result
+}

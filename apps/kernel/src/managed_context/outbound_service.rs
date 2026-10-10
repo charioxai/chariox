@@ -975,7 +975,14 @@ fn prepare_managed_context_package_with_environment(
                 .iter()
                 .map(resolve_repository_selection)
                 .collect::<Result<Vec<_>, DaemonError>>()?;
-            let exported = super::development::export_development_context_with_environment(
+            let vault = super::development::vault_artifacts::ExportVault::new(
+                config,
+                &plan.context_id,
+                &ticket.target.kernel_id,
+                &ticket.target.relay_public_key,
+                project_id,
+            );
+            let exported = super::development::export_development_context_with_vault(
                 DevelopmentContextExportRequest {
                     project_id: project_id.clone(),
                     repositories: selections,
@@ -986,6 +993,7 @@ fn prepare_managed_context_package_with_environment(
                 } else {
                     environment
                 },
+                Some(&vault),
             )?;
             ManagedContextPackageDevelopment::FromSource {
                 archive_path: exported.archive_path,

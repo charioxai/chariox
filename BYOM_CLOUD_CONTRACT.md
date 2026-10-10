@@ -2,9 +2,10 @@
 
 The kernel request is already implemented on OSS `byom/owner-context-transfer`:
 `StartManagedContextTransfer { interactive: true, ownerManaged: { target, contextSelection } }`.
-The source kernel owns the plan, credential-free export, native RuntimeInteraction review,
+The source kernel owns the plan, shared development export, native RuntimeInteraction review,
 relay transfer and progress. The browser uses that existing shape directly. Local daemon
-protocol **445** and relay peer **88** remain unchanged; no serialized shape was changed.
+protocol **480** and relay peer **88** carry the additive `ownerManaged` selection and
+target destination receipts documented in `PROTOCOL.md`.
 The web requires updated source and target kernels and connects through the existing
 BrowserKernelClient, never a Cloud runtime proxy.
 

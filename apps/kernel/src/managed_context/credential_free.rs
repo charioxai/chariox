@@ -1,6 +1,7 @@
-//! MP-08 / MP-11: fail-closed checks before packaging and before target mutation.
+//! MP-08 / MP-11: detect Vault-routed content; reject plaintext secrets before target mutation.
 #[path = "credential_free/config.rs"]
 mod config;
+mod history;
 #[path = "credential_free/json.rs"]
 mod json;
 #[path = "credential_free/shell.rs"]
@@ -8,6 +9,7 @@ mod shell;
 #[path = "credential_free/text.rs"]
 mod text;
 pub(crate) use config::exportable_mcp;
+pub(crate) use history::scan_repository;
 use shell::{credential_text, unsupported_shell};
 
 use super::development::{
@@ -65,7 +67,32 @@ pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError
     {
         return Err(refused());
     }
-    let text = text::decode(bytes)?;
+    // MP-08 / MP-11: undecodable artwork is ordinary data. Scan its printable
+    // runs as well, so invalid UTF-8 cannot hide a recognized secret signature.
+    let text = match text::decode(bytes) {
+        Ok(text) => text,
+        Err(_) => {
+            for run in bytes.split(|byte| {
+                !byte.is_ascii()
+                    || (byte.is_ascii_control() && !matches!(*byte, b'\n' | b'\r' | b'\t'))
+            }) {
+                if !run.is_empty() {
+                    let text = std::str::from_utf8(run).map_err(|_| refused())?;
+                    if text::credential_format(text) || credential_text(text) {
+                        return Err(refused());
+                    }
+                    for word in text.split_whitespace() {
+                        if url::Url::parse(word.trim_matches(['\'', '"', ',', ';']))
+                            .is_ok_and(|url| credential_url(&url))
+                        {
+                            return Err(refused());
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
+    };
     if text::credential_format(&text) {
         return Err(refused());
     }
@@ -168,87 +195,12 @@ fn validate_bundle(
         ],
         MAX_FILE,
     )?;
-    // Clone can import pack objects without installing their advertised refs.
-    // Inspect the entire isolated object store, including unreachable objects;
-    // path hints are also incomplete when a blob has multiple historical names.
-    let objects = git(
-        &repository,
-        &[
-            "cat-file",
-            "--batch-all-objects",
-            "--batch-check=%(objectname)",
-        ],
-        MAX_FILE,
-    )?;
-    let objects = std::str::from_utf8(&objects).map_err(|_| refused())?;
-    if objects.lines().count() > 10_000 {
+    if !scan_repository(&repository)?.is_empty() {
         return Err(refused());
     }
-    let mut kinds = BTreeMap::new();
-    let mut blob_paths: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut associations = 0usize;
-    for oid in objects.lines() {
-        let kind = git(&repository, &["cat-file", "-t", oid], 128)?;
-        if kind == b"tree\n" {
-            // Include every tree in the pack, regardless of ref reachability.
-            // NUL framing preserves literal filenames, including tabs/newlines.
-            let tree = git(
-                &repository,
-                &["ls-tree", "-r", "-t", "-z", "--full-tree", oid],
-                MAX_FILE,
-            )?;
-            *budget = budget.saturating_add(tree.len() as u64);
-            if *budget > MAX_SCAN {
-                return Err(refused());
-            }
-            for entry in tree
-                .split(|byte| *byte == 0)
-                .filter(|entry| !entry.is_empty())
-            {
-                let entry = std::str::from_utf8(entry).map_err(|_| refused())?;
-                let (metadata, path) = entry.split_once('\t').ok_or_else(refused)?;
-                validate_bytes(path, b"")?;
-                let mut metadata = metadata.split_whitespace();
-                let _mode = metadata.next().ok_or_else(refused)?;
-                let kind = metadata.next().ok_or_else(refused)?;
-                let blob = metadata.next().ok_or_else(refused)?;
-                if metadata.next().is_some() {
-                    return Err(refused());
-                }
-                if kind == "blob"
-                    && blob_paths
-                        .entry(blob.to_owned())
-                        .or_default()
-                        .insert(path.to_owned())
-                {
-                    associations += 1;
-                    if associations > 100_000 {
-                        return Err(refused());
-                    }
-                }
-            }
-        }
-        kinds.insert(oid, kind);
-    }
-    for (oid, kind) in kinds {
-        if matches!(kind.as_slice(), b"blob\n" | b"commit\n" | b"tag\n") {
-            let contents = git(&repository, &["cat-file", "-p", oid], MAX_FILE)?;
-            let paths = blob_paths.get(oid);
-            // Bound both content reads and repeated path-sensitive inspection.
-            *budget = budget.saturating_add(
-                (contents.len() as u64).saturating_mul(paths.map_or(1, |paths| paths.len() as u64)),
-            );
-            if *budget > MAX_SCAN {
-                return Err(refused());
-            }
-            if let Some(paths) = paths {
-                for path in paths {
-                    validate_bytes(path, &contents)?;
-                }
-            } else {
-                validate_bytes("", &contents)?;
-            }
-        }
+    *budget = budget.saturating_add(fs::metadata(bundle).map_err(|_| refused())?.len());
+    if *budget > MAX_SCAN {
+        return Err(admission_error("Copy exceeds the 1 GiB scan-byte limit"));
     }
     Ok(())
 }
@@ -274,12 +226,16 @@ pub(crate) fn validate_development_archive(
     if manifest.project_environment.is_some() {
         return Err(refused());
     }
+    let sealed = manifest
+        .vault_artifacts
+        .iter()
+        .map(|artifact| artifact.binding.object_path.clone())
+        .collect::<BTreeSet<_>>();
     let mut budget = 0u64;
     let mut bundles = Vec::new();
     let mut object_paths: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for repository in manifest.repositories {
         for overlay in repository.overlay {
-            validate_bytes(&overlay.path, b"")?;
             for state in [overlay.index, overlay.worktree] {
                 if let DevelopmentFileState::File { object_path, .. } = state {
                     object_paths
@@ -292,11 +248,14 @@ pub(crate) fn validate_development_archive(
         if let Some(origin) = repository.origin_url {
             validate_bytes("origin-url", origin.as_bytes())?;
         }
-        if !repository.bundle_path.is_empty() {
+        if !repository.bundle_path.is_empty() && !sealed.contains(&repository.bundle_path) {
             bundles.push(artifacts.join(repository.bundle_path));
         }
     }
     for (object, paths) in object_paths {
+        if sealed.contains(&object) {
+            continue;
+        }
         let mut bytes = Vec::new();
         File::open(artifacts.join(object))
             .map_err(|_| refused())?

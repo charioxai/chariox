@@ -668,7 +668,7 @@ fn mp08_mp11_target_accepts_package_metadata_in_overlay_and_history() {
 }
 
 #[test]
-fn mp11_supported_encodings_are_inspected_and_unclassifiable_bytes_refused() {
+fn mp11_supported_encodings_are_inspected_and_binary_bytes_copy() {
     let credential = "$env:API_KEY = 'synthetic-canary'\n";
     let ordinary = "Write-Output 'ready 🦀'\n";
     for text in [credential, ordinary] {
@@ -708,8 +708,9 @@ fn mp11_supported_encodings_are_inspected_and_unclassifiable_bytes_refused() {
         b"\xff\xfe\x00\x00\x61",
     ] {
         assert!(
-            validate_bytes("bootstrap.ps1", bytes).is_err(),
-            "MP-11 unclassifiable bytes"
+            validate_bytes("bootstrap.ps1", bytes).is_err()
+                == bytes.windows(7).any(|w| w == b"API_KEY"),
+            "MP-11 binary bytes match only a secret detector"
         );
     }
 }
@@ -964,4 +965,17 @@ fn mp08_mp11_public_requests_prose_retains_secret_detection() {
     assert!(validate_bytes("", &changed).is_err());
     assert!(validate_bytes("", b"`API_KEY=synthetic-canary`").is_err());
     assert!(validate_bytes("", b"env API_`printf KEY`=synthetic-canary worker").is_err());
+}
+
+// MP-08 / MP-11: Miguel's Copy policy admits binary artwork, while detectors
+// still identify secrets embedded in otherwise undecodable bytes.
+#[test]
+fn mp08_binary_artwork_copies_without_blanket_refusal() {
+    assert!(validate_bytes("artwork.png", &[0x89, b'P', b'N', b'G', 0, 0xff]).is_ok());
+}
+#[test]
+fn mp11_binary_secret_signature_requires_vault() {
+    let mut bytes = vec![0xff, 0, 0x89];
+    bytes.extend_from_slice(b"-----BEGIN PRIVATE KEY-----");
+    assert!(validate_bytes("artwork.bin", &bytes).is_err());
 }

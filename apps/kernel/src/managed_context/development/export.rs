@@ -8,7 +8,15 @@ pub fn export_development_context(
 
 pub fn export_development_context_with_environment(
     request: DevelopmentContextExportRequest,
+    environment: Option<DevelopmentProjectEnvironment>,
+) -> Result<DevelopmentContextExportResult, DaemonError> {
+    export_development_context_with_vault(request, environment, None)
+}
+
+pub(crate) fn export_development_context_with_vault(
+    request: DevelopmentContextExportRequest,
     mut environment: Option<DevelopmentProjectEnvironment>,
+    vault: Option<&vault_artifacts::ExportVault<'_>>,
 ) -> Result<DevelopmentContextExportResult, DaemonError> {
     validate_export_request(&request)?;
     let archive_parent = request.archive_path.parent().ok_or_else(|| {
@@ -82,14 +90,13 @@ pub fn export_development_context_with_environment(
             &mut target_directories,
             &mut manifest_budget,
             managed_publication_export,
+            vault,
         )?;
         checkout_bytes = checkout_bytes.saturating_add(estimate.checkout_bytes);
         materialized_entries = materialized_entries.saturating_add(estimate.materialized_entries);
-        if checkout_bytes > MAX_CHECKOUT_BYTES_PER_PROJECT
-            || materialized_entries > MAX_MATERIALIZED_ENTRIES_PER_PROJECT
-        {
+        if checkout_bytes > MAX_CHECKOUT_BYTES_PER_PROJECT {
             return Err(context_error(format!(
-                "development context materialization exceeds the project budget of {MAX_CHECKOUT_BYTES_PER_PROJECT} bytes or {MAX_MATERIALIZED_ENTRIES_PER_PROJECT} entries"
+                "development context materialization exceeds the project budget of {MAX_CHECKOUT_BYTES_PER_PROJECT} bytes"
             )));
         }
         source_repositories.push(DevelopmentSourceRepositoryMapping {
@@ -132,7 +139,10 @@ pub fn export_development_context_with_environment(
         }
     }
     let manifest = DevelopmentContextManifest {
-        schema_version: if environment.is_some() {
+        vault_artifacts: vault.map_or_else(Vec::new, |v| v.artifacts()),
+        schema_version: if vault.is_some_and(|v| !v.artifacts().is_empty()) {
+            VAULT_CONTEXT_SCHEMA_VERSION
+        } else if environment.is_some() {
             ENVIRONMENT_CONTEXT_SCHEMA_VERSION
         } else if repositories
             .iter()
@@ -278,6 +288,7 @@ fn export_repository(
     target_directories: &mut BTreeSet<String>,
     manifest_budget: &mut ManifestMemoryBudget,
     managed_publication_export: bool,
+    vault: Option<&vault_artifacts::ExportVault<'_>>,
 ) -> Result<
     (
         DevelopmentRepositoryManifest,
@@ -295,6 +306,7 @@ fn export_repository(
                 target_directories,
                 manifest_budget,
                 managed_publication_export,
+                vault,
             );
         }
         Err(error) => return Err(context_io_error("inspect Git workspace metadata", error)),
@@ -340,28 +352,59 @@ fn export_repository(
     let repository_root = staging_root.join("repositories").join(&repository_id);
     create_private_directory(&repository_root)?;
     let bundle_path = repository_root.join("repository.bundle");
-    create_git_bundle(worktree, &bundle_path, MAX_BUNDLE_BYTES_PER_REPOSITORY)?;
-    let bundle_size_bytes = fs::metadata(&bundle_path)
-        .map_err(|error| context_io_error("inspect Git bundle", error))?
-        .len();
-    verify_git_bundle(worktree, &bundle_path, &head_sha)?;
-    let bundle_sha256 = sha256_file(&bundle_path)?;
-    let (overlay, overlay_size_bytes) =
-        export_overlay(worktree, &repository_id, staging_root, manifest_budget)?;
+    let bundle_relative = format!("repositories/{repository_id}/repository.bundle");
+    let (bundle_size_bytes, bundle_sha256) = if let Some(vault) = vault {
+        let items = super::super::credential_free::scan_repository(worktree)?;
+        let bytes = git::create_git_bundle_bytes(worktree, MAX_BUNDLE_BYTES_PER_REPOSITORY)?;
+        git::verify_git_bundle_header_reader(
+            &mut std::io::Cursor::new(bytes.as_slice()),
+            &head_sha,
+        )?;
+        let size = bytes.len() as u64;
+        let digest = sha256_bytes(&bytes);
+        vault.stage(staging_root, &bundle_relative, &bytes, items)?;
+        (size, digest)
+    } else {
+        create_git_bundle(worktree, &bundle_path, MAX_BUNDLE_BYTES_PER_REPOSITORY)?;
+        verify_git_bundle(worktree, &bundle_path, &head_sha)?;
+        (
+            fs::metadata(&bundle_path)
+                .map_err(|error| context_io_error("inspect Git bundle", error))?
+                .len(),
+            sha256_file(&bundle_path)?,
+        )
+    };
+    let (overlay, overlay_size_bytes) = export_overlay(
+        worktree,
+        &repository_id,
+        staging_root,
+        manifest_budget,
+        vault,
+    )?;
     let source_estimate = charge_overlay_materialization(
         source_estimate,
         &overlay,
         MAX_CHECKOUT_BYTES_PER_REPOSITORY,
-        MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY,
+        u64::MAX,
     )?;
     let verification_root = repository_root.join("snapshot-verification");
     create_private_directory(&verification_root)?;
     let mut verification_budget = ManifestMemoryBudget::new();
+    let verification_vault = vault.map(|v| {
+        vault_artifacts::ExportVault::new(
+            v.config,
+            v.context_id,
+            v.target_kernel_id,
+            v.target_public_key,
+            v.project_id,
+        )
+    });
     let (verified_overlay, verified_overlay_size_bytes) = export_overlay(
         worktree,
         &repository_id,
         &verification_root,
         &mut verification_budget,
+        verification_vault.as_ref(),
     )?;
     fs::remove_dir_all(&verification_root)
         .map_err(|error| context_io_error("remove snapshot verification", error))?;
@@ -369,7 +412,7 @@ fn export_repository(
         inspect_export_repository(worktree)?,
         &verified_overlay,
         MAX_CHECKOUT_BYTES_PER_REPOSITORY,
-        MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY,
+        u64::MAX,
     )?;
     let source_after = repository_source_state(worktree)?;
     if source_before != source_after

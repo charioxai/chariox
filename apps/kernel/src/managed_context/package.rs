@@ -797,10 +797,12 @@ pub(crate) fn apply_managed_context_package(
                     .as_ref()
                     .map(|config| {
                         let mut config = config.clone();
-                        if matches!(
-                            &extracted.kernel_context,
-                            ManagedContextPackageKernel::FromKernel(_)
-                        ) {
+                        if request.expected_binding.plan.destination.is_none()
+                            && matches!(
+                                &extracted.kernel_context,
+                                ManagedContextPackageKernel::FromKernel(_)
+                            )
+                        {
                             let (_, vault_path) = configured_managed_kernel_context_paths()?;
                             config.user_config.credential_vault.backend =
                                 crate::config::CredentialVaultBackend::CharioxEncrypted;

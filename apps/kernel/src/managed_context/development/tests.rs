@@ -1170,16 +1170,18 @@ fn fails_closed_on_invalid_ignore_files_and_bounded_path_enumeration() {
     fs::remove_file(repository.join(".charioxignore")).expect("remove ignore file");
     fs::write(repository.join("one.txt"), "one\n").expect("write first untracked file");
     fs::write(repository.join("two.txt"), "two\n").expect("write second untracked file");
-    let enumeration = stream_git_nul_records(
+    let mut enumerated = 0;
+    stream_git_nul_records(
         &repository,
         &["ls-files", "--others", "--exclude-standard", "-z", "--"],
-        1,
-        |_| Ok(()),
+        1, // The legacy count argument no longer limits Copy.
+        |_| {
+            enumerated += 1;
+            Ok(())
+        },
     )
-    .expect_err("path enumeration should stop at its record limit");
-    assert!(enumeration
-        .to_string()
-        .contains("returned more than 1 records"));
+    .expect("ordinary files are admitted by byte/time budgets, not counts");
+    assert_eq!(enumerated, 2);
 
     fs::remove_dir_all(root).expect("remove test root");
 }
@@ -1772,7 +1774,7 @@ fn materialization_rejects_large_current_tree_before_checkout() {
         &unpacked,
         &destination,
         512 * 1024,
-        MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY,
+        u64::MAX,
     )
     .expect_err("checkout budget must reject the current tree");
     assert!(error.to_string().contains("checkout budget"));
@@ -1781,7 +1783,7 @@ fn materialization_rejects_large_current_tree_before_checkout() {
 }
 
 #[test]
-fn multi_repository_entry_budget_rejects_before_any_checkout() {
+fn multi_repository_byte_budget_rejects_before_any_checkout() {
     let root = test_root("project-entry-budget");
     let primary = root.join("primary");
     let supporting = root.join("supporting");
@@ -1816,18 +1818,18 @@ fn multi_repository_entry_budget_rejects_before_any_checkout() {
             expected_source_repositories: None,
             destination_root: destination.clone(),
         },
-        MAX_CHECKOUT_BYTES_PER_PROJECT,
-        3,
+        12_000,
+        u64::MAX,
     )
-    .expect_err("project-wide entry budget must reject two repositories");
-    assert!(error.to_string().contains("entry materialization budget"));
+    .expect_err("project-wide byte budget must reject two repositories");
+    assert!(error.to_string().contains("checkout budget"));
     assert!(!destination.exists());
     assert_no_import_temporaries(&root.join("managed"));
     fs::remove_dir_all(root).expect("remove test root");
 }
 
 #[test]
-fn overlay_entries_count_toward_prepare_budget() {
+fn overlay_allocation_bytes_count_toward_prepare_budget() {
     let root = test_root("overlay-entry-budget");
     let repository = root.join("repository");
     init_repository(&repository, "tracked.txt", "base\n");
@@ -1844,8 +1846,8 @@ fn overlay_entries_count_toward_prepare_budget() {
             expected_source_repositories: None,
             destination_root: destination.clone(),
         },
-        MAX_CHECKOUT_BYTES_PER_PROJECT,
-        3,
+        12_000,
+        u64::MAX,
     )
     .expect_err("nested overlay must count toward the prepare budget");
     assert!(error.to_string().contains("repository overlay"));

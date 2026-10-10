@@ -16,7 +16,7 @@ pub(super) fn prepare_repository(
             },
             &repository.overlay,
             remaining_project_checkout_bytes.min(MAX_CHECKOUT_BYTES_PER_REPOSITORY),
-            remaining_project_materialized_entries.min(MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY),
+            remaining_project_materialized_entries.min(u64::MAX),
         );
     }
     let bundle = artifacts_root.join(&repository.bundle_path);
@@ -48,7 +48,7 @@ pub(super) fn prepare_repository(
         estimate,
         &repository.overlay,
         remaining_project_checkout_bytes.min(MAX_CHECKOUT_BYTES_PER_REPOSITORY),
-        remaining_project_materialized_entries.min(MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY),
+        remaining_project_materialized_entries.min(u64::MAX),
     )?;
     if git_text_isolated(destination, &["rev-parse", "HEAD"])? != repository.head_sha {
         return Err(context_error(

@@ -67,17 +67,12 @@ fn charge_materialized_state(
 fn validate_materialization_estimate(
     estimate: RepositoryMaterializationEstimate,
     maximum_checkout_bytes: u64,
-    maximum_materialized_entries: u64,
+    _maximum_materialized_entries: u64,
     label: &str,
 ) -> Result<(), DaemonError> {
     if estimate.checkout_bytes > maximum_checkout_bytes {
         return Err(context_error(format!(
             "{label} exceeds the {maximum_checkout_bytes}-byte checkout budget"
-        )));
-    }
-    if estimate.materialized_entries > maximum_materialized_entries {
-        return Err(context_error(format!(
-            "{label} exceeds the {maximum_materialized_entries}-entry materialization budget"
         )));
     }
     Ok(())
@@ -86,12 +81,7 @@ fn validate_materialization_estimate(
 pub(super) fn inspect_export_repository(
     worktree: &Path,
 ) -> Result<RepositoryMaterializationEstimate, DaemonError> {
-    inspect_repository_features(
-        worktree,
-        false,
-        MAX_CHECKOUT_BYTES_PER_REPOSITORY,
-        MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY,
-    )
+    inspect_repository_features(worktree, false, MAX_CHECKOUT_BYTES_PER_REPOSITORY, u64::MAX)
 }
 
 pub(super) fn inspect_import_repository(
@@ -103,7 +93,7 @@ pub(super) fn inspect_import_repository(
         worktree,
         true,
         maximum_checkout_bytes.min(MAX_CHECKOUT_BYTES_PER_REPOSITORY),
-        maximum_materialized_entries.min(MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY),
+        maximum_materialized_entries.min(u64::MAX),
     )
 }
 
@@ -138,7 +128,7 @@ fn inspect_repository_features(
     stream_git_nul_records_with_environment(
         worktree,
         &["ls-tree", "-r", "-l", "-z", "HEAD"],
-        MAX_REPOSITORY_TREE_ENTRIES,
+        usize::MAX,
         isolated,
         |record| {
             let Some((metadata, path)) = record.split_once('\t') else {
@@ -161,12 +151,6 @@ fn inspect_repository_features(
             materialized_entries = materialized_entries
                 .saturating_add(1)
                 .saturating_add(path.bytes().filter(|byte| *byte == b'/').count() as u64);
-            if materialized_entries > maximum_materialized_entries {
-                return Err(context_error(format!(
-                    "repository `{}` current tree exceeds the {maximum_materialized_entries}-entry materialization budget",
-                    worktree.display()
-                )));
-            }
             match mode {
                 "160000" => {
                     return Err(context_error(format!(
@@ -331,10 +315,34 @@ pub(super) fn create_git_bundle(
 ) -> Result<(), DaemonError> {
     let mut cleanup = BundleCleanup::new(destination.to_path_buf());
     let mut file = private_create_new(destination)?;
+    create_git_bundle_to_writer(worktree, &mut file, maximum_bytes)?;
+    file.sync_all()
+        .map_err(|error| context_io_error("sync Git bundle", error))?;
+    cleanup.keep();
+    Ok(())
+}
+
+pub(super) fn create_git_bundle_bytes(
+    worktree: &Path,
+    maximum_bytes: u64,
+) -> Result<zeroize::Zeroizing<Vec<u8>>, DaemonError> {
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    create_git_bundle_to_writer(worktree, &mut *bytes, maximum_bytes)?;
+    Ok(bytes)
+}
+
+fn create_git_bundle_to_writer(
+    worktree: &Path,
+    writer: &mut impl Write,
+    maximum_bytes: u64,
+) -> Result<(), DaemonError> {
     let mut child = Command::new("git")
         .args([OsStr::new("bundle"), OsStr::new("create"), OsStr::new("-")])
         .arg("HEAD")
         .current_dir(worktree)
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -354,7 +362,9 @@ pub(super) fn create_git_bundle(
         let read = match stdout.read(&mut buffer) {
             Ok(read) => read,
             Err(error) => {
-                let _ = child.kill();
+                if child.id() > 1 {
+                    let _ = child.kill();
+                }
                 let _ = child.wait();
                 let _ = stderr_reader.join();
                 return Err(context_io_error("read Git bundle", error));
@@ -365,15 +375,19 @@ pub(super) fn create_git_bundle(
         }
         written = written.saturating_add(read as u64);
         if written > maximum_bytes {
-            let _ = child.kill();
+            if child.id() > 1 {
+                let _ = child.kill();
+            }
             let _ = child.wait();
             let _ = stderr_reader.join();
             return Err(context_error(format!(
                 "repository Git bundle exceeds {maximum_bytes} bytes"
             )));
         }
-        if let Err(error) = file.write_all(&buffer[..read]) {
-            let _ = child.kill();
+        if let Err(error) = writer.write_all(&buffer[..read]) {
+            if child.id() > 1 {
+                let _ = child.kill();
+            }
             let _ = child.wait();
             let _ = stderr_reader.join();
             return Err(context_io_error("write Git bundle", error));
@@ -389,9 +403,6 @@ pub(super) fn create_git_bundle(
             String::from_utf8_lossy(&stderr).trim()
         )));
     }
-    file.sync_all()
-        .map_err(|error| context_io_error("sync Git bundle", error))?;
-    cleanup.keep();
     Ok(())
 }
 
@@ -416,18 +427,24 @@ pub(super) fn verify_git_bundle_header(
     expected_head: &str,
 ) -> Result<(), DaemonError> {
     let file = File::open(bundle).map_err(|error| context_io_error("open Git bundle", error))?;
-    let mut reader = BufReader::new(file);
+    verify_git_bundle_header_reader(&mut BufReader::new(file), expected_head)
+}
+
+pub(super) fn verify_git_bundle_header_reader(
+    reader: &mut impl BufRead,
+    expected_head: &str,
+) -> Result<(), DaemonError> {
     let mut header_bytes = 0_usize;
     let mut header_records = 0_usize;
     let signature =
-        read_bounded_bundle_header_line(&mut reader, &mut header_bytes, &mut header_records)?
+        read_bounded_bundle_header_line(reader, &mut header_bytes, &mut header_records)?
             .unwrap_or_default();
     if !signature.starts_with("# v") || !signature.ends_with(" git bundle") {
         return Err(context_error("Git bundle has an invalid signature"));
     }
     let mut head_seen = false;
     while let Some(line) =
-        read_bounded_bundle_header_line(&mut reader, &mut header_bytes, &mut header_records)?
+        read_bounded_bundle_header_line(reader, &mut header_bytes, &mut header_records)?
     {
         if line.is_empty() {
             break;
@@ -648,7 +665,9 @@ fn run_git_output_bounded(
         let read = match stdout.read(&mut buffer) {
             Ok(read) => read,
             Err(error) => {
-                let _ = child.kill();
+                if child.id() > 1 {
+                    let _ = child.kill();
+                }
                 let _ = child.wait();
                 let _ = stderr_reader.join();
                 return Err(context_io_error("read bounded Git output", error));
@@ -658,7 +677,9 @@ fn run_git_output_bounded(
             break;
         }
         if stdout_bytes.len().saturating_add(read) > maximum_stdout_bytes {
-            let _ = child.kill();
+            if child.id() > 1 {
+                let _ = child.kill();
+            }
             let _ = child.wait();
             let _ = stderr_reader.join();
             return Err(context_error(format!(
@@ -736,7 +757,7 @@ where
 fn stream_git_nul_records_with_environment<F>(
     worktree: &Path,
     args: &[&str],
-    maximum_records: usize,
+    _maximum_records: usize,
     isolated: bool,
     mut on_record: F,
 ) -> Result<(), DaemonError>
@@ -762,7 +783,8 @@ where
         .take()
         .ok_or_else(|| context_error("streaming Git command did not provide stderr"))?;
     let stderr_reader = std::thread::spawn(move || read_capped_and_drain(stderr));
-    let mut records = 0_usize;
+    let started = std::time::Instant::now();
+    let mut output_bytes = 0u64;
     let mut record = Vec::new();
     let mut buffer = [0_u8; 64 * 1024];
     let result = 'stream: loop {
@@ -779,14 +801,16 @@ where
                 ))
             };
         }
+        output_bytes = output_bytes.saturating_add(read as u64);
+        if output_bytes > MAX_PACKAGE_BYTES
+            || started.elapsed() > std::time::Duration::from_secs(120)
+        {
+            break Err(context_error(
+                "Git path stream exceeds the 1 GiB byte or 120 second time limit",
+            ));
+        }
         for byte in &buffer[..read] {
             if *byte == 0 {
-                records = records.saturating_add(1);
-                if records > maximum_records {
-                    break 'stream Err(context_error(format!(
-                        "Git command returned more than {maximum_records} records"
-                    )));
-                }
                 let value = match String::from_utf8(std::mem::take(&mut record)) {
                     Ok(value) => value,
                     Err(_) => {
@@ -808,7 +832,7 @@ where
             }
         }
     };
-    if result.is_err() {
+    if result.is_err() && child.id() > 1 {
         let _ = child.kill();
     }
     let status = child

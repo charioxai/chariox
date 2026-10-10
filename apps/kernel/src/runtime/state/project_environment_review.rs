@@ -29,6 +29,12 @@ impl KernelRuntimeState {
             || format!("project-environment:{}", rand::random::<u64>()),
             |context| format!("owner-context:{context}"),
         );
+        let scan_roots = roots.clone();
+        let vault_items = tokio::task::spawn_blocking(move || {
+            crate::managed_context::development::vault_artifacts::review_items(&scan_roots)
+        })
+        .await
+        .map_err(|_| environment_failure("Vault review task failed"))??;
         let mut expanded = false;
         let mut revise = false;
         let mut supply: Option<String> = None;
@@ -46,7 +52,7 @@ impl KernelRuntimeState {
                         missing.status
                     });
             }
-            let review = ProjectEnvironmentReview::build(
+            let mut review = ProjectEnvironmentReview::build(
                 state,
                 project,
                 target,
@@ -54,6 +60,15 @@ impl KernelRuntimeState {
                 expanded,
                 false,
             );
+            if !vault_items.is_empty() {
+                review.rows.push(ProjectEnvironmentReviewRow { label: "Vault".into(), summary: "Secret-bearing files and history will travel through your Chariox Vault. Unlock the source and target Vaults before copying.".into() });
+                for item in &vault_items {
+                    review.rows.push(ProjectEnvironmentReviewRow {
+                        label: "Vault".into(),
+                        summary: format!("{} · {}", item.path, item.kind),
+                    });
+                }
+            }
             let mut choices = vec![
                 RuntimeInteractionChoice::new(
                     "continue",
