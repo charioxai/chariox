@@ -700,24 +700,28 @@ test("Path-1 builder rotation supports simultaneous release-signing key rotation
   assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")), `releases/${harness.target.digest.slice(7)}`)
 })
 
-test("Path-1 builder rotation recovers a crash after pin replacement before release activation", async (context) => {
+test("MP-07 Path-1 builder rotation restores a killed pin helper before a fresh upgrade", async (context) => {
   const harness = await makeHarness(context, { path1Release: true, rotateBuilder: true })
   const runtimePin = join(harness.installRoot, "etc/chariox/trusted-builder-public-key")
   await put(runtimePin, await readFile(harness.trustedBuilderKey), 0o644)
   await put(join(harness.state, "check-builder-pin-on-start"), "check\n")
   await put(join(harness.state, "crash-after-builder-pin"), "crash\n")
+  const before = await persistentSnapshot(harness.persistent)
   const env = {
     CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1",
     CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: harness.trustedBuilderKey,
     CHARIOX_NEXT_TRUSTED_BUILDER_PUBLIC_KEY: harness.nextTrustedBuilderKey,
   }
   const crashed = harness.run(env)
-  assert.equal(crashed.signal, "SIGKILL", crashed.stderr)
-  assert.equal(await readFile(runtimePin, "utf8"), await readFile(harness.nextTrustedBuilderKey, "utf8"))
+  assert.equal(crashed.status, 1, crashed.stderr)
+  assert.equal(await readFile(runtimePin, "utf8"), await readFile(harness.trustedBuilderKey, "utf8"))
   assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")), `releases/${harness.current.digest.slice(7)}`)
+  assert.deepEqual(await persistentSnapshot(harness.persistent), before)
+  assert.equal(await lstat(join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade")).then(() => true, () => false), false)
   const recovered = harness.run(env)
   assert.equal(recovered.status, 0, recovered.stderr)
   assert.equal(await readFile(runtimePin, "utf8"), await readFile(harness.nextTrustedBuilderKey, "utf8"))
+  assert.deepEqual(await persistentSnapshot(harness.persistent), before)
   assert.equal((await readFile(join(harness.state, "builder-pin-starts"), "utf8")).trim().split("\n").length, 2)
   assert.equal(await lstat(join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade")).then(() => true, () => false), false)
 })
