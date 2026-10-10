@@ -1,6 +1,7 @@
 import { parseKeypress, StdinParser, TextRenderable, TextareaRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { createClipboardController } from "./clipboard-controller.js"
+import { bindRendererShortcutInput } from "./renderer-shortcut-input.js"
 import { createNativeSelectionController } from "./native-selection-controller.js"
 import assert from "node:assert/strict"
 import test from "node:test"
@@ -168,13 +169,12 @@ test("MP-08 / MP-10 native copy owns F7 and Esc before dialogs/selection clearin
 for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (const [kind, input] of [
   ["enter", "\r"], ["text", "xy"], ["paste", "\x1b[200~paste\x1b[201~"],
 ] as const) {
-  test(`MP-08 / MP-10 renderer applies F7 before coalesced ${kind} (${buffer ? "Buffer" : "string"}; raw ${rawFirst ? "first" : "last"})`, async () => {
+  test(`MP-08 / MP-10 renderer applies F7 before coalesced ${kind} (${buffer ? "Buffer" : "string"}; stdin observer ${rawFirst ? "first" : "last"})`, async () => {
     const harness = await createTestRenderer({ width: 80, height: 8, useThread: false })
     const native = createNativeSelectionController({ renderer: harness.renderer, setHint: () => {} })
     const rawKeys: string[] = []
     let submits = 0, clears = 0
     const raw = createCliStdinKeyController({
-      createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
       handleNativeSelectionKey: native.handleKey,
       handleNativeSelectionPaste: native.handlePaste,
       flushTextSelectionRebuild: () => { clears++ },
@@ -189,7 +189,11 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
     harness.renderer.keyInput.prependListener("paste", event => {
       if (native.handleRendererPaste()) { event.preventDefault(); event.stopPropagation() }
     })
-    const rawInput = (chunk: Buffer | string) => { queueMicrotask(() => { raw.handleData(chunk) }) }
+    const disposeInput = bindRendererShortcutInput({
+      keyInput: harness.renderer.keyInput, enabled: () => true,
+      handleEvent: raw.handleEvent, discardInput: () => {},
+    })
+    const rawInput = () => {}
     if (rawFirst) harness.renderer.stdin.prependListener("data", rawInput)
     else harness.renderer.stdin.on("data", rawInput)
     const prompt = new TextareaRenderable(harness.renderer, { width: 40, height: 1, initialValue: "draft", keyBindings: [{ name: "return", action: "submit" }], onSubmit: () => { submits++ } })
@@ -223,6 +227,7 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
       assert.deepEqual(rawKeys, ["x", "y", "z"])
       assert.equal(clears, 3)
     } finally {
+      disposeInput()
       native.dispose()
       harness.renderer.destroy()
     }
@@ -234,7 +239,7 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
   ["Shift+Left twice", "\x1b[1;2D\x1b[1;2D", "ft"],
   ["Shift+Home", "\x1b[1;2H", "draft"],
 ] as const) {
-  test(`MP-08 / MP-10 prompt ${kind} survives raw routing and F6/replacement (${buffer ? "Buffer" : "string"}; raw ${rawFirst ? "first" : "last"}; ${batched ? "coalesced" : "separate"}; ${paste ? "paste" : "typing"}; edit ${sameChunkEdit ? "coalesced" : "later"})`, async () => {
+  test(`MP-08 / MP-10 prompt ${kind} survives raw routing and F6/replacement (${buffer ? "Buffer" : "string"}; stdin observer ${rawFirst ? "first" : "last"}; ${batched ? "coalesced" : "separate"}; ${paste ? "paste" : "typing"}; edit ${sameChunkEdit ? "coalesced" : "later"})`, async () => {
     const harness = await createTestRenderer({ width: 80, height: 8, useThread: false })
     const prompt = new TextareaRenderable(harness.renderer, { width: 40, height: 2, initialValue: "draft" })
     harness.renderer.root.add(prompt)
@@ -250,7 +255,6 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
     })
     let rebuildDeferred = true, rebuilds = 0
     const raw = createCliStdinKeyController({
-      createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
       hasPromptSelection: () => prompt.hasSelection(),
       flushTextSelectionRebuild: () => {
         if (rebuildDeferred) { rebuildDeferred = false; rebuilds++ }
@@ -265,7 +269,11 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
     } as unknown as CliStdinKeyControllerDeps)
     harness.renderer.keyInput.prependListener("keypress", event => clipboard.captureCopyKey(event))
     harness.renderer.keyInput.prependListener("paste", () => clipboard.capturePaste())
-    const rawInput = (chunk: Buffer | string) => { queueMicrotask(() => { raw.handleData(chunk) }) }
+    const disposeInput = bindRendererShortcutInput({
+      keyInput: harness.renderer.keyInput, enabled: () => true,
+      handleEvent: raw.handleEvent, discardInput: () => {},
+    })
+    const rawInput = () => {}
     if (rawFirst) harness.renderer.stdin.prependListener("data", rawInput)
     else harness.renderer.stdin.on("data", rawInput)
     const send = async (bytes: string) => {
@@ -290,14 +298,14 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
       assert.equal(prompt.plainText, kind === "Shift+Home" ? "Z" : "draZ", "typing replaces the selected range")
       assert.equal(prompt.hasSelection(), false)
       assert.equal(rebuilds, 1, "editing releases selection and flushes the deferred rebuild")
-    } finally { harness.renderer.destroy() }
+    } finally { disposeInput(); harness.renderer.destroy() }
   })
 }
 
 // MP-08 / MP-10: repeated copies in one chunk retain each event's range,
 // including an empty selection before the first selection movement.
 for (const rawFirst of [false, true]) for (const buffer of [false, true]) {
-  test(`MP-08 / MP-10 copy snapshots precede later selection extension (${buffer ? "Buffer" : "string"}; raw ${rawFirst ? "first" : "last"})`, async () => {
+  test(`MP-08 / MP-10 copy snapshots precede later selection extension (${buffer ? "Buffer" : "string"}; stdin observer ${rawFirst ? "first" : "last"})`, async () => {
     const harness = await createTestRenderer({ width: 80, height: 8, useThread: false })
     const prompt = new TextareaRenderable(harness.renderer, { width: 40, height: 2, initialValue: "draft" })
     harness.renderer.root.add(prompt)
@@ -308,7 +316,6 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) {
     const clipboard = createClipboardController({ renderer: harness.renderer, promptInput: () => prompt,
       flashFooter: () => {}, copyText: async text => { copies.push(text); return "copied" } })
     const raw = createCliStdinKeyController({
-      createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
       replayCopyKey: clipboard.replayCopyKey,
       copyPromptSelection: clipboard.copyCapturedSelection ?? clipboard.copyPromptSelection,
       hasPromptSelection: () => prompt.hasSelection(),
@@ -320,7 +327,11 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) {
     } as unknown as CliStdinKeyControllerDeps)
     harness.renderer.keyInput.prependListener("keypress", event => clipboard.captureCopyKey(event))
     harness.renderer.keyInput.prependListener("paste", () => clipboard.capturePaste())
-    const rawInput = (chunk: Buffer | string) => { queueMicrotask(() => { raw.handleData(chunk) }) }
+    const disposeInput = bindRendererShortcutInput({
+      keyInput: harness.renderer.keyInput, enabled: () => true,
+      handleEvent: raw.handleEvent, discardInput: () => {},
+    })
+    const rawInput = () => {}
     if (rawFirst) harness.renderer.stdin.prependListener("data", rawInput)
     else harness.renderer.stdin.on("data", rawInput)
     try {
@@ -329,14 +340,14 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) {
       await Promise.resolve()
       assert.deepEqual(copies, ["t", "ft"], "empty F6 must stay empty; each later F6 copies its event-time range")
       assert.equal(prompt.getSelectedText(), "aft")
-    } finally { harness.renderer.destroy() }
+    } finally { disposeInput(); harness.renderer.destroy() }
   })
 }
 
 // MP-08 / MP-10: editing must invalidate transcript selection before a later
 // decoded copy, even though raw routing/rebuilds wait for the entire chunk.
 for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (const batched of [false, true]) for (const paste of [false, true]) {
-  test(`MP-08 / MP-10 transcript edit precedes copy (${buffer ? "Buffer" : "string"}; raw ${rawFirst ? "first" : "last"}; ${batched ? "coalesced" : "separate"}; ${paste ? "paste" : "typing"})`, async () => {
+  test(`MP-08 / MP-10 transcript edit precedes copy (${buffer ? "Buffer" : "string"}; stdin observer ${rawFirst ? "first" : "last"}; ${batched ? "coalesced" : "separate"}; ${paste ? "paste" : "typing"})`, async () => {
     const harness = await createTestRenderer({ width: 80, height: 8, useThread: false })
     const transcript = new TextRenderable(harness.renderer, { content: "retained transcript", width: 40, height: 1 })
     const prompt = new TextareaRenderable(harness.renderer, { width: 40, height: 2 })
@@ -349,7 +360,6 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
       flashFooter: () => {}, copyText: async text => { copies.push(text); return "copied" } })
     let rebuilds = 0
     const raw = createCliStdinKeyController({
-      createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
       replayCopyKey: clipboard.replayCopyKey,
       copyPromptSelection: clipboard.copyCapturedSelection,
       hasPromptSelection: () => prompt.hasSelection(),
@@ -361,7 +371,11 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
     } as unknown as CliStdinKeyControllerDeps)
     harness.renderer.keyInput.prependListener("keypress", event => clipboard.captureCopyKey(event))
     harness.renderer.keyInput.prependListener("paste", () => clipboard.capturePaste())
-    const rawInput = (chunk: Buffer | string) => { queueMicrotask(() => { raw.handleData(chunk) }) }
+    const disposeInput = bindRendererShortcutInput({
+      keyInput: harness.renderer.keyInput, enabled: () => true,
+      handleEvent: raw.handleEvent, discardInput: () => {},
+    })
+    const rawInput = () => {}
     if (rawFirst) harness.renderer.stdin.prependListener("data", rawInput)
     else harness.renderer.stdin.on("data", rawInput)
     const send = async (bytes: string) => {
@@ -380,6 +394,70 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
       assert.equal(harness.renderer.getSelection(), null)
       assert.equal(rebuilds, 1, "raw edit flushes the deferred rebuild once")
       assert.deepEqual(copies, [], "an edit before F6 must not overwrite the clipboard with deselected transcript text")
-    } finally { harness.renderer.destroy() }
+    } finally { disposeInput(); harness.renderer.destroy() }
+  })
+}
+
+// MP-08 / MP-10 reviewer0794: a native release never reaches the TUI.
+for (const transition of ["native", "suspend"] as const) for (const coalesced of [false, true]) {
+  test(`MP-08 / MP-10 held mouse ${transition} drains Escape before ordinary c (${coalesced ? "coalesced" : "separate"})`, async () => {
+    const harness = await createTestRenderer({ width: 80, height: 8, useThread: false })
+    const native = createNativeSelectionController({ renderer: harness.renderer, setHint: () => {} })
+    const seen: Array<{ name: string; meta: boolean }> = []
+    let queuedCancels = 0
+    const raw = createCliStdinKeyController({
+      handleNativeSelectionKey: event => {
+        const owned = native.handleKey(event)
+        seen.push({ name: event.name, meta: Boolean(event.meta) })
+        return owned
+      },
+      dialogOverlayOpen: () => false,
+      handleSessionBrowserKey: event => {
+        if (event.name === "c" && event.meta) queuedCancels++
+        return true
+      },
+    } as CliStdinKeyControllerDeps)
+    const gate = (event: import("@opentui/core").KeyEvent) => {
+      if (native.handleRendererKey(event)) { event.preventDefault(); event.stopPropagation() }
+    }
+    harness.renderer.keyInput.prependListener("keypress", gate)
+    const disposeInput = bindRendererShortcutInput({
+      keyInput: harness.renderer.keyInput, enabled: () => true,
+      handleEvent: raw.handleEvent, discardInput: native.discardInput,
+    })
+    const send = async (bytes: string) => {
+      harness.renderer.stdin.emit("data", Buffer.from(bytes))
+      await Promise.resolve()
+    }
+    const prompt = new TextareaRenderable(harness.renderer, { width: 40, height: 1, initialValue: "" })
+    harness.renderer.root.add(prompt)
+    prompt.focus()
+    try {
+      await send("\x1b[<0;2;2M" + (coalesced && transition === "native" ? "\x1b[18~" : ""))
+      if (transition === "native") {
+        if (!coalesced) await send("\x1b[18~")
+        assert.equal(harness.renderer.useMouse, false)
+        // Release belongs to the emulator after F7, with no SGR report.
+      } else {
+        harness.renderer.suspend()
+        harness.renderer.resume()
+        await new Promise(resolve => setImmediate(resolve))
+      }
+      await send("\x1b")
+      await new Promise(resolve => setTimeout(resolve, 300))
+      assert.equal(native.isActive(), false)
+      await send("c")
+      assert.equal(prompt.plainText, "c")
+      assert.equal(queuedCancels, 0, "ordinary c must not cancel a queued prompt")
+      assert.deepEqual(seen.slice(-2), [{ name: "escape", meta: false }, { name: "c", meta: false }])
+      // A new native round consumes only its own decisions, then ordinary c.
+      await send("\x1b[18~x\x1b[18~c")
+      assert.deepEqual(seen.slice(-4).map(event => event.name), ["f7", "x", "f7", "c"])
+      assert.equal(prompt.plainText, "cc")
+    } finally {
+      disposeInput()
+      native.dispose()
+      harness.renderer.destroy()
+    }
   })
 }

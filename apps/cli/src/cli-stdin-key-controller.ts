@@ -7,17 +7,17 @@ export type CliStdinKeyEvent = ParsedShortcut & {
   alt?: boolean
 }
 
-// OpenTUI's StdinParser: buffers sequences split across stdin chunks and
-// flushes a lone ESC after its timeout.
+export type CliStdinInputEvent = { type: string; key?: CliStdinKeyEvent }
+
 export type CliStdinParser = {
   push(data: Uint8Array): void
-  drain(onEvent: (event: { type: string; key?: CliStdinKeyEvent }) => void): void
+  drain(onEvent: (event: CliStdinInputEvent) => void): void
 }
 
 export type CliStdinKeyControllerDeps = {
   handleNativeSelectionKey?: (event: CliStdinKeyEvent) => boolean
   handleNativeSelectionPaste?: () => boolean
-  createStdinParser: (onTimeoutFlush: () => void) => CliStdinParser
+  createStdinParser?: (onTimeoutFlush: () => void) => CliStdinParser
   kernelApprovalOwnsInput?: () => boolean
   dialogOverlayOpen: () => boolean
   closeActiveDialogOverlay: () => void
@@ -53,28 +53,29 @@ export type CliStdinKeyControllerDeps = {
 
 export type CliStdinKeyController = {
   handleData(chunk: Buffer | string): boolean
+  handleEvent(event: CliStdinInputEvent): boolean
 }
 
 export function createCliStdinKeyController(
   deps: CliStdinKeyControllerDeps,
 ): CliStdinKeyController {
-  // MP-08 / MP-10: decode complete events only. A mouse report split across
-  // chunks (after ESC, inside the CSI parameters) must never act as a key.
-  const parser = deps.createStdinParser(() => { drain() })
-  // MP-08 / MP-10: decoded renderer events own selection mutation. Raw
-  // replay only flushes deferred rebuilds; it must preserve a newer mouse
+  // MP-08 / MP-10: production uses renderer-decoded events. The optional
+  // byte source supports isolated parser regressions without a second live parser.
+  const parser = deps.createStdinParser?.(() => { drain() })
+  // MP-08 / MP-10: decoded renderer events own selection mutation. Deferred
+  // replay only flushes rebuilds; it must preserve a newer mouse
   // selection created by later events in this same stdin chunk.
   const flushSelectionRebuild = () => {
     if (!deps.hasPromptSelection?.()) deps.flushTextSelectionRebuild?.()
   }
   const drain = () => {
     let handled = false
-    parser.drain((event) => {
-      // Mouse reports and terminal responses keep the selection.
-      if (event.type === "paste" && !deps.handleNativeSelectionPaste?.()) flushSelectionRebuild()
-      else if (event.type === "key" && event.key) handled = handleKey(event.key) || handled
-    })
+    parser?.drain((event) => { handled = handleEvent(event) || handled })
     return handled
+  }
+  const handleEvent = (event: CliStdinInputEvent): boolean => {
+    if (event.type === "paste" && !deps.handleNativeSelectionPaste?.()) flushSelectionRebuild()
+    return event.type === "key" && event.key ? handleKey(event.key) : false
   }
   const handleKey = (event: CliStdinKeyEvent): boolean => {
     if (deps.handleNativeSelectionKey?.(event)) return true
@@ -192,8 +193,9 @@ export function createCliStdinKeyController(
     return false
   }
   return {
+    handleEvent,
     handleData(chunk) {
-      parser.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk)
+      parser?.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk)
       return drain()
     },
   }

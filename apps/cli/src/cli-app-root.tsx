@@ -905,7 +905,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
 
   const {
     cycleFocusedInteractionChoice, executeCommandCenterCommand, handleCloudCommand, handlePromptKeyDown,
-    handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
+    handleSigint, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
     appHostTerminal: createAppHostTerminal(renderer),
@@ -918,6 +918,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentAccountProfileId: () => waitingRoomState().accountProfileId || options.accountProfile || "default",
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
     readSecret: secretInput.readSecret,
+    shortcutInputEnabled: () => !renderer.isDestroyed && !providerLoginLink.isActive(),
+    discardShortcutInput: () => { nativeSelection.discardInput(); discardCopyInput() },
     handleNativeSelectionKey: nativeSelection.handleKey,
     handleNativeSelectionPaste: nativeSelection.handlePaste,
     flushTextSelectionRebuild: flushDeferredRebuild,
@@ -977,14 +979,6 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   } = createCliAppProcessRuntimeComposition({
     client, options, appLogger, formatError,
     flashFooter, handleSigint,
-    // MP-08 / MP-10: resume() reattaches the renderer after this listener.
-    // Drain the application parser after renderer dispatch in either order.
-    handleStdinData: (chunk: Buffer | string) => {
-      if (!providerLoginLink.isActive()) queueMicrotask(() => {
-        if (!renderer.isDestroyed && !providerLoginLink.isActive()) handleStdinData(chunk)
-        else { nativeSelection.discardInput(); discardCopyInput() }
-      })
-    },
     clearTerminalOutputRecordTimer,
     workspaceScreenMode,
     workflowScreenActive: workflowActions.workflowScreenActive,

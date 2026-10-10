@@ -1,7 +1,7 @@
-import { StdinParser } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
 
+import { bindRendererShortcutInput } from "./renderer-shortcut-input.js"
 import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
 import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
 import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
@@ -34,6 +34,8 @@ type AnyFn = (...args: any[]) => any
 export type CliInputRoutingCompositionDeps = {
   handleNativeSelectionKey?: import("./cli-stdin-key-controller.js").CliStdinKeyControllerDeps["handleNativeSelectionKey"]
   handleNativeSelectionPaste?: () => boolean
+  shortcutInputEnabled: () => boolean
+  discardShortcutInput: () => void
   handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
   openKernelApprovals: () => void
   kernelApprovalOwnsInput?: () => boolean
@@ -679,8 +681,6 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     ...(deps.handleNativeSelectionKey ? { handleNativeSelectionKey: deps.handleNativeSelectionKey } : {}),
     ...(deps.handleNativeSelectionPaste ? { handleNativeSelectionPaste: deps.handleNativeSelectionPaste } : {}),
     kernelApprovalOwnsInput: () => deps.kernelApprovalOwnsInput?.() ?? false,
-    // Same settings as the renderer's own parser, so both agree on every chunk.
-    createStdinParser: (onTimeoutFlush) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
     handleManagedMachineDialogKey: deps.handleManagedMachineDialogKey,
@@ -722,11 +722,17 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     handleWaitingRoomKey: waitingRoomKeyController.handleKey,
   })
 
+  onCleanup(bindRendererShortcutInput({
+    keyInput: useRenderer().keyInput,
+    enabled: deps.shortcutInputEnabled,
+    handleEvent: stdinKeyController.handleEvent,
+    discardInput: deps.discardShortcutInput,
+  }))
+
   return {
     cycleFocusedInteractionChoice,
     handlePromptKeyDown,
     handleSigint,
-    handleStdinData: stdinKeyController.handleData,
     requestPromptStop,
     submitFocusedInteractionChoice,
     submitPrompt,
