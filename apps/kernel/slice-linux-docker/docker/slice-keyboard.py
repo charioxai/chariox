@@ -154,7 +154,7 @@ def assert_secret_target(connection, expected_target):
         raise SecretTargetChanged()
 
 
-def type_text(text, expected_target=None, before_press=None):
+def type_text(text, expected_target=None, before_press=None, *, pace_seconds=0.04):
     connection = _x11_module.open_display(display)
     keyboard = ComputerTextKeyboard(connection)
     lifted = []
@@ -221,7 +221,8 @@ def type_text(text, expected_target=None, before_press=None):
             # Pace on this process, not in the X server's request queue. Killing
             # the kernel-owned process group must stop future physical events.
             connection.sync()
-            time.sleep(0.04)
+            if pace_seconds:
+                time.sleep(pace_seconds)
     finally:
         if expected_target is not None and fill_record is not None:
             fill_targets.finish(fill_record, text)
