@@ -212,9 +212,9 @@ test('MP-08/MP-10: replies that never apply keep the failure streak, so the mirr
 
 test('MP-10: review #320-1 a select shows its live selection after its options are built (snapshot and children delta)', () => {
   // Fake DOM with the real select rule: selectedIndex is clamped to the options present, and the first option appended to an empty select becomes selected.
-  type Fake = { nodeType: number; localName: string; childNodes: Fake[]; attributes: Map<string, string>; selectedIndex?: number; value?: string; setAttribute(n: string, v: string): void; removeAttribute(n: string): void; appendChild(c: Fake): Fake; addEventListener(): void; style: { setProperty(): void } }
+  type Fake = { nodeType: number; localName: string; childNodes: Fake[]; attributes: Map<string, string>; selectedIndex?: number; value?: string; setAttribute(n: string, v: string): void; removeAttribute(n: string): void; appendChild(c: Fake): Fake; addEventListener(): void; style: { setProperty(): void }; getRootNode(): { activeElement: null } }
   const make = (tag: string): Fake => {
-    const node: Fake = { nodeType: 1, localName: tag, childNodes: [], attributes: new Map(), setAttribute: (n, v) => { node.attributes.set(n, v) }, removeAttribute: n => { node.attributes.delete(n) }, addEventListener: () => {}, style: { setProperty: () => {} },
+    const node: Fake = { nodeType: 1, localName: tag, childNodes: [], attributes: new Map(), setAttribute: (n, v) => { node.attributes.set(n, v) }, removeAttribute: n => { node.attributes.delete(n) }, addEventListener: () => {}, style: { setProperty: () => {} }, getRootNode: () => ({ activeElement: null }),
       appendChild: child => { node.childNodes.push(child); if (tag === 'select' && child.localName === 'option' && index < 0) index = 0; return child } }
     let index = -1
     if (tag === 'select') Object.defineProperty(node, 'selectedIndex', { get: () => index, set: (v: number) => { index = v >= 0 && v < node.childNodes.length ? v : -1 } })
@@ -256,4 +256,43 @@ test('MP-10: review #941-2 a viewer scroll inside a rendered open shadow root re
     await new Promise(resolve => setTimeout(resolve, 10))
   } finally { globalThis.requestAnimationFrame = raf }
   assert.deepEqual(sent, [{ kind: 'scroll_to', node_id: 'n9', x: 0, y: 300 }])
+})
+
+// A small fake DOM for apply(): text controls take Chrome's rules (assigning a value puts the caret at its end; focus keeps it).
+type FakeNode = { nodeType: number; localName: string; childNodes: FakeNode[]; parentNode: FakeNode | null; [key: string]: unknown }
+function fakeDocument(): { doc: FakeNode; container: unknown } {
+  const doc = { nodeType: 9, localName: '#document', childNodes: [], parentNode: null, activeElement: null, adoptedStyleSheets: [], addEventListener: () => {}, getSelection: () => null } as unknown as FakeNode & { activeElement: FakeNode | null }
+  const make = (tag: string, nodeType = 1): FakeNode => {
+    let value = ''
+    const node: FakeNode = { nodeType, localName: tag, childNodes: [], parentNode: null, ownerDocument: doc, attributes: new Map(), style: { setProperty: () => {} }, dataset: {}, shadowRoot: null, selection: null,
+      setAttribute: (n: string, v: string) => (node.attributes as Map<string, string>).set(n, v), removeAttribute: (n: string) => (node.attributes as Map<string, string>).delete(n), addEventListener: (type: string, fn: () => void) => { if (type === 'load') setTimeout(fn, 0) },
+      appendChild: (child: FakeNode) => { child.parentNode?.childNodes.splice(child.parentNode.childNodes.indexOf(child), 1); child.parentNode = node; node.childNodes.push(child); return child },
+      insertBefore: (child: FakeNode, ref: FakeNode | null) => { child.parentNode?.childNodes.splice(child.parentNode.childNodes.indexOf(child), 1); child.parentNode = node; node.childNodes.splice(ref ? node.childNodes.indexOf(ref) : node.childNodes.length, 0, child); return child },
+      removeChild: (child: FakeNode) => { node.childNodes.splice(node.childNodes.indexOf(child), 1); child.parentNode = null; return child },
+      prepend: (child: FakeNode) => (node.insertBefore as (c: FakeNode, r: FakeNode | null) => FakeNode)(child, node.childNodes[0] ?? null),
+      replaceWith: (other: FakeNode) => { (doc as unknown as { documentElement: FakeNode }).documentElement = other; other.parentNode = doc },
+      getRootNode: () => doc, matches: () => false,
+      focus: () => { (doc as unknown as { activeElement: FakeNode }).activeElement = node },
+      setSelectionRange: (start: number, end: number) => { node.selection = [start, end] } }
+    if (tag === 'input') Object.defineProperty(node, 'value', { get: () => value, set: (next: string) => { value = next; node.selection = [next.length, next.length] } })
+    return node
+  }
+  Object.assign(doc, { createElement: make, createElementNS: (_: string, tag: string) => make(tag), createTextNode: (text: string) => Object.assign(make('#text', 3), { data: text, textContent: text }), createDocumentFragment: () => make('#fragment', 11) })
+  const html = make('html'), head = make('head'); html.childNodes.push(head); Object.assign(doc, { documentElement: html, head })
+  const iframe = Object.assign(make('iframe'), { contentDocument: doc, contentWindow: { scrollTo: () => {}, scrollX: 0, scrollY: 0 } })
+  return { doc, container: { ownerDocument: { createElement: () => iframe }, append: () => {} } }
+}
+
+test('MP-08: review #320-1 a focused text control shows the kernel caret/range after focus (snapshot and a newly introduced field)', async () => {
+  const { doc, container } = fakeDocument()
+  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async () => {})
+  await renderer.ready()
+  const form = (start: number, end: number) => ({ value: 'abc', checked: false, selected_index: -1, selection_start: start, selection_end: end })
+  const nodes: Mirror2Record[] = [{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+    { id: 'n4', parent: 'n3', kind: 'element', tag: 'input', attrs: {}, form: form(0, 0) }]
+  await renderer.apply(base(nodes, { focused: 'n4' }))
+  const field = (id: string) => (doc as unknown as { documentElement: FakeNode }).documentElement.childNodes.flatMap(n => n.childNodes).find(n => (renderer as unknown as { ids: WeakMap<object, string> }).ids.get(n) === id)
+  assert.deepEqual(field('n4')?.selection, [0, 0], 'MP-08: snapshot caret at the kernel position, not the value end')
+  await renderer.apply({ ...base(nodes, { reset: false, base_sequence: 1, sequence: 2, focused: 'n5', ops: [{ op: 'children', id: 'n3', children: ['n4', 'n5'], nodes: [{ id: 'n5', parent: 'n3', kind: 'element', tag: 'input', attrs: {}, form: form(1, 2) }] }] }), nodes: undefined, root: undefined } as unknown as Mirror2Packet)
+  assert.deepEqual(field('n5')?.selection, [1, 2], 'MP-08: a newly introduced focused field keeps the kernel range')
 })

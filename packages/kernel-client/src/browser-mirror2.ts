@@ -218,7 +218,16 @@ export class BrowserMirror2Renderer {
     if (field.value !== form.value) field.value = form.value
     if ('checked' in field && field.type !== undefined) field.checked = form.checked
     if (element.localName === 'select') (element as unknown as HTMLSelectElement).selectedIndex = form.selected_index
-    if (form.selection_start !== null && form.selection_end !== null && field.ownerDocument.activeElement === field) try { field.setSelectionRange(form.selection_start, form.selection_end) } catch { /* not a text control */ }
+    if ((field.getRootNode() as Document | ShadowRoot).activeElement === field) this.caret(field, form)
+  }
+  private caret(field: HTMLInputElement, form: Mirror2Form): void {
+    if (form.selection_start !== null && form.selection_end !== null) try { field.setSelectionRange(form.selection_start, form.selection_end) } catch { /* not a text control */ }
+  }
+  // The focused leaf across open shadow roots and mirrored frame documents.
+  private active(): Element | null {
+    let element = this.doc?.activeElement ?? null
+    for (let depth = 0; depth < 64 && element; depth++) { const next = element.shadowRoot?.activeElement ?? (element.localName === 'iframe' ? (element as HTMLIFrameElement).contentDocument?.activeElement : null); if (!next || next === element) break; element = next }
+    return element
   }
   // Records are pre-order; each record's children follow it in list order.
   // Frame documents are built separately into the frame's own document.
@@ -316,7 +325,8 @@ export class BrowserMirror2Renderer {
       this.sequence = packet.sequence; this.documentId = packet.document_id
       if (!this.pendingInputs) {
         const focused = packet.focused ? this.dom.get(packet.focused) as HTMLElement | undefined : undefined
-        if (focused && this.doc.activeElement !== focused) focused.focus?.({ preventScroll: true })
+        // A control built while detached could not take its caret: restore it once focused.
+        if (focused && this.active() !== focused) { focused.focus?.({ preventScroll: true }); const form = this.records.get(packet.focused!)?.form; if (form) this.caret(focused as HTMLInputElement, form) }
         if (packet.selection) { const s = packet.selection, a = this.dom.get(s.anchor_id), b = this.dom.get(s.focus_id); if (a && b) a.ownerDocument?.getSelection()?.setBaseAndExtent(a, s.anchor_offset, b, s.focus_offset) }
       }
     } finally { this.applying = false }
