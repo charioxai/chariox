@@ -184,9 +184,11 @@ test('MP-10: protocol 489 bodies from 512 bytes deflate in the subscription cont
 
 test("MP-10: review #941-4 leading @import rules keep their layer/supports/media conditions; later or brace-bearing ones are skipped", () => {
   const text = '@charset "utf-8";/* c */@layer a, b;@import url("../a.css") screen;\n@import "b.css" layer(x) supports(not (display: grid)) print and (min-width: 10px);@import url(c.css) layer;@import url(d.css) screen{} x;.y{}@import url(e.css);';
-  assert.deepEqual(cssImports(text), [
+  assert.deepEqual(cssImports(text), { layers: "@layer a, b;", imports: [
     { url: "../a.css", open: "@media screen{", close: "}" },
     { url: "b.css", open: "@layer x{@supports (not (display: grid)){@media print and (min-width: 10px){", close: "}}}" },
     { url: "c.css", open: "@layer {", close: "}" },
-  ]);
+  ] });
+  // Review #941-4: only leading layer statements precede imports; Chrome ignores an @import after a later one.
+  assert.deepEqual(cssImports('/* @layer z; */@layer a;\n@layer b, c;@import "x.css" layer(c);@layer d;@import "y.css";'), { layers: "@layer a;@layer b, c;", imports: [{ url: "x.css", open: "@layer c{", close: "}" }] });
 });

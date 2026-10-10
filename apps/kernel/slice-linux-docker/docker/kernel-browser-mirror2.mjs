@@ -51,9 +51,12 @@ export function mirrorResourceType(bytes, kind) {
 // precede them), with their layer/supports/media conditions as wrapping blocks.
 // The wrapped text is parsed by the CSSOM again before it is sanitized.
 export function cssImports(text) {
-  const out = []; let rest = text;
+  const out = []; let rest = text, layers = '';
   for (let i = 0; i < 64; i++) {
-    rest = rest.replace(/^(?:\s+|\/\*[\s\S]*?\*\/|@charset\s+"[^"]*"\s*;|@layer\s+[^;{}]*;)*/i, '');
+    // Layer statements may only lead (an @import after a later one is ignored); they fix the layer order first.
+    const lead = (i ? /^(?:\s+|\/\*[\s\S]*?\*\/)*/ : /^(?:\s+|\/\*[\s\S]*?\*\/|@charset\s+"[^"]*"\s*;|@layer\s+[^;{}]*;)*/i).exec(rest)[0];
+    if (!i) layers = lead.replace(/\/\*[\s\S]*?\*\//g, '').match(/@layer\s+[^;{}]*;/gi)?.join('') ?? '';
+    rest = rest.slice(lead.length);
     const match = /^@import\s+(?:url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s"']*))\s*\)|"([^"]*)"|'([^']*)')([^;]*);/i.exec(rest);
     if (!match) break;
     rest = rest.slice(match[0].length);
@@ -70,7 +73,7 @@ export function cssImports(text) {
     if (condition) { open += `@media ${condition}{`; close += '}'; }
     out.push({ url: match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5], open, close });
   }
-  return out;
+  return { layers, imports: out };
 }
 
 function dataUrlBytes(url) {
@@ -497,7 +500,7 @@ export class Mirror2 {
   // CSSOM in the isolated world normalizes it, then the same sanitizer runs.
   // A constructed sheet drops @import: imports the page already loaded are read
   // the same way (depth-first, bounded), each under its conditions and sanitized
-  // against its own URL.
+  // against its own URL, after the importing sheet's leading layer statements.
   async crossOriginSheet(world, url) {
     const { frameTree } = await world.connection.send('Page.getResourceTree', {}, world.sessionId);
     const frameOf = new Map(); const collect = node => { for (const r of node.resources ?? []) frameOf.set(r.url, node.frame.id); for (const child of node.childFrames ?? []) collect(child); }; collect(frameTree);
@@ -507,7 +510,10 @@ export class Mirror2 {
       const reply = await world.connection.send('Page.getResourceContent', { frameId, url: href }, world.sessionId);
       const text = reply.base64Encoded ? Buffer.from(reply.content, 'base64').toString('utf8') : reply.content;
       if (typeof text !== 'string' || (bytes += text.length) > 16 * 1024 * 1024) return false;
-      if (depth < 8) for (const rule of cssImports(text)) {
+      const { layers, imports } = cssImports(text);
+      // In source order: the sheet's leading layer statements, its imports, then its own rules.
+      if (layers) sheets.push({ text: layers, url: href, open, close });
+      if (depth < 8) for (const rule of imports) {
         let next; try { next = new URL(rule.url, href).href; } catch { continue; }
         await read(next, open + rule.open, rule.close + close, depth + 1).catch(() => false);
       }

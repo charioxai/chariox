@@ -461,3 +461,18 @@ test("MP-10: review #941-3 readable @import keeps its cascade layer (named, anon
     assert.deepEqual(source, ["rgb(0, 0, 255)", "rgb(0, 0, 255)", "rgb(0, 0, 255)", "rgb(0, 128, 0)"], "MP-10: the fixture's layered rules lose to the unlayered one");
     assert.deepEqual(mirror, source, "MP-10: the mirrored CSS gives the same colors");
   }, layeredSheets()));
+
+test("MP-10: review #941-4 a CDP-read cross-origin sheet keeps its declared layer order ahead of its imports (and their layers): viewer colors match the source", () => mirrored(
+  '<link rel="stylesheet" href="http://localhost:PORT/cdn/main.css"><p id="q">q</p><p id="r">r</p>', async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const packets = [await next()]; for (let i = 0; i < 4 && !mirroredCss(packets).includes("#r"); i++) packets.push(await next(1000));
+    const { source, mirror } = await colors(evaluate, ["q", "r"], mirroredCss(packets));
+    assert.deepEqual(source, ["rgb(0, 0, 255)", "rgb(0, 128, 0)"], "MP-10: the declared order a, b, c decides (not import order)");
+    assert.deepEqual(mirror, source, "MP-10: the mirrored CSS gives the same colors");
+  }, {
+    "/cdn/main.css": { type: "text/css", body: '@layer a, b;\n@import url("b.css") layer(b);\n@import url("a.css") layer(a);\n@import url("c.css") layer(c);\n@layer d;\n@import url("d.css");' }, // Chrome ignores an @import after a later @layer statement
+    "/cdn/d.css": { type: "text/css", body: "#q{color:rgb(255, 0, 0) !important}" },
+    "/cdn/a.css": { type: "text/css", body: "#q{color:rgb(255, 0, 0)}#r{color:rgb(255, 0, 0)}" },
+    "/cdn/b.css": { type: "text/css", body: "#q{color:rgb(0, 0, 255)}" },
+    "/cdn/c.css": { type: "text/css", body: "#r{color:rgb(0, 128, 0)}" },
+  }));
