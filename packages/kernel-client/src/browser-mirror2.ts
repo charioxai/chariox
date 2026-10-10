@@ -8,6 +8,7 @@ export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from '.
 export const browserMirror2MinimumProtocolVersion = 492
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
+const CREDIT_WINDOW = 4 // credits in flight at most (attachBrowserMirror2)
 const DELETIONS: Record<string, string[]> = {
   deleteContentBackward: ['Backspace'], deleteContentForward: ['Delete'], deleteWordBackward: ['Ctrl+Backspace'], deleteWordForward: ['Ctrl+Delete'],
   deleteSoftLineBackward: ['Shift+Home', 'Backspace'], deleteHardLineBackward: ['Shift+Home', 'Backspace'], deleteSoftLineForward: ['Shift+End', 'Delete'], deleteHardLineForward: ['Shift+End', 'Delete'],
@@ -47,6 +48,10 @@ export class BrowserMirror2Renderer {
   private pendingInputs = 0
   private focusSent: string | null = null // the focus the kernel has (applied from it, or sent to it)
   private pointerFocus: string | null = null // a focus taken by a pointer press: its click focuses in the kernel
+  // After the kernel acknowledged a viewer focus, packets already in flight (one per credit) may have been drained
+  // before it applied: those still naming the old kernel focus leave the viewer's alone (until the window passes).
+  private focusHold: { id: string, previous: string | null, until: number } | null = null
+  private kernelFocus: string | null = null // the latest packet's focus
   private queue: Array<{ action: Mirror2Action; epoch: { sequence: number; document_id: string } }> = []
   private sending = false
   // Viewer-owned scroll (plan 4.1): kernel echoes wait until the viewer settles.
@@ -90,9 +95,14 @@ export class BrowserMirror2Renderer {
       for (let next = this.queue.shift(); next; next = this.queue.shift()) {
         // A refused input (stale epoch, changed or protected target) is dropped:
         // the kernel stays authoritative and packets keep flowing (plan 4.3).
-        try { if (!this.disposed) await this.send(next.action, next.epoch) } catch { this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) } finally { this.pendingInputs-- }
+        try { if (!this.disposed) { await this.send(next.action, next.epoch); this.holdFocus(next.action) } } catch { this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) } finally { this.pendingInputs-- }
       }
     } finally { this.sending = false }
+  }
+  private holdFocus(action: Mirror2Action): void {
+    if (!['focus', 'click', 'selection'].includes(action.kind)) return
+    const active = this.active(), id = active && active !== active.ownerDocument.body && active !== active.ownerDocument.documentElement ? this.ids.get(active) : undefined
+    if (id && id !== this.kernelFocus && this.records.get(id)?.kind === 'element') this.focusHold = { id, previous: this.kernelFocus, until: this.sequence + CREDIT_WINDOW }
   }
   // A text control's own range (select-all, a drag inside it) reaches the kernel
   // before the key or text that replaces it; ranges it already has are not resent.
@@ -445,7 +455,10 @@ export class BrowserMirror2Renderer {
       }
       this.sequence = packet.sequence; this.documentId = packet.document_id
       // A focus taken by a pointer still pressed is pending input too (it is sent with its click or drag end).
-      if (!this.pendingInputs && !this.pointerFocus) {
+      this.kernelFocus = packet.focused
+      const hold = this.focusHold
+      if (hold && (packet.focused !== hold.previous || packet.sequence > hold.until)) this.focusHold = null
+      if (!this.pendingInputs && !this.pointerFocus && !this.focusHold) {
         // The viewer page's own control outside the mirror keeps its focus (the kernel's is not pulled in).
         const outside = this.frame.ownerDocument.activeElement, elsewhere = !!outside && outside !== this.frame && outside !== this.frame.ownerDocument.body
         const focused = packet.focused && !elsewhere ? this.dom.get(packet.focused) as HTMLElement | undefined : undefined, active = this.active() as HTMLElement | null
@@ -576,7 +589,7 @@ type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'fram
 // A failure streak that outlives this with no packet is terminal (the runtime then
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
-export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; packet?(packet: Mirror2Packet): void }, { credits = 4, waitMs = 2000, failingMs = FAILING_MS, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
+export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; packet?(packet: Mirror2Packet): void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
   if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 492')
   const request = async (command: unknown): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } }) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string

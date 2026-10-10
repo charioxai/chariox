@@ -299,8 +299,10 @@ test('MP-08: protocol 492 a viewer focus change reaches the kernel as `focus`, a
     await drag();
     const first = await sent();
     assert.deepEqual(first[0], { kind: 'focus', node_id: 'n5' }, 'MP-08: the viewer\'s focus moved to the second control');
-    // The kernel's focus goes back to the first control; the same drag repeats the same (cached) range.
-    await apply(page, delta(2, [], { focused: 'n4' })); assert.deepEqual(await sent(), []);
+    // The kernel's focus goes back to the first control (after the packets in flight at the focus reply,
+    // which could predate it); the same drag repeats the same (cached) range.
+    for (let sequence = 2; sequence <= 7; sequence++) await apply(page, delta(sequence, [], { focused: 'n4' }));
+    assert.deepEqual(await sent(), []);
     await drag(); await page.keyboard.type('x'); await frames();
     const second = await sent();
     assert.deepEqual([second[0], second.at(-1)], [{ kind: 'focus', node_id: 'n5' }, { kind: 'text', text: 'x' }], `MP-08: the text goes where the viewer typed: ${JSON.stringify(second)}`);
@@ -399,5 +401,31 @@ test('MP-08: a kernel packet that still names the old focus while the viewer\'s 
     await page.keyboard.type('x'); await frames();
     const actions = await sent();
     assert.deepEqual([actions[0], actions.at(-1)], [{ kind: 'focus', node_id: 'n5' }, { kind: 'text', text: 'x' }], `MP-08: focus then text for the pressed control: ${JSON.stringify(actions)}`);
+  } finally { await page.close(); }
+});
+
+test('MP-08: a packet drained before the kernel applied the viewer\'s focus (it arrives after the focus reply) does not refocus the old control; a later packet does', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'font:16px monospace;width:300px;display:block' }, form: textForm('first field', 11) },
+      { id: 'n5', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'font:16px monospace;width:300px;display:block' }, form: textForm('second field', 12) },
+      { id: 'n6', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'font:16px monospace;width:300px;display:block' }, form: textForm('third field', 11) }])), focused: 'n4' });
+    const active = () => page.evaluate(() => { const d = window.r.frame.contentDocument; return [...d.querySelectorAll('input')].indexOf(d.activeElement); });
+    const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelectorAll('input')[1].getBoundingClientRect(); return { x: f.x + t.x + 40, y: f.y + t.y + 9 }; });
+    await page.mouse.click(box.x, box.y); await frames();
+    assert.deepEqual((await page.evaluate(() => window.sent.splice(0))).map(a => a.kind), ['click'], 'MP-08: the click carries the focus');
+    // The reply came back; a packet the kernel drained before applying the click still names the old focus.
+    await apply(page, delta(2, [], { focused: 'n4' })); await frames();
+    assert.equal(await active(), 1, 'MP-08: the viewer keeps the control it focused');
+    await apply(page, delta(3, [], { focused: 'n5' })); await frames();
+    assert.equal(await active(), 1);
+    // Past the credit window the kernel's focus is authoritative again (a page script moved it back).
+    for (let sequence = 4; sequence <= 8; sequence++) await apply(page, delta(sequence, [], { focused: 'n4' }));
+    await frames();
+    assert.equal(await active(), 0, 'MP-08: a later kernel focus change still reaches the viewer');
+    // A click whose page script focuses a third control: that focus applies at once (it is not the old one).
+    await page.mouse.click(box.x, box.y); await frames(); await page.evaluate(() => window.sent.splice(0));
+    await apply(page, delta(9, [], { focused: 'n6' })); await frames();
+    assert.equal(await active(), 2, 'MP-08: a new kernel focus inside the window applies immediately');
   } finally { await page.close(); }
 });
