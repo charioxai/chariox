@@ -35,16 +35,33 @@ const kernelLog = createWriteStream(path.join(stateRoot, 'kernel.log'), { mode: 
 await new Promise(resolve => kernelLog.once('open',resolve))
 const kernel = spawn(kernelBinary, [], { cwd: workspace, env, stdio: ['ignore', kernelLog, kernelLog] })
 let tui, automation, client, sessionId, result, failure, db
-const processRoots = [kernel.pid]
+const processRoots = []
+await registerRoot(kernel.pid)
+async function registerRoot(pid) {
+  assert(Number.isInteger(pid) && pid > 1, 'unsafe own process root')
+  const fields = (await readFile(`/proc/${pid}/stat`, 'utf8')).split(') ')[1].split(' ')
+  assert.equal(Number(fields[1]), process.pid, 'process root must be this runner child')
+  processRoots.push({pid,born:fields[19]})
+}
 const ptyLog = createWriteStream(path.join(evidence, 'real-tui.ansi'), { mode: 0o600 })
 
 // Signal only verified descendants of these own process roots. Birth times fence PID reuse.
 async function ownProcesses() {
   const rows = new Map()
   for (const name of await readdir('/proc')) if (/^[0-9]+$/.test(name)) {
-    try { const stat = (await readFile(`/proc/${name}/stat`, 'utf8')).split(') ')[1].split(' '); rows.set(Number(name), { pid:Number(name), parent:Number(stat[1]), born:stat[19] }) } catch {}
+    try { const stat = (await readFile(`/proc/${name}/stat`, 'utf8')).split(') ')[1].split(' '); rows.set(Number(name), { pid:Number(name), parent:Number(stat[1]), born:stat[19], state:stat[0] }) } catch {}
   }
-  const owned = new Set(processRoots.filter(pid => Number.isInteger(pid) && pid > 1))
+  const owned = new Set(processRoots.filter(root => rows.get(root.pid)?.born === root.born).map(root => root.pid))
+  // Product catalog servers can detach during startup. Read only public scope keys;
+  // never retain or print any other environment value, including credentials.
+  const scopeKeys = new Map([['HOME',env.HOME],['TMPDIR',env.TMPDIR],['CHARIOX_HOME',env.CHARIOX_HOME]])
+  for (const row of rows.values()) {
+    if (row.pid <= 1 || row.pid === process.pid) continue
+    try {
+      const values = (await readFile(`/proc/${row.pid}/environ`)).toString().split('\0')
+      if ([...scopeKeys].some(([key,value]) => values.includes(`${key}=${value}`))) owned.add(row.pid)
+    } catch {}
+  }
   for (let changed = true; changed;) { changed = false; for (const row of rows.values()) if (owned.has(row.parent) && !owned.has(row.pid)) { owned.add(row.pid); changed = true } }
   return [...rows.values()].filter(row => owned.has(row.pid))
 }
@@ -83,7 +100,7 @@ try {
   const ptyDriver = path.join(stateRoot,'terminal_driver.py')
   await writeFile(ptyDriver, `import os,pty,fcntl,termios,struct,subprocess,select,sys\nm,s=pty.openpty()\nfcntl.ioctl(s,termios.TIOCSWINSZ,struct.pack('HHHH',55,160,0,0))\np=subprocess.Popen(sys.argv[1:],stdin=s,stdout=s,stderr=s)\nos.close(s)\nwhile p.poll() is None:\n if select.select([m],[],[],0.2)[0]:\n  try: os.write(1,os.read(m,65536))\n  except OSError: break\np.wait()\n`)
   tui = spawn('python3',[ptyDriver,'bun',cliEntry,'--kernel-url',url,'--create-session','--workspace',workspace,'--worktree',workspace,'--provider','codex','--account-profile',account.profile_id,'--model','codex/gpt-6.1-sol','--automation-socket',socketPath],{cwd:workspace,env,stdio:['ignore','pipe','pipe']})
-  processRoots.push(tui.pid); tui.stdout.pipe(ptyLog); tui.stderr.pipe(ptyLog,{end:false})
+  await registerRoot(tui.pid); tui.stdout.pipe(ptyLog); tui.stderr.pipe(ptyLog,{end:false})
   await waitUntil(async()=>{try { automation = await connectAutomation(); return true } catch { return false }},Boolean,'real TUI startup')
   const initial = await waitUntil(()=>automation.send('snapshot'),s=>s.session?.id && s.session?.agentCount===1,'real TUI attached')
   sessionId = initial.session.id
@@ -144,9 +161,12 @@ finally {
   automation?.close(); db?.close(); await client?.close().catch(()=>{})
   for (const row of owned.slice().reverse()) await signalOwn(row,'SIGTERM')
   await sleep(2000)
+  const late = await ownProcesses()
+  for (const row of late) if (!owned.some(old => old.pid === row.pid && old.born === row.born)) owned.push(row)
   for (const row of owned.slice().reverse()) await signalOwn(row,'SIGKILL')
+  await sleep(500)
   ptyLog.end(); kernelLog.end()
-  await writeFile(path.join(evidence,'result.json'),JSON.stringify({...result,cleanup:{owned_pids:owned.map(r=>r.pid),remaining:(await ownProcesses()).filter(r=>owned.some(o=>o.pid===r.pid && o.born===r.born)).map(r=>r.pid)},state_root:stateRoot},null,2))
+  await writeFile(path.join(evidence,'result.json'),JSON.stringify({...result,cleanup:{owned_pids:owned.map(r=>r.pid),remaining:(await ownProcesses()).filter(r=>r.state !== 'Z').map(r=>r.pid)},state_root:stateRoot},null,2))
 }
 console.log(JSON.stringify({area:'MP-08 / MP-09 / MP-10 / MP-11 A12-S02',status:result.status,first_failing_seam:result.first_failing_seam}))
 if (failure) process.exitCode=1
