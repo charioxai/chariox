@@ -338,6 +338,9 @@ impl KernelRuntimeState {
         request: KernelBrowserDisplayRequest,
     ) -> Result<serde_json::Value, DaemonError> {
         use crate::session::{EnvironmentActor, EnvironmentActorKind};
+        // MP-08/MP-10/MP-11: ingress-to-admission timing contains no binding.
+        let input_at = matches!(&request, KernelBrowserDisplayRequest::Input { .. })
+            .then(std::time::Instant::now);
         let (user, actor) = self.kernel_browser_terminal_context(caller)?;
         let host = &self.owned.kernel_browser_host;
         let admission =
@@ -411,6 +414,9 @@ impl KernelRuntimeState {
             }
         };
         params["observed_by"] = serde_json::json!(actor);
+        if let Some(at) = input_at {
+            crate::transport::kernel_browser_display::timing("input_admission", at);
+        }
         self.kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
             .await
     }

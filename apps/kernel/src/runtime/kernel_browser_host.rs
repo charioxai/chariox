@@ -348,14 +348,23 @@ impl KernelBrowserHost {
         } else {
             None
         };
+        let input = method == "host.browser" && params["op"] == "input";
+        let queued = std::time::Instant::now();
         let _mutation_guard = mutation_lane
             .as_ref()
             .map(|lane| lane.lock())
             .transpose()
             .map_err(|_| "MD-3: browser mutation lane poisoned")?;
+        if input {
+            crate::transport::kernel_browser_display::timing("input_mutation_queue", queued);
+        }
+        let queued = std::time::Instant::now();
         let mut backend = browser
             .lock()
             .map_err(|_| "MD-2: browser operation lock poisoned")?;
+        if input {
+            crate::transport::kernel_browser_display::timing("input_backend_queue", queued);
+        }
         self.require_running()?;
         self.check_admission(admission)?;
         self.scope_browser_request(admission, method, &params)?;

@@ -25,7 +25,7 @@ export class NativeWorkerControl {
    const value=JSON.parse(bytes);
    if(value.error){waiter.reject(notSent('MP-11: native worker refused'));return;}
    if(Array.isArray(value.timings)&&value.timings.length<=64){
-    const stages=new Set(['native_codec','codec_packetize','native_exact_prepare','native_shift_prepare','native_cpu_mask_guard','native_cpu_compare','native_cpu_convert','native_cpu_encode','native_cpu_output_guard','native_cpu_reference_copy']);
+    const stages=new Set(['native_codec_queue','native_codec','codec_packetize','native_exact_prepare','native_shift_prepare','native_cpu_mask_guard','native_cpu_compare','native_cpu_convert','native_cpu_encode','native_cpu_output_guard','native_cpu_reference_copy']);
     const spans=value.timings.filter(s=>Array.isArray(s)&&s.length===3&&stages.has(s[0])&&Number.isFinite(s[1])&&Number.isFinite(s[2])&&s[2]>=s[1]);
     if(this.timing?.batch)this.timing.batch(spans);else for(const span of spans)this.timing?.(...span);
    }
