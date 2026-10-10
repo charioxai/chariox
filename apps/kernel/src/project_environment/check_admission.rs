@@ -66,8 +66,10 @@ pub(super) fn check_admission(
                 p = updated;
             }
             if p.auth_state != crate::account_profile::ProviderAccountAuthState::Authenticated
-                || p.last_validated_at_ms
-                    .is_none_or(|t| crate::session::unix_epoch_ms().saturating_sub(t) > 60_000)
+                || p.last_validated_at_ms.is_none_or(|t| {
+                    t > crate::session::unix_epoch_ms()
+                        || crate::session::unix_epoch_ms().saturating_sub(t) > 60_000
+                })
             {
                 return outcome(
                     NeedsYourInput,
