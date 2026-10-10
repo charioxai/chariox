@@ -358,12 +358,16 @@ fn scrub_browser_result(
                 .ok_or_else(|| host_error("MD-DISPLAY: invalid protected frame".into()))?;
             let payload = frame.remove("data_base64");
             let tiles = frame.remove("tiles");
+            let stripes = frame.remove("stripes");
             data = protection.scrub(scope, data)?;
             if let Some(payload) = payload {
                 data["data_base64"] = payload;
             }
             if let Some(tiles) = tiles {
                 data["tiles"] = tiles;
+            }
+            if let Some(stripes) = stripes {
+                data["stripes"] = stripes;
             }
         }
         if let Some(slot) = result.pointer_mut(pixel_path) {
@@ -434,6 +438,29 @@ mod tests {
             )
             .unwrap();
         }
+    }
+    #[test]
+    fn mp08_mp11_hydrated_stripes_survive_short_secret_scrubbing() {
+        use super::super::room_secret_observation::RoomSecretObservations;
+        use crate::transport::{
+            kernel_browser_display::encode_display_event, kernel_protocol::KernelEvent,
+        };
+        let root = crate::test_support::TestWorktree::new("stripe-scrub-boundary");
+        let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+        store.register("stripe", "AAAA").unwrap();
+        // Annex-B start codes encode with the same prefix as this valid short value.
+        let packet = "AAAAAWU=";
+        let result = json!({"display_frame":{"kind":"stripes","title":"AAAA", "stripes":[{"data_base64":packet}]},"text":"AAAA"});
+        let wire = scrub_browser_result(&store, "stripe", result, true, true, false).unwrap();
+        assert_ne!(wire["text"], "AAAA");
+        assert_ne!(wire["display_frame"]["title"], "AAAA");
+        assert_eq!(wire["display_frame"]["stripes"][0]["data_base64"], packet);
+        let encoded = encode_display_event(KernelEvent::KernelBrowserFrame {
+            subscription_id: "stripe".into(),
+            frame: wire["display_frame"].clone(),
+        })
+        .unwrap();
+        assert!(encoded.ends_with(&[0, 0, 0, 1, 0x65]));
     }
     #[test]
     fn host_vault_is_owner_only_and_tool_never_accepts_secret_bytes() {
