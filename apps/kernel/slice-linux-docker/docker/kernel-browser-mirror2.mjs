@@ -600,8 +600,11 @@ export class Mirror2 {
     if (!action || typeof action.kind !== 'string') throw new Error('MP-11: invalid mirror input');
     if (['click', 'focus', 'scroll', 'blur', 'set'].includes(action.kind) && !validId(action.node_id) || action.kind === 'selection' && (!validId(action.anchor_id) || !validId(action.focus_id))) throw new Error('MP-11: invalid mirror input');
     if (action.kind === 'text' && (typeof action.text !== 'string' || action.text.length > 16384 || action.node_id !== undefined && !validId(action.node_id))) throw new Error('MP-11: invalid mirror input');
-    // A target whose attributes changed after the viewer's view is refused (re-sync).
-    for (const id of [action.node_id, action.anchor_id, action.focus_id]) if (id && (stream.attrSequence.get(id) ?? 0) > input.sequence) throw new Error('MP-11: changed mirror input target');
+    // A pointer target whose attributes changed after the viewer's view is refused (re-sync). Focus, range and
+    // control state refuse only a changed identity (type, editability, morph), like text and keys: a field's own
+    // focus handler changing its aria-* must not refuse the range sent with that focus.
+    const changed = ['click', 'scroll'].includes(action.kind) ? stream.attrSequence : stream.identity ?? new Map();
+    for (const id of [action.node_id, action.anchor_id, action.focus_id]) if (id && (changed.get(id) ?? 0) > input.sequence) throw new Error('MP-11: changed mirror input target');
     stream.inputAt = Date.now();
     const world = await this.world(tab, stream);
     const assertEpoch = () => { if (this.service.require(input.subscription_id, scope, generation) !== stream || stream.policy !== this.host.protection || stream.document_id !== tab.document_id || stream.fallback) throw new Error('MP-11: stale mirror protection policy or admitted input'); };

@@ -787,3 +787,15 @@ test("MP-11: a Vault-filled plain field that changes its own display is re-seria
   assert.deepEqual(masks(packet).map(mask => mask.display), ["block"], "MP-11: the viewer's mask follows the field's display");
   assert.doesNotMatch(JSON.stringify(packet), /filled/, "MP-11: the protected value never travels");
 }));
+
+// Round 9 hosted finding: a focus whose page handler changes the field's attributes (aria-expanded) must not
+// refuse the range sent with it (same viewer epoch); ordinary attribute churn only refuses clicks.
+test("MP-08: focus, range and text sent together for a field whose focus handler changes its attributes all apply", () => mirrored(
+  '<input id="b" value="zqxj wvkpq"><script>b.addEventListener("focus",()=>{b.setAttribute("aria-expanded","true");b.className="open"})</script>', async ({ next, evaluate, input }) => {
+    const snapshot = await next(), id = elements(snapshot).find(([, , attrs]) => attrs.id === "b")[0];
+    for (const action of [{ kind: "focus", node_id: id }, { kind: "selection", anchor_id: id, anchor_offset: 10, focus_id: id, focus_offset: 5 }, { kind: "text", text: "delta" }]) {
+      await input(snapshot.sequence, action);
+      if (action.kind === "focus") await next(600); // the attribute change reaches the kernel's stream (not the viewer)
+    }
+    assert.equal(await evaluate("b.value"), "zqxj delta");
+  }));
