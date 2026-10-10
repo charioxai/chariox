@@ -629,6 +629,36 @@ test("transport closure immediately marks retained inventory as reconnecting", a
   assert.equal(harness.reconcileCount(), 2)
 })
 
+test("MP-08 / MP-11 reconnect replaces the closed transport row baseline", async () => {
+  const persisted: WaitingRoomInventory[] = []
+  const harness = createHarness({
+    snapshots: [inventory("before", { sessions: [session("deleted"), session("kept")], projects: [project("deleted-project", "Deleted"), project("kept-project", "Kept")] }), inventory("after", {sessions: [session("kept")], projects: [project("kept-project", "Kept")]})],
+    cachedInventories: [inventory("other", {kernelId: "kernel-other", sessions: [session("other-session")]})],
+    persistInventory: value => persisted.push(value),
+  })
+  await harness.controller.refreshNow()
+  harness.controller.applyTransportClosed()
+  assert.deepEqual(harness.availableSessions().map(row => row.id).sort(), ["deleted", "kept", "other-session"])
+  // The first subscription report is complete; deletions while disconnected
+  // do not appear in removedSessionIds because the server reset its baseline.
+  harness.controller.applyRowsChanged({
+    inventoryVersion: "after", structuralVersion: "after", activityRevision: "after",
+    sessions: [session("kept")], removedSessionIds: [],
+    projects: [project("kept-project", "Kept")], removedProjectIds: [],
+  })
+  assert.deepEqual(harness.projects().map(row => row.id), ["kept-project"])
+  assert.deepEqual(harness.availableSessions().map(row => row.id).sort(), ["kept", "other-session"])
+  assert.deepEqual(persisted.at(-1)?.sessions.map(row => row.id), ["kept"])
+  assert.deepEqual(persisted.at(-1)?.projects.map(row => row.id), ["kept-project"])
+  await harness.controller.refreshNow()
+  assert.deepEqual(harness.availableSessions().map(row => row.id).sort(), ["kept", "other-session"])
+  harness.controller.applyRowsChanged({
+    inventoryVersion: "delta", structuralVersion: "delta", activityRevision: "delta",
+    sessions: [session("new")], removedSessionIds: [],
+  })
+  assert.deepEqual(harness.availableSessions().map(row => row.id).sort(), ["kept", "new", "other-session"])
+})
+
 function createHarness(options: {
   connected?: boolean
   nowMs?: () => number

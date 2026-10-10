@@ -285,6 +285,8 @@ export function createWaitingRoomInventoryRefreshController(
 
   return {
     applyTransportClosed() {
+      inventoryVersion = null
+      inventoryInvalidated = true
       options.setInventoryStatus("loading")
       retainDisconnectedRows()
       options.reconcileWaitingRoom(options.getWaitingRoomState())
@@ -331,7 +333,7 @@ export function createWaitingRoomInventoryRefreshController(
           sessions,
           projects: patch.projects
             ? mergeWaitingRoomProjectRows(
-                activeInventory.projects ?? [],
+                currentInventoryVersion === null ? [] : activeInventory.projects ?? [],
                 patch.projects,
                 patch.removedProjectIds ?? [],
               )
@@ -351,7 +353,7 @@ export function createWaitingRoomInventoryRefreshController(
         ))
         if (patch.projects) {
           options.setProjects?.(mergeWaitingRoomProjectRows(
-            options.getProjects?.() ?? [],
+            currentInventoryVersion === null ? [] : options.getProjects?.() ?? [],
             patch.projects,
             patch.removedProjectIds ?? [],
           ))
