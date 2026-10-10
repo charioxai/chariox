@@ -138,11 +138,7 @@ pub fn run_codex_utility_prompt(
             ),
         });
     }
-    let output = if policy.is_metadata_only() {
-        output.trim().to_string()
-    } else {
-        clean_codex_utility_output(&output)
-    };
+    let output = codex_utility_output(&output, policy);
     if output.is_empty() {
         return Err(DaemonError::ProviderProtocol {
             provider_run_id: run.id().to_string(),
@@ -168,4 +164,29 @@ fn clean_codex_utility_output(output: &str) -> String {
         .trim_matches('\'')
         .trim()
         .to_string()
+}
+
+fn codex_utility_output(output: &str, policy: ProviderUtilityExecutionPolicy) -> String {
+    if policy.is_read_only_discovery() {
+        output.trim().to_string()
+    } else {
+        clean_codex_utility_output(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mp08_mp11_discovery_preserves_multiline_json() {
+        let output = "\n{\n  \"definition\": null,\n  \"missing_user_inputs\": []\n}\n";
+        assert_eq!(codex_utility_output(output, ProviderUtilityExecutionPolicy::ReadOnlyDiscovery), output.trim());
+        assert_eq!(codex_utility_output(output, ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery), output.trim());
+    }
+
+    #[test]
+    fn mp08_mp11_existing_title_utility_keeps_single_line_cleanup() {
+        assert_eq!(codex_utility_output("\n\"Short title\"\nExtra explanation", ProviderUtilityExecutionPolicy::ExistingRun), "Short title");
+    }
 }
