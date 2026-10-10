@@ -55,7 +55,7 @@ pub(super) fn provider_readiness_failure(error: &DaemonError) -> (&'static str, 
     };
     // Operation names are kernel static metadata; never use Display or Debug fields.
     let source: String = source.chars().take(80).collect();
-    ("worker_provider_context_unavailable", format!("the prepared worker provider context is unavailable [cause:{cause}; error:{}; source:{source}]", error_kind(error)))
+    ("worker_provider_context_unavailable", format!("[cause:{cause}] provider readiness unavailable [error:{}; source:{source}]", error_kind(error)))
 }
 
 pub(super) fn record_provider_readiness_failure(
