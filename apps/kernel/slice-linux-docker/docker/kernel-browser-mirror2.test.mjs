@@ -192,3 +192,25 @@ test("MP-10: review #941-4 leading @import rules keep their layer/supports/media
   // Review #941-4: only leading layer statements precede imports; Chrome ignores an @import after a later one.
   assert.deepEqual(cssImports('/* @layer z; */@layer a;\n@layer b, c;@import "x.css" layer(c);@layer d;@import "y.css";'), { layers: "@layer a;@layer b, c;", imports: [{ url: "x.css", open: "@layer c{", close: "}" }] });
 });
+
+// Audit 2026-10-10 step 5: a child frame's delta is rebased by schema, field by field; an unnamed field is refused.
+test('MP-11: every field of a child-frame delta is rebased into the frame slot; unnamed delta, op and record fields are refused', async () => {
+  const frames = await import('./kernel-browser-mirror2-frames.mjs');
+  const slot = 2, n = local => `n${2e9 + local}`, r = local => `r${2e6 + local}`;
+  assert.equal(typeof frames.rebaseDelta, 'function', 'MP-11: a schema-driven delta rebase exists');
+  const record = { id: 'n7', parent: 'n6', kind: 'element', tag: 'div', attrs: { class: 'x', style: 'background:url("mr:r3")' }, res: 'r4', form: { value: 'v' }, scroll: [0, 1], state: { modal: true } };
+  const delta = { ops: [{ op: 'children', id: 'n6', children: ['n7'], nodes: [record] }, { op: 'attr', id: 'n7', name: 'style', value: 'color:red;background:url("mr:r5")' }, { op: 'text', id: 'n8', text: 't' },
+    { op: 'css', id: 'n9', css: 'a{background:url("mr:r6")}' }, { op: 'adopted', id: 'n1', sheets: ['b{background:url("mr:r7")}'] }, { op: 'form', id: 'n7', form: { value: 'w' } }, { op: 'scroll', id: 'n7', scroll: [1, 2] },
+    { op: 'size', id: 'n7', size: [3, 4] }, { op: 'res', id: 'n7', res: 'r8' }, { op: 'res', id: 'n7', res: null }, { op: 'state', id: 'n7', state: { popover_open: true } }],
+    changed: ['n8'], resources: [{ key: 'r9', url: 'https://x/a.png', kind: 'image' }], sheets: [{ id: 'n9', url: 'https://x/a.css' }], scroll: [0, 5], focused: 'n7',
+    selection: { anchor_id: 'n8', anchor_offset: 0, focus_id: 'n8', focus_offset: 1 }, fragment: 'top', revision: 3 };
+  const out = frames.rebaseDelta(delta, slot);
+  assert.deepEqual(out.ops[0], { op: 'children', id: n(6), children: [n(7)], nodes: [{ ...record, id: n(7), parent: n(6), attrs: { class: 'x', style: `background:url("mr:${r(3)}")` }, res: r(4) }] });
+  assert.deepEqual(out.ops.slice(1).map(op => op.id), [n(7), n(8), n(9), n(1), n(7), n(7), n(7), n(7), n(7), n(7)]);
+  assert.match(JSON.stringify(out.ops), new RegExp(`mr:${r(5)}.*mr:${r(6)}.*mr:${r(7)}.*"res":"${r(8)}".*"res":null`));
+  assert.deepEqual([out.changed, out.resources[0].key, out.resources[0].slot, out.focused, out.selection.anchor_id, out.selection.focus_id, out.sheets, out.scroll], [[n(8)], r(9), slot, n(7), n(8), n(8), delta.sheets, [0, 5]]);
+  assert.throws(() => frames.rebaseDelta({ ...delta, target_id: 'n3' }, slot), /unrebased mirror delta field/);
+  assert.throws(() => frames.rebaseOp({ op: 'attr', id: 'n3', name: 'x', value: 'y', owner_id: 'n4' }, slot), /unrebased mirror op field/);
+  assert.throws(() => frames.rebaseOp({ op: 'focus_ring', id: 'n3' }, slot), /unrebased mirror op/);
+  assert.throws(() => frames.rebaseRecord({ ...record, label_for: 'n3' }, slot), /unrebased mirror record field/);
+});

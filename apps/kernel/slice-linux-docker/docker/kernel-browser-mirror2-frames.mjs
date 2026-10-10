@@ -13,31 +13,40 @@ export const slotOf = id => Math.floor(Number(id.slice(1)) / FRAME_SLOT);
 export const localId = id => `n${Number(id.slice(1)) % FRAME_SLOT}`;
 const rebaseCss = (text, slot) => text.replace(/mr:r([0-9]{1,6})/g, (_, n) => `mr:${rebaseKey(`r${n}`, slot)}`);
 
+// Schema-driven rebasing (audit 2026-10-10 step 5): every field of a child record, op and delta is
+// named here with how it carries ids, resource keys or CSS; an unnamed field is refused, so a new
+// field cannot travel from a child frame un-rebased.
+const same = value => value;
+const id = slot => value => rebaseId(value, slot);
+const RECORD = slot => ({ id: id(slot), parent: value => value === null ? null : rebaseId(value, slot), kind: same, tag: same, ns: same, text: same, form: same, scroll: same, size: same, display: same, reason: same, state: same, foreign: same,
+  attrs: attrs => attrs.style ? { ...attrs, style: rebaseCss(attrs.style, slot) } : attrs, res: key => rebaseKey(key, slot), css: text => rebaseCss(text, slot), adopted: list => list.map(text => rebaseCss(text, slot)) });
+const OPS = {
+  children: slot => ({ children: list => list.map(id(slot)), nodes: list => list.map(record => rebaseRecord(record, slot)) }),
+  attr: slot => ({ name: same, value: same }), text: () => ({ text: same }), form: () => ({ form: same }), scroll: () => ({ scroll: same }), size: () => ({ size: same }), state: () => ({ state: same }),
+  css: slot => ({ css: text => rebaseCss(text, slot) }), adopted: slot => ({ sheets: list => list.map(text => rebaseCss(text, slot)) }), res: slot => ({ res: key => key && rebaseKey(key, slot) }),
+};
+const DELTA = slot => ({ ops: list => list.map(op => rebaseOp(op, slot)), changed: list => list.map(id(slot)), resources: list => list.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot })),
+  focused: value => value ? rebaseId(value, slot) : null, selection: value => value ? { ...value, anchor_id: rebaseId(value.anchor_id, slot), focus_id: rebaseId(value.focus_id, slot) } : null,
+  sheets: same, scroll: same, fragment: same, revision: same }); // sheets: frame-local ids, read through the child's own CDP session first
+const apply = (value, schema, what) => Object.fromEntries(Object.entries(value).map(([name, field]) => { if (!Object.hasOwn(schema, name)) throw new Error(`MP-11: unrebased mirror ${what} field`); return [name, field === undefined ? field : schema[name](field)]; }));
 export function rebaseRecord(record, slot) {
   if (!slot) return record;
-  const out = { ...record, id: rebaseId(record.id, slot), parent: record.parent === null ? null : rebaseId(record.parent, slot) };
+  const out = apply(record, RECORD(slot), 'record');
   // Depth 1 only: a frame nested inside a child frame stays an opaque region.
   if (out.foreign) { delete out.foreign; out.kind = 'tile'; out.reason = 'cross_origin_frame'; }
-  if (out.res) out.res = rebaseKey(out.res, slot);
-  if (out.css !== undefined) out.css = rebaseCss(out.css, slot);
-  if (out.attrs?.style) out.attrs = { ...out.attrs, style: rebaseCss(out.attrs.style, slot) };
-  if (out.adopted) out.adopted = out.adopted.map(text => rebaseCss(text, slot));
   return out;
 }
 export function rebaseOp(op, slot) {
   if (!slot) return op;
-  const out = { ...op, id: rebaseId(op.id, slot) };
-  if (op.op === 'children') { out.children = op.children.map(id => rebaseId(id, slot)); out.nodes = op.nodes.map(r => rebaseRecord(r, slot)); }
+  const schema = OPS[op.op]; if (!schema) throw new Error('MP-11: unrebased mirror op');
+  const out = apply(op, { op: same, id: id(slot), ...schema(slot) }, 'op');
   if (op.op === 'attr' && op.name === 'style' && op.value) out.value = rebaseCss(op.value, slot);
-  if (op.op === 'css') out.css = rebaseCss(op.css, slot);
-  if (op.op === 'adopted') out.sheets = op.sheets.map(text => rebaseCss(text, slot));
-  if (op.op === 'res' && op.res) out.res = rebaseKey(op.res, slot);
   return out;
 }
+export const rebaseDelta = (delta, slot) => apply(delta, DELTA(slot), 'delta');
 
 // A child's focused leaf and selection in viewer ids (its page sees only the owner focused).
-const rebaseFocus = (header, slot) => ({ focused: header.focused ? rebaseId(header.focused, slot) : null,
-  selection: header.selection ? { ...header.selection, anchor_id: rebaseId(header.selection.anchor_id, slot), focus_id: rebaseId(header.selection.focus_id, slot) } : null });
+const rebaseFocus = (header, slot) => { const { focused, selection } = rebaseDelta({ focused: header.focused, selection: header.selection }, slot); return { focused, selection }; };
 
 export class MirrorFrames {
   constructor(mirror) { this.mirror = mirror; this.failures = []; }
@@ -127,15 +136,14 @@ export class MirrorFrames {
       try {
         const loaderId = await this.loaderId(entry.child);
         if (loaderId !== entry.loaderId) throw new Error('navigated');
-        const delta = await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`);
-        if (delta.resync) throw new Error('resync');
-        out.ops.push(...delta.ops.map(op => rebaseOp(op, entry.slot)), ...await this.sheetOps(entry.child, entry.slot, delta.sheets));
+        const raw = await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`);
+        if (raw.resync) throw new Error('resync');
+        const delta = rebaseDelta(raw, entry.slot);
         // Morphed child nodes (a new page node under a viewer id) are changed input targets too.
-        out.changed.push(...delta.changed.map(id => rebaseId(id, entry.slot)));
-        entry.focus = rebaseFocus(delta, entry.slot);
+        out.ops.push(...delta.ops, ...await this.sheetOps(entry.child, entry.slot, raw.sheets)); out.changed.push(...delta.changed); out.resources.push(...delta.resources);
+        entry.focus = { focused: delta.focused, selection: delta.selection };
         // The child's window position is its header, not an op: forward its changes.
         if (JSON.stringify(delta.scroll) !== entry.scroll) { entry.scroll = JSON.stringify(delta.scroll); out.ops.push({ op: 'scroll', id: entry.documentId, scroll: delta.scroll }); }
-        out.resources.push(...delta.resources.map(d => ({ ...d, key: rebaseKey(d.key, entry.slot), slot: entry.slot })));
       } catch {
         // New child document (or lost world): fresh snapshot replaces the owner's child.
         stream.frames.delete(owner); stream.frameSlots.delete(entry.slot);
