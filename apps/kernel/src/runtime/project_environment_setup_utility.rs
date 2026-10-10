@@ -95,6 +95,13 @@ project evidence requires. Represent each required package, compiler, system too
 dependency, and command as a repeatable setup step with bounded validation. If project evidence\n\
 requires SSH or tmux, include the appropriate openssh-client/ssh and tmux system-tool steps with\n\
 bounded validation; do not assume they are present in the managed image. Return explicit relative path_entries for any named executable directories setup creates.\n\n\
+Prepare the ordinary development environment for this worker using one compatible primary\n\
+toolchain for each required language. Separate ordinary build requirements from independent\n\
+CI-only jobs. Fuzzing, documentation publishing, interpreter checks, cross-target jobs, stress\n\
+tests, and benchmarks require their extra tools only when the selected recipe, ordinary build\n\
+instructions, or requested validation requires them. A CI matrix alone does not make every\n\
+job-specific toolchain a dependency of ordinary readiness. Use bounded checks of the required\n\
+tools and ordinary project build to validate readiness.\n\n\
 Prefer an existing project Dockerfile, devcontainer, setup script, lockfile, or verified\n\
 environment recipe over inventing equivalent commands. Do not copy binaries from a host or Mac,\n\
 read host credential stores, install a provider SDK, or replace the home kernel.\n\n\
