@@ -139,3 +139,15 @@ test("P03 TUI inspects a Web-edited revision after Refresh", async () => {
   assert(controller.visibleLines().includes("Version constraint: 22"))
   assert(controller.visibleLines().includes("Version constraint: 24"))
 })
+
+// MP-08 / MP-10 / MP-11: unsupported Check is explicit and has no mutation.
+test("P04 old kernel explains unavailable Check and pressing c sends no operation", async () => {
+  const requests: unknown[] = []
+  const environment: any = {schema_version:1,local_project_id:"project",revision:0,content_digest:"base",folders:[],project_requirements:[],proposals:[],operations:[],delivered_capabilities:{enabled_environment_operations:["get","save"],supported_schema:1}}
+  const controller = createProjectEnvironmentReadController({send:async request=>{requests.push(request);return {ProjectEnvironment:{environment}}},render(){},pageSize:()=>100})
+  await controller.open("project")
+  controller.handleKey({name:"c"})
+  await new Promise(resolve=>setTimeout(resolve,0))
+  assert.equal(requests.length,1,"no unsupported Check request or identity lookup")
+  assert(controller.visibleLines().includes("Check is unavailable on this kernel"))
+})
