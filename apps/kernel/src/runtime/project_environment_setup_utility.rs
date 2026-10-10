@@ -102,6 +102,10 @@ tests, and benchmarks require their extra tools only when the selected recipe, o
 instructions, or requested validation requires them. A CI matrix alone does not make every\n\
 job-specific toolchain a dependency of ordinary readiness. Use bounded checks of the required\n\
 tools and ordinary project build to validate readiness.\n\n\
+Returned setup steps execute with a fresh isolated HOME. Check that a tool actually runs in\n\
+that HOME before skipping installation; an executable on PATH can be a launcher whose\n\
+user-scoped toolchain state is absent. Reuse working system tools and install only missing\n\
+requirements, using the package manager's bounded lock waiting when installation is needed.\n\n\
 Prefer an existing project Dockerfile, devcontainer, setup script, lockfile, or verified\n\
 environment recipe over inventing equivalent commands. Do not copy binaries from a host or Mac,\n\
 read host credential stores, install a provider SDK, or replace the home kernel.\n\n\
