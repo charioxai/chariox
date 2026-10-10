@@ -52,6 +52,10 @@ Vault values with browser/X11 refs. Those refs cannot prove a Mac field's bounds
 withholds pixels and AX/OCR while mapping or provenance is unresolved. This
 replaces the previous blanket native-window mask for nonempty registry policy.
 Empty/invalid region geometry now refuses before encoding or OCR.
+Legacy AX/text and experimental physical input also require known policy before
+dispatch. Each event fence binds the admitted protection revision; a policy
+change during an Action refuses before the next mutation. A proven no-effect
+refusal preserves later admitted input rather than latching owned-release loss.
 
 The coordinator must establish authenticated Mac plain-text field mapping and
 private UI exclusion provenance before field-scoped masking can be accepted.
@@ -69,8 +73,9 @@ the lease, even if focus returns before cleanup. The fix is mirrored in M0-M3.
 
 Evidence is under
 `/Users/miguel/.codex/evidence/browser-computer-use-macos/cumac-r10-20261011`.
-Behavioral red/green logs cover empty private geometry, paired target/OCR policy
-dispatch and both real runner boundaries with their native scripts in a Node VM.
+Behavioral red/green logs cover empty private geometry, paired observation/input
+policy and revision fencing, and both runner boundaries with their native scripts
+in a Node VM.
 Missing AX/OCR/policy API compile logs are supplementary. Removing fresh target
 validation, frame-stamp checking or Vault withholding fails the focused tests.
 Real Vision read a generated public canary and could not read its opaque protected

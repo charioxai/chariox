@@ -162,9 +162,11 @@ import Darwin
                 return (reply, false)
             }
             guard let input = params["input"] as? [String: Any] else { throw tagged(.arguments, "invalid-paired-input") }
+            let inputRevision = try capture.admitInput()
             if nativeInput != nil, scope.ownerWindow { throw tagged(.disabled, "physical-owner-window-unavailable") }
             let source = MacSource(authority: {
                 try self.checkAuthority()
+                try self.capture.checkInputRevision(inputRevision)
                 try self.nativeInput?.observer.check()
             }, tagInput: { self.nativeInput?.observer.fence.tag($0) })
             let receipts: [String]
@@ -175,6 +177,7 @@ import Darwin
                 receipts = try await execute(operation, source)
             }
             try checkAuthority()
+            try capture.checkInputRevision(inputRevision)
             reply["ok"] = true
             reply["result"] = ["dispatched": true, "receipts": receipts]
         } catch {

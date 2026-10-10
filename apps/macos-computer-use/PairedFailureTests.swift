@@ -18,6 +18,7 @@ import Darwin
         }
         let started = await session.reply(request("host.computer", ["op": "start"]))
         precondition(started.reply["ok"] as? Bool == true)
+        _ = await session.reply(request("host.protect", ["unknown": false, "values": [], "targets": []]))
         let input = request("host.computer", ["op": "input", "surface_id": "macos-seat", "generation": "first",
             "input": ["kind": "text", "text": "x"]])
         let failed = await session.reply(input)

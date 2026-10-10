@@ -22,6 +22,14 @@ import ScreenCaptureKit
     }
     func clear() { stream?.stop(); stream = nil; attachment.close(); targets.stop(); policy = nil; privacy = nil; allowed = false }
 
+    func admitInput() throws -> UInt64 {
+        guard privacy?.observationsAllowed == true else { throw tagged(.secure, "native-vault-provenance-unknown") }
+        return protection
+    }
+    func checkInputRevision(_ revision: UInt64) throws {
+        guard try admitInput() == revision else { throw tagged(.secure, "native-input-protection-changed") }
+    }
+
     // Private OS adapter API, projected through the existing shared snapshot,
     // OCR and target-action contracts without changing public request shapes.
     func observe(_ scope: Request, surface: NativeSurface, generation: String,
