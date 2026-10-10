@@ -71,8 +71,8 @@ func dispatchInputEvents(_ events: [CGEvent], fence: (CGEvent) throws -> Void,
             try fence(event)
             guard releaseAllowed() else { throw tagged(.permission, "post-event-permission") }
             event.flags = []; post(event)
-            if event.type == .leftMouseDown || event.type == .keyDown { release = events.last }
-            if event.type == .leftMouseUp || event.type == .keyUp { release = nil }
+            if [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown].contains(event.type) { release = events.last }
+            if [.leftMouseUp, .rightMouseUp, .otherMouseUp, .keyUp].contains(event.type) { release = nil }
         }
     } catch {
         guard let release else { throw error }
