@@ -4,7 +4,7 @@ use super::*;
 #[test]
 fn mp08_mp10_mp11_browser_artifact_protocol_443_snapshot_and_hash() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 489);
     let wire = serde_json::json!({"RoomBrowserArtifact": {
         "session_id":"room-a", "attachment_id":"client-a", "tab_id":"tab-a",
         "operation":{"action":"capture","kind":"image","browser_generation":1,"guid":null,"return_image_base64":true}
@@ -31,7 +31,7 @@ fn mp08_mp10_mp11_browser_artifact_peer_86_shape_hashes() {
         RoomBrowserControllerCommand, RoomBrowserControllerResult,
     };
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 489);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         96
@@ -87,7 +87,7 @@ fn mp08_mp10_mp11_browser_artifact_peer_86_shape_hashes() {
 #[test]
 fn mp08_mp10_mp11_apps_browser_computer_union_443_86_is_hashed() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 489);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         96

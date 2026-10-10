@@ -271,4 +271,11 @@ pub use workspace::*;
 /// segments) and adds lossless WebP tiles and scroll move rectangles.
 /// MP-08/MP-10: version 475 adds pushed display (`display_ack` drives the
 /// kernel push pump of a relay display subscription; `display_next` remains).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 475;
+/// MP-08/MP-10/MP-11: version 482 adds DOM mirror v2 (`wire: 2`): author
+/// stylesheets and attributes, snapshot plus deltas, long-poll credits
+/// (`wait_ms`), viewer-offset clicks and viewer-owned `scroll_to`.
+/// MP-08/MP-10: version 489 makes mirror v2 compact: deltas omit the binding
+/// and unchanged header fields, bodies deflate in the subscription's context,
+/// form ops carry changed properties, resources travel in ordered slices and
+/// `mirror_input` answers `{"accepted": true}`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 489;

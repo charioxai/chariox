@@ -9,6 +9,120 @@ The screen tiers are native App views, mirrored web pages, then protected video.
 This implementation targets host Chromium on Linux. It does not introduce a
 browser inside a slice, a Cloud runtime proxy, or a second input authority.
 
+## Protocol 489: DOM mirror v2 (current; introduced in 482, compact wire in 489)
+
+`mirror_subscribe {wire: 2}` selects v2; the 443 computed-style packets below
+remain for one protocol version (TUI/tests) and are superseded for web clients.
+v2 follows rrweb's model instead of a per-credit computed-style dump:
+
+- **One observer per viewer.** Each subscription has its own observer instance
+  in the isolated world (ids, mutation journal, listeners), so one viewer's
+  snapshot or reset never touches another's; it stops when the subscription
+  closes or expires.
+- **Snapshot, then deltas.** One pre-order snapshot per document (`reset`),
+  then MutationObserver deltas as ops: `children` (reconcile a parent's child
+  list; new subtrees carried as records), `attr`, `text`, `css`, `adopted`,
+  `form`, `scroll`, `size`, `res`. Records travel as compact rows
+  `[idDelta, parentBack, tag | kindCode, attrs | 0, extra]`; a stylesheet text
+  of 2 KB or more travels once per snapshot epoch (`sheets` + `css_ref`).
+  Deltas carry only changes: a child list that ends as it was sends nothing, a
+  form op travels only when the field's state changed, and a subtree the page
+  rebuilds with the same shape (a typeahead list replaced by innerHTML) keeps
+  the viewer's nodes: the new page nodes take over the removed nodes' ids and
+  only `attr`/`text`/`res` differences travel. A `form` op carries only the
+  properties that changed (489). Masks, form fields, frames,
+  styles, opaque and custom elements are never morphed, and a morphed node
+  counts as a changed input target.
+- **Author CSS and real attributes.** Stylesheets are the page's own CSSOM
+  text (imports inlined; cross-origin sheets read through CDP and normalized
+  by a constructed sheet); adoptedStyleSheets and open shadow roots are kept.
+  HTML attributes ship by denylist and only if rendered/exposed by the UA or
+  referenced by the page's CSS selectors/attr(); links carry `href="#"`.
+- **Pushed credits.** `mirror_next {wait_ms <= 2000}` is a long poll answered
+  by the next page change; the client keeps four credits outstanding, packets
+  apply strictly in sequence (`base_sequence`), and a gap asks for a reset
+  (`after_sequence: 0`). Replies arrive in credit order, so a gap with no older
+  credit outstanding (for example a credit replayed after a reconnect, which the
+  kernel runs again) resets at once; the reset credit does not wait for credits
+  in flight, and the kernel ends the long poll of every credit that arrived
+  before it. A queued credit's wait starts when its predecessor is answered
+  (one heartbeat per wait instead of one per credit), at most three waits from
+  its arrival (below the client's 8 s request timeout).
+- **Compact wire (489).** A reset packet carries the binding and header
+  (`subscription_id`, `tab_id`, `generation`, `document_id`, `css_width`,
+  `css_height`, `device_scale_factor`, `scroll`, `focused`, `selection`). A
+  delta carries `wire`, `sequence`, its ops, and only the header fields that
+  differ from its base (an explicit `null` replaces); its base is
+  `sequence - 1`, and the viewer restores the rest from its binding and the
+  base. Empty `resources`/`tiles` are omitted. The controller encodes the packet
+  (the Rust kernel passes it through): a body from 512 bytes travels as
+  `{encoding: "deflate", packet_bytes, packet_base64}`, raw deflate in the
+  subscription's context (one sync flush per packet; a reset packet starts a
+  fresh context), so repeated structure such as typeahead rows costs a few
+  bytes. The viewer inflates such bodies strictly in sequence order; a body it
+  cannot inflate asks for a reset. Smaller bodies (echoes) travel as JSON outside
+  the context. A credit replayed after a reconnect gets the same encoded bytes.
+  `mirror_input` answers `{"accepted": true}`: the kernel reconciles its actor
+  ledger with the full browser state, and the viewer sees the input's effect in
+  the next packet.
+- **Resources** are only bytes the page itself loaded (data: URLs, the resource
+  tree, or Chrome's cache without credentials for Resource Timing URLs), typed
+  by magic bytes; fonts ride with the snapshot, images follow it. SVG renders as
+  a `data:` image; the sandbox CSP is `img-src blob: data:; font-src blob:`.
+  Element images (`<img>` in the top document) travel only within one viewport
+  of the view, nearest first; the rest wait until the view comes near them.
+  While the view moves (a viewer `scroll_to` or a page scroll, and 300 ms
+  after), a near image above 8 KB travels as a preview: decoded in the
+  observer's world from the page's bytes, half its CSS size, WebP, wrapped in an
+  SVG of the original pixel size so the layout does not change. Its exact bytes
+  replace it under the same key once the view settles (settled pixels stay
+  exact). CSS images and frame resources keep the earlier order. A packet's
+  resource budget is 256 KB of base64, or 64 KB within a second of viewer input,
+  so an echo waits behind at most one such packet. A resource larger than the
+  room left travels in slices (489): `offset`/`total` in base64 characters
+  (4-aligned), in order, under the whole resource's `resource_id`; the viewer
+  verifies the digest of the reassembled bytes. A reset restarts a resource
+  still in slices (its slices may have been lost with the base).
+- **Frames.** Same-origin frames are part of the document. Cross-origin frames
+  are mirrored through their own CDP session/isolated world with the same
+  observer (ids and resource keys rebased per frame slot; stylesheets its CSSOM
+  cannot read are read through the child's CDP session); nested or
+  unattachable frames, canvas/video/plugins are opaque regions painted from
+  masked lossless captures (at most 1 Hz until video regions land).
+- **Input** is node-addressed with the viewer's offset inside the node; the
+  kernel clamps to the live box, hit-tests at dispatch (through frames/shadow),
+  refuses protected ancestry and targets whose attributes changed after the
+  viewer's applied sequence. Epochs are snapshot sequences, not wall clocks.
+  CDP pointer coordinates follow the emulated view scale (DPR1 on a scale-2
+  window). Text/keys go to the live focus behind the shared text fence.
+- **Scroll** is shared (owner decision): the kernel tab has one position. A
+  viewer scrolls its own copy natively for frame rate and sends coalesced
+  `scroll_to`; the kernel applies it and every other viewer follows the
+  kernel's position (last writer wins). A viewer ignores kernel echoes only
+  while it is scrolling itself, and the kernel does not send a viewer its own
+  scroll position back. Wheel over opaque regions drives the kernel.
+- **No tree hash.** Correctness comes from sequenced deltas, base checks,
+  resnapshot on a gap and independent client validation.
+- **Fallback.** Over-budget or unavailable DOM returns a labelled `fallback`
+  packet; the web client shows protected video and retries the mirror after
+  30 s, doubling to 10 min. A retired subscription (`stale or foreign mirror`)
+  or a credit failure streak longer than 15 s ends the mirror the same way;
+  shorter streaks back off (250 ms to 4 s). A packet that fails to apply asks
+  for a reset; later packets still apply.
+
+MP-11 rules for v2 (owner decision, Miguel 2026-10-09 11:30 UTC, replacing the
+earlier variant scanning): only the fields the kernel filled from the Vault are
+masked, by node identity (top-level `backend:N` and child-frame
+`frame:<id>:<loader>:backend:N` targets), and only while they are plain text
+fields (text-like input, textarea, contenteditable); the type is checked on
+every capture, so a show-password toggle becomes a mask. A password field
+renders as dots of the same length and its value never leaves, nor does a
+hidden input's. No page-text, attribute or CSS value scanning and no
+container, frame or media masks: cross-origin frames are mirrored. Fonts and
+images ship; every url() spelling is a kernel resource key or `none`; the
+client validates every packet independently (unknown record keys, forbidden
+tags/attributes, any fetching CSS refused).
+
 ## Contract and authority
 
 Local protocol **433**, relay peer **79**. Set `CHARIOX_KERNEL_BROWSER_MIRROR=1`

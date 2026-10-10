@@ -92,7 +92,8 @@
     "./kernel-unix-socket-path": "./dist/kernel-unix-socket-path.js",
     "./hidden-input": "./dist/hidden-input.js",
     "./user-domain-access": "./dist/user-domain-access.js",
-    "./browser-mirror": "./dist/browser-mirror.js"
+    "./browser-mirror": "./dist/browser-mirror.js",
+    "./browser-mirror2": "./dist/browser-mirror2.js"
   },
   "types": "./dist/index.d.ts",
   "scripts": {

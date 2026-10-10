@@ -1,0 +1,324 @@
+// MP-08/MP-10/MP-11: protocol 489 mirror v2 — fail closed before DOM construction.
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { createDeflateRaw, constants as zlib } from 'node:zlib'
+import { setFlagsFromString } from 'node:v8'
+import { runInNewContext } from 'node:vm'
+import { validateMirror2Packet, validateMirror2Record, validateMirror2Css, mirror2SandboxCsp, decodeMirror2Records, resolveMirror2Sheets } from './browser-mirror2-security.js'
+import { Mirror2Inflater, browserMirror2MinimumProtocolVersion, attachBrowserMirror2, BrowserMirror2Renderer } from './browser-mirror2.js'
+import type { Mirror2Packet, Mirror2Record } from './browser-mirror2-types.js'
+
+const base = (nodes: Mirror2Record[], extra: Partial<Mirror2Packet> = {}): Mirror2Packet => ({ wire: 2, subscription_id: 's', tab_id: 't', generation: 1, document_id: 'd', sequence: 1, base_sequence: null, reset: true, root: nodes[0]!.id, nodes, ops: [], scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [], css_width: 1280, css_height: 800, device_scale_factor: 1, ...extra })
+const tree = (...rest: Mirror2Record[]): Mirror2Record[] => [{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, ...rest]
+const element = (tag: string, attrs: Record<string, string> = {}, extra: Partial<Mirror2Record> = {}): Mirror2Record => ({ id: 'n3', parent: 'n2', kind: 'element', tag, attrs, ...extra })
+
+test('MP-11: v2 refuses active elements, handlers, navigable URLs and fetching CSS', () => {
+  for (const tag of ['script', 'noscript', 'template', 'object', 'embed', 'base', 'meta', 'link', 'frame', 'portal', 'Script', 'x y'])
+    assert.throws(() => validateMirror2Packet(base(tree(element(tag))), new Map()), /unsafe mirror/)
+  for (const [name, value] of ([['onerror', 'x'], ['onclick', 'x'], ['src', '/a.png'], ['srcset', 'a.png 1x'], ['srcdoc', '<b>'], ['action', '/x'], ['formaction', '/x'], ['href', 'https://origin.test/'], ['xlink:href', '/a'], ['poster', '/p.png'], ['data-x', 'javascript:alert(1)'], ['fill', 'url(https://leak.test/#a)']] as Array<[string, string]>))
+    assert.throws(() => validateMirror2Packet(base(tree(element('a', { [name]: value }))), new Map()), /unsafe mirror/, `${name}`)
+  for (const css of ['a{background:url(https://leak.test/x)}', 'a{background:url("data:image/png;base64,AA==")}', '@import url(x.css);', 'a{width:expression(alert(1))}', 'a{--x:u\\72l(//leak.test)}', 'a{-moz-binding:url("mr:r1")}', 'a{behavior:url("mr:r1")}'])
+    assert.throws(() => validateMirror2Css(css), /unsafe mirror CSS/, css)
+  for (const css of ['a{background:url("mr:r12")}', 'a{mask:url("#clip")}', '.md\\:flex:not(.x){display:flex}', 'a{scroll-behavior:smooth;overscroll-behavior:none}', 'a{background:url("mr:r1000003")}'])
+    validateMirror2Css(css)
+  // Links keep `#` (never a URL); SVG references only same-document fragments.
+  validateMirror2Packet(base(tree(element('a', { href: '#', class: 'external', 'data-x': 'y', 'aria-label': 'z' }))), new Map())
+  validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'use', ns: 'svg', attrs: { href: '#icon' } })), new Map())
+  assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'use', ns: 'svg', attrs: { href: 'https://x/#icon' } })), new Map()), /unsafe mirror/)
+  assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'foreignObject', ns: 'svg' })), new Map()), /unsafe mirror/)
+  assert.match(mirror2SandboxCsp, /script-src 'none'/); assert.match(mirror2SandboxCsp, /connect-src 'none'/); assert.match(mirror2SandboxCsp, /img-src blob: data:;/)
+  assert.equal(browserMirror2MinimumProtocolVersion, 489)
+})
+
+test('MP-11: masks carry no content and leaves never parent nodes', () => {
+  for (const extra of [{ text: 'secret' }, { res: 'r1' }, { css: 'a{}' }, { attrs: { title: 'secret' } }, { form: { value: 'secret', checked: false, selected_index: -1, selection_start: null, selection_end: null } }])
+    assert.throws(() => validateMirror2Record({ id: 'n3', parent: 'n2', kind: 'mask', tag: 'span', size: [10, 10], ...extra } as Mirror2Record), /unsafe mirror/)
+  validateMirror2Record({ id: 'n3', parent: 'n2', kind: 'mask', tag: 'input', attrs: { class: 'field' }, size: [10, 10] })
+  assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'mask', tag: 'span', size: [1, 1] }, { id: 'n4', parent: 'n3', kind: 'text', text: 'under mask' })), new Map()), /unsafe mirror leaf/)
+  assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n9', kind: 'text', text: 'detached' })), new Map()), /unsafe mirror tree/)
+  assert.throws(() => validateMirror2Packet(base([{ id: 'n1', parent: null, kind: 'element', tag: 'div' }]), new Map()), /unsafe mirror snapshot/)
+})
+
+test('MP-11: deltas reference known nodes; ops cannot write attributes into masks or style into text', () => {
+  const previous = new Map<string, Mirror2Record>([['n2', { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }], ['n3', { id: 'n3', parent: 'n2', kind: 'mask', tag: 'span', size: [1, 1] }], ['n5', { id: 'n5', parent: 'n2', kind: 'text', text: 'a' }]])
+  const delta = (ops: NonNullable<Mirror2Packet['ops']>): Mirror2Packet => { const { nodes: _n, root: _r, ...rest } = base([{ id: 'n1', parent: null, kind: 'document' }], { reset: false, base_sequence: 1, sequence: 2, ops }); return rest }
+  validateMirror2Packet(delta([{ op: 'children', id: 'n2', children: ['n5', 'n6'], nodes: [{ id: 'n6', parent: 'n2', kind: 'text', text: 'new' }] }, { op: 'text', id: 'n5', text: 'b' }]), previous)
+  assert.throws(() => validateMirror2Packet(delta([{ op: 'attr', id: 'n3', name: 'title', value: 'secret' }]), previous), /unsafe mirror/)
+  assert.throws(() => validateMirror2Packet(delta([{ op: 'attr', id: 'n2', name: 'onload', value: 'x' }]), previous), /unsafe mirror/)
+  assert.throws(() => validateMirror2Packet(delta([{ op: 'css', id: 'n5', css: 'a{}' }]), previous), /unsafe mirror/)
+  assert.throws(() => validateMirror2Packet(delta([{ op: 'children', id: 'n2', children: ['n7'], nodes: [{ id: 'n7', parent: 'n8', kind: 'text', text: 'x' }] }]), previous), /unsafe mirror tree/)
+  assert.throws(() => validateMirror2Packet(delta([{ op: 'form', id: 'n3', form: { value: 'x', checked: false, selected_index: -1, selection_start: null, selection_end: null } }]), previous), /unsafe mirror/)
+  assert.throws(() => validateMirror2Packet({ ...delta([]), resources: [{ key: 'r1', resource_id: 'a'.repeat(64), mime_type: 'text/html', data_base64: '' }] }, previous), /executable/)
+  // Protocol 489: a form op carries only changed, typed properties.
+  validateMirror2Packet(delta([{ op: 'form', id: 'n2', form: { value: 'ab', selection_start: 2, selection_end: 2 } }]), previous)
+  for (const form of [{ value: 1 }, { checked: 'yes' }, { selection_start: 1.5 }, { innerHTML: '<b>' }, null])
+    assert.throws(() => validateMirror2Packet(delta([{ op: 'form', id: 'n2', form } as unknown as NonNullable<Mirror2Packet['ops']>[number]]), previous), /unsafe mirror op/, JSON.stringify(form))
+  // Slices: 4-aligned offsets inside a bounded whole.
+  const slice = (offset: unknown, total: unknown, data = 'AAAA') => ({ ...delta([]), resources: [{ key: 'r1', resource_id: 'a'.repeat(64), mime_type: 'image/png', data_base64: data, offset, total }] } as Mirror2Packet)
+  validateMirror2Packet(slice(0, 8), previous); validateMirror2Packet(slice(4, 8), previous)
+  for (const [offset, total, data] of [[2, 8], [8, 8], [0, 7 * 1024 * 1024], [0, undefined], [0, 8, '']] as Array<[unknown, unknown, string?]>) assert.throws(() => validateMirror2Packet(slice(offset, total, data), previous), /executable/, `${offset}/${total}`)
+})
+
+// The kernel's encoder: one raw deflate context per subscription, sync flush per packet.
+const kernelContext = () => {
+  const deflate = createDeflateRaw({ level: 9, memLevel: 9 }), chunks: Buffer[] = []
+  deflate.on('data', chunk => chunks.push(chunk))
+  return { close: () => deflate.close(), encode: (text: string) => new Promise<{ packet_base64: string; packet_bytes: number }>(resolve => { deflate.write(Buffer.from(text)); deflate.flush(zlib.Z_SYNC_FLUSH, () => resolve({ packet_base64: Buffer.concat(chunks.splice(0)).toString('base64'), packet_bytes: Buffer.byteLength(text) })) }) }
+}
+test('MP-10: context-deflated bodies inflate in order; a repeat costs a few bytes; lying sizes are refused', async () => {
+  const kernel = kernelContext(), inflater = new Mirror2Inflater()
+  const rows = JSON.stringify({ wire: 2, sequence: 2, ops: [{ op: 'children', id: 'n9', children: ['n10'], nodes: Array.from({ length: 6 }, (_, i) => [1, 1, 'a', { class: 'suggestion-link', href: '#' }, { title: `Suggestion ${i}` }]) }] })
+  const first = await kernel.encode(rows), again = await kernel.encode(rows.replace('"sequence":2', '"sequence":3'))
+  assert.equal(await inflater.inflate(first.packet_base64, first.packet_bytes), rows)
+  assert.equal(await inflater.inflate(again.packet_base64, again.packet_bytes), rows.replace('"sequence":2', '"sequence":3'))
+  assert.ok(again.packet_base64.length < first.packet_base64.length / 3, `MP-10: a repeated typeahead body is cheap in the context (${again.packet_base64.length} vs ${first.packet_base64.length})`)
+  const lying = await kernel.encode(rows)
+  await assert.rejects(inflater.inflate(lying.packet_base64, lying.packet_bytes - 1), /mirror packet bounds/)
+  await assert.rejects(new Mirror2Inflater().inflate(first.packet_base64, 1), /mirror packet bounds/)
+  inflater.close(); kernel.close()
+})
+
+test('MP-10/MP-11: compact rows decode to records (kernel encoder fixture) and refuse malformed rows', () => {
+  const rows = [[1, 0, 1], [1, 1, 'html', { lang: 'en' }], [1, 1, 'body'], [2, 1, 0, 'Hello'], [1, 2, 4, 0, { size: [10, 20], display: 'inline-block', tag: 'span' }], [1, 3, 'svg', { viewBox: '0 0 1 1' }, { ns: 'svg' }], [999999994, 4, 3, 0, { tag: 'iframe' }]]
+  assert.deepEqual(decodeMirror2Records(rows, null), [
+    { id: 'n1', parent: null, kind: 'document' },
+    { id: 'n2', parent: 'n1', kind: 'element', tag: 'html', attrs: { lang: 'en' } },
+    { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+    { id: 'n5', parent: 'n3', kind: 'text', text: 'Hello' },
+    { size: [10, 20], display: 'inline-block', tag: 'span', id: 'n6', parent: 'n3', kind: 'mask' },
+    { ns: 'svg', id: 'n7', parent: 'n3', kind: 'element', tag: 'svg', attrs: { viewBox: '0 0 1 1' } },
+    { tag: 'iframe', id: 'n1000000001', parent: 'n3', kind: 'frame' },
+  ])
+  for (const bad of [[[1, 2, 'div']], [[0, 0, 'div']], [[1, 0, 9]], [[1, 0, 0, 5]], [[1, 0, 'div', [1]]], [[1, 0, 'div', 0, 'x']], [['1', 0, 'div']]]) assert.throws(() => decodeMirror2Records(bad, null), /unsafe mirror/, JSON.stringify(bad))
+  // Extra keys cannot smuggle unknown record fields past validation.
+  assert.throws(() => validateMirror2Record(decodeMirror2Records([[1, 0, 'div', 0, { onload: 'x' }]], 'n1')[0]!), /unsafe mirror node/)
+})
+
+test('MP-10/MP-11: sheet references resolve within the epoch and are validated as text', () => {
+  const known = new Map<string, string>(), digest = 'a'.repeat(24)
+  const first = resolveMirror2Sheets({ ...base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'style', css_ref: digest })), sheets: { [digest]: 'p{color:red}' } }, known)
+  assert.equal(first.nodes![2]!.css, 'p{color:red}'); assert.equal(first.sheets, undefined)
+  const delta = { ...base([{ id: 'n1', parent: null, kind: 'document' }], { reset: false, base_sequence: 1, sequence: 2 }), ops: [{ op: 'css' as const, id: 'n3', css: '', css_ref: digest }] }
+  assert.deepEqual(resolveMirror2Sheets(delta, known).ops, [{ op: 'css', id: 'n3', css: 'p{color:red}' }])
+  assert.throws(() => resolveMirror2Sheets({ ...delta, ops: [{ op: 'css', id: 'n3', css: '', css_ref: 'b'.repeat(24) }] }, known), /sheet reference/)
+  assert.throws(() => validateMirror2Packet(resolveMirror2Sheets({ ...base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'style', css_ref: digest })), sheets: { [digest]: 'p{background:url(https://leak.test)}' } }, known), new Map()), /unsafe mirror CSS/)
+  // A new snapshot epoch forgets earlier sheets.
+  assert.throws(() => resolveMirror2Sheets(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'style', css_ref: 'c'.repeat(24) })), known), /sheet reference/)
+})
+
+// Viewer flow with a scripted kernel and a recording renderer (no DOM needed).
+const flow = (script: (command: Record<string, unknown>) => Promise<unknown>) => {
+  const applied: number[] = [], failures: unknown[] = []
+  let failNext = false, always = false
+  const packets: Mirror2Packet[] = []
+  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (packet: Mirror2Packet) => { if (failNext) { failNext = always; throw Error('MP-11: nested mirror unavailable') } applied.push(packet.sequence); packets.push(packet) } })
+  const requests: Array<Record<string, unknown>> = []
+  const transport = { protocolVersion: 489, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
+  return { applied, packets, failures, requests, failOnce: () => { failNext = true }, failAlways: () => { failNext = true; always = true }, start: (failingMs?: number) => attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: error => failures.push(error) }, { credits: 1, waitMs: 0, renderer, ...(failingMs ? { failingMs } : {}) }) }
+}
+// Protocol 489: a reset carries the binding and header; a delta only what changed.
+const packet = (sequence: number, reset: boolean, _base?: number | null) => reset ? { wire: 2, subscription_id: 's', tab_id: 't', generation: 1, document_id: 'd', sequence, base_sequence: null, reset, css_width: 1280, css_height: 800, device_scale_factor: 1, scroll: [0, 0], focused: null, selection: null, root: 'n1', nodes: [[1, 0, 1], [1, 1, 'html']], ops: [] } : { wire: 2, sequence, ops: [] }
+const until = async (check: () => boolean, ms = 3000) => { const end = Date.now() + ms; while (!check() && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 10)) }
+
+test('MP-08/MP-10: a failed packet application does not stop later packets (the reset applies)', async () => {
+  let sequence = 0
+  const f = flow(async command => command.op === 'mirror_subscribe' ? { subscription_id: 's' } : command.op === 'mirror_close' ? { closed: true } : (sequence++, command.after_sequence === 0 ? packet(sequence, true, null) : packet(sequence, false, sequence - 1)))
+  f.failOnce(); const mirror = await f.start()
+  await until(() => f.applied.length >= 2)
+  await mirror.close()
+  assert.ok(f.applied.length >= 2, `MP-08: packets after the failed application still apply: ${f.applied}`)
+  assert.deepEqual(f.failures, [])
+})
+
+test('MP-08/MP-10: a retired subscription surfaces a failure; transient failures back off', async () => {
+  const retired = flow(async command => { if (command.op === 'mirror_subscribe') return { subscription_id: 's' }; if (command.op === 'mirror_close') return { closed: true }; throw Error('kernel_browser_failed: MP-11: stale or foreign mirror') })
+  const first = await retired.start()
+  await until(() => retired.failures.length > 0)
+  assert.equal(retired.failures.length, 1); await first.close()
+  const flaky = flow(async command => { if (command.op === 'mirror_subscribe') return { subscription_id: 's' }; if (command.op === 'mirror_close') return { closed: true }; throw Error('local_transport_error: timeout') })
+  const second = await flaky.start()
+  await new Promise(resolve => setTimeout(resolve, 1500))
+  const credits = flaky.requests.filter(command => command.op === 'mirror_next').length
+  await second.close()
+  assert.ok(credits <= 6, `MP-10: credits back off after failures (${credits} in 1.5 s)`)
+  assert.deepEqual(flaky.failures, [], 'MP-10: a short failure streak is not terminal')
+})
+
+test('MP-10: removing an inline style forgets it, so a later resource cannot restore it', () => {
+  const element = () => { const attributes = new Map<string, string>(); return { nodeType: 1, attributes, setAttribute: (name: string, value: string) => attributes.set(name, value), removeAttribute: (name: string) => attributes.delete(name), addEventListener: () => {}, style: {} } }
+  const iframe = element(), container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
+  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async () => {}) as unknown as { dom: Map<string, unknown>; records: Map<string, Mirror2Record>; styled: Map<string, { keys: string[] }>; op(op: unknown, scrolls: unknown[]): void }
+  const node = element(); renderer.dom.set('n5', node); renderer.records.set('n5', { id: 'n5', parent: 'n2', kind: 'element', tag: 'div' })
+  renderer.op({ op: 'attr', id: 'n5', name: 'style', value: 'background:url("mr:r1")' }, [])
+  assert.deepEqual(renderer.styled.get('n5#style')?.keys, ['r1'])
+  renderer.op({ op: 'attr', id: 'n5', name: 'style', value: null }, [])
+  assert.equal(renderer.styled.has('n5#style'), false); assert.equal(node.attributes.has('style'), false)
+})
+
+test('MP-08/MP-10: compact deltas inherit binding and header from their base; deflated bodies inflate in sequence order; late copies are not gaps', async () => {
+  const kernel = kernelContext()
+  const reset = { ...packet(1, true), scroll: [0, 40], focused: 'n2' }
+  const bodies = [reset, { wire: 2, sequence: 2, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 3, focused: null, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 4, ops: [] }]
+  const wires: unknown[] = []
+  for (const body of bodies) { const text = JSON.stringify(body); wires.push(text.length >= 512 ? { wire: 2, sequence: body.sequence, ...(body.sequence === 1 ? { reset: true } : {}), encoding: 'deflate', ...await kernel.encode(text) } : body) }
+  kernel.close()
+  let next = 0
+  // Replies arrive out of order (3 before 2) and one late copy repeats.
+  const order = [0, 2, 1, 1, 3]
+  const f = flow(async command => command.op === 'mirror_subscribe' ? { subscription_id: 's' } : command.op === 'mirror_close' ? { closed: true } : next < order.length ? wires[order[next++]!] : new Promise(() => {}))
+  const mirror = await f.start()
+  await until(() => f.applied.length >= 4)
+  await mirror.close()
+  assert.deepEqual(f.applied, [1, 2, 3, 4]); assert.deepEqual(f.failures, [])
+  const [, second, third, fourth] = f.packets
+  assert.deepEqual([second!.subscription_id, second!.tab_id, second!.document_id, second!.base_sequence, second!.reset, second!.scroll, second!.focused], ['s', 't', 'd', 1, false, [0, 40], 'n2'])
+  assert.equal(third!.focused, null, 'an explicit null replaces the base value'); assert.equal(fourth!.focused, null); assert.deepEqual(fourth!.resources, [])
+})
+
+test('MP-10: resource slices reassemble in order; a reset restarts them', () => {
+  const iframe = { setAttribute: () => {}, addEventListener: () => {}, style: {} }, container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
+  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async () => {}) as unknown as { assemble(r: Record<string, unknown>): Record<string, unknown> | null; slices: Map<string, unknown> }
+  const slice = (offset: number, data: string) => ({ key: 'r1', resource_id: 'a'.repeat(64), mime_type: 'image/png', data_base64: data, offset, total: 12 })
+  assert.equal(renderer.assemble(slice(0, 'AAAA')), null)
+  assert.equal(renderer.assemble(slice(4, 'BBBB')), null)
+  assert.deepEqual(renderer.assemble(slice(8, 'CCCC')), { key: 'r1', resource_id: 'a'.repeat(64), mime_type: 'image/png', data_base64: 'AAAABBBBCCCC' })
+  assert.equal(renderer.slices.size, 0)
+  assert.equal(renderer.assemble(slice(0, 'AAAA')), null)
+  assert.throws(() => renderer.assemble(slice(8, 'CCCC')), /slice out of order/)
+  const whole = { key: 'r2', resource_id: 'b'.repeat(64), mime_type: 'image/png', data_base64: 'AAAA' }
+  assert.equal(renderer.assemble(whole), whole)
+})
+
+test('MP-08: Page Up/Page Down scroll the viewer natively (no preventDefault); other navigation keys go to the kernel', async () => {
+  const iframe = { setAttribute: () => {}, addEventListener: () => {}, style: {} }, container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
+  const sent: unknown[] = []
+  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async action => { sent.push(action) }) as unknown as { bind(doc: unknown): void; documentId: string }
+  const handlers = new Map<string, (event: unknown) => void>()
+  renderer.bind({ addEventListener: (type: string, fn: (event: unknown) => void) => handlers.set(type, fn), getSelection: () => null })
+  renderer.documentId = 'd'
+  const press = (key: string, shiftKey = false) => { let prevented = false; handlers.get('keydown')!({ key, shiftKey, ctrlKey: false, metaKey: false, altKey: false, preventDefault: () => { prevented = true } }); return prevented }
+  assert.equal(press('PageDown'), false); assert.equal(press('PageUp'), false)
+  assert.equal(press('Tab'), true)
+  // Review #941-2: Shift extends the kernel selection (and Shift+Tab moves focus back).
+  for (const key of ['Tab', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'Enter']) assert.equal(press(key, true), true)
+  await new Promise(resolve => setTimeout(resolve, 0)) // inputs are sent in order
+  assert.deepEqual(sent.map(action => (action as { key: string }).key), ['Tab', 'Shift+Tab', 'Shift+ArrowLeft', 'Shift+ArrowRight', 'Shift+ArrowUp', 'Shift+ArrowDown', 'Shift+Home', 'Shift+End', 'Enter'])
+})
+
+test('MP-08/MP-10: replies that never apply keep the failure streak, so the mirror ends (video fallback) instead of retrying forever', async () => {
+  let sequence = 0
+  const f = flow(async command => command.op === 'mirror_subscribe' ? { subscription_id: 's' } : command.op === 'mirror_close' ? { closed: true } : packet(++sequence, true))
+  f.failAlways(); const mirror = await f.start(400)
+  await until(() => f.failures.length > 0, 3000)
+  await mirror.close()
+  assert.equal(f.failures.length, 1, 'MP-08: a renderer that cannot apply any snapshot reaches the terminal failure')
+  assert.deepEqual(f.applied, [])
+})
+
+test('MP-10: review #320-1 a select shows its live selection after its options are built (snapshot and children delta)', () => {
+  // Fake DOM with the real select rule: selectedIndex is clamped to the options present, and the first option appended to an empty select becomes selected.
+  type Fake = { nodeType: number; localName: string; childNodes: Fake[]; attributes: Map<string, string>; selectedIndex?: number; value?: string; setAttribute(n: string, v: string): void; removeAttribute(n: string): void; appendChild(c: Fake): Fake; addEventListener(): void; style: { setProperty(): void }; getRootNode(): { activeElement: null } }
+  const make = (tag: string): Fake => {
+    const node: Fake = { nodeType: 1, localName: tag, childNodes: [], attributes: new Map(), setAttribute: (n, v) => { node.attributes.set(n, v) }, removeAttribute: n => { node.attributes.delete(n) }, addEventListener: () => {}, style: { setProperty: () => {} }, getRootNode: () => ({ activeElement: null }),
+      appendChild: child => { node.childNodes.push(child); if (tag === 'select' && child.localName === 'option' && index < 0) index = 0; return child } }
+    let index = -1
+    if (tag === 'select') Object.defineProperty(node, 'selectedIndex', { get: () => index, set: (v: number) => { index = v >= 0 && v < node.childNodes.length ? v : -1 } })
+    return node
+  }
+  const doc = { createElement: make, createElementNS: (_: string, tag: string) => make(tag), createTextNode: () => make('#text'), createDocumentFragment: () => make('#fragment') }
+  const iframe = make('iframe'), container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
+  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async () => {}) as unknown as { build(records: Mirror2Record[], doc: unknown, frames: unknown[], scrolls: unknown[]): Map<string, Fake> }
+  const form = { value: 'b', checked: false, selected_index: 1, selection_start: null, selection_end: null }
+  for (const id of ['n3', 'n13']) {
+    const built = renderer.build([{ id, parent: null, kind: 'element', tag: 'select', form }, { id: id + '1', parent: id, kind: 'element', tag: 'option' }, { id: id + '2', parent: id, kind: 'element', tag: 'option' }], doc, [], [])
+    assert.equal(built.get(id)?.selectedIndex, 1, 'MP-10: the live selection, not the first option')
+  }
+})
+
+test('MP-08: review #320-2 a terminal application failure followed by close releases the kernel subscription exactly once', async () => {
+  let sequence = 0
+  const f = flow(async command => command.op === 'mirror_subscribe' ? { subscription_id: 's' } : command.op === 'mirror_close' ? { closed: true } : packet(++sequence, true))
+  f.failAlways(); const mirror = await f.start(400)
+  await until(() => f.failures.length > 0, 3000)
+  await mirror.close(); await mirror.close()
+  assert.equal(f.failures.length, 1)
+  assert.equal(f.requests.filter(command => command.op === 'mirror_close').length, 1, 'MP-08: one mirror_close frees the subscription, its observer and the shared budget')
+})
+
+test('MP-10: review #941-2 a viewer scroll inside a rendered open shadow root reaches the kernel', async () => {
+  const listeners = new Map<string, (event: unknown) => void>()
+  const root = { addEventListener: (type: string, fn: (event: unknown) => void) => listeners.set(type, fn), replaceChildren: () => {} }
+  const iframe = { setAttribute: () => {}, addEventListener: () => {}, style: {} }, container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
+  const sent: unknown[] = []
+  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async action => { sent.push(action) }) as unknown as { attachShadow(host: unknown, record: Mirror2Record, fragment: unknown): void; ids: WeakMap<object, string>; documentId: string }
+  renderer.documentId = 'd'
+  renderer.attachShadow({ shadowRoot: null, attachShadow: () => root }, { id: 'n7', parent: 'n6', kind: 'shadow' }, { childNodes: [] })
+  const scroller = { nodeType: 1, scrollLeft: 0, scrollTop: 300 }; renderer.ids.set(scroller, 'n9')
+  const raf = globalThis.requestAnimationFrame
+  globalThis.requestAnimationFrame = (fn: FrameRequestCallback) => setTimeout(() => fn(0), 0) as unknown as number
+  try {
+    listeners.get('scroll')?.({ target: scroller })
+    await new Promise(resolve => setTimeout(resolve, 10))
+  } finally { globalThis.requestAnimationFrame = raf }
+  assert.deepEqual(sent, [{ kind: 'scroll_to', node_id: 'n9', x: 0, y: 300 }])
+})
+
+// A small fake DOM for apply(): text controls take Chrome's rules (assigning a value puts the caret at its end; focus keeps it).
+type FakeNode = { nodeType: number; localName: string; childNodes: FakeNode[]; parentNode: FakeNode | null; [key: string]: unknown }
+function fakeDocument(): { doc: FakeNode; container: unknown } {
+  const doc = { nodeType: 9, localName: '#document', childNodes: [], parentNode: null, activeElement: null, adoptedStyleSheets: [], addEventListener: () => {}, getSelection: () => null } as unknown as FakeNode & { activeElement: FakeNode | null }
+  const make = (tag: string, nodeType = 1): FakeNode => {
+    let value = ''
+    const node: FakeNode = { nodeType, localName: tag, childNodes: [], parentNode: null, ownerDocument: doc, attributes: new Map(), style: { setProperty: () => {} }, dataset: {}, shadowRoot: null, selection: null,
+      setAttribute: (n: string, v: string) => (node.attributes as Map<string, string>).set(n, v), removeAttribute: (n: string) => (node.attributes as Map<string, string>).delete(n), addEventListener: (type: string, fn: () => void) => { if (type === 'load') setTimeout(fn, 0) },
+      appendChild: (child: FakeNode) => { child.parentNode?.childNodes.splice(child.parentNode.childNodes.indexOf(child), 1); child.parentNode = node; node.childNodes.push(child); return child },
+      insertBefore: (child: FakeNode, ref: FakeNode | null) => { child.parentNode?.childNodes.splice(child.parentNode.childNodes.indexOf(child), 1); child.parentNode = node; node.childNodes.splice(ref ? node.childNodes.indexOf(ref) : node.childNodes.length, 0, child); return child },
+      removeChild: (child: FakeNode) => { node.childNodes.splice(node.childNodes.indexOf(child), 1); child.parentNode = null; return child },
+      prepend: (child: FakeNode) => (node.insertBefore as (c: FakeNode, r: FakeNode | null) => FakeNode)(child, node.childNodes[0] ?? null),
+      replaceWith: (other: FakeNode) => { (doc as unknown as { documentElement: FakeNode }).documentElement = other; other.parentNode = doc },
+      getRootNode: () => doc, matches: () => false, closest: () => null,
+      focus: () => { (doc as unknown as { activeElement: FakeNode }).activeElement = node },
+      setSelectionRange: (start: number, end: number) => { node.selection = [start, end] } }
+    if (tag === 'input') Object.defineProperty(node, 'value', { get: () => value, set: (next: string) => { value = next; node.selection = [next.length, next.length] } })
+    return node
+  }
+  Object.assign(doc, { createElement: make, createElementNS: (_: string, tag: string) => make(tag), createTextNode: (text: string) => Object.assign(make('#text', 3), { data: text, textContent: text }), createDocumentFragment: () => make('#fragment', 11) })
+  const html = make('html'), head = make('head'); html.childNodes.push(head); Object.assign(doc, { documentElement: html, head })
+  const iframe = Object.assign(make('iframe'), { contentDocument: doc, contentWindow: { scrollTo: () => {}, scrollX: 0, scrollY: 0 } })
+  return { doc, container: { ownerDocument: { createElement: () => iframe }, append: () => {} } }
+}
+
+test('MP-08: review #320-1 a focused text control shows the kernel caret/range after focus (snapshot and a newly introduced field)', async () => {
+  const { doc, container } = fakeDocument()
+  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async () => {})
+  await renderer.ready()
+  const form = (start: number, end: number) => ({ value: 'abc', checked: false, selected_index: -1, selection_start: start, selection_end: end })
+  const nodes: Mirror2Record[] = [{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+    { id: 'n4', parent: 'n3', kind: 'element', tag: 'input', attrs: {}, form: form(0, 0) }]
+  await renderer.apply(base(nodes, { focused: 'n4' }))
+  const field = (id: string) => (doc as unknown as { documentElement: FakeNode }).documentElement.childNodes.flatMap(n => n.childNodes).find(n => (renderer as unknown as { ids: WeakMap<object, string> }).ids.get(n) === id)
+  assert.deepEqual(field('n4')?.selection, [0, 0], 'MP-08: snapshot caret at the kernel position, not the value end')
+  await renderer.apply({ ...base(nodes, { reset: false, base_sequence: 1, sequence: 2, focused: 'n5', ops: [{ op: 'children', id: 'n3', children: ['n4', 'n5'], nodes: [{ id: 'n5', parent: 'n3', kind: 'element', tag: 'input', attrs: {}, form: form(1, 2) }] }] }), nodes: undefined, root: undefined } as unknown as Mirror2Packet)
+  assert.deepEqual(field('n5')?.selection, [1, 2], 'MP-08: a newly introduced focused field keeps the kernel range')
+})
+
+test('MP-10: review #320-2 a removed frame releases its nested records and a retired document its binding', async () => {
+  const { doc, container } = fakeDocument()
+  type Internals = { ready(): Promise<void>; bind(doc: unknown): void; op(op: unknown, scrolls: unknown[]): void; dom: Map<string, unknown>; records: Map<string, Mirror2Record>; ids: WeakMap<object, string> }
+  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async () => {}) as unknown as Internals
+  await renderer.ready()
+  const make = doc.createElement as (tag: string) => FakeNode
+  const nested = fakeDocument().doc, body = make('body'), frame = make('iframe'), html = make('html'), text = make('#text')
+  Object.defineProperty(frame, 'contentDocument', { get: () => frame.parentNode ? nested : null }) // a detached iframe has no document
+  nested.childNodes.push(html); html.childNodes.push(text); (body.appendChild as (c: FakeNode) => FakeNode)(frame)
+  const known: Array<[string, object, Mirror2Record]> = [['n3', body, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' }], ['n5', frame, { id: 'n5', parent: 'n3', kind: 'frame', tag: 'iframe' }],
+    ['n6', nested, { id: 'n6', parent: 'n5', kind: 'document' }], ['n7', html, { id: 'n7', parent: 'n6', kind: 'element', tag: 'html' }], ['n8', text, { id: 'n8', parent: 'n7', kind: 'text', text: 'x' }]]
+  for (const [id, node, record] of known) { renderer.dom.set(id, node); renderer.ids.set(node, id); renderer.records.set(id, record) }
+  renderer.op({ op: 'children', id: 'n3', children: [], nodes: [] }, [])
+  assert.deepEqual(['n5', 'n6', 'n7', 'n8'].filter(id => renderer.records.has(id) || renderer.dom.has(id)), [], 'MP-10: the frame and its document are forgotten')
+  setFlagsFromString('--expose-gc'); const gc = runInNewContext('gc') as () => void
+  let retired!: WeakRef<object>
+  ;(() => { const old = { addEventListener: () => {}, getSelection: () => null }; renderer.bind(old); retired = new WeakRef(old) })()
+  for (let i = 0; i < 3 && retired.deref(); i++) { await new Promise(resolve => setTimeout(resolve, 0)); gc() }
+  assert.equal(retired.deref(), undefined, 'MP-10: a bound document no longer in use can be collected')
+})
