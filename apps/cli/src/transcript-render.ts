@@ -40,7 +40,7 @@ import {
   type TranscriptSurfaceTone,
 } from "./transcript-render-theme.js"
 import { applyTranscriptTextContent } from "./transcript-text-render.js"
-import { renderTranscriptMarkdownNode } from "./transcript-hyperlinks.js"
+import { createTranscriptMarkdownNodeRenderer } from "./transcript-hyperlinks.js"
 
 export {
   transcriptRenderMode,
@@ -214,7 +214,7 @@ function buildExpandedTranscriptContent(
       conceal: true,
       concealCode: false,
       streaming: true,
-      renderNode: renderTranscriptMarkdownNode,
+      renderNode: createTranscriptMarkdownNodeRenderer(renderer),
     })
     body.add(markdown)
     markdown.requestRender()

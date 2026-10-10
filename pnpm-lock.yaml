@@ -4,6 +4,14 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@opentui/core-darwin-x64': 0.1.88
+  '@opentui/core-darwin-arm64': 0.1.88
+  '@opentui/core-linux-x64': 0.1.88
+  '@opentui/core-linux-arm64': 0.1.88
+  '@opentui/core-win32-x64': 0.1.88
+  '@opentui/core-win32-arm64': 0.1.88
+
 patchedDependencies:
   '@opentui/core@0.1.87':
     hash: igw7nobtxnxlxloqmrjkwend5q
@@ -382,33 +390,33 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@opentui/core-darwin-arm64@0.1.87':
-    resolution: {integrity: sha512-G8oq85diOfkU6n0T1CxCle7oDmpKxwhcdhZ9khBMU5IrfLx9ZDuCM3F6MsiRQWdvPPCq2oomNbd64bYkPamYgw==}
+  '@opentui/core-darwin-arm64@0.1.88':
+    resolution: {integrity: sha512-oGRexWwZFeQJymOK5ORrLrwJUbPHMYaFa0EcLnlhvPnymm1xyMcRKm39ez0WSIdtiCCi/PmMHX95CfyyJB5VMA==}
     cpu: [arm64]
     os: [darwin]
 
-  '@opentui/core-darwin-x64@0.1.87':
-    resolution: {integrity: sha512-MYTFQfOHm6qO7YaY4GHK9u/oJlXY6djaaxl5I+k4p2mk3vvuFIl/AP1ypITwBFjyV5gyp7PRWFp4nGfY9oN8bw==}
+  '@opentui/core-darwin-x64@0.1.88':
+    resolution: {integrity: sha512-ddnruYpXt7gXsAqZoQzNrHtZ50niYQfESVT3rhE5qgsz7zoWBdKe/RxLKcb6zQmHMZML6SjSh0NrMG86lsH4dQ==}
     cpu: [x64]
     os: [darwin]
 
-  '@opentui/core-linux-arm64@0.1.87':
-    resolution: {integrity: sha512-he8o1h5M6oskRJ7wE+xKJgmWnv5ZwN6gB3M/Z+SeHtOMPa5cZmi3TefTjG54llEgFfx0F9RcqHof7TJ/GNxRkw==}
+  '@opentui/core-linux-arm64@0.1.88':
+    resolution: {integrity: sha512-jfcU/Sw8re3aWWb9cQ4OXmVNp/pchu6lgDRqvfy0EKTpzd7CNIu6a0xm+rcUKiPO7BrTrwtumT5/jZWWgCdHlg==}
     cpu: [arm64]
     os: [linux]
 
-  '@opentui/core-linux-x64@0.1.87':
-    resolution: {integrity: sha512-aiUwjPlH4yDcB8/6YDKSmMkaoGAAltL0Xo0AzXyAtJXWK5tkCSaYjEVwzJ/rYRkr4Magnad+Mjth4AQUWdR2AA==}
+  '@opentui/core-linux-x64@0.1.88':
+    resolution: {integrity: sha512-nyfilOYLu6XWRlPl1R0Y6WzdL+jVdIFnwShBWcZL+QC5HiJnQc6LKy5yX8uv0fVbY5xs1wBvlHVeUj1UwFQyFQ==}
     cpu: [x64]
     os: [linux]
 
-  '@opentui/core-win32-arm64@0.1.87':
-    resolution: {integrity: sha512-cmP0pOyREjWGniHqbDmaMY7U+1AyagrD8VseJbU0cGpNgVpG2/gbrJUGdfdLB0SNb+mzLdx6SOjdxtrElwRCQA==}
+  '@opentui/core-win32-arm64@0.1.88':
+    resolution: {integrity: sha512-jv/dQwcku7YZ4lNnYjivVvjPwTfDfzGfcplUqHxmirnv1Q1pZL1qS5wH1PV6RhAKN779vHTvnYMD4OgHWzqVaA==}
     cpu: [arm64]
     os: [win32]
 
-  '@opentui/core-win32-x64@0.1.87':
-    resolution: {integrity: sha512-N2GErAAP8iODf2RPp86pilPaVKiD6G4pkpZL5nLGbKsl0bndrVTpSqZcn8+/nQwFZDPD/AsiRTYNOfWOblhzOw==}
+  '@opentui/core-win32-x64@0.1.88':
+    resolution: {integrity: sha512-saGvsQqwL8H7B0VBCQ+szMCKh9WIfTebOR8cwPa2+DR+1FnrEG2I4kiikoj4hfYfRMX18A0A11vQxSh3vvy8Ig==}
     cpu: [x64]
     os: [win32]
 
@@ -1515,22 +1523,22 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@opentui/core-darwin-arm64@0.1.87':
+  '@opentui/core-darwin-arm64@0.1.88':
     optional: true
 
-  '@opentui/core-darwin-x64@0.1.87':
+  '@opentui/core-darwin-x64@0.1.88':
     optional: true
 
-  '@opentui/core-linux-arm64@0.1.87':
+  '@opentui/core-linux-arm64@0.1.88':
     optional: true
 
-  '@opentui/core-linux-x64@0.1.87':
+  '@opentui/core-linux-x64@0.1.88':
     optional: true
 
-  '@opentui/core-win32-arm64@0.1.87':
+  '@opentui/core-win32-arm64@0.1.88':
     optional: true
 
-  '@opentui/core-win32-x64@0.1.87':
+  '@opentui/core-win32-x64@0.1.88':
     optional: true
 
   '@opentui/core@0.1.87(patch_hash=igw7nobtxnxlxloqmrjkwend5q)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10)':
@@ -1543,12 +1551,12 @@ snapshots:
       yoga-layout: 3.2.1
     optionalDependencies:
       '@dimforge/rapier2d-simd-compat': 0.17.3
-      '@opentui/core-darwin-arm64': 0.1.87
-      '@opentui/core-darwin-x64': 0.1.87
-      '@opentui/core-linux-arm64': 0.1.87
-      '@opentui/core-linux-x64': 0.1.87
-      '@opentui/core-win32-arm64': 0.1.87
-      '@opentui/core-win32-x64': 0.1.87
+      '@opentui/core-darwin-arm64': 0.1.88
+      '@opentui/core-darwin-x64': 0.1.88
+      '@opentui/core-linux-arm64': 0.1.88
+      '@opentui/core-linux-x64': 0.1.88
+      '@opentui/core-win32-arm64': 0.1.88
+      '@opentui/core-win32-x64': 0.1.88
       bun-webgpu: 0.1.5
       planck: 1.4.3(stage-js@1.0.1)
       three: 0.177.0

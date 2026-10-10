@@ -1,6 +1,5 @@
-import { CodeRenderable, type MarkdownOptions, type TextChunk } from "@opentui/core"
+import { CodeRenderable, StyledText, TextRenderable, type MarkdownOptions, type TextChunk } from "@opentui/core"
 import { providerLoginUrl } from "./provider-login-link.js"
-import { rememberTerminalLinkChunks } from "./terminal-hyperlink-content.js"
 
 // MP-08/MP-10/MP-11: native links retain visible text and styling, including
 // bare Markdown URLs that OpenTUI's syntax-based link detection misses.
@@ -31,11 +30,27 @@ export function linkifyTranscriptChunks(chunks: TextChunk[]): TextChunk[] {
   })
 }
 
-export const renderTranscriptMarkdownNode: NonNullable<MarkdownOptions["renderNode"]> = (_token, context) => {
+class LinkedPlainTextRenderable extends TextRenderable {
+  override get content(): StyledText { return super.content }
+  override set content(value: StyledText | string) {
+    super.content = typeof value === "string"
+      ? new StyledText(linkifyTranscriptChunks([{ __isChunk: true, text: value }])) : value
+  }
+}
+
+export const createTranscriptMarkdownNodeRenderer = (renderer: ConstructorParameters<typeof TextRenderable>[0]): NonNullable<MarkdownOptions["renderNode"]> => (token, context) => {
+  if (token.type === "code" && (!token.lang || /^(?:text|txt|plaintext)$/i.test(token.lang))) {
+    // No syntax grammar invokes onChunks for plaintext fences. Preserve the
+    // bytes and native targets on creation and subsequent streaming updates.
+    return new LinkedPlainTextRenderable(renderer, {
+      width: "100%", wrapMode: "word",
+      content: new StyledText(linkifyTranscriptChunks([{ __isChunk: true, text: token.text }])),
+    })
+  }
   const node = context.defaultRender()
   if (node instanceof CodeRenderable) {
     const original = node.onChunks
-    node.onChunks = async (chunks, details) => rememberTerminalLinkChunks(node, linkifyTranscriptChunks(await original?.(chunks, details) ?? chunks), details.content)
+    node.onChunks = async (chunks, details) => linkifyTranscriptChunks(await original?.(chunks, details) ?? chunks)
   }
   return node
 }

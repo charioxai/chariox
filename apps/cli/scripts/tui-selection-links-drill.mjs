@@ -284,7 +284,7 @@ try {
     let selectionText = 'Provider Accounts'
     if (options['native-session']) {
       await waitFor(() => page.evaluate(() => terminalScreen().includes('Write your next prompt here')),90_000)
-      await typeText('Read the public README at https://github.com/charioxai/chariox, then return NATIVE COPY READY on one line and that repository URL alone on the next line. No explanation.')
+      await typeText('Read the public README at https://github.com/charioxai/chariox, then return NATIVE COPY READY on one line and that repository URL alone on the next line. ' + (options['code-fence'] ? 'Put only those two lines in a single fenced text code block. No explanation.' : 'No explanation.'))
       await press('\r')
       await waitFor(() => page.evaluate(() => terminalScreen().split('\n').some(row => row.replace(/^[│ ]+/,'').replace(/[█ ]+$/,'') === 'NATIVE COPY READY') && /\bIDLE\b/.test(terminalScreen())),180_000)
       selectionText = 'NATIVE COPY READY'

@@ -1,27 +1,28 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { CodeRenderable, SyntaxStyle, TextRenderable } from "@opentui/core"
+import { MarkdownRenderable, SyntaxStyle, TextRenderable, getLinkId } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { applyTranscriptTextContent } from "./transcript-text-render.js"
 import type { TranscriptEntry } from "./cli-types.js"
-import { linkifyTranscriptChunks } from "./transcript-hyperlinks.js"
-import { installTerminalHyperlinkContent, rememberTerminalLinkChunks } from "./terminal-hyperlink-content.js"
+import { createTranscriptMarkdownNodeRenderer, linkifyTranscriptChunks } from "./transcript-hyperlinks.js"
 
-test("MP-08/MP-10/MP-11 hyperlink repaint never replaces newer streamed text with cached content", async () => {
+test("MP-08/MP-10/MP-11 plaintext code-fence URLs have native link metadata without a syntax grammar", async () => {
   const harness = await createTestRenderer({width:80,height:5,useThread:false})
   const syntax = SyntaxStyle.fromStyles({})
-  const old = "OLD https://github.com/charioxai/chariox"
-  const node = new CodeRenderable(harness.renderer,{content:old,syntaxStyle:syntax})
+  const node = new MarkdownRenderable(harness.renderer,{
+    content:"```text\nhttps://github.com/charioxai/chariox\n```",syntaxStyle:syntax,
+    renderNode:createTranscriptMarkdownNodeRenderer(harness.renderer),
+  })
   harness.renderer.root.add(node)
-  rememberTerminalLinkChunks(node,linkifyTranscriptChunks([{__isChunk:true,text:old}]),old)
-  const dispose = installTerminalHyperlinkContent(harness.renderer)
   try {
     await harness.renderOnce()
-    node.content = "NEW STREAM CONTENT"
+    assert.ok(harness.captureCharFrame().includes("https://github.com/charioxai/chariox"))
+    assert.ok([...harness.renderer.currentRenderBuffer.buffers.attributes].some(value=>getLinkId(value)>0))
+    node.content="```text\nUPDATED https://github.com/charioxai/chariox\n```"
     await harness.renderOnce()
-    assert.ok(harness.captureCharFrame().includes("NEW STREAM CONTENT"))
-    assert.ok(!harness.captureCharFrame().includes("OLD https://"))
-  } finally { dispose(); harness.renderer.destroy(); syntax.destroy() }
+    assert.ok(harness.captureCharFrame().includes("UPDATED https://github.com/charioxai/chariox"))
+    assert.ok([...harness.renderer.currentRenderBuffer.buffers.attributes].some(value=>getLinkId(value)>0))
+  } finally { harness.renderer.destroy(); syntax.destroy() }
 })
 
 test("MP-08/MP-10/MP-11 Markdown bare URLs spanning styled chunks receive one exact native target", () => {
