@@ -2,6 +2,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createDeflateRaw, constants as zlib } from 'node:zlib'
+import { setFlagsFromString } from 'node:v8'
+import { runInNewContext } from 'node:vm'
 import { validateMirror2Packet, validateMirror2Record, validateMirror2Css, mirror2SandboxCsp, decodeMirror2Records, resolveMirror2Sheets } from './browser-mirror2-security.js'
 import { Mirror2Inflater, browserMirror2MinimumProtocolVersion, attachBrowserMirror2, BrowserMirror2Renderer } from './browser-mirror2.js'
 import type { Mirror2Packet, Mirror2Record } from './browser-mirror2-types.js'
@@ -295,4 +297,25 @@ test('MP-08: review #320-1 a focused text control shows the kernel caret/range a
   assert.deepEqual(field('n4')?.selection, [0, 0], 'MP-08: snapshot caret at the kernel position, not the value end')
   await renderer.apply({ ...base(nodes, { reset: false, base_sequence: 1, sequence: 2, focused: 'n5', ops: [{ op: 'children', id: 'n3', children: ['n4', 'n5'], nodes: [{ id: 'n5', parent: 'n3', kind: 'element', tag: 'input', attrs: {}, form: form(1, 2) }] }] }), nodes: undefined, root: undefined } as unknown as Mirror2Packet)
   assert.deepEqual(field('n5')?.selection, [1, 2], 'MP-08: a newly introduced focused field keeps the kernel range')
+})
+
+test('MP-10: review #320-2 a removed frame releases its nested records and a retired document its binding', async () => {
+  const { doc, container } = fakeDocument()
+  type Internals = { ready(): Promise<void>; bind(doc: unknown): void; op(op: unknown, scrolls: unknown[]): void; dom: Map<string, unknown>; records: Map<string, Mirror2Record>; ids: WeakMap<object, string> }
+  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async () => {}) as unknown as Internals
+  await renderer.ready()
+  const make = doc.createElement as (tag: string) => FakeNode
+  const nested = fakeDocument().doc, body = make('body'), frame = make('iframe'), html = make('html'), text = make('#text')
+  Object.defineProperty(frame, 'contentDocument', { get: () => frame.parentNode ? nested : null }) // a detached iframe has no document
+  nested.childNodes.push(html); html.childNodes.push(text); (body.appendChild as (c: FakeNode) => FakeNode)(frame)
+  const known: Array<[string, object, Mirror2Record]> = [['n3', body, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' }], ['n5', frame, { id: 'n5', parent: 'n3', kind: 'frame', tag: 'iframe' }],
+    ['n6', nested, { id: 'n6', parent: 'n5', kind: 'document' }], ['n7', html, { id: 'n7', parent: 'n6', kind: 'element', tag: 'html' }], ['n8', text, { id: 'n8', parent: 'n7', kind: 'text', text: 'x' }]]
+  for (const [id, node, record] of known) { renderer.dom.set(id, node); renderer.ids.set(node, id); renderer.records.set(id, record) }
+  renderer.op({ op: 'children', id: 'n3', children: [], nodes: [] }, [])
+  assert.deepEqual(['n5', 'n6', 'n7', 'n8'].filter(id => renderer.records.has(id) || renderer.dom.has(id)), [], 'MP-10: the frame and its document are forgotten')
+  setFlagsFromString('--expose-gc'); const gc = runInNewContext('gc') as () => void
+  let retired!: WeakRef<object>
+  ;(() => { const old = { addEventListener: () => {}, getSelection: () => null }; renderer.bind(old); retired = new WeakRef(old) })()
+  for (let i = 0; i < 3 && retired.deref(); i++) { await new Promise(resolve => setTimeout(resolve, 0)); gc() }
+  assert.equal(retired.deref(), undefined, 'MP-10: a bound document no longer in use can be collected')
 })

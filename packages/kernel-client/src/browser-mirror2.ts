@@ -30,7 +30,7 @@ export class BrowserMirror2Renderer {
   private styled = new Map<string, Styled>()
   private tileUrls = new Map<string, string>()
   private selects: Array<[Element, Mirror2Form]> = []
-  private bound = new Set<Document>()
+  private bound = new WeakSet<Document>() // a retired frame document is not kept alive by its binding
   private empty: string
   sequence = 0
   documentId = ''
@@ -267,6 +267,7 @@ export class BrowserMirror2Renderer {
     const id = this.ids.get(node); if (id) this.forget(id)
     for (const child of Array.from(node.childNodes)) this.forgetTree(child)
     if ((node as Element).shadowRoot) this.forgetTree((node as Element).shadowRoot!)
+    if ((node as Element).localName === 'iframe') { const nested = (node as HTMLIFrameElement).contentDocument; if (nested) this.forgetTree(nested) }
   }
   private hydrateFrames(frames: Array<{ frame: HTMLIFrameElement; id: string }>, records: Mirror2Record[], scrolls: Array<[Element, number, number]>): void {
     for (let i = 0; i < frames.length; i++) {
@@ -358,7 +359,7 @@ export class BrowserMirror2Renderer {
         // A frame's child is its document: rebuild the frame's own document.
         if (this.records.get(op.id)?.kind === 'frame') {
           const nested = (node as HTMLIFrameElement).contentDocument
-          if (nested?.documentElement) this.forgetTree(nested.documentElement)
+          if (nested) this.forgetTree(nested)
           this.hydrateFrames([{ frame: node as HTMLIFrameElement, id: op.id }], op.nodes, scrolls)
           break
         }
@@ -372,7 +373,8 @@ export class BrowserMirror2Renderer {
           const child = fresh.get(id) ?? this.dom.get(id); if (child) desired.push(child)
         }
         const keep = new Set(desired)
-        for (const child of Array.from(container.childNodes)) if (!keep.has(child) && (this.ids.has(child) || child.nodeType !== 1 || !(child as Element).matches?.('meta[http-equiv]'))) { container.removeChild(child); if (!this.isAttached(child)) this.forgetTree(child) }
+        // Forgotten before removal: a detached iframe no longer exposes its document.
+        for (const child of Array.from(container.childNodes)) if (!keep.has(child) && (this.ids.has(child) || child.nodeType !== 1 || !(child as Element).matches?.('meta[http-equiv]'))) { this.forgetTree(child); container.removeChild(child) }
         for (let i = 0; i < desired.length; i++) if (container.childNodes[i] !== desired[i]) container.insertBefore(desired[i]!, container.childNodes[i] ?? null)
         for (const id of shadowIds) { const record = this.records.get(id)!; const fragment = fresh.get(id); if (fragment && node.nodeType === 1) this.attachShadow(node as Element, record, fragment as DocumentFragment) }
         if (node.nodeType === 9 && !(node as Document).head?.querySelector('meta[http-equiv]')) this.csp(node as Document)
@@ -395,7 +397,6 @@ export class BrowserMirror2Renderer {
       case 'res': this.image(op.id, node as Element, op.res); break
     }
   }
-  private isAttached(node: Node): boolean { return node.isConnected || node.parentNode !== null }
   // Opaque region pixels paint as the element's own background: they scroll and
   // reflow with the mirrored layout instead of floating at a stale viewport box.
   private tile(tile: Mirror2Tile): void {
