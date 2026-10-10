@@ -14,6 +14,7 @@ spec.loader.exec_module(drill)
 class CaretVerdictTests(unittest.TestCase):
     def setUp(self):
         root = Path.home() / '.codex/evidence/browser-computer-use-macos'
+        root.mkdir(parents=True, exist_ok=True)
         self.evidence = Path(tempfile.mkdtemp(prefix='caret-verdict-unit-', dir=root))
         self.state = {'frontmostPID': 42, 'pointer': {'x': 366.0, 'y': 571.0}}
 
