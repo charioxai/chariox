@@ -314,7 +314,8 @@ fn cloud_enrolled_kernel_pairing_creates_safe_links_and_redeems_over_scoped_rela
             let request = LocalDaemonRequest::JoinTerminalPairingLink(
                 crate::local::JoinTerminalPairingLinkRequest {
                     pairing_link: link,
-                    terminal_id: Some("viewer-terminal".into()),
+                    // MP-08 / MP-10 / MP-11: exercise owner denial after proving the receiver identity.
+                    terminal_id: Some("shared-viewer".into()),
                     terminal_type: None,
                     alias: None,
                     public_key_thumbprint: Some(pin.clone()),
@@ -366,7 +367,8 @@ fn cloud_enrolled_kernel_pairing_creates_safe_links_and_redeems_over_scoped_rela
         let join = LocalDaemonRequest::JoinTerminalPairingLink(
             crate::local::JoinTerminalPairingLinkRequest {
                 pairing_link: pairing.pairing_link,
-                terminal_id: Some(pairing.terminal_id),
+                // MP-08 / MP-10 / MP-11: the enrolled receiving CLIENT, not the invitation label.
+                terminal_id: Some("receiver".into()),
                 terminal_type: None,
                 alias: None,
                 public_key_thumbprint: Some(pin.clone()),
