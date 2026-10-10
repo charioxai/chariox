@@ -67,21 +67,22 @@ class CaretVerdictTests(unittest.TestCase):
 
     def pointer_verdict(self, pointer, cg_pointer=None, receipt_point='363.0,571.0', refuse=False):
         state = {'frontmostPID': 42, 'pointer': pointer,
+                 'windows': [{'pid': 42, 'windowID': 7, 'bounds': {'X': 0, 'Y': 0, 'Width': 1000, 'Height': 1000}}],
                  'cgPointer': cg_pointer if cg_pointer is not None else pointer}
         receipt = ('dispatched; path=AXSelectedTextRange; observed AXSelectedTextRange '
                    f'location=125 length=0; point={receipt_point}')
         with patch.object(drill, 'require_gui'), patch.object(drill, 'desktop', return_value=state), \
-                patch.object(drill, 'warp_pointer'), patch.object(drill, 'launch_helper', return_value=receipt) as launch, \
+                patch.object(drill, 'run_pointer_script', return_value=json.dumps({'last': pointer, 'stopped': False})), patch.object(drill, 'launch_helper', return_value=receipt) as launch, \
                 patch.object(drill, 'selection', return_value=('125', '0')):
             if refuse:
                 with self.assertRaisesRegex(RuntimeError, 'pointer-warp-coordinate-mismatch'):
-                    drill.verify_caret(self.evidence, 'probe', [], 42,
+                    drill.verify_caret(self.evidence, 'probe', ['--window-id', '7'], 42,
                                        '363.61328125', '571', '125', True)
                 launch.assert_not_called()
                 return
-            result = drill.verify_caret(self.evidence, 'probe', [], 42,
+            result = drill.verify_caret(self.evidence, 'probe', ['--window-id', '7'], 42,
                                         '363.61328125', '571', '125', True)[0]
-            launch.assert_called_once_with(self.evidence, 'probe', ['--target', 'text', '--click-at-pointer', '--click'])
+            launch.assert_called_once_with(self.evidence, 'probe', ['--window-id', '7', '--target', 'text', '--click-at-pointer', '--click'])
             return result
 
     def test_fractional_warp_uses_sampled_point_for_receipt(self):
