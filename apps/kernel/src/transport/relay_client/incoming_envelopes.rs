@@ -147,11 +147,18 @@ pub(super) async fn handle_incoming_envelope(
                     });
                 }
             }
+            let timing_input = turn.is_some();
+            if timing_input {
+                chariox_relay::transport_timing::record("kernel_input_queued", timing_packet);
+            }
             tokio::spawn(async move {
                 if let Some(turn) = turn.as_mut() {
                     turn.ready().await;
                 }
                 chariox_relay::transport_timing::record("kernel_request_start", timing_packet);
+                if timing_input {
+                    chariox_relay::transport_timing::record("kernel_input_start", timing_packet);
+                }
                 let mut relay_response = match prepared {
                     Ok(prepared) => {
                         handle_prepared_daemon_request(
@@ -166,6 +173,9 @@ pub(super) async fn handle_incoming_envelope(
                     Err(outcome) => outcome,
                 };
                 chariox_relay::transport_timing::record("kernel_request_end", timing_packet);
+                if timing_input {
+                    chariox_relay::transport_timing::record("kernel_input_end", timing_packet);
+                }
                 drop(turn);
                 if let Some((display_id, event_id, encrypted_event)) = relay_response.display_event
                 {
