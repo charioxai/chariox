@@ -11,6 +11,8 @@ import { runHostedRemoteCliAssertions } from "./hosted-cloud-remote-cli-scenario
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { fileURLToPath } from "node:url"
+import { runRemoteTerminalLogin } from "./hosted-cloud-remote-terminal-login.mjs"
+import { bootstrapCliRuntime, defaultCliRuntimeBootstrapDeps } from "../../dist/cli-runtime-bootstrap.js"
 
 const modules = await loadCloudRelayDrillModules()
 
@@ -154,15 +156,84 @@ test("MP-11: hosted helper rejects invalid signal targets and omits private resp
 })
 
 test("MP-08 / MP-10 / MP-11: hosted remote CLI pairs with its own CLIENT profile rather than forwarding the owner's grant", async () => {
-  let command, pairingRequests = 0
+  let command, pairingRequests = 0, prepared = false, cleaned = false
   await assert.rejects(runHostedRemoteCliAssertions({
     requests: modules.requests,
     homeClient: {send: async request => {assert.ok(request.CreateTerminalPairingLink); pairingRequests++; return {TerminalPairingLinkCreated: {pairing: {pairing_link: "synthetic-pairing-link"}}}}},
     repoRoot: "/synthetic-repo", remoteCliRepo: "/synthetic-remote-repo", remoteCliHost: "synthetic-host",
     log: () => {}, assert, unwrap, shellQuote: value => `'${value}'`, sshArgs: value => {command = value; return []},
     spawnProcess: () => {throw new Error("synthetic launch boundary")}, terminateChild: async () => {}, runSsh: async () => {}, allowDevStubProvider: async () => {},
+    prepareRemoteTerminal: async () => {
+      prepared = true
+      return { environment: "export CHARIOX_HOME='/isolated-receiver'", cleanup: async () => { cleaned = true } }
+    },
   }), /synthetic launch boundary/)
+  assert.equal(prepared, true, "receiver CLIENT login must finish before TUI launch")
+  assert.equal(cleaned, true, "receiver logout must run even when TUI launch fails")
   assert.equal(pairingRequests, 1)
   assert.match(command, /--terminal-pairing-link 'synthetic-pairing-link'/)
   assert.doesNotMatch(command, /--relay-token/)
+  assert.match(command, /CHARIOX_HOME='\/isolated-receiver'/)
+})
+
+test("MP-08 / MP-10 / MP-11: receiver device login feeds actual CLI pairing bootstrap and acknowledged logout", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "kauthval-receiver-bootstrap-"))
+  const previousHome = process.env.CHARIOX_HOME
+  process.env.CHARIOX_HOME = path.join(root, "home/.chariox")
+  t.after(async () => {
+    if (previousHome === undefined) delete process.env.CHARIOX_HOME
+    else process.env.CHARIOX_HOME = previousHome
+    await rm(root, {recursive: true, force: true})
+  })
+  const calls = []
+  let identity, grantKey, logouts = 0
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    const route = new URL(url).pathname, body = JSON.parse(init.body)
+    calls.push(route)
+    if (route === "/auth/device/start") {
+      assert.equal(body.enrollmentKind, "CLIENT")
+      identity = body
+      return Response.json({deviceCode: "synthetic-device", userCode: "PUBLIC", verificationUrl: "http://127.0.0.1/activate", expiresAt: new Date(Date.now()+60_000).toISOString(), intervalSeconds: 1})
+    }
+    if (route === "/auth/device/poll") return Response.json({status: "approved", profile: {enrollmentKind: "CLIENT", publicKeyThumbprint: identity.publicKeyThumbprint, clientId: identity.clientId, email: "owner@example.test", accountSlug: "owner", accountId: "account", userId: "owner", realmId: "realm", relayUrl: "wss://relay.test", issuerId: "issuer"}, cloudSessionToken: "synthetic-human-access", refreshCredential: "synthetic-refresh", cloudSessionExpiresAt: new Date(Date.now()+300_000).toISOString()})
+    if (route === "/relay/token") {
+      assert.equal(body.clientId, identity.clientId)
+      assert.deepEqual(body.allowedTargets, ["home-kernel"])
+      grantKey = body.publicKeyThumbprint
+      return Response.json({token: `fixture.${Buffer.from(JSON.stringify({public_key_thumbprint: grantKey})).toString("base64url")}.fixture`, expiresAt: new Date(Date.now()+300_000).toISOString()})
+    }
+    assert.equal(route, "/auth/logout")
+    assert.equal(body.clientId, identity.clientId)
+    assert.equal(body.revokeClient, true)
+    logouts++
+    return Response.json(null)
+  })
+  const pairingLink = "chariox://terminal-pairing/synthetic"
+  const options = {relayUrl: "wss://relay.test", relayToken: "cloud-client-token-required", targetDaemonId: "home-kernel", clientId: "receiver", workspace: root, worktree: root}
+  let joins = 0, clients = 0
+  const fakeClient = {close: async () => {}, send: async request => {
+    assert.ok(request.JoinTerminalPairingLink)
+    assert.equal(request.JoinTerminalPairingLink.public_key_thumbprint, grantKey)
+    joins++
+    return {TerminalPairingLinkJoined: {kernel_pairing: true, terminal: {terminal_id: "receiver"}, pairing: {target_daemon_id: "home-kernel", relay_url: options.relayUrl, subject_id: "receiver", public_key_thumbprint: grantKey}}}
+  }}
+  const deps = {...defaultCliRuntimeBootstrapDeps, parseArgs: () => ({...options}),
+    loadPreferences: async () => ({}), applyProviderPreferenceDefaults: () => {},
+    createClient: () => { clients++; return fakeClient },
+    inferWorkspaceTargetsFromLaunchDirectory: async () => ({workspace: root, worktree: root}),
+    clearWaitingRoomWorktreeInventory: () => {}, loadThemeRegistry: async () => ({}),
+    isNoArgDefaultKernelLaunch: () => false, maybeResize: async () => {},
+    bootstrapAttachedSession: async () => ({client: fakeClient, sessionId: "session", transcript: []}),
+  }
+  const boot = () => bootstrapCliRuntime({argv: ["--terminal-pairing-link", pairingLink], cwd: root}, deps)
+  await assert.rejects(boot(), /signed-in terminal/)
+  assert.equal(clients, 0, "fresh receiver rejects before IPC")
+  await runRemoteTerminalLogin("login", root, "http://127.0.0.1:44123", "account")
+  assert.equal((await boot()).kind, "ready")
+  assert.equal(joins, 1)
+  assert.equal(grantKey, identity.publicKeyThumbprint)
+  assert.equal((await stat(path.join(process.env.CHARIOX_HOME, "relay/cloud-client.json"))).mode & 0o777, 0o600)
+  await runRemoteTerminalLogin("logout", root)
+  assert.equal(logouts, 1)
+  assert.deepEqual(calls, ["/auth/device/start", "/auth/device/poll", "/relay/token", "/auth/logout"])
 })

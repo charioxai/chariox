@@ -2,6 +2,7 @@ import { rm } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
+import { prepareHostedRemoteTerminal } from "./hosted-cloud-remote-terminal-login.mjs"
 
 async function waitForLocalSocket(socketPath, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs
@@ -417,12 +418,17 @@ export async function runHostedRemoteCliAssertions({
   spawnProcess,
   terminateChild,
   allowDevStubProvider,
+  apiUrl,
+  ownerAccountSlug,
+  ownerAccountId,
+  prepareRemoteTerminal = prepareHostedRemoteTerminal,
 }) {
   const remoteId = `${process.pid}-${Date.now()}`
   const remoteAlias = `hosted-remote-cli-${remoteId}`
   const remoteClientId = `hosted-remote-client-${remoteId}`
-  const remoteWorkspace = `/tmp/chariox-hosted-remote-cli-${remoteId}`
-  const remoteSocket = `/tmp/chariox-hosted-remote-cli-${remoteId}.sock`
+  const remoteRoot = `/var/tmp/chariox-kauthval-hosted-remote-cli-${remoteId}`
+  const remoteWorkspace = `${remoteRoot}/workspace`
+  const remoteSocket = `${remoteRoot}/automation.sock`
   // MP-08 / MP-10 / MP-11: the receiving terminal uses its own signed-in
   // CLIENT profile and key, as in the remote pairing scenario. An owner's
   // key-bound grant cannot be forwarded to another terminal.
@@ -431,39 +437,42 @@ export async function runHostedRemoteCliAssertions({
     "TerminalPairingLinkCreated",
   ).pairing
   assert(pairing?.pairing_link, "remote CLI pairing link should be returned")
-  const remoteCommand = [
-    "set -e",
-    "export PATH=/root/.bun/bin:/opt/node-v22/bin:$PATH",
-    "export CHARIOX_TEST_TUI=1",
-    `mkdir -p ${shellQuote(remoteWorkspace)}`,
-    `cd ${shellQuote(path.posix.join(remoteCliRepo, "apps/cli"))}`,
-    [
-      "bun",
-      "dist/index.js",
-      "--terminal-pairing-link",
-      shellQuote(pairing.pairing_link),
-      "--automation-socket",
-      shellQuote(remoteSocket),
-      "--create-session",
-      "--alias",
-      shellQuote(remoteAlias),
-      "--workspace",
-      shellQuote(remoteWorkspace),
-      "--worktree",
-      shellQuote(remoteWorkspace),
-      "--client-id",
-      shellQuote(remoteClientId),
-      "--provider",
-      "dev-stub",
-      "--model",
-      "remote-cli-drill",
-      "--effort",
-      "low",
-    ].join(" "),
-  ].join("; ")
-
-  let remoteCli = null
+  let receiver, remoteCli = null
   try {
+    receiver = await prepareRemoteTerminal({ remoteRoot, remoteCliRepo, apiUrl, ownerAccountSlug, ownerAccountId,
+      runSsh, shellQuote, sshArgs, spawnProcess, terminateChild })
+    const remoteCommand = [
+      "set -e",
+      "export PATH=/root/.bun/bin:/opt/node-v22/bin:$PATH",
+      "export CHARIOX_TEST_TUI=1",
+      receiver.environment,
+      `mkdir -p ${shellQuote(remoteWorkspace)}`,
+      `cd ${shellQuote(path.posix.join(remoteCliRepo, "apps/cli"))}`,
+      [
+        "bun",
+        "dist/index.js",
+        "--terminal-pairing-link",
+        shellQuote(pairing.pairing_link),
+        "--automation-socket",
+        shellQuote(remoteSocket),
+        "--create-session",
+        "--alias",
+        shellQuote(remoteAlias),
+        "--workspace",
+        shellQuote(remoteWorkspace),
+        "--worktree",
+        shellQuote(remoteWorkspace),
+        "--client-id",
+        shellQuote(remoteClientId),
+        "--provider",
+        "dev-stub",
+        "--model",
+        "remote-cli-drill",
+        "--effort",
+        "low",
+      ].join(" "),
+    ].join("; ")
+
     await allowDevStubProvider(homeClient, requests, "remote-cli-home-kernel")
     log("remote-cli-start", { host: remoteCliHost, repo: remoteCliRepo, alias: remoteAlias })
     remoteCli = spawnProcess("ssh", sshArgs(remoteCommand, { tty: true }), {
@@ -502,6 +511,6 @@ export async function runHostedRemoteCliAssertions({
     })
   } finally {
     await terminateChild(remoteCli)
-    await runSsh(`rm -f ${shellQuote(remoteSocket)}; rm -rf ${shellQuote(remoteWorkspace)}`).catch(() => {})
+    await receiver?.cleanup()
   }
 }
