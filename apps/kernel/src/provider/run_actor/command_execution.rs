@@ -157,7 +157,12 @@ pub(super) fn execute_utility_command(
                 )?
                 .state;
             let result = run_claude_utility_prompt_on_runtime(
-                &run, &mut utility, &envelope, timeout, true, cancellation.as_ref(),
+                &run,
+                &mut utility,
+                &envelope,
+                timeout,
+                true,
+                cancellation.as_ref(),
             );
             drop(utility);
             result
@@ -167,7 +172,12 @@ pub(super) fn execute_utility_command(
     }
     let expects_text = policy != ProviderUtilityExecutionPolicy::SessionCommand;
     let result = run_claude_utility_prompt_on_runtime(
-        &run, &mut state, &envelope, timeout, expects_text, None,
+        &run,
+        &mut state,
+        &envelope,
+        timeout,
+        expects_text,
+        None,
     );
     runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
     result
