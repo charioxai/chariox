@@ -52,6 +52,23 @@ impl KernelRuntimeState {
                 .structured_output_records
                 .take_in_flight_prompt_id(&finished_run_id);
             let is_requested_run = finished_run_id == provider_run_id;
+            // MP-08 / MP-10 / MP-11: final polls can outlive their session.
+            // Drop that run's bookkeeping before draining the shared completion
+            // queue, so it cannot strand another session's first response.
+            let run = match owned.provider_store.get_run(&finished_run_id) {
+                Ok(run) => run,
+                Err(_) => {
+                    owned.structured_output_records.clear(&finished_run_id);
+                    continue;
+                }
+            };
+            if matches!(
+                owned.session_store.get_session(run.session_id()),
+                Err(DaemonError::SessionNotFound { .. })
+            ) {
+                owned.structured_output_records.clear(&finished_run_id);
+                continue;
+            }
             crate::logging::debug_with_fields(
                 "daemon.provider",
                 "drained finished structured output poll",
@@ -297,13 +314,6 @@ impl KernelRuntimeState {
                     .schedule_next_poll(finished_run_id, now_ms);
                 continue;
             }
-            let run = match owned.provider_store.get_run(&finished_run_id) {
-                Ok(run) => run,
-                Err(_) => {
-                    owned.structured_output_records.clear(&finished_run_id);
-                    continue;
-                }
-            };
             let next_due_at_ms =
                 if crate::app::provider_output::structured_output_batch_should_poll_immediately(
                     &poll_result,

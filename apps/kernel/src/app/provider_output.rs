@@ -541,6 +541,24 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 .pending_structured_output_records
                 .take_in_flight_prompt_id(&provider_run_id);
             let is_requested_run = provider_run_id == requested_provider_run_id;
+            // MP-08 / MP-10 / MP-11: a final poll for a deleted session must
+            // not abort this shared drain or lose another run's output batch.
+            let provider_run = match self.provider_store.get_run(&provider_run_id) {
+                Ok(run) => run,
+                Err(_) => {
+                    self.pending_structured_output_records
+                        .clear(&provider_run_id);
+                    continue;
+                }
+            };
+            if matches!(
+                self.app.sessions().get_session(provider_run.session_id()),
+                Err(DaemonError::SessionNotFound { .. })
+            ) {
+                self.pending_structured_output_records
+                    .clear(&provider_run_id);
+                continue;
+            }
             let now_ms = crate::session::unix_epoch_ms();
             let poll_result = match finished.result {
                 Ok(Some(poll_result)) => {
@@ -726,14 +744,6 @@ impl<'a> ProviderOutputPumpContext<'a> {
                             continue;
                         }
                     }
-                }
-            };
-            let provider_run = match self.provider_store.get_run(&provider_run_id) {
-                Ok(run) => run,
-                Err(_) => {
-                    self.pending_structured_output_records
-                        .clear(&provider_run_id);
-                    continue;
                 }
             };
             let session_id = provider_run.session_id().to_string();

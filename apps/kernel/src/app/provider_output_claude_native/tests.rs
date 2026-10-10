@@ -1,6 +1,125 @@
 use super::transcript::ClaudeTranscriptCursor;
 use super::*;
 
+#[test]
+fn numbered_workspace_trust_ignores_incremental_row_order() {
+    // MP-08/MP-10/MP-11: appended Ink updates preserve numbered screen order.
+    let frames = "1. Yes, I trust this folder\n2. No, exit\n1. Yes, I trust this folder";
+    assert_eq!(
+        claude_workspace_trust_approval_input(frames),
+        Some(b"\r".as_slice())
+    );
+    let no_selected = "1. Yes, I trust this folder\n❯ 2. No, exit\n1. Yes, I trust this folder";
+    assert_eq!(
+        claude_workspace_trust_approval_input(no_selected),
+        Some(b"\x1b[A".as_slice())
+    );
+}
+
+#[test]
+fn native_usage_maps_only_the_configured_cloud_owner_to_local_accounts() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("native-usage-owner");
+    let usage_file = root.path().join("usage.json");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    app.config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "cloud-owner".into(),
+        ..Default::default()
+    });
+    let make_run = |runtime_owner: &str, profile_id: &str| {
+        let request = crate::provider::LaunchProviderRequest::new(
+            "usage-session",
+            "claude",
+            "claude-headless",
+            profile_id,
+            "sonnet",
+        )
+        .with_owner_user_id(runtime_owner);
+        RuntimeProviderRun::new(
+            "usage-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "usage-fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::from([(
+                    "CHARIOX_CLAUDE_USAGE_FILE".into(),
+                    usage_file.display().to_string(),
+                )]),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        )
+    };
+    let mut observed = Vec::new();
+    for (runtime_owner, account_owner, used) in [
+        ("cloud-owner", "local", 22.0),
+        ("collaborator", "collaborator", 37.0),
+    ] {
+        let profile = app
+            .provider_account_profiles
+            .create_managed(account_owner, "claude", "native usage")
+            .unwrap();
+        let run = make_run(runtime_owner, &profile.profile_id);
+        fs::write(
+            &usage_file,
+            serde_json::json!({"rate_limits":{"five_hour":{"used_percentage":used}}}).to_string(),
+        )
+        .unwrap();
+        let outcome =
+            ProviderOutputClaudeNativeBridge::new(&mut app).process_claude_account_usage(&run);
+        let actual = app
+            .provider_account_profiles
+            .get(account_owner, "claude", &profile.profile_id)
+            .unwrap()
+            .usage
+            .meters
+            .first()
+            .and_then(|m| m.used_percent);
+        observed.push((
+            runtime_owner,
+            outcome.map_err(|e| e.to_string()),
+            actual,
+            used,
+            profile.profile_id,
+        ));
+    }
+    // A collaborator using the local profile id must not mutate its usage.
+    let run = make_run("collaborator", &observed[0].4);
+    fs::write(
+        &usage_file,
+        r#"{"rate_limits":{"five_hour":{"used_percentage":99}}}"#,
+    )
+    .unwrap();
+    let rejected = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_claude_account_usage(&run)
+        .is_err();
+    let local_after = app
+        .provider_account_profiles
+        .get("local", "claude", &observed[0].4)
+        .unwrap()
+        .usage
+        .meters
+        .first()
+        .and_then(|m| m.used_percent);
+    app.shutdown_cleanup().unwrap();
+    for (runtime_owner, outcome, actual, expected, _) in observed {
+        assert!(
+            outcome.is_ok(),
+            "MP-08/MP-10/MP-11 {runtime_owner}: {outcome:?}"
+        );
+        assert_eq!(actual, Some(expected));
+    }
+    assert!(
+        rejected,
+        "MP-08/MP-10/MP-11 collaborator must retain its independent namespace"
+    );
+    assert_eq!(local_after, Some(22.0));
+}
+
 #[derive(Clone, Default)]
 struct RecordingPermissionBridge {
     interaction_ids: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -127,6 +246,26 @@ fn startup_readiness_run(
     events_file: &std::path::Path,
     pty_command: String,
 ) -> RuntimeProviderRun {
+    startup_readiness_run_at(
+        session_id,
+        agent_id,
+        provider_run_id,
+        context_file,
+        events_file,
+        pty_command,
+        None,
+    )
+}
+
+fn startup_readiness_run_at(
+    session_id: &str,
+    agent_id: &str,
+    provider_run_id: &str,
+    context_file: &std::path::Path,
+    events_file: &std::path::Path,
+    pty_command: String,
+    working_directory: Option<PathBuf>,
+) -> RuntimeProviderRun {
     let request = crate::provider::LaunchProviderRequest::new(
         session_id,
         "claude",
@@ -156,7 +295,7 @@ fn startup_readiness_run(
                 ),
             ]),
             pty_env_remove: Vec::new(),
-            working_directory: None,
+            working_directory,
             structured_endpoint: None,
         },
     )
@@ -1463,6 +1602,160 @@ fn claude_headless_user_prompt_submit_acknowledges_matching_managed_dispatches()
 
 #[test]
 fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
+    workspace_trust_approval_fixture("1. No, exit\n2. Yes, I trust this folder", "\x1b[B\n");
+}
+
+#[test]
+fn claude_headless_slow_start_waits_for_observed_composer_after_startup_grace() {
+    claude_headless_composer_readiness_fixture(false);
+}
+
+#[test]
+fn claude_headless_warm_turn_survives_composer_scrolling_out_of_recent_output() {
+    claude_headless_composer_readiness_fixture(true);
+}
+
+fn claude_headless_composer_readiness_fixture(warm: bool) {
+    let worktree = crate::test_support::TestWorktree::new("claude-warm-composer");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "warm-composer-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-warm-composer-{}-{}-{}",
+        std::process::id(),
+        timestamp_millis(),
+        if warm { "warm" } else { "cold" }
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context = root.join("hidden-context.txt");
+    let events = root.join("events.jsonl");
+    fs::write(&context, "").unwrap();
+    fs::write(&events, "").unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "warm-composer-run",
+        &context,
+        &events,
+        "cat >/dev/null".into(),
+    );
+    run.mark_running();
+    let mut aged = serde_json::to_value(&run).unwrap();
+    aged["started_at_ms"] = serde_json::json!(unix_epoch_ms().saturating_sub(5_000));
+    run = serde_json::from_value(aged).unwrap();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .unwrap();
+    app.record_native_prompt_started_with_attachments(
+        session.id(),
+        attachment.id(),
+        attachment.id(),
+        agent.id(),
+        "Task 1 must reach the composer, never a startup selector",
+        Vec::new(),
+    )
+    .unwrap();
+    let context = context.display().to_string();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .inject_pending_prompt(session.id(), run.id(), agent.id(), &context, &run)
+        .unwrap();
+    let before_composer = claude_native_marker(&context);
+    fs::write(
+        root.join("permission-recent.txt"),
+        "Claude Code ❯ ⏵⏵ mode (shift+tab to cycle)",
+    )
+    .unwrap();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .inject_pending_prompt(session.id(), run.id(), agent.id(), &context, &run)
+        .unwrap();
+    let after_composer = claude_native_marker(&context);
+    let warm_marker = if warm {
+        let first_prompt = app
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .unwrap()
+            .unwrap();
+        // A matching official UserPromptSubmit/queue acknowledgement is the proof
+        // that this exact live provider instance has initialized its composer.
+        write_claude_native_marker(&context, &format!("accepted:{}", first_prompt.id()));
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .complete_native_prompt_after_stop(session.id(), run.id(), agent.id(), &context, true)
+            .unwrap();
+        // Ink emits incremental frames; unchanged composer/footer pixels need not
+        // be emitted again when a long answer rolls the bounded text buffer over.
+        let recent =
+            update_claude_permission_recent(&context, &"Public response text ".repeat(300));
+        assert!(!claude_headless_composer_visible(&recent));
+        app.record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "A second admitted task must reach the same warm provider",
+            Vec::new(),
+        )
+        .unwrap();
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .inject_pending_prompt(session.id(), run.id(), agent.id(), &context, &run)
+            .unwrap();
+        claude_native_marker(&context)
+    } else {
+        None
+    };
+    app.pty.remove_process(run.id()).unwrap();
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        before_composer, None,
+        "elapsed startup grace is not evidence that the provider can accept a prompt"
+    );
+    assert!(after_composer.is_some_and(|marker| marker.starts_with("submit-wait:")));
+    if warm {
+        assert!(warm_marker.is_some_and(|marker| marker.starts_with("submit-wait:")),
+            "warm provider readiness must survive unchanged footer pixels leaving the recent output buffer");
+    }
+}
+
+#[test]
+fn claude_workspace_trust_accepts_yes_first_without_selecting_no() {
+    workspace_trust_approval_fixture("❯ 1. Yes, I trust this folder\n2. No, exit", "\n");
+}
+
+#[test]
+fn claude_workspace_trust_keeps_highlighted_yes_second() {
+    workspace_trust_approval_fixture("1. No, exit\n❯ 2. Yes, I trust this folder", "\n");
+}
+
+// MP-08/MP-10/MP-11: captured official Claude 2.1.292 uses unnumbered choices.
+#[test]
+fn claude_workspace_trust_accepts_unnumbered_no_first() {
+    workspace_trust_approval_fixture("❯ No, exit\nYes, I trust this folder", "\x1b[B\n");
+}
+
+#[test]
+fn claude_workspace_trust_accepts_unnumbered_yes_first() {
+    workspace_trust_approval_fixture("❯ Yes, I trust this folder\nNo, exit", "\n");
+}
+
+#[test]
+fn claude_workspace_trust_keeps_unnumbered_highlighted_yes() {
+    workspace_trust_approval_fixture("No, exit\n❯ Yes, I trust this folder", "\n");
+}
+
+#[test]
+fn claude_workspace_trust_selects_yes_above_highlighted_no() {
+    workspace_trust_approval_fixture("1. Yes, I trust this folder\n❯ 2. No, exit", "\x1b[A\n");
+}
+
+fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
     let worktree = crate::test_support::TestWorktree::new("claude-native-trust-approval");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
@@ -1536,15 +1829,14 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
         steering: false,
     };
     let bridge = StartupTrustBridge::default();
-    let trust_frame =
-        "Quick safety check\nDo you trust this folder?\n1. No, exit\n2. Yes, I trust this folder";
+    let trust_frame = format!("Quick safety check\nDo you trust this folder?\n{choices}");
     ProviderOutputClaudeNativeBridge::new(&mut app)
         .process_terminal_output(
             session.id(),
             run.id(),
             &run,
             Some(std::sync::Arc::new(bridge.clone())),
-            trust_frame,
+            &trust_frame,
         )
         .expect("startup trust should enter the native interaction path");
 
@@ -1596,6 +1888,29 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(approved, "explicit approval should reach startup wait");
+    for _ in 0..100 {
+        if fs::read_to_string(&capture_file)
+            .unwrap_or_default()
+            .contains(expected_input)
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        fs::read_to_string(&capture_file)
+            .expect("PTY should capture workspace approval")
+            .contains(expected_input),
+        "approval must select Yes for the rendered choices"
+    );
+    if expected_input == "\n" {
+        assert!(
+            !fs::read_to_string(&capture_file)
+                .unwrap()
+                .contains("\x1b[B"),
+            "an already selected Yes must not move to No"
+        );
+    }
 
     std::thread::sleep(std::time::Duration::from_millis(4_100));
     fs::write(
@@ -1737,6 +2052,7 @@ fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
 
 #[test]
 fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
+    crate::test_support::isolated_env_test!();
     let worktree = crate::test_support::TestWorktree::new("claude-native-trust-rejection");
     let root = std::env::temp_dir().join(format!(
         "chariox-claude-startup-trust-rejection-{}-{}",
@@ -2677,6 +2993,19 @@ fn claude_headless_prompt_waiting_in_composer_detects_direct_prompt_text() {
 }
 
 #[test]
+fn claude_headless_composer_detects_manual_mode_footer_only_with_prompt_glyph() {
+    assert!(claude_headless_composer_visible(
+        "Claude Code v2.1.292\n❯ \n⏸ manual mode on · ← for agents"
+    ));
+    assert!(!claude_headless_composer_visible(
+        "Claude Code v2.1.292\nmanual mode on · ← for agents"
+    ));
+    assert!(!claude_headless_composer_visible(
+        "Quick safety check: trust this folder?\n❯ No, exit\nYes, I trust this folder\nmanual mode on · ← for agents"
+    ));
+}
+
+#[test]
 fn claude_headless_composer_detects_current_cycle_footer_only_with_prompt_glyph() {
     assert!(claude_headless_composer_visible(
         "──────────────── ❯ ──────────────── ⏵⏵ mode (shift+tab to cycle)"
@@ -2746,6 +3075,11 @@ fn queued_claude_failed_request_note_reaches_hook_context_and_waits_for_acceptan
     let events_file = root.join("events.jsonl");
     fs::write(&context_file, "").unwrap();
     fs::write(&events_file, "").unwrap();
+    fs::write(
+        root.join("permission-recent.txt"),
+        "Claude Code ❯ ⏸ manual mode on · ← for agents",
+    )
+    .unwrap();
     let mut run = startup_readiness_run(
         session.id(),
         agent.id(),
@@ -2923,7 +3257,8 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
                     run.id(),
                     &run,
                     &context,
-                    std::sync::Arc::new(RefusedPermissionBridge),
+                    Some(std::sync::Arc::new(RefusedPermissionBridge)),
+                    "Quick safety check\nDo you trust this folder?\n1. No, exit\n2. Yes, I trust this folder",
                 )
                 .unwrap();
         } else {
@@ -2955,4 +3290,104 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
+}
+
+// MP-08 / MP-10 / MP-11: user-selected workspace trust uses the official native selector.
+#[test]
+fn claude_selected_workspace_trust_is_automatic_only_at_startup() {
+    let worktree = crate::test_support::TestWorktree::new("claude-chosen-trust");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "claude-chosen-trust-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context = root.join("hidden-context.txt");
+    let events = root.join("events.jsonl");
+    let capture = root.join("pty-input.log");
+    fs::write(&context, "").unwrap();
+    fs::write(&events, "").unwrap();
+    let mut run = startup_readiness_run_at(
+        session.id(),
+        agent.id(),
+        "provider-run-chosen-trust",
+        &context,
+        &events,
+        format!("tee {} >/dev/null", capture.display()),
+        Some(PathBuf::from(session.worktree_id())),
+    );
+    run.mark_running();
+    app.pty.spawn_for_run(&run).unwrap();
+    let bridge = RecordingPermissionBridge::default();
+    let rendered = format!("Accessing workspace:\n{}\nQuick safety check\nDo you trust this folder?\n❯ No, exit\nYes, I trust this folder", session.worktree_id());
+    let context = context.display().to_string();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_terminal_output(
+            session.id(),
+            run.id(),
+            &run,
+            Some(std::sync::Arc::new(bridge.clone())),
+            &rendered,
+        )
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    // Capture the assertion after cleanup: a red run must not leak its PTY or scratch.
+    let projected = bridge.interaction_ids.lock().unwrap().clone();
+    let mut approved = false;
+    for _ in 0..100 {
+        let resolution = ProviderOutputClaudeNativeBridge::new(&mut app)
+            .process_pending_claude_workspace_trust(run.id(), &context)
+            .unwrap();
+        approved |= resolution == Some(ClaudeWorkspaceTrustResolution::Approved);
+        if approved {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let input = fs::read_to_string(&capture).unwrap_or_default();
+    // A warm assistant can quote a startup frame. That untrusted observation
+    // must never gain the startup-only automatic approval authority.
+    write_claude_native_marker(&context, "accepted:previous-real-turn");
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_terminal_output(
+            session.id(),
+            run.id(),
+            &run,
+            Some(std::sync::Arc::new(bridge.clone())),
+            &rendered,
+        )
+        .unwrap();
+    let mut warm_projected = Vec::new();
+    for _ in 0..100 {
+        warm_projected = bridge.interaction_ids.lock().unwrap().clone();
+        if !warm_projected.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    app.pty.remove_process(run.id()).unwrap();
+    app.shutdown_cleanup().unwrap();
+    fs::remove_dir_all(root).unwrap();
+    assert!(
+        projected.is_empty(),
+        "selected workspace must not ask twice: {projected:?}"
+    );
+    assert!(
+        approved,
+        "native trust must complete before prompt injection"
+    );
+    assert_eq!(
+        warm_projected.len(),
+        1,
+        "warm provider text must remain explicitly gated"
+    );
+    assert!(
+        input.contains("\x1b[B\n"),
+        "must select Yes before submitting: {input:?}"
+    );
 }

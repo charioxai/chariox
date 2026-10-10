@@ -104,7 +104,20 @@ impl ProviderRunWorkerDeps {
                 };
                 let worker = self.clone();
                 match tokio::task::spawn_blocking(move || worker.execute(command, permit)).await {
-                    Ok(true) | Err(_) => break,
+                    Ok(true) => break,
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.provider_run_actor",
+                            "provider run actor command worker failed",
+                            serde_json::json!({
+                                "provider_run_id": provider_run_id,
+                                "panicked": error.is_panic(),
+                                "cancelled": error.is_cancelled(),
+                                "error": crate::provider::redact_provider_diagnostic(&error.to_string()),
+                            }),
+                        );
+                        break;
+                    }
                     Ok(false) => {}
                 }
             }
