@@ -229,3 +229,13 @@ test('MP-10: review #320-1 a select shows its live selection after its options a
     assert.equal(built.get(id)?.selectedIndex, 1, 'MP-10: the live selection, not the first option')
   }
 })
+
+test('MP-08: review #320-2 a terminal application failure followed by close releases the kernel subscription exactly once', async () => {
+  let sequence = 0
+  const f = flow(async command => command.op === 'mirror_subscribe' ? { subscription_id: 's' } : command.op === 'mirror_close' ? { closed: true } : packet(++sequence, true))
+  f.failAlways(); const mirror = await f.start(400)
+  await until(() => f.failures.length > 0, 3000)
+  await mirror.close(); await mirror.close()
+  assert.equal(f.failures.length, 1)
+  assert.equal(f.requests.filter(command => command.op === 'mirror_close').length, 1, 'MP-08: one mirror_close frees the subscription, its observer and the shared budget')
+})

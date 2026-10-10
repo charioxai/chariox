@@ -479,6 +479,9 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     else if (!gapSince) { const since = gapSince = performance.now(); setTimeout(() => { if (gapSince === since && buffered.size && !closed) { buffered.clear(); gapSince = 0; wantReset = true; fill() } }, GAP_MS) }
   }); chain = run.catch(() => { buffered.clear(); gapSince = 0 }); return run }
   // A retired subscription or generation never recovers by itself.
+  // Stopping local credits and releasing the kernel subscription are separate: the latter happens once.
+  let remoteClosed: Promise<void> | null = null
+  const closeRemote = (): Promise<void> => remoteClosed ??= request({ op: 'mirror_close', subscription_id, generation: binding.generation }).then(() => {}, () => {})
   const terminal = (error: unknown): boolean => error instanceof Error && /stale or foreign mirror/.test(error.message)
   const fatal = (error: unknown): boolean => error instanceof Error && /MP-11: (invalid|unsafe|foreign|executable|active|protected|mirror resource digest|mirror packet bounds)/.test(error.message)
   const credit = (): void => {
@@ -495,7 +498,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       })
       .catch(error => {
         if (reset) resetOutstanding = false; wantReset = true; failures++; failingSince ||= performance.now()
-        if (!closed && (fatal(error) || terminal(error) || performance.now() - failingSince > failingMs)) { closed = true; inflater?.close(); renderer.close(); handlers.failure(error) }
+        if (!closed && (fatal(error) || terminal(error) || performance.now() - failingSince > failingMs)) { closed = true; inflater?.close(); renderer.close(); handlers.failure(error); void closeRemote() }
       })
       .finally(() => { inflight--; if (!closed) setTimeout(fill, failures ? Math.min(4000, 250 * 2 ** (failures - 1)) : 0) })
   }
@@ -508,7 +511,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   fill()
   return {
     renderer,
-    async close() { if (closed) return; closed = true; inflater?.close(); renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}) },
+    async close() { if (!closed) { closed = true; inflater?.close(); renderer.close() } await closeRemote() },
     takeover: () => request({ op: 'display_takeover', tab_id: binding.tab_id, generation: binding.generation }),
     release: () => request({ op: 'display_release', tab_id: binding.tab_id, generation: binding.generation }),
   }
