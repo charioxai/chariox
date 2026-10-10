@@ -327,7 +327,19 @@ export async function resolveKernelClientConnection(
   const payload = expectVariant<{
     connection: KernelClientConnectionPayload
   }>(response, "KernelClientConnectionResolved").connection
-  if (input.publicKeyThumbprint) requireRelayTokenKeyBinding(payload.relay_token, input.publicKeyThumbprint, "resolved CLI kernel connection")
+  if (input.publicKeyThumbprint) {
+    // MP-08/MP-11: only the resolving kernel's explicit absence of a Cloud
+    // profile permits an opaque, non-expiring shared token. Missing expiry alone
+    // is not self-hosted proof. Direct admission still needs a key-bound grant.
+    let selfHostedSharedToken = false
+    if (payload.token_expires_at == null && !relayTokenPayload(payload.relay_token)) {
+      const status = await client.send<Record<string, unknown>>({ CloudRelayStatus: null })
+      selfHostedSharedToken = expectVariant<{ profile?: KernelCloudRelayProfile | null }>(status, "CloudRelayStatus").profile === null
+    }
+    if (!selfHostedSharedToken) {
+      requireRelayTokenKeyBinding(payload.relay_token, input.publicKeyThumbprint, "resolved CLI kernel connection")
+    }
+  }
   return {
     relayUrl: payload.relay_url,
     relayToken: payload.relay_token,

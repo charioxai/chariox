@@ -3,7 +3,7 @@ import test from "node:test"
 
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client/kernel-types"
 
-import { issueKernelCloudRelayClientToken, joinKernelTerminalPairingLink, logoutCloudRelay } from "./relay-api.js"
+import { issueKernelCloudRelayClientToken, joinKernelTerminalPairingLink, logoutCloudRelay, resolveKernelClientConnection } from "./relay-api.js"
 import type { LocalIpcClient } from "./ipc.js"
 
 function fakeClient(send: (request: unknown) => Promise<unknown>): LocalIpcClient {
@@ -36,6 +36,51 @@ function tokenResponse(thumbprint = "bootstrap-thumbprint", allowedTargets?: unk
     },
   }
 }
+
+function connectionResponse(token: string, expiresAt: string | null | undefined) {
+  return { KernelClientConnectionResolved: { connection: {
+    relay_url: "wss://relay.example", relay_token: token,
+    target_daemon_id: "kernel-2", target_daemon_alias: "other-kernel",
+    machine_id: "machine-2", kernel_id: "kernel-2",
+    ...(expiresAt !== undefined ? { token_expires_at: expiresAt } : {}),
+  } } }
+}
+
+const connectionInput = { kernelRef: "kernel-2", machineRef: "machine-2", clientId: "cli-1", publicKeyThumbprint: "bootstrap-thumbprint" }
+
+test("MP-08/MP-11 waiting-room resolution preserves explicit self-hosted shared tokens", async () => {
+  for (const expiresAt of [undefined, null]) {
+    const requests: unknown[] = []
+    const connection = await resolveKernelClientConnection(fakeClient(async request => {
+      requests.push(request)
+      if ("CloudRelayStatus" in (request as object)) return { CloudRelayStatus: { profile: null } }
+      return connectionResponse("shared-token", expiresAt)
+    }), connectionInput)
+    assert.equal(connection.relayToken, "shared-token")
+    assert.equal(connection.tokenExpiresAtMs, null)
+    assert.equal(connection.targetDaemonId, "kernel-2")
+    assert.equal(connection.machineId, "machine-2")
+    assert.equal((requests[0] as any).ResolveKernelClientConnection.public_key_thumbprint, "bootstrap-thumbprint")
+  }
+})
+
+test("MP-08/MP-11 waiting-room resolution rejects unbound hosted and ambiguous tokens", async () => {
+  for (const expiresAt of ["2099-01-01T00:00:00Z", undefined, null]) {
+    for (const profile of [{}, undefined]) {
+      await assert.rejects(resolveKernelClientConnection(fakeClient(async request => "CloudRelayStatus" in (request as object)
+        ? { CloudRelayStatus: { profile } } : connectionResponse("shared-token", expiresAt)), connectionInput), /requires a relay token bound/)
+    }
+  }
+  for (const expiresAt of ["2099-01-01T00:00:00Z", null]) {
+    await assert.rejects(resolveKernelClientConnection(fakeClient(async () => connectionResponse(relayToken("foreign-thumbprint"), expiresAt)), connectionInput), /did not bind the token/)
+  }
+})
+
+test("MP-08/MP-11 waiting-room resolution accepts the bound Cloud token", async () => {
+  const connection = await resolveKernelClientConnection(fakeClient(async () => connectionResponse(relayToken("bootstrap-thumbprint"), "2099-01-01T00:00:00Z")), connectionInput)
+  assert.equal(connection.relayToken, relayToken("bootstrap-thumbprint"))
+  assert.equal(connection.tokenExpiresAtMs, Date.parse("2099-01-01T00:00:00Z"))
+})
 
 test("CLI token and terminal join requests bind the actual bootstrap thumbprint", async () => {
   assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 473)
