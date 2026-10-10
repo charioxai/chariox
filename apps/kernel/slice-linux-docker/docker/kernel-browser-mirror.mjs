@@ -1,5 +1,5 @@
 // MP-08/MP-10/MP-11: bounded, caller/document/policy-bound mirroring service.
-import {displayDeviceMetrics} from './kernel-browser-geometry.mjs';
+import {displayDeviceMetrics,hostViewport} from './kernel-browser-geometry.mjs';
 import { losslessRegion } from './kernel-browser-display.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 import { randomUUID } from 'node:crypto';
@@ -54,14 +54,14 @@ export class MirrorService {
   }
   async subscribe(command,scope) {
     this.expire();if(this.streams.size>=8||![1,2].includes(command.device_scale_factor))throw new Error('MP-11: mirror negotiation bounds');
-    const tab=await this.host.target(command),scale=this.host.scales.get(tab.tab_id);
-    if(scale && scale!==command.device_scale_factor)throw new Error('MP-08: canonical mirror geometry already selected');
+    const tab=await this.host.target(command),scale=hostViewport().device_scale_factor;
+    if(this.host.scales.has(tab.tab_id) && this.host.scales.get(tab.tab_id)!==scale)throw new Error('MP-08: canonical mirror geometry already selected');
     this.assertWebTab(tab);const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
-    await connection.send('Emulation.setDeviceMetricsOverride',displayDeviceMetrics(1280,800,command.device_scale_factor,this.host.chromium?.scale??1),sessionId);
-    this.host.scales.set(tab.tab_id,command.device_scale_factor);
+    await connection.send('Emulation.setDeviceMetricsOverride',displayDeviceMetrics(1280,800,scale,this.host.chromium?.scale??1),sessionId);
+    this.host.scales.set(tab.tab_id,scale);
     const subscription_id=`host-mirror-${randomUUID()}`;
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
-    return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:command.device_scale_factor};
+    return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale};
   }
   async next(command,scope,options={}) {
     const stream=this.require(command.subscription_id,scope,command.generation);

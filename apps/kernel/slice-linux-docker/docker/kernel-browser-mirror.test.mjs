@@ -91,7 +91,7 @@ test('MP-08/MP-11: layout drift falls back to protected tiles and drops the enti
 test('MP-11: stream count and canonical geometry stay bounded',async()=>{
  const {service}=fixture();for(let i=0;i<8;i++)await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
  await assert.rejects(service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),/bounds/);
- const f=fixture();await f.service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');await assert.rejects(f.service.subscribe({tab_id:'t',generation:1,device_scale_factor:2},'a'),/canonical/);
+ const f=fixture();await f.service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');assert.equal((await f.service.subscribe({tab_id:'t',generation:1,device_scale_factor:2},'a')).device_scale_factor,1);
 });
 test('MP-11: resource service reads only Chromium-loaded resources, strips URL, rejects SVG and policy-protected bytes',async()=>{
  let reads=0;const png=encodePng(20,20,Buffer.alloc(20*20*4,120));
@@ -276,7 +276,7 @@ test('MP-11: native keyboard unknown/protected focus refuses with no retry marke
 // MP-08/MP-10/MP-11: both transports must size the actual compositor view.
 for(const dpr of [1,2])test(`MP-10 mirror negotiates native view image scale at DPR${dpr}`,async()=>{
  const {service,calls}=fixture();await service.subscribe({tab_id:'t',generation:1,device_scale_factor:dpr},'a');
- assert.deepEqual(calls.find(c=>c.method==='Emulation.setDeviceMetricsOverride').params,{width:1280,height:800,deviceScaleFactor:dpr,scale:dpr,mobile:false});
+ assert.deepEqual(calls.find(c=>c.method==='Emulation.setDeviceMetricsOverride').params,{width:1280,height:800,deviceScaleFactor:1,scale:1,mobile:false});
 });
 
 // MP-11: no new packet is produced after the live page/native focus moves.
@@ -301,4 +301,18 @@ test('MP-11: plain key refuses a display fallback without painted DOM focus',asy
  service.evaluate=async(world,expression)=>{if(expression.includes('.read('))throw Error('MP-11: observer unavailable');return evaluate(world,expression);};
  const packet=await service.next(next(s.subscription_id),'a');
  await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:packet.sequence,action:{kind:'key',key:'Backspace'}},'a'),/observed focus/);
+});
+
+// MP-08/MP-10/MP-11: a viewer cannot resize a kernel-owned native browser.
+test('MP-10 DPR1 and DPR2 mirrors share native density with video and provider observations',async()=>{
+ const before=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try {
+  const {service,host,calls}=fixture();host.scales.set('t',2);
+  for(const viewerDpr of [1,2]){
+   const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:viewerDpr},'a');
+   assert.equal(sub.device_scale_factor,2);assert.equal(host.scales.get('t'),2);
+  }
+  for(const c of calls.filter(c=>c.method==='Emulation.setDeviceMetricsOverride'))assert.equal(c.params.deviceScaleFactor,2);
+  service.clear();clearInterval(service.expiry);
+ }finally{if(before===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=before;}
 });
