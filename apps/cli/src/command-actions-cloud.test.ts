@@ -226,6 +226,7 @@ test("/cloud links instead of opening when the local kernel is not linked", asyn
 
   assert.equal(startedDeviceLogin, true)
   assert.match(notices[0] ?? "", /Link this machine to Chariox Cloud/)
+  assert.ok((notices[0] ?? "").includes("Cmd-click (Terminal.app: Cmd-double-click) the link to open it, or select it and press Cmd-C"))
   assert.doesNotMatch(notices[0] ?? "", /Opening Chariox Cloud/)
 })
 
@@ -358,6 +359,7 @@ test("/cloud link triggers hosted device login flow", async () => {
 
   assert.deepEqual(flashed, [])
   assert.match(notices[0] ?? "", /Link this machine to Chariox Cloud/)
+  assert.ok((notices[0] ?? "").includes("Cmd-click (Terminal.app: Cmd-double-click) the link to open it, or select it and press Cmd-C"))
   assert.equal(notices.at(-1), "cloud linked: user")
 })
 
