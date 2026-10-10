@@ -1,3 +1,4 @@
+mod account_usage;
 mod prepared_context;
 
 use super::transcript::ClaudeTranscriptCursor;

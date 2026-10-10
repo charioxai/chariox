@@ -590,8 +590,22 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(snapshot) = crate::provider::claude_status_line_usage_snapshot(&value) else {
             return Ok(());
         };
+        // As for structured output, leased quota belongs to the home account.
+        // A worker must neither resolve nor modify its own profile for it.
+        if self
+            .app
+            .provider_run_projection
+            .is_leased_provider_run(provider_run.id())
+        {
+            return Ok(());
+        }
+        let account_owner_user_id =
+            crate::account_profile::provider_account_authority_owner_user_id(
+                &self.app.config,
+                provider_run.owner_user_id(),
+            );
         self.app.provider_account_profiles.update_usage(
-            provider_run.owner_user_id(),
+            &account_owner_user_id,
             provider_run.provider(),
             provider_run.account_profile(),
             snapshot,
