@@ -49,11 +49,14 @@ pub(crate) use account_credential::{
     store_provider_account_credential, validate_provider_account_credential_input,
     CLAUDE_OAUTH_TOKEN_ENV,
 };
-pub(crate) use claude::probe_claude_account_usage;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
     ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
     CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+};
+pub(crate) use claude::{
+    prepare_claude_selected_project_trust, probe_claude_account_usage,
+    redirect_claude_home_to_project, selected_project_trust_scope,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;

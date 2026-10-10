@@ -1795,14 +1795,30 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
             return Ok(());
         };
-        // MP-08 / MP-10 / MP-11: opening a workspace through Chariox already
-        // selects it. Route that exact trust decision through Claude's native
-        // selector; never change permission mode or provider-owned profile JSON.
+        // MP-08 / MP-10 / MP-11: pre-recorded Project trust is primary. A
+        // remaining dialog uses the native selector with the same exact scope.
+        crate::logging::info_with_fields(
+            "daemon.provider_output",
+            "observed Claude trust screen fallback",
+            serde_json::json!({"session_id": session_id, "provider_run_id": provider_run_id, "trust_path": "screen-fallback"}),
+        );
         let session = self.app.sessions.get_session(session_id)?;
         let agent = self.app.agents.get_agent(&agent_id)?;
         let selected =
             std::path::Path::new(agent.worktree_id().unwrap_or_else(|| session.worktree_id()));
-        if !claude_headless_composer_initialized(context_file)
+        let selected_canonical = selected.canonicalize().ok();
+        let home = provider_run
+            .pty_env()
+            .get("HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .and_then(|path| path.canonicalize().ok());
+        let selected_is_project = !session.project_id().is_empty()
+            && selected_canonical.is_some()
+            && home.is_some()
+            && selected_canonical != home;
+        if selected_is_project
+            && !claude_headless_composer_initialized(context_file)
             && provider_run.session_id() == session_id
             && agent.session_id() == session_id
             && workspace_trust::selected_workspace_is_trust_target(
@@ -1818,7 +1834,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             crate::logging::info_with_fields(
                 "daemon.provider_output",
                 "approving Claude trust for the selected workspace",
-                serde_json::json!({ "session_id": session_id, "provider_run_id": provider_run_id }),
+                serde_json::json!({ "session_id": session_id, "provider_run_id": provider_run_id, "trust_path": "screen-fallback" }),
             );
             return Ok(());
         }

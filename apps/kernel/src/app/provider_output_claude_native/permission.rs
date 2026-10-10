@@ -649,7 +649,11 @@ fn normalize_claude_rendered_permission_text(value: &str) -> String {
             }
             continue;
         }
-        if ch.is_whitespace() {
+        if ch == ' ' {
+            // Keep literal path spaces exact; only terminal/control separators
+            // are normalized. Compact matching belongs to UI labels alone.
+            output.push(ch);
+        } else if ch.is_whitespace() {
             if !output.ends_with(' ') {
                 output.push(' ');
             }
@@ -822,5 +826,14 @@ fn workspace_trust_normalization_preserves_path_spaces_and_styles() {
     assert_eq!(
         normalize_claude_rendered_permission_text("/chosen/co\x1b[1mlored\x1b[22m"),
         "/chosen/colored"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn pre_recorded_claude_fallback_preserves_repeated_literal_path_spaces() {
+    assert_eq!(
+        normalize_claude_rendered_permission_text("/selected/folder  name"),
+        "/selected/folder  name"
     );
 }
