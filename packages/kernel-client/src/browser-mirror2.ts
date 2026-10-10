@@ -126,9 +126,11 @@ export class BrowserMirror2Renderer {
     on('wheel', event => { const hit = element(event), wheel = event as WheelEvent; if (!hit || this.records.get(hit.id)?.kind !== 'tile') { this.localScrollAt = performance.now(); return } event.preventDefault(); this.enqueue({ kind: 'scroll', node_id: hit.id, ...offset(hit.el, wheel), delta_x: Math.trunc(wheel.deltaX), delta_y: Math.trunc(wheel.deltaY) }) })
     on('scroll', this.scrolled)
     on('keydown', event => {
-      const { key, shiftKey, ctrlKey, metaKey, altKey, isComposing } = event as KeyboardEvent
-      // While composing, the viewer's own value shows the composition: its range is not the kernel's.
-      if (!isComposing) this.syncRange()
+      const { key, shiftKey, ctrlKey, metaKey, altKey, isComposing, keyCode } = event as KeyboardEvent
+      // Keys while composing belong to the viewer's IME (candidates, confirmation); its range is
+      // not the kernel's either. The committed text travels on compositionend.
+      if (isComposing || keyCode === 229) return
+      this.syncRange()
       if (ctrlKey || metaKey || altKey) return
       // Page keys scroll the viewer's own copy natively; the scroll listener sends the position.
       if (['Tab', 'Enter', 'Escape', 'Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(key)) {

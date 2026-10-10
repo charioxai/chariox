@@ -219,3 +219,24 @@ test('MP-08: review #941-1 an IME composition keeps the kernel\'s insertion poin
     assert.deepEqual(await page.evaluate(() => window.sent.filter(action => action.kind !== 'scroll_to')), [{ kind: 'selection', anchor_id: 'n4', anchor_offset: 0, focus_id: 'n4', focus_offset: 13 }, { kind: 'text', text: 'か' }], 'MP-08: the composition replaces the synced range');
   } finally { await page.close(); }
 });
+
+test('MP-08: review #941-1 keys pressed while composing stay with the viewer\'s IME (candidate navigation, editing, Enter confirmation); only the committed text reaches the kernel', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'form' }, { id: 'n5', parent: 'n4', kind: 'element', tag: 'input', form: { value: 'hello ', checked: false, selected_index: -1, selection_start: 6, selection_end: 6 } }]), focused: 'n5' });
+    // After the renderer's capture listener: what the page-side IME would see.
+    await page.evaluate(() => { window.keys = []; window.r.frame.contentDocument.addEventListener('keydown', e => window.keys.push([e.key, e.isComposing, e.defaultPrevented])); });
+    const cdp = await page.context().newCDPSession(page);
+    // As an IME reports them: the key with keyCode 229 while it updates its own composition.
+    const key = key => cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key, code: key, windowsVirtualKeyCode: 229 }).then(() => cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: 229 }));
+    const compose = text => cdp.send('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length });
+    await compose('にほんg'); await frames();
+    for (const [name, text] of [['Backspace', 'にほん'], ['ArrowDown', '日本'], ['ArrowUp', '二本'], ['ArrowDown', '日本'], ['Escape', 'にほん'], ['ArrowDown', '日本'], ['Enter', null]]) { await key(name); if (text) await compose(text); await frames(); }
+    await cdp.send('Input.insertText', { text: '日本' }); await frames();
+    const keys = await page.evaluate(() => window.keys);
+    assert(keys.length === 7 && keys.every(([, composing]) => composing), `MP-08: the keys arrived while composing: ${JSON.stringify(keys)}`);
+    assert.deepEqual(keys.filter(([, , prevented]) => prevented), [], 'MP-08: no composing key is taken from the viewer\'s IME');
+    assert.deepEqual(await page.evaluate(() => window.sent.filter(action => action.kind !== 'scroll_to')), [{ kind: 'text', text: '日本' }], 'MP-08: only the committed text reaches the kernel (no Enter submits the source form)');
+  } finally { await page.close(); }
+});
