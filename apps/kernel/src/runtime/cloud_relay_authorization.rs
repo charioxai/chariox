@@ -11,6 +11,29 @@ pub(crate) fn authorize_kernel_cloud_request(
     command: &KernelCommand,
     request: &LocalDaemonRequest,
 ) -> Result<(), DaemonError> {
+    // MP-08 / MP-10 / MP-11: a paired remote caller can renew its own
+    // identity only. Otherwise a revoked CLIENT could request an unregistered
+    // attached-local subject with the same still-valid delegated token.
+    if config.cloud_relay.is_some() && command.caller.caller_kind == KernelCallerKind::RemoteClient {
+        let binding = match request {
+            LocalDaemonRequest::IssueCloudRelayClientToken(request) => Some((Some(request.client_id.as_str()), request.public_key_thumbprint.as_deref())),
+            LocalDaemonRequest::ResolveKernelClientConnection(request) => Some((request.client_id.as_deref(), request.public_key_thumbprint.as_deref())),
+            LocalDaemonRequest::JoinTerminalPairingLink(request) => Some((request.terminal_id.as_deref(), request.public_key_thumbprint.as_deref())),
+            _ => None,
+        };
+        if let Some((client_id, key)) = binding {
+            let owns_identity = client_id.zip(command.caller.client_id.as_deref()).is_some_and(|(requested, authenticated)| {
+                if requested == authenticated { return true; }
+                use sha2::{Digest, Sha256};
+                let issuer = config.cloud_relay.as_ref().and_then(|profile| profile.kernel_id.as_deref()).unwrap_or(&config.daemon_id);
+                authenticated == format!("kernel-client:{:x}:{:x}", Sha256::digest(issuer.as_bytes()), Sha256::digest(requested.as_bytes()))
+            });
+            if !owns_identity || key.is_none() || key != command.caller.public_key_thumbprint.as_deref() {
+                return Err(DaemonError::LocalTransport { operation: "authorize paired terminal renewal", message: "terminal delegation must preserve the authenticated receiving identity and key".into() });
+            }
+        }
+    }
+
     let cloud_control = matches!(
         request,
         LocalDaemonRequest::PreflightProviderAccountPortability(_)
@@ -79,6 +102,59 @@ mod tests {
     use super::*;
     use crate::local::ResolveKernelClientConnectionRequest;
     #[test]
+    fn paired_terminal_cannot_renew_a_different_identity_or_key() {
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "owner".into(), realm_id: "realm".into(), ..Default::default()
+        });
+        for (client_id, key, allowed) in [
+            ("paired-terminal", "bound-key", true),
+            ("new-local-identity", "bound-key", false),
+            ("paired-terminal", "new-key", false),
+        ] {
+            let request = LocalDaemonRequest::IssueCloudRelayClientToken(
+                crate::local::IssueCloudRelayClientTokenRequest {
+                    target_daemon_alias: "kernel".into(), client_id: client_id.into(),
+                    session_id: None, public_key_thumbprint: Some(key.into()),
+                });
+            let mut command = KernelCommand::from_local_request("renewal", None, None, &request);
+            command.source = KernelCommandSource::RelayClient;
+            command.caller.caller_kind = KernelCallerKind::RemoteClient;
+            command.caller.user_id = Some("owner".into());
+            command.caller.realm_id = Some("realm".into());
+            command.caller.client_id = Some("paired-terminal".into());
+            command.caller.public_key_thumbprint = Some("bound-key".into());
+            assert_eq!(authorize_kernel_cloud_request(&config, &command, &request).is_ok(), allowed);
+            command.source = KernelCommandSource::LocalIpc;
+            command.caller.caller_kind = KernelCallerKind::LocalClient;
+            assert!(authorize_kernel_cloud_request(&config, &command, &request).is_ok());
+        }
+    }
+
+    #[test]
+    fn paired_terminal_renewal_retains_the_original_client_hash() {
+        use sha2::{Digest, Sha256};
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            kernel_id: Some("issuer".into()), user_id: "owner".into(), realm_id: "realm".into(), ..Default::default()
+        });
+        let subject = format!("kernel-client:{:x}:{:x}", Sha256::digest(b"issuer"), Sha256::digest(b"original-cli"));
+        for client_id in ["original-cli", subject.as_str()] {
+            let request = LocalDaemonRequest::IssueCloudRelayClientToken(crate::local::IssueCloudRelayClientTokenRequest {
+                target_daemon_alias: "target".into(), client_id: client_id.into(), session_id: None, public_key_thumbprint: Some("key".into())
+            });
+            let mut command = KernelCommand::from_local_request("renewal", None, None, &request);
+            command.source = KernelCommandSource::RelayClient;
+            command.caller.caller_kind = KernelCallerKind::RemoteClient;
+            command.caller.user_id = Some("owner".into());
+            command.caller.realm_id = Some("realm".into());
+            command.caller.client_id = Some(subject.clone());
+            command.caller.public_key_thumbprint = Some("key".into());
+            assert!(authorize_kernel_cloud_request(&config, &command, &request).is_ok());
+        }
+    }
+
+    #[test]
     fn provider_portability_is_owner_scoped_before_session_membership() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
@@ -125,6 +201,8 @@ mod tests {
             command.caller.caller_kind = KernelCallerKind::RemoteClient;
             command.caller.user_id = Some("collaborator".into());
             command.caller.realm_id = Some("realm-a".into());
+            command.caller.client_id = Some("viewer-terminal".into());
+            command.caller.public_key_thumbprint = Some("a".repeat(64));
             command.session_id = Some("shared-session".into());
             assert!(
                 authorize_kernel_cloud_request(&config, &command, &request).is_err(),
@@ -165,6 +243,8 @@ mod tests {
         )
         .is_err());
         command.caller.user_id = Some("owner".into());
+        command.caller.client_id = Some("cli-a".into());
+        command.caller.public_key_thumbprint = Some("a".repeat(64));
         assert!(authorize_kernel_cloud_request(&config, &command, &request).is_ok());
         command.caller.caller_kind = KernelCallerKind::RemoteKernel;
         assert!(authorize_kernel_cloud_request(&config, &command, &request).is_err());

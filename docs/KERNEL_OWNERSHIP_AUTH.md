@@ -97,3 +97,21 @@ exercises the actual command handlers and client adapters against synthetic loca
 Cloud/relay/kernel seams, including commands and encrypted events across several
 grant expiries and safe child signalling. These checks do not establish a live
 Cloud/PostgreSQL run, hosted transport or fresh-machine MP-10 acceptance.
+
+## MP-08 / MP-10 / MP-11 receiving terminal revocation (main protocol 487)
+
+A kernel-paired Cloud CLIENT retains its receiving terminal authority during
+issuance and renewal. Cloud resolves the stable terminal hash in the delegated
+subject, checks the receiving account, key and active CLIENT session, and binds
+the grant to that session. CLIENT revocation and logout therefore sweep these
+tokens through the existing relay revocation feed, including active sockets.
+The check applies to default SDK renewal without a CLI callback. A remote
+terminal cannot switch the authenticated subject or key to request an
+unregistered attached-local identity. The original terminal ID and its existing
+kernel-derived subject identify the same receiver during renewal.
+
+Attached-local delegation and self-hosted operator pairing retain their existing
+paths. No serialized shape is added; the rebase retains main's protocol 487 and
+the ownership feature's minimum 478. Focused regressions remain supplementary:
+hosted Settings revocation, actual receiving TUI/default SDK refusal and the
+DPR 1/2 two-hour renewal gate require separate live evidence.
