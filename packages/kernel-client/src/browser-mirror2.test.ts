@@ -209,3 +209,23 @@ test('MP-08/MP-10: replies that never apply keep the failure streak, so the mirr
   assert.equal(f.failures.length, 1, 'MP-08: a renderer that cannot apply any snapshot reaches the terminal failure')
   assert.deepEqual(f.applied, [])
 })
+
+test('MP-10: review #320-1 a select shows its live selection after its options are built (snapshot and children delta)', () => {
+  // Fake DOM with the real select rule: selectedIndex is clamped to the options present, and the first option appended to an empty select becomes selected.
+  type Fake = { nodeType: number; localName: string; childNodes: Fake[]; attributes: Map<string, string>; selectedIndex?: number; value?: string; setAttribute(n: string, v: string): void; removeAttribute(n: string): void; appendChild(c: Fake): Fake; addEventListener(): void; style: { setProperty(): void } }
+  const make = (tag: string): Fake => {
+    const node: Fake = { nodeType: 1, localName: tag, childNodes: [], attributes: new Map(), setAttribute: (n, v) => { node.attributes.set(n, v) }, removeAttribute: n => { node.attributes.delete(n) }, addEventListener: () => {}, style: { setProperty: () => {} },
+      appendChild: child => { node.childNodes.push(child); if (tag === 'select' && child.localName === 'option' && index < 0) index = 0; return child } }
+    let index = -1
+    if (tag === 'select') Object.defineProperty(node, 'selectedIndex', { get: () => index, set: (v: number) => { index = v >= 0 && v < node.childNodes.length ? v : -1 } })
+    return node
+  }
+  const doc = { createElement: make, createElementNS: (_: string, tag: string) => make(tag), createTextNode: () => make('#text'), createDocumentFragment: () => make('#fragment') }
+  const iframe = make('iframe'), container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
+  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async () => {}) as unknown as { build(records: Mirror2Record[], doc: unknown, frames: unknown[], scrolls: unknown[]): Map<string, Fake> }
+  const form = { value: 'b', checked: false, selected_index: 1, selection_start: null, selection_end: null }
+  for (const id of ['n3', 'n13']) {
+    const built = renderer.build([{ id, parent: null, kind: 'element', tag: 'select', form }, { id: id + '1', parent: id, kind: 'element', tag: 'option' }, { id: id + '2', parent: id, kind: 'element', tag: 'option' }], doc, [], [])
+    assert.equal(built.get(id)?.selectedIndex, 1, 'MP-10: the live selection, not the first option')
+  }
+})

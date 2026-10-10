@@ -29,6 +29,7 @@ export class BrowserMirror2Renderer {
   private slices = new Map<string, Mirror2Resource>() // resources still arriving in slices
   private styled = new Map<string, Styled>()
   private tileUrls = new Map<string, string>()
+  private selects: Array<[Element, Mirror2Form]> = []
   private bound = new Set<Document>()
   private empty: string
   sequence = 0
@@ -200,7 +201,8 @@ export class BrowserMirror2Renderer {
       if (record.kind === 'tile') { style.setProperty('display', record.display === 'none' ? 'none' : 'inline-block'); if (element.localName === 'iframe') element.setAttribute('sandbox', '') }
     }
     if (record.kind === 'frame') { element.setAttribute('sandbox', 'allow-same-origin'); element.setAttribute('referrerpolicy', 'no-referrer') }
-    if (record.form) this.form(element, record.form)
+    // A select's state waits for its options (the build appends children after their parent).
+    if (record.form) { if (element.localName === 'select') this.selects.push([element, record.form]); else this.form(element, record.form) }
   }
   private image(id: string, element: Element, key: string | null): void {
     const url = key ? this.resources.get(key) ?? null : null
@@ -218,7 +220,8 @@ export class BrowserMirror2Renderer {
   // Records are pre-order; each record's children follow it in list order.
   // Frame documents are built separately into the frame's own document.
   private build(records: Mirror2Record[], doc: Document, frames: Array<{ frame: HTMLIFrameElement; id: string }>, scrolls: Array<[Element, number, number]>): Map<string, Node> {
-    const built = new Map<string, Node>(), shadows: Array<[Element, Mirror2Record]> = [], skipped = new Set<string>()
+    const built = new Map<string, Node>(), shadows: Array<[Element, Mirror2Record]> = [], skipped = new Set<string>(), outer = this.selects
+    this.selects = []
     for (const record of records) {
       if (record.parent !== null && (skipped.has(record.parent) || this.records.get(record.parent)?.kind === 'frame')) { skipped.add(record.id); continue }
       const node = this.create(record, doc); built.set(record.id, node)
@@ -229,6 +232,8 @@ export class BrowserMirror2Renderer {
       parent?.appendChild(node)
     }
     for (const [host, record] of shadows) this.attachShadow(host, record, built.get(record.id) as DocumentFragment)
+    for (const [element, form] of this.selects) this.form(element, form)
+    this.selects = outer
     return built
   }
   private attachShadow(host: Element, record: Mirror2Record, fragment: DocumentFragment): void {
