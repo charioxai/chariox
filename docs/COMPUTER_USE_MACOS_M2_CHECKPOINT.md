@@ -1,70 +1,87 @@
-# M2 first checkpoint: paired protected capture source
+# M2 native capture attachment checkpoint
 
-Branch `cu/macos-m2` starts from M1's r6 revocation checkpoint. M2 remains
-disabled and unstaged. This slice adds on-demand paired ScreenCaptureKit capture
-of one explicit signed public fixture window. The existing Computer screenshot
-result shape is reused. No public command/event DTO or protocol version changes.
-The selected window filter omits audio and cursor pixels. Window position, scale,
-AX secure-region coverage, kernel connection and permission are checked before
-and after capture. Secure regions receive opaque masks before encoding or damage
-comparison. Registry protection masks the whole window; unknown protection or
-coverage withholds capture. Real-app capture stays refused until M4 coverage.
-Frames stay in memory, never in helper logs or disk. Encoded output is at most
-512 KiB and protected RGBA state at most 16 MiB. Snapshot peak memory has not
-been measured; the bounded objects do not establish a runtime memory PASS.
+`cu/macos-m2` remains disabled and unstaged. It starts from the published M1
+revocation branch. The protected fixture-only SCK capture is now connected to a
+private helper `host.display` source contract with subscribe, sample and close.
+The kernel must supply `_attachment_owner` only after caller admission. This
+private method has no public KernelComputer route yet. It must not be enabled
+by forwarding caller JSON directly or by inventing a browser tab identity.
 
-The private attachment seam retains one protected RGBA base and compares exact
-64-pixel tiles. It emits an exact full base for a new source/protection/geometry,
-an unknown acknowledged sequence or explicit repair. Unchanged frames advance
-no sequence. Edge tiles are clipped. Invalidation drops the retained raster.
-The source returns a protected PNG and a private publication description; it
-currently encodes a full PNG even when only some tiles changed. Damage tile
-encoding, subscriber credits and periodic streaming are the next M2 slice.
+Each source binds the explicit signed fixture PID/window, pairing generation,
+Quartz origin, native pixel size and 1x/2x scale. Real-app capture remains refused
+until M4. A selected-window filter excludes everything outside the admitted
+fixture, including Chariox helper, approval and viewer windows. Registry targets
+or values mask the entire window; unknown protection withholds capture. Secure
+AX geometry receives opaque masks before encoding, damage comparison or cache
+retention. Output is SDR sRGB, without audio, microphone or cursor pixels.
 
-This is not an encrypted shared-viewer acceptance result. The existing
-`KernelComputerCommand` has no native display-subscribe/attachment operations.
-The existing Browser display paths bind `tab_id` and numeric browser generation.
-M2 must extend the agreed multidomain display surface registration instead of
-inventing a Mac tab ID. Coordinate any serialized contract change with the
-coordinator's protocol allocation, snapshots/hashes and dependent minima.
-Reuse `transport/kernel_browser_display.rs` for transient frame-event extraction
-and no history/trace replay, the caller-bound Browser attachment authorization,
-and existing encrypted relay delivery. `transport/secure_display.rs` is the
-existing encrypted display channel for the Room/Selkies path; select the agreed
-multidomain presenter route rather than adding a second encryption stack.
-The relay remains opaque. Local public-fixture screenshots or passing encryption
-unit tests alone cannot prove this delivery path.
+The source uses SCK complete-frame callbacks at 30 Hz, queueDepth 3 and one
+latest pending buffer. New samples replace older pending samples. Incomplete or
+unproven metadata drops pending pixels. A closed/failed stream never accepts a
+later callback. Presentation timestamps, content size and scale are checked;
+old frames cannot satisfy a fresh sample request. Static streams use independent
+full SCK screenshot readback for byte-exact verification. Capture errors fence
+the stream rather than switch to a different capture API. Policy changes close
+the stream and flush protected bases. Pairing EOF, geometry loss, Stop and
+capture permission health failure clear source state. Health retires idle
+subscriptions and stops their stream. There is no raw-frame log or disk output.
 
-Next M2 needs actual shared viewer registration, native surface/geometry metadata,
-protected damage tile output, credits/acknowledged base validation, exact repair,
-SCK stream callbacks, exclusions/protection-change flushes and encrypted hosted
-relay/Web/TUI drills. Capture a clean public fixture with the re-granted helper,
-inspect exact pixels independently, and then connect that same source to the
-shared presenter. No hardware/video or full-desktop scope is enabled here.
+At most two private subscriptions retain one protected RGBA base each, at most
+16 MiB per base. Each has one outstanding credit and a 60-second idle lease.
+Foreign owners, overlapping credits and expired/closed subscriptions refuse
+before capture. The helper compares every protected byte in clipped 64-pixel
+tiles, emits no duplicate pixels for a quiet surface, and encodes changed tiles
+as lossless PNG. More than 260 tiles or 32 KiB of encoded tile damage becomes a
+full exact PNG. PNGs are capped at 512 KiB and serialized packets at 700 KiB to
+leave room inside the existing 1 MiB private channel envelope. Two caches and
+bounded packets do not establish a measured peak-memory or performance PASS.
 
-M3 must add physical input/owned holds, local-human activity and self-tags,
-serialized seat delivery, fatal owned-release reset and takeover drills. Use
-this source's bound origin/scale for canonical pixels and expire all targets
-on source or transform changes. A failed bounded M0 owned release now poisons
-the paired input session; reset refuses instead of claiming it released input.
-The helper cannot silently clear that state or replay the action.
+Unknown acknowledged sequence, explicit repair, new source/geometry/protection,
+failed encoding or withheld publication forces a full exact base. Final
+publication rechecks owner, lease, source revision and authority after encoding.
+A fail-first test found and fixed a protection-change gap at that final fence.
+The headless suite independently decodes native PNG tiles, checks an edge pixel,
+reconstructs exact damage and verifies full repair. Additional coverage includes
+quiet frames, slow viewers, overlapping credits, foreign owner denial,
+negative-origin 2x masks, whole-window canary removal and callback retirement.
 
-M4 must replace fixture-only coverage with bounded AX refs/revisions and
-conservative real-app private/secure coverage, Vision on protected pixels only,
-OCR ambiguity, opaque AX and no-leak canary tests. M2 and M3 stay disabled until
-those gates pass. Missing geometry must withhold the affected frame.
+## Shared viewer dependency
 
-M5 must attach VideoToolbox/software codec selection, measure authoritative
-presentation and exact restore, provide the protected Developer ID/notarized
-upgrade path, and validate owner onboarding, Web/local TUI/remote TUI and hosted
-relay loss/reconnect, sleep/wake and lock. No signing-key or Keychain work occurs
-in this checkpoint.
+The checked-in shared display route remains browser-specific. Its registration
+accepts tab IDs and numeric browser generations; the presenter validates a
+1280x800 CSS viewport. `KernelComputerCommand` has no display operations. The
+macOS plan reserves the multidomain display union and numeric protocol versions
+for coordinator allocation. This checkpoint allocates none and changes no
+public DTO, version, snapshot or client minimum. The allocated contract commit
+and version were requested during r7 and have not been supplied.
 
-Regression tests cover exact bootstrap, edge damage, quiet frames, missing-base
-and explicit repair, protection/source invalidation, raster budget, opaque mask
-placement at 2x with negative origins, and no remaining synthetic canary pixels
-under a whole-window mask. Native permission-backed capture and input drills
-wait for the one final helper re-grant. Live acceptance remains BLOCKED.
-Rollback removes the explicit Mac helper and scope configuration. Cleanup is
-restricted to inventoried build intermediates and runner-owned processes; no
-recursive runtime-state removal is authorized by these scripts.
+Full M2 still requires native surface registration, caller-bound kernel
+attachment and presenter binding through the existing encrypted transient
+kernel/relay event route. Reuse `transport/kernel_browser_display.rs` to remove
+frame bytes from response/history/trace, existing attachment authorization and
+encrypted relay delivery. Do not add a second encryption stack, put private
+frames into ordinary request replay, or use a Mac window as a browser tab.
+After allocation, update the shared version and snapshots/hashes, dependent
+client minima and focused relay drill together.
+
+No r7 helper rebuild occurred. The preserved r6 bundle is awaiting Miguel's
+re-grant. All r7 helper changes are batched in source for one later rebuild and
+new grant. `OWNER_RECHECK.md` gives the exact retained-r6 fence replay, in-flight
+kernel revoke, and paired capture/native damage replay. That replay uses live
+r6 PNGs and the compiled r7 private attachment. It cannot validate r7 callbacks
+in a granted helper or encrypted shared-viewer delivery. Those live gates remain
+BLOCKED; no capture/input was attempted during r7.
+
+## Remaining milestones and rollback
+
+M3 needs physical input, owned holds, local-human observation/self-tags, seat
+delivery and fatal release/reset proof. The paired bounded AX drill does not
+prove those capabilities. M4 needs AX refs/revisions, protected Vision fallback,
+private coverage, OCR ambiguity and real-app no-leak tests. M5 needs codec
+attachment, measured presentation/restore, Developer ID/notarized upgrades and
+the Web/local TUI/remote TUI/hosted-relay loss, sleep/wake and lock matrix.
+
+Rollback removes the explicit helper/scope configuration. Cleanup is limited
+to inventoried compiler output and runner-owned processes. Durable kernel homes,
+keys, backups, credential profiles and reviewer infrastructure are preserved.
+All builds stay under the approved build root with `-j2`; no CI or push.
