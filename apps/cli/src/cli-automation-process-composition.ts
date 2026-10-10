@@ -22,7 +22,7 @@ export type CliAutomationProcessCompositionDeps = {
   formatError: AnyFn
   flashFooter: AnyFn
   handleSigint: AnyFn
-  handleStdinData: AnyFn
+  handleStdinData?: AnyFn
   onSigint: AnyFn
   offSigint: AnyFn
   onStdinData: AnyFn
@@ -197,7 +197,7 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
   })
   const processLifecycleController = createCliProcessLifecycleController({
     handleSigint: deps.handleSigint,
-    handleStdinData: deps.handleStdinData,
+    ...(deps.handleStdinData ? { handleStdinData: deps.handleStdinData } : {}),
     startAutomationServer: () => automationServerController.start(),
     stopAutomationServer: () => automationServerController.stop(),
     onSigint: deps.onSigint,

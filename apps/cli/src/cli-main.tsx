@@ -70,7 +70,7 @@ async function main() {
       gatherStats: false,
       exitOnCtrlC: false,
       useKittyKeyboard: {},
-      useMouse: true,
+      useMouse: process.env.CHARIOX_TUI_MOUSE !== "off",
       enableMouseMovement: false,
       useAlternateScreen: true,
       autoFocus: true,

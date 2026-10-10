@@ -13,6 +13,7 @@ import { bootstrapCloudRelayProfile } from "./cloud-relay.js"
 import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
+import type { ProviderLoginLinkOptions } from "./provider-login-link.js"
 import { formatAgentLabel } from "./agent-label.js"
 import { grantAgentApp, revokeAgentApp } from "./app-binding-api.js"
 import {
@@ -224,6 +225,7 @@ export type CliCommandActionCompositionDeps = {
   flashFooter: AnyFn
   appendNotice: AnyFn
   readSecret?: AnyFn
+  showProviderLoginLink?: (url: string, options?: ProviderLoginLinkOptions) => Promise<boolean | void>
   appendCloudNotice: AnyFn
   formatError: AnyFn
   attachBinding: AnyFn
@@ -562,6 +564,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     sendProviderLoginInput: (loginId, dataBase64) => sendProviderLoginInput(client, loginId, dataBase64),
     cancelProviderLogin: (loginId) => cancelProviderLogin(client, loginId),
     ...(readSecret ? { readSecret } : {}),
+    ...(deps.showProviderLoginLink ? { showProviderLoginLink: deps.showProviderLoginLink } : {}),
     storeProviderSetupToken: (profile, value, replace) => storeProviderSetupToken(client, profile, value, replace, {
       ...(isAttached() ? { sessionId: sessionState().id, agentId: focusedAgentId() } : {}),
     }),

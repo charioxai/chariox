@@ -44,7 +44,7 @@ export function renderSessionChromeSummary(options: SessionChromeSummaryRenderOp
         : theme.textMuted,
   )
   options.promptStateBox?.requestRender()
-  setTextRenderable(options.state.footerSummaryText, options.footerSummary, theme.textMuted)
+  setTextRenderable(options.state.footerSummaryText, options.footerFlash ? "" : `F7: native copy • ${options.footerSummary}`, theme.textMuted)
   setTextRenderable(
     options.state.footerFlashText,
     options.footerFlash ? ` • ${options.footerFlash.message}` : "",

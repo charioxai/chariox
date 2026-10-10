@@ -1,7 +1,7 @@
-import { parseKeypress } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
 
+import { bindRendererShortcutInput } from "./renderer-shortcut-input.js"
 import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
 import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
 import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
@@ -32,6 +32,10 @@ import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-c
 type AnyFn = (...args: any[]) => any
 
 export type CliInputRoutingCompositionDeps = {
+  handleNativeSelectionKey?: import("./cli-stdin-key-controller.js").CliStdinKeyControllerDeps["handleNativeSelectionKey"]
+  handleNativeSelectionPaste?: () => boolean
+  shortcutInputEnabled: () => boolean
+  discardShortcutInput: () => void
   handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
   openKernelApprovals: () => void
   kernelApprovalOwnsInput?: () => boolean
@@ -206,7 +210,10 @@ export type CliInputRoutingCompositionDeps = {
   workflowScreenActive: AnyFn
   cycleWorkflowCanvasNode: AnyFn
   handleCycleAgentFocus: AnyFn
+  replayCopyKey?: import("./cli-stdin-key-controller.js").CliStdinKeyControllerDeps["replayCopyKey"]
   copyPromptSelection: AnyFn
+  flushTextSelectionRebuild?: () => void
+  hasPromptSelection?: () => boolean
   removePromptAttachmentsForEdit: AnyFn
   removeLastPendingPromptAttachment: AnyFn
 }
@@ -671,8 +678,9 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   }
 
   const stdinKeyController = createCliStdinKeyController({
+    ...(deps.handleNativeSelectionKey ? { handleNativeSelectionKey: deps.handleNativeSelectionKey } : {}),
+    ...(deps.handleNativeSelectionPaste ? { handleNativeSelectionPaste: deps.handleNativeSelectionPaste } : {}),
     kernelApprovalOwnsInput: () => deps.kernelApprovalOwnsInput?.() ?? false,
-    parseKeypress: (chunk, options) => parseKeypress(chunk, options),
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
     handleManagedMachineDialogKey: deps.handleManagedMachineDialogKey,
@@ -695,7 +703,10 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     cycleAgentFocus: () => {
       void deps.handleCycleAgentFocus()
     },
+    ...(deps.replayCopyKey ? { replayCopyKey: deps.replayCopyKey } : {}),
     copyPromptSelection: deps.copyPromptSelection,
+    ...(deps.hasPromptSelection ? { hasPromptSelection: deps.hasPromptSelection } : {}),
+    ...(deps.flushTextSelectionRebuild ? { flushTextSelectionRebuild: deps.flushTextSelectionRebuild } : {}),
     hasActiveTurnWork: deps.hasActiveTurnWork,
     requestPromptStop: () => {
       void requestPromptStop()
@@ -711,11 +722,17 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     handleWaitingRoomKey: waitingRoomKeyController.handleKey,
   })
 
+  onCleanup(bindRendererShortcutInput({
+    keyInput: useRenderer().keyInput,
+    enabled: deps.shortcutInputEnabled,
+    handleEvent: stdinKeyController.handleEvent,
+    discardInput: deps.discardShortcutInput,
+  }))
+
   return {
     cycleFocusedInteractionChoice,
     handlePromptKeyDown,
     handleSigint,
-    handleStdinData: stdinKeyController.handleData,
     requestPromptStop,
     submitFocusedInteractionChoice,
     submitPrompt,

@@ -1,3 +1,5 @@
+import { createNativeSelectionController } from "./native-selection-controller.js"
+import { createProviderLoginLinkPresenter } from "./provider-login-link.js"
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
 import { AppDevLoop } from "./app-dev-loop.js"
@@ -8,9 +10,9 @@ import { homedir } from "node:os"
 import { clearTimeout, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, ScrollBoxRenderable, TextRenderable, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable, TextRenderable, type KeyEvent, type TextareaRenderable } from "@opentui/core"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { batch, createEffect, onCleanup } from "solid-js"
+import { batch, createEffect, createSignal, onCleanup } from "solid-js"
 import { reconcile } from "solid-js/store"
 
 import type {
@@ -215,7 +217,30 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     client_id: options.clientId,
   })
   const renderer = useRenderer()
+  const [nativeSelectionHint, setNativeSelectionHint] = createSignal<string | null>(null)
+  const nativeSelection = createNativeSelectionController({
+    renderer,
+    setHint: (hint) => { setNativeSelectionHint(hint); updateSessionChrome() },
+  })
+  const nativeSelectionInput = (event: KeyEvent) => {
+    if (nativeSelection.handleRendererKey(event)) { event.preventDefault(); event.stopPropagation() }
+    else captureCopyKey(event)
+  }
+  renderer.keyInput.prependListener("keypress", nativeSelectionInput)
+  renderer.keyInput.prependListener("keyrelease", nativeSelectionInput)
+  const nativeSelectionPaste = (event: { preventDefault(): void; stopPropagation(): void }) => {
+    if (nativeSelection.handleRendererPaste()) { event.preventDefault(); event.stopPropagation() }
+    else capturePaste()
+  }
+  renderer.keyInput.prependListener("paste", nativeSelectionPaste)
+  onCleanup(() => {
+    renderer.keyInput.off("keypress", nativeSelectionInput)
+    renderer.keyInput.off("keyrelease", nativeSelectionInput)
+    renderer.keyInput.off("paste", nativeSelectionPaste)
+    if (!renderer.isDestroyed) nativeSelection.dispose()
+  })
   const secretInput = createCliSecretInput(renderer)
+  const providerLoginLink = createProviderLoginLinkPresenter(renderer)
   onCleanup(secretInput.cancel)
   const dimensions = useTerminalDimensions()
   const setCenterMode = (_mode: "transcript") => {}
@@ -526,7 +551,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
   const {
     assignDialogOverlayBox, closeActiveDialogOverlay, closeHotkeys, closeSessionBrowserDialog,
-    closeTerminalPairingDialog, copyPromptSelection, dialogOverlayOpen, handleHotkeysToggleShortcut,
+    closeTerminalPairingDialog, captureCopyKey, capturePaste, replayCopyKey, discardCopyInput, copyPromptSelection, dialogOverlayOpen, handleHotkeysToggleShortcut,
     handleManagedMachineDialogKey, handlePromptSelectionSurfaceMouseUp, handleSessionBrowserKey,
     openHotkeys, openManagedMachineDialog, openSessionBrowserDialog,
     openTerminalPairingDialog, renderHotkeysOverlay,
@@ -723,7 +748,11 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     providerRunStateSignal: providerRunState,
     working, activeStatusLabel, providerActivityLabel, syncPromptPlaceholder,
     fatalError, submitting, footerHint, connectedClientCount,
-    multiAgentMode, sessionStatusMode, footerFlash, promptMetaParts,
+    multiAgentMode, sessionStatusMode,
+    footerFlash: () => nativeSelectionHint()
+      ? { message: nativeSelectionHint()!, tone: "info" }
+      : footerFlash(),
+    promptMetaParts,
   })
   sessionChromeUpdateController = responseShellSessionChromeUpdateController
 
@@ -749,7 +778,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   const {
-    mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript,
+    mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript, flushDeferredRebuild,
     replaceTranscriptEntries, primeAttachedSessionBinding, bumpHistoryLoadGeneration, transcriptHistoryAutoloadController,
   } = createCliPrimaryTranscriptComposition({
     client,
@@ -876,7 +905,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
 
   const {
     cycleFocusedInteractionChoice, executeCommandCenterCommand, handleCloudCommand, handlePromptKeyDown,
-    handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
+    handleSigint, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
     appHostTerminal: createAppHostTerminal(renderer),
@@ -889,6 +918,13 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentAccountProfileId: () => waitingRoomState().accountProfileId || options.accountProfile || "default",
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
     readSecret: secretInput.readSecret,
+    shortcutInputEnabled: () => !renderer.isDestroyed && !providerLoginLink.isActive(),
+    discardShortcutInput: () => { nativeSelection.discardInput(); discardCopyInput() },
+    handleNativeSelectionKey: nativeSelection.handleKey,
+    handleNativeSelectionPaste: nativeSelection.handlePaste,
+    flushTextSelectionRebuild: flushDeferredRebuild,
+    hasPromptSelection: () => promptInputRefController.isFocused() && Boolean(promptInputRefController.current()?.hasSelection()),
+    showProviderLoginLink: providerLoginLink,
     attachBinding, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,
     applyVariantSelection, applyModeSelection, applyPermissionSelection,
     currentExecutionMode: () => waitingRoomState().executionMode ?? "build",
@@ -933,7 +969,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleManagedMachineDialogKey, openManagedMachineDialog,
     toggleWorkspaceScreen: workflowActions.toggleWorkspaceScreen,
     cycleWorkflowCanvasNode: workflowActions.cycleWorkflowCanvasNode,
-    copyPromptSelection, removePromptAttachmentsForEdit, removeLastPendingPromptAttachment,
+    replayCopyKey, copyPromptSelection, removePromptAttachmentsForEdit, removeLastPendingPromptAttachment,
   })
 
   const {
@@ -942,7 +978,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     processKernelTerminalOutputRecord: runtimeProcessKernelTerminalOutputRecord,
   } = createCliAppProcessRuntimeComposition({
     client, options, appLogger, formatError,
-    flashFooter, handleSigint, handleStdinData, clearTerminalOutputRecordTimer,
+    flashFooter, handleSigint,
+    clearTerminalOutputRecordTimer,
     workspaceScreenMode,
     workflowScreenActive: workflowActions.workflowScreenActive,
     daemonDisconnected, statusLine, sessionState, focusedAgentId,
@@ -1018,7 +1055,11 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}
       promptAreaBackground={promptAreaBackground()}
-      retainPromptFocus={() => { if (!kernelApprovals.ownsInput()) retainPromptFocus() }}
+      handleRootMouseUp={() => {
+        if (!kernelApprovals.ownsInput()) retainPromptFocus()
+        // OpenTUI finishes or clears the selection after this handler returns.
+        startTimeout(flushDeferredRebuild, 0)
+      }}
       handlePromptSelectionSurfaceMouseUp={handlePromptSelectionSurfaceMouseUp}
       responsePaneRenderRefStore={responsePaneRenderRefStore}
       historyLoadingRenderController={historyLoadingRenderController}

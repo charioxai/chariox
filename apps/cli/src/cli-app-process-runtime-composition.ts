@@ -13,7 +13,7 @@ export type CliAppProcessRuntimeCompositionDeps = Record<string, any> & {
   formatError: AnyFn
   flashFooter: AnyFn
   handleSigint: AnyFn
-  handleStdinData: AnyFn
+  handleStdinData?: AnyFn
 }
 
 export function createCliAppProcessRuntimeComposition(
@@ -26,7 +26,7 @@ export function createCliAppProcessRuntimeComposition(
     formatError: deps.formatError,
     flashFooter: deps.flashFooter,
     handleSigint: deps.handleSigint,
-    handleStdinData: deps.handleStdinData,
+    ...(deps.handleStdinData ? { handleStdinData: deps.handleStdinData } : {}),
     onSigint: (handler) => process.on("SIGINT", handler),
     offSigint: (handler) => process.off("SIGINT", handler),
     onStdinData: (handler) => process.stdin.on("data", handler),

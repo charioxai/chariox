@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   '@opentui/core@0.1.87':
-    hash: igw7nobtxnxlxloqmrjkwend5q
+    hash: vten3xteqslerdvnuhlb6osr7m
     path: patches/@opentui__core@0.1.87.patch
 
 importers:
@@ -30,7 +30,7 @@ importers:
         version: link:../../packages/tool-display
       '@opentui/core':
         specifier: 0.1.87
-        version: 0.1.87(patch_hash=igw7nobtxnxlxloqmrjkwend5q)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10)
+        version: 0.1.87(patch_hash=vten3xteqslerdvnuhlb6osr7m)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10)
       '@opentui/solid':
         specifier: 0.1.87
         version: 0.1.87(solid-js@1.9.11)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10)
@@ -1533,7 +1533,7 @@ snapshots:
   '@opentui/core-win32-x64@0.1.87':
     optional: true
 
-  '@opentui/core@0.1.87(patch_hash=igw7nobtxnxlxloqmrjkwend5q)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10)':
+  '@opentui/core@0.1.87(patch_hash=vten3xteqslerdvnuhlb6osr7m)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10)':
     dependencies:
       bun-ffi-structs: 0.1.2(typescript@5.9.3)
       diff: 8.0.2
@@ -1560,7 +1560,7 @@ snapshots:
     dependencies:
       '@babel/core': 7.28.0
       '@babel/preset-typescript': 7.27.1(@babel/core@7.28.0)
-      '@opentui/core': 0.1.87(patch_hash=igw7nobtxnxlxloqmrjkwend5q)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10)
+      '@opentui/core': 0.1.87(patch_hash=vten3xteqslerdvnuhlb6osr7m)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10)
       babel-plugin-module-resolver: 5.0.2
       babel-preset-solid: 1.9.9(@babel/core@7.28.0)(solid-js@1.9.11)
       entities: 7.0.1
