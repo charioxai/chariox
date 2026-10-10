@@ -159,6 +159,9 @@ export class LinuxCapture {
   if(this.publishing)return;this.publishing=true;
   try{while(this.pending&&this.valid()){
    let raw=this.pending;this.pending=null;this.publishingRaw=raw;
+   if(this.connection.presentationFence&&!this.connection.presentationFence.stable(raw.captured_ms,raw.captured_ms+(raw.capture_ms??0))){
+    this.timing('native_capture_transient_dropped',raw.captured_ms);raw.release?.();this.publishingRaw=null;this.wake(true);continue;
+   }
    const revision=this.regionRevision;
    // MP-08/MP-10/MP-11: every readback checks live Vault-filled field type
    // and geometry. Document changes also retire the source through onCdp.

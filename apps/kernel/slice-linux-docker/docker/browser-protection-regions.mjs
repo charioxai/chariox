@@ -315,11 +315,14 @@ export async function fenceBrowserCapture(browser, policy, capture, attempts = 3
   for (let attempt = 0; attempt < attempts; attempt++) {
     const before = await measurePresented(browser, policy);
     if (!before) break;
+    const captured = Date.now();
     const result = await capture(before);
+    const ended = Date.now() + 1;
     // One frame first: the re-measurement then sees compositor scrolls too.
     let after = null;
     try { await awaitPresented(browser, before.pages, 1); after = await measureBrowserProtection(browser, policy); } catch {}
-    if (after && protectionDigest(after) === protectionDigest(before)) return result;
+    if (after && protectionDigest(after) === protectionDigest(before) &&
+        (!browser.connection?.presentationFence || browser.connection.presentationFence.stable(captured, ended))) return result;
   }
   throw Error('MP-11: fill-target capture fence unavailable');
 }

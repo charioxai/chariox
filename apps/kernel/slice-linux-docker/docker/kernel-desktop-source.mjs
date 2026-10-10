@@ -179,6 +179,11 @@ export class DesktopSource {
   }
   offer(sample,serial,captured) {
     if(this.closed){sample.raw.release?.();return;}
+    const presentation=this.binding.browser?.()?.connection?.presentationFence;
+    const start=captured??sample.raw.captured_ms,end=start+(sample.raw.capture_ms??0);
+    if(presentation&&!presentation.stable(start,end)){
+      this.timing('desktop_capture_transient_dropped',start);sample.raw.release?.();void this.wake();return;
+    }
     // Serial 0 withholds every kernel-browser window: publish at once.
     if(serial===0)this.publish(sample);
     else if(serial===this.gate.protectionSerial){this.pending.push({sample,serial,captured});this.settle();}

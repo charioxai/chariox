@@ -9,6 +9,7 @@ import * as linux from "./kernel-browser-linux.mjs";
 import * as macos from "./kernel-browser-macos.mjs";
 import { LinuxOwnedDesktop, desktopCommand } from './linux-owned-desktop.mjs';
 import { connectCdpPipe } from './kernel-browser-cdp-pipe.mjs';
+import { fenceScreenshotPresentation } from './browser-capture-presentation.mjs';
 
 function platformPolicy(platform) {
   if (platform === "linux") return linux;
@@ -103,6 +104,7 @@ export class HostChromium {
     this.child = child;
     child.on('error', () => {});
     const connection = connectCdpPipe(child.stdio[3], child.stdio[4]);
+    if (this.desktop?.binding()) fenceScreenshotPresentation(connection);
     this.connection = connection;
     child.once('error', () => { void connection.close(); });
     child.once('exit', () => { void connection.close(); });

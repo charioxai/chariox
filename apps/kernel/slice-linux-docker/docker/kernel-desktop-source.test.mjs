@@ -165,3 +165,13 @@ test('MP-08/MP-11 Vault values never mask the whole desktop; the oracle gets the
   await source.measure(scope);
   assert.deepEqual(written[0].values,['synthetic-vault-value']);
 });
+
+test('MP-08/MP-10/MP-11 Computer drops screenshot-transformed native pixels and resumes stable readbacks',async()=>{
+ const f=fixture();let stable=false;
+ f.source.binding={...binding,browser:()=>({connection:{presentationFence:{stable:()=>stable}}})};
+ f.source.next=f.raw(1,f.now());await f.source.protect();
+ f.source.next=f.raw(2,f.now()+2);await f.source.protect();
+ assert.equal(f.published.length,0,'temporary DPR2 screenshot pixels must never enter Computer');
+ stable=true;f.source.next=f.raw(3,f.now()+2);await f.source.protect();
+ assert.equal(f.published.length,1,'stable native readbacks resume');
+});
