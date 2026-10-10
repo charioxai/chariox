@@ -343,6 +343,7 @@ impl KernelRuntimeState {
             let cancellation = owned.finalize_local_prompt_cancellation_with_queued_advance(
                 session_id,
                 &agent_id,
+                active_prompt.id(),
                 Some(provider_run_id),
             )?;
             if cancellation.released_claim {

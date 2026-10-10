@@ -917,13 +917,24 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
     ) -> Option<PromptQueueItem> {
+        self.finalize_active_prompt_cancellation_if_matches(session, agent_id, None)
+    }
+
+    pub(crate) fn finalize_active_prompt_cancellation_if_matches(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        expected_prompt_id: Option<&str>,
+    ) -> Option<PromptQueueItem> {
         let mut owner = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
-        let active_status = state.active_prompt.as_ref()?.status();
-        if active_status != PromptStatus::Cancelling {
+        let active = state.active_prompt.as_ref()?;
+        if active.status() != PromptStatus::Cancelling
+            || expected_prompt_id.is_some_and(|expected| active.id() != expected)
+        {
             return None;
         }
         let mut cancelled = state.take_active_prompt()?;

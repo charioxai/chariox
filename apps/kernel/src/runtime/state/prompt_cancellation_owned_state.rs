@@ -43,6 +43,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         agent_id: &str,
+        expected_prompt_id: &str,
         provider_run_id: Option<&str>,
     ) -> Result<OwnedPromptCancellation, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
@@ -52,10 +53,17 @@ impl KernelRuntimeOwnedState {
                 agent_id: agent_id.to_string(),
             });
         }
+        // MP-08/MP-10/MP-11: Resume must not observe an empty owner until the
+        // interrupted invocation's claim and activity have also settled.
+        let activity_mutation = self.begin_managed_activity_mutation();
         let session = self.session_store.get_session(session_id)?;
         let prompt = self
             .prompt_state_owner
-            .finalize_active_prompt_cancellation(&session, agent_id)
+            .finalize_active_prompt_cancellation_if_matches(
+                &session,
+                agent_id,
+                Some(expected_prompt_id),
+            )
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
@@ -95,12 +103,28 @@ impl KernelRuntimeOwnedState {
             };
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
-        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
-        let released_claim = cancellation_provider_run_id
-            .as_deref()
-            .map(|provider_run_id| self.clear_prompt_activity(provider_run_id))
-            .unwrap_or(false)
-            || released_workflow_claim;
+        let mirrored = self.session_store.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        self.persist_prompt_session_state(&mirrored, agent_id)?;
+        let released_provider_claim =
+            if let Some(provider_run_id) = cancellation_provider_run_id.as_deref() {
+                self.clear_prompt_activity_at_with_activity_mutation(
+                    provider_run_id,
+                    None,
+                    activity_mutation,
+                )
+            } else {
+                activity_mutation.record();
+                false
+            };
+        let released_claim = released_provider_claim || released_workflow_claim;
+        self.withdraw_stale_agent_interactions();
+        self.provider_process_projection.invalidate();
+        let _ = self.session_snapshot(session_id)?;
         let current_session = self.session_store.get_session(session_id)?;
         let hold_queued_prompts = current_session
             .metaagent_task(agent_id)

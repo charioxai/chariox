@@ -626,16 +626,15 @@ impl KernelRuntimeOwnedState {
         target_agent_id: &str,
         attachment_id: &str,
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
-        let _ =
+        let started =
             self.begin_remote_prompt_cancellation(session_id, target_agent_id, attachment_id)?;
+        self.workflow_cancel_prompt(session_id, &started.cancellation.prompt)?;
         let cancellation = self.finalize_local_prompt_cancellation_with_queued_advance(
             session_id,
             target_agent_id,
+            started.cancellation.prompt.id(),
             None,
         )?;
-        if cancellation.cancellation.prompt.workflow_run_id().is_some() {
-            self.workflow_cancel_prompt(session_id, &cancellation.cancellation.prompt)?;
-        }
         let session = self.session_snapshot(session_id)?;
         Ok(crate::app::KernelPromptCancellation {
             cancellation: cancellation.cancellation,

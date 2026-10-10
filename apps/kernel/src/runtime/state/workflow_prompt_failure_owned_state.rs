@@ -78,46 +78,57 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(());
         };
-        // MP-08/MP-10/MP-11: Resume admits a new prompt for this same node.
-        // A delayed cancellation of its predecessor cannot stop that invocation
-        // or release the workspace claim it now owns.
-        let session = self.session_store.get_session(session_id)?;
-        let (active, queued) = self
-            .prompt_state_owner
-            .state_parts(&session, prompt.target_agent_id());
-        if active.into_iter().chain(queued).any(|current| {
-            current.id() != prompt.id()
-                && current.workflow_run_id() == Some(workflow_run_id)
-                && current.workflow_node_run_id() == Some(workflow_node_run_id)
-        }) {
-            return Ok(());
-        }
-        let already_interrupted = self
-            .session_store
-            .read()
-            .resolve_workflow_run_ref(session_id, workflow_run_id)
-            .is_ok_and(|run| {
-                matches!(
-                    run.status(),
-                    crate::session::WorkflowRunStatus::Paused
-                        | crate::session::WorkflowRunStatus::Stopped
-                )
-            });
-        if already_interrupted {
-            let _ = self.release_workflow_node_workspace_claim(
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let (workflow_run_before, workflow_run) = {
+            let mut session_store = self.session_store.write();
+            let session = session_store.get_session(session_id)?;
+            let (active, queued) = self
+                .prompt_state_owner
+                .state_parts(&session, prompt.target_agent_id());
+            let prompts = active.into_iter().chain(queued).collect::<Vec<_>>();
+            // MP-08/MP-10/MP-11: Check the invocation and mutate its workflow
+            // under one session boundary, including the resume/admission gap.
+            if prompts.iter().any(|current| {
+                current.id() != prompt.id()
+                    && current.workflow_run_id() == Some(workflow_run_id)
+                    && current.workflow_node_run_id() == Some(workflow_node_run_id)
+            }) {
+                return Ok(());
+            }
+            let run = session_store.resolve_workflow_run_ref(session_id, workflow_run_id)?;
+            if matches!(
+                run.status(),
+                crate::session::WorkflowRunStatus::Paused
+                    | crate::session::WorkflowRunStatus::Stopped
+            ) {
+                self.release_workflow_node_workspace_claim(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                );
+                drop(session_store);
+                drop(activity_mutation);
+                let _ = self.session_snapshot(session_id)?;
+                return Ok(());
+            }
+            if !prompts.iter().any(|current| current.id() == prompt.id()) {
+                return Ok(());
+            }
+            let workflow_run = run.clone();
+            let runtime_instance = workflow_run
+                .runtime_instance_id()
+                .and_then(|instance_id| session.workflow_runtime_instance(instance_id))
+                .cloned();
+            let rollback = WorkflowPromptFailureRollback {
+                workflow_run,
+                runtime_instance,
+            };
+            let stopped = session_store.stop_workflow_node_run(
                 session_id,
                 workflow_run_id,
                 workflow_node_run_id,
             );
-            let _ = self.session_snapshot(session_id)?;
-            return Ok(());
-        }
-        let activity_mutation = self.begin_managed_activity_mutation();
-        let workflow_run_before =
-            self.workflow_run_before_prompt_failure(session_id, workflow_run_id)?;
-        let workflow_run = {
-            let mut session_store = self.session_store.write();
-            session_store.stop_workflow_node_run(session_id, workflow_run_id, workflow_node_run_id)
+            (rollback, stopped)
         };
         let workflow_run = match workflow_run {
             Ok(workflow_run) => workflow_run,
@@ -549,6 +560,7 @@ mod tests {
             .finalize_local_prompt_cancellation_with_queued_advance(
                 &fixture.session_id,
                 agent_id,
+                old_prompt.id(),
                 None,
             )
             .unwrap();
@@ -646,6 +658,210 @@ mod tests {
             committed_workflow_event_count(&fixture, "workflow_prompt_cancelled"),
             events_before
         );
+    }
+
+    // MP-08/MP-10/MP-11: Resume commits before its replacement prompt is admitted.
+    #[tokio::test]
+    async fn resumed_workflow_survives_cancellation_before_prompt_readmission() {
+        let fixture = running_workflow_fixture("resume-admission-gap").await;
+        let agent_id = fixture.prompt.target_agent_id();
+        fixture
+            .runtime
+            .app
+            .lock()
+            .await
+            .prompt_owner_submit_prepared_prompt(&fixture.session_id, fixture.prompt.clone(), false)
+            .unwrap();
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        let old = fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .begin_cancelling_active_prompt(&session, agent_id)
+            .unwrap();
+        fixture
+            .runtime
+            .owned
+            .session_store
+            .write()
+            .pause_workflow_run(&fixture.session_id, &fixture.workflow_run_id)
+            .unwrap();
+        fixture
+            .runtime
+            .owned
+            .workflow_cancel_prompt(&fixture.session_id, &old)
+            .unwrap();
+        fixture
+            .runtime
+            .owned
+            .finalize_local_prompt_cancellation_with_queued_advance(
+                &fixture.session_id,
+                agent_id,
+                old.id(),
+                None,
+            )
+            .unwrap();
+        fixture
+            .runtime
+            .owned
+            .session_store
+            .write()
+            .resume_workflow_run(&fixture.session_id, &fixture.workflow_run_id)
+            .unwrap();
+        let resumed_status = fixture
+            .runtime
+            .owned
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(&fixture.session_id, &fixture.workflow_run_id)
+            .unwrap()
+            .status();
+        let events_before = committed_workflow_event_count(&fixture, "workflow_prompt_cancelled");
+        fixture
+            .runtime
+            .owned
+            .workflow_cancel_prompt(&fixture.session_id, &old)
+            .unwrap();
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        let run = session
+            .workflow_run(&fixture.workflow_run_id)
+            .cloned()
+            .or_else(|| {
+                fixture
+                    .runtime
+                    .owned
+                    .durable_state_store
+                    .resolve_workflow_run(
+                        &fixture.host_daemon_id,
+                        &fixture.session_id,
+                        &fixture.workflow_run_id,
+                    )
+                    .unwrap()
+            })
+            .expect("resumed run must remain resolvable");
+        assert_eq!(
+            run.status(),
+            resumed_status,
+            "old cancellation must not stop a durable resume before replacement prompt admission"
+        );
+        assert!(run.failure_events().is_empty());
+        assert_eq!(
+            committed_workflow_event_count(&fixture, "workflow_prompt_cancelled"),
+            events_before
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_abort_finalization_preserves_newer_cancelling_prompt() {
+        let fixture = running_workflow_fixture("stale-abort-finalization").await;
+        let agent_id = fixture.prompt.target_agent_id();
+        fixture
+            .runtime
+            .app
+            .lock()
+            .await
+            .prompt_owner_submit_prepared_prompt(&fixture.session_id, fixture.prompt.clone(), false)
+            .unwrap();
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        let old = fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .begin_cancelling_active_prompt(&session, agent_id)
+            .unwrap();
+        fixture
+            .runtime
+            .owned
+            .session_store
+            .write()
+            .pause_workflow_run(&fixture.session_id, &fixture.workflow_run_id)
+            .unwrap();
+        fixture
+            .runtime
+            .owned
+            .workflow_cancel_prompt(&fixture.session_id, &old)
+            .unwrap();
+        fixture
+            .runtime
+            .owned
+            .finalize_local_prompt_cancellation_with_queued_advance(
+                &fixture.session_id,
+                agent_id,
+                old.id(),
+                None,
+            )
+            .unwrap();
+        fixture
+            .runtime
+            .owned
+            .session_store
+            .write()
+            .resume_workflow_run(&fixture.session_id, &fixture.workflow_run_id)
+            .unwrap();
+        fixture
+            .runtime
+            .app
+            .lock()
+            .await
+            .prompt_owner_submit_prepared_prompt(
+                &fixture.session_id,
+                PromptQueueItem::new(
+                    "new",
+                    &fixture.attachment_id,
+                    agent_id,
+                    "resumed request",
+                    PromptStatus::Queued,
+                )
+                .with_workflow_context(&fixture.workflow_run_id, &fixture.workflow_node_run_id),
+                false,
+            )
+            .unwrap();
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        let newer = fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .begin_cancelling_active_prompt(&session, agent_id)
+            .unwrap();
+        assert_ne!(old.id(), newer.id());
+        // An old callback already selected `old`; finalization must remain tied to it.
+        let _ = fixture
+            .runtime
+            .owned
+            .finalize_local_prompt_cancellation_with_queued_advance(
+                &fixture.session_id,
+                agent_id,
+                old.id(),
+                None,
+            );
+        let current = fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .expect("old abort finalization must preserve the newer cancellation");
+        assert_eq!(current.id(), newer.id());
+        assert_eq!(current.status(), PromptStatus::Cancelling);
     }
 
     #[tokio::test]
@@ -830,7 +1046,41 @@ mod tests {
 
     #[tokio::test]
     async fn workflow_cancellation_append_failure_retains_run_claim_and_notice_for_retry() {
-        let fixture = running_workflow_fixture("cancel-append-retry").await;
+        let mut fixture = running_workflow_fixture("cancel-append-retry").await;
+        fixture
+            .runtime
+            .app
+            .lock()
+            .await
+            .prompt_owner_submit_prepared_prompt(&fixture.session_id, fixture.prompt.clone(), false)
+            .unwrap();
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        fixture.prompt = fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .begin_cancelling_active_prompt(&session, fixture.prompt.target_agent_id())
+            .unwrap();
+        let (active, queued) = fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, fixture.prompt.target_agent_id());
+        fixture
+            .runtime
+            .owned
+            .mirror_prompt_owner_agent_state(
+                &fixture.session_id,
+                fixture.prompt.target_agent_id(),
+                active,
+                queued,
+            )
+            .unwrap();
         let projection_sequence = fixture.runtime.owned.session_projection.change_sequence();
         let activity_sequence = fixture.runtime.managed_activity_change_sequence();
         let notice_count = fixture.runtime.owned.terminal_stream.notice_records().len();

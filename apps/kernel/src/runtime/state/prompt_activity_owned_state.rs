@@ -339,6 +339,7 @@ impl KernelRuntimeOwnedState {
                     .finalize_local_prompt_cancellation_with_queued_advance(
                         &finished.session_id,
                         &agent_id,
+                        &finished.prompt_id,
                         Some(&finished.provider_run_id),
                     )
                 {
@@ -534,7 +535,19 @@ impl KernelRuntimeOwnedState {
         provider_run_id: &str,
         observed_at_ms: Option<u64>,
     ) -> bool {
-        let activity_mutation = self.begin_managed_activity_mutation();
+        self.clear_prompt_activity_at_with_activity_mutation(
+            provider_run_id,
+            observed_at_ms,
+            self.begin_managed_activity_mutation(),
+        )
+    }
+
+    pub(super) fn clear_prompt_activity_at_with_activity_mutation(
+        &self,
+        provider_run_id: &str,
+        observed_at_ms: Option<u64>,
+        activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
+    ) -> bool {
         self.provider_output_deadlines.clear(provider_run_id);
         let prompt_activity = self.prompt_activity.write().remove(provider_run_id);
         let active_turn = self.active_turns.get(provider_run_id);
@@ -555,6 +568,8 @@ impl KernelRuntimeOwnedState {
         if active_turn.is_some() {
             activity_mutation.record_prompt_finish_at(observed_at_ms);
             self.runtime_projection_changes.record_change();
+        } else {
+            activity_mutation.record();
         }
         released_claim
     }

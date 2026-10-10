@@ -2397,7 +2397,7 @@ pub(in crate::runtime::state) mod tests {
             "after success",
         )
         .await;
-        runtime
+        let cancelled = runtime
             .owned
             .cancel_local_prompt(&session_id, &agent_id, &source_id)
             .expect("cancellation should succeed")
@@ -2407,6 +2407,7 @@ pub(in crate::runtime::state) mod tests {
             .finalize_local_prompt_cancellation_with_queued_advance(
                 &session_id,
                 &agent_id,
+                cancelled.cancellation.prompt.id(),
                 Some(&provider_run_id),
             )
             .expect("cancellation should finalize");
@@ -4696,6 +4697,7 @@ impl KernelRuntimeState {
                                 .finalize_local_prompt_cancellation_with_queued_advance(
                                     &dispatch.session_id,
                                     &agent_id,
+                                    &dispatch.prompt_id,
                                     Some(&dispatch.provider_run_id),
                                 );
                         }

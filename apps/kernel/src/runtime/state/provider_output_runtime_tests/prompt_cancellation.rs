@@ -149,6 +149,7 @@ async fn cancelling_a_workflow_prompt_promotes_the_next_run_before_provider_disp
         .finalize_local_prompt_cancellation_with_queued_advance(
             session.id(),
             agent.id(),
+            cancellation.cancellation.prompt.id(),
             Some(provider_run.id()),
         )
         .expect("provider abort acknowledgement should promote queued workflow prompt");
@@ -429,6 +430,7 @@ async fn paused_metaagent_cancellation_promotes_queued_user_prompt_after_abort_a
         .finalize_local_prompt_cancellation_with_queued_advance(
             session.id(),
             agent.id(),
+            cancellation.cancellation.prompt.id(),
             Some(run.id()),
         )
         .expect("provider abort acknowledgement should finalize cancellation");
@@ -544,6 +546,7 @@ async fn paused_metaagent_cancellation_holds_queued_private_event_after_abort_ac
         .finalize_local_prompt_cancellation_with_queued_advance(
             session.id(),
             agent.id(),
+            cancellation.cancellation.prompt.id(),
             Some(run.id()),
         )
         .expect("provider abort acknowledgement should finalize cancellation");
