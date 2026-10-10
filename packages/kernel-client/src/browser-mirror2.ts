@@ -388,6 +388,9 @@ export class BrowserMirror2Renderer {
         for (let i = 0; i < desired.length; i++) if (container.childNodes[i] !== desired[i]) container.insertBefore(desired[i]!, container.childNodes[i] ?? null)
         for (const id of shadowIds) { const record = this.records.get(id)!; const fragment = fresh.get(id); if (fragment && node.nodeType === 1) this.attachShadow(node as Element, record, fragment as DocumentFragment) }
         if (node.nodeType === 9 && !(node as Document).head?.querySelector('meta[http-equiv]')) this.csp(node as Document)
+        // Changed options (also beneath an optgroup) reset a select's selection: restore its recorded state.
+        const select = node.nodeType === 1 ? (node as Element).closest('select') : null, selected = select && this.records.get(this.ids.get(select) ?? '')?.form
+        if (selected) this.form(select!, selected)
         this.hydrateFrames(frames, op.nodes, scrolls)
         break
       }

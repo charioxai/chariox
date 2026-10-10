@@ -276,7 +276,7 @@ function fakeDocument(): { doc: FakeNode; container: unknown } {
       removeChild: (child: FakeNode) => { node.childNodes.splice(node.childNodes.indexOf(child), 1); child.parentNode = null; return child },
       prepend: (child: FakeNode) => (node.insertBefore as (c: FakeNode, r: FakeNode | null) => FakeNode)(child, node.childNodes[0] ?? null),
       replaceWith: (other: FakeNode) => { (doc as unknown as { documentElement: FakeNode }).documentElement = other; other.parentNode = doc },
-      getRootNode: () => doc, matches: () => false,
+      getRootNode: () => doc, matches: () => false, closest: () => null,
       focus: () => { (doc as unknown as { activeElement: FakeNode }).activeElement = node },
       setSelectionRange: (start: number, end: number) => { node.selection = [start, end] } }
     if (tag === 'input') Object.defineProperty(node, 'value', { get: () => value, set: (next: string) => { value = next; node.selection = [next.length, next.length] } })

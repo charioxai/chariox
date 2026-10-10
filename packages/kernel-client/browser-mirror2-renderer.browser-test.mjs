@@ -65,3 +65,19 @@ test('MP-10: review #941-1 kernel positions of other scrollers that arrive while
     assert.deepEqual(at, { inner: 50, own: 40, shadow: 60, child: 70, foreign: 90, window: 100 }, 'MP-10: deferred kernel positions apply when settled; the viewer\'s own later scroll is not overwritten');
   } finally { await page.close(); }
 });
+
+test('MP-10: review #320-1 an existing select keeps its recorded selection when its options change (regrouped into an optgroup, replaced beneath it)', async () => {
+  const page = await viewer();
+  try {
+    const option = (id, parent, value) => ({ id, parent, kind: 'element', tag: 'option', attrs: { value } });
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'select', form: { value: 'b', checked: false, selected_index: 1, selection_start: null, selection_end: null } }, option('n5', 'n4', 'a'), option('n6', 'n4', 'b')]));
+    const state = () => page.evaluate(() => { const s = window.r.frame.contentDocument.querySelector('select'); return [s.selectedIndex, s.value]; });
+    assert.deepEqual(await state(), [1, 'b']);
+    // The page moves its options into an optgroup and sets the select back to b: the observer's form state is unchanged (no form op).
+    await apply(page, delta(2, [{ op: 'children', id: 'n4', children: ['n7'], nodes: [{ id: 'n7', parent: 'n4', kind: 'element', tag: 'optgroup', attrs: { label: 'g' } }, option('n8', 'n7', 'a'), option('n9', 'n7', 'b')] }]));
+    assert.deepEqual(await state(), [1, 'b'], 'MP-10: regrouped options keep the recorded selection');
+    await apply(page, delta(3, [{ op: 'children', id: 'n7', children: ['n10', 'n11'], nodes: [option('n10', 'n7', 'a'), option('n11', 'n7', 'b')] }]));
+    assert.deepEqual(await state(), [1, 'b'], 'MP-10: options replaced beneath the optgroup keep the recorded selection');
+  } finally { await page.close(); }
+});
