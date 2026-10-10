@@ -68,8 +68,17 @@ fn helper(dir: &Path, fake: Fake, seen: &Mutex<Vec<String>>) {
             epoch.clone()
         };
         if method != "heartbeat" && matches!(fake, Fake::OwnedReleaseFailure | Fake::ScopeRefused) {
-            let code = if fake == Fake::OwnedReleaseFailure { "owner_reset_required" } else { "user_domain_stale_epoch" };
-            writeln!(stream, "{}", json!({"id":request["id"],"epoch":epoch,"ok":false,"error":{"code":code}})).unwrap();
+            let code = if fake == Fake::OwnedReleaseFailure {
+                "owner_reset_required"
+            } else {
+                "user_domain_stale_epoch"
+            };
+            writeln!(
+                stream,
+                "{}",
+                json!({"id":request["id"],"epoch":epoch,"ok":false,"error":{"code":code}})
+            )
+            .unwrap();
             continue;
         }
         let result = json!({"surface_id":"macos-seat","generation":generation});
@@ -379,7 +388,11 @@ fn m1_revocation_interrupts_a_request_already_received_by_the_helper() {
     let authority = cancel.clone();
     let (finished, outcome) = std::sync::mpsc::channel();
     let request = std::thread::spawn(move || {
-        let result = seat.request("host.computer", json!({"op":"input"}), Some(authority));
+        let result = seat.request(
+            "host.computer",
+            json!({"op":"input","input":{"kind":"click"}}),
+            Some(authority),
+        );
         finished.send(result).unwrap();
         seat.shutdown().unwrap();
     });
@@ -414,11 +427,18 @@ fn m1_unresolved_native_release_latches_owner_reset_across_stop_and_start() {
     let (mut seat, root, _) = seat("always", Fake::OwnedReleaseFailure);
     seat.start().unwrap();
     let error = state(&mut seat).unwrap_err().to_string();
-    assert!(error.contains("owner-reset-required"), "owned release was hidden: {error}");
+    assert!(
+        error.contains("owner-reset-required"),
+        "owned release was hidden: {error}"
+    );
     assert!(!seat.ready());
     seat.stop().unwrap();
     assert!(seat.start().unwrap_err().contains("owner-reset-required"));
-    assert!(seat.request("host.computer.reset", json!({}), None).unwrap_err().to_string().contains("owner-reset-required"));
+    assert!(seat
+        .request("host.computer.reset", json!({}), None)
+        .unwrap_err()
+        .to_string()
+        .contains("owner-reset-required"));
     seat.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -430,10 +450,64 @@ fn m1_scope_refusal_retires_link_and_explicit_start_gets_fresh_epoch() {
     let old = seat.link.as_ref().unwrap().epoch.clone();
     let dir = seat.link.as_ref().unwrap().dir.clone();
     assert!(state(&mut seat).is_err());
-    assert!(wait(|| !dir.exists()), "permanently invalidated pairing stayed alive");
+    assert!(
+        wait(|| !dir.exists()),
+        "permanently invalidated pairing stayed alive"
+    );
     assert!(!seat.ready());
     seat.start().unwrap();
     assert_ne!(seat.link.as_ref().unwrap().epoch, old);
     seat.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn m1_lost_release_confirmation_after_key_down_latches_across_stop_and_start() {
+    let root = std::env::temp_dir().join(format!("cumac-uncertain-{:08x}", rand::random::<u32>()));
+    let (entered, received) = std::sync::mpsc::channel();
+    let launch: Launch = Box::new(move |dir| {
+        let dir = dir.to_path_buf();
+        let entered = entered.clone();
+        std::thread::spawn(move || {
+            let bootstrap: Value =
+                serde_json::from_slice(&std::fs::read(dir.join("bootstrap")).unwrap()).unwrap();
+            let mut stream = UnixStream::connect(dir.join("s")).unwrap();
+            writeln!(stream,"{}",json!({"token":bootstrap["token"],"epoch":bootstrap["epoch"],"pid":std::process::id()})).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            // System-boundary fake has posted key-down; release confirmation is lost.
+            entered.send(()).unwrap();
+            let mut byte = [0];
+            assert_eq!(reader.read(&mut byte).unwrap(), 0);
+        });
+        Ok(())
+    });
+    let mut seat = MacComputerHelper::new(root.join("h"), "always".into(), launch);
+    seat.start().unwrap();
+    let cancel = Arc::new(BrowserCancellation::default());
+    let authority = cancel.clone();
+    let request = std::thread::spawn(move || {
+        let result = seat.request(
+            "host.computer",
+            json!({"op":"input","input":{"kind":"text","text":"x"}}),
+            Some(authority),
+        );
+        let latched = result
+            .unwrap_err()
+            .to_string()
+            .contains("owner-reset-required");
+        seat.stop().unwrap();
+        let restarted = seat.start();
+        seat.shutdown().unwrap();
+        latched && restarted.is_err_and(|error| error.contains("owner-reset-required"))
+    });
+    received.recv_timeout(Duration::from_secs(2)).unwrap();
+    cancel.request_cancel();
+    let passed = request.join().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        passed,
+        "lost owned-release confirmation admitted a new pairing"
+    );
 }

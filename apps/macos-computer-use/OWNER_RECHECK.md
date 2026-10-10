@@ -114,3 +114,21 @@ capture/replay steps require the separately published
 and the coordinator's revised local M2 suite. That requirement does not imply
 that M1 implements protected capture or that the unpublished r7 source was
 already rebuilt or granted.
+
+
+## R8 review source fixes
+
+The #920 @bc53791b1 pointer runner now binds the exact foreground fixture and
+last pointer position before every warp/jitter step. Focus/window loss or human
+pointer movement aborts mutation and prevents restoration over owner activity.
+Five headless regressions pass; this is source evidence only. The retained r6
+helper still awaits its pending re-grant and was not rebuilt or re-signed.
+
+#923 @8fc71e560 additionally latches uncertain text/physical input before
+dispatch. Cancellation/EOF cannot clear it without an authenticated successful
+release result. Stop/Start/reset cannot admit a new pairing after unconfirmed
+release. The actual adapter regression passes with key-down followed by forced
+socket loss. These changes require the next combined build and its new grant.
+The strict r8 cancellation/capture suite is in the M2 runbook and requires that
+matching new kernel/helper, not the retained r6 kernel. M1 remains the bounded
+seat/identity milestone; encrypted native capture belongs to M2.

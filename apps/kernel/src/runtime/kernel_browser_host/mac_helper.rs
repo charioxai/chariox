@@ -294,13 +294,20 @@ impl Link {
             self.fence();
             return Err(HostFailure::Other(OWNER_RESET.into()));
         }
-        Err(match response["error"]["code"].as_str().and_then(UserDomainRefusalReason::from_code) {
-            Some(reason) => {
-                if matches!(reason, UserDomainRefusalReason::StaleEpoch) { self.fence(); }
-                HostFailure::Refused(reason)
-            }
-            None => HostFailure::Other("MP-11: macOS Computer helper refused".into()),
-        })
+        Err(
+            match response["error"]["code"]
+                .as_str()
+                .and_then(UserDomainRefusalReason::from_code)
+            {
+                Some(reason) => {
+                    if matches!(reason, UserDomainRefusalReason::StaleEpoch) {
+                        self.fence();
+                    }
+                    HostFailure::Refused(reason)
+                }
+                None => HostFailure::Other("MP-11: macOS Computer helper refused".into()),
+            },
+        )
     }
 
     fn fence(&self) {
@@ -380,7 +387,11 @@ fn watch(link: Weak<Link>) -> std::thread::JoinHandle<()> {
 
 impl ComputerBackend for MacComputerHelper {
     fn ready(&mut self) -> bool {
-        if self.link.as_ref().is_some_and(|l| l.unresolved_input.load(Ordering::Acquire)) {
+        if self
+            .link
+            .as_ref()
+            .is_some_and(|l| l.unresolved_input.load(Ordering::Acquire))
+        {
             self.unresolved_input = true;
         }
         if self
@@ -396,7 +407,9 @@ impl ComputerBackend for MacComputerHelper {
         if self.ready() {
             return Ok(());
         }
-        if self.unresolved_input { return Err(OWNER_RESET.into()); }
+        if self.unresolved_input {
+            return Err(OWNER_RESET.into());
+        }
         let link = self.pair()?;
         self.workers.retain(|worker| !worker.is_finished());
         self.workers.push(watch(Arc::downgrade(&link)));
@@ -433,7 +446,9 @@ impl ComputerBackend for MacComputerHelper {
             return Err("MP-11: Computer action cancelled before dispatch".into());
         }
         let ready = self.ready();
-        if self.unresolved_input { return Err(HostFailure::Other(OWNER_RESET.into())); }
+        if self.unresolved_input {
+            return Err(HostFailure::Other(OWNER_RESET.into()));
+        }
         if !ready {
             return Err("MP-11: browser_unavailable: explicitly start the Computer seat".into());
         }
@@ -444,9 +459,22 @@ impl ComputerBackend for MacComputerHelper {
             let (cancel, link) = (cancel.clone(), link.clone());
             RequestFence::watch(move || cancel.requested(), move || link.fence())
         });
+        // AX click has no physical press. Text and future physical input retain
+        // uncertainty until an authenticated successful reply confirms release.
+        let owns_press = method == "host.computer"
+            && params["op"] == "input"
+            && params["input"]["kind"] != "click";
+        if owns_press {
+            link.unresolved_input.store(true, Ordering::Release);
+        }
         let result = link.call(method, params, REQUEST);
+        if owns_press && result.is_ok() {
+            link.unresolved_input.store(false, Ordering::Release);
+        }
         self.unresolved_input |= link.unresolved_input.load(Ordering::Acquire);
-        if self.unresolved_input { return Err(HostFailure::Other(OWNER_RESET.into())); }
+        if self.unresolved_input {
+            return Err(HostFailure::Other(OWNER_RESET.into()));
+        }
         if cancellation.as_ref().is_some_and(|c| c.requested()) {
             link.fence();
             return Err("MP-11: Computer grant revoked; action cancelled".into());
