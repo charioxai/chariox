@@ -380,3 +380,24 @@ test('MP-08: protocol 492 a click on a focusable control is forwarded alone (the
     }
   } finally { await page.close(); }
 });
+
+test('MP-08: a kernel packet that still names the old focus while the viewer\'s pointer is pressed in another control keeps the viewer\'s focus (round 10 hosted dragrepeat)', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'font:16px monospace;width:300px;display:block' }, form: textForm('first field', 11) },
+      { id: 'n5', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'font:16px monospace;width:300px;display:block' }, form: textForm('second field', 12) }])), focused: 'n4' });
+    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to'));
+    const cdp = await page.context().newCDPSession(page);
+    const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelectorAll('input')[1].getBoundingClientRect(); return { x: f.x + t.x, y: f.y + t.y + 9 }; });
+    const mouse = (type, x, buttons) => cdp.send('Input.dispatchMouseEvent', { type, x: box.x + x, y: box.y, button: 'left', buttons, clickCount: 1 });
+    await mouse('mousePressed', 70, 1); await mouse('mouseMoved', 90, 1); await frames();
+    // The page's own change (A's suggestions) arrives mid-drag; the kernel has not heard of the viewer's focus yet.
+    await apply(page, delta(2, [], { focused: 'n4' }));
+    await mouse('mouseMoved', 125, 1); await mouse('mouseReleased', 125, 0); await frames();
+    const active = await page.evaluate(() => window.r.frame.contentDocument.activeElement === window.r.frame.contentDocument.querySelectorAll('input')[1]);
+    assert(active, 'MP-08: the viewer keeps its pressed control focused');
+    await page.keyboard.type('x'); await frames();
+    const actions = await sent();
+    assert.deepEqual([actions[0], actions.at(-1)], [{ kind: 'focus', node_id: 'n5' }, { kind: 'text', text: 'x' }], `MP-08: focus then text for the pressed control: ${JSON.stringify(actions)}`);
+  } finally { await page.close(); }
+});

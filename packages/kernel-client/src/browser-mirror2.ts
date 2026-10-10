@@ -444,7 +444,8 @@ export class BrowserMirror2Renderer {
         const view = this.frame.contentWindow!; view.scrollTo(packet.scroll[0], packet.scroll[1]); this.applied.set(this.doc, [view.scrollX, view.scrollY])
       }
       this.sequence = packet.sequence; this.documentId = packet.document_id
-      if (!this.pendingInputs) {
+      // A focus taken by a pointer still pressed is pending input too (it is sent with its click or drag end).
+      if (!this.pendingInputs && !this.pointerFocus) {
         // The viewer page's own control outside the mirror keeps its focus (the kernel's is not pulled in).
         const outside = this.frame.ownerDocument.activeElement, elsewhere = !!outside && outside !== this.frame && outside !== this.frame.ownerDocument.body
         const focused = packet.focused && !elsewhere ? this.dom.get(packet.focused) as HTMLElement | undefined : undefined, active = this.active() as HTMLElement | null
