@@ -10,6 +10,7 @@ import { createReadStream } from 'node:fs'
 import { mkdir, readFile, writeFile, rm, mkdtemp, readdir } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { WebSocketServer } from 'ws'
+import { observeProviderTiming } from './lib/tui-provider-timing.mjs'
 
 const hashClient = async root => {
   const hash = createHash('sha256')
@@ -42,6 +43,7 @@ Object.assign(runtimeEnv, {
   XDG_STATE_HOME: path.join(scratch,'xdg-state'), XDG_DATA_HOME: path.join(scratch,'xdg-data'),
   CODEX_HOME: path.join(scratch,'codex'), CLAUDE_CONFIG_DIR: path.join(scratch,'claude'),
   OPENCODE_CONFIG_DIR: path.join(scratch,'opencode'),
+  ...(options['mouse-observer'] ? { TUIFIX_MOUSE_TRACE: path.join(evidence, 'mouse-events.jsonl') } : {}),
   // Separate client discovery state prevents bypassing the fixture proxy.
   CHARIOX_HOME: path.join(scratch,'client-state'), CHARIOX_LOG_DIR: path.join(scratch,'client-logs'),
   ...(process.env.CHARIOX_TUI_MOUSE === 'off' ? { CHARIOX_TUI_MOUSE: 'off' } : {}),
@@ -52,7 +54,7 @@ const url = 'https://claude.ai/oauth/authorize?client_id=fixture&redirect_uri=ht
 const deviceUrl = 'https://auth.openai.com/codex/device'
 const requests = []
 const upstreamResponses = []
-let output = '', tui, browser, page, frontend, kernel
+let output = '', tui, browser, page, frontend, kernel, timingObserver, timingClient
 const clients = new Set()
 const fixture = new WebSocketServer({ port: 0, host: '127.0.0.1' })
 await new Promise(resolve => fixture.once('listening', resolve))
@@ -210,7 +212,7 @@ try {
       '--provider', options.provider ?? 'codex', '--account-profile', options['account-profile'], '--model', options.model]
     : ['--detached', '--kernel-url', `ws://127.0.0.1:${fixture.address().port}/kernel`]
   if (options.attached) sessionDeleted = false
-  tui = Bun.spawn(['bun', cli, ...tuiArgs], {
+  tui = Bun.spawn(['bun', ...(options['mouse-observer'] ? ['--preload', options['mouse-observer']] : []), cli, ...tuiArgs], {
     cwd: process.cwd(), env: { ...runtimeEnv, TERM: options.term ?? 'xterm-256color', SSH_CONNECTION: 'fixture 1 fixture 2',
       ...(options['no-mouse'] ? { CHARIOX_TUI_MOUSE: 'off' } : {}),
       ...(options.attached || options['waiting-room-paste'] ? { CHARIOX_HOME: process.env.CHARIOX_HOME } : {}) },
@@ -251,6 +253,15 @@ try {
   const copySequence = options['copy-key'] === 'kitty' ? '\x1b[99;6u' : '\x1b[17~'
   // Real SGR drag across `width` cells of a visible row, then release.
   const dragSelect = async (at, width) => {
+    if (options['real-pointer']) {
+      const coords = await page.evaluate(() => { const r = document.querySelector('.xterm-screen').getBoundingClientRect(); return {x:r.x,y:r.y,cw:r.width/term.cols,ch:r.height/term.rows} })
+      await page.mouse.move(coords.x+coords.cw*(at.x+0.5), coords.y+coords.ch*(at.y+0.5))
+      await page.mouse.down()
+      await page.mouse.move(coords.x+coords.cw*(at.x+width-0.5), coords.y+coords.ch*(at.y+0.5), {steps: 10})
+      await page.mouse.up()
+      await sleep(400)
+      return
+    }
     await mouse(`\x1b[<0;${at.x+1};${at.y+1}M`)
     const move = `\x1b[<32;${at.x+width};${at.y+1}M`
     await mouse(options['batch-mouse'] ? `\x1b[<32;${at.x+2};${at.y+1}M${move}` : move)
@@ -470,17 +481,67 @@ try {
     if (options.provider?.startsWith('claude')) {
       await typeText('/permissions required'); await press('\r'); await sleep(1000)
     }
+    if (options['timing-review']) {
+      timingClient = new KernelClient(options['fleet-kernel-url'], {})
+      timingObserver = await observeProviderTiming({client:timingClient, alias:sessionAlias, evidence, stop, kernelPid:kernel?.pid??Number(options['timing-kernel-pid'])})
+    }
     await typeText('Reply with exactly one line: the words tuifix marker seven alpha, written in uppercase.')
+    timingObserver?.dispatch()
     await press('\r')
     await capture('a01b-prompt-sent')
-    await waitFor(async () => (await rowOf(marker)) !== null, 240_000).catch(async error => { await capture('a01c-response-timeout'); throw error })
+    let lastSample = 0
+    await waitFor(async () => {
+      await timingObserver?.tick()
+      if (timingObserver && Date.now()-lastSample >= 2000) {lastSample=Date.now(); await timingObserver.sample()}
+      return (await rowOf(marker)) !== null
+    }, 240_000).catch(async error => { await capture('a01c-response-timeout'); throw error })
+    timingObserver?.rendered()
+    const providerTiming = await timingObserver?.finish()
     // MP-08 / MP-10: the marker can stream before final turn settlement.
     // Select the completed response; settlement may still replace its view.
     await waitFor(() => page.evaluate(() => terminalScreen().split('\n').slice(-8).some(row => /^\s*[│ ]*IDLE\b/.test(row))), 240_000)
     await sleep(4000)
     await capture('a02-response')
     const nativeCopy = options['native-selection-review'] ? await nativeCopyCases(marker) : null
-    if (options['native-batch-review']) {
+    if (options['timing-only']) {
+      result = {items:['MP-08','MP-10'], source:options.source, provider:options.provider, dpr:Number(options.dpr??1), providerTiming}
+    } else if (options['mouse-order-review']) {
+      const cells=[]
+      for (const paste of [false,true]) for(const delivery of ['separate','down-coalesced','drag-coalesced']) {
+        await press('\x15')
+        const at=await settledRowOf(marker)
+        const edit=paste?'\x1b[200~z\x1b[201~':'z'
+        const down=`\x1b[<0;${at.x+1};${at.y+1}M`
+        const rest=`\x1b[<32;${at.x+14};${at.y+1}M\x1b[<0;${at.x+14};${at.y+1}m`
+        const count=(await copiedTexts()).length
+        if(delivery==='separate'){await press(edit);await press(down);await press(rest)}
+        else if(delivery==='down-coalesced'){await press(edit+down);await press(rest)}
+        else await press(edit+down+rest)
+        await sleep(500)
+        const copied=(await copiedTexts()).slice(count).some(text=>text.startsWith('TUIFIX MARKER'))
+        cells.push({paste,delivery,copied})
+        await capture(`mouse-order-${paste?'paste':'typing'}-${delivery}`)
+        await writeFile(path.join(evidence,'mouse-order.json'),JSON.stringify({items:['MP-08','MP-10'],cells},null,2))
+      }
+      result={items:['MP-08','MP-10'],source:options.source,provider:options.provider,dpr:Number(options.dpr??1),cells}
+      if(options['expect-red'])assert.ok(cells.some(c=>!c.copied),'base must lose a newer coalesced selection')
+      else assert.ok(cells.every(c=>c.copied),'all newer mouse selections must survive earlier edits')
+    } else if (options['drag-stress']) {
+      const cells=[]
+      for (let i=0; i<Number(options['drag-stress']); i++) {
+        if (options['drag-edit']) {await press('\x15'); await press(i%2?'ab':'\x1b[200~pasted text\x1b[201~'); await press('\x15')}
+        const at=await settledRowOf(marker)
+        assert.ok(at)
+        const copyCount=(await copiedTexts()).length
+        await dragSelect(at,14)
+        const copied=(await copiedTexts()).slice(copyCount).some(text=>text.startsWith('TUIFIX MARKER'))
+        cells.push({i,at,copied})
+        if (!copied || i===0 || i===Number(options['drag-stress'])-1) await capture(`drag-stress-${i}`)
+        await writeFile(path.join(evidence,'drag-stress.json'),JSON.stringify({items:['MP-08','MP-10'],cells},null,2))
+      }
+      result={items:['MP-08','MP-10'],source:options.source,provider:options.provider,dpr:Number(options.dpr??1),cells,providerTiming}
+      assert.ok(cells.every(cell=>cell.copied),'every real terminal drag must acquire selection')
+    } else if (options['native-batch-review']) {
       const nativeBatch = await nativeBatchCases()
       result = {items: ['MP-08','MP-10'], mode: 'native-batch-review', source: options.source,
         provider: options.provider, model: options.model, dpr: Number(options.dpr ?? 1), nativeBatch, nativeCopy,
@@ -749,6 +810,9 @@ try {
   }
   }
 } finally {
+  let timingError
+  try {await timingObserver?.finish()} catch(error) {timingError=error}
+  await timingClient?.close()
   await browser?.close()
   await stop(tui)
   if (!sessionDeleted) await deleteSession().catch(error => console.error(`session cleanup failed: ${error?.message}`))
@@ -759,5 +823,7 @@ try {
   await stop(kernel)
   await rm(scratch, { recursive: true, force: true })
   if (!options.interactive) await writeFile(path.join(evidence, 'terminal.pty'), output)
-  await writeFile(path.join(evidence, 'result.json'), JSON.stringify({ source: options.source, cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null, ...result, requests, upstreamResponses, cleanup: 'owned TUI/kernel/browser/proxy stopped; disposable state removed' }, null, 2))
+  if(timingError) await writeFile(path.join(evidence,'timing-error.txt'),'MP-08 / MP-10 timing observer failed; see runner error')
+  await writeFile(path.join(evidence, 'result.json'), JSON.stringify({ source: options.source, cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null, ...result, timingObserverFailed:Boolean(timingError), requests, upstreamResponses, cleanup: 'owned TUI/kernel/browser/proxy stopped; disposable state removed' }, null, 2))
+  if(timingError)throw timingError
 }
