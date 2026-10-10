@@ -83,6 +83,13 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
     session
         .metaagent_tasks
         .retain(|task| visible_agent_ids.contains(task.metaagent_id()));
+    // MP-08/MP-09/MP-10/MP-11: lifecycle reasons and process argv follow trace visibility.
+    session
+        .agent_tasks
+        .retain(|task| visible_agent_ids.contains(&task.agent_id));
+    session
+        .agent_wakes
+        .retain(|wake| visible_agent_ids.contains(&wake.agent_id));
     // A04: window, run and requester details belong to the window's owner.
     session
         .sudo_windows
