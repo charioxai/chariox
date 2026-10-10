@@ -4655,6 +4655,53 @@ impl KernelRuntimeState {
         });
     }
 
+    // MP-08/MP-10/MP-11: the waiter holds the provider operation lane until this
+    // exact cancelled invocation has settled, including settlement by another pump.
+    pub(super) async fn wait_for_structured_prompt_abort_settlement(
+        &self,
+        dispatch: &crate::app::KernelPromptAbortDispatch,
+        completion_signal: &crate::provider::ProviderRunActorCompletionSignal,
+        mut completion_sequence: u64,
+    ) {
+        loop {
+            if self
+                .owned
+                .cancelling_prompt_for_abort(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &dispatch.prompt_id,
+                )
+                .is_none()
+            {
+                return;
+            }
+            // MP-08/MP-10/MP-11: another output pump may settle the owner after
+            // its actor completion was already observed. Recheck that exact
+            // prompt even when there is no further provider event. This delay
+            // never acknowledges an abort or settles a still-cancelling turn.
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(25),
+                completion_signal.wait_for_change_after(completion_sequence),
+            )
+            .await;
+            completion_sequence = completion_signal.sequence();
+            self.reap_structured_prompt_jobs_and_dispatch();
+            let prompt_is_still_cancelling = self
+                .owned
+                .cancelling_prompt_for_abort(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &dispatch.prompt_id,
+                )
+                .is_some();
+            if !prompt_is_still_cancelling {
+                self.spawn_workflow_prompt_dispatches(self.owned.workflow_retry_blocked_claims());
+                let _ = self.owned.session_snapshot(&dispatch.session_id);
+                return;
+            }
+        }
+    }
+
     pub(crate) fn spawn_prompt_abort(
         &self,
         dispatch: crate::app::KernelPromptAbortDispatch,
@@ -4678,7 +4725,7 @@ impl KernelRuntimeState {
             loop {
                 let completion_signal =
                     structured.then(|| state.owned.provider_store.run_actor_completion_signal());
-                let mut completion_sequence = completion_signal
+                let completion_sequence = completion_signal
                     .as_ref()
                     .map(|signal| signal.sequence())
                     .unwrap_or_default();
@@ -4703,42 +4750,18 @@ impl KernelRuntimeState {
                         }
                         PromptAbortDispatchOutcome::Done
                     }
-                    Ok(()) => loop {
-                        if state
-                            .owned
-                            .cancelling_prompt_for_abort(
-                                &dispatch.session_id,
-                                &dispatch.provider_run_id,
-                                &dispatch.prompt_id,
+                    Ok(()) => {
+                        state
+                            .wait_for_structured_prompt_abort_settlement(
+                                &dispatch,
+                                completion_signal
+                                    .as_ref()
+                                    .expect("structured abort should have a completion signal"),
+                                completion_sequence,
                             )
-                            .is_none()
-                        {
-                            break PromptAbortDispatchOutcome::Done;
-                        }
-                        let completion_signal = completion_signal
-                            .as_ref()
-                            .expect("structured abort should have a completion signal");
-                        completion_signal
-                            .wait_for_change_after(completion_sequence)
                             .await;
-                        completion_sequence = completion_signal.sequence();
-                        state.reap_structured_prompt_jobs_and_dispatch();
-                        let prompt_is_still_cancelling = state
-                            .owned
-                            .cancelling_prompt_for_abort(
-                                &dispatch.session_id,
-                                &dispatch.provider_run_id,
-                                &dispatch.prompt_id,
-                            )
-                            .is_some();
-                        if !prompt_is_still_cancelling {
-                            state.spawn_workflow_prompt_dispatches(
-                                state.owned.workflow_retry_blocked_claims(),
-                            );
-                            let _ = state.owned.session_snapshot(&dispatch.session_id);
-                            break PromptAbortDispatchOutcome::Done;
-                        }
-                    },
+                        PromptAbortDispatchOutcome::Done
+                    }
                     Err(_)
                         if state
                             .structured_prompt_io_in_flight(&dispatch.provider_run_id)
