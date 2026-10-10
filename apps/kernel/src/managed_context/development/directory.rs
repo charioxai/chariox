@@ -136,6 +136,10 @@ fn snapshot(
                 .to_string();
             validate_relative_path(&path_text)?;
             if overlay::context_force_excluded_path(&path_text)
+                || (vault.is_none()
+                    && crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(
+                        &path_text,
+                    ))
                 || overlay::user_ignore_pattern_matches_any(&patterns, &path_text)
             {
                 continue;

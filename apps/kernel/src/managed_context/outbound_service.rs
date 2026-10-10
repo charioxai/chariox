@@ -1929,46 +1929,46 @@ mod tests {
     use crate::transport::relay_crypto;
 
     #[test]
-    fn mp08_mp11_source_refuses_compound_shell_assignments_in_overlay() {
+    fn mp08_mp11_source_vault_seals_compound_shell_assignments_in_overlay() {
         crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
-        assert_source_refuses_inline_shell(
+        assert_source_vault_seals_inline_shell(
             "FOO=bar API_KEY=synthetic-canary curl https://example.test\n",
             false,
         );
     }
 
     #[test]
-    fn mp08_mp11_source_refuses_basic_auth_in_overlay() {
+    fn mp08_mp11_source_vault_seals_basic_auth_in_overlay() {
         crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
-        assert_source_refuses_inline_shell(
+        assert_source_vault_seals_inline_shell(
             "curl --user owner:synthetic-canary https://example.test\n",
             false,
         );
     }
 
     #[test]
-    fn mp08_mp11_source_refuses_compound_shell_assignments_in_history() {
+    fn mp08_mp11_source_vault_seals_compound_shell_assignments_in_history() {
         crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
-        assert_source_refuses_inline_shell(
+        assert_source_vault_seals_inline_shell(
             "FOO=bar API_KEY=synthetic-canary curl https://example.test\n",
             true,
         );
     }
 
     #[test]
-    fn mp08_mp11_source_refuses_basic_auth_in_history() {
+    fn mp08_mp11_source_vault_seals_basic_auth_in_history() {
         crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
-        assert_source_refuses_inline_shell(
+        assert_source_vault_seals_inline_shell(
             "curl --user owner:synthetic-canary https://example.test\n",
             true,
         );
     }
 
-    fn assert_source_refuses_inline_shell(text: &str, history: bool) {
+    fn assert_source_vault_seals_inline_shell(text: &str, history: bool) {
         assert_source_shell_result(text, history, false);
     }
 
@@ -1997,6 +1997,24 @@ mod tests {
     ) {
         use crate::managed_context::owner_managed::*;
         let mut config = DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = fixture
+            .root
+            .join("source-vault.json")
+            .to_string_lossy()
+            .into_owned();
+        crate::secret::create_chariox_encrypted_vault_for_test(
+            Path::new(&config.user_config.credential_vault.path),
+            "supplementary-test-passphrase",
+        )
+        .unwrap();
+        crate::secret::unlock_chariox_encrypted_vault(
+            &config.user_config.credential_vault.path,
+            "supplementary-test-passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
             realm_id: "realm".into(),
             machine_id: Some(config.host_machine_id.clone()),
@@ -2033,31 +2051,27 @@ mod tests {
             fixture.root.join("profiles.json"),
         )
         .unwrap();
-        let result = prepare_managed_context_package(&config, &store, &profiles, &ticket);
-        if accepted {
-            assert!(
-                result.is_ok(),
-                "MP-08 ordinary source shell refused: {:?}",
-                result.as_ref().err()
-            );
-            return;
-        }
-        assert!(
-            matches!(result, Err(ref error) if error.to_string().contains("credential-free context")),
-            "MP-11 source must reject inline shell credentials"
+        let result = prepare_managed_context_package(&config, &store, &profiles, &ticket)
+            .expect("MP-08 shared Copy must seal detected secrets instead of refusing them");
+        let manifest = super::super::development::extract_verified_development_archive(
+            &result.artifact_root.join("development.tar.gz"),
+            "project",
+            None,
+            &fixture.root.join("inspect"),
+        )
+        .expect("MP-11 encrypted archive remains structurally valid");
+        assert_eq!(
+            manifest.vault_artifacts.is_empty(),
+            accepted,
+            "MP-11 ordinary content copies normally; detected credentials use Vault artifacts"
         );
-        assert!(
-            !fixture
-                .root
-                .join("outbound")
-                .join(ticket.context_plan.context_id())
-                .exists(),
-            "MP-11 rejected package is cleaned up"
-        );
+        crate::secret::lock_chariox_encrypted_vault(&config.user_config.credential_vault.path)
+            .unwrap();
+        retire_artifact_root(&result.artifact_root).unwrap();
     }
 
     #[test]
-    fn mp08_mp11_source_refuses_utf16_in_overlay_and_history() {
+    fn mp08_mp11_source_vault_seals_utf16_in_overlay_and_history() {
         crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
         use crate::managed_context::credential_free::tests::{utf16, InlineShellFixture};

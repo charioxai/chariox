@@ -1,4 +1,4 @@
-//! MP-08/MP-11: decode supported text before inspection; unknown bytes fail closed.
+//! MP-08/MP-11: decode supported text before inspection; unknown bytes are classified by the shared binary scanner.
 use super::refused;
 use crate::error::DaemonError;
 use std::borrow::Cow;

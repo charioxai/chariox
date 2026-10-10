@@ -7,8 +7,13 @@ pub(super) fn export_overlay(
     manifest_budget: &mut ManifestMemoryBudget,
     vault: Option<&vault_artifacts::ExportVault<'_>>,
 ) -> Result<(Vec<DevelopmentOverlayEntry>, u64), DaemonError> {
-    let (entries, size, pending) =
-        collect_overlay(worktree, repository_id, staging_root, manifest_budget)?;
+    let (entries, size, pending) = collect_overlay(
+        worktree,
+        repository_id,
+        staging_root,
+        manifest_budget,
+        vault.is_some(),
+    )?;
     stage_objects(staging_root, &entries, pending, vault)?;
     Ok((entries, size))
 }
@@ -18,6 +23,7 @@ pub(super) fn collect_overlay(
     repository_id: &str,
     staging_root: &Path,
     manifest_budget: &mut ManifestMemoryBudget,
+    vault_enabled: bool,
 ) -> Result<
     (
         Vec<DevelopmentOverlayEntry>,
@@ -62,7 +68,7 @@ pub(super) fn collect_overlay(
         ];
         args.extend(includes);
         stream_git_nul_records(worktree, &args, usize::MAX, |path| {
-            if !context_force_excluded_path(&path)
+            if !excluded_for_export(&path, vault_enabled)
                 && !crate::workspace_live_sync_ignore::user_rules_exclude_path(
                     &path,
                     &ignore_patterns,
@@ -80,7 +86,7 @@ pub(super) fn collect_overlay(
     let mut entries = Vec::new();
     for path in paths {
         validate_relative_path(&path)?;
-        if context_force_excluded_path(&path)
+        if excluded_for_export(&path, vault_enabled)
             || crate::workspace_live_sync_ignore::user_rules_exclude_path(&path, &ignore_patterns)
         {
             continue;
@@ -119,7 +125,7 @@ fn index_file_state(
     worktree: &Path,
     repository_id: &str,
     path: &str,
-    staging_root: &Path,
+    _staging_root: &Path,
     stored_objects: &mut BTreeSet<String>,
     overlay_size_bytes: &mut u64,
     pending: &mut BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
@@ -179,7 +185,7 @@ fn worktree_file_state(
     worktree: &Path,
     repository_id: &str,
     path: &str,
-    staging_root: &Path,
+    _staging_root: &Path,
     stored_objects: &mut BTreeSet<String>,
     overlay_size_bytes: &mut u64,
     pending: &mut BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
@@ -253,7 +259,7 @@ pub(super) fn store_overlay_object(
     repository_id: &str,
     bytes: Vec<u8>,
     executable: bool,
-    staging_root: &Path,
+    _staging_root: &Path,
     stored_objects: &mut BTreeSet<String>,
     overlay_size_bytes: &mut u64,
     pending: &mut BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
@@ -326,6 +332,12 @@ pub(super) fn validate_relative_path(path: &str) -> Result<(), DaemonError> {
         return Err(context_error(format!("unsafe repository path `{path}`")));
     }
     Ok(())
+}
+
+fn excluded_for_export(path: &str, vault_enabled: bool) -> bool {
+    context_force_excluded_path(path)
+        || (!vault_enabled
+            && crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(path))
 }
 
 pub(super) fn context_force_excluded_path(path: &str) -> bool {

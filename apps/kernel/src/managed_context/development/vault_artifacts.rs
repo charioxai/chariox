@@ -24,8 +24,13 @@ pub(crate) fn review_items(
             }
         }
         if fs::symlink_metadata(root.join(".git")).is_ok() {
-            let (entries, _, pending) =
-                overlay::collect_overlay(root, "review", root, &mut ManifestMemoryBudget::new())?;
+            let (entries, _, pending) = overlay::collect_overlay(
+                root,
+                "review",
+                root,
+                &mut ManifestMemoryBudget::new(),
+                true,
+            )?;
             for (object, bytes) in pending {
                 for mut item in overlay::items_for_object(&object, &bytes, &entries) {
                     item.path = format!("{workspace}/{}", item.path);
