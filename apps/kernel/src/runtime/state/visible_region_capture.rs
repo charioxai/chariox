@@ -38,11 +38,11 @@ impl KernelRuntimeState {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-')
         {
-            return Err(capture_error("Invalid capture ID"));
+            return Err(capture_error("Invalid capture ID [capture:kernel-visible_region_capture-1]"));
         }
         raster::validate_region(&request.region)?;
         let _capture_budget = CAPTURE_BUDGET.try_acquire().map_err(|_| {
-            capture_error("Capture busy; retry after the current selection finishes")
+            capture_error("Capture busy; retry after the current selection finishes [capture:kernel-visible_region_capture-2]")
         })?;
         let owner = command_caller_user_id(command);
         let mut masks = Vec::new();
@@ -58,13 +58,13 @@ impl KernelRuntimeState {
                     .await?;
                 let before = self
                     .room_environment_snapshot(session_id)
-                    .map_err(|_| capture_error("Room unavailable"))?;
+                    .map_err(|_| capture_error("Room unavailable [capture:kernel-visible_region_capture-3]"))?;
                 if before.runtime_generation != *runtime_generation
                     || before.viewport.revision != *viewport_revision
                     || before.viewport.desktop_pixel_width != request.region.frame_width
                     || before.viewport.desktop_pixel_height != request.region.frame_height
                 {
-                    return Err(capture_error("Stale Room frame; refresh before capturing"));
+                    return Err(capture_error("Stale Room frame; refresh before capturing [capture:kernel-visible_region_capture-4]"));
                 }
                 let artifact = self
                     .capture_room_environment_screenshot(
@@ -82,11 +82,11 @@ impl KernelRuntimeState {
                 // revision on each chunk. Viewport changes invalidate this crop.
                 let after = self
                     .room_environment_snapshot(session_id)
-                    .map_err(|_| capture_error("Room unavailable"))?;
+                    .map_err(|_| capture_error("Room unavailable [capture:kernel-visible_region_capture-5]"))?;
                 if before.runtime_generation != after.runtime_generation
                     || before.viewport != after.viewport
                 {
-                    return Err(capture_error("Room changed during capture"));
+                    return Err(capture_error("Room changed during capture [capture:kernel-visible_region_capture-6]"));
                 }
                 bytes
             }
@@ -112,7 +112,7 @@ impl KernelRuntimeState {
                                 )?;
                             let browser = view.browser.ok_or_else(|| {
                                 capture_error(
-                                    "Native App views are captured by the trusted client renderer",
+                                    "Native App views are captured by the trusted client renderer [capture:kernel-visible_region_capture-7]",
                                 )
                             })?;
                             if browser.generation != *generation {
@@ -128,13 +128,13 @@ impl KernelRuntimeState {
                         )))]
                         {
                             let _ = (view_id, generation);
-                            return Err(capture_error("App host unavailable"));
+                            return Err(capture_error("App host unavailable [capture:kernel-visible_region_capture-8]"));
                         }
                     }
                     _ => unreachable!(),
                 };
                 if tab_id.is_empty() || tab_id.len() > 128 || generation == 0 {
-                    return Err(capture_error("Invalid host identity"));
+                    return Err(capture_error("Invalid host identity [capture:kernel-visible_region_capture-9]"));
                 }
                 let frame = self
                     .kernel_browser_display_request(
@@ -145,23 +145,23 @@ impl KernelRuntimeState {
                 if frame.get("generation").and_then(|v| v.as_u64()) != Some(generation)
                     || frame.get("mime_type").and_then(|v| v.as_str()) != Some("image/png")
                 {
-                    return Err(capture_error("Host returned a stale or invalid frame"));
+                    return Err(capture_error("Host returned a stale or invalid frame [capture:kernel-visible_region_capture-10]"));
                 }
                 masks = serde_json::from_value::<Vec<CaptureMask>>(
                     frame
                         .get("protected_regions")
                         .cloned()
-                        .ok_or_else(|| capture_error("Host protection unavailable"))?,
+                        .ok_or_else(|| capture_error("Host protection unavailable [capture:kernel-visible_region_capture-11]"))?,
                 )
-                .map_err(|_| capture_error("Invalid host protection bounds"))?;
+                .map_err(|_| capture_error("Invalid host protection bounds [capture:kernel-visible_region_capture-12]"))?;
                 let encoded = frame
                     .get("data_base64")
                     .and_then(|v| v.as_str())
                     .filter(|v| v.len() <= 24 * 1024 * 1024)
-                    .ok_or_else(|| capture_error("Host frame exceeds limit"))?;
+                    .ok_or_else(|| capture_error("Host frame exceeds limit [capture:kernel-visible_region_capture-13]"))?;
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(encoded)
-                    .map_err(|_| capture_error("Invalid host frame encoding"))?;
+                    .map_err(|_| capture_error("Invalid host frame encoding [capture:kernel-visible_region_capture-14]"))?;
                 // Close/revocation wins over an in-flight App capture.
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 if let ScreenshotSurface::UserAppView {
@@ -178,7 +178,7 @@ impl KernelRuntimeState {
                             v.browser.is_some_and(|b| b.generation == *generation)
                         })
                     {
-                        return Err(capture_error("App closed during capture"));
+                        return Err(capture_error("App closed during capture [capture:kernel-visible_region_capture-15]"));
                     }
                 }
                 bytes
@@ -187,7 +187,7 @@ impl KernelRuntimeState {
         let region = request.region;
         let cropped = tokio::task::spawn_blocking(move || crop_png(&bytes, &region, &masks))
             .await
-            .map_err(|_| capture_error("Image crop task failed"))??;
+            .map_err(|_| capture_error("Image crop task failed [capture:kernel-visible_region_capture-16]"))??;
         let captured_at_ms = crate::session::unix_epoch_ms();
         Ok(VisibleRegionCapture {
             capture_id: request.capture_id,
