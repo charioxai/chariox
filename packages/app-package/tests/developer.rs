@@ -476,8 +476,10 @@ fn bundle_rejects_link_escapes_hardlinks_special_files_and_limits() {
         ErrorCode::InvalidPath
     );
     fs::remove_file(&escape).unwrap();
-    let mut limits = Limits::default();
-    limits.max_entries = 2;
+    let limits = Limits {
+        max_entries: 2,
+        ..Limits::default()
+    };
     assert_eq!(
         developer::read_bundle(&fixture.path("bundle"), &limits)
             .unwrap_err()

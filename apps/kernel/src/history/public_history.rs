@@ -268,7 +268,7 @@ impl OperationalHistoryStore {
         }
         let expression = terms
             .iter()
-            .map(|s| format!("\"{}\"", s))
+            .map(|s| format!("\"{s}\""))
             .collect::<Vec<_>>()
             .join(" AND ");
         let binding = format!(
@@ -425,13 +425,11 @@ impl OperationalHistoryStore {
                 |r| Ok((r.get::<_, String>(0)?, r.get(1)?)),
             )
             .map_err(public_error)?;
-        let documents = rows
-            .map(|row| {
-                let (json, prompt) = row.map_err(public_error)?;
-                public_document(&json, prompt)
-            })
-            .collect();
-        documents
+        rows.map(|row| {
+            let (json, prompt) = row.map_err(public_error)?;
+            public_document(&json, prompt)
+        })
+        .collect()
     }
 
     /// Start/resume a bounded rebuild from sanitized source, never raw rows.

@@ -417,7 +417,6 @@ fn pre_spawn_storage_visit_keeps_the_domain_pinned_and_refuses_a_retained_descri
         .ok()
         .expect("sole owner")
         .into_inner()
-        .ok()
         .expect("healthy preparation");
     let (prepared, bytes) = prepared
         .visit_private_data(|data| {

@@ -580,7 +580,7 @@ async fn room_boundaries() {
     assert!(
         matches!(
             resumed,
-            Err(crate::local::DaemonError::InvalidWorkflowRunState { .. })
+            Err(crate::DaemonError::InvalidWorkflowRunState { .. })
         ),
         "MP-08 / MP-10 / MP-11 A01-S04: public peer graph passes admission: {resumed:?}"
     );
