@@ -10,6 +10,7 @@ import subprocess
 import time
 
 BUILD = Path('/Users/miguel/.chariox/dev/cumac/build')
+HELPER = BUILD / 'Chariox Computer Helper.app'
 LANE = Path('/Users/miguel/.chariox/dev/browser-computer-use/resume-20260930/agents/cumac')
 
 
@@ -62,7 +63,7 @@ def launch_helper(evidence, label, arguments):
     require_gui()
     subprocess.run(['open', '-n', '-g', '-W', '--stdout', str(evidence / f'{label}.out'),
                     '--stderr', str(evidence / f'{label}.err'),
-                    str(BUILD / 'Chariox Computer Helper.app'), '--args', *arguments],
+                    str(HELPER), '--args', *arguments],
                    check=True, timeout=8)
     receipt = read(evidence, f'{label}.out') + read(evidence, f'{label}.err')
     print(receipt, end='')
@@ -225,7 +226,10 @@ def run_cell(mode):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--suite', action='store_true', help='also run fixture button and scroll')
+    parser.add_argument('--recheck-bundle', action='store_true', help='use the separately built helper')
     options = parser.parse_args()
+    if options.recheck_bundle:
+        HELPER = BUILD / 'Chariox Computer Helper Recheck.app'
     wait_for_gui()
     results = [run_cell('text-click')]
     if options.suite:

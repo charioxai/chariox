@@ -1,4 +1,74 @@
-# Granted helper: unattended recheck complete
+# Fixture pass; real TextEdit reference waits for a re-grant
+
+The r4 review fixes are complete. Manually launched fixtures stay open; only
+`--unattended` enables the 20-second watchdog. Both runner modes supply that
+flag and match it during cleanup. A 21-second lifecycle check proved manual
+survival and unattended termination. The headless suite now creates its
+evidence parent before `mkdtemp`, and passes with a fresh home.
+
+The requested AX-bounds/AppKit comparison needs metadata that the granted
+helper does not expose. A direct diagnostic had no Accessibility grant and
+returned AX status -25211. One helper rebuild added an explicit public-document
+diagnostic. It is in a separate build bundle; the original granted bundle was
+not overwritten or re-signed:
+
+```text
+/Users/miguel/.chariox/dev/cumac/build/Chariox Computer Helper Recheck.app
+CDHash: 425753b7ce44dd772d2e428f3bc36b634d69eaeb
+SHA-256: 91150453be0ccb4a61b53ce29d7fbb1608bf86cb991fe9e61bf913007b809ba3
+```
+
+This bundle's preflight returned `refused: permission (accessibility-denied)`.
+The only owner step is to grant the exact new bundle in Accessibility and
+Screen Recording using System Settings. Accessibility is required by the
+TextEdit drill; no Screen Recording operation is used by that drill. Keep the
+original grants and bundle intact. No document opening, pointer positioning,
+caret clicking or screenshot inspection is requested from the owner.
+
+After that re-grant, run from this worktree:
+
+```bash
+python3 apps/macos-computer-use/textedit-click-drill.py --recheck-bundle
+python3 apps/macos-computer-use/text-click-drill.py --suite --recheck-bundle
+```
+
+The real-app runner checks the grant before opening anything, opens a new copy
+of the same 12-line public probe in Apple's TextEdit, discovers its new window,
+and requires an exact file URL and exact synthetic content match. The explicit
+`--public-text-drill-document PATH --ax-read` diagnostic publishes AX bounds
+for indices 125 and 126, AppKit insertion references using the AX font metadata,
+the actual selected range, launch-time CG/AppKit pointer samples and the window's
+screen. Ordinary AX reads still return role metadata only. The runner compares
+both explicit and warped-pointer clicks with those references, rejects changed
+layout/focus, restores an unchanged warped pointer, and closes only the matching
+unedited public document. A cleanup failure is FAIL. The new diagnostic has
+compiled and passed headless checks, but its real AX reference and close path
+remain unverified until the grant.
+
+The unchanged granted helper was also exercised in real TextEdit during r4.
+Both paths reported index 126 at 316,192 in the newly opened window. A temporary
+marker independently appeared as `car|et` on line 05 through each path, then
+was undone. These exploratory points came from the public screenshot, so they
+do not substitute for the requested AX-bounds reference. The owned document
+was closed. One physical display had origin 0,0, size 1512 by 982 and scale 2;
+TextEdit's new window was at Quartz 181,102, size 656 by 422. Other display
+arrangements remain untested.
+
+The historical manual receipt used the older `c1b20e40...` helper, whose pointer
+sample was `CGEvent(source: nil)?.location`. The granted `d171e975...` helper
+uses the same AppKit pointer sampler for fixture and owner mode. Replaying the
+historical reported point with the new window's 29,29 translation produced
+index 84 again; an independent marker appeared as `lin|e` on line 04. This
+establishes where that reported point maps in this layout, not why the old
+helper sampled it instead of Miguel's intended line-05 point. That cause is
+still unresolved. CG and AppKit agreed at the unattended warped points.
+
+R4 evidence is under
+`~/.codex/evidence/browser-computer-use-macos/cumac-r4-20261010/`.
+The permission-blocked new runner produced
+`ax-textedit-20261010-221956`. No real TextEdit reference PASS is claimed.
+
+## Preserved granted helper and fixture results
 
 Miguel re-granted this build bundle in Accessibility and Screen Recording
 on October 10 at approximately 20:00 UTC:
@@ -59,7 +129,7 @@ completion still requires the helper receipt and actual fixture selection.
 
 The same suite checks an observed fixture button counter increment through
 AXPress and an observed vertical scroll increase through AXScrollValue. Every
-fixture has a 20-second exit timer, and the runner closes only its own fixture.
+runner-owned fixture has an opt-in 20-second exit timer, and the runner closes only its own fixture.
 Evidence goes under `~/.codex/evidence/browser-computer-use-macos/`.
 
 GUI runs are allowed by default. While the lane's GUI_HOLD file exists, the
@@ -74,7 +144,7 @@ The earlier October 10 owner run proved button and scroll, but caret placement
 was wrong: location 84 instead of the owner's intended 126. Its cause remains
 unreproduced. The earlier unattended
 refusal happened while Miguel was typing elsewhere and is invalid evidence.
-The unattended suite replaces that ambiguous manual caret check. It proves
+The unattended suite complements that ambiguous manual caret check. It proves
 mapping on its own NSTextView window; separate real TextEdit compatibility,
 fatal input recovery, Developer ID signing and M1-M5 acceptance remain outside
 this recheck.

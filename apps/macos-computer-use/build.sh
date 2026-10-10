@@ -2,6 +2,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 build=${CUMAC_BUILD_DIR:-"$HOME/.chariox/dev/cumac/build"}
+helper_bundle="Chariox Computer Helper.app"
+case "${1:-}" in
+  --helper-recheck) helper_bundle="Chariox Computer Helper Recheck.app" ;;
+  "") ;;
+  *) printf 'Unknown build option\n' >&2; exit 1 ;;
+esac
 mkdir -p "$build/modules"
 arch=$(uname -m)
 flags=(-parse-as-library -target "$arch-apple-macosx14.0" -module-cache-path "$build/modules")
@@ -9,6 +15,7 @@ swiftc "${flags[@]}" Policy.swift Signing.swift Coordinates.swift PointerInput.s
 "$build/policy-tests"
 for kind in Helper Fixture; do
   bundle="$build/Chariox Computer $kind.app"
+  if [[ $kind == Helper ]]; then bundle="$build/$helper_bundle"; fi
   mkdir -p "$bundle/Contents/MacOS"
   name=$(printf '%s' "$kind" | tr '[:upper:]' '[:lower:]')
   cat > "$bundle/Contents/Info.plist" <<EOF
@@ -25,7 +32,7 @@ for kind in Helper Fixture; do
 EOF
   if [[ $kind == Helper ]]; then /usr/libexec/PlistBuddy -c 'Add :LSUIElement bool true' "$bundle/Contents/Info.plist"; fi
   if [[ $kind == Helper ]]; then
-    swiftc "${flags[@]}" Policy.swift Signing.swift Coordinates.swift PointerInput.swift Native.swift TextClick.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
+    swiftc "${flags[@]}" Policy.swift Signing.swift Coordinates.swift PointerInput.swift Native.swift TextClick.swift TextDrillReference.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
   else
     swiftc "${flags[@]}" Policy.swift Coordinates.swift Fixture.swift -o "$bundle/Contents/MacOS/fixture"
   fi

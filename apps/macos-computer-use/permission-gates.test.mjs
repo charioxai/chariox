@@ -13,6 +13,19 @@ test('manual fixture stays open; unattended runner explicitly enables watchdog',
   assert.match(fixture, /if CommandLine.arguments.contains\("--unattended"\) \{\s*Timer.scheduledTimer\(withTimeInterval: 20, repeats: false\)/);
 });
 
+test('public TextEdit reference stays opt-in, file-bound and below ordinary permission fences', () => {
+  assert.match(policy, /case "--public-text-drill-document"/);
+  assert.match(policy, /request.ownerWindow[\s\S]*request.operations == \[.read\]/);
+  const reference = readFileSync(new URL('./TextDrillReference.swift', import.meta.url), 'utf8');
+  assert.match(reference, /kAXDocumentAttribute[\s\S]*document == expected/);
+  assert.match(reference, /text == publicProbeText/);
+  assert.match(reference, /kAXBoundsForRangeParameterizedAttribute/);
+  assert.match(reference, /characterIndexForInsertion/);
+  assert.match(reference, /kAXSelectedTextRangeAttribute/);
+  assert.match(reference, /kAXEditedAttribute[\s\S]*kAXCloseButtonAttribute/);
+  assert.match(native, /if operation == .read[\s\S]*publicTextDrillDocument[\s\S]*publicTextDrillReference/);
+});
+
 test('run owns the pre-dispatch permission gate', () => {
   const dispatch = policy.slice(policy.indexOf('for operation in request.operations {', policy.indexOf('var result:')));
   assert.match(dispatch, /validateTarget\(request\)[\s\S]*checkPermission\(operation\)[\s\S]*source.perform\(operation/);
@@ -89,7 +102,10 @@ test('production refusals carry public reason tags without framework or AX value
 test('pointer clicks use one AppKit snapshot and reject a changed live pointer before AX access', () => {
   const helper = readFileSync(new URL('./Helper.swift', import.meta.url), 'utf8');
   assert.match(helper, /request.clickPoint = try currentPointerPoint\(\)/);
-  assert.doesNotMatch(helper, /CGEvent\(source: nil\)\?\.location/);
+  const clickSnapshot = helper.slice(helper.indexOf('if request.clickAtPointer {'), helper.indexOf('for receipt in try await run'));
+  assert.doesNotMatch(clickSnapshot, /CGEvent\(source: nil\)\?\.location/);
+  assert.equal(clickSnapshot.match(/currentPointerPoint\(\)/g)?.length, 1);
+  assert.match(helper, /if request.publicTextDrillDocument != nil \{[\s\S]*request.publicDrillLegacyPointer = CGEvent\(source: nil\)\?\.location[\s\S]*\}\s*if request.clickAtPointer/);
   const fence = native.slice(native.indexOf('func fence('), native.indexOf('func bind('));
   assert.match(fence, /checkPointerSnapshot\(request, currentPoint: currentPointerPoint\(\)\)[\s\S]*selectedWindow/);
 });

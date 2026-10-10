@@ -39,6 +39,19 @@ final class FakeSource: NativeSource {
 @main struct Tests {
     static func main() async throws {
         try testPointerInput()
+        let publicRead = ["--enable-owner-window", "--owner-pid", "42", "--window-id", "1", "--ax-read"]
+        let diagnostic = ["--public-text-drill-document", "/public/caret-probe-r4.txt"]
+        let reference = try Request.parse(publicRead + diagnostic)
+        precondition(reference.publicTextDrillDocument == diagnostic[1] && !reference.closePublicTextDrill)
+        let closing = try Request.parse(publicRead + diagnostic + ["--close-public-text-drill"])
+        precondition(closing.closePublicTextDrill)
+        for invalid in [publicRead + ["--close-public-text-drill"], publicRead + diagnostic + diagnostic,
+                        publicRead + diagnostic + ["--click"],
+                        ["--enable-fixture", "--fixture-pid", "42", "--window-id", "1", "--ax-read"] + diagnostic] {
+            do { _ = try Request.parse(invalid); preconditionFailure("unsafe public diagnostic admitted") }
+            catch { precondition(refusalKind(error) == .arguments) }
+        }
+        print("PASS public TextEdit reference is owner-only and requires one read operation")
         precondition(refusalMessage(tagged(.target, "not-frontmost")) ==
             "refused: target (not-frontmost)")
         precondition(refusalMessage(tagged(.permission, "accessibility-denied")) ==

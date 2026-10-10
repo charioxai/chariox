@@ -264,6 +264,9 @@ struct MacSource: NativeSource {
             return "frame \(image.width)x\(image.height) window=\(request.window)"
         }
         if operation == .read {
+            if request.publicTextDrillDocument != nil {
+                return try publicTextDrillReference(request, element: element)
+            }
             // Read only public metadata, never values, labels, selections or secure descendants.
             guard let role = try attribute(element, kAXRoleAttribute) as? String,
                   [kAXTextFieldRole, kAXTextAreaRole, kAXButtonRole, kAXScrollAreaRole].contains(role) else { throw tagged(.target, "unsupported-read-role") }

@@ -20,11 +20,21 @@ func launchIdentity() throws -> [String: Any] {
             let arguments = Array(CommandLine.arguments.dropFirst())
             print(String(data: try JSONSerialization.data(withJSONObject: launchIdentity(), options: [.sortedKeys]), encoding: .utf8)!)
             if arguments == ["--identity"] { return }
+            if arguments == ["--drill-permissions"] {
+                try MacSource().checkPermission(.read)
+                print("drillPermission accessibility=granted")
+                return
+            }
             if arguments == ["--enable-owner-window", "--list-windows"] {
                 print(String(data: try JSONSerialization.data(withJSONObject: ownerWindowChoices(), options: [.sortedKeys]), encoding: .utf8)!)
                 return
             }
             var request = try Request.parse(arguments)
+            if request.publicTextDrillDocument != nil {
+                // Compare the historical sampling order before target discovery.
+                request.publicDrillLegacyPointer = CGEvent(source: nil)?.location
+                request.publicDrillAppKitPointer = try currentPointerPoint()
+            }
             if request.clickAtPointer {
                 // Read the existing pointer once. This does not post a mouse event.
                 request.clickPoint = try currentPointerPoint()
