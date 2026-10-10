@@ -286,7 +286,10 @@ export class Mirror2 {
     mark('observe_resources');
     const sheets = await this.sheetOps(world, source?.sheets);
     let tiles = [];
-    if (!fallback) try { tiles = await this.tiles(world, tab, stream, reset); } catch (error) {
+    // Stills, like image bytes, never ride on a DOM change or follow viewer input
+    // within QUIET_MS: an echo must not queue behind a lossless region.
+    const still = reset || (this.emptyDom(stream, source) && !this.recentInput(stream));
+    if (!fallback) try { tiles = await this.tiles(world, tab, stream, reset, still); } catch (error) {
       if (error.mirrorReason !== 'region_area') throw error;
       fallback = 'region_area'; this.host.timing?.('mirror2_fallback_region_area', timestamp()); source = null; reset = true; resources = [];
     }
@@ -340,12 +343,14 @@ export class Mirror2 {
     return { wire: 2, sequence: packet.sequence, ...(packet.reset ? { reset: true } : {}), encoding: 'deflate', packet_bytes: text.length, packet_base64: compressed.toString('base64'), ...(resources ? { resources } : {}), ...(tiles ? { tiles } : {}) };
   }
   // The viewer's own scroll position coming back is not news to that viewer.
-  empty(stream, source) {
+  empty(stream, source) { return this.emptyDom(stream, source) && !this.tilesDue(stream); }
+  emptyDom(stream, source) {
     const scroll = JSON.stringify(source.scroll) === stream.ownScrolls.get(null) ? stream.sentScroll : source.scroll;
-    return !source.ops?.length && !source.sheets?.length && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.selection) === stream.header.selection && !this.tilesDue(stream);
+    return !source.ops?.length && !source.sheets?.length && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.selection) === stream.header.selection;
   }
   // A packet's resource budget; smaller within a second of viewer input.
-  packetBytes(stream) { return Date.now() - (stream.inputAt ?? 0) < QUIET_MS ? INPUT_PACKET_BYTES : RESOURCE_PACKET_BYTES; }
+  packetBytes(stream) { return this.recentInput(stream) ? INPUT_PACKET_BYTES : RESOURCE_PACKET_BYTES; }
+  recentInput(stream) { return Date.now() - (stream.inputAt ?? 0) < QUIET_MS; }
   refinePending(stream) { for (const entry of stream.resources.values()) if (entry.previewed && !entry.sent) return true; return false; }
   merge(a, b) { return { ...b, ops: [...(a.ops ?? []), ...(b.ops ?? [])], sheets: [...(a.sheets ?? []), ...(b.sheets ?? [])], changed: [...(a.changed ?? []), ...(b.changed ?? [])] }; }
   // Unattached foreign frames are opaque regions (masked captures only).
@@ -357,7 +362,7 @@ export class Mirror2 {
   register(stream, source) {
     for (const descriptor of source?.resources ?? []) if (!stream.resources.has(descriptor.key)) stream.resources.set(descriptor.key, { ...descriptor, state: 'new', tries: 0, sent: false });
   }
-  tilesDue(stream) { return stream.tileKeys !== '' && Date.now() - stream.tilesAt >= TILE_REFRESH_MS; }
+  tilesDue(stream) { return stream.tileKeys !== '' && Date.now() - stream.tilesAt >= TILE_REFRESH_MS && !this.recentInput(stream); }
   // Bytes the page itself loaded: data URLs, the inspector's resource tree, or
   // Chrome's cache (credential-free) for URLs in the page's Resource Timing.
   // A URL a stylesheet merely mentions waits until the page loads it.
@@ -462,14 +467,16 @@ export class Mirror2 {
   }
   // Opaque regions (canvas/video/foreign frames) as masked lossless stills,
   // refreshed at most once a second until phase 3 binds them to video rows.
-  async tiles(world, tab, stream, reset) {
+  async tiles(world, tab, stream, reset, still) {
     const boxes = [...(await this.evaluate(world, `${world.ref}.opaqueBoxes()`)).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)];
     stream.tileKeys = boxes.map(b => b.id).join(',');
     // Plan 3.2 handoff: opaque regions over a quarter of the viewport hand the
     // whole page to protected video (labelled; the client retries later).
     if (regionArea(boxes) > 0.25 * 1280 * 800) { const error = new Error('MP-10: opaque regions exceed the mirror budget'); error.mirrorReason = 'region_area'; throw error; }
-    if (!boxes.length || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
+    if (!boxes.length || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
     stream.tilesAt = Date.now();
+    // The viewer keeps a still until replaced: unchanged pixels are not sent again.
+    if (reset || !stream.tileHashes) stream.tileHashes = new Map();
     const scale = this.host.scales.get(tab.tab_id) ?? 1;
     const x0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => b.box[0])))), y0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => b.box[1]))));
     const x1 = Math.min(1280, Math.ceil(Math.max(...boxes.map(b => b.box[0] + b.box[2])))), y1 = Math.min(800, Math.ceil(Math.max(...boxes.map(b => b.box[1] + b.box[3]))));
@@ -485,7 +492,10 @@ export class Mirror2 {
       const x = Math.floor((left - x0) * scale), y = Math.floor((top - y0) * scale);
       const w = Math.min(frame.width, Math.ceil((right - x0) * scale)) - x, h = Math.min(frame.height, Math.ceil((bottom - y0) * scale)) - y;
       if (w <= 0 || h <= 0) continue;
-      out.push({ node_id: id, x: x / scale + x0 - box[0], y: y / scale + y0 - box[1], width: w / scale, height: h / scale, data_base64: losslessRegion(frame, x, y, w, h).data_base64 });
+      const data = losslessRegion(frame, x, y, w, h).data_base64, digest = createHash('sha256').update(`${x},${y},${w},${h},${data}`).digest('hex');
+      if (stream.tileHashes.get(id) === digest) continue;
+      stream.tileHashes.set(id, digest);
+      out.push({ node_id: id, x: x / scale + x0 - box[0], y: y / scale + y0 - box[1], width: w / scale, height: h / scale, data_base64: data });
     }
     return out;
   }

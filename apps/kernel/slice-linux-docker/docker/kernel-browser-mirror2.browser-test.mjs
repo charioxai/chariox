@@ -230,3 +230,21 @@ test("MP-10: review #941-2 a cross-origin frame's window scroll reaches every vi
   }, {
     "/long": { type: "text/html", body: '<!doctype html><div style="height:2000px">long</div><script>setTimeout(()=>scrollTo(0,600),3500)</script>' },
   }));
+
+// Wikipedia "Web browser" shape: a video poster (opaque region, lossless still) beside the controls the viewer clicks.
+const opaque = '<canvas id="c" width="320" height="180"></canvas><p id="x">day</p><script>const g=document.querySelector("#c").getContext("2d");window.paint=c=>{g.fillStyle=c;g.fillRect(0,0,320,180)};paint("#3a6")</script>';
+test("MP-10: opaque-region stills never ride on a DOM-change packet and an unchanged still is not sent again", () => mirrored(opaque, async ({ next, evaluate }) => {
+  const first = await next();
+  assert.equal(first.reset, true); assert.equal(first.tiles.length, 1, "MP-10: the snapshot carries the still");
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  await evaluate("document.querySelector('#x').className='night'");
+  const change = await next(600);
+  assert.deepEqual(change.ops.map(op => op.op), ["attr"]);
+  assert.equal(change.tiles.length, 0, "MP-10: the echo does not queue behind a still refresh");
+  // Unchanged pixels: refresh packets carry no still; changed pixels travel once.
+  for (let i = 0; i < 2; i++) { await new Promise(resolve => setTimeout(resolve, 1100)); assert.equal((await next(600)).tiles.length, 0, "MP-10: unchanged still not re-sent"); }
+  await evaluate("paint('#a36')");
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  let changed = []; for (let i = 0; i < 4 && !changed.length; i++) changed = (await next(600)).tiles;
+  assert.equal(changed.length, 1, "MP-10: a changed still reaches the viewer");
+}));
