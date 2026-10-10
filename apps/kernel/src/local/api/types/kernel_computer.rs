@@ -19,6 +19,15 @@ pub enum KernelComputerCommand {
         bitrate: u32,
         device_scale_factor: u32,
     },
+    /// MP-08/MP-11: installed graphical application IDs, bounded by this desktop.
+    InstalledApplications {
+        target: KernelDesktopTarget,
+    },
+    /// Resolve an installed ID; callers cannot supply command, arguments or env.
+    LaunchApplication {
+        target: KernelDesktopTarget,
+        application_id: String,
+    },
     Snapshot {
         target: KernelDesktopTarget,
     },

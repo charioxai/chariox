@@ -338,3 +338,29 @@ done
         "agent input must retain fresh Browser reconciliation"
     );
 }
+
+#[test]
+fn mp11_installed_app_launch_is_a_native_mutation_fenced_by_takeover() {
+    let mut model = KernelBrowserActors::default();
+    model
+        .reconcile(&json!({"generation":1,"tabs":[{"tab_id":"t","document_id":"d"}]}))
+        .unwrap();
+    model
+        .reconcile_desktop(&json!({"surface_id":"s","generation":"g"}))
+        .unwrap();
+    let agent = EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "Agent");
+    let human = EnvironmentActor::new("terminal:a", EnvironmentActorKind::Human, "Human");
+    model.takeover_desktop(human, "s", "g").unwrap();
+    assert!(model
+        .begin(
+            agent.clone(),
+            &json!({"op":"launch_application","_native":true})
+        )
+        .is_err());
+    model.release_desktop("terminal:a", "s", "g").unwrap();
+    let (action, cancel) = model
+        .begin(agent, &json!({"op":"launch_application","_native":true}))
+        .unwrap();
+    assert!(!cancel.requested());
+    model.finish(&action, EnvironmentActionTerminal::Completed);
+}

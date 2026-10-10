@@ -641,6 +641,14 @@ export class KernelBrowserHost {
           if(process.env.CHARIOX_KERNEL_BROWSER_DISPLAY!=='1')throw new Error('MP-08: experimental display disabled');
           return {id:request.id,ok:true,result:await this.desktopDisplay.subscribe(nativeParams,request.params.observed_by??'terminal')};
         }
+        if (['installed_applications','launch_application'].includes(request.params.op)) {
+          const binding=this.chromium.desktop?.binding();
+          if(!binding || request.params.surface_id!==binding.surface_id || request.params.generation!==binding.generation)throw new Error('MP-11: stale installed application surface');
+          if(request.params.op==='installed_applications')return {id:request.id,ok:true,result:{surface_id:binding.surface_id,generation:binding.generation,...await this.chromium.desktop.installedApplications({signal})}};
+          const launched=await this.chromium.desktop.launchApplication(request.params.application_id,{signal,observe:()=>this.nativeAccessibility.snapshot(observer,this.protection,{signal})});
+          this.onNativeInput();
+          return {id:request.id,ok:true,result:launched};
+        }
         if (request.params.op === 'snapshot') {
           const binding=this.chromium.desktop?.binding();
           if(!binding || request.params.surface_id!==binding.surface_id || request.params.generation!==binding.generation)throw new Error('MP-11: stale native snapshot surface');

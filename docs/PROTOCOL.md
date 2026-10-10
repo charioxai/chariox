@@ -3295,3 +3295,28 @@ coordinates to native coordinates and routes input, takeover and release through
 the existing kernel Computer admission and actor ledger. Browser viewports retain
 their existing path. A Cloud client must expose the native source and use this
 shared presenter before the desktop feature is user-visible.
+
+
+### MP-08 / MP-11: installed graphical application launch (local494)
+
+`KernelBrowser.command={op:"computer",command:...}` and the official provider
+`chariox.kernel_computer` tool share two bounded commands:
+
+- `installed_applications`: current `target={surface_id,generation}`; returns
+  eligible installed desktop application IDs and names (at most256).
+- `launch_application`: the same current target plus one `application_id` from
+  that inventory. No command string, caller arguments, files, URLs or environment
+  are accepted. The kernel resolves the installed entry in its desktop user's
+  normal application inventory, starts its fixed Exec without a shell on the
+  existing owned display/bus, and retains process cleanup ownership. Unsupported
+  shell/env launchers and invalid desktop field codes refuse.
+
+Launch is a normal Computer mutation: provider capability/resource admission,
+current desktop generation, human takeover, cancellation and native observation
+protection all apply. Its reply identifies the application and includes a
+protected native observation; it never grants process control. Cancellation or
+failed launch observation settles the newly started process. Successful apps
+live until ordinary owned-desktop cleanup. No peer frame changes; peer103 is
+unused. Supplementary descriptor, command-shape and takeover tests cannot close
+MP-10 Drill D; that requires an official agent, real TUI/web/hostedWSS and public
+native document work at DPR1/2.

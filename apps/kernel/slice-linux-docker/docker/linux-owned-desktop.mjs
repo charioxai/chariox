@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
+import { desktopApplication } from './desktop-applications.mjs';
 import { processIdentity, settleOwned, descendants } from './linux-owned-process.mjs';
 
 export function desktopEnvironment(source, runtime, uid = process.getuid?.()) {
@@ -53,6 +54,33 @@ export class LinuxOwnedDesktop {
     record.identity = await processIdentity(child.pid);
     if (!record.identity) throw new Error('MP-11: desktop child ownership unavailable');
     return child;
+  }
+  // MP-08/MP-11: installed descriptors are resolved inside this desktop user.
+  async installedApplications({signal}={}) {
+    const binding=this.current;
+    if(!binding)throw Error('MP-08: native desktop unavailable');
+    const result=await desktopApplication({op:'list'},binding.environment,signal);
+    if(this.current!==binding)throw Error('MP-11: stale application desktop');
+    return result;
+  }
+  async launchApplication(applicationId,{signal,observe}={}) {
+    const binding=this.current;
+    if(!binding)throw Error('MP-08: native desktop unavailable');
+    const app=await desktopApplication({op:'resolve',application_id:applicationId},binding.environment,signal);
+    if(signal?.aborted || this.current!==binding)throw Error('MP-11: application launch cancelled');
+    const command=desktopCommand(app.argv[0],app.argv.slice(1));
+    const child=await this.launch(command.binary,command.args,binding.environment);
+    const record=this.children.find(item=>item.child===child);
+    const stop=()=>void settleOwned([record]);
+    signal?.addEventListener('abort',stop,{once:true});
+    try {
+      if(signal?.aborted || this.current!==binding)throw Error('MP-11: application launch cancelled');
+      const observation=await observe?.();
+      if(signal?.aborted || this.current!==binding)throw Error('MP-11: application launch cancelled');
+      return {application_id:app.application_id,name:app.name,launched:true,...(observation?{observation}:{})};
+    } catch(error) {await settleOwned([record]);throw error;}
+    finally {signal?.removeEventListener('abort',stop);}
+
   }
   async ownedProcesses() {
     const roots=this.children.filter(({child,identity})=>identity && child.exitCode===null && child.signalCode===null).map(({identity})=>identity);

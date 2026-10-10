@@ -147,6 +147,14 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/slice-text-finder.py"),
     ),
     (
+        "desktop-applications.mjs",
+        include_bytes!("../../slice-linux-docker/docker/desktop-applications.mjs"),
+    ),
+    (
+        "desktop-applications.py",
+        include_bytes!("../../slice-linux-docker/docker/desktop-applications.py"),
+    ),
+    (
         "linux-owned-desktop.mjs",
         include_bytes!("../../slice-linux-docker/docker/linux-owned-desktop.mjs"),
     ),

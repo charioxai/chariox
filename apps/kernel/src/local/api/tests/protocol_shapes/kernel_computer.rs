@@ -2,7 +2,7 @@
 use super::*;
 #[test]
 fn mp08_mp11_kernel_computer_461_92_shapes_are_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 494);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         96
@@ -65,7 +65,7 @@ fn mp08_mp11_kernel_computer_461_92_shapes_are_hashed() {
 // MP-08 / MP-10 / MP-11: PR5 adds only a terminal desktop source selection.
 #[test]
 fn mp08_mp11_desktop_display_474_shape_hash_and_actor_rejection() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 494);
     let wire = serde_json::json!({"KernelBrowser": {"command": {"op": "computer", "command": {"op": "display_subscribe", "target": {"surface_id": "desktop-one", "generation": "native-one"}, "codecs": ["avc1.420033", "chariox-relay-binary-v96"], "bitrate": 8000000, "device_scale_factor": 2}}}});
     let typed: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(typed).unwrap(), wire);
@@ -77,5 +77,33 @@ fn mp08_mp11_desktop_display_474_shape_hash_and_actor_rejection() {
         let mut forged = wire.clone();
         forged["KernelBrowser"]["command"]["command"][field] = "forged".into();
         assert!(serde_json::from_value::<LocalDaemonRequest>(forged).is_err());
+    }
+}
+
+// MP-08/MP-11: protocol494 is allocated; installed entries are the only launch input.
+#[test]
+fn mp08_installed_application_494_wire_rejects_execution_authority() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 494);
+    let commands = serde_json::json!([
+        {"op":"installed_applications","target":{"surface_id":"s","generation":"g"}},
+        {"op":"launch_application","target":{"surface_id":"s","generation":"g"},"application_id":"org.xfce.mousepad.desktop"}
+    ]);
+    for command in commands.as_array().unwrap() {
+        let typed: crate::local::KernelComputerCommand =
+            serde_json::from_value(command.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), *command);
+    }
+    let snapshot = serde_json::json!({"local":494,"commands":commands});
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "2acbe9c91fb8d76f1378f15d1904f92ce6cfdb8adf2dc094d619a4c5d5e45b67"
+    );
+    for key in ["command", "args", "env", "observed_by", "_agent_input"] {
+        let mut forged = commands[1].clone();
+        forged[key] = serde_json::json!({"injection":true});
+        assert!(serde_json::from_value::<crate::local::KernelComputerCommand>(forged).is_err());
     }
 }

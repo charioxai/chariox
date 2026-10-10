@@ -28,11 +28,25 @@ fn params(command: KernelComputerCommand) -> Result<serde_json::Value, DaemonErr
             let id = target[key]
                 .as_str()
                 .ok_or_else(|| host_error("MP-11: invalid desktop target".into()))?;
-            if id.is_empty() || id.len() > 128 {
+            if id.is_empty()
+                || id.len() > 128
+                || !id.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
+            {
                 return Err(host_error("MP-11: invalid desktop target".into()));
             }
             value[key] = id.into();
         }
+    }
+    if value["op"] == "launch_application"
+        && value["application_id"].as_str().is_none_or(|id| {
+            id.len() > 128
+                || !id.ends_with(".desktop")
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        })
+    {
+        return Err(host_error("MP-11: invalid installed application ID".into()));
     }
     if value["query"]
         .as_str()
@@ -63,7 +77,7 @@ impl KernelRuntimeState {
             agent.id(),
             KernelBrowserCapability::Computer,
         ) {
-            tools.push(RuntimeToolSpec{name:TOOL.into(),description:"MP-08: control the owned host desktop via fresh surface/generation. snapshot returns scoped AT-SPI targets/tree_revision; stale targets require rediscovery. OCR and exact protected screenshots are on-demand; captures mask only currently plain fields filled by the kernel Vault; password dots remain visible. Agent input supports text/committed composition, single key chords, left/right click, move and scroll; use integer coordinates and click button 1=left or 3=right. For a chord use kind=key, not hold. Holds, pointer_hold, drag, clipboard_write, middle-button paste and persistent keycode down/up require the human channel and are refused for agents. Text, key and click also require current focus and a proved ordinary clipboard source; registered Vault targets refuse ordinary agent input. Human takeover pauses agent input. Never use video timing as observation.".into(),input_schema:serde_json::json!({"type":"object","properties":{"command":{"type":"object","properties":{"op":{"enum":["start","state","snapshot","screenshot","ocr","clipboard_read","input","target_action"]},"target":{"type":"object","properties":{"surface_id":{"type":"string","minLength":1,"maxLength":128},"generation":{"type":"string","minLength":1,"maxLength":128}},"required":["surface_id","generation"],"additionalProperties":false},"query":{"type":["string","null"],"maxLength":4096},"input":{"type":"object","properties":{"kind":{"enum":["text","composition","key","hold","pointer_hold","click","move","drag","scroll","clipboard_write"]},"text":{"type":"string","maxLength":65536,"description":"text/composition: at most 128 Unicode characters per action; clipboard_write: at most 65536 UTF-8 bytes"},"key":{"type":"string","maxLength":128},"duration_ms":{"type":"integer","minimum":1,"maximum":10000},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"to_x":{"type":"integer","minimum":0,"maximum":1279},"to_y":{"type":"integer","minimum":0,"maximum":799},"button":{"type":"integer","minimum":1,"maximum":3},"steps":{"type":"integer","minimum":-100,"maximum":100}},"required":["kind"],"additionalProperties":false},"tree_revision":{"type":"integer","minimum":1},"target_id":{"type":"string","maxLength":128},"action":{"type":"string","maxLength":128}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false})});
+            tools.push(RuntimeToolSpec{name:TOOL.into(),description:"MP-08: control the owned host desktop via fresh surface/generation. snapshot returns scoped AT-SPI targets/tree_revision; stale targets require rediscovery. OCR and exact protected screenshots are on-demand; captures mask only currently plain fields filled by the kernel Vault; password dots remain visible. Agent input supports text/committed composition, single key chords, left/right click, move and scroll; use integer coordinates and click button 1=left or 3=right. For a chord use kind=key, not hold. Holds, pointer_hold, drag, clipboard_write, middle-button paste and persistent keycode down/up require the human channel and are refused for agents. Text, key and click also require current focus and a proved ordinary clipboard source; registered Vault targets refuse ordinary agent input. Use installed_applications with the current target, then launch_application with one returned application_id. No command strings, environment or free arguments. The kernel owns the application process and cleanup. Human takeover pauses agent mutations. Never use video timing as observation.".into(),input_schema:serde_json::json!({"type":"object","properties":{"command":{"type":"object","properties":{"op":{"enum":["start","state","installed_applications","launch_application","snapshot","screenshot","ocr","clipboard_read","input","target_action"]},"target":{"type":"object","properties":{"surface_id":{"type":"string","minLength":1,"maxLength":128},"generation":{"type":"string","minLength":1,"maxLength":128}},"required":["surface_id","generation"],"additionalProperties":false},"application_id":{"type":"string","minLength":9,"maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*\\.desktop$"},"query":{"type":["string","null"],"maxLength":4096},"input":{"type":"object","properties":{"kind":{"enum":["text","composition","key","hold","pointer_hold","click","move","drag","scroll","clipboard_write"]},"text":{"type":"string","maxLength":65536,"description":"text/composition: at most 128 Unicode characters per action; clipboard_write: at most 65536 UTF-8 bytes"},"key":{"type":"string","maxLength":128},"duration_ms":{"type":"integer","minimum":1,"maximum":10000},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"to_x":{"type":"integer","minimum":0,"maximum":1279},"to_y":{"type":"integer","minimum":0,"maximum":799},"button":{"type":"integer","minimum":1,"maximum":3},"steps":{"type":"integer","minimum":-100,"maximum":100}},"required":["kind"],"additionalProperties":false},"tree_revision":{"type":"integer","minimum":1},"target_id":{"type":"string","maxLength":128},"action":{"type":"string","maxLength":128}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false})});
         }
         tools
     }
@@ -183,6 +197,30 @@ impl KernelRuntimeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mp11_launch_only_accepts_an_installed_desktop_id() {
+        let target = crate::local::KernelDesktopTarget {
+            surface_id: "s".into(),
+            generation: "g".into(),
+        };
+        for id in [
+            "/bin/sh",
+            "../editor.desktop",
+            "editor.desktop;env",
+            "x\n.desktop",
+        ] {
+            assert!(params(KernelComputerCommand::LaunchApplication {
+                target: target.clone(),
+                application_id: id.into()
+            })
+            .is_err());
+        }
+        assert!(params(KernelComputerCommand::LaunchApplication {
+            target,
+            application_id: "org.xfce.mousepad.desktop".into()
+        })
+        .is_ok());
+    }
     #[test]
     fn mp08_native_text_budget_is_checked_before_backend_dispatch() {
         for kind in ["text", "composition"] {
