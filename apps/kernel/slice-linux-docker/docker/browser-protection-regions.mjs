@@ -76,8 +76,13 @@ async function fieldState(connection,entry,document,backendNodeId) {
   try {
     const {result,exceptionDetails}=await connection.send('Runtime.callFunctionOn',{objectId:object.objectId,returnByValue:true,
       functionDeclaration:`function(){ const editable=this.localName==='input'||this.localName==='textarea'||this.isContentEditable;
-        return {exists:this.isConnected,editable,contenteditable:this.isContentEditable,changed:globalThis.__charioxFilledFields?.get(this)?.changed===true,password:this.localName==='input'&&this.type==='password',
-          value:editable?String(this.isContentEditable?this.textContent:this.value):''}; }`},entry.sessionId);
+        let unprovedPaint=false;
+        for(let element=this;element;element=element.parentElement??element.getRootNode().host) {
+          const style=element.ownerDocument.defaultView.getComputedStyle(element);
+          unprovedPaint ||= style.filter!=='none'||style.webkitBoxReflect!=='none';
+        }
+        return {exists:this.isConnected,editable,unprovedPaint,contenteditable:this.isContentEditable,changed:globalThis.__charioxFilledFields?.get(this)?.changed===true,password:this.localName==='input'&&this.type==='password',
+          textShadow:this.ownerDocument.defaultView.getComputedStyle(this).textShadow,value:editable?String(this.isContentEditable?this.textContent:this.value):''}; }`},entry.sessionId);
     if(exceptionDetails||!result?.value)throw Error('MP-11: fill state unavailable');
     return result.value;
   } finally {await connection.send('Runtime.releaseObject',{objectId:object.objectId},entry.sessionId).catch(()=>{});}
@@ -111,9 +116,19 @@ function contenteditableTextGeometry() {
   while(text.nextNode()) {
     // Visibility may be restored at any descendant. Only painted text adds
     // overflow coverage; hidden runs must not cover neighboring ordinary pixels.
-    if(this.ownerDocument.defaultView.getComputedStyle(text.currentNode.parentElement).visibility!=='visible')continue;
+    const style=this.ownerDocument.defaultView.getComputedStyle(text.currentNode.parentElement);
+    if(style.visibility!=='visible')continue;
+    // Shadows paint outside Range layout bounds. Do not claim coverage from
+    // offsets/blur heuristics, including inherited and descendant shadows.
+    if(style.textShadow!=='none')throw Error('unproved filled text shadow');
     range.selectNodeContents(text.currentNode);
     for(const box of range.getClientRects()) {
+      // Filters and reflections paint outside Range bounds. Check the rendered
+      // text's entire descendant path; these effects are not inherited CSS.
+      for(let element=text.currentNode.parentElement;element!==this;element=element.parentElement) {
+        const paint=this.ownerDocument.defaultView.getComputedStyle(element);
+        if(paint.filter!=='none'||paint.webkitBoxReflect!=='none')throw Error('unproved filled text paint');
+      }
       const left=Math.max(clips[0],box.left),top=Math.max(clips[1],box.top),right=Math.min(clips[2],box.right),bottom=Math.min(clips[3],box.bottom);
       if(right>left&&bottom>top)rects.push([left,top,right-left,bottom-top]);
     }
@@ -163,6 +178,18 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         quad[1]+x*(quad[3]-quad[1])/width+y*(quad[7]-quad[1])/height]);
       transforms.set(entry,map);return map;
     };
+    const checkedFramePaint=new Set();
+    const assertFramePaint=async(entry,frame)=>{
+      if(!frame.parentId||checkedFramePaint.has(frame.id))return;
+      const parent=frame.id===entry.frame.id?entry.parent:entry;
+      const parentFrame=parent&&visit(parent.tree,frame.parentId);
+      if(!parentFrame)throw Error('MP-11: fill frame paint unavailable');
+      const owner=await connection.send('DOM.getFrameOwner',{frameId:frame.id},parent.sessionId);
+      const state=await fieldState(connection,parent,{frameId:parentFrame.id},owner.backendNodeId);
+      if(!state.exists||state.unprovedPaint)throw Error('MP-11: fill frame paint coverage unavailable');
+      await assertFramePaint(parent,parentFrame);
+      checkedFramePaint.add(frame.id);
+    };
     for(const entry of frames) {
       const candidates=targets.filter(t=>t.document_id===top.frame.loaderId&&targetNode(t,entry));
       if(!candidates.length)continue;
@@ -190,6 +217,13 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
           return false;
         });
         if(!rendered)continue;
+        // Box and Range geometry cannot prove filter or reflection ink.
+        // Include composed ancestors and frame owners, for both field kinds.
+        if(state.unprovedPaint)throw Error('MP-11: fill paint coverage unavailable');
+        await assertFramePaint(entry,frame);
+        // Native text controls have the same layout/paint distinction. Password
+        // dots bypass this check; hidden controls retain tracking until reveal.
+        if(!state.contenteditable&&state.textShadow!=='none')throw Error('MP-11: fill text shadow coverage unavailable');
         await onPlainField?.({sessionId:entry.sessionId,backendNodeId});
         const {model}=await connection.send('DOM.getBoxModel',{backendNodeId},entry.sessionId);
         const map=await toViewport(entry),fieldRegions=[];
