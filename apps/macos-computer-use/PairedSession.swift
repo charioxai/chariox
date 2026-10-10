@@ -10,6 +10,8 @@ import Darwin
     private var lastKernelRequest = ProcessInfo.processInfo.systemUptime
     private var revoked = false
     private var surface: NativeSurface?
+    private let capture = PairedCapture()
+    private var unresolvedInput = false
     init(fd: Int32, epoch: String, scope: Any?) throws {
         self.fd = fd; self.epoch = epoch
         self.scope = try pairedScope(scope)
@@ -34,14 +36,19 @@ import Darwin
         }
         let method = request["method"] as? String
         let params = request["params"] as? [String: Any] ?? [:]
-        if method == "stop" { revoked = true; return pairedReply(request, epoch: epoch) }
+        if method == "stop" { revoked = true; capture.clear(); return pairedReply(request, epoch: epoch) }
+        if method == "host.computer.reset", unresolvedInput {
+            return (["id": request["id"] ?? NSNull(), "epoch": epoch, "ok": false,
+                "error": ["code": "unsupported", "reason": "owned-release-failed"]], false)
+        }
+        if method == "host.protect" { capture.protect(params); return pairedReply(request, epoch: epoch) }
         if method == "host.computer", ["start", "state"].contains(params["op"] as? String ?? "") {
             do {
                 if surface == nil { surface = try nativeSurface(scope) }
                 try checkAuthority()
                 var result = pairedReply(request, epoch: epoch)
                 result.reply["result"] = ["surface_id": "macos-seat", "generation": epoch,
-                    "mode": "scoped-drill", "capture": "unavailable", "input": "bounded-ax",
+                    "mode": "scoped-drill", "capture": scope.ownerWindow ? "unavailable" : "protected-fixture-png", "input": "bounded-ax",
                     "width": surface!.width, "height": surface!.height, "placement": "host",
                     "pid": Int(getpid())]
                 return result
@@ -50,22 +57,30 @@ import Darwin
                          "error": ["code": "user_domain_stale_epoch"]], false)
             }
         }
-        guard method == "host.computer", params["op"] as? String == "input" else {
+        guard method == "host.computer", ["input", "screenshot"].contains(params["op"] as? String ?? "") else {
             return pairedReply(request, epoch: epoch)
         }
         var reply: [String: Any] = ["id": request["id"] ?? NSNull(), "epoch": epoch, "ok": false]
         do {
             try checkAuthority()
+            guard !unresolvedInput else { throw tagged(.ownedInput, "owned-release-failed") }
             guard params["surface_id"] as? String == "macos-seat",
-                  params["generation"] as? String == epoch,
-                  let input = params["input"] as? [String: Any] else { throw tagged(.target, "stale-native-scope") }
+                  params["generation"] as? String == epoch else { throw tagged(.target, "stale-native-scope") }
             guard let surface else { throw tagged(.disabled, "scope-not-started") }
+            if params["op"] as? String == "screenshot" {
+                let image = try await capture.screenshot(scope, surface: surface, generation: epoch,
+                                                         authority: { try self.checkAuthority() })
+                try checkAuthority(); reply["ok"] = true; reply["result"] = image
+                return (reply, false)
+            }
+            guard let input = params["input"] as? [String: Any] else { throw tagged(.arguments, "invalid-paired-input") }
             let operation = try pairedInput(input, scope: scope, surface: surface)
             let receipts = try await run(operation, source: MacSource(authority: { try self.checkAuthority() }))
             try checkAuthority()
             reply["ok"] = true
             reply["result"] = ["dispatched": true, "receipts": receipts]
         } catch {
+            if refusalKind(error) == .ownedInput { unresolvedInput = true }
             // Fixed public tags only. No text, AX tree or app errors cross the socket.
             reply["error"] = ["code": revoked ? "browser_action_cancelled" : "unsupported",
                               "reason": (error as? RefusalDetail)?.reason ?? "native-refused"]
