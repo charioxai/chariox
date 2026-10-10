@@ -333,6 +333,29 @@ for(const dpr of [1,2]) {
    }finally{release.resolve();connection.send=send;}
  }));
 
+ test(`MP-08/MP-10/MP-11 DPR${dpr}: an absent snapshot cannot retire a fill completed during another field measurement`,()=>setup(dpr,async({browser,connection,fill,collect,evaluate,capture,ref})=>{
+   await fill('#plain');const plain=Number((await ref('#plain')).split(':').at(-1));
+   const paused=Promise.withResolvers(),resumeFill=Promise.withResolvers(),measuring=Promise.withResolvers(),resumeMeasure=Promise.withResolvers(),send=connection.send.bind(connection);
+   let blocked=false,holdMeasurement=false;
+   connection.send=async(method,params,...args)=>{
+     if(!blocked&&method==='Runtime.callFunctionOn'&&params.functionDeclaration.includes('function actionabilityFunction')){blocked=true;paused.resolve();await resumeFill.promise;}
+     if(holdMeasurement&&method==='DOM.getBoxModel'&&params.backendNodeId===plain){holdMeasurement=false;measuring.resolve();await resumeMeasure.promise;}
+     return send(method,params,...args);
+   };
+   const pendingFill=fill('#editor');let pendingMeasurement;
+   try {
+     await paused.promise;await evaluate("globalThis.pendingEditor=document.querySelector('#editor');pendingEditor.remove()");
+     holdMeasurement=true;pendingMeasurement=collect();await measuring.promise;
+     await evaluate('document.body.append(pendingEditor)');resumeFill.resolve();await pendingFill;
+     resumeMeasure.resolve();
+     await assert.rejects(pendingMeasurement,/MP-11: fill changed during protection measurement|MP-11: pending fill target unavailable/);
+     assert.equal((await collect()).length,2,'MP-11 neither completed field can be retired by the stale absence');
+     const frame=await capture('absent-snapshot-completed-fill'),i=((310*dpr)*frame.width+100*dpr)*4;
+     assert.deepEqual([...frame.pixels.subarray(i,i+3)],[0,0,0]);
+     if(frame.video)assert([...frame.video.subarray(i,i+3)].every(channel=>channel<=32),'MP-11 completed editor remains masked in video');
+   }finally{resumeFill.resolve();resumeMeasure.resolve();await pendingFill.catch(()=>{});await pendingMeasurement?.catch(()=>{});connection.send=send;}
+ }));
+
  test(`MP-08/MP-11 DPR${dpr}: image artifacts report actual plain-field redaction`,()=>setup(dpr,async({browser,connection,fill,evaluate,targetId,documentId})=>{
    connection.browserInstanceId='MP11-public-artifact-fixture';
    const request={target_id:targetId,document_id:documentId,browser_generation:browser.browserGeneration,kind:'image',guid:null,viewport:{css_width:1280,css_height:800,device_scale_factor:dpr,desktop_pixel_width:1280*dpr,desktop_pixel_height:800*dpr,revision:1,last_actor_id:null}};

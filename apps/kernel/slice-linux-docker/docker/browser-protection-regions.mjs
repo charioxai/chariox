@@ -144,6 +144,8 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
   const dead=retired.get(connection)??new Set();retired.set(connection,dead);
   const targets=(policy.targets??[]).filter(t=>t.target_id===targetId&&!t.echo_only&&!dead.has(fillKey(t)));
   const lifecycles=new Map(targets.map(target=>[fillKey(target),filling.get(connection)?.get(fillKey(target))]));
+  // MP-11: preserve the pending state observed before awaiting the snapshot.
+  const pendingAtSnapshot=new Map([...lifecycles].map(([key,lifecycle])=>[key,lifecycle?.pending]));
   if(!targets.length)return page;
   await withBrowserFrames(connection,sessionId,targetId,top.frame.loaderId,async frames=>{
     const seen=new Set(),transforms=new Map([[frames[0],point=>point]]);
@@ -221,7 +223,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         }
       }
     }
-    for(const target of targets)if(!seen.has(fillKey(target))){const key=fillKey(target);if(lifecycles.get(key)!==filling.get(connection)?.get(key))throw Error('MP-11: fill changed during protection measurement');if(lifecycles.get(key)?.pending)throw Error('MP-11: pending fill target unavailable');dead.add(key);}
+    for(const target of targets)if(!seen.has(fillKey(target))){const key=fillKey(target);if(lifecycles.get(key)!==filling.get(connection)?.get(key))throw Error('MP-11: fill changed during protection measurement');if(pendingAtSnapshot.get(key)||lifecycles.get(key)?.pending)throw Error('MP-11: pending fill target unavailable');dead.add(key);}
     await assertBrowserFramesUnchanged(connection,frames);
   });
   return page;
