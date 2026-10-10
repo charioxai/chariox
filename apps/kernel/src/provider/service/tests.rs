@@ -832,6 +832,74 @@ fn merge_opencode_run_selection_keeps_the_existing_run_when_sync_has_no_metadata
 }
 
 #[test]
+fn abort_interrupts_fresh_metadata_utility_before_its_deadline() {
+    use std::time::{Duration, Instant};
+    let root = std::env::temp_dir().join(format!("metadata-abort-{:016x}", rand::random::<u64>()));
+    std::fs::create_dir(&root).unwrap();
+    let marker = root.join("utility-started");
+    let request = LaunchProviderRequest::new("s", "claude", "claude", "default", "sonnet");
+    let program = format!(
+        "import sys,time,pathlib,json\nfor line in sys.stdin:\n pathlib.Path({:?}).touch()\n time.sleep(3)\n print(json.dumps({{'type':'assistant','message':{{'content':[{{'type':'text','text':'brief'}}]}}}}),flush=True)\n print(json.dumps({{'type':'result','subtype':'success'}}),flush=True)",
+        marker.to_string_lossy(),
+    );
+    let mut run = RuntimeProviderRun::new(
+        "metadata-abort",
+        &request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "metadata-abort-regression".into(),
+            pty_target: None,
+            pty_program: Some("/usr/bin/python3".into()),
+            pty_args: vec!["-u".into(), "-c".into(), program],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.set_execution_config(
+        crate::provider::AgentExecutionMode::Plan,
+        crate::provider::AgentPermissionLevel::Required,
+    );
+    run.mark_running();
+    let store = crate::provider::ProviderProcessServiceStore::new(ProviderProcessService::new());
+    store.write().insert_run_for_test(run.clone());
+    store.initialize_runtime(&run).unwrap();
+    let worker_store = store.clone();
+    let utility = run.clone();
+    let worker = std::thread::spawn(move || {
+        worker_store.run_structured_utility_prompt(
+            &utility,
+            "brief",
+            "",
+            Duration::from_secs(5),
+            crate::provider::ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
+        )
+    });
+    let started = Instant::now();
+    while !marker.exists() && started.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(marker.exists(), "utility must be executing before Abort");
+    let cancelled = Instant::now();
+    store
+        .enqueue_structured_prompt_abort("s".into(), run.id().into())
+        .unwrap();
+    let result = worker.join().unwrap();
+    let elapsed = cancelled.elapsed();
+    drop(store);
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "Abort must interrupt the fresh utility, not queue behind it: {elapsed:?}"
+    );
+    assert!(
+        result.is_err(),
+        "cancelled utility must not publish a successful fold"
+    );
+}
+
+#[test]
 fn a_long_utility_does_not_lock_other_provider_runs() {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
