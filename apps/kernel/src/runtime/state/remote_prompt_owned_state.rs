@@ -628,8 +628,13 @@ impl KernelRuntimeOwnedState {
         target_agent_id: &str,
         attachment_id: &str,
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
-        let _ =
+        let begun =
             self.begin_remote_prompt_cancellation(session_id, target_agent_id, attachment_id)?;
+        self.cancel_settled_remote_prompt_task(
+            session_id,
+            target_agent_id,
+            begun.cancellation.prompt.id(),
+        )?;
         let cancellation = self.finalize_local_prompt_cancellation_with_queued_advance(
             session_id,
             target_agent_id,

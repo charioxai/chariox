@@ -4,6 +4,40 @@ use crate::durable_state::agent_lifecycle::{
     AgentTaskExecution, ExecutionState, Operation, Outcome,
 };
 impl KernelRuntimeOwnedState {
+    /// MP-08 / MP-09 / MP-10 / MP-11 A10/G03: the worker has settled this
+    /// exact prompt; cancel its home task before promoting a queued successor.
+    pub(super) fn cancel_settled_remote_prompt_task(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<(), DaemonError> {
+        if !self.config_projection.snapshot().room_agent_tools {
+            return Ok(());
+        }
+        let owner = self
+            .session_store
+            .get_session(room)?
+            .owner_user_id()
+            .to_string();
+        let task = self
+            .durable_state_store
+            .agent_tasks(Some(room), Some(agent))?
+            .into_iter()
+            .find(|task| {
+                task.prompt_id == prompt || task.pending_prompt_id.as_deref() == Some(prompt)
+            });
+        if let Some(task) = task {
+            self.durable_state_store
+                .agent_lifecycle(Operation::CancelTask {
+                    task: task.task_id,
+                    owner,
+                    revision: task.revision,
+                })?;
+        }
+        Ok(())
+    }
+
     /// Read current resource state: task cancellation is intent, not physical
     /// settlement. A matched process can outlive its satisfied obligation.
     pub(super) fn agent_task_resources_unsettled(

@@ -424,6 +424,7 @@ impl KernelRuntimeState {
             }
             cancellation.session = submission.session;
         }
+        self.schedule_agent_lifecycle_sweep();
         Ok(cancellation)
     }
 
