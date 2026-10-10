@@ -347,6 +347,88 @@ mod tests {
     use tokio::sync::Mutex;
 
     #[tokio::test]
+    async fn session_snapshot_remains_responsive_during_provider_launch_authority_lock() {
+        crate::test_support::isolated_env_test!();
+        let workspace =
+            std::env::temp_dir().join(format!("snapshot-launch-lock-{}", rand::random::<u64>()));
+        std::fs::create_dir(&workspace).expect("workspace");
+        let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                workspace.to_string_lossy(),
+                workspace.to_string_lossy(),
+            ))
+            .expect("session");
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "codex",
+            "codex",
+            "default",
+            "codex/gpt-6.1-sol",
+        )
+        .with_agent_id(agent.id());
+        let run = crate::provider::RuntimeProviderRun::new(
+            "launching-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "snapshot-launch-regression".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        runtime.owned.provider_run_projection.update(run.clone());
+        let store = runtime.owned.provider_store.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _authority = store.write();
+            ready_tx.send(()).expect("announce held launch authority");
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(1));
+        });
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("authority held");
+        let started = std::time::Instant::now();
+        let snapshot = runtime
+            .owned
+            .session_snapshot(session.id())
+            .expect("snapshot");
+        let elapsed = started.elapsed();
+        let _ = release_tx.send(());
+        holder.join().expect("authority released");
+        std::fs::remove_dir(&workspace).expect("remove test workspace");
+        assert_eq!(snapshot.active_provider_run_id(), Some("launching-run"));
+        assert!(elapsed < std::time::Duration::from_millis(150),
+            "presentation must use the existing projection while launch authority is held: {elapsed:?}");
+        // Once authority is available, its newer lifecycle state wins over the
+        // cached Starting projection.
+        let mut current = run;
+        current.mark_parked();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(current);
+        assert_eq!(
+            runtime
+                .owned
+                .session_snapshot(session.id())
+                .unwrap()
+                .active_provider_run_id(),
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn owned_launch_preparation_preserves_account_without_injecting_project_repositories() {
         crate::test_support::isolated_env_test!();
         let root = std::env::temp_dir().join(format!(
