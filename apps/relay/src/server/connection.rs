@@ -164,10 +164,13 @@ pub(crate) async fn handle_connection(
                     message = Message::Text(text.into());
                 }
             }
+            let packet = crate::transport_timing::message_signature(&message);
+            crate::transport_timing::record("relay_write_start", packet);
             if writer.send(message).await.is_err() {
                 let _ = writer.flush().await;
                 break;
             }
+            crate::transport_timing::record("relay_write_end", packet);
         }
     }));
     let mut registered_daemon_key: Option<DaemonKey> = None;
@@ -271,6 +274,7 @@ pub(crate) async fn handle_connection(
                 break;
             };
             let message = message.map_err(|error| std::io::Error::other(error.to_string()))?;
+            crate::transport_timing::record("relay_read", crate::transport_timing::message_signature(&message));
             last_read_at = Instant::now();
             match message {
                 Message::Text(text) => {

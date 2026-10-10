@@ -175,7 +175,7 @@ export class DesktopSource {
     const masked=maskNativeRaster(raw,regions,this.previousRegions,this.latest?.raw);
     if(masked!==raw)raw.release();
     this.previousRegions=regions;
-    this.offer({raw:masked,serial:raw.serial,width,height,motion:true,data_base64:masked.signature},serial,captured);
+    this.offer({raw:masked,serial:raw.serial,captured_ms:captured,width,height,motion:true,data_base64:masked.signature},serial,captured);
   }
   offer(sample,serial,captured) {
     if(this.closed){sample.raw.release?.();return;}
@@ -199,6 +199,7 @@ export class DesktopSource {
   publish(sample) {
     if(this.closed){sample.raw.release?.();return;}
     this.latest?.raw.release?.();
+    sample.published_ms=Date.now();
     this.latest=sample;this.changedAt=performance.now();
     for(const listener of this.listeners)listener(sample);
   }

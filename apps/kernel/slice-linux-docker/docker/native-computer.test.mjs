@@ -7,6 +7,17 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 const binding = {surface_id:'surface',generation:'generation',width:1280,height:800,environment:{DISPLAY:':999'}};
+test('MP-08/MP-10 native injection timings stay private and contain only numbers', async () => {
+  const events=[];
+  const timing=()=>{};timing.event=(...event)=>events.push(event);
+  const adapter=new NativeComputer({placement:'host',binding:()=>binding,timing,
+    execute:async()=>({applied:true,_timing:{started_ms:100,ended_ms:102,text:'must not be logged'}})});
+  const result=await adapter.request({op:'input',surface_id:'surface',generation:'generation',input:{kind:'key',key:'a'}},{});
+  assert.deepEqual(result,{applied:true});
+  const injection=events.find(([stage])=>stage==='computer_x11');
+  assert(injection);assert.equal(injection[1].at,100);assert.equal(injection[1].injected_ms,102);
+  assert(Object.values(injection[1]).every(Number.isFinite));
+});
 const publicDependencies=Object.fromEntries(['PYTHONPATH','LD_LIBRARY_PATH','GI_TYPELIB_PATH'].filter(key=>process.env[key]).map(key=>[key,process.env[key]]));
 test('MP-11 native input rejects stale placement and invalid physical events', () => {
   for (const input of [{kind:'keycode',keycode:1,state:'down'},{kind:'keycode',keycode:38,state:'wrong'},{kind:'click',x:1280,y:1},{kind:'hold',key:'a',duration_ms:10001}]) assert.throws(() => nativeInput(input,binding));

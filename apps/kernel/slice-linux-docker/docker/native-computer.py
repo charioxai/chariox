@@ -3,6 +3,8 @@ import base64
 import importlib.util
 import io
 import json
+import os
+import time
 from pathlib import Path
 import signal
 import subprocess
@@ -116,7 +118,13 @@ def main(request, connection=None):
     if op in ('accessibility','accessibility_action'):
         accessibility=load('native-accessibility')
         return accessibility.snapshot(request['processes'],request.get('browser_processes')) if op=='accessibility' else accessibility.act(request)
-    if op == 'input': input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None,connection); return {'applied':True}
+    if op == 'input':
+        started=time.time_ns()/1000000
+        input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None,connection)
+        result={'applied':True}
+        if os.environ.get('CHARIOX_BROWSER_DISPLAY_TIMING')=='1':
+            result['_timing']={'started_ms':started,'ended_ms':time.time_ns()/1000000}
+        return result
     if op == 'release':
         owned = connection is None
         if owned: connection=load('native-x11').open_display(display)

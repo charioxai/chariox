@@ -4,6 +4,7 @@ pub mod config;
 pub mod protocol;
 pub mod revocation_sync;
 pub mod server;
+pub mod transport_timing;
 
 mod registry;
 

@@ -38,8 +38,11 @@ where
         }
     };
     let payload_len = frame.len();
+    let packet = chariox_relay::transport_timing::envelope_signature(&envelope);
+    chariox_relay::transport_timing::record("kernel_write_start", packet);
     let started = Instant::now();
     let sent = writer.send(frame).await.is_ok();
+    chariox_relay::transport_timing::record("kernel_write_end", packet);
     if kind == "daemon_event" {
         crate::transport::kernel_browser_display::timing("event_socket_write", started);
     }

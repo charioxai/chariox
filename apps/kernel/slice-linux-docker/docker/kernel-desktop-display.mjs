@@ -65,6 +65,7 @@ export class DesktopDisplay {
     // A newer published sample abandons a link-paced repair batch (motion first).
     const published=source.sample(),current=encoded?valid:()=>valid()&&source.sample()===published;
     const frame=await stream.frame({...sample,generation:this.host.generation},binding.generation,command.after_sequence,async()=>current(),current);
+    if(frame)this.host.timing.event?.('desktop_frame_out',{at:sample.captured_ms??sample.raw?.captured_ms,sequence:frame.sequence,serial:sample.serial,captured_ms:sample.captured_ms??sample.raw?.captured_ms,published_ms:sample.published_ms,encoded_ms:sample.encoded_ms});
     return {generation:this.host.generation,frame_sent:frame!==null,display_frame:frame};
   }
   // MP-08/MP-10: a quiet lossy desktop settles to exact repair tiles of the

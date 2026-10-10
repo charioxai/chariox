@@ -88,6 +88,7 @@ export class KernelBrowserHost {
     this.onNativeInput = () => this.desktopDisplay.wake();
     this.nativeAccessibility = new NativeAccessibility({binding:()=>this.chromium.desktop?.binding()});
     this.nativeComputer = new NativeComputer({ placement: 'host',
+      timing: this.timing,
       binding: () => this.chromium.desktop?.binding(),
       wakeCapture: event => this.onNativeInput?.(event),
     });

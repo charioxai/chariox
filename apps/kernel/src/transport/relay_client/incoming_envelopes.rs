@@ -103,6 +103,10 @@ pub(super) async fn handle_incoming_envelope(
             message: error.to_string(),
         }
     })?;
+    chariox_relay::transport_timing::record(
+        "kernel_receive",
+        chariox_relay::transport_timing::envelope_signature(&envelope),
+    );
     match envelope {
         RelayEnvelope::DaemonRequest {
             relay_request_id,

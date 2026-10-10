@@ -1,5 +1,6 @@
 // MP-08 / MP-11: explicit placement, shared native helper, protected on-demand reads.
 import { NativeKeyboardChannel } from './native-keyboard-channel.mjs';
+import { timestamp } from './kernel-browser-timing.mjs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -67,9 +68,9 @@ export async function executeNative(request, environment, signal) {
   } finally { clearTimeout(timer);signal?.removeEventListener('abort',cancel); }
 }
 export class NativeComputer {
-  constructor({placement,binding,execute=executeNative,wakeCapture=()=>{},channel=execute===executeNative?environment=>new NativeKeyboardChannel(environment):null}) {
+  constructor({placement,binding,execute=executeNative,wakeCapture=()=>{},timing=()=>{},channel=execute===executeNative?environment=>new NativeKeyboardChannel(environment):null}) {
     if(!['host','slice'].includes(placement)) throw new Error('MP-08: explicit native placement required');
-    this.placement=placement;this.binding=binding;this.execute=execute;this.wakeCapture=wakeCapture;this.channel=channel;this.held=new Set();this.clipboard=null;this.heldOwner=null;
+    this.placement=placement;this.binding=binding;this.execute=execute;this.wakeCapture=wakeCapture;this.timing=timing;this.inputSequence=0;this.channel=channel;this.held=new Set();this.clipboard=null;this.heldOwner=null;
   }
   async primeKeyboard() {
     if(!this.channel)return;
@@ -130,6 +131,7 @@ export class NativeComputer {
         else if(!this.held.has(input.keycode)) throw new Error('MP-11: key release without owned press');
       }
       try {
+        const dispatchedAt=timestamp(),sequence=++this.inputSequence;
         // MP-08/MP-10: human input keeps one warm, ordered helper; agent input
         // keeps the one-shot helper with its per-press admission.
         const dispatched=input.kind==='composition'?{kind:'text',text:input.text}:input;
@@ -137,10 +139,15 @@ export class NativeComputer {
         let physical;
         if(warm){await this.primeKeyboard();physical=await this.keyboard.send({op:'input',input:dispatched},signal);}
         const result=warm ? physical : input.kind==='clipboard_write' ? await this.writeClipboard(input.text,binding) : await this.execute({op:'input',...admission,input:dispatched},binding.environment,signal);
+        // MP-08/MP-10: helper timings are private, never part of public input replies.
+        const {_timing:injection,...publicResult}=result;
+        this.timing.event?.('computer_dispatch',{at:dispatchedAt,input:sequence,completed_ms:timestamp()});
+        if(Number.isFinite(injection?.started_ms)&&Number.isFinite(injection?.ended_ms)&&injection.ended_ms>=injection.started_ms)
+          this.timing.event?.('computer_x11',{at:injection.started_ms,input:sequence,injected_ms:injection.ended_ms});
         if(input.kind==='keycode' && input.state==='up') {this.held.delete(input.keycode);if(!this.held.size)this.heldOwner=null;}
         // Display PR5 consumes this event to wake XDamage capture immediately.
         this.wakeCapture({surface_id:binding.surface_id,generation:binding.generation,exact:true,reason:input.kind});
-        return result;
+        return publicResult;
       } catch(error) {await this.reset();throw error;}
     }
     if(!['screenshot','ocr','clipboard_read'].includes(command.op)) throw new Error('MP-08: unsupported native observation');
