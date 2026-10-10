@@ -3,7 +3,7 @@ import type { KernelBrowserMirrorAction } from "./browser-mirror-types.js"
 export type KernelBrowserInput =
   | { kind: "click"; x: number; y: number }
   | { kind: "text"; text: string }
-  | { kind: "key"; key: string }
+  | { kind: "key"; key: string; modifiers?: number }
   | { kind: "scroll"; x: number; y: number; delta_x: number; delta_y: number }
 export type KernelBrowserCommand =
   | { op: "list_grants" }
