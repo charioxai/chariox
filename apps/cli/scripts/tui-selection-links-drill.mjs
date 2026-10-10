@@ -505,6 +505,38 @@ try {
     const nativeCopy = options['native-selection-review'] ? await nativeCopyCases(marker) : null
     if (options['timing-only']) {
       result = {items:['MP-08','MP-10'], source:options.source, provider:options.provider, dpr:Number(options.dpr??1), providerTiming}
+    } else if (options['clean-selection-review']) {
+      // MP-08 / MP-10: explicit SSH fallback displays logical selected text,
+      // without the surrounding layout. Native terminal selection owns it.
+      const count = (await copiedTexts()).length
+      await dragSelect(await settledRowOf(marker), 14)
+      const expected = (await copiedTexts()).slice(count).at(-1)
+      assert.ok(expected?.startsWith(marker.slice(0, 13)), 'plain release requests its selected text')
+      await press('\x1b[18~')
+      await waitFor(() => page.evaluate(() => terminalScreen().includes('Selected text')), 5000)
+      await capture('clean-selection-pane')
+      const at = await rowOf(expected)
+      assert.ok(at, 'clean pane retains the exact released text')
+      const coords = await page.evaluate(() => {
+        const r = document.querySelector('.xterm-screen').getBoundingClientRect()
+        return { x: r.x, y: r.y, cw: r.width / term.cols, ch: r.height / term.rows }
+      })
+      await page.mouse.move(coords.x + coords.cw * (at.x + .1), coords.y + coords.ch * (at.y + .5))
+      await page.mouse.down()
+      await page.mouse.move(coords.x + coords.cw * (at.x + expected.length + .1), coords.y + coords.ch * (at.y + .5), { steps: 20 })
+      await page.mouse.up()
+      const nativeText = await page.evaluate(() => term.getSelection())
+      await capture('clean-selection-native')
+      assert.equal(nativeText, expected, 'native fallback excludes panel and cursor cells')
+      await press('\r')
+      await waitFor(() => page.evaluate(() => !terminalScreen().includes('Selected text')), 5000)
+      await typeText('z'); await sleep(500)
+      const restored = await promptShows('z')
+      await capture('clean-selection-restored')
+      assert.ok(restored, 'return restores ordinary prompt typing')
+      result = { items: ['MP-08', 'MP-10'], source: options.source, provider: options.provider,
+        dpr: Number(options.dpr ?? 1), expected, nativeText, restored, cliSha256: await hashClient(path.dirname(cli)),
+        acceptance: 'real provider and built TUI; physical Terminal.app remains an owner observation' }
     } else if (options['release-edit-review']) {
       // MP-08 / MP-10: real provider text, followed immediately by an edit in
       // the same terminal write as release (as buffered SSH stdin can arrive).

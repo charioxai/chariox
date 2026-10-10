@@ -96,3 +96,21 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
     } finally { harness.renderer.destroy() }
   })
 }
+
+test("MP-08 / MP-10 wrapped paragraph selection excludes adjacent panel and cursor cells", async () => {
+  const harness = await createTestRenderer({ width: 80, height: 12, useThread: false })
+  const content = "BEGIN_COPY " + "alpha beta gamma delta epsilon ".repeat(5) + "END_COPY"
+  const text = new TextRenderable(harness.renderer, { content, width: 40, height: 8 })
+  const otherPanel = new TextRenderable(harness.renderer, { content: "█│ other panel\n█│ cursor\n█│ side panel", position: "absolute", left: 50, top: 0, width: 20, height: 8, selectable: false })
+  harness.renderer.root.add(text); harness.renderer.root.add(otherPanel)
+  await harness.renderOnce()
+  try {
+    const rows = harness.captureCharFrame().split("\n")
+    const first = rows.findIndex(row => row.includes("BEGIN_COPY"))
+    const last = rows.findIndex(row => row.includes("END_COPY"))
+    assert.ok(last > first, "the real renderer must soft-wrap this paragraph")
+    const x = rows[last]!.indexOf("END_COPY") + "END_COPY".length + 1
+    harness.renderer.stdin.emit("data", `\x1b[<0;1;${first+1}M\x1b[<32;${x};${last+1}M\x1b[<0;${x};${last+1}m`)
+    assert.equal(harness.renderer.getSelection()?.getSelectedText(), content)
+  } finally { harness.renderer.destroy() }
+})

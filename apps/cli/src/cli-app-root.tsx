@@ -1,4 +1,5 @@
 import { createNativeSelectionController } from "./native-selection-controller.js"
+import { createSelectionTextView } from "./selection-text-view.js"
 import { createProviderLoginLinkPresenter } from "./provider-login-link.js"
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
@@ -218,9 +219,18 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
   const renderer = useRenderer()
   const [nativeSelectionHint, setNativeSelectionHint] = createSignal<string | null>(null)
+  const selectionTextView = createSelectionTextView(renderer, error => {
+    appLogger?.warn("selection text view failed", { error: formatError(error) })
+  })
+  onCleanup(selectionTextView.cancel)
   const nativeSelection = createNativeSelectionController({
     renderer,
     setHint: (hint) => { setNativeSelectionHint(hint); updateSessionChrome() },
+    selectionTextViewActive: selectionTextView.isActive,
+    presentSelectionText: () => {
+      const selection = renderer.getSelection()
+      return !selection?.isDragging && selectionTextView.present(selection?.getSelectedText() ?? "")
+    },
   })
   const nativeSelectionInput = (event: KeyEvent) => {
     if (nativeSelection.handleRendererKey(event)) { event.preventDefault(); event.stopPropagation() }
@@ -918,7 +928,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentAccountProfileId: () => waitingRoomState().accountProfileId || options.accountProfile || "default",
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
     readSecret: secretInput.readSecret,
-    shortcutInputEnabled: () => !renderer.isDestroyed && !providerLoginLink.isActive(),
+    shortcutInputEnabled: () => !renderer.isDestroyed && !providerLoginLink.isActive() && !selectionTextView.isActive(),
     discardShortcutInput: () => { nativeSelection.discardInput(); discardCopyInput() },
     handleNativeSelectionKey: nativeSelection.handleKey,
     handleNativeSelectionPaste: nativeSelection.handlePaste,

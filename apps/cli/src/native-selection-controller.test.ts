@@ -58,3 +58,23 @@ test("MP-08 / MP-10 raw replay never toggles twice and handoff discards skipped 
   assert.equal(controller.isActive(), false)
   controller.dispose()
 })
+
+// MP-08 / MP-10: snapshot selection before F7 can clear it.
+test("MP-08 / MP-10 F7 offers selected text without the surrounding panel cells", () => {
+  const text = "one logical soft-wrapped paragraph"
+  const calls: string[] = []
+  const renderer = { useMouse: true, clearSelection: () => { calls.push("clear") } }
+  let showing = false
+  const controller = createNativeSelectionController({ renderer, setHint: () => {},
+    presentSelectionText: () => { calls.push(text); showing = true; return true },
+    selectionTextViewActive: () => showing,
+  })
+  assert.equal(controller.handleRendererKey({ name: "f7" }), true)
+  assert.deepEqual(calls, [text])
+  assert.equal(renderer.useMouse, true)
+  assert.equal(controller.isActive(), false)
+  assert.equal(controller.handleRendererKey({ name: "z" }), true)
+  assert.equal(controller.handleRendererPaste(), true)
+  assert.equal(controller.handleRendererKey({ name: "f7" }), true)
+  assert.deepEqual(calls, [text])
+})

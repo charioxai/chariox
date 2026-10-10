@@ -7,6 +7,8 @@ type SelectionKey = { name: string; eventType?: string; ctrl?: boolean; sequence
 export function createNativeSelectionController(deps: {
   renderer: { useMouse: boolean; clearSelection(): void }
   setHint(hint: string | null): void
+  presentSelectionText?(): boolean
+  selectionTextViewActive?(): boolean
 }) {
   let active = false
   let previousMouse = deps.renderer.useMouse
@@ -19,10 +21,15 @@ export function createNativeSelectionController(deps: {
     deps.setHint(null)
   }
   const handleKey = (event: SelectionKey): boolean => {
+    // A buffered key/paste after F7 must not edit the suspended app behind it.
+    if (deps.selectionTextViewActive?.()) return true
     if (event.name === "f7" || (active && event.name === "escape")) {
       if (event.eventType === "release") return true
       if (active) leave()
       else {
+        // MP-08 / MP-10: native screen-row selection includes adjacent panels.
+        // Hand the completed in-app text to a plain terminal view instead.
+        if (deps.presentSelectionText?.()) return true
         previousMouse = deps.renderer.useMouse
         active = true
         deps.renderer.clearSelection()
@@ -43,8 +50,9 @@ export function createNativeSelectionController(deps: {
       return owned
     },
     handleRendererPaste() {
-      rendererPastes.push(active)
-      return active
+      const owned = active || Boolean(deps.selectionTextViewActive?.())
+      rendererPastes.push(owned)
+      return owned
     },
     // Preserve each event's decision even if another F7 in the same chunk
     // has already changed the renderer's final state. Do not toggle twice.

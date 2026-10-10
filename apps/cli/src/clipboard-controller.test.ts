@@ -55,7 +55,7 @@ test("clipboard controller reports copy failures", async () => {
   controller.copySelection()
   await flushMicrotasks()
 
-  assert.deepEqual(harness.footerMessages(), [{ message: "F7: mouse off; drag-select, Cmd-C; Esc/F7: mouse on", tone: "error" }])
+  assert.deepEqual(harness.footerMessages(), [{ message: "F7: clean text (mouse off); drag-select, Cmd-C; Esc/F7: mouse on", tone: "error" }])
   assert.deepEqual(harness.warnings(), [{ message: "selection copy failed", error: "copy failed" }])
 })
 
