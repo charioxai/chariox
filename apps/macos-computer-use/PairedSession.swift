@@ -91,6 +91,7 @@ import Darwin
             // Fixed public tags only. No text, AX tree or app errors cross the socket.
             reply["error"] = ["code": unresolvedInput ? "owner_reset_required" : (revoked ? "browser_action_cancelled" : "unsupported"),
                               "reason": (error as? RefusalDetail)?.reason ?? "native-refused"]
+            reply["input_released"] = !unresolvedInput
         }
         return (reply, revoked)
     }

@@ -286,6 +286,11 @@ impl Link {
             self.fence();
             return Err(HostFailure::Refused(UserDomainRefusalReason::StaleEpoch));
         }
+        // An authenticated no-press/released reply can clear dispatch uncertainty.
+        // EOF, absent status and failed owned release cannot do so.
+        if response["input_released"] == true {
+            self.unresolved_input.store(false, Ordering::Release);
+        }
         if response["ok"] == true {
             return Ok(response["result"].clone());
         }
