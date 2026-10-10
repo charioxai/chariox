@@ -171,7 +171,7 @@ export class BrowserDisplayPresenter {
     }
     return { op: 'display_input', tab_id: this.binding.tab_id, generation: this.binding.generation, document_id: this.documentId, input };
   }
-  close() { this.stripeDecoder?.close();this.prediction?.close();for(const key of ['back','scratch'])if(this[key]){this[key].width=1;this[key].height=1;this[key]=null;} this.workerDecoder?.close();this.workerDecoder=null;if(this.decoder?.state!=='closed')this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; this.canvas.width = 1; this.canvas.height = 1; }
+  close() { if(this.closed)return;this.closed=true;this.stripeDecoder?.close();this.prediction?.close();for(const key of ['back','scratch'])if(this[key]){this[key].width=1;this[key].height=1;this[key]=null;} this.workerDecoder?.close();this.workerDecoder=null;if(this.decoder?.state!=='closed')this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; this.canvas.width = 1; this.canvas.height = 1; }
 }
 // Bounded credit window; events and responses can arrive in either order.
 export async function attachBrowserDisplay(canvas, transport, tab, options = {}) {

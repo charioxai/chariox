@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { attachBrowserDisplay, IdleCredit } from './presenter.mjs';
+import { attachBrowserDisplay, IdleCredit, BrowserDisplayPresenter } from './presenter.mjs';
 test('MP-08/MP-10/MP-11 display requires protocol466 and a binary event decoder before subscribing',async()=>{
  for(const capability of [{},{kernelProtocolVersion:465,displayEventEncoding:'CXD1'},{kernelProtocolVersion:466},{kernelProtocolVersion:466,displayEventEncoding:'JSON'}]) {
   let requests=0;
@@ -355,4 +355,12 @@ test('MP-08/MP-10 a stopped push display neither presents nor acknowledges, and 
   f.emit({sequence:3,kind:'video',key:false});f.emit({sequence:4,kind:'video',key:true});
   await stream.next();assert.deepEqual(shown,[1,4]);
  }finally{await stream.close()}
+});
+
+// MP-08/MP-10/MP-11 #313: synchronous local retirement precedes lease cleanup.
+test('MP-08 / MP-11 repeated presenter disposal cannot reset a reused canvas',()=>{
+ const canvas={width:1280,height:800};
+ const old=new BrowserDisplayPresenter(canvas,{});
+ old.close();canvas.width=2560;canvas.height=1600;
+ old.close();assert.deepEqual([canvas.width,canvas.height],[2560,1600]);
 });
