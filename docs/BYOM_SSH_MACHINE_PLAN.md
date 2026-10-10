@@ -102,14 +102,27 @@ relay 88 for owner context transfer. The aggregate version/hash is reconciled. L
 source/mock drills do not establish live Cloud, signed distribution, real user
 services or fresh-machine acceptance.
 
-## MP-08 / MP-11 credential-free export boundary and threat model
+## MP-08 / MP-10 / MP-11 project-copy and Extension boundaries
 
-Owner-managed copy uses the ordinary kernel export/import path. A source owner
-may accidentally select credential-bearing context; an untrusted source may
-compose a correctly hashed snapshot to bypass source admission. The target
-rechecks the same boundary before publication. Hashes establish content identity,
-not the absence of secrets. This policy does not alter credential-bearing
-Path-1 transfer, its explicit Vault binding, or official provider profiles.
+Owner-managed copy uses the ordinary kernel export/import path. Project copy
+and managed-machine context transfer have no file-count ceiling. Selected
+secret-bearing Project files and repository history use the Vault path and a
+value-free owner review; ordinary binary assets remain Project content. Source
+and target enforce the same package integrity and owner/peer binding before
+publication. This does not copy provider logins or a source Vault store.
+
+Coordinator scope decision, 2026-10-10: the no-file-count-ceiling rule applies to
+Project copy and context transfer only. Typed Kernel Extension package/source
+bounds (`export.rs` `MAX_PACKAGE_FILES` / `MAX_SNAPSHOT_FILES` and
+`source_snapshot.rs` `MAX_SOURCE_FILES`) and Extension secret admission remain
+unchanged. They are out of scope for BY-04/BY-05 Project-policy acceptance;
+these rows grant no acceptance to Extension policy.
+
+A source owner may accidentally select credential-bearing Extension content;
+an untrusted source may compose a correctly hashed snapshot to bypass source
+admission. The target rechecks the Extension boundary before publication.
+Hashes establish content identity, not the absence of secrets. The remainder
+of this section describes that separate typed Extension boundary.
 
 The exportable structured schema is the typed Extension/dependency model.
 MCP definitions allow transport command/arguments or URL, working directory,
@@ -133,10 +146,10 @@ closed allowlist deliberately refuses unsupported configuration rather than
 classifying it by whether a key sounds secret. New typed fields/variants require
 an explicit export decision.
 
-Every packaged file is scanned under its actual path, including skill/MCP,
-portable environment and user adapter files. Standalone script source retains
-Python/TypeScript runtime context. The same file detector applies to development
-overlays and Git history: high-signal private-key/provider-token formats,
+Every packaged Extension file is scanned under its actual path, including
+skill/MCP, portable environment and user adapter files. Standalone script
+source retains Python/TypeScript runtime context. Extension source snapshots
+and overlays use the same detector: high-signal private-key/provider-token formats,
 credential assignments/flags/URLs, and strict UTF-8 or BOM-marked UTF-16/32
 decoding. Unsupported bytes, malformed encodings and binary controls fail
 closed. Shell paths and shell shebangs also refuse undecodable shell quoting.
@@ -150,10 +163,11 @@ prose, source literals, allowed URLs or metadata. Computed values, arbitrary
 encodings/encryption, external references and every language's execution
 semantics are outside its finite detectors. It neither executes files nor
 certifies that a package is safe to execute. False refusals are possible,
-including secret-looking examples, unsupported schema features and binary
-assets. The owner must review and confirm the selected exports in the source
-Project RuntimeInteraction, including packaged files and repository history;
-that confirmation does not bypass a scanner refusal. Target admission, owner
+including secret-looking Extension examples, unsupported schema features and
+binary Extension assets. The owner must review and confirm the selected exports
+in the source Project RuntimeInteraction. That confirmation does not bypass an
+Extension scanner refusal. Selected Project files and repository history retain
+the distinct Vault policy described above. Target admission, owner
 and plan binding, integrity checks, publication ownership and recovery remain
 independent controls. No whole MP-10 matrix or MP-11 review gate closes from a
 scanner test or this bounded two-kernel drill.
