@@ -86,11 +86,11 @@ test('MP-08/MP-11 native exact byte serial settles once; lossy fallback still ve
  }finally{await r.close()}
 });
 
-// MP-08/MP-10: native byte serials need no delayed CDP verification.
-test('MP-08/MP-10 native exact preparation starts within50ms of the final byte change',async()=>{
- let now=49,reads=0;
+// MP-08/MP-10: wait through fine-wheel/typing gaps before preparing full repairs.
+test('MP-08/MP-10 native exact preparation starts after150ms of quiet',async()=>{
+ let now=149,reads=0;
  const r=new NativeRefiner(async()=>{reads++;return {data_base64:'png'}},{now:()=>now,pixels:{run:async()=>({}),close:async()=>{}}});
- try{const native={...binding,native:true};r.request(native,0,()=>true);assert.equal(reads,0);now=50;r.request(native,0,()=>true);await r.active;assert.equal(reads,1)}finally{await r.close()}
+ try{const native={...binding,native:true};r.request(native,0,()=>true);assert.equal(reads,0);now=150;r.request(native,0,()=>true);await r.active;assert.equal(reads,1)}finally{await r.close()}
 });
 
 test('MP-08/MP-10 an exact PNG within the repair budget skips redundant tile preparation',async()=>{
@@ -102,5 +102,24 @@ test('MP-08/MP-10 an exact PNG within the repair budget skips redundant tile pre
 test('MP-08/MP-10 native quiet deadline avoids 30Hz motion reads',async()=>{
  let now=33,reads=0;
  const r=new NativeRefiner(async()=>{reads++;return{data_base64:'png'}},{now:()=>now,pixels:{run:async()=>({}),close:async()=>{}}});
- try{r.request({...binding,native:true},0,()=>true);assert.equal(reads,0,'30Hz inter-frame gap must not start a full raster read');now=50;r.request({...binding,native:true},0,()=>true);await r.active;assert.equal(reads,1)}finally{await r.close()}
+ try{r.request({...binding,native:true},0,()=>true);assert.equal(reads,0,'30Hz inter-frame gap must not start a full raster read');now=150;r.request({...binding,native:true},0,()=>true);await r.active;assert.equal(reads,1)}finally{await r.close()}
+});
+
+test('MP-08/MP-10 native repair does not start between 20Hz wheel or 10Hz typing inputs',async()=>{
+ for(const interval of [50,100]){
+  let now=0,reads=0;
+  const r=new NativeRefiner(async()=>{reads++;return{data_base64:'png'}},{now:()=>now,pixels:{run:async()=>({}),close:async()=>{}}});
+  try{
+   let changed=0;
+   for(let epoch=1;epoch<=10;epoch++){
+    const b={...binding,native:true,epoch,serial:epoch};
+    // A parked capture credit wakes just before the next input reaches the kernel.
+    now=changed+interval+5;r.request(b,changed,()=>true);await r.active;
+    changed=now;
+   }
+   assert.equal(reads,0,'a soon-invalidated full repair must not compete with ongoing input');
+   now=changed+150;r.request({...binding,native:true,epoch:10,serial:10},changed,()=>true);await r.active;
+   assert.equal(reads,1,'the final native raster still settles to exact pixels');
+  }finally{await r.close()}
+ }
 });
