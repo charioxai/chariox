@@ -20,6 +20,8 @@ mod test_pause;
 
 #[cfg(test)]
 mod test_provider_runs;
+#[cfg(test)]
+mod test_run_identity;
 
 const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(60);
@@ -995,19 +997,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 }
             }
         }
+        // MP-08 / MP-10 / MP-11: home state uses the admitted projection ID;
+        // worker admission and peer requests keep the worker-local run ID.
         let recipient_attachment_ids = self.app.attachments.list_session_attachment_ids(session_id);
         for prompt in prompts {
             self.project_remote_native_prompt_started(
                 session_id,
                 agent_id,
-                provider_run_id,
+                &projected_provider_run_id,
                 prompt,
             )?;
         }
         for chunk in output_chunks {
             self.app.fan_out_output_for_agent(
                 session_id,
-                provider_run_id,
+                &projected_provider_run_id,
                 Some(agent_id),
                 chunk.kind.clone(),
                 chunk.merge_key.clone(),
@@ -1018,7 +1022,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         for notice in notices {
             self.app.record_notice_for_agent(
                 session_id,
-                Some(provider_run_id),
+                Some(projected_provider_run_id.as_str()),
                 Some(agent_id),
                 recipient_attachment_ids.clone(),
                 notice.clone(),
@@ -1069,7 +1073,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         for completion in &matching_completions {
             self.app.record_assistant_message_completion_for_agent(
                 session_id,
-                provider_run_id,
+                &projected_provider_run_id,
                 Some(agent_id),
                 recipient_attachment_ids.clone(),
                 &completion.message_id,
@@ -1093,7 +1097,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     self.app,
                     session_id,
                     &active_prompt,
-                    Some(provider_run_id),
+                    Some(projected_provider_run_id.as_str()),
                 );
             if !saw_completion && !workflow_output_ready {
                 return Ok(outcome);
@@ -1157,7 +1161,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     )?;
                     self.app.record_notice(
                         session_id,
-                        Some(provider_run_id),
+                        Some(projected_provider_run_id.as_str()),
                         recipient_attachment_ids.clone(),
                         notice_message,
                     );
@@ -1167,7 +1171,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         session_id,
                         agent_id,
                         &active_prompt,
-                        provider_run_id,
+                        &projected_provider_run_id,
                         projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                         projected_termination.clone(),
                     );
@@ -1177,7 +1181,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     outcome.provider_failed = provider_failed;
                     crate::transport::flow_control::clear_prompt_activity(
                         self.app,
-                        provider_run_id,
+                        &projected_provider_run_id,
                     );
                     let _ = crate::app::KernelSessionReadService::new(self.app)
                         .session_snapshot(session_id);
@@ -1192,7 +1196,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 session_id,
                 agent_id,
                 &active_prompt,
-                provider_run_id,
+                &projected_provider_run_id,
                 projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                 projected_termination.clone(),
             );
@@ -1202,7 +1206,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             // A matching worker completion settles the same flow-control turn
             // started by native prompt projection. Clear it before publishing
             // the home snapshot, otherwise completed prompts remain WORKING.
-            crate::transport::flow_control::clear_prompt_activity(self.app, provider_run_id);
+            crate::transport::flow_control::clear_prompt_activity(
+                self.app,
+                &projected_provider_run_id,
+            );
             if let Ok(agent) = self.app.agents.get_agent(agent_id) {
                 if agent.remote_execution().is_some() {
                     let _ = self
@@ -1244,7 +1251,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     self.app,
                     session_id,
                     &completed,
-                    Some(provider_run_id),
+                    Some(projected_provider_run_id.as_str()),
                 )?;
             }
             if let Some(remote_execution) = remote_execution {
