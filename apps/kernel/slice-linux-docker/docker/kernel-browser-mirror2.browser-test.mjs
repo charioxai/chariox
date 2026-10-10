@@ -490,3 +490,21 @@ test("MP-10: review #941-5 CSSOM sheet.disabled toggles of unreadable cross-orig
     for (let i = 0; i < 4 && ops.length < 2; i++) ops.push(...(await next(1500)).ops.filter(op => op.op === "attr" && op.name === "media"));
     assert.deepEqual(ops.map(op => [op.id, op.value]).sort(), [[styles[0][0], "not all"], [styles[1][0], null]].sort());
   }, { "/a.css": { type: "text/css", body: "p{color:rgb(1,2,3)}" }, "/b.css": { type: "text/css", body: "p{background:rgb(4,5,6)}" } }));
+
+// Adopted sheets per root (document, shadow) from snapshot rows and adopted ops; their colors in a fresh document of the source browser.
+const adoptedRoots = packet => { const out = new Map(); let id = 0; for (const row of packet.nodes) { id += row[0]; if (row[2] === 1 || row[2] === 2) out.set(`n${id}`, row[4]?.adopted ?? []); } return out; };
+const adoptedColors = (evaluate, [documentSheets, shadowSheets]) => evaluate(`new Promise(resolve=>{const f=document.createElement("iframe");f.srcdoc='<!doctype html><p id="d">d</p><div id="h"></div>';f.onload=()=>{const d=f.contentDocument,w=f.contentWindow,sheets=texts=>texts.map(t=>{const s=new w.CSSStyleSheet();s.replaceSync(t);return s}),r=d.getElementById("h").attachShadow({mode:"open"});r.innerHTML="<p>s</p>";d.adoptedStyleSheets=sheets(${JSON.stringify(documentSheets)});r.adoptedStyleSheets=sheets(${JSON.stringify(shadowSheets)});resolve([getComputedStyle(d.getElementById("d")).color,getComputedStyle(r.firstChild).color]);f.remove()};document.body.append(f)})`);
+test("MP-10: review #941-3 a disabled adopted stylesheet stays inactive in the viewer (snapshot, disable, enable; document and shadow root): viewer colors match the source", () => mirrored(
+  '<p id="d">doc</p><div id="h"></div><script>const mk=t=>{const s=new CSSStyleSheet();s.replaceSync(t);return s};window.base=mk("p{color:rgb(0, 0, 255)}");window.theme=mk("p{color:rgb(255, 0, 0)}");theme.disabled=true;document.adoptedStyleSheets=[base,theme];const r=document.getElementById("h").attachShadow({mode:"open"});r.innerHTML="<p>s</p>";window.ibase=mk("p{color:rgb(0, 128, 0)}");window.itheme=mk("p{color:rgb(255, 0, 0)}");itheme.disabled=true;r.adoptedStyleSheets=[ibase,itheme]</script>', async ({ next, evaluate }) => {
+    const roots = adoptedRoots(await next());
+    const source = () => evaluate('[getComputedStyle(document.getElementById("d")).color,getComputedStyle(document.getElementById("h").shadowRoot.firstChild).color]');
+    assert.deepEqual(await source(), ["rgb(0, 0, 255)", "rgb(0, 128, 0)"]);
+    assert.deepEqual(await adoptedColors(evaluate, [...roots.values()]), await source(), "MP-10: sheets disabled before the snapshot are inactive in the viewer");
+    // The page enables both themes and disables the shadow root's base sheet.
+    await evaluate("theme.disabled=false;ibase.disabled=true;itheme.disabled=false;true");
+    const ops = [];
+    for (let i = 0; i < 4 && ops.length < 2; i++) ops.push(...(await next(1500)).ops.filter(op => op.op === "adopted"));
+    for (const op of ops) roots.set(op.id, op.sheets);
+    assert.deepEqual(await source(), ["rgb(255, 0, 0)", "rgb(255, 0, 0)"]);
+    assert.deepEqual(await adoptedColors(evaluate, [...roots.values()]), await source(), "MP-10: disable and enable toggles reach the viewer");
+  }));
