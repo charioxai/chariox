@@ -68,6 +68,19 @@ fn refresh_provider_usage_before_launch(
 }
 
 impl DaemonApp {
+    pub(crate) fn provider_account_launch_scope_for_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> crate::account_profile::ProviderAccountLaunchScope {
+        if self.leased_agents.values().any(|leased| {
+            leased.backing_session_id == agent.session_id() && leased.backing_agent_id == agent.id()
+        }) {
+            crate::account_profile::ProviderAccountLaunchScope::LeaseReplica
+        } else {
+            crate::account_profile::ProviderAccountLaunchScope::Home
+        }
+    }
+
     pub(crate) fn prepare_app_provider_launch_request(
         &self,
         mut request: LaunchProviderRequest,
@@ -104,11 +117,11 @@ impl DaemonApp {
         if crate::provider::canonical_provider_family(&request.provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
-            let account_owner_user_id =
-                crate::account_profile::provider_account_authority_owner_user_id(
-                    &self.config,
-                    &request.owner_user_id,
-                );
+            let account_owner_user_id = agent
+                .as_ref()
+                .map(|agent| self.provider_account_launch_scope_for_agent(agent))
+                .unwrap_or(crate::account_profile::ProviderAccountLaunchScope::Home)
+                .owner_user_id(&self.config, &request.owner_user_id);
             let profile = if request.client_interface.is_chariox() {
                 refresh_provider_usage_before_launch(
                     &self.provider_account_profiles,
