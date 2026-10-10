@@ -78,7 +78,7 @@ pub(super) fn machine(root: &Path) -> EnvironmentMeasuredFacts {
     f
 }
 /// Named inventory probes have fixed argv. Imported executable/arguments never widen this list.
-fn inventory_args(name: &str) -> Option<&'static [&'static str]> {
+pub(super) fn inventory_args(name: &str) -> Option<&'static [&'static str]> {
     match name {
         "node" | "npm" | "pnpm" | "yarn" | "bun" | "python" | "python3" | "pip" | "pip3"
         | "ruby" | "cargo" | "rustc" | "git" | "docker" | "mise" | "deno" | "php" | "java"
@@ -124,6 +124,13 @@ pub(super) fn version(name: &str, roots: &[PathBuf]) -> Result<Option<String>, &
         .env_clear()
         .env("LANG", "C")
         .env("PATH", "/usr/local/bin:/usr/bin:/bin");
+    if matches!(name, "cargo" | "rustc") {
+        for key in ["RUSTUP_HOME", "RUSTUP_TOOLCHAIN"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+    }
     let output =
         crate::local::provider_requests::capture_inventory_probe(command, Duration::from_secs(3))
             .map_err(|_| "probe_failed")?;
@@ -207,98 +214,7 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
     }
     (!constraint.is_empty()).then_some(accepted)
 }
-pub(super) fn health(
-    probe: &EnvironmentProbe,
-    expectation: &Option<EnvironmentHealthExpectation>,
-    roots: &[PathBuf],
-) -> Result<bool, &'static str> {
-    match probe {
-        EnvironmentProbe::Tcp {
-            host,
-            port,
-            timeout_ms,
-        } => {
-            use std::net::ToSocketAddrs;
-            let timeout = Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64);
-            // DNS is bounded through the existing resolver by HTTP; TCP literal addresses avoid opaque resolver stalls.
-            let ip: std::net::IpAddr = if host == "localhost" {
-                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
-            } else {
-                host.parse().map_err(|_| "tcp_requires_ip_address")?
-            };
-            let addr = (ip, *port)
-                .to_socket_addrs()
-                .map_err(|_| "probe_failed")?
-                .next()
-                .ok_or("probe_failed")?;
-            Ok(std::net::TcpStream::connect_timeout(&addr, timeout).is_ok())
-        }
-        EnvironmentProbe::Http {
-            url,
-            expected_status,
-            timeout_ms,
-        } => {
-            let parsed = url::Url::parse(url).map_err(|_| "invalid_probe")?;
-            if !matches!(parsed.scheme(), "http" | "https")
-                || !parsed.username().is_empty()
-                || parsed.password().is_some()
-                || parsed.query().is_some()
-                || parsed.fragment().is_some()
-            {
-                return Err("invalid_probe");
-            }
-            let expected = match expectation {
-                Some(EnvironmentHealthExpectation::HttpStatus { status }) => *status,
-                _ => *expected_status,
-            };
-            let agent = ureq::AgentBuilder::new()
-                .redirects(0)
-                .timeout(Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64))
-                .build();
-            match agent.get(url).call() {
-                Ok(r) => Ok(r.status() == expected),
-                Err(ureq::Error::Status(s, _)) => Ok(s == expected),
-                Err(_) => Ok(false),
-            }
-        }
-        EnvironmentProbe::Executable {
-            name,
-            arguments,
-            timeout_ms,
-        } => {
-            let Some(args) = inventory_args(name) else {
-                return Err("worker_required");
-            };
-            if arguments.iter().map(String::as_str).collect::<Vec<_>>() != args {
-                return Err("worker_required");
-            }
-            let Some(p) = executable(name) else {
-                return Ok(false);
-            };
-            if roots.iter().any(|r| p.starts_with(r)) {
-                return Err("worker_required");
-            }
-            let mut c = std::process::Command::new(p);
-            c.args(args)
-                .current_dir("/")
-                .env_clear()
-                .env("LANG", "C")
-                .env("PATH", "/usr/local/bin:/usr/bin:/bin");
-            let exit = crate::local::provider_requests::capture_inventory_probe(
-                c,
-                Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64),
-            )
-            .map_err(|_| "probe_failed")?
-            .status
-            .code();
-            Ok(exit
-                == Some(match expectation {
-                    Some(EnvironmentHealthExpectation::CommandExit { exit_code }) => *exit_code,
-                    _ => 0,
-                }))
-        }
-    }
-}
+pub(super) use super::check_health::health;
 
 /// MP-08 / MP-10 / MP-11: package and font inventory reads installed facts,
 /// never lockfiles as proof, package scripts or package-manager mutations.

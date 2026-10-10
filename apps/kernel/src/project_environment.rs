@@ -7,6 +7,7 @@ mod aggregate_store;
 mod check;
 mod check_admission;
 mod check_assets;
+mod check_health;
 mod check_inventory;
 mod check_platform;
 mod check_runner;

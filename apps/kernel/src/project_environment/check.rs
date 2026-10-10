@@ -121,7 +121,7 @@ pub(crate) fn check_requirement(
                         "A named service health probe is required; a PID never proves health",
                     );
                 };
-                match inventory::health(p,health_expectation,&roots){Ok(true)=>outcome(Ready,"service_healthy","Named service health probe passed; Check does not start or restart services"),Ok(false)=>outcome(Missing,"service_unhealthy","Service health probe failed; no repair performed"),Err(_)=>outcome(NeedsYourInput,"worker_required","Executable health script requires confirmed disposable-worker execution; no host command ran")}
+                match inventory::health(p,health_expectation,&roots){Ok(true)=>outcome(Ready,"service_healthy","Named service health probe passed; Check does not start or restart services"),Ok(false)=>outcome(Missing,"service_unhealthy","Service health probe failed; no repair performed"),Err("worker_required")=>outcome(NeedsYourInput,"worker_required","Executable health script requires confirmed disposable-worker execution; no host command ran"),Err(_)=>outcome(NeedsYourInput,"probe_unproven","Named health probe is unavailable or invalid; review its target and probe")}
             }
             RequirementSpec::Variables { .. } => {
                 super::check_assets::check_assets(ctx, env, r, target, baseline, &mut facts)
