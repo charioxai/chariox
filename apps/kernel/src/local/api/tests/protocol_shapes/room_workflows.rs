@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn room_workflows_protocol_439_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 483);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 495);
     let room = crate::session::RuntimeSession::new(
         "room",
         None,

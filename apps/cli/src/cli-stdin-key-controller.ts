@@ -17,6 +17,7 @@ export type CliStdinKeyControllerDeps = {
   kernelApprovalOwnsInput?: () => boolean
   dialogOverlayOpen: () => boolean
   closeActiveDialogOverlay: () => void
+  handleProjectEnvironmentKey?: (event: CliStdinKeyEvent) => boolean
   handleManagedMachineDialogKey?: (event: CliStdinKeyEvent) => boolean
   handleSessionBrowserKey: (event: CliStdinKeyEvent) => boolean
   requestExit: () => void
@@ -64,6 +65,7 @@ export function createCliStdinKeyController(
         deps.closeActiveDialogOverlay()
         return true
       }
+      if (deps.handleProjectEnvironmentKey?.(event)) return true
       if (deps.handleManagedMachineDialogKey?.(event)) {
         return true
       }

@@ -202,6 +202,8 @@ export type CliInputRoutingCompositionDeps = {
   activateWaitingRoom: AnyFn
   startSessionFromWaitingRoomDefaults: AnyFn
   handleSessionBrowserKey: AnyFn
+  openProjectEnvironment: AnyFn
+  handleProjectEnvironmentKey: AnyFn
   handleManagedMachineDialogKey: AnyFn
   openManagedMachineDialog: AnyFn
   toggleWorkspaceScreen: AnyFn
@@ -607,6 +609,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     applyLifecycleAction: (action) => {
       void deps.applyWaitingRoomSessionLifecycleAction(action)
     },
+    openProjectEnvironment: projectId => { void deps.openProjectEnvironment(projectId) },
     beginProjectRename: (projectId, currentName) => {
       pendingProjectRenameId = projectId
       deps.promptTextController.setText(currentName)
@@ -681,6 +684,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     parseKeypress: (chunk, options) => parseKeypress(chunk, options),
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
+    handleProjectEnvironmentKey: deps.handleProjectEnvironmentKey,
     handleManagedMachineDialogKey: deps.handleManagedMachineDialogKey,
     handleSessionBrowserKey: deps.handleSessionBrowserKey,
     requestExit: () => {

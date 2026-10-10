@@ -76,10 +76,10 @@ pub use api::{
     GetManagedContextLaunchTargetRequest, GetManagedContextTransferStatusRequest,
     GetManagedEnvironmentReimagePreflightRequest, GetManagedEnvironmentRequest,
     GetMcpServerRequest, GetMetaagentTurnBlobRequest, GetMetaagentTurnOverviewRequest,
-    GetProjectEnvironmentManifestRequest, GetProjectEnvironmentSetupStatusRequest,
-    GetPromptInputHistoryRequest, GetPromptSettingRequest, GetProviderAuthStatusRequest,
-    GetProviderCatalogRequest, GetProviderCommandCatalogsRequest, GetProviderLoginStatusRequest,
-    GetProviderRunRequest, GetRoomEnvironmentEventsRequest,
+    GetProjectEnvironmentManifestRequest, GetProjectEnvironmentRequest,
+    GetProjectEnvironmentSetupStatusRequest, GetPromptInputHistoryRequest, GetPromptSettingRequest,
+    GetProviderAuthStatusRequest, GetProviderCatalogRequest, GetProviderCommandCatalogsRequest,
+    GetProviderLoginStatusRequest, GetProviderRunRequest, GetRoomEnvironmentEventsRequest,
     GetRoomEnvironmentResourceInventoryRequest, GetRoomEnvironmentStateRequest,
     GetRoomEnvironmentTabAccessibilityRequest, GetScriptRequest,
     GetSessionHistoryBlobContentRequest, GetSessionHistoryOutlineRequest, GetSessionStateRequest,
@@ -292,3 +292,11 @@ pub fn default_access_holder_pid() -> std::io::Result<u32> {
     let (peer, _) = crate::runtime::kernel_access::process::inspect(std::process::id())?;
     crate::runtime::kernel_access::requester::default_holder(&peer).map(|holder| holder.pid)
 }
+
+pub use api::{
+    ApplyProjectEnvironmentRequest, CheckProjectEnvironmentRequest, CommitEnvironmentImportRequest,
+    DetectProjectEnvironmentRequest, EnvironmentExportDestination, EnvironmentOperationRequest,
+    ExportProjectEnvironmentRequest, PlanProjectEnvironmentRequest, PreviewEnvironmentDiffRequest,
+    PreviewEnvironmentImportRequest, RetryEnvironmentOperationRequest,
+    SaveProjectEnvironmentRevisionRequest,
+};

@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn relay_status_control_capabilities_are_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 483);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 495);
     let legacy = serde_json::json!({
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",
@@ -41,7 +41,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
 
 #[test]
 fn key_bound_cli_relay_requests_and_join_response_have_exact_protocol_shapes() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 483);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 495);
 
     let token_request =
         LocalDaemonRequest::IssueCloudRelayClientToken(IssueCloudRelayClientTokenRequest {
@@ -163,7 +163,7 @@ fn legacy_terminal_join_requests_and_responses_remain_unbound() {
 
 #[test]
 fn relay_status_native_process_identity_is_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 483);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 495);
     let legacy = serde_json::json!({
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",
@@ -202,7 +202,7 @@ fn cloud_device_denial_poll_is_versioned_and_hashed() {
         .expect("denial must deserialize as a terminal poll outcome");
     let actual = serde_json::to_value(response).unwrap();
     assert_eq!(actual, expected);
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 483);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 495);
     assert_eq!(
         format!(
             "{:x}",
@@ -214,7 +214,7 @@ fn cloud_device_denial_poll_is_versioned_and_hashed() {
 
 #[test]
 fn cloud_device_denial_capability_preserves_legacy_requests_and_is_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 483);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 495);
     let legacy = serde_json::json!({"PollCloudRelayLogin": {
         "api_url": "https://cloud.example.test", "device_code": "synthetic-device-code"
     }});

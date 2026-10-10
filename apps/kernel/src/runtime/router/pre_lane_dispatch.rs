@@ -303,6 +303,20 @@ impl CommandRouter {
                     .await
                     .map(Some);
             }
+            request if request.unsupported_environment_capability().is_some() => {
+                return Ok(Some(LocalDaemonResponse::EnvironmentUnsupportedFeature {
+                    feature: request
+                        .unsupported_environment_capability()
+                        .expect("matched unsupported feature"),
+                    supported_schema: 1,
+                }));
+            }
+            LocalDaemonRequest::GetProjectEnvironment(request) => {
+                return self
+                    .runtime_state
+                    .get_project_environment(request.clone(), caller_user_id)
+                    .map(Some);
+            }
             LocalDaemonRequest::GetProjectEnvironmentManifest(request) => {
                 return self
                     .runtime_state

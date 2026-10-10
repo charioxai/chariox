@@ -1,3 +1,4 @@
+import { createProjectEnvironmentReadController, projectEnvironmentPageSize } from "./project-environment-read-controller.js"
 import { MouseButton } from "@opentui/core"
 
 import { createCliDialogOverlayController } from "./cli-dialog-overlay-controller.js"
@@ -90,13 +91,20 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
   })
   const hotkeyDebug = hotkeyDebugReporter.report
 
+  const environmentController = createProjectEnvironmentReadController({
+    send: request => deps.client.send(request),
+    pageSize: () => projectEnvironmentPageSize(deps.dimensions().height),
+    render: () => dialogOverlayController.render(),
+  })
   const dialogOverlayController = createCliDialogOverlayController<any, any>({
     getOpenState: () => ({
+      environmentOpen: environmentController.isOpen(),
       hotkeysOpen: deps.hotkeysOpen(),
       terminalPairingOpen: deps.terminalPairingOpen(),
       sessionBrowserOpen: deps.sessionBrowserOpen(),
       managedMachineOpen: deps.managedMachineDialogOpen(),
     }),
+    closeEnvironment: environmentController.close,
     getCurrentFocus: deps.currentFocusedRenderable,
     getPromptFocus: () => deps.promptInputRefController.current() as any,
     describeFocus: deps.describeRenderableDebug,
@@ -126,6 +134,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
         dimensions: deps.dimensions(),
         mode,
         onDismiss,
+        environmentLines: environmentController.visibleLines(),
         sessions: sessionBrowserSessions(),
         normalizeSessionBrowserIndex,
         sessionBrowserProject: sessionBrowserProjectionController.selectedProject(),
@@ -222,6 +231,8 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     handlePromptSelectionSurfaceMouseUp: promptSurfaceMouseController.handleMouseUp,
     handleSessionBrowserKey: sessionBrowserController.handleKey,
     handleManagedMachineDialogKey: managedMachineDialogController.handleKey,
+    openProjectEnvironment: environmentController.open,
+    handleProjectEnvironmentKey: environmentController.handleKey,
     openHotkeys: dialogOverlayController.openHotkeys,
     openSessionBrowserDialog: dialogOverlayController.openSessionBrowser,
     openManagedMachineDialog: managedMachineDialogController.open,
