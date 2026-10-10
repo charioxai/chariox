@@ -799,3 +799,26 @@ test("MP-08: focus, range and text sent together for a field whose focus handler
     }
     assert.equal(await evaluate("b.value"), "zqxj delta");
   }));
+
+test("MP-10: review #941 R8-2 an SVG image's changed href / xlink:href reaches the viewer as a resource update (external, fragment, removed)", () => mirrored(
+  `<svg width="200" height="60"><defs><image id="sym" href="/a.svg" width="10" height="10"/></defs><image id="h" href="/a.svg" width="40" height="40"/><image id="x" xlink:href="/a.svg" x="50" width="40" height="40"/></svg>`, async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const snapshot = await next(), ids = new Map(rows(snapshot.nodes).filter(r => r.tag === "image").map((r, i) => [["sym", "h", "x"][i], r.id]));
+    await evaluate(`new Promise(resolve=>{const i=new Image();i.onload=()=>resolve(true);i.src='/b.svg'}).then(()=>{h.setAttribute('href','/b.svg');x.setAttributeNS('http://www.w3.org/1999/xlink','xlink:href','/b.svg');return true})`);
+    const packets = []; for (let i = 0; i < 8 && !packets.some(p => p.resources.some(r => Buffer.from(r.data_base64, "base64").toString().includes("#0a0b0c"))); i++) packets.push(await next(1000));
+    const ops = packets.flatMap(p => p.ops), bKey = packets.flatMap(p => p.resources).find(r => Buffer.from(r.data_base64, "base64").toString().includes("#0a0b0c"))?.key;
+    assert(bKey, "MP-10: the new image's bytes arrived");
+    for (const name of ["h", "x"]) {
+      const mine = ops.filter(op => op.id === ids.get(name));
+      assert.deepEqual(mine.filter(op => op.op === "res").map(op => op.res), [bKey], `MP-10: ${name} gets the new key (${JSON.stringify(mine)})`);
+      assert(!mine.some(op => op.op === "attr" && op.name === "href" && op.value === null), `MP-10: ${name} keeps its image (no href removal)`);
+    }
+    // To a fragment, then removed: the key goes, the fragment travels as an attribute.
+    await evaluate("h.setAttribute('href','#sym');x.removeAttributeNS('http://www.w3.org/1999/xlink','href');true");
+    const later = (await next(1000)).ops;
+    assert.deepEqual(later.filter(op => op.id === ids.get("h")).map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", "#sym"]]);
+    assert.deepEqual(later.filter(op => op.id === ids.get("x")).map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", null]]);
+  }, {
+    "/a.svg": { type: "image/svg+xml", body: svg("#010203") },
+    "/b.svg": { type: "image/svg+xml", body: svg("#0a0b0c") },
+  }));

@@ -323,7 +323,7 @@ export function installMirror2(sanitizeMirrorCss) {
         return id;
       }
       if (ns === HTML && tag === 'img' && node.currentSrc) { const key = resource(node.currentSrc, base, 'image'); if (key) { record.res = key; resOf.set(id, key); } }
-      if (ns === SVG && tag === 'image') { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'); const key = href && !href.startsWith('#') ? resource(href, base, 'image') : null; if (key) record.res = key; }
+      if (ns === SVG && tag === 'image') { const key = svgImageKey(node); if (key) { record.res = key; resOf.set(id, key); } }
       if (ns === HTML && formControl(node)) record.form = formRecord(node);
       if (stateful(node)) stateRecord(node, record);
       if (node.scrollLeft || node.scrollTop) record.scroll = [node.scrollLeft, node.scrollTop];
@@ -366,7 +366,8 @@ export function installMirror2(sanitizeMirrorCss) {
       adoptedDirty = false;
       return { root, nodes: out, ...take(), ...header() };
     };
-    const imageOp = (node, id, ops) => { const key = node.currentSrc ? resource(node.currentSrc, node.baseURI, 'image') : null; if ((key ?? null) === (resOf.get(id) ?? null)) return; if (key) resOf.set(id, key); else resOf.delete(id); ops.push({ op: 'res', id, res: key }); };
+    const svgImageKey = node => { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'); return href && !href.startsWith('#') ? resource(href, node.baseURI, 'image') : null; };
+    const imageOp = (node, id, ops, key = node.currentSrc ? resource(node.currentSrc, node.baseURI, 'image') : null) => { if ((key ?? null) === (resOf.get(id) ?? null)) return; if (key) resOf.set(id, key); else resOf.delete(id); ops.push({ op: 'res', id, res: key }); };
     // Morph (keystroke/typeahead bytes): a page that rebuilds a subtree with the
     // same shape (innerHTML of a suggestion list) keeps the viewer's nodes. A new
     // node of the same kind takes over a removed node's id; only attribute, text
@@ -456,7 +457,13 @@ export function installMirror2(sanitizeMirrorCss) {
         if (node.localName === 'input' && names.has('type') || node.localName === 'select' && names.has('multiple')) { dirty.replace.add(node); continue; }
         const attrs = attributes(node, node.baseURI);
         for (const name of names) {
-          if (name === 'href' || name === 'xlink:href') { ops.push({ op: 'attr', id, name: 'href', value: attrs.href ?? null }); continue; }
+          if (name === 'href' || name === 'xlink:href') {
+            // An SVG image's external URL travels as a resource key (the viewer sets href to the bytes).
+            const key = node.namespaceURI === SVG && node.localName === 'image' ? svgImageKey(node) : null;
+            if (node.namespaceURI === SVG && node.localName === 'image') imageOp(node, id, ops, key);
+            if (!key) ops.push({ op: 'attr', id, name: 'href', value: attrs.href ?? null });
+            continue;
+          }
           if (denied(name.toLowerCase())) continue; // never travels (the viewer's own src/handlers stay)
           ops.push({ op: 'attr', id, name, value: Object.hasOwn(attrs, name) ? attrs[name] : null });
         }
