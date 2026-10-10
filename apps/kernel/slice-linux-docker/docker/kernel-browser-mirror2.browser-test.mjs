@@ -822,3 +822,17 @@ test("MP-10: review #941 R8-2 an SVG image's changed href / xlink:href reaches t
     "/a.svg": { type: "image/svg+xml", body: svg("#010203") },
     "/b.svg": { type: "image/svg+xml", body: svg("#0a0b0c") },
   }));
+
+test("MP-10: residue 2.4-13 a collapsed selection (the caret) inside editable content reaches the viewer; outside editable content it stays null", () => mirrored(
+  '<div id="ed" contenteditable="true">hello world</div><p id="p">plain text</p>', async ({ next, evaluate }) => {
+    const snapshot = await next(), text = texts(snapshot);
+    await evaluate("ed.focus();getSelection().collapse(ed.firstChild,5);true");
+    let packet = await next(1000);
+    assert.deepEqual(packet.selection, { anchor_id: text.get("hello world"), anchor_offset: 5, focus_id: text.get("hello world"), focus_offset: 5 }, "MP-10: the kernel's caret travels");
+    await evaluate("getSelection().collapse(ed.firstChild,2);true");
+    packet = await next(1000);
+    assert.equal(packet.selection?.anchor_offset, 2, "MP-10: a moved caret travels");
+    await evaluate("ed.blur();getSelection().collapse(p.firstChild,3);true");
+    packet = await next(1000);
+    assert.equal(packet.selection ?? null, null, "MP-10: a caret outside editable content is no selection");
+  }));

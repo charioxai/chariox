@@ -341,10 +341,11 @@ export function installMirror2(sanitizeMirrorCss) {
       let focused = document.activeElement;
       for (let i = 0; i < 128; i++) { let child = focused?.shadowRoot?.activeElement; try { child ??= focused?.localName === 'iframe' ? focused.contentDocument?.activeElement : null; } catch {} if (!child || child === focused) break; focused = child; }
       // Same-origin child documents have their own selection: the one changed last, else any observed one (top first).
+      // A collapsed one is the caret: it travels only inside editable content.
       let selection = null;
       for (const doc of new Set([selectedDoc, document, ...roots.values()])) {
         const selected = doc?.nodeType === 9 ? doc.getSelection() : null;
-        if (!selected || selected.isCollapsed) continue;
+        if (!selected?.rangeCount || selected.isCollapsed && !selected.anchorNode?.parentElement?.isContentEditable) continue;
         const anchor = mirrored(selected.anchorNode), focus = mirrored(selected.focusNode);
         if (anchor && focus && kindOf.get(anchor) === 'text' && kindOf.get(focus) === 'text') { selection = { anchor_id: anchor, anchor_offset: selected.anchorOffset, focus_id: focus, focus_offset: selected.focusOffset }; break; }
       }
