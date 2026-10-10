@@ -119,3 +119,17 @@ export function environmentDiffLines(diff: EnvironmentRevisionDiff): string[] {
       ]),
   ]
 }
+
+// MP-08 / MP-10 / MP-11: rendering only; both inputs are authoritative kernel snapshots.
+export function environmentSnapshotDiff(before: import("./kernel-types-project-environment-aggregate.js").ProjectEnvironment, after: import("./kernel-types-project-environment-aggregate.js").ProjectEnvironment): EnvironmentRevisionDiff | null {
+  if (before.local_project_id !== after.local_project_id || before.lineage.environment_id !== after.lineage.environment_id || after.revision < before.revision || before.content_digest === after.content_digest) return null
+  const rows = (e: typeof before) => [...e.project_requirements, ...e.folders.flatMap(f => f.requirements)]
+  const old = new Map(rows(before).map(r => [r.requirement_id, r]))
+  const next = new Map(rows(after).map(r => [r.requirement_id, r]))
+  return {
+project_id: after.local_project_id, expected_revision: before.revision, source_digest: before.content_digest, target_digest: after.content_digest, folder_map: after.folders.map(f => ({ folder_id: f.folder_id, local_workspace_binding: f.local_workspace_binding })), requirements: [...new Set([...old.keys(), ...next.keys()])].sort().map(id => {
+      const previous = old.get(id) ?? null, current = next.get(id) ?? null
+      return { requirement_id: id, kind: previous === null ? "added" : current === null ? "removed" : JSON.stringify(previous) === JSON.stringify(current) ? "unchanged" : "changed", before: previous, after: current }
+    })
+}
+}

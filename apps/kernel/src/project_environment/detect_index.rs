@@ -63,11 +63,18 @@ pub(super) fn safe_metadata(value: &str) -> bool {
         .any(|marker| value.contains(marker))
 }
 pub(super) fn credential_content(text: &str) -> bool {
+    credential_matches(text, true)
+}
+// Metadata contains names and references; a bare name is never a plaintext value.
+pub(super) fn credential_metadata(text: &str) -> bool {
+    credential_matches(text, false)
+}
+fn credential_matches(text: &str, private_content: bool) -> bool {
     super::index::contains_secret_configuration(text)
         || legacy_key_literal(text)
-        // Names are metadata. Only assignment keys and literal credential patterns are hits.
+        // Metadata skips bare names; File contents retain the conservative name heuristic.
         || text.split_inclusive([':', '=']).take(100_000).filter_map(|part| {
-            part.strip_suffix(':').or_else(|| part.strip_suffix('='))
+            part.strip_suffix(':').or_else(|| part.strip_suffix('=')).or_else(|| private_content.then_some(part))
         }).any(|prefix| {
             let key = prefix
                 .rsplit(['{', ',', '\n'])
@@ -515,6 +522,27 @@ impl EvidenceRoot {
                 }
             }
             Ok((None, path))
+        }
+    }
+}
+
+#[cfg(test)]
+mod envp03_credential_names {
+    use super::*;
+    // MP-08 / MP-10 / MP-11: metadata names do not weaken conservative File content filtering.
+    #[test]
+    fn names_are_metadata_while_private_content_remains_filtered() {
+        for name in ["Secrets", "API_TOKEN", "Credentials", "RAW_SECRET"] {
+            assert!(!credential_metadata(name));
+            assert!(credential_content(name));
+        }
+        for value in [
+            "password=synthetic-regression-value",
+            "api_key:synthetic-regression-value",
+            "https://example:synthetic-regression-value@example.invalid",
+        ] {
+            assert!(credential_metadata(value));
+            assert!(credential_content(value));
         }
     }
 }

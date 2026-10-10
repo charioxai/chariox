@@ -5,7 +5,7 @@ fn text(v: &str) -> Result<(), DaemonError> {
     if v.is_empty()
         || v.len() > 4096
         || v.chars().any(char::is_control)
-        || super::detect_index::credential_content(v)
+        || super::detect_index::credential_metadata(v)
     {
         return Err(environment_error(
             "invalid or credential-shaped requirement; choose Vault for private input",

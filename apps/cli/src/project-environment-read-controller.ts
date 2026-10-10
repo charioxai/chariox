@@ -1,7 +1,7 @@
 // MP-08 / MP-10 / MP-11: Detect uses shared request builders.
 import { projectEnvironmentOperationRequest, relayStatusRequest, cloudRelayStatusRequest } from "@chariox/kernel-client/ipc-requests"
 // MP-08 / MP-10: Project read-only navigation, independent of session selection.
-import { createEnvironmentViewCache, getProjectEnvironmentRequest, projectEnvironmentLines, environmentOriginLabel, environmentRevisionDraft, saveEnvironmentRevisionRequest, environmentDiffLines, type EnvironmentRevisionDiff, type ProjectEnvironment } from "@chariox/kernel-client"
+import { createEnvironmentViewCache, getProjectEnvironmentRequest, projectEnvironmentLines, environmentOriginLabel, environmentRevisionDraft, saveEnvironmentRevisionRequest, environmentDiffLines, environmentSnapshotDiff, type EnvironmentRevisionDiff, type ProjectEnvironment } from "@chariox/kernel-client"
 
 export function projectEnvironmentPageSize(height: number) {
   return Math.max(1, height - Math.max(1, Math.floor(height / 5)) - 4)
@@ -24,6 +24,7 @@ export function createProjectEnvironmentReadController(deps: {
   let proposalIndex = 0
   let diff: EnvironmentRevisionDiff | null = null
   let showingDiff = false
+  let diffLabel = "Kernel Save diff"
   let webLink: string | null = null
   let savingGeneration: number | null = null
   let detectionGeneration: number | null = null
@@ -33,13 +34,16 @@ export function createProjectEnvironmentReadController(deps: {
     close() { open = false; generation++; deps.render() },
     async open(projectId: string) {
       const requestGeneration = ++generation
-      open = true; refreshing = true; diff = null; showingDiff = false; webLink = null; current = cache.peek(scope, projectId); proposalIndex = 0; offset = 0
+      const prior = cache.peek(scope, projectId)
+      if (current?.local_project_id !== projectId) diff = null
+      open = true; refreshing = true; showingDiff = false; webLink = null; current = cache.peek(scope, projectId); proposalIndex = 0; offset = 0
       lines = current ? ["Refreshing Environment… · last kernel snapshot", ...viewLines(current)] : ["Loading Environment…"]; deps.render()
       try {
         const response = await deps.send(getProjectEnvironmentRequest(projectId)) as { ProjectEnvironment?: { environment: ProjectEnvironment } }
         const environment = response.ProjectEnvironment?.environment
         if (!environment || environment.local_project_id !== projectId || environment.schema_version !== 1) throw new Error("Environment unavailable for this Project")
         if (requestGeneration !== generation) return
+        if (prior) { const observed = environmentSnapshotDiff(prior, environment); if (observed) { diff = observed; diffLabel = "Observed revision changes · between kernel snapshots" } }
         cache.remember(scope, environment); current = environment
         lines = viewLines(environment)
       } catch (error) {
@@ -98,7 +102,7 @@ export function createProjectEnvironmentReadController(deps: {
         if (generation !== requestGeneration) return
         const saved = response.ProjectEnvironmentSaved?.environment
         if (!saved || saved.local_project_id !== current.local_project_id) throw new Error("Proposal review unavailable")
-        diff = response.ProjectEnvironmentSaved?.diff ?? null; showingDiff = false; cache.remember(scope, saved); current = saved; proposalIndex = Math.min(proposalIndex, Math.max(0, saved.proposals.length - 1)); lines = viewLines(saved); offset = 0
+        diff = response.ProjectEnvironmentSaved?.diff ?? null; diffLabel = "Kernel Save diff"; showingDiff = false; cache.remember(scope, saved); current = saved; proposalIndex = Math.min(proposalIndex, Math.max(0, saved.proposals.length - 1)); lines = viewLines(saved); offset = 0
       } catch (error) {
         if (generation === requestGeneration) lines = [error instanceof Error ? error.message : "Proposal review failed", "r · Refresh to review the latest revision", ...viewLines(current)]
       } finally { if (savingGeneration === requestGeneration) savingGeneration = null; if (generation === requestGeneration) deps.render() }
@@ -109,7 +113,7 @@ export function createProjectEnvironmentReadController(deps: {
       if (event.ctrl && (event.name === "c" || event.name === "e")) return false
       if (event.ctrl || event.alt || event.meta) return true
       if (event.name === "w") { void controller.web(); return true }
-      if (event.name === "v" && current) { showingDiff = !showingDiff; lines = showingDiff ? (diff ? environmentDiffLines(diff) : ["No revision diff from this client yet · review a proposal or open Web", ...viewLines(current)]) : viewLines(current); offset = 0; deps.render(); return true }
+      if (event.name === "v" && current) { showingDiff = !showingDiff; lines = showingDiff ? (diff ? [diffLabel, ...environmentDiffLines(diff)] : ["No revision diff from this client yet · review a proposal or open Web", ...viewLines(current)]) : viewLines(current); offset = 0; deps.render(); return true }
       if ((event.name === "left" || event.name === "right") && current) {
         const titles = ["Project-wide", ...current.folders.map(f => f.label)]
         const positions = titles.map(t => lines.indexOf(t)).filter(p => p >= 0)
