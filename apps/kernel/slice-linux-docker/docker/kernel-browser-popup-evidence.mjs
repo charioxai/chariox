@@ -19,17 +19,25 @@ export class BrowserPopupEvidence {
     let source=this.sources.get(tab.target_id);
     if(source)return source;
     const sessionId=await browser.ensureTargetSession(connection,tab.target_id);
-    const {frameTree}=await connection.send('Page.getFrameTree',{},sessionId);
-    await connection.send('Runtime.addBinding',{name:BINDING,executionContextName:WORLD},sessionId);
-    await connection.send('Page.addScriptToEvaluateOnNewDocument',{source:OBSERVER,worldName:WORLD},sessionId);
-    const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:frameTree.frame.id,worldName:WORLD},sessionId);
-    await connection.send('Runtime.evaluate',{expression:OBSERVER,contextId:executionContextId},sessionId);
-    source={sessionId,actionId:null,dispatches:0,expires:0,opens:[]};this.sources.set(tab.target_id,source);
+    source={sessionId,sessions:new Set([sessionId]),actionId:null,dispatches:0,expires:0,opens:[]};
+    const sessions=[sessionId,...[...(browser.frameSessions?.sessions??[])].filter(([,entry])=>entry.targetId===tab.target_id).map(([id])=>id)];
+    for(const id of sessions){
+      const {frameTree}=await connection.send('Page.getFrameTree',{},id);
+      await connection.send('Runtime.addBinding',{name:BINDING,executionContextName:WORLD},id);
+      await connection.send('Page.addScriptToEvaluateOnNewDocument',{source:OBSERVER,worldName:WORLD},id);
+      const install=async tree=>{
+        const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:tree.frame.id,worldName:WORLD},id);
+        await connection.send('Runtime.evaluate',{expression:OBSERVER,contextId:executionContextId},id);
+        for(const child of tree.childFrames??[])await install(child);
+      };
+      await install(frameTree);source.sessions.add(id);
+    }
+    this.sources.set(tab.target_id,source);
     while(this.sources.size>this.limit)this.sources.delete(this.sources.keys().next().value);
     return source;
   }
   observe(message) {
-    const source=[...this.sources.values()].find(s=>s.sessionId===message.sessionId);
+    const source=[...this.sources.values()].find(s=>s.sessions.has(message.sessionId));
     if(message.method==='Runtime.bindingCalled'&&message.params?.name===BINDING&&source&&!source.dispatches){source.actionId=null;source.opens=[];}
     if(message.method==='Page.windowOpen'&&source&&message.params?.userGesture&&source.actionId&&Date.now()<=source.expires){
       source.opens.push(source.actionId);if(source.opens.length>this.limit)source.opens.shift();
