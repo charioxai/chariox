@@ -426,10 +426,13 @@ export class Mirror2 {
       const size = near?.get(entry.key);
       if (size && moving && entry.resource.data_base64.length > PREVIEW_MIN_BASE64 && PREVIEW_TYPES.has(entry.resource.mime_type)) {
         if (entry.previewed) continue; // exact bytes once the view settles
-        const svg = await this.evaluate(world, `${world.ref}.preview(${JSON.stringify(entry.resource.data_base64)},${JSON.stringify(entry.resource.mime_type)},${size[0]},${size[1]})`, true).catch(() => null);
+        // Generated once; admitted only within this packet's remaining budget (else a later packet,
+        // or the exact bytes in slices once the view settles).
+        const svg = entry.preview ??= await this.evaluate(world, `${world.ref}.preview(${JSON.stringify(entry.resource.data_base64)},${JSON.stringify(entry.resource.mime_type)},${size[0]},${size[1]})`, true).catch(() => null);
         if (typeof svg === 'string') {
-          const data = Buffer.from(svg, 'utf8');
-          entry.previewed = true; bytes += data.length * 4 / 3;
+          const data = Buffer.from(svg, 'utf8'), size64 = Math.ceil(data.length / 3) * 4;
+          if (bytes + size64 > budget) continue;
+          entry.previewed = true; entry.preview = null; bytes += size64;
           out.push({ key: entry.key, resource_id: createHash('sha256').update(data).digest('hex'), mime_type: 'image/svg+xml', data_base64: data.toString('base64') });
           continue;
         }

@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { inflateRawSync, constants as zlib } from "node:zlib";
+import { inflateRawSync, deflateSync, constants as zlib } from "node:zlib";
 import { mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { KernelBrowserHost } from "./kernel-browser-host.mjs";
@@ -325,3 +325,23 @@ test("MP-10: review #941-5 CSSOM edits through a readable linked stylesheet with
     await evaluate("const s=document.styleSheets[0];s.deleteRule(0);s.insertRule('p{color:rgb(4, 5, 6)}',0);true");
     assert(await css("rgb(4, 5, 6)"), "MP-10: a replaced rule reaches the viewer");
   }, { "/a.css": { type: "text/css", body: "p{color:rgb(9, 9, 9)}" } }));
+
+// A noisy PNG (previews of it cannot compress below the input-time packet budget).
+const noisePng = (w, h, seed) => {
+  const crc = buf => { let c = ~0; for (const b of buf) { c ^= b; for (let k = 0; k < 8; k++) c = c >>> 1 ^ 0xedb88320 & -(c & 1); } return ~c >>> 0; };
+  const chunk = (type, data) => { const out = Buffer.alloc(12 + data.length); out.writeUInt32BE(data.length); out.write(type, 4); data.copy(out, 8); out.writeUInt32BE(crc(out.subarray(4, 8 + data.length)), 8 + data.length); return out; };
+  const raw = Buffer.alloc((w * 3 + 1) * h); let x = seed; for (let i = 0; i < raw.length; i++) raw[i] = i % (w * 3 + 1) ? (x = x * 1103515245 + 12345 >>> 0) >>> 24 : 0;
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 2;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]).toString("base64");
+};
+test("MP-10: review #941-6 previews respect the packet budget while the viewer moves (oversized preview, preview after another resource)", () => mirrored(
+  `<img src="data:image/png;base64,${noisePng(320, 320, 1)}" style="display:block;width:1900px;height:1900px"><img src="data:image/png;base64,${noisePng(320, 320, 2)}" style="display:block;width:1900px;height:1900px">`, async ({ next, input }) => {
+    const snapshot = await next();
+    const sizes = [];
+    for (let i = 0; i < 6; i++) {
+      await input((await next(0)).sequence, { kind: "scroll_to", node_id: null, x: 0, y: 100 + i * 50 });
+      const packet = await next(200);
+      sizes.push(packet.resources.reduce((n, r) => n + r.data_base64.length, 0));
+    }
+    assert(sizes.every(n => n <= 64 * 1024), `MP-10: every packet within 1 s of input stays within 64 KB of media (${sizes})`);
+  }));
