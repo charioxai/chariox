@@ -41,6 +41,7 @@ export class BrowserMirror2Renderer {
   // Viewer-owned scroll (plan 4.1): kernel echoes wait until the viewer settles.
   private localScrollAt = -Infinity
   private applied = new WeakMap<Node, [number, number]>() // kernel-applied positions (their scroll events are not viewer input)
+  private deferred = new Map<Node, [number, number]>() // latest kernel position per scroller that arrived while the viewer scrolled
   constructor(private container: HTMLElement, private send: (action: Mirror2Action, epoch: { sequence: number; document_id: string }) => Promise<unknown>, _failure?: (error: unknown) => void) {
     const owner = container.ownerDocument
     this.empty = URL.createObjectURL(new Blob([]))
@@ -131,6 +132,8 @@ export class BrowserMirror2Renderer {
     const now = target.nodeType === 9 ? [(target as Document).defaultView?.scrollX ?? 0, (target as Document).defaultView?.scrollY ?? 0] : [(target as Element).scrollLeft, (target as Element).scrollTop]
     if (this.applying || kernel && Math.abs(kernel[0] - now[0]!) < 1 && Math.abs(kernel[1] - now[1]!) < 1) return
     this.applied.delete(target)
+    // The viewer's own scroll is the last writer of this scroller.
+    this.deferred.delete(target); if (target.nodeType === 9) this.deferred.delete((target as Document).documentElement)
     this.localScrollAt = performance.now(); this.scrollTargets.add(target)
     this.scrollFrame ||= requestAnimationFrame(() => {
       this.scrollFrame = 0; const targets = this.scrollTargets; this.scrollTargets = new Set()
@@ -314,10 +317,16 @@ export class BrowserMirror2Renderer {
       for (const resource of complete) for (const entry of this.styled.values()) if (entry.keys.includes(resource.key)) this.restyle(entry)
       for (const resource of complete) for (const [id, record] of this.records) if (record.res === resource.key) { const node = this.dom.get(id); if (node?.nodeType === 1) this.image(id, node as Element, record.res) }
       for (const tile of packet.tiles) this.tile(tile)
-      // The viewer owns scroll while it scrolls; the kernel's position applies on reset or when settled.
+      // The viewer owns scroll while it scrolls; the kernel's positions (the latest per
+      // scroller, kept while deferred) apply on reset or once the viewer settles.
+      if (packet.reset) this.deferred.clear()
+      for (const [element, x, y] of scrolls) this.deferred.set(element, [x, y])
       if (packet.reset || !this.scrolling()) {
-        for (const [element, x, y] of scrolls) {
-          if ((element as Node).nodeType === 9) { const view = (element as unknown as Document).defaultView; view?.scrollTo(x, y); if (view) this.applied.set(element, [view.scrollX, view.scrollY]); continue }
+        const pending = this.deferred; this.deferred = new Map()
+        for (const [element, [x, y]] of pending as Map<Element, [number, number]>) {
+          // A frame document scrolls its viewport (its root element: a quirks-mode viewer document would not).
+          const doc = (element as Node).nodeType === 9 ? element as unknown as Document : element === element.ownerDocument.documentElement ? element.ownerDocument : null
+          if (doc) { const view = doc.defaultView; view?.scrollTo(x, y); if (view) this.applied.set(doc, [view.scrollX, view.scrollY]); continue }
           if (element.scrollLeft !== x) element.scrollLeft = x; if (element.scrollTop !== y) element.scrollTop = y
           this.applied.set(element, [element.scrollLeft, element.scrollTop])
         }
@@ -411,7 +420,7 @@ export class BrowserMirror2Renderer {
     this.disposed = true; this.doc = null
     for (const url of this.resources.values()) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    URL.revokeObjectURL(this.empty); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frame.remove()
+    URL.revokeObjectURL(this.empty); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frame.remove()
   }
 }
 
