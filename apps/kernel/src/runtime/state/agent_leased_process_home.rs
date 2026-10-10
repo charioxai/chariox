@@ -7,6 +7,40 @@ use crate::transport::relay_peer::{
     LeasedWatchedProcessAction as Action, RelayPeerRequest, RelayPeerResponse,
 };
 
+// MP-08/MP-09/MP-10/MP-11: reserve supervision before publishing the wake.
+// A scheduler Query must not race the worker's first durable Start receipt.
+struct LeasedProcessPoll {
+    monitor: Arc<super::agent_wake_scheduler::AgentWakeMonitor>,
+    id: String,
+}
+
+impl LeasedProcessPoll {
+    fn reserve(
+        monitor: &Arc<super::agent_wake_scheduler::AgentWakeMonitor>,
+        id: &str,
+    ) -> Option<Self> {
+        monitor
+            .leased_polls
+            .lock()
+            .expect("leased process polls poisoned")
+            .insert(id.to_owned())
+            .then(|| Self {
+                monitor: monitor.clone(),
+                id: id.to_owned(),
+            })
+    }
+}
+
+impl Drop for LeasedProcessPoll {
+    fn drop(&mut self) {
+        self.monitor
+            .leased_polls
+            .lock()
+            .expect("leased process polls poisoned")
+            .remove(&self.id);
+    }
+}
+
 impl KernelRuntimeState {
     async fn leased_process_request(
         &self,
@@ -103,6 +137,8 @@ impl KernelRuntimeState {
                 .ok_or_else(|| ledger::error("leased process needs an active worker run"))?,
         };
         self.authorize_current_external_command()?;
+        let admission = LeasedProcessPoll::reserve(&self.owned.agent_wakes, &wake.id)
+            .ok_or_else(|| ledger::error("leased process admission is already supervised"))?;
         self.owned
             .durable_state_store
             .agent_lifecycle(Operation::CreateLeasedWake {
@@ -126,6 +162,7 @@ impl KernelRuntimeState {
         if let Ok(Some(receipt)) = &result {
             self.project_leased_process_receipt(&wake, receipt)?;
         }
+        drop(admission);
         self.ensure_leased_process_poll(&wake);
         self.refresh_wake_projection(&wake.room_id);
         self.owned
@@ -202,29 +239,16 @@ impl KernelRuntimeState {
     }
 
     pub(super) fn ensure_leased_process_poll(&self, wake: &AgentWake) {
-        let mut polling = self
-            .owned
-            .agent_wakes
-            .leased_polls
-            .lock()
-            .expect("leased process polls poisoned");
-        if !polling.insert(wake.id.clone()) {
+        let Some(poll) = LeasedProcessPoll::reserve(&self.owned.agent_wakes, &wake.id) else {
             return;
-        }
-        drop(polling);
+        };
         let state = self.clone();
         let wake = wake.clone();
         tokio::spawn(async move {
             if let Err(error) = state.poll_leased_process(&wake).await {
                 tracing::warn!(%error,"MP-08/MP-09/MP-10/MP-11: leased watcher supervision retained for next tick");
             }
-            state
-                .owned
-                .agent_wakes
-                .leased_polls
-                .lock()
-                .expect("leased process polls poisoned")
-                .remove(&wake.id);
+            drop(poll);
         });
     }
 
@@ -321,5 +345,32 @@ impl KernelRuntimeState {
         } else {
             Ok(self.owned.agent_wakes.processes.terminate(id))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn leased_process_admission_excludes_poll_until_commit_and_releases_on_abort() {
+        let monitor = Arc::new(super::super::agent_wake_scheduler::AgentWakeMonitor::new());
+        let (ready, admitted) = tokio::sync::oneshot::channel();
+        let task_monitor = monitor.clone();
+        let admission = tokio::spawn(async move {
+            let _reservation = LeasedProcessPoll::reserve(&task_monitor, "pending-start").unwrap();
+            ready.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        admitted.await.unwrap();
+        assert!(LeasedProcessPoll::reserve(&monitor, "pending-start").is_none());
+        // Independent sources still admit while this Start is in flight.
+        assert!(LeasedProcessPoll::reserve(&monitor, "another-source").is_some());
+        admission.abort();
+        assert!(admission.await.unwrap_err().is_cancelled());
+        let poll = LeasedProcessPoll::reserve(&monitor, "pending-start").unwrap();
+        assert!(LeasedProcessPoll::reserve(&monitor, "pending-start").is_none());
+        drop(poll);
+        assert!(LeasedProcessPoll::reserve(&monitor, "pending-start").is_some());
     }
 }
