@@ -192,27 +192,27 @@ completion time. Provider tools and transcript remain usable. Repeat the
 official harness leg for Codex, OpenCode and Claude selected through product
 accounts; record failures individually and macOS Seatbelt launch result.
 
-## MP-08 / MP-10 / MP-11 — H6 critical receipt and no inheritance
+## MP-08 / MP-10 / MP-11 — H6 owner-only decisions and no inheritance
 
-Use the existing Apps acceptance fixture's **harmless local critical action**
-(counter/file mutation, never payment or external send), with its exact App
-operation ID recorded. Trigger it in another disposable session. Expect the
-host critical popup everywhere. The external holder's `critical <id>` refuses.
-During a human-authorized sudo turn, direct KA_AGENT to answer it through:
+Use an owner decision genuinely needed by the real provider's authorized work
+(for example a blocked review that needs a missing real account or deployment
+resource). Record the actual interaction ID. Alternatively use an authorized
+critical operation in a real installed App on a real service/account. Synthetic
+App actions are supplementary regressions and never live acceptance.
 
-```json
-{"request":{"RespondToInteraction":{"session_id":"<target-session>","interaction_id":"<critical-id>","choice_id":"approve"}}}
-```
+During the human-authorized sudo work, ask the agent to answer that interaction
+through `chariox_kernel_request`. Expect refusal for approval, refusal, Resume
+and Cancel alike: sudo agents cannot answer owner interactions. The original
+interaction stays pending and the action has no effect. The owner answers
+through the real terminal popup with a fresh passkey when required; expect one
+effect and all popups to close. Spawn a second ordinary agent for related real
+work; it receives no elevation and cannot answer the owner interaction either.
+The external holder's `critical` command also refuses.
 
-Use `chariox_kernel_request`, the existing runtime MCP tool. Expect the action
-once, all popups close, no new passkey required, and `kernel_access.sudo_approval`
-with human entry/terminal, sudo agent/run/prompt, target interaction and choice.
-The receipt must join to the original human-authorized sudo entry. During that
-turn spawn a second ordinary agent through the kernel and have it run the H5
-Unix probe: refused; no sudo inheritance. Ordinary approvals still work.
-Do not invent a direct low-level critical fixture on the live vault; if the
-Apps fixture is unavailable, record H6 BLOCKED with the missing fixture ID.
-Other kit steps continue, but “sudo validated” cannot be declared.
+Do not manufacture an owner decision or invent a low-level critical fixture on
+the live Vault. If the real work has no needed decision and the real App/account
+is unavailable, record this leg BLOCKED with the exact missing resource. Other
+kit steps continue; the missing leg cannot be declared accepted.
 
 ## MP-08 / MP-10 / MP-11 — H7 interrupt, busy queue and revocation
 

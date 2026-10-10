@@ -8,6 +8,7 @@ pub enum LocalDaemonResponse {
     WorkflowNotificationDetached { subscription_id: String },
     WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     KernelSudoRequested { agent_id: String },
+    KernelSudoExtended { turn: KernelSudoTurn },
     KernelAccessGranted { grant: KernelAccessGrant, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
     KernelAccessRevoked { revoked: usize, },

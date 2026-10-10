@@ -26,13 +26,49 @@ pub(crate) fn prompt_claims_provider_run(
 struct OwnedAgentPromptState {
     // Ephemeral: never copied from the durable session mirror.
     sudo_entry_id: Option<String>,
+    // MP-08/MP-10/MP-11 F5: captured at each running sudo prompt binding.
+    sudo_process_cutoff: Option<u64>,
+    // MP-08/MP-10/MP-11 A04: while a sudo window's work is open, only its
+    // kernel-correlated prompts may start; others stay queued (causal fence).
+    sudo_work: Option<SudoWorkHold>,
     active_prompt: Option<PromptQueueItem>,
     queued_prompts: VecDeque<PromptQueueItem>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct SudoWorkHold {
+    entry_id: String,
+    prompts: BTreeSet<String>,
+}
+
 impl OwnedAgentPromptState {
+    /// Whether `prompt` may become active now; a held work prompt is bound.
+    fn sudo_admits(&self, prompt: &str) -> bool {
+        self.sudo_work
+            .as_ref()
+            .is_none_or(|hold| hold.prompts.contains(prompt))
+    }
+
+    fn bind_sudo_work(&mut self) {
+        let Some(active) = self.active_prompt.as_ref() else {
+            return;
+        };
+        if let Some(hold) = self
+            .sudo_work
+            .as_ref()
+            .filter(|hold| hold.prompts.contains(active.id()))
+        {
+            if self.sudo_entry_id.as_deref() != Some(hold.entry_id.as_str()) {
+                self.sudo_process_cutoff =
+                    crate::runtime::kernel_access::process::birth_cutoff().ok();
+            }
+            self.sudo_entry_id = Some(hold.entry_id.clone());
+        }
+    }
+
     fn take_active_prompt(&mut self) -> Option<PromptQueueItem> {
         self.sudo_entry_id = None;
+        self.sudo_process_cutoff = None;
         self.active_prompt.take()
     }
 
@@ -41,6 +77,7 @@ impl OwnedAgentPromptState {
             != prompt.as_ref().map(PromptQueueItem::id)
         {
             self.sudo_entry_id = None;
+            self.sudo_process_cutoff = None;
         }
         self.active_prompt = prompt;
     }
@@ -51,6 +88,8 @@ impl OwnedAgentPromptState {
             .get(agent_id)
             .map(|state| Self {
                 sudo_entry_id: None,
+                sudo_process_cutoff: None,
+                sudo_work: None,
                 active_prompt: state.active_prompt().cloned(),
                 queued_prompts: state.queued_prompts().clone(),
             })
@@ -222,6 +261,7 @@ impl PromptStateOwner {
         }
         if next_status == PromptStatus::Cancelling {
             state.sudo_entry_id = None;
+            state.sudo_process_cutoff = None;
         }
         active.set_status(next_status);
         active.set_durable_delivery_failure_pending(next_status == PromptStatus::Cancelling);
@@ -437,7 +477,10 @@ impl PromptStateOwner {
             .contains_key(&PromptStateKey::new(session.id(), &agent_id));
         let should_start = {
             let state = owner.ensure_agent_state(session, &agent_id);
-            !force_queue && !profile_transition_pending && state.active_prompt.is_none()
+            !force_queue
+                && !profile_transition_pending
+                && state.active_prompt.is_none()
+                && state.sudo_admits(prompt.id())
         };
         if should_start {
             let state = owner.ensure_agent_state(session, &agent_id);
@@ -449,6 +492,7 @@ impl PromptStateOwner {
             );
             prompt.set_status(PromptStatus::Running);
             state.set_active_prompt(Some(prompt.clone()));
+            state.bind_sudo_work();
             Ok(PromptSubmissionOutcome::Started { prompt })
         } else {
             if !allow_queue {
@@ -612,6 +656,9 @@ impl PromptStateOwner {
         {
             return false;
         }
+        if state.sudo_entry_id.as_deref() != Some(entry) {
+            state.sudo_process_cutoff = crate::runtime::kernel_access::process::birth_cutoff().ok();
+        }
         state.sudo_entry_id = Some(entry.into());
         true
     }
@@ -634,55 +681,116 @@ impl PromptStateOwner {
                 .is_some_and(|active| active.id() == prompt)
     }
 
-    pub(crate) fn sudo_turn_live(
+    /// The running prompt bound to a sudo window, as `(entry_id, prompt_id)`.
+    pub(crate) fn sudo_bound_prompt(
         &self,
         session: &RuntimeSession,
         agent: &str,
-        prompt: &str,
-        entry: &str,
-    ) -> bool {
+    ) -> Option<(String, String)> {
         let mut owner = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent);
-        state.sudo_entry_id.as_deref() == Some(entry)
-            && state.active_prompt.as_ref().is_some_and(|active| {
-                active.id() == prompt && active.status() == PromptStatus::Running
-            })
+        let entry = state.sudo_entry_id.clone()?;
+        state
+            .active_prompt
+            .as_ref()
+            .filter(|active| active.status() == PromptStatus::Running)
+            .map(|active| (entry, active.id().to_owned()))
     }
 
-    /// Linearize a sudo decision against yield and interruption. The prompt
-    /// owner cannot replace or cancel this turn until the decision is consumed.
-    pub(crate) fn with_running_prompt<R>(
+    /// Returns the cutoff only for the exact running prompt/window binding.
+    pub(crate) fn sudo_bound_process_cutoff(
         &self,
         session: &RuntimeSession,
-        agent_id: &str,
-        prompt_id: &str,
-        sudo_entry_id: &str,
-        action: impl FnOnce() -> Result<R, DaemonError>,
-    ) -> Result<R, DaemonError> {
+        agent: &str,
+        entry: &str,
+        prompt: &str,
+    ) -> Option<u64> {
         let mut owner = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let state = owner.ensure_agent_state(session, agent_id);
-        if state.sudo_entry_id.as_deref() != Some(sudo_entry_id) {
-            return Err(DaemonError::LocalTransport {
-                operation: "sudo",
-                message: "sudo turn no longer authorized".into(),
-            });
+        let state = owner.ensure_agent_state(session, agent);
+        if state.sudo_entry_id.as_deref() != Some(entry)
+            || !state.active_prompt.as_ref().is_some_and(|active| {
+                active.id() == prompt && active.status() == PromptStatus::Running
+            })
+        {
+            return None;
         }
-        let active = state.active_prompt.as_ref();
-        if active.is_none_or(|prompt| {
-            prompt.id() != prompt_id || prompt.status() != PromptStatus::Running
-        }) {
-            return Err(DaemonError::LocalTransport {
-                operation: "sudo",
-                message: "sudo turn yielded or was interrupted".into(),
-            });
+        state.sudo_process_cutoff
+    }
+
+    /// Hold `agent` for one sudo window's work; `prompt` is its first turn.
+    pub(crate) fn hold_sudo_work(
+        &self,
+        session: &RuntimeSession,
+        agent: &str,
+        entry: &str,
+        prompt: &str,
+    ) {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        owner.ensure_agent_state(session, agent).sudo_work = Some(SudoWorkHold {
+            entry_id: entry.into(),
+            prompts: BTreeSet::from([prompt.to_owned()]),
+        });
+    }
+
+    /// Admit a kernel-correlated continuation of the held work.
+    pub(crate) fn admit_sudo_work_prompt(
+        &self,
+        session: &RuntimeSession,
+        agent: &str,
+        entry: &str,
+        prompt: &str,
+    ) -> bool {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(hold) = owner
+            .ensure_agent_state(session, agent)
+            .sudo_work
+            .as_mut()
+            .filter(|hold| hold.entry_id == entry)
+        else {
+            return false;
+        };
+        hold.prompts.insert(prompt.into());
+        true
+    }
+
+    pub(crate) fn sudo_work_held(&self, session: &RuntimeSession, agent: &str) -> bool {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        owner.ensure_agent_state(session, agent).sudo_work.is_some()
+    }
+
+    /// End the window's hold and any binding; regular work keeps running.
+    pub(crate) fn release_sudo_work(&self, session: &RuntimeSession, agent: &str, entry: &str) {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent);
+        if state
+            .sudo_work
+            .as_ref()
+            .is_some_and(|hold| hold.entry_id == entry)
+        {
+            state.sudo_work = None;
         }
-        action()
+        if state.sudo_entry_id.as_deref() == Some(entry) {
+            state.sudo_entry_id = None;
+            state.sudo_process_cutoff = None;
+        }
     }
 
     pub(crate) fn begin_cancelling_active_prompt(
@@ -709,6 +817,7 @@ impl PromptStateOwner {
             return None;
         }
         state.sudo_entry_id = None;
+        state.sudo_process_cutoff = None;
         active.set_status(PromptStatus::Cancelling);
         Some(active.clone())
     }
@@ -1128,7 +1237,9 @@ impl PromptStateOwner {
         let state = owner.ensure_agent_state(session, agent_id);
         if state.active_prompt.is_some()
             || state.queued_prompts.front().is_none_or(|front| {
-                front.id() != expected_prompt_id || front.remote_steer_reserved()
+                front.id() != expected_prompt_id
+                    || front.remote_steer_reserved()
+                    || !state.sudo_admits(front.id())
             })
         {
             return Ok(None);
@@ -1160,7 +1271,7 @@ impl PromptStateOwner {
         let Some(front) = state.queued_prompts.front() else {
             return Ok(None);
         };
-        if front.remote_steer_reserved() {
+        if front.remote_steer_reserved() || !state.sudo_admits(front.id()) {
             return Ok(None);
         }
         if let Some(expected_prompt_id) = expected_prompt_id {
@@ -1188,6 +1299,7 @@ impl PromptStateOwner {
             .with_id(prompt_id);
         active.set_status(PromptStatus::Dispatching);
         state.set_active_prompt(Some(active.clone()));
+        state.bind_sudo_work();
         Ok(Some(active))
     }
 
@@ -1401,12 +1513,36 @@ impl PromptStateOwner {
             .keys()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
-        owner.states.retain(|key, _| {
-            key.session_id != session.id() || restored_agent_ids.contains(&key.agent_id)
+        owner.states.retain(|key, state| {
+            if key.session_id != session.id() || restored_agent_ids.contains(&key.agent_id) {
+                return true;
+            }
+            // Keep only an idle agent's sudo hold; the mirror has no prompts.
+            state.sudo_entry_id = None;
+            state.sudo_process_cutoff = None;
+            state.active_prompt = None;
+            state.queued_prompts.clear();
+            state.sudo_work.is_some()
         });
         for agent_id in session.prompt_states().keys() {
-            let restored = OwnedAgentPromptState::from_session(session, agent_id);
-            if restored.active_prompt.is_none() && restored.queued_prompts.is_empty() {
+            let mut restored = OwnedAgentPromptState::from_session(session, agent_id);
+            // A live sudo hold is kernel memory, not mirror state: keep the fence.
+            if let Some(previous) = owner
+                .states
+                .get(&PromptStateKey::new(session.id(), agent_id))
+            {
+                restored.sudo_work = previous.sudo_work.clone();
+                if previous.active_prompt.as_ref().map(PromptQueueItem::id)
+                    == restored.active_prompt.as_ref().map(PromptQueueItem::id)
+                {
+                    restored.sudo_entry_id = previous.sudo_entry_id.clone();
+                    restored.sudo_process_cutoff = previous.sudo_process_cutoff;
+                }
+            }
+            if restored.active_prompt.is_none()
+                && restored.queued_prompts.is_empty()
+                && restored.sudo_work.is_none()
+            {
                 owner
                     .states
                     .remove(&PromptStateKey::new(session.id(), agent_id));
@@ -2747,6 +2883,8 @@ mod tests {
                 PromptStateKey::new(session.id(), "agent-1"),
                 OwnedAgentPromptState {
                     sudo_entry_id: None,
+                    sudo_process_cutoff: None,
+                    sudo_work: None,
                     active_prompt: None,
                     queued_prompts: VecDeque::from([queued_prompt]),
                 },

@@ -123,10 +123,30 @@ impl KernelRuntimeOwnedState {
         } else {
             prompt.with_id(self.session_store.reserve_prompt_id())
         };
+        // A04 causal fence: a held agent starts only its sudo work's
+        // kernel-correlated prompts; anything else queues visibly.
+        let sudo_deferred = self
+            .prompt_state_owner
+            .sudo_work_held(&session, &target_agent_id)
+            && !self.admit_sudo_work_prompt(&session, &target_agent_id, prompt.id());
         let _admission = self.begin_managed_activity_admission()?;
         let outcome = self
             .prompt_state_owner
             .submit_prepared_prompt_with_queue_policy(&session, prompt, force_queue, allow_queue)?;
+        if sudo_deferred
+            && matches!(
+                outcome,
+                crate::session::PromptSubmissionOutcome::Queued { .. }
+            )
+        {
+            self.record_notice_for_agent(
+                &session_id,
+                None,
+                Some(&target_agent_id),
+                self.attachment_store.list_session_attachment_ids(&session_id),
+                format!("Deferred prompt for agent {target_agent_id}: it is running sudo-bound work for its owner. The prompt stays queued and runs as a regular turn once that work ends, its window expires or it is revoked."),
+            );
+        }
         self.agent_store
             .clear_local_prompt_error(&target_agent_id)?;
         let outcome_agent_id = match &outcome {

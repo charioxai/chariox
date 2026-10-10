@@ -296,6 +296,7 @@ async fn a02_r3_taskless_rejection_timeout_projects_owner_action() {
             target: None,
             run: None,
             now: crate::session::unix_epoch_ms() - DELIVERY_TIMEOUT_MS,
+            work: None,
         })
         .unwrap();
     store
@@ -3080,6 +3081,7 @@ async fn a02_r4_busy_message_survives_timeout(deferred: bool) {
                 target: Some("old-active-prompt".into()),
                 run: Some(run.id().into()),
                 now,
+                work: None,
             })
             .unwrap();
         store
@@ -3208,6 +3210,7 @@ async fn a02_r6_late_receipt_retracts_delivery_owner_interaction() {
             target: Some("old-turn".into()),
             run: Some("old-run".into()),
             now: crate::session::unix_epoch_ms() - DELIVERY_TIMEOUT_MS,
+            work: None,
         })
         .unwrap();
     runtime.sweep_agent_lifecycle().await.unwrap();

@@ -171,8 +171,8 @@ impl KernelRuntimeState {
             if run.state() != crate::provider::ProviderRunState::Ended)
         {
             specs.push(crate::transport::runtime_tools::RuntimeToolSpec {
-                name: "chariox_kernel_request".into(),
-                description: "Requires a live human-authorized sudo turn; ordinary turns are denied. Act as the host on this kernel during that turn. Submit a LocalDaemonRequest in request. Can answer critical approvals across sessions. Cannot grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at yield or revocation.".into(),
+                name: sudo::SUDO_TOOL.into(),
+                description: "Act as the host on this kernel during your sudo window, for the owner-authorized task only. Submit a LocalDaemonRequest in request. Cannot answer approvals, grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at expiry, task end or revocation; regular work continues.".into(),
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });
         }
@@ -572,7 +572,6 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL
-                    | crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL
             ) {
                 if let Some(result) = self
                     .try_dispatch_remote_meta_runtime_tool_call(

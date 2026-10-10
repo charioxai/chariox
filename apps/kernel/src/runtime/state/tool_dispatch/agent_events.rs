@@ -45,14 +45,17 @@ impl KernelRuntimeState {
             .ok_or_else(|| ledger::error("task unavailable in this room and turn"))?;
         let now = crate::session::unix_epoch_ms();
         let payload = match name {
-            "chariox.events.inbox" => {
-                serde_json::to_value(self.owned.durable_state_store.agent_inbox(
+            "chariox.events.inbox" => serde_json::to_value(
+                self.owned.durable_state_store.agent_work_inbox(
                     run.session_id(),
                     actor,
                     args["after"].as_u64().unwrap_or(0),
-                )?)
-                .map_err(|_| ledger::error("inbox encoding failed"))?
-            }
+                    self.owned
+                        .sudo_work_task(run.session_id(), actor)
+                        .as_deref(),
+                )?,
+            )
+            .map_err(|_| ledger::error("inbox encoding failed"))?,
             "chariox.events.subscriptions" => {
                 serde_json::json!({"task":task,"registrations":self.owned.durable_state_store.agent_registrations(task_id)?})
             }
@@ -120,6 +123,22 @@ impl KernelRuntimeState {
                 let seq = args["sequence"]
                     .as_u64()
                     .ok_or_else(|| ledger::error("sequence required"))?;
+                if let Some(work) = self.owned.sudo_work_task(run.session_id(), actor) {
+                    if !self
+                        .owned
+                        .durable_state_store
+                        .agent_work_inbox(
+                            run.session_id(),
+                            actor,
+                            seq.saturating_sub(1),
+                            Some(&work),
+                        )?
+                        .iter()
+                        .any(|event| event.sequence == seq)
+                    {
+                        return Err(ledger::error("event is deferred outside this sudo work"));
+                    }
+                }
                 self.owned
                     .durable_state_store
                     .agent_lifecycle(Operation::Ack {

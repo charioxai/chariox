@@ -2,6 +2,13 @@
 
 **Status:** Draft, 2026-09-30, revised 2026-10-06. MP-08 / MP-10 / MP-11: owner correction grants the whole local kernel; no access levels or session scope. Owner decisions of 2026-09-30 and 2026-10-01 recorded; no lead proposals remain open. This is an independent milestone, not part of Chariox Apps Phase 2.
 
+MP-08 / MP-10 / MP-11 A04 update (protocol 484): the current sudo contract is
+[`KERNEL_SUDO.md`](KERNEL_SUDO.md). Hour-scale windows bind the owner-authorized
+work and fresh-passkey typed operation scopes; sudo cannot answer approvals.
+The historical D2/D3/D14/D16 one-turn and approval rules below are superseded
+for sudo by that contract. Main's whole-local-kernel external grants and
+structured requester identity remain unchanged.
+
 ## Summary
 
 Today, on a laptop kernel, any process running as the owner's OS user can connect to the local kernel websocket and act as the owner. That includes an agent's own shell tool. Phase 1 of Chariox Apps closes the most dangerous consequence of this: approving a critical action now requires the Chariox passkey at approval time. The passkey is the vault passphrase.
@@ -218,7 +225,7 @@ grant_extend_notice_minutes = 5
 request_timeout_minutes = 10
 ```
 
-The user picks a grant's lifetime in the popup, up to `grant_max_minutes`. Each extension starts a new term under the same limit. A grant also ends when its bound process exits. A sudo turn has no lifetime setting: it lasts exactly one turn (D2). The owner approved these defaults on 2026-10-06; no term may exceed 24 hours.
+The owner set external-agent grants to 8 hours by default and 24 hours at most; out-of-range older configs are clamped at load with a warning. The user picks a grant's lifetime in the popup, up to `grant_max_minutes`. Each extension starts a new term under the same limit. A grant also ends when its bound process exits. A sudo turn has no lifetime setting: it lasts exactly one turn (D2).
 
 ### 5.6 Revocation
 

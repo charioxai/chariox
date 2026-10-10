@@ -52,6 +52,12 @@ impl KernelCommand {
         .then(|| self.caller.caller_id.clone())
     }
 
+    /// A command an elevated provider turn submitted through its sudo grant.
+    pub(crate) fn is_sudo_command(&self) -> bool {
+        self.external_grant_id()
+            .is_some_and(|id| id.starts_with("sudo:") && self.causation_id.as_deref() == Some(&id))
+    }
+
     pub(crate) fn durable_operation_id(&self, suffix: Option<&str>) -> String {
         match suffix {
             Some(suffix) => format!("{}:{suffix}", self.command_id),

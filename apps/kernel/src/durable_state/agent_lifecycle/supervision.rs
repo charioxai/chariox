@@ -119,6 +119,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         Operation::Sweep {
             now,
             busy_recipients,
+            held_work,
         } => {
             let mut changed = vec![];
             for mut t in tasks(tx)? {
@@ -230,6 +231,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     if busy_recipients
                         .iter()
                         .any(|(room, agent)| room == &e.room_id && agent == &e.agent_id)
+                        || held_work.iter().any(|(room, agent, work)| {
+                            room == &e.room_id
+                                && agent == &e.agent_id
+                                && !super::work_correlated(&e, work)
+                        })
                     {
                         tx.execute(
                             "DELETE FROM agent_inbox_refusals WHERE sequence=?1",

@@ -144,7 +144,6 @@ impl KernelRuntimeState {
                 answer.custom_reply.as_deref(),
                 Some(owner),
                 authorization.verified,
-                None,
                 Some(terminal),
                 false,
             )

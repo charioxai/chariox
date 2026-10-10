@@ -607,8 +607,13 @@ pub(super) async fn run_relay_subscription_loop(
                             return;
                         }
                     }
+                    let skip_snapshot = can_skip_session_snapshot(
+                        &snapshot,
+                        previous_snapshot_ref,
+                        emitted_projection_delta || workflow_run_only,
+                    );
                     previous_snapshot = Some(snapshot.clone());
-                    if emitted_projection_delta || workflow_run_only {
+                    if skip_snapshot {
                         continue;
                     }
                     if emit_relay_event(

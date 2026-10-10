@@ -4,7 +4,7 @@ use super::*;
 #[test]
 fn mp08_mp10_mp11_browser_artifact_protocol_437_snapshot_and_hash() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 484);
     let wire = serde_json::json!({"RoomBrowserArtifact": {
         "session_id":"room-a", "attachment_id":"client-a", "tab_id":"tab-a",
         "operation":{"action":"capture","kind":"image","browser_generation":1,"guid":null,"return_image_base64":true}
@@ -31,7 +31,7 @@ fn mp08_mp10_mp11_browser_artifact_peer_82_shape_hashes() {
         RoomBrowserControllerCommand, RoomBrowserControllerResult,
     };
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 484);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         82
@@ -85,9 +85,9 @@ fn mp08_mp10_mp11_browser_artifact_peer_82_shape_hashes() {
 // MP-08/MP-10/MP-11: the integration contract contains Apps access, Browser
 // artifact, Computer hold and public provider-run shapes together; unreleased per-lane numbers fold.
 #[test]
-fn mp08_mp10_mp11_apps_browser_computer_union_472_82_is_hashed() {
+fn mp08_mp10_mp11_apps_browser_computer_union_484_82_is_hashed() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 484);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         82
@@ -106,6 +106,6 @@ fn mp08_mp10_mp11_apps_browser_computer_union_472_82_is_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "34c0841042d1b6c560d750c8a01708bafcbd5d61f616ad89d4f9cf14e8e4ea62"
+        "e2ecaccf5611b49605d8a4290a55c1a779b4c6fcaff7f077c9e348c8e615edfe"
     );
 }

@@ -779,19 +779,5 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "additionalProperties": false
             }),
         },
-        RuntimeToolSpec {
-            name: META_RESOLVE_RUNTIME_INTERACTION_TOOL.to_string(),
-            description: "Resolve a kernel-owned runtime interaction for one of this user's regular agents. An agent in Meta mode can never resolve its own interactions.".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "required": ["interaction_id"],
-                "properties": {
-                    "interaction_id": {"type": "string"},
-                    "choice_id": {"type": "string"},
-                    "input": {"type": "string"}
-                },
-                "additionalProperties": false
-            }),
-        },
     ]
 }
