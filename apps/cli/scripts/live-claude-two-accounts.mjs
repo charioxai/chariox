@@ -61,7 +61,7 @@ const cells = []
 const result = { items: ["MP-08", "MP-10", "MP-11"], source, model, dpr, mode: execute ? "real-tui" : "read-only-preflight", started: new Date().toISOString(), profiles, checks: [] }
 let browser, frontend, scratch
 const payload = (response, key) => { assert(response?.[key], `expected ${key}; received ${Object.keys(response ?? {}).join(",")}`); return response[key] }
-const request = async (key, body = {}) => payload(await client.send({ [key]: body }), ({ ListSessions: "SessionsListed", GetSessionState: "SessionState", ListProviderAccountProfiles: "ProviderAccountProfilesListed", GetProviderAuthStatus: "ProviderAuthStatus", GetSessionHistoryOutline: "SessionHistoryOutline", GetSessionHistoryBlobContent: "SessionHistoryBlobContent", GetProviderRun: "ProviderRun", DeleteSession: "SessionDeleted" })[key])
+const request = async (key, body = null) => payload(await client.send({ [key]: body }), ({ ListSessions: "SessionsListed", GetSessionState: "SessionState", ListProviderAccountProfiles: "ProviderAccountProfilesListed", GetProviderAuthStatus: "ProviderAuthStatus", GetSessionHistoryOutline: "SessionHistoryOutline", GetSessionHistoryBlobContent: "SessionHistoryBlobContent", GetProviderRun: "ProviderRun", DeleteSession: "SessionDeleted" })[key])
 const hash = value => createHash("sha256").update(value).digest("hex")
 
 async function scopedAccounts(stage) {
