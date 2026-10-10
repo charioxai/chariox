@@ -174,11 +174,11 @@ mod tests {
     #[test]
     fn mp08_display_credits_and_unidentified_requests_do_not_take_input_turns() {
         use crate::local::KernelBrowserCommand as C;
-        assert!(prepared(C::DisplayAck {
+        // MP-08/MP-10/MP-11: this Linux branch credits through DisplayNext.
+        assert!(prepared(C::DisplayNext {
             subscription_id: "s".into(),
             generation: 1,
-            sequence: 0,
-            lost: false
+            after_sequence: 0,
         })
         .browser_input_key()
         .is_none());
