@@ -77,13 +77,20 @@ pub(crate) fn isolate_environment_test() -> bool {
     let mut child = command
         .spawn()
         .expect("isolated environment test should start");
+    // MP-08 / MP-10 / MP-11: retain birth/ancestry witnesses before any timeout signal.
+    let mut owned_signals =
+        crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&child).ok();
     let status = child.wait_timeout(Duration::from_secs(180)).unwrap();
     if status.is_none() {
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        if let Some(guard) = owned_signals.as_mut() {
+            // Complete group membership is verified; ambiguous members are never signalled.
+            let _ = guard.kill_group();
+            let _ = guard.kill_owned_processes();
         }
-        let _ = child.kill();
+        // The unreaped std Child remains ours; never cast it to an unchecked group id.
+        if child.id() > 1 && child.id() <= i32::MAX as u32 {
+            let _ = child.kill();
+        }
         let _ = child.wait();
     }
     let stdout = std::fs::read_to_string(stdout).unwrap();
