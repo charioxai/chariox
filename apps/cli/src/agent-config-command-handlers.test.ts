@@ -165,6 +165,34 @@ test("agent account command loads its scoped catalog and applies a compatible pr
   assert.equal(flashedMessage, "agent-1 account: Validation")
 })
 
+test("MP-08 MP-10 MP-11 reselecting the same account preserves its explicit native model", async () => {
+  const current = agent({ provider: "claude", model: "claude-haiku-4-5-20251001", account_profile: "work" })
+  let catalogCalls = 0
+  let updates = 0
+  await handleAgentProfileCommand({
+    ...deps(current),
+    resolveSessionAgent: () => ({ agent: current, error: null }),
+    listProviderAccountProfiles: async () => [{
+      provider: "claude", profile_id: "work", label: "Work", is_default: true,
+    } as ProviderAccountProfile],
+    getProviderCatalogForAgent: async () => {
+      catalogCalls++
+      return {
+        all: [{ id: "claude-p", name: "Claude", models: {
+          sonnet: { id: "sonnet", name: "Sonnet", status: "active", variants: {} },
+          haiku: { id: "haiku", name: "Haiku", status: "active", variants: {} },
+        } }], default: { "claude-p": "sonnet" }, connected: ["claude-p"],
+      }
+    },
+    updateAgentProfile: async () => {
+      updates++
+      return { agent: current, session: session({ agents: [current] }) }
+    },
+  }, ["account", "agent-1", "Work"], "account")
+  assert.equal(updates, 0, "same-account selection must not replace a valid native model with the catalog default")
+  assert.equal(catalogCalls, 0, "same-account selection does not need model rediscovery")
+})
+
 test("a delayed account catalog preserves a later model outside its snapshot", async () => {
   let current = agent({ provider: "codex", model: "codex/old", account_profile: "first" })
   let release!: () => void
