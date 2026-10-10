@@ -255,23 +255,6 @@ pub async fn wait_for_error_code(
     .expect("timed out waiting for kernel websocket error code")
 }
 
-pub async fn wait_for_request_completion(
-    socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
-    request_id: &str,
-) -> Value {
-    let deadline = Duration::from_secs(5);
-    timeout(deadline, async {
-        loop {
-            let frame = next_json_frame(socket).await;
-            if frame["type"] == "response" && frame["request_id"] == request_id {
-                return frame;
-            }
-        }
-    })
-    .await
-    .expect("timed out waiting for kernel websocket request completion")
-}
-
 pub fn provider_run_id_from_launch_response(frame: &Value) -> String {
     let response = &frame["response"];
     let provider_run = response

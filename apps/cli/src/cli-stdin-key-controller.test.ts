@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { createProjectEnvironmentReadController } from "./project-environment-read-controller.js"
 
 import {
   createCliStdinKeyController,
@@ -247,6 +248,7 @@ test("cli stdin key controller falls through to prompt-turn and waiting-room han
 
 function createHarness(options: {
   parsedEvent?: CliStdinKeyEvent | null
+  handleProjectEnvironmentKey?: (event: CliStdinKeyEvent) => boolean
   dialogOpen?: boolean
   sessionBrowserHandled?: boolean
   focusedInteractionActive?: boolean
@@ -276,6 +278,7 @@ function createHarness(options: {
       calls.push(`parse:${String(chunk)}:${parseOptions.useKittyKeyboard}`)
       return parsedEvent
     },
+    ...(options.handleProjectEnvironmentKey ? { handleProjectEnvironmentKey: options.handleProjectEnvironmentKey } : {}),
     dialogOverlayOpen: () => options.dialogOpen ?? false,
     closeActiveDialogOverlay: () => {
       calls.push("close-dialog")
@@ -377,3 +380,14 @@ function keyEvent(name: string, options: {
   }
   return event
 }
+
+// MP-08/MP-10: exercise the real stdin ordering with the mounted read controller.
+test("Environment panel preserves Ctrl+E and Ctrl+C exit/stop through stdin", async () => {
+  for (const name of ["e", "c"]) for (const activeTurnWork of [false, true]) {
+    const panel = createProjectEnvironmentReadController({ send: async () => { throw new Error("read only") }, render() {}, pageSize: () => 10 })
+    await panel.open("project")
+    const harness = createHarness({ parsedEvent: keyEvent(name, { ctrl: true }), activeTurnWork, handleProjectEnvironmentKey: panel.handleKey })
+    assert.equal(harness.controller.handleData("x"), true)
+    assert(harness.calls().includes(name === "c" && activeTurnWork ? "stop" : "exit"))
+  }
+})

@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::io::{Read, Write};
 use std::net::TcpListener as StdTcpListener;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -72,10 +72,16 @@ pub const KERNEL_RUNTIME_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
 pub(crate) const RECENT_EVENT_LIMIT: usize = 256;
 const BACKPRESSURE_CLOSE_REASON: &str = "kernel transport overloaded; reconnecting";
 pub const CONNECTION_INBOUND_REQUEST_LIMIT: usize = 32;
-const MIN_PROCESS_INBOUND_REQUEST_LIMIT: usize = 32;
+// Even the smallest process pool must outlast one saturated connection, so a
+// stuck client cannot refuse other clients' health and control requests.
+const MIN_PROCESS_INBOUND_REQUEST_LIMIT: usize = 2 * CONNECTION_INBOUND_REQUEST_LIMIT;
 const MAX_PROCESS_INBOUND_REQUEST_LIMIT: usize = 256;
 const PROCESS_INBOUND_REQUESTS_PER_CPU: usize = 8;
 const RESERVED_INTERACTIVE_REQUESTS: usize = 8;
+const _: () = assert!(
+    MIN_PROCESS_INBOUND_REQUEST_LIMIT - RESERVED_INTERACTIVE_REQUESTS
+        > CONNECTION_INBOUND_REQUEST_LIMIT
+);
 static KERNEL_LOCAL_AUTH_TOKEN: OnceLock<Option<Arc<str>>> = OnceLock::new();
 
 pub fn initialize_kernel_local_auth_from_env() -> Result<(), DaemonError> {
@@ -1236,6 +1242,12 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
         peer,
         ..
     } = connection;
+
+    // A connection closing for backpressure can no longer receive responses;
+    // its pipelined frames would only hold shared admission capacity.
+    if close_requested.load(Ordering::SeqCst) {
+        return;
+    }
 
     let frame = match serde_json::from_slice::<KernelIncomingFrame>(payload) {
         Ok(frame) => frame,

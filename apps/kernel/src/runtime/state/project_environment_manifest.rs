@@ -2,6 +2,26 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) fn get_project_environment(
+        &self,
+        request: crate::local::GetProjectEnvironmentRequest,
+        caller_user_id: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let project = self.owned.session_store.get_project(&request.project_id)?;
+        if project.owner_user_id() != caller_user_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "get Project environment",
+                message: "caller does not own the selected Project".into(),
+            });
+        }
+        let config = self.owned.config_projection.snapshot();
+        let environment = crate::project_environment::ProjectEnvironmentStore::new(
+            &config.private_runtime_state_root(),
+        )
+        .snapshot(&project)?;
+        Ok(LocalDaemonResponse::ProjectEnvironment { environment })
+    }
+
     // MP-08 / MP-10 / MP-11: Idle prompt admission refreshes through normal activation.
     pub(super) async fn refresh_project_prompt_provider(
         &self,

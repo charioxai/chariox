@@ -90,7 +90,8 @@
     "./workspace-live-sync-mode": "./dist/workspace-live-sync-mode.js",
     "./project-environment-panel": "./dist/project-environment-panel.js",
     "./kernel-unix-socket-path": "./dist/kernel-unix-socket-path.js",
-    "./hidden-input": "./dist/hidden-input.js"
+    "./hidden-input": "./dist/hidden-input.js",
+    "./project-environment-aggregate": "./dist/project-environment-aggregate.js"
   },
   "types": "./dist/index.d.ts",
   "scripts": {

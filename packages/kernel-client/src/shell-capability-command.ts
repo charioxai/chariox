@@ -297,14 +297,14 @@ export async function executeEnvironmentCommand(
       }
       const response = await deps.client.send(registerEnvironmentRequest(context.workspace, config as unknown as Record<string, unknown>))
       const environment = expectVariant<{ environment: CharioxEnvironmentConfig }>(response, "EnvironmentRegistered").environment
-      return { ok: true, message: `registered environment ${environment.name}`, data: { environment } }
+      return { ok: true, message: `registered Script runtime ${environment.name}`, data: { environment } }
     }
     case "remove":
     case "unregister": {
       if (!name) return { ok: false, message: `usage: env ${action} <name>` }
       const response = await deps.client.send(removeEnvironmentRequest(context.workspace, name))
       const environment = expectVariant<{ environment: CharioxEnvironmentConfig }>(response, "EnvironmentRemoved").environment
-      return { ok: true, message: `removed environment ${environment.name}`, data: { environment } }
+      return { ok: true, message: `removed Script runtime ${environment.name}`, data: { environment } }
     }
     default:
       return { ok: false, message: "usage: env list|show|register|remove" }

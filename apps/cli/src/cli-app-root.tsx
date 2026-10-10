@@ -528,6 +528,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     assignDialogOverlayBox, closeActiveDialogOverlay, closeHotkeys, closeSessionBrowserDialog,
     closeTerminalPairingDialog, copyPromptSelection, dialogOverlayOpen, handleHotkeysToggleShortcut,
     handleManagedMachineDialogKey, handlePromptSelectionSurfaceMouseUp, handleSessionBrowserKey,
+    openProjectEnvironment, handleProjectEnvironmentKey,
     openHotkeys, openManagedMachineDialog, openSessionBrowserDialog,
     openTerminalPairingDialog, renderHotkeysOverlay,
   } = createCliOverlayInteractionComposition({
@@ -930,6 +931,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     themeRegistryState, reconcileWaitingRoom, setWaitingRoomState, applyWaitingRoomSessionLifecycleAction,
     restoreWaitingRoomProject, renameWaitingRoomProject,
     activateWaitingRoom, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults, handleSessionBrowserKey,
+    openProjectEnvironment, handleProjectEnvironmentKey,
     handleManagedMachineDialogKey, openManagedMachineDialog,
     toggleWorkspaceScreen: workflowActions.toggleWorkspaceScreen,
     cycleWorkflowCanvasNode: workflowActions.cycleWorkflowCanvasNode,
