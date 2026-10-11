@@ -936,3 +936,16 @@ test("MP-10: review #941@36a395b05-5 a screenshot-crop region under a size-prese
       assert.equal(back.fallback, undefined, `MP-10: the mirror returns after ${style}`);
     }
   }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="60" height="60" fill="rgb(255,0,0)"/><rect x="60" width="60" height="60" fill="rgb(0,0,255)"/></svg>' } }));
+
+// Review #941 @36a395b05 finding 2: a same-origin child document is observed by its parent's world, but CSS events
+// name the child's frame id: they must reach the world that mirrors that document (style and adopted sheets).
+test("MP-10: review #941@36a395b05-2 same-count CSSOM edits in a same-origin child document reach the viewer (style sheet, adopted sheet)", () => mirrored(
+  '<iframe id="f" src="/child" width="300" height="120"></iframe>', async ({ next, evaluate }) => {
+    for (let i = 0; i < 100 && await evaluate("f.contentWindow?.sheet !== undefined && f.contentDocument.readyState === 'complete'") !== true; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal((await next()).reset, true);
+    const sheets = async needle => { for (let i = 0; i < 5; i++) for (const op of (await next(1000)).ops) if (op.op === "css" && op.css.includes(needle) || op.op === "adopted" && op.sheets.some(text => text.includes(needle))) return true; return false; };
+    await evaluate("f.contentDocument.styleSheets[0].cssRules[0].style.color='rgb(1, 2, 3)';true");
+    assert(await sheets("rgb(1, 2, 3)"), "MP-10: the child's style sheet edit reaches the viewer");
+    await evaluate("f.contentWindow.sheet.cssRules[0].style.color='rgb(4, 5, 6)';true");
+    assert(await sheets("rgb(4, 5, 6)"), "MP-10: the child's adopted sheet edit reaches the viewer");
+  }, { "/child": { type: "text/html", body: '<!doctype html><style>#c{color:rgb(9, 9, 9)}</style><p id="c">c</p><p id="d">d</p><script>const s=new CSSStyleSheet();s.replaceSync("#d{color:rgb(7, 7, 7)}");document.adoptedStyleSheets=[s];window.sheet=s</script>' } }));

@@ -43,14 +43,18 @@ export class MirrorCssEvents {
       entry.timer ??= setTimeout(() => { entry.timer = null; void this.flush(entry); }, 0);
     }
   }
-  // Coalesced per task: each changed owner is marked once per world.
+  // Coalesced per task: each changed owner is marked once per world. A frame without its own world (a
+  // same-origin child document, observed by an ancestor's world) is marked in every world of the session:
+  // only the world mirroring that document knows the owner.
   async flush(entry) {
     const marks = new Map();
     for (const id of entry.changed) {
-      const header = entry.headers.get(id), contextId = header && entry.worlds.get(header.frameId);
-      if (!contextId) continue;
-      if (!marks.has(contextId)) marks.set(contextId, new Set());
-      marks.get(contextId).add(header.constructed ? 'adopted' : Number.isSafeInteger(header.owner) ? header.owner : 'imports');
+      const header = entry.headers.get(id); if (!header) continue;
+      const contexts = entry.worlds.has(header.frameId) ? [entry.worlds.get(header.frameId)] : new Set(entry.worlds.values());
+      for (const contextId of contexts) {
+        if (!marks.has(contextId)) marks.set(contextId, new Set());
+        marks.get(contextId).add(header.constructed ? 'adopted' : Number.isSafeInteger(header.owner) ? header.owner : 'imports');
+      }
     }
     entry.changed.clear();
     const send = (method, params) => entry.connection.send(method, params, entry.sessionId);
