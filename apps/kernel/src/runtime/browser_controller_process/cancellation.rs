@@ -47,6 +47,17 @@ impl CancellationSignal {
                 .as_ref()
                 .is_some_and(|authority| !authority())
     }
+    // Action cancellation can be a safe local pause. Authority retirement
+    // must still tear down transport even when a helper confirms release.
+    pub(crate) fn authority_revoked(&self) -> bool {
+        self.authority
+            .as_ref()
+            .is_some_and(|authority| !authority())
+            || self
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.authority_revoked())
+    }
     pub(super) fn confirm_stop(&self) {
         self.accepted.store(true, Ordering::Release);
         self.stopped.store(true, Ordering::Release);

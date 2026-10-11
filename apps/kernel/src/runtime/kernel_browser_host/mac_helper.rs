@@ -58,6 +58,7 @@ struct Link {
     unresolved_input: AtomicBool,
     physical_input: bool,
     physical_human: AtomicBool,
+    released_physical_pause: AtomicBool,
     on_physical_human: HumanCallback,
     control: UnixStream,
     channel: Mutex<(BufReader<UnixStream>, u64)>,
@@ -241,6 +242,7 @@ fn admit(
         unresolved_input: AtomicBool::new(false),
         physical_input,
         physical_human: AtomicBool::new(false),
+        released_physical_pause: AtomicBool::new(false),
         on_physical_human,
         control: stream.try_clone().map_err(|_| REFUSED)?,
         channel: Mutex::new((reader, 1)),
@@ -313,7 +315,21 @@ impl Link {
         let human = response["physical_human"]
             .as_bool()
             .or_else(|| response["result"]["physical_human"].as_bool());
+        if response["input_released"] == true {
+            self.unresolved_input.store(false, Ordering::Release);
+        }
         if self.physical_input {
+            if method == "host.computer"
+                && request["params"]["op"] == "input"
+                && human == Some(true)
+                && response["input_released"] == true
+                && response["ok"] == false
+                && response["error"]["code"] != "owner_reset_required"
+            {
+                // Publish before the callback cancels the Action. The watcher
+                // must not race a confirmed safe pause into socket shutdown.
+                self.released_physical_pause.store(true, Ordering::Release);
+            }
             if let Some(human) = human {
                 let previous = self.physical_human.swap(human, Ordering::AcqRel);
                 if human && !previous {
@@ -323,9 +339,6 @@ impl Link {
                     }
                 }
             }
-        }
-        if response["input_released"] == true {
-            self.unresolved_input.store(false, Ordering::Release);
         }
         if response["ok"] == true {
             if method == "host.computer.reset"
@@ -508,9 +521,17 @@ impl ComputerBackend for MacComputerHelper {
         let link = self.link.as_ref().unwrap();
         // Revoke sets authority before waiting for the seat lock. Interrupt the
         // socket independently of its channel lock, including during native I/O.
+        link.released_physical_pause.store(false, Ordering::Release);
         let _fence = cancellation.as_ref().map(|cancel| {
-            let (cancel, link) = (cancel.clone(), link.clone());
-            RequestFence::watch(move || cancel.requested(), move || link.fence())
+            let (cancel, watched, link) = (cancel.clone(), link.clone(), link.clone());
+            RequestFence::watch(
+                move || {
+                    cancel.requested()
+                        && (!watched.released_physical_pause.load(Ordering::Acquire)
+                            || cancel.authority_revoked())
+                },
+                move || link.fence(),
+            )
         });
         // AX-only clicks do not own a press. Experimental physical clicks do.
         // Native input retains uncertainty until an authenticated
@@ -533,8 +554,10 @@ impl ComputerBackend for MacComputerHelper {
         if self.unresolved_input {
             return Err(HostFailure::Other(OWNER_RESET.into()));
         }
-        if cancellation.as_ref().is_some_and(|c| c.requested()) {
-            link.fence();
+        if let Some(cancel) = cancellation.as_ref().filter(|c| c.requested()) {
+            if !link.released_physical_pause.load(Ordering::Acquire) || cancel.authority_revoked() {
+                link.fence();
+            }
             return Err(HostFailure::Cancelled);
         }
         let result = result?;

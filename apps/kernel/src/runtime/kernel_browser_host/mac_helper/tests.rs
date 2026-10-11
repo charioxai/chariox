@@ -628,3 +628,84 @@ fn m1_authenticated_no_press_refusal_leaves_the_seat_usable() {
     seat.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn m3_released_physical_pause_preserves_pairing_with_real_actor_cancellation() {
+    use crate::runtime::kernel_browser_actors::KernelBrowserActors;
+    use crate::session::{EnvironmentActionTerminal, EnvironmentActor, EnvironmentActorKind};
+    for kind in ["move", "click"] {
+        for revoke_authority in [false, true] {
+            let (mut seat, root, _) = seat("always", Fake::PhysicalHuman);
+            seat.physical_input = true;
+            let model = Arc::new(Mutex::new(KernelBrowserActors::default()));
+            let authority = Arc::new(AtomicBool::new(true));
+            let (actors, admitted) = (model.clone(), authority.clone());
+            seat.on_physical_human = Arc::new(move |epoch| {
+                actors.lock().unwrap().takeover_desktop(
+                    EnvironmentActor::new(
+                        "human:physical-owner",
+                        EnvironmentActorKind::Human,
+                        "Physical",
+                    ),
+                    "macos-seat",
+                    epoch,
+                )?;
+                if revoke_authority {
+                    admitted.store(false, Ordering::Release);
+                }
+                // Give the real RequestFence watcher time to observe cancellation.
+                std::thread::sleep(Duration::from_millis(20));
+                Ok(())
+            });
+            seat.start().unwrap();
+            let epoch = seat.link.as_ref().unwrap().epoch.clone();
+            model
+                .lock()
+                .unwrap()
+                .reconcile_desktop(&json!({"surface_id":"macos-seat","generation":epoch}))
+                .unwrap();
+            let (id, action) = model
+                .lock()
+                .unwrap()
+                .begin(
+                    EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "A"),
+                    &json!({"op":"input","_native":true}),
+                )
+                .unwrap();
+            let cancel = Arc::new(BrowserCancellation::for_authority(
+                action.clone(),
+                move || authority.load(Ordering::Acquire),
+            ));
+            let result = seat.request(
+                "host.computer",
+                json!({"op":"input","input":{"kind":kind}}),
+                Some(cancel),
+            );
+            assert!(
+                matches!(result, Err(HostFailure::Cancelled)),
+                "{kind}: {result:?}"
+            );
+            assert!(action.requested());
+            model
+                .lock()
+                .unwrap()
+                .finish(&id, EnvironmentActionTerminal::Cancelled);
+            if revoke_authority {
+                assert!(!seat.ready(), "authority revocation retained pairing");
+            } else {
+                assert!(seat.ready(), "released local pause destroyed pairing");
+                seat.request("host.computer.reset", json!({}), None)
+                    .unwrap();
+                seat.request(
+                    "host.computer.reset",
+                    json!({"physical_human_release":true}),
+                    None,
+                )
+                .unwrap();
+                assert_eq!(state(&mut seat).unwrap()["generation"], epoch);
+            }
+            seat.shutdown().unwrap();
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+}
