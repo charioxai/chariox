@@ -637,8 +637,12 @@ shared task ledger. No separate goal scheduler or relay/Cloud authority exists.
 
 Each work-turn end admits one same-provider `completion_check` turn, bounded
 by 60 seconds and an 8 KiB public assessment. Its bounded public context carries
-obligation and registration coverage. It cannot use runtime tools or sudo,
-recursively evaluate or count its assessment as progress. The home kernel
+obligation and registration coverage. It runs through the same provider actor
+using a fresh tool-free official-provider conversation in a neutral directory;
+ordinary conversation/resume state and permissions remain available for later
+work. Native shell, file, network, configured MCP and runtime tools are disabled
+before dispatch. Unsupported unstructured assessment paths block explicitly.
+It cannot use sudo, recursively evaluate or count its assessment as progress. The home kernel
 validates achieved/continue/waiting/blocked against current objective and ledger
 bindings. Achieved requires no open, settling or failed obligations. Valid
 continue retains sources and admits one durable continuation; valid waiting

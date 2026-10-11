@@ -29,6 +29,10 @@ pub(super) fn execute_submit_command(
     prompt_id: &str,
 ) -> Result<ProviderPromptSubmitAcknowledgement, DaemonError> {
     let run_id = run.id().to_string();
+    runtime_registry.take_assessment_output(&run_id);
+    if envelope.assessment_only {
+        return super::assessment::execute_assessment(runtime_registry, &run, envelope, prompt_id);
+    }
     if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
         thread::sleep(Duration::from_millis(750));
         return Ok(ProviderPromptSubmitAcknowledgement {
@@ -94,6 +98,7 @@ pub(super) fn execute_abort_command(
     run: RuntimeProviderRun,
 ) -> Result<(), DaemonError> {
     let run_id = run.id().to_string();
+    runtime_registry.take_assessment_output(&run_id);
     if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
         thread::sleep(Duration::from_millis(750));
         return Ok(());
@@ -275,6 +280,9 @@ pub(super) fn execute_output_poll_command(
     output_poll_delay: Duration,
 ) -> Result<Option<ProviderPromptSignalBatch>, DaemonError> {
     let run_id = run.id();
+    if let Some(output) = runtime_registry.take_assessment_output(run_id) {
+        return Ok(Some(output));
+    }
     if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
         thread::sleep(Duration::from_millis(750));
         return Ok(None);

@@ -7,6 +7,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc as tokio_mpsc, Notify, Semaphore};
 
 mod command_enqueue;
+pub(in crate::provider) mod assessment;
 mod command_execution;
 mod finished_jobs;
 mod in_flight;

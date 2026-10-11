@@ -293,7 +293,7 @@ impl KernelRuntimeOwnedState {
                     &prompt_with_handoff,
                     &hidden_system_context,
                     started_next.attachments(),
-                    mode,
+                    mode.with_prompt_origin(started_next.prompt_origin()),
                     false,
                 )?;
                 self.note_prompt_started(provider_run_id);
