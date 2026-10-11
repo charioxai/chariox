@@ -128,6 +128,7 @@ pub(crate) struct ActiveTurnState {
     pub(crate) phase: ActiveTurnPhase,
     pub(crate) settlement_requested: bool,
     pub(crate) interruption_requested_at_ms: Option<u64>,
+    pub(crate) native_prompt_hook_request_id: Option<String>,
     // A durable completion failed after authoritative completion was accepted.
     // Unlike assistant-message completion, this allows retry without another
     // provider end event. It belongs to this exact prompt and provider run.
@@ -156,6 +157,7 @@ impl ActiveTurnState {
             phase: ActiveTurnPhase::Accepted,
             settlement_requested: false,
             interruption_requested_at_ms: None,
+            native_prompt_hook_request_id: None,
             completion_retry_observed_at_ms: None,
             completion_retry_attempt: 0,
         }
@@ -249,6 +251,24 @@ impl ActiveTurnStore {
             }
             turn.settlement_requested = true;
             record_active_turn_event(turn, "active_turn_mark_settling", true);
+        }
+    }
+
+    pub(crate) fn bind_native_prompt_hook_request(
+        &self,
+        provider_run_id: &str,
+        prompt_id: &str,
+        request_id: &str,
+    ) {
+        if let Some(turn) = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(provider_run_id)
+        {
+            if turn.prompt_id == prompt_id {
+                turn.native_prompt_hook_request_id = Some(request_id.to_string());
+            }
         }
     }
 
@@ -418,6 +438,9 @@ fn merge_active_turn_start(
         if incoming.external_observed_id.is_none() {
             incoming.external_observed_id = existing.external_observed_id.clone();
         }
+        incoming.native_prompt_hook_request_id = incoming
+            .native_prompt_hook_request_id
+            .or_else(|| existing.native_prompt_hook_request_id.clone());
         incoming.settlement_requested |= existing.settlement_requested;
         incoming.interruption_requested_at_ms = incoming
             .interruption_requested_at_ms

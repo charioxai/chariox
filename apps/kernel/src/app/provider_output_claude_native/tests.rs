@@ -3110,12 +3110,18 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
 // MP-08 / MP-10 / MP-11: native interruption is a prompt-bound receipt.
 #[test]
 fn native_claude_cancel_settles_only_from_a_fresh_exact_run_interruption() {
-    for (cancelling, fresh, current_run, matching_prompt) in [
-        (true, true, true, true),
-        (false, true, true, true),
-        (true, false, true, true),
-        (true, true, false, true),
-        (true, true, true, false),
+    for (hook_receipt, matching_request, cancelling, fresh, current_run, matching_prompt) in [
+        (false, true, true, true, true, true),
+        (false, true, false, true, true, true),
+        (false, true, true, false, true, true),
+        (false, true, true, true, false, true),
+        (false, true, true, true, true, false),
+        (true, true, true, true, true, true),
+        (true, false, true, true, true, true),
+        (true, true, false, true, true, true),
+        (true, true, true, false, true, true),
+        (true, true, true, true, false, true),
+        (true, true, true, true, true, false),
     ] {
         let worktree = crate::test_support::TestWorktree::new("claude-native-cancel-receipt");
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
@@ -3189,6 +3195,22 @@ fn native_claude_cancel_settles_only_from_a_fresh_exact_run_interruption() {
             other => panic!("{other:?}"),
         };
         write_claude_native_marker(&context_file, &format!("native:{}", prompt.id()));
+        if hook_receipt {
+            write_claude_native_marker(&context_file, &format!("injected:{}", prompt.id()));
+            fs::write(
+                &events_file,
+                serde_json::json!({
+                    "hook_event_name": "UserPromptSubmit", "prompt": prompt.prompt(),
+                    "hook_context_request_id": "current-submit-hook"
+                })
+                .to_string()
+                    + "\n",
+            )
+            .unwrap();
+            ProviderOutputClaudeNativeBridge::new(&mut app)
+                .process(session.id(), run.id(), &run, None)
+                .unwrap();
+        }
         if cancelling {
             app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
                 .unwrap();
@@ -3209,6 +3231,14 @@ fn native_claude_cancel_settles_only_from_a_fresh_exact_run_interruption() {
             .to_rfc3339();
         fs::write(&transcript_file, serde_json::json!({ "type": "user", "uuid": "interrupted", "timestamp": timestamp, "message": { "role": "user", "content": [{"type": "text", "text": "[Request interrupted by user]"}] } }).to_string()+"\n").unwrap();
         fs::write(&events_file, serde_json::json!({"hook_event_name": "SessionStart", "transcript_path": transcript_file.display().to_string()}).to_string()+"\n").unwrap();
+        if hook_receipt {
+            fs::write(&transcript_file, "").unwrap();
+            fs::write(&events_file, serde_json::json!({
+                "hook_event_name": "UserPromptSubmitInterrupted", "at": timestamp,
+                "hook_context_request_id": if matching_request { "current-submit-hook" } else { "stale-submit-hook" },
+                "signal": "SIGTERM"
+            }).to_string()+"\n").unwrap();
+        }
         if !current_run {
             let mut successor = RuntimeProviderRun::new(
                 "successor-run",
@@ -3240,8 +3270,8 @@ fn native_claude_cancel_settles_only_from_a_fresh_exact_run_interruption() {
         fs::remove_dir_all(root).unwrap();
         assert_eq!(
             active.is_none(),
-            cancelling && fresh && current_run && matching_prompt,
-            "cancelling={cancelling}, fresh={fresh}, current_run={current_run}, matching_prompt={matching_prompt}"
+            cancelling && fresh && current_run && matching_prompt && matching_request,
+            "hook={hook_receipt}, matching_request={matching_request}, cancelling={cancelling}, fresh={fresh}, current_run={current_run}, matching_prompt={matching_prompt}"
         );
     }
 }

@@ -43,3 +43,59 @@ pub(super) fn mark_native_interruption_for_cancellation(
     );
     Ok(())
 }
+
+pub(super) fn bind_prompt_hook_request(
+    app: &DaemonApp,
+    provider_run_id: &str,
+    prompt_id: &str,
+    event: &serde_json::Value,
+) {
+    if let Some(request_id) = event
+        .get("hook_context_request_id")
+        .and_then(serde_json::Value::as_str)
+    {
+        app.active_turns
+            .bind_native_prompt_hook_request(provider_run_id, prompt_id, request_id);
+    }
+}
+
+pub(super) fn observe_prompt_hook_interruption(
+    app: &mut DaemonApp,
+    session_id: &str,
+    provider_run_id: &str,
+    context_file: &str,
+    event: &serde_json::Value,
+) -> Result<(), DaemonError> {
+    if !matches!(
+        event.get("signal").and_then(serde_json::Value::as_str),
+        Some("SIGINT" | "SIGTERM")
+    ) || !app
+        .providers
+        .get_run(provider_run_id)
+        .is_ok_and(|run| !run.client_interface().is_chariox())
+    {
+        return Ok(());
+    }
+    let Some(request_id) = event
+        .get("hook_context_request_id")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Ok(());
+    };
+    if !app
+        .active_turns
+        .get(provider_run_id)
+        .is_some_and(|turn| turn.native_prompt_hook_request_id.as_deref() == Some(request_id))
+    {
+        return Ok(());
+    }
+    let Some(at) = event
+        .get("at")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+        .and_then(|at| u64::try_from(at.timestamp_millis()).ok())
+    else {
+        return Ok(());
+    };
+    mark_native_interruption_for_cancellation(app, session_id, provider_run_id, context_file, at)
+}

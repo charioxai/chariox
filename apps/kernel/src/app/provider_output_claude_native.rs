@@ -432,6 +432,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             &agent_id,
                             context_file,
                         )?;
+                        interruption::bind_prompt_hook_request(
+                            self.app,
+                            provider_run_id,
+                            dispatch_prompt_id,
+                            &event,
+                        );
                         continue;
                     }
                     if active_prompt.is_some() {
@@ -486,6 +492,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         },
                     )?;
                     write_claude_native_marker(context_file, &format!("native:{}", prompt.id()));
+                    interruption::bind_prompt_hook_request(
+                        self.app,
+                        provider_run_id,
+                        prompt.id(),
+                        &event,
+                    );
                 }
                 if let Some(request_id) =
                     event.get("hook_context_request_id").and_then(Value::as_str)
@@ -493,6 +505,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     let context = fs::read_to_string(context_file).unwrap_or_default();
                     write_claude_hook_context_response(context_file, request_id, &context);
                 }
+            } else if event_name == "UserPromptSubmitInterrupted" {
+                interruption::observe_prompt_hook_interruption(
+                    self.app,
+                    session_id,
+                    provider_run_id,
+                    context_file,
+                    &event,
+                )?;
             } else if event_name == "StopFailure" {
                 outcome.terminal_failure = crate::provider::claude_native_stop_failure(&event);
                 return Ok(outcome);

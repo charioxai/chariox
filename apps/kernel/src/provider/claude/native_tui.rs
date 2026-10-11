@@ -263,6 +263,29 @@ if (!contextOnlyHook && eventName === "SessionStart") {
 const hookContextRequestId = eventName === "UserPromptSubmit" || eventName === "PreToolUse" || eventName === "PermissionRequest"
   ? `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`
   : null
+// MP-08 / MP-10 / MP-11: Esc can terminate this hook before Claude writes
+// a user transcript record. Receipt the exact hook request through this same
+// native bridge, then preserve the provider's normal termination outcome.
+if (!contextOnlyHook && eventName === "UserPromptSubmit" && hookContextRequestId) {
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    const interrupted = () => {
+      try {
+        appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
+          at: new Date().toISOString(),
+          hook_event_name: "UserPromptSubmitInterrupted",
+          hook_context_request_id: hookContextRequestId,
+          signal,
+        }) + "\n")
+      } finally {
+        process.removeListener(signal, interrupted)
+        if (!Number.isSafeInteger(process.pid) || process.pid <= 1) process.exit(1)
+        process.kill(process.pid, signal)
+      }
+    }
+    process.on(signal, interrupted)
+  }
+}
+
 if (!contextOnlyHook) {
   appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
     at: new Date().toISOString(),
@@ -1284,3 +1307,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "native_tui/hook_interruption_tests.rs"]
+mod hook_interruption_tests;

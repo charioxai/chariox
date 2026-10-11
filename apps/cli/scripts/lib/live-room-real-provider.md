@@ -228,3 +228,15 @@ Exercise concurrent native and kernel MCP clients, including reconnects that
 restart JSON-RPC request numbering at zero. Each distinct request must retain
 its own forwarding invocation identity; replaying that identity must still be
 rejected. Connection-local MCP request IDs cannot identify provider tool calls.
+
+### MP-08 / MP-10 / MP-11: Claude cancellation during prompt hooks
+
+Cancel both while Claude runs a real public-site tool and while its native
+UserPromptSubmit hook is preparing the next real research turn. In the latter
+case Claude can terminate the hook before writing a user transcript record.
+The existing hook bridge must receipt that exact request; home settles only
+from a fresh receipt for its current cancelled prompt and current worker run.
+Keep stale request, stale timestamp, wrong run and non-cancelling controls.
+The original Esc must settle the exact home prompt and leave the native composer
+writable for a real public-site continuation. Supplemental terminal/RPC input
+after a failure is diagnostic evidence and cannot count as a passing cell.
