@@ -82,3 +82,10 @@ test("MP-08 / MP-10 / MP-11 typed leased desktop grants require allocated protoc
     assert.doesNotThrow(() => requireKernelFeatureProtocol({KernelBrowser:{command}}, 500))
   }
 })
+
+// MP-08 / MP-10 / MP-11: actual predecessors lack this request variant.
+test("MP-08 visible-region capture refuses protocol 487 and 493 before transport", () => {
+  const request = {CaptureVisibleRegion: {}}
+  for (const version of [487, 493]) assert.throws(() => requireKernelFeatureProtocol(request, version), /Visible region capture needs protocol ≥494/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 494))
+})

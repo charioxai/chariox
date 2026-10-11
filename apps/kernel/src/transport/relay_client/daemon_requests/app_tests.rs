@@ -1198,3 +1198,59 @@ async fn md5_relay_cached_browser_observations_obey_current_vault_policy() {
         state.shutdown_cleanup().await.unwrap();
     }
 }
+
+// MP-08 / MP-10 / MP-11: HOME observations cannot fence worker authorization.
+#[tokio::test]
+async fn leased_computer_terminal_receipts_ignore_fenced_home_observations() {
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 2);
+    let state = router.runtime_state();
+    let cache = CommandResultCache::default();
+    let sequence = AtomicU64::new(1);
+    let requests = [
+        serde_json::json!({"KernelBrowser":{"command":{"op":"grant_leased_computer","agent_id":"missing-worker","target":{"surface_id":"worker-desktop","generation":"generation"}}}}),
+        serde_json::json!({"KernelBrowser":{"command":{"op":"revoke_leased_computer","agent_id":"missing-worker"}}}),
+    ];
+    let mut expected = Vec::new();
+    for (index, request) in requests.iter().enumerate() {
+        let outcome = dispatch_relay_client_request(
+            &router,
+            &sequence,
+            Some(caller("alice")),
+            serde_json::from_value(request.clone()).unwrap(),
+            Some(format!("MP-11-lease-before-{index}")),
+            &cache,
+        )
+        .await;
+        let RelayDispatchOutcome::RelayError(error) = outcome else {
+            panic!("missing worker must be refused by grant handler")
+        };
+        expected.push((error.code, error.message));
+    }
+    state.fence_kernel_browser_fixture("alice");
+    for (index, request) in requests.iter().enumerate() {
+        // Exercise creation and cached receipt validation through terminal dispatch.
+        for _ in 0..2 {
+            let outcome = dispatch_relay_client_request(
+                &router,
+                &sequence,
+                Some(caller("alice")),
+                serde_json::from_value(request.clone()).unwrap(),
+                Some(format!("MP-11-lease-fenced-{index}")),
+                &cache,
+            )
+            .await;
+            let RelayDispatchOutcome::RelayError(error) = outcome else {
+                panic!("missing worker was accepted")
+            };
+            assert_eq!(
+                (error.code, error.message),
+                expected[index],
+                "HOME fence replaced worker grant admission"
+            );
+        }
+    }
+    state.shutdown_cleanup().await.unwrap();
+}

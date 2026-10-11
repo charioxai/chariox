@@ -35,6 +35,14 @@ pub fn envelope_signature(envelope: &RelayEnvelope) -> Option<u64> {
         | RelayEnvelope::ClientEvent {
             encrypted_event, ..
         } => encrypted_event,
+        RelayEnvelope::DaemonResponse {
+            encrypted_response: Some(payload),
+            ..
+        }
+        | RelayEnvelope::ClientResponse {
+            encrypted_response: Some(payload),
+            ..
+        } => payload,
         _ => return None,
     };
     STANDARD
@@ -76,6 +84,39 @@ pub fn record(stage: &'static str, packet: Option<u64>) {
 mod tests {
     use super::*;
     use crate::protocol::EncryptedRelayPayload;
+
+    #[test]
+    fn opaque_response_join_ignores_routing_and_plain_refusals() {
+        let response = RelayEnvelope::DaemonResponse {
+            relay_request_id: "relay".into(),
+            encrypted_response: Some(EncryptedRelayPayload {
+                sender_public_key: "public".into(),
+                nonce: "synthetic".into(),
+                ciphertext: STANDARD.encode([9u8; 16]),
+            }),
+            error: None,
+        };
+        let client = RelayEnvelope::ClientResponse {
+            request_id: "viewer".into(),
+            encrypted_response: match &response {
+                RelayEnvelope::DaemonResponse {
+                    encrypted_response, ..
+                } => encrypted_response.clone(),
+                _ => unreachable!(),
+            },
+            error: None,
+        };
+        assert_eq!(envelope_signature(&response), envelope_signature(&client));
+        if enabled() {
+            assert!(envelope_signature(&response).is_some());
+        }
+        assert!(envelope_signature(&RelayEnvelope::ClientResponse {
+            request_id: "viewer".into(),
+            encrypted_response: None,
+            error: None
+        })
+        .is_none());
+    }
 
     #[test]
     fn opaque_packet_join_ignores_routing_and_rejects_authentication() {

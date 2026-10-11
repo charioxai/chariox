@@ -16,3 +16,12 @@ test('MP-10 hop decomposition only joins the same packet and rejects reversed cl
  assert.equal(hops.viewer_to_relay.p95_ms,35);assert.equal(hops.relay_to_kernel.p95_ms,1);assert.equal(hops.kernel_queue.p95_ms,1);assert.equal(hops.kernel_request.p95_ms,10);assert.equal(hops.relay_to_viewer.samples,0);
  assert.equal(transportHops([row('viewer_send',10),row('relay_read',5)]).viewer_to_relay.samples,0);
 });
+// MP-08 / MP-10 / MP-11: small replies must be joinable behind large catalogues.
+test('MP-10 response timing joins opaque ciphertext without routing or authentication',()=>{
+ const encrypted_response={ciphertext:Buffer.alloc(16,9).toString('base64')};
+ const daemon=JSON.stringify({kind:'daemon_response',relay_request_id:'relay',encrypted_response});
+ const client=JSON.stringify({kind:'client_response',request_id:'viewer',encrypted_response});
+ assert(Number.isSafeInteger(packetSignature(1,daemon)));
+ assert.equal(packetSignature(1,daemon),packetSignature(1,client));
+ assert.equal(packetSignature(1,JSON.stringify({kind:'client_response',request_id:'viewer',encrypted_response:null,error:{code:'refused'}})),null);
+});

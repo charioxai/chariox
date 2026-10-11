@@ -11,12 +11,12 @@ export function packetSignature(opcode,payload,withSequence=false) {
       const length=wire.readUInt32BE(4);
       if(length<2||length>4096||wire.length<8+length+16)return null;
       const header=JSON.parse(wire.toString('utf8',8,8+length));
-      if(!['daemon_event','client_event'].includes(header.kind))return null;
+      if(!['daemon_event','client_event','daemon_response','client_response'].includes(header.kind))return null;
       bytes=wire.subarray(8+length);sequence=header.event_id;
     }else if(opcode===1){
       const envelope=JSON.parse(payload);
-      if(!['client_request','daemon_request','daemon_event','client_event'].includes(envelope.kind))return null;
-      const encrypted=envelope.encrypted_request??envelope.encrypted_event;
+      if(!['client_request','daemon_request','daemon_event','client_event','daemon_response','client_response'].includes(envelope.kind))return null;
+      const encrypted=envelope.encrypted_request??envelope.encrypted_event??envelope.encrypted_response;
       if(typeof encrypted?.ciphertext!=='string')return null;
       bytes=Buffer.from(encrypted.ciphertext,'base64');sequence=envelope.event_id;
     }else return null;
