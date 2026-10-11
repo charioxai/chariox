@@ -24,7 +24,7 @@ export class VideoSink {
   if(video.dataset)video.dataset.displaySink=track?'track':'canvas';
   Object.assign(video.style,{position:'absolute',pointerEvents:'none'});
   if(document.defaultView?.getComputedStyle(parent).position==='static'){this.parent=parent;this.parentPosition=parent.style.position;parent.style.position='relative';}
-  this.canvasOpacity=this.canvas.style.opacity;
+  this.canvasOpacity=this.canvas.style.opacity;this.canvasBackground=this.canvas.style.background;
   if(document.defaultView?.getComputedStyle(this.canvas).position==='static'){this.canvasPosition=this.canvas.style.position;this.canvas.style.position='relative';}
   parent.insertBefore(video,this.canvas);
   const sync=()=>{
@@ -40,17 +40,19 @@ export class VideoSink {
  restoreStyle(){
   if(this.canvasPosition!==undefined){if(this.canvas.style.position==='relative')this.canvas.style.position=this.canvasPosition;this.canvasPosition=undefined;}
   if(this.canvasOpacity!==undefined)this.canvas.style.opacity=this.canvasOpacity;
+  if(this.canvasBackground!==undefined)this.canvas.style.background=this.canvasBackground;
   if(this.parent){this.parent.style.position=this.parentPosition;this.parent=null;}
  }
  stopTrack(){this.resize?.disconnect();this.mutation?.disconnect();this.resize=null;this.mutation=null;this.track?.stop();this.track=null;if(this.video){this.video.pause?.();this.video.srcObject=null;this.video.remove();this.video=null;}this.restoreStyle();}
  // Called only after the ordered video job passed the worker geometry check.
  async commit(result,frame){
   const image=result.image??result;
-  if(this.closed){image.close();return {drawn:false};}
+  if(this.closed)return {drawn:false};
+  if(frame.key)this.keyPending=true;
   const decodedAt=result.decodedAt??performance.timeOrigin+performance.now();
   if(result.committedAt!==undefined){
    this.remember(image);
-   if(frame.key){this.canvas.style.opacity='0';this.overlayActive=false;}
+   if(this.keyPending){this.canvas.style.opacity='0';this.overlayActive=false;this.keyPending=false;}
    return {...result,drawn:true};
   }
   return new Promise(resolve=>{
@@ -66,14 +68,14 @@ export class VideoSink {
      if(target.width!==frame.width)target.width=frame.width;
      if(target.height!==frame.height)target.height=frame.height;
      target.getContext('2d').drawImage(image,0,0,frame.width,frame.height);
-     if(this.video&&jobs.some(job=>job.frame.key)){this.canvas.style.opacity='0';this.overlayActive=false;}
+     if(this.video&&this.keyPending){this.canvas.style.opacity='0';this.overlayActive=false;this.keyPending=false;}
      this.remember(image);
     }
     const committedAt=performance.timeOrigin+performance.now();
     for(const job of jobs){const drawn=!this.closed&&job===latest;job.resolve({drawn,decodedAt:job.decodedAt,committedAt});if(!drawn&&!this.closed)this.onTiming('client_present_drop',job.decodedAt);}
    };
-   // Hidden documents cannot run rAF; retire decoded outputs while the ACK
-   // heartbeat keeps the existing lease alive. Visibility recovery is unchanged.
+   // Hidden documents cannot run rAF. Settle without drawing; the presenter
+   // validates the output and owns its retirement, including skipped frames.
    if(this.canvas.ownerDocument?.hidden){commitHidden(this.pending);return;}
    this.cancelRaf=view.cancelAnimationFrame?.bind(view)??clearTimeout;
    this.raf=view.requestAnimationFrame?view.requestAnimationFrame(commit):setTimeout(commit,0);
@@ -86,6 +88,7 @@ export class VideoSink {
   if(this.canvas.height!==frame.height)this.canvas.height=frame.height;
   if(!this.overlayActive){
    this.canvas.getContext('2d').clearRect(0,0,frame.width,frame.height);
+   this.canvas.style.background='transparent';
    this.canvas.style.opacity=this.canvasOpacity??'';this.overlayActive=true;
   }
  }
@@ -105,4 +108,4 @@ export class VideoSink {
   this.last?.close();this.last=null;this.stopTrack();
  }
 }
-function commitHidden(jobs){for(const job of jobs.splice(0)){job.image.close();job.resolve({drawn:false,decodedAt:job.decodedAt});}}
+function commitHidden(jobs){for(const job of jobs.splice(0)){job.resolve({drawn:false,decodedAt:job.decodedAt});}}
