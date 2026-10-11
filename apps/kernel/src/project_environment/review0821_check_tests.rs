@@ -46,3 +46,5 @@ fn project(root: &std::path::Path, id: &str) -> crate::session::RuntimeProject {
 
 #[path = "review0821_excluded_tests.rs"]
 mod excluded;
+#[path = "review0821_wildcard_tests.rs"]
+mod wildcard;

@@ -188,7 +188,29 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
         let expected = token.strip_prefix(op).unwrap_or(token);
         if expected.ends_with(".*") || expected.ends_with(".x") {
             let n = numbers(&expected[..expected.len() - 2])?;
-            accepted &= v.starts_with(&n);
+            if n.len() > 2 {
+                return None;
+            }
+            let mut lower = n.clone();
+            lower.resize(4, 0);
+            let mut upper = lower.clone();
+            let index = if op == "^" {
+                n.iter().position(|p| *p != 0).unwrap_or(n.len() - 1)
+            } else {
+                n.len() - 1
+            };
+            upper[index] = upper[index].checked_add(1)?;
+            upper[index + 1..].fill(0);
+            let mut actual = v.clone();
+            actual.resize(4, 0);
+            accepted &= match op {
+                "<" => actual < lower,
+                ">=" => actual >= lower,
+                ">" => actual >= upper,
+                "<=" => actual < upper,
+                "" | "=" | "~" | "^" => actual >= lower && actual < upper,
+                _ => return None,
+            };
             continue;
         }
         let e = numbers(expected)?;
