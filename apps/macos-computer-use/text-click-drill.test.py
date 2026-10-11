@@ -63,7 +63,8 @@ class CaretVerdictTests(unittest.TestCase):
         self.assertFalse(self.verdict('dispatched; path=AXSelectedTextRange; observed AXSelectedTextRange location=125 length=0; point=182.457,147.887', ('125', '0')))
 
     def test_refusal_fails(self):
-        self.assertFalse(self.verdict('refused: target (no-range-at-point)', ('0', '0')))
+        with self.assertRaisesRegex(RuntimeError, 'helper-caret-refused'):
+            self.verdict('refused: target (no-range-at-point)', ('0', '0'))
 
     def pointer_verdict(self, pointer, cg_pointer=None, receipt_point='363.0,571.0', refuse=False):
         state = {'frontmostPID': 42, 'pointer': pointer,
