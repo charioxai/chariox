@@ -87,6 +87,8 @@ export function createWaitingRoomInventoryRefreshController(
   let activeKernelId: string | null = null
   let managedEnvironmentCatalogScope: string | null = null
   let inventoryInvalidated = false
+  let transportGeneration = 0
+  let rowsBaselinePending = false
   let cacheScopeKey = options.getCacheScopeKey?.() ?? null
   let directTargetKernelId = currentDirectTargetKernelId(options)
   const inventoriesByKernel = new Map(
@@ -145,12 +147,14 @@ export function createWaitingRoomInventoryRefreshController(
     }
     for (let attempt = 0; attempt < 2; attempt += 1) {
       refreshProjectionScope()
+      const requestedTransportGeneration = transportGeneration
       const requestedCacheScopeKey = cacheScopeKey
       const requestedTargetKernelId = directTargetKernelId
       let snapshot: WaitingRoomInventory
       try {
         snapshot = await options.getInventory()
       } catch (error) {
+        if (requestedTransportGeneration !== transportGeneration) return
         refreshProjectionScope()
         if (
           requestedCacheScopeKey !== cacheScopeKey
@@ -165,6 +169,7 @@ export function createWaitingRoomInventoryRefreshController(
         options.reconcileWaitingRoom(options.getWaitingRoomState())
         return
       }
+      if (requestedTransportGeneration !== transportGeneration) return
       refreshProjectionScope()
       if (
         requestedCacheScopeKey !== cacheScopeKey
@@ -285,6 +290,8 @@ export function createWaitingRoomInventoryRefreshController(
 
   return {
     applyTransportClosed() {
+      transportGeneration += 1
+      rowsBaselinePending = true
       inventoryVersion = null
       inventoryInvalidated = true
       options.setInventoryStatus("loading")
@@ -305,11 +312,12 @@ export function createWaitingRoomInventoryRefreshController(
         return
       }
       refreshProjectionScope()
-      if (patch.inventoryVersion === inventoryVersion) {
+      if (!rowsBaselinePending && patch.inventoryVersion === inventoryVersion) {
         options.reconcileWaitingRoom(options.getWaitingRoomState())
         return
       }
-      const currentInventoryVersion = inventoryVersion
+      const currentInventoryVersion = rowsBaselinePending ? null : inventoryVersion
+      rowsBaselinePending = false
       inventoryVersion = patch.inventoryVersion
       options.setInventoryStatus("ready")
       const activeInventory = activeKernelId ? inventoriesByKernel.get(activeKernelId) : undefined

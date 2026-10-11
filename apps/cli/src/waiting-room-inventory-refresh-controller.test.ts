@@ -659,6 +659,41 @@ test("MP-08 / MP-11 reconnect replaces the closed transport row baseline", async
   assert.deepEqual(harness.availableSessions().map(row => row.id).sort(), ["kept", "new", "other-session"])
 })
 
+test("MP-08 / MP-11 rejects a pre-disconnect snapshot resolved before the replacement baseline", async () => {
+  const persisted: WaitingRoomInventory[] = []
+  const oldRead = deferred<WaitingRoomInventory>()
+  let reads = 0
+  const harness = createHarness({
+    getInventory: async () => ++reads === 1 ? inventory("before", { sessions: [session("deleted"), session("kept")] }) : reads === 2 ? oldRead.promise : inventory("after", {sessions: [session("kept")], projects: [project("kept-project", "Kept")]}),
+    cachedInventories: [inventory("other", {kernelId: "kernel-other", sessions: [session("other-session")]})],
+    persistInventory: value => persisted.push(value),
+  })
+  await harness.controller.refreshNow()
+  const pending = harness.controller.refreshNow()
+  harness.controller.applyTransportClosed()
+  oldRead.resolve(inventory("before", {sessions: [session("deleted"), session("kept")]}))
+  await pending
+  assert.deepEqual(harness.availableSessions().map(row => row.id).sort(), ["deleted", "kept", "other-session"])
+  // The first subscription report is complete; deletions while disconnected
+  // do not appear in removedSessionIds because the server reset its baseline.
+  harness.controller.applyRowsChanged({
+    inventoryVersion: "after", structuralVersion: "after", activityRevision: "after",
+    sessions: [session("kept")], removedSessionIds: [],
+    projects: [project("kept-project", "Kept")], removedProjectIds: [],
+  })
+  assert.deepEqual(harness.projects().map(row => row.id), ["kept-project"])
+  assert.deepEqual(harness.availableSessions().map(row => row.id).sort(), ["kept", "other-session"])
+  assert.deepEqual(persisted.at(-1)?.sessions.map(row => row.id), ["kept"])
+  assert.deepEqual(persisted.at(-1)?.projects.map(row => row.id), ["kept-project"])
+  await harness.controller.refreshNow()
+  assert.deepEqual(harness.availableSessions().map(row => row.id).sort(), ["kept", "other-session"])
+  harness.controller.applyRowsChanged({
+    inventoryVersion: "delta", structuralVersion: "delta", activityRevision: "delta",
+    sessions: [session("new")], removedSessionIds: [],
+  })
+  assert.deepEqual(harness.availableSessions().map(row => row.id).sort(), ["kept", "new", "other-session"])
+})
+
 function createHarness(options: {
   connected?: boolean
   nowMs?: () => number
