@@ -214,7 +214,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   const binding = { ...tab, ...await request({ op: 'display_subscribe', ...tab, codecs: options.stripes===false?codecs.filter(c=>c!=='chariox-stripes-v1'):codecs, bitrate: options.bitrate ?? 2_000_000, device_scale_factor: options.deviceScaleFactor ?? 1 }) };
   const onTiming = options.onTiming ?? (() => {});
   const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming);
-  if(options.scrollPredictionRegion)presenter.prediction=new ScrollPrediction(canvas,options.scrollPredictionRegion);
+  if(options.scrollPredictionRegion)presenter.prediction=new ScrollPrediction(canvas,options.scrollPredictionRegion,context=>presenter.videoSink.snapshot(context));
   let pending = null, stopped = false, creditOutstanding = false, predictionEpoch=0;
   let running = false, failure = null, active = new Set();
   const presentationQueue=new PresentationQueue(presenter);
@@ -271,7 +271,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     const presented = event.then(async frame => {
       if (!frame) return null;
       if (!await presenter.present(frame)) throw new Error('MD-DISPLAY: rejected frame');
-      options.onPresented?.(frame,presenter.outcomes.get(frame));
+      if(presenter.wasDrawn(frame)!==false) options.onPresented?.(frame,presenter.outcomes.get(frame));
       return frame;
     });
     presented.catch(() => {});
