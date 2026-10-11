@@ -193,6 +193,9 @@ export class BrowserMirror2Renderer {
     on('compositionstart', () => this.syncRange())
     on('selectionchange', () => { if (this.applying) return; const selection = doc.getSelection(); if (!selection || selection.isCollapsed) return; const a = this.ids.get(selection.anchorNode!), b = this.ids.get(selection.focusNode!); if (a && b && this.records.get(a)?.kind === 'text' && this.records.get(b)?.kind === 'text') this.enqueue({ kind: 'selection', anchor_id: a, anchor_offset: selection.anchorOffset, focus_id: b, focus_offset: selection.focusOffset }) })
   }
+  // A multiple select's option state last sent per option, until the kernel's record for it changes: two opposing
+  // changes before the first echo compare with what was sent, not with the unchanged kernel record.
+  private optionSent = new WeakMap<Element, boolean>()
   // Committed control state (protocol 492 `set`). Bound on documents and shadow roots: `change` is not composed.
   private committed = (event: Event): void => {
     const control = event.composedPath()[0] as HTMLSelectElement & HTMLInputElement, id = this.ids.get(control)
@@ -201,7 +204,7 @@ export class BrowserMirror2Renderer {
     else if (!control.multiple) this.enqueue({ kind: 'set', node_id: id, selected_index: control.selectedIndex })
     else for (const option of Array.from(control.options)) {
       const option_id = this.ids.get(option), state = option_id ? this.records.get(option_id)?.form : undefined
-      if (option_id && state && state.checked !== option.selected) this.enqueue({ kind: 'set', node_id: option_id, checked: option.selected })
+      if (option_id && state && (this.optionSent.get(option) ?? state.checked) !== option.selected) { this.optionSent.set(option, option.selected); this.enqueue({ kind: 'set', node_id: option_id, checked: option.selected }) }
     }
   }
   // Viewer scrolls (documents and shadow roots: element scroll events do not cross a shadow boundary).
@@ -327,7 +330,7 @@ export class BrowserMirror2Renderer {
   }
   private form(element: Element, form: Mirror2Form): void {
     // An option of a multiple select carries its own selectedness (`checked`).
-    if (element.localName === 'option') { (element as HTMLOptionElement).selected = form.checked; return }
+    if (element.localName === 'option') { (element as HTMLOptionElement).selected = form.checked; this.optionSent.delete(element); return }
     const field = element as HTMLInputElement
     if (field.value !== form.value) field.value = form.value
     if ('checked' in field && field.type !== undefined) field.checked = form.checked

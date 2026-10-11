@@ -447,3 +447,22 @@ test('MP-08: review #941@36a395b05-1 a select and a date picker inside an open s
     assert.deepEqual((await sent()).at(-1), { kind: 'set', node_id: 'n9', value: '2026-10-10' }, 'MP-08: the shadow date commits as one value');
   } finally { await page.close(); }
 });
+
+// Review #320 @90c1195fc finding 1: two opposing option changes before the first `set` echoes: the second compared
+// against the unchanged kernel record and sent nothing, so the kernel kept the option the user deselected.
+test('MP-08: review #320@90c1195fc-1 selecting then deselecting a multiple-select option before the echo sends both changes', async () => {
+  const page = await viewer();
+  try {
+    const form = (checked, extra = {}) => ({ value: '', checked, selected_index: -1, selection_start: null, selection_end: null, ...extra });
+    const option = (id, text) => [{ id, parent: 'n4', kind: 'element', tag: 'option', form: form(false, { value: text }) }, { id: `${id}0`, parent: id, kind: 'text', text }];
+    await apply(page, snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'select', attrs: { multiple: '', size: '3' }, form: form(false) }, ...option('n5', 'alpha'), ...option('n6', 'beta')])));
+    const at = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), o = window.r.frame.contentDocument.querySelector('option').getBoundingClientRect(); return [f.x + o.x + 5, f.y + o.y + o.height / 2]; });
+    for (let i = 0; i < 2; i++) { await page.keyboard.down('Control'); await page.mouse.click(at[0], at[1]); await page.keyboard.up('Control'); await frames(); }
+    const sets = (await page.evaluate(() => window.sent.splice(0))).filter(action => action.kind === 'set');
+    assert.deepEqual(sets, [{ kind: 'set', node_id: 'n5', checked: true }, { kind: 'set', node_id: 'n5', checked: false }], 'MP-08: the deselect follows the select');
+    // The kernel's echoes then apply in order; a later page change starts again from the kernel's state.
+    await apply(page, delta(2, [{ op: 'form', id: 'n5', form: { checked: true } }])); await apply(page, delta(3, [{ op: 'form', id: 'n5', form: { checked: false } }]));
+    await page.keyboard.down('Control'); await page.mouse.click(at[0], at[1]); await page.keyboard.up('Control'); await frames();
+    assert.deepEqual((await page.evaluate(() => window.sent.splice(0))).filter(action => action.kind === 'set'), [{ kind: 'set', node_id: 'n5', checked: true }]);
+  } finally { await page.close(); }
+});
