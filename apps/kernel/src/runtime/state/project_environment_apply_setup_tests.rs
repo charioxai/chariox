@@ -71,29 +71,43 @@ fn envp05a_setup_progress_proves_only_the_unstarted_suffix() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn envp05a_setup_retry_completes_suffix_without_replaying_successful_predecessor() {
-    setup_retry_regression(false, false, false).await;
+    setup_retry_regression(SetupScenario::Retry).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn envp05a_setup_public_dependencies_ignore_locked_unrelated_secret() {
-    setup_retry_regression(true, false, false).await;
+    setup_retry_regression(SetupScenario::LockedSecret).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn envp05a_setup_preparation_failure_has_proven_unstarted_progress() {
-    setup_retry_regression(true, true, false).await;
+    setup_retry_regression(SetupScenario::MissingPublic).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn envp05a_setup_rejects_fresh_credential_content_before_command_admission() {
-    setup_retry_regression(true, false, true).await;
+    setup_retry_regression(SetupScenario::ChangedPublic).await;
 }
 
 #[cfg(target_os = "linux")]
-async fn setup_retry_regression(locked_secret: bool, preparation_failure: bool, changed_public: bool) {
+#[tokio::test]
+async fn envp05a_setup_foreign_dependency_cannot_borrow_same_name_local_binding() {
+    setup_retry_regression(SetupScenario::ForeignDependency).await;
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum SetupScenario { Retry, LockedSecret, MissingPublic, ChangedPublic, ForeignDependency }
+
+#[cfg(target_os = "linux")]
+async fn setup_retry_regression(scenario: SetupScenario) {
+    let locked_secret = !matches!(scenario, SetupScenario::Retry);
+    let preparation_failure = matches!(scenario, SetupScenario::MissingPublic);
+    let changed_public = matches!(scenario, SetupScenario::ChangedPublic);
+
     crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let root = crate::test_support::TestWorktree::new("envp05-setup-retry");
@@ -181,6 +195,9 @@ async fn setup_retry_regression(locked_secret: bool, preparation_failure: bool, 
             name: "PUBLIC_BUILD_INPUT".into(),
             locator: ProjectEnvironmentLocator::ConfigFile { path: "public-input".into() },
         };
+        if matches!(scenario, SetupScenario::ForeignDependency) {
+            public.scope = RequirementScope::Folder { folder_id: env.folders[0].folder_id.clone() };
+        }
         std::fs::write(workspace.join("public-input"), "public build input").unwrap();
         env.project_requirements.push(public.clone());
         crate::project_environment::apply_scoped_binding(&store, &config, &env, &public).unwrap();
@@ -197,6 +214,29 @@ async fn setup_retry_regression(locked_secret: bool, preparation_failure: bool, 
         store.save(&stored).unwrap();
         requirement.depends_on.push(public.requirement_id);
         env.project_requirements[0] = requirement.clone();
+    }
+    if matches!(scenario, SetupScenario::ForeignDependency) {
+        let first_id = env.folders[0].folder_id.clone();
+        requirement.scope = RequirementScope::Folder { folder_id: first_id.clone() };
+        let mut public = env.project_requirements[1].clone();
+        public.scope = requirement.scope.clone();
+        env.project_requirements.clear();
+        env.folders[0].requirements = vec![requirement.clone(), public.clone()];
+        crate::project_environment::apply_scoped_binding(&store, &config, &env, &public).unwrap();
+        let second_workspace = root.path().join("second-workspace");
+        std::fs::create_dir_all(&second_workspace).unwrap();
+        std::fs::write(second_workspace.join("public-input"), "distinct second-folder input").unwrap();
+        let mut second = env.folders[0].clone();
+        second.folder_id = "second-folder".into();
+        second.local_workspace_binding = second_workspace.to_string_lossy().into();
+        let mut foreign = public.clone();
+        foreign.requirement_id = "foreign-public".into();
+        foreign.scope = RequirementScope::Folder { folder_id: second.folder_id.clone() };
+        second.requirements = vec![foreign.clone()];
+        env.folders.push(second);
+        crate::project_environment::apply_scoped_binding(&store, &config, &env, &foreign).unwrap();
+        requirement.depends_on = vec![foreign.requirement_id.clone()];
+        env.folders[0].requirements[0] = requirement.clone();
     }
     let mut operation = EnvironmentOperation {
         operation_id: "retry-operation".into(),
@@ -241,6 +281,15 @@ async fn setup_retry_regression(locked_secret: bool, preparation_failure: bool, 
             },
         )
         .unwrap();
+    if matches!(scenario, SetupScenario::ForeignDependency) {
+        // B is the selected prerequisite; A has an independently applied equal name.
+        assert!(apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false).is_err());
+        assert!(!workspace.join("successful-count").exists(), "cross-folder prerequisite must not substitute A's unselected value");
+        assert_eq!(store.load_applies(project.id()).unwrap().attempts[0].setup_admitted_commands.get("setup"), Some(&0));
+        // Explicitly selecting the local prerequisite restores eligible Setup.
+        requirement.depends_on = vec!["public".into()];
+        env.folders[0].requirements[0] = requirement.clone();
+    }
     if changed_public {
         // Public at Check/Apply time, credential-shaped when Setup resolves it.
         let replacement = format!("sk-{}", "s".repeat(48));

@@ -211,24 +211,18 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
     let mut environment = worker_validation_environment_without_provider(preparation.path());
     // Only explicitly dependent public bindings can enter Setup; named secrets
     // continue through provider/Agent-tool services, not generic injection.
-    let permitted: BTreeSet<_> = environment_requirements(env)
+    let dependencies: Vec<_> = environment_requirements(env)
         .filter(|r| requirement.depends_on.contains(&r.requirement_id))
-        .filter_map(|r| match &r.spec {
-            RequirementSpec::Variables { name, .. } => Some(name.as_str()),
-            _ => None,
-        })
         .collect();
     let bindings = project_public_setup_environment(
         config,
         &env.local_project_id,
-        &root.local_workspace_binding,
+        root,
         &workspace,
-        &permitted,
+        &dependencies,
     )?;
     for (name, value) in bindings.iter() {
-        if permitted.contains(name) && !crate::secret::secret_like_env_name(name) {
-            environment.insert(name.into(), value.into());
-        }
+        environment.insert(name.into(), value.into());
     }
     let deadline = Instant::now() + VALIDATION_TOTAL_TIMEOUT;
     for (index, command) in commands.iter().enumerate() {
