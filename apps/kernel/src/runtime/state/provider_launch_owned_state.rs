@@ -644,6 +644,20 @@ mod tests {
             &completed_agent,
             "MP-08 / MP-10 / MP-11 home queue"
         ));
+        // MP-08 / MP-10 / MP-11: recover from the current authenticated
+        // launch before testing expired-account denial. Expired credentials
+        // now enter the product login recovery flow rather than bypassing it.
+        let credentials = runtime
+            .resolve_provider_account_credentials_for_run_with_vault(
+                &completed,
+                "MP-08 / MP-10 / MP-11 home recovery",
+            )
+            .await
+            .unwrap();
+        assert!(credentials
+            .iter()
+            .any(|(name, value)| name == "CLAUDE_CODE_OAUTH_TOKEN"
+                && value == "synthetic-home-token"));
         registry
             .update_observation(
                 "local",
@@ -701,17 +715,6 @@ mod tests {
                 "MP-08 / MP-10 / MP-11 expired home queue"
             )
         );
-        let credentials = runtime
-            .resolve_provider_account_credentials_for_run_with_vault(
-                &completed,
-                "MP-08 / MP-10 / MP-11 home recovery",
-            )
-            .await
-            .unwrap();
-        assert!(credentials
-            .iter()
-            .any(|(name, value)| name == "CLAUDE_CODE_OAUTH_TOKEN"
-                && value == "synthetic-home-token"));
         let reload = super::super::provider_reload::policy_reload_launch_request(
             &run,
             agent.id(),
