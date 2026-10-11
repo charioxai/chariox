@@ -9,6 +9,15 @@ import test from 'node:test'
 import { makeHarness } from './lib/managed-kernel-upgrade-fixture.mjs'
 
 const roots = [ ['H', process.env.MP07_SIGNED_H], ['I', process.env.MP07_SIGNED_I] ]
+// Optional actual K-A/K-B payloads, signed with synthetic test keys (public pins only).
+async function actualRelease(prefix) {
+  const rootfs = process.env[prefix + '_ROOTFS']
+  if (!rootfs) return null
+  const bytes = await readFile(join(rootfs, 'usr/lib/chariox/release-manifest.json'))
+  return { rootfs, digest: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+    releasePin: process.env[prefix + '_RELEASE_PIN'], builderPin: process.env[prefix + '_BUILDER_PIN'] }
+}
+const actualKA = await actualRelease('MP07_K_A'), actualKB = await actualRelease('MP07_K_B')
 for (const [round, rootfs] of roots) {
   test(`MP-07 signed ${round} actual verifier and updater admit K-A bridge`, {skip:!rootfs}, async context => {
     const manifestPath = join(rootfs, 'usr/lib/chariox/release-manifest.json')
@@ -20,7 +29,7 @@ for (const [round, rootfs] of roots) {
     assert.equal(protocol.status,0,protocol.stderr)
     const h = await makeHarness(context, {installedRelease, updaterPath, updaterShell:true, path1Release:true,
       currentProtocol:Number(protocol.stdout), targetProtocol:Number(protocol.stdout),
-      targetServicePolicy: Number(process.env.MP07_CANDIDATE_SERVICE_POLICY ?? 1)})
+      targetServicePolicy: Number(process.env.MP07_CANDIDATE_SERVICE_POLICY ?? 1), targetRelease: actualKA})
     await chmod(h.root, 0o755)
     await chown(dirname(h.receiptPath), h.charioxIdentity.uid, h.charioxIdentity.gid)
     await chmod(dirname(h.receiptPath),0o700)
@@ -38,8 +47,10 @@ for (const [round, rootfs] of roots) {
     // Continue on the same installed host with K-A's versioned upgrade policy.
     const bridgeRelease = {...h.target, releasePin:h.nextTrustedReleaseKey, builderPin:h.nextTrustedBuilderKey}
     const b = await makeHarness(context, {installedRelease:bridgeRelease, path1Release:true,
-      currentProtocol:Number(protocol.stdout), targetProtocol:Number(protocol.stdout), targetServicePolicy:2})
-    const kScript = new URL('../deploy/managed-kernel/upgrade-image.sh', import.meta.url).pathname
+      currentProtocol:Number(protocol.stdout), targetProtocol:Number(protocol.stdout), targetServicePolicy:2, targetRelease: actualKB})
+    // The second hop runs K-A's own updater: the actual payload's copy when supplied.
+    const kScript = actualKA ? join(actualKA.rootfs, 'usr/lib/chariox/slice-build-context/deploy/managed-kernel/upgrade-image.sh')
+      : new URL('../deploy/managed-kernel/upgrade-image.sh', import.meta.url).pathname
     const second = spawnSync(kScript, [b.target.rootfs, h.target.digest, b.target.digest,
       h.nextTrustedReleaseKey, b.nextTrustedReleaseKey], {encoding:'utf8', env:{...h.env,
         CHARIOX_MANAGED_PROVIDER_TOPOLOGY:'path1',
@@ -51,7 +62,7 @@ for (const [round, rootfs] of roots) {
     assert.equal(privateState.uid,0)
     assert.equal(privateState.mode & 0o777,0o600)
     assert.equal((await stat(dirname(h.receiptPath))).mode & 0o777,0o700)
-    console.log(`MP-07 ${round} source=${JSON.parse(bytes).sourceCommit} digest=${installedRelease.digest} updater=unchanged path=${round}→K-A→K-B state=root-private`)
+    console.log(`MP-07 ${round} source=${JSON.parse(bytes).sourceCommit} digest=${installedRelease.digest} updater=unchanged path=${round}→K-A→K-B state=root-private targets=${actualKA ? actualKA.digest + '→' + actualKB.digest : 'fixture'}`)
   })
 }
 

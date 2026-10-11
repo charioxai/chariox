@@ -264,6 +264,8 @@ async function makeHarness(context, {
   updaterPath = upgrade,
   builderInputLF = false,
   installedRelease = null,
+  // An actual signed payload: { rootfs, digest, releasePin, builderPin }.
+  targetRelease = null,
   targetServicePolicy = 1,
   currentServicePolicy = 1,
   updaterShell = false,
@@ -285,12 +287,13 @@ async function makeHarness(context, {
     path1Release || workerCapableCurrent || receiptKind === "allocation_worker", builderKeys, currentManifestSchema,
     currentAppArtifacts, currentServicePolicy,
   )
-  const target = await makeRelease(
+  const target = targetRelease ?? await makeRelease(
     root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true, targetBuilderKeys, targetManifestSchema, true, targetServicePolicy,
   )
   const nextTrustedReleaseKey = join(root, "next-trusted-release-public-key")
   if (installedRelease) {
-    await put(nextTrustedReleaseKey, await readFile(trustedKey), 0o600)
+    await put(nextTrustedReleaseKey, await readFile(targetRelease?.releasePin ?? trustedKey), 0o600)
+    if (targetRelease) await put(nextTrustedBuilderKey, await readFile(targetRelease.builderPin), 0o600)
     await put(trustedKey, await readFile(installedRelease.releasePin), 0o600)
     await put(trustedBuilderKey, await readFile(installedRelease.builderPin), 0o600)
   }
