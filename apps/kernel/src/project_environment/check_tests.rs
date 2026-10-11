@@ -274,3 +274,6 @@ mod review0212;
 
 #[path = "review0821_check_tests.rs"]
 mod review0821;
+
+#[path = "review1118_check_tests.rs"]
+mod review1118;

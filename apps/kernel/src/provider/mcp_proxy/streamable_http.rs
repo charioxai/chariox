@@ -14,6 +14,13 @@ pub(super) fn forward_streamable_http_mcp_request(
     timeout_sec: Option<u64>,
 ) -> Result<serde_json::Value, DaemonError> {
     let request_id = payload.get("id").cloned();
+    let expects_response = |message: &serde_json::Value| {
+        message.get("method").is_some() && message.get("id").is_some()
+    };
+    let acknowledgement_only = match &payload {
+        serde_json::Value::Array(messages) => !messages.iter().any(expects_response),
+        message => !expects_response(message),
+    };
     let body = serde_json::to_vec(&payload).map_err(|error| DaemonError::LocalTransport {
         operation: "mcp.proxy.http.serialize",
         message: error.to_string(),
@@ -61,6 +68,11 @@ pub(super) fn forward_streamable_http_mcp_request(
             });
         }
     };
+    // MP-08 / MP-10 / MP-11: HTTP 202 acknowledges notifications and
+    // JSON-RPC responses without a JSON response body (MCP HTTP contract).
+    if acknowledgement_only && response.status() == 202 {
+        return Ok(serde_json::Value::Null);
+    }
     let content_type = response
         .header("Content-Type")
         .unwrap_or_default()
