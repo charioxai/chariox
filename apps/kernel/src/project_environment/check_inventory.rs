@@ -1,7 +1,7 @@
 //! MP-08 / MP-10 / MP-11: bounded named host probes; no scripts or installers.
 use super::*;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
 pub(super) fn facts() -> EnvironmentMeasuredFacts {
@@ -107,7 +107,22 @@ pub(super) fn executable(name: &str) -> Option<PathBuf> {
             m.is_file().then_some(p)
         })
 }
+pub(super) fn remaining(deadline: Instant, cap: Duration) -> Result<Duration, &'static str> {
+    let left = deadline.saturating_duration_since(Instant::now()).min(cap);
+    if left.is_zero() {
+        Err("check_budget_exceeded")
+    } else {
+        Ok(left)
+    }
+}
 pub(super) fn version(name: &str, roots: &[PathBuf]) -> Result<Option<String>, &'static str> {
+    version_until(name, roots, Instant::now() + Duration::from_secs(3))
+}
+pub(super) fn version_until(
+    name: &str,
+    roots: &[PathBuf],
+    deadline: Instant,
+) -> Result<Option<String>, &'static str> {
     let Some(args) = inventory_args(name) else {
         return Err("unsupported_inventory");
     };
@@ -131,9 +146,11 @@ pub(super) fn version(name: &str, roots: &[PathBuf]) -> Result<Option<String>, &
             }
         }
     }
-    let output =
-        crate::local::provider_requests::capture_inventory_probe(command, Duration::from_secs(3))
-            .map_err(|_| "probe_failed")?;
+    let output = crate::local::provider_requests::capture_inventory_probe(
+        command,
+        remaining(deadline, Duration::from_secs(3))?,
+    )
+    .map_err(|_| "probe_failed")?;
     if !output.status.success() {
         return Err("probe_failed");
     }
@@ -188,7 +205,29 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
         let expected = token.strip_prefix(op).unwrap_or(token);
         if expected.ends_with(".*") || expected.ends_with(".x") {
             let n = numbers(&expected[..expected.len() - 2])?;
-            accepted &= v.starts_with(&n);
+            if n.len() > 2 {
+                return None;
+            }
+            let mut lower = n.clone();
+            lower.resize(4, 0);
+            let mut upper = lower.clone();
+            let index = if op == "^" {
+                n.iter().position(|p| *p != 0).unwrap_or(n.len() - 1)
+            } else {
+                n.len() - 1
+            };
+            upper[index] = upper[index].checked_add(1)?;
+            upper[index + 1..].fill(0);
+            let mut actual = v.clone();
+            actual.resize(4, 0);
+            accepted &= match op {
+                "<" => actual < lower,
+                ">=" => actual >= lower,
+                ">" => actual >= upper,
+                "<=" => actual < upper,
+                "" | "=" | "~" | "^" => actual >= lower && actual < upper,
+                _ => return None,
+            };
             continue;
         }
         let e = numbers(expected)?;
@@ -214,7 +253,7 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
     }
     (!constraint.is_empty()).then_some(accepted)
 }
-pub(super) use super::check_health::health;
+pub(super) use super::check_health::{health, health_until};
 
 /// MP-08 / MP-10 / MP-11: package and font inventory reads installed facts,
 /// never lockfiles as proof, package scripts or package-manager mutations.
@@ -224,6 +263,22 @@ pub(super) fn software_version(
     root: Option<&Path>,
     roots: &[PathBuf],
 ) -> Result<Option<String>, &'static str> {
+    software_version_until(
+        name,
+        source,
+        root,
+        roots,
+        Instant::now() + Duration::from_secs(3),
+    )
+}
+pub(super) fn software_version_until(
+    name: &str,
+    source: Option<&str>,
+    root: Option<&Path>,
+    roots: &[PathBuf],
+    deadline: Instant,
+) -> Result<Option<String>, &'static str> {
+    remaining(deadline, Duration::from_secs(3))?;
     match source {
         Some("npm package") => {
             if name.starts_with('-')
@@ -273,9 +328,11 @@ pub(super) fn software_version(
                 .env_clear()
                 .env("LANG", "C")
                 .env("PATH", "/usr/local/bin:/usr/bin:/bin");
-            let output =
-                crate::local::provider_requests::capture_inventory_probe(c, Duration::from_secs(3))
-                    .map_err(|_| "probe_failed")?;
+            let output = crate::local::provider_requests::capture_inventory_probe(
+                c,
+                remaining(deadline, Duration::from_secs(3))?,
+            )
+            .map_err(|_| "probe_failed")?;
             if !output.status.success() {
                 return Err("probe_failed");
             }
@@ -308,9 +365,11 @@ pub(super) fn software_version(
                 .env_clear()
                 .env("LANG", "C")
                 .env("PATH", "/usr/local/bin:/usr/bin:/bin");
-            let output =
-                crate::local::provider_requests::capture_inventory_probe(c, Duration::from_secs(3))
-                    .map_err(|_| "probe_failed")?;
+            let output = crate::local::provider_requests::capture_inventory_probe(
+                c,
+                remaining(deadline, Duration::from_secs(3))?,
+            )
+            .map_err(|_| "probe_failed")?;
             if !output.status.success() {
                 return Ok(None);
             }
@@ -333,7 +392,7 @@ pub(super) fn software_version(
             Ok(Some(v.into()))
         }
         Some("manifest package") => Err("package_inventory_unavailable"),
-        _ => version(name, roots),
+        _ => version_until(name, roots, deadline),
     }
 }
 

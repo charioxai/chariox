@@ -68,7 +68,44 @@ fn parent(pid: u32) -> Option<u32> {
         .parse()
         .ok()
 }
-pub(super) fn observe(root: Option<u32>, owned: &mut Vec<Descendant>) -> io::Result<()> {
+fn group_members(root: u32) -> io::Result<Vec<u32>> {
+    let mut members = Vec::new();
+    for entry in std::fs::read_dir("/proc")? {
+        let entry = entry?;
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|p| p.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid != root && group(pid) == Some(root) {
+            members.push(pid);
+        }
+        if members.len() >= 1024 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "probe descendant limit",
+            ));
+        }
+    }
+    Ok(members)
+}
+fn group(pid: u32) -> Option<u32> {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()?
+        .rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(2)?
+        .parse()
+        .ok()
+}
+pub(super) fn observe(
+    root: Option<u32>,
+    owned: &mut Vec<Descendant>,
+    include_group: bool,
+) -> io::Result<()> {
     let mut parents = root
         .into_iter()
         .chain(owned.iter().filter(|p| p.alive()).map(|p| p.pid))
@@ -78,7 +115,11 @@ pub(super) fn observe(root: Option<u32>, owned: &mut Vec<Descendant>) -> io::Res
         if !visited.insert(pid) {
             continue;
         }
-        for child in children(pid)? {
+        let mut candidates = children(pid)?;
+        if include_group && root == Some(pid) {
+            candidates.extend(group_members(pid)?);
+        }
+        for child in candidates {
             if super::signal_pid(child.into()).is_err()
                 || owned.iter().any(|p| p.pid == child && p.alive())
             {
@@ -97,7 +138,10 @@ pub(super) fn observe(root: Option<u32>, owned: &mut Vec<Descendant>) -> io::Res
                 fd: unsafe { OwnedFd::from_raw_fd(fd as i32) },
             };
             let parent_owned = root == Some(pid) || owned.iter().any(|p| p.pid == pid && p.alive());
-            if pinned.alive() && parent(child) == Some(pid) && parent_owned {
+            if pinned.alive()
+                && parent_owned
+                && (parent(child) == Some(pid) || (root == Some(pid) && group(child) == Some(pid)))
+            {
                 if owned.len() >= 1024 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,

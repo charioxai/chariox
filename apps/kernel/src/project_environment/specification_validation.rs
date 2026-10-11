@@ -185,6 +185,7 @@ pub(super) fn validate_typed_requirement(r: &Requirement) -> Result<(), DaemonEr
                 }
             }
             if let Some(p) = source_path {
+                text(p)?;
                 relative_environment_path(p).map_err(environment_error)?;
             }
             optional(source_digest)?;

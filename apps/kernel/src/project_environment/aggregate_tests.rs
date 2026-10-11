@@ -368,3 +368,7 @@ fn envp05a_first_apply_advertises_durable_controls_together() {
         assert!(env.delivered_capabilities.enabled_environment_operations.contains(&capability), "missing {capability:?}");
     }
 }
+#[path = "review0821_platform_tests.rs"]
+mod review0821_platform;
+#[path = "review0821_metadata_tests.rs"]
+mod review0821_metadata;

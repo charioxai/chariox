@@ -4,6 +4,7 @@ use super::*;
 use crate::config::DaemonConfig;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use zeroize::Zeroizing;
 
 pub(crate) struct EnvironmentCheckContext {
@@ -54,6 +55,7 @@ pub(crate) fn check_requirement(
     target: &EnvironmentTargetBinding,
     operation: &str,
     baseline: &mut BTreeMap<String, String>,
+    deadline: Instant,
 ) -> MachineObservation {
     let mut facts = inventory::facts();
     let roots: Vec<PathBuf> = env
@@ -66,7 +68,17 @@ pub(crate) fn check_requirement(
                 .ok()
         })
         .collect();
+    let budget = || {
+        outcome(
+            NeedsYourInput,
+            "check_budget_exceeded",
+            "Check reached its bounded probe budget; select fewer items and check again",
+        )
+    };
     let result = (|| {
+        if Instant::now() >= deadline {
+            return budget();
+        }
         if !r.platform_variants.is_empty()
             && !r.platform_variants.iter().any(|p| {
                 facts
@@ -99,7 +111,7 @@ pub(crate) fn check_requirement(
                 super::check_assets::check_assets(ctx, env, r, target, baseline, &mut facts)
             }
             RequirementSpec::Software { .. } => {
-                super::check_platform::check_platform(ctx, env, r, &roots, &mut facts)
+                super::check_platform::check_platform(ctx, env, r, &roots, &mut facts, deadline)
             }
             RequirementSpec::Services {
                 target_binding,
@@ -121,7 +133,7 @@ pub(crate) fn check_requirement(
                         "A named service health probe is required; a PID never proves health",
                     );
                 };
-                match inventory::health(p,health_expectation,&roots){Ok(true)=>outcome(Ready,"service_healthy","Named service health probe passed; Check does not start or restart services"),Ok(false)=>outcome(Missing,"service_unhealthy","Service health probe failed; no repair performed"),Err("worker_required")=>outcome(NeedsYourInput,"worker_required","Executable health script requires confirmed disposable-worker execution; no host command ran"),Err(_)=>outcome(NeedsYourInput,"probe_unproven","Named health probe is unavailable or invalid; review its target and probe")}
+                match inventory::health_until(p,health_expectation,&roots,deadline){Ok(true)=>outcome(Ready,"service_healthy","Named service health probe passed; Check does not start or restart services"),Ok(false)=>outcome(Missing,"service_unhealthy","Service health probe failed; no repair performed"),Err("worker_required")=>outcome(NeedsYourInput,"worker_required","Executable health script requires confirmed disposable-worker execution; no host command ran"),Err(_)=>outcome(NeedsYourInput,"probe_unproven","Named health probe is unavailable or invalid; review its target and probe")}
             }
             RequirementSpec::Variables { .. } => {
                 super::check_assets::check_assets(ctx, env, r, target, baseline, &mut facts)
@@ -130,7 +142,7 @@ pub(crate) fn check_requirement(
                 super::check_assets::check_assets(ctx, env, r, target, baseline, &mut facts)
             }
             RequirementSpec::MachineNeeds { .. } => {
-                super::check_platform::check_platform(ctx, env, r, &roots, &mut facts)
+                super::check_platform::check_platform(ctx, env, r, &roots, &mut facts, deadline)
             }
             RequirementSpec::Accounts { .. } => super::check_admission::check_admission(ctx, r),
             RequirementSpec::AgentTools {
@@ -149,6 +161,7 @@ pub(crate) fn check_requirement(
                 vault_refs,
                 &roots,
                 operation,
+                deadline,
             ),
             RequirementSpec::CharioxApps { .. } => super::check_admission::check_admission(ctx, r),
             RequirementSpec::SetupChecks {
@@ -168,7 +181,10 @@ pub(crate) fn check_requirement(
                     );
                 }
                 for p in probes {
-                    match inventory::health(p, &None, &roots) {
+                    if Instant::now() >= deadline {
+                        return budget();
+                    }
+                    match inventory::health_until(p, &None, &roots, deadline) {
                         Ok(true) => {}
                         Ok(false) => {
                             return outcome(
@@ -194,6 +210,12 @@ pub(crate) fn check_requirement(
             }
         }
     })();
+    let result = if Instant::now() >= deadline {
+        budget()
+    } else {
+        result
+    };
+    let stale = result.1 == "check_budget_exceeded";
     MachineObservation {
         environment_id: env.lineage.environment_id.clone(),
         requirement_id: r.requirement_id.clone(),
@@ -205,7 +227,7 @@ pub(crate) fn check_requirement(
         reason_code: result.1,
         safe_summary: result.2,
         check_operation_id: Some(operation.into()),
-        stale: false,
+        stale,
     }
 }
 

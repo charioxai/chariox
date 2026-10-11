@@ -81,6 +81,7 @@ impl KernelRuntimeState {
                     &target,
                     "apply-plan",
                     &mut checks.public_bindings,
+                    deadline,
                 ));
             }
             validate_project(&state, &project, &owner, &env, &store)?;

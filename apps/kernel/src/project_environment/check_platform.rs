@@ -10,6 +10,7 @@ pub(super) fn check_platform(
     r: &Requirement,
     roots: &[PathBuf],
     facts: &mut EnvironmentMeasuredFacts,
+    deadline: std::time::Instant,
 ) -> (EnvironmentObservationStatus, String, String) {
     match &r.spec {
         RequirementSpec::Software {
@@ -66,11 +67,12 @@ pub(super) fn check_platform(
                     return outcome(Missing,"gui_platform_gap","Desktop program is absent or unsupported on this platform; Check-only in V1");
                 }
             }
-            match inventory::software_version(
+            match inventory::software_version_until(
                 identity,
                 install_source.as_deref(),
                 workspace(env, r),
                 &roots,
+                deadline,
             ) {
                 Ok(Some(v)) => {
                     facts.present = Some(true);

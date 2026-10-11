@@ -9,13 +9,29 @@ pub(super) fn health(
     expectation: &Option<EnvironmentHealthExpectation>,
     roots: &[PathBuf],
 ) -> Result<bool, &'static str> {
+    health_until(
+        probe,
+        expectation,
+        roots,
+        Instant::now() + Duration::from_secs(5),
+    )
+}
+pub(super) fn health_until(
+    probe: &EnvironmentProbe,
+    expectation: &Option<EnvironmentHealthExpectation>,
+    roots: &[PathBuf],
+    deadline: Instant,
+) -> Result<bool, &'static str> {
     match probe {
         EnvironmentProbe::Tcp {
             host,
             port,
             timeout_ms,
         } => {
-            let timeout = Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64);
+            let timeout = super::check_inventory::remaining(
+                deadline,
+                Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64),
+            )?;
             let began = Instant::now();
             let addresses = resolve_host(host, timeout, roots)?;
             for ip in addresses {
@@ -52,9 +68,33 @@ pub(super) fn health(
                 Some(EnvironmentHealthExpectation::HttpStatus { status }) => *status,
                 _ => *expected_status,
             };
+            let timeout = super::check_inventory::remaining(
+                deadline,
+                Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64),
+            )?;
+            let began = Instant::now();
+            let addresses = match parsed.host().ok_or("invalid_probe_host")? {
+                url::Host::Domain(host) => resolve_host(host, timeout, roots)?,
+                url::Host::Ipv4(ip) => vec![ip.into()],
+                url::Host::Ipv6(ip) => vec![ip.into()],
+            };
+            let port = parsed.port_or_known_default().ok_or("invalid_probe")?;
+            let addresses: Vec<_> = addresses
+                .into_iter()
+                .map(|ip| std::net::SocketAddr::new(ip, port))
+                .collect();
+            let remaining = timeout.saturating_sub(began.elapsed());
+            if remaining.is_zero() || addresses.is_empty() {
+                return Ok(false);
+            }
+            // Resolve before ureq, preserving the URL's Host header and TLS
+            // server name. Redirects and environment proxies cannot escape to
+            // a second unbounded hostname lookup.
             let agent = ureq::AgentBuilder::new()
+                .try_proxy_from_env(false)
+                .resolver(move |_: &str| Ok(addresses.clone()))
                 .redirects(0)
-                .timeout(Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64))
+                .timeout(remaining)
                 .build();
             match agent.get(url).call() {
                 Ok(r) => Ok(r.status() == expected),
@@ -87,7 +127,10 @@ pub(super) fn health(
                 .env("PATH", "/usr/local/bin:/usr/bin:/bin");
             let exit = crate::local::provider_requests::capture_inventory_probe(
                 c,
-                Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64),
+                super::check_inventory::remaining(
+                    deadline,
+                    Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64),
+                )?,
             )
             .map_err(|_| "probe_failed")?
             .status

@@ -210,6 +210,7 @@ impl KernelRuntimeState {
             &current_check_target(&config),
             "apply-capability",
             &mut BTreeMap::new(),
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
         );
         if checked.status != EnvironmentObservationStatus::Ready {
             return Err(environment_error(

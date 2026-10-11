@@ -131,6 +131,7 @@ fn run_apply(
             &op.target,
             &op.operation_id,
             &mut checks.public_bindings,
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
         );
         let mut result = apply_item_result(
             r,
@@ -183,6 +184,7 @@ fn run_apply(
                         &op.target,
                         &op.operation_id,
                         &mut checks.public_bindings,
+                        std::time::Instant::now() + std::time::Duration::from_secs(60),
                     );
                     if setup_reconciliation_allowed(
                         previous_receipt.is_some(), uncertain,
@@ -296,6 +298,7 @@ fn run_apply(
                 &op.target,
                 &op.operation_id,
                 &mut checks.public_bindings,
+                std::time::Instant::now() + std::time::Duration::from_secs(60),
             );
             if outcome.is_ok() && checked.status == EnvironmentObservationStatus::Ready {
                 observation = checked;

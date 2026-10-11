@@ -316,3 +316,6 @@ fn envp04_new_check_replaces_obsolete_generation_but_preserves_other_targets() {
 
 #[path = "review0212_check_tests.rs"]
 mod review0212;
+
+#[path = "review0821_check_tests.rs"]
+mod review0821;
