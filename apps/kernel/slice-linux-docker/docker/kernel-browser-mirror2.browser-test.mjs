@@ -979,3 +979,25 @@ test("MP-11: a Vault-filled plain field is masked while it holds the fill: fill 
   assert.deepEqual(kinds(refilled), ["mask"], "MP-11: a refill masks it again");
   assert(!JSON.stringify(refilled).includes(secret));
 }));
+
+// Round 11 drop drill (b3 hosted, DPR2): a reply lost with a dropped socket and not replayed left a gap; the viewer
+// waited 500 ms, then a full snapshot (2.2 s), or the kernel's 1.5 s resend (3.1 s in the DPR2 hour). Protocol 501
+// `resend`: the viewer asks for the packet after its base at once; earlier long polls end (a failed credit's orphan).
+test("MP-10: protocol 501 a resend credit gets the packet after its base at once (lost reply), and ends an orphaned long poll returning the packet it issued", () => mirrored('<p id="x">one</p>', async ({ next, evaluate, host, subscription_id, generation }) => {
+  const first = await next();
+  const credit = (after, extra = {}) => host.request({ op: "mirror_next", subscription_id, generation, after_sequence: after, drift_nodes: [], wait_ms: 2000, ...extra });
+  await evaluate("x.firstChild.data='two';true");
+  const lost = await credit(first.sequence);
+  assert.equal(lost.sequence, first.sequence + 1);
+  let started = Date.now();
+  assert.deepEqual(await credit(first.sequence, { resend: true }), lost, "MP-10: the lost packet again, byte for byte");
+  assert.ok(Date.now() - started < 500, `MP-10: at once (${Date.now() - started} ms), not after the 1.5 s resend window`);
+  // An orphaned long poll (its credit failed with the socket): the resend credit ends it and returns what it issued.
+  const orphan = credit(lost.sequence);
+  await new Promise(resolve => setTimeout(resolve, 150));
+  started = Date.now();
+  const resent = await credit(lost.sequence, { resend: true });
+  assert.ok(Date.now() - started < 800, `MP-10: the orphaned poll ended (${Date.now() - started} ms)`);
+  assert.deepEqual(resent, await orphan, "MP-10: the orphan's packet is the resend");
+  assert.equal((await credit(resent.sequence, { wait_ms: 0 })).sequence, resent.sequence + 1, "MP-10: then the stream continues");
+}));

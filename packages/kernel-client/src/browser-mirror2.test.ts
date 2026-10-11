@@ -27,7 +27,7 @@ test('MP-11: v2 refuses active elements, handlers, navigable URLs and fetching C
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'use', ns: 'svg', attrs: { href: 'https://x/#icon' } })), new Map()), /unsafe mirror/)
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'foreignObject', ns: 'svg' })), new Map()), /unsafe mirror/)
   assert.match(mirror2SandboxCsp, /script-src 'none'/); assert.match(mirror2SandboxCsp, /connect-src 'none'/); assert.match(mirror2SandboxCsp, /img-src blob: data:;/)
-  assert.equal(browserMirror2MinimumProtocolVersion, 492)
+  assert.equal(browserMirror2MinimumProtocolVersion, 501)
 })
 
 test('MP-11: masks carry no content and leaves never parent nodes', () => {
@@ -122,7 +122,7 @@ const flow = (script: (command: Record<string, unknown>) => Promise<unknown>) =>
   const packets: Mirror2Packet[] = []
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (packet: Mirror2Packet) => { if (failNext) { failNext = always; throw Error('MP-11: nested mirror unavailable') } applied.push(packet.sequence); packets.push(packet) } })
   const requests: Array<Record<string, unknown>> = []
-  const transport = { protocolVersion: 492, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
+  const transport = { protocolVersion: 501, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
   return { applied, packets, failures, requests, failOnce: () => { failNext = true }, failAlways: () => { failNext = true; always = true }, start: (failingMs?: number) => attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: error => failures.push(error) }, { credits: 1, waitMs: 0, renderer, ...(failingMs ? { failingMs } : {}) }) }
 }
 // Protocol 489: a reset carries the binding and header; a delta only what changed.
@@ -153,26 +153,27 @@ test('MP-08/MP-10: a retired subscription surfaces a failure; transient failures
   assert.deepEqual(flaky.failures, [], 'MP-10: a short failure streak is not terminal')
 })
 
-// Round 10 hosted drop drill (reverses audit 2026-10-10 §4.8): a failed credit asks for a reset. A plain re-credit
-// waited behind the kernel's long poll for the lost credit and then for the 1.5 s resend (3.25 s after reconnect);
-// a reset's hurry ends that poll (0.1-0.25 s after reconnect).
-test('MP-10: a failed credit asks for a reset (it ends the kernel long poll of the lost credit); the stream continues', async () => {
+// Round 10 hosted drop drill: a plain re-credit after a failed credit waited behind the kernel's long poll for the
+// lost credit and then for the 1.5 s resend (3.25 s after reconnect); round 10 reset instead (a full snapshot).
+// Round 11 (protocol 501): a resend credit ends that poll too and gets the packet it issued, without a snapshot.
+test('MP-10: protocol 501 a failed credit asks for a resend (it ends the kernel long poll of the lost credit), not a reset; the stream continues', async () => {
   let sequence = 0, failures = 0
   const viewer = flow(async command => {
     if (command.op === 'mirror_subscribe') return { subscription_id: 's' }
     if (command.op === 'mirror_close') return { closed: true }
     if (command.after_sequence === 0) return packet(++sequence, true)
-    if (failures < 1 && sequence === 2) { failures++; throw Error('local_transport_error: connection closed') }
+    if (failures < 1 && sequence === 2) { failures++; ++sequence; throw Error('local_transport_error: connection closed') } // packet 3 issued, its reply lost
+    if (command.resend) return packet(command.after_sequence as number + 1, false)
     if (sequence >= 4) await new Promise(resolve => setTimeout(resolve, 200))
     return packet(++sequence, false)
   })
   const view = await viewer.start()
   await until(() => viewer.applied.length >= 4)
   await view.close()
-  const afters = viewer.requests.filter(command => command.op === 'mirror_next').map(command => command.after_sequence)
-  const lost = afters.indexOf(2)
-  assert.equal(afters[lost + 1], 0, `MP-10: the credit after the failed one is a reset: ${JSON.stringify(afters)}`)
-  assert.ok(viewer.applied.length >= 4)
+  const credits = viewer.requests.filter(command => command.op === 'mirror_next'), lost = credits.findIndex(command => command.after_sequence === 2)
+  assert.deepEqual([credits[lost + 1]!.after_sequence, credits[lost + 1]!.resend], [2, true], `MP-10: the credit after the failed one is a resend: ${JSON.stringify(credits)}`)
+  assert.equal(credits.filter(command => command.after_sequence === 0).length, 1, 'MP-10: no second snapshot')
+  assert.deepEqual(viewer.applied.slice(0, 4), [1, 2, 3, 4])
 })
 
 test('MP-10: removing an inline style forgets it, so a later resource cannot restore it', () => {
@@ -356,11 +357,11 @@ test('MP-10: review #320-2 a removed frame releases its nested records and a ret
 
 // Round 10 hosted drop drill: a dropped socket fails every credit in flight at once. That is one failure for the
 // backoff (no 2 s wait), and a reset: only a reset ends the long polls the kernel still holds for the lost credits.
-test('MP-10: credits that fail together (a dropped socket) count as one failure: the reset follows after one backoff step', async () => {
+test('MP-10: credits that fail together (a dropped socket) count as one failure: the resend follows after one backoff step', async () => {
   let sequence = 0, dropped = false, released: Array<() => void> = []
   const applied: number[] = [], requests: Array<Record<string, unknown>> = []
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
-  const transport = { protocolVersion: 492, request: async (request: unknown) => {
+  const transport = { protocolVersion: 501, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
@@ -377,5 +378,32 @@ test('MP-10: credits that fail together (a dropped socket) count as one failure:
   await view.close()
   const after = requests.filter(c => c.op === 'mirror_next' && (c.at as number) > droppedAt)
   assert.ok(after.length > 0 && (after[0]!.at as number) - droppedAt < 600, `MP-10: re-credit within one backoff step (${after.length ? (after[0]!.at as number) - droppedAt : 'none'} ms)`)
-  assert.equal(after[0]!.after_sequence, 0, 'MP-10: the first credit after the drop is the reset that ends the lost long polls')
+  assert.deepEqual([after[0]!.after_sequence, after[0]!.resend], [1, true], 'MP-10: the first credit after the drop is the resend that ends the lost long polls')
+})
+
+// Round 11 hosted drop drill (b3, DPR2): a reply lost without a replay left a gap; the viewer waited 500 ms and reset
+// (a full snapshot: 2.2 s after the drop). Protocol 501: the missing packet is asked for at once (resend).
+test('MP-10: protocol 501 a gap (a reply lost with its socket) asks for the missing packet at once; it applies without a reset', async () => {
+  let sequence = 0, gapAt = 0
+  const applied: number[] = [], requests: Array<Record<string, unknown>> = []
+  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
+  const transport = { protocolVersion: 501, request: async (request: unknown) => {
+    const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() })
+    if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
+    if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
+    if (command.after_sequence === 0) return { KernelBrowser: { result: packet(++sequence, true) } }
+    if (command.resend) return { KernelBrowser: { result: packet(command.after_sequence as number + 1, false) } }
+    if (sequence === 1) { ++sequence; return new Promise(() => {}) } // packet 2: its reply never arrives
+    await new Promise(resolve => setTimeout(resolve, 30)); if (sequence === 2) gapAt = Date.now()
+    return { KernelBrowser: { result: packet(++sequence, false) } }
+  } }
+  const view = await attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: () => {} }, { credits: 2, waitMs: 0, renderer })
+  await until(() => applied.includes(3), 3000)
+  await view.close()
+  const resend = requests.find(command => command.resend)
+  assert.ok(resend, `MP-10: a resend credit: ${JSON.stringify(requests.map(c => [c.after_sequence, c.resend]))}`)
+  assert.equal(resend.after_sequence, 1, 'MP-10: it names the base before the missing packet')
+  assert.ok((resend.at as number) - gapAt < 200, `MP-10: at once (${(resend.at as number) - gapAt} ms after the gap)`)
+  assert.deepEqual(applied.slice(0, 3), [1, 2, 3], 'MP-10: the missing packet applies, then the buffered one')
+  assert.equal(requests.filter(command => command.after_sequence === 0).length, 1, 'MP-10: no second snapshot')
 })

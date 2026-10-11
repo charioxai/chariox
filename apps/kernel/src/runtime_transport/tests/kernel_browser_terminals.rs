@@ -263,6 +263,7 @@ async fn mdnotes_two_local_connections_child() {
                 after_sequence: 0,
                 drift_nodes: vec![],
                 wait_ms: None,
+                resend: None,
             },
         )
         .await;
@@ -283,6 +284,7 @@ async fn mdnotes_two_local_connections_child() {
                     after_sequence: 0,
                     drift_nodes: vec![],
                     wait_ms: None,
+                    resend: None,
                 },
             )
             .await,
@@ -309,6 +311,7 @@ async fn mdnotes_two_local_connections_child() {
                     after_sequence: 1,
                     drift_nodes: vec![],
                     wait_ms: None,
+                    resend: None,
                 },
             )
             .await,
@@ -359,6 +362,7 @@ async fn mdnotes_two_local_connections_child() {
                     after_sequence: 0,
                     drift_nodes: vec![],
                     wait_ms: None,
+                    resend: None,
                 },
             )
             .await,

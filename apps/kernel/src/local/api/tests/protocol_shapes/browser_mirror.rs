@@ -1,15 +1,15 @@
-//! MP-08/MP-10/MP-11: protocol 447/492 mirroring shape and rejection contract.
+//! MP-08/MP-10/MP-11: protocol 447/492/501 mirroring shape and rejection contract.
 use super::*;
 use crate::local::{
     KernelBrowserCommand as C, KernelBrowserInput, KernelBrowserMirrorAction as A,
     KernelBrowserRequest,
 };
 #[test]
-fn browser_mirror_protocol_492_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 492);
+fn browser_mirror_protocol_501_shapes_and_hash() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 501);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        96
+        110
     );
     let binding = |action| C::MirrorInput {
         tab_id: "t".into(),
@@ -32,6 +32,7 @@ fn browser_mirror_protocol_492_shapes_and_hash() {
             after_sequence: 3,
             drift_nodes: vec!["n1".into()],
             wait_ms: None,
+            resend: None,
         },
         C::MirrorSubscribe {
             tab_id: "t".into(),
@@ -45,6 +46,15 @@ fn browser_mirror_protocol_492_shapes_and_hash() {
             after_sequence: 3,
             drift_nodes: vec![],
             wait_ms: Some(1500),
+            resend: None,
+        },
+        C::MirrorNext {
+            subscription_id: "s".into(),
+            generation: 2,
+            after_sequence: 3,
+            drift_nodes: vec![],
+            wait_ms: Some(1500),
+            resend: Some(true),
         },
         C::MirrorClose {
             subscription_id: "s".into(),
@@ -128,11 +138,11 @@ fn browser_mirror_protocol_492_shapes_and_hash() {
         assert!(serde_json::from_value::<LocalDaemonRequest>(value.clone()).is_ok());
     }
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("browser-mirror-492.json")).unwrap();
+        serde_json::from_str(include_str!("browser-mirror-501.json")).unwrap();
     assert_eq!(serde_json::json!(values), expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&values).unwrap())),
-        "12802036db2d247dc5826229a6028e08cbe29b88410886e76a644ce2ac1ae823"
+        "11b80a68517f28e8b03508f786b044aa88175c3b004a858178c1f930ca88c6e5"
     );
     let next = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
         command: C::MirrorNext {
@@ -141,6 +151,7 @@ fn browser_mirror_protocol_492_shapes_and_hash() {
             after_sequence: 3,
             drift_nodes: vec![],
             wait_ms: Some(1500),
+            resend: Some(true),
         },
     });
     assert!(
@@ -157,6 +168,8 @@ fn browser_mirror_refuses_authority_scripts_and_missing_document_shapes() {
         // Protocol 492 retired the never-sent composition action; `set` names only control state.
         serde_json::json!({"KernelBrowser":{"command":{"op":"mirror_input","tab_id":"t","generation":1,"document_id":"d","subscription_id":"s","sequence":1,"action":{"kind":"composition","text":"a","selection_start":0,"selection_end":1}}}}),
         serde_json::json!({"KernelBrowser":{"command":{"op":"mirror_input","tab_id":"t","generation":1,"document_id":"d","subscription_id":"s","sequence":1,"action":{"kind":"set","node_id":"n1","value":"x","script":"unsafe"}}}}),
+        // Protocol 501: `resend` is a flag, nothing else.
+        serde_json::json!({"KernelBrowser":{"command":{"op":"mirror_next","subscription_id":"s","generation":1,"after_sequence":1,"drift_nodes":[],"resend":"1"}}}),
     ] {
         assert!(serde_json::from_value::<LocalDaemonRequest>(value).is_err());
     }

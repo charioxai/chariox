@@ -1,4 +1,4 @@
-// MP-08/MP-10/MP-11 — DOM mirror v2 wire (local protocol 492); kernel remains browser authority.
+// MP-08/MP-10/MP-11 — DOM mirror v2 wire (local protocol 501); kernel remains browser authority.
 export type Mirror2Kind = 'document' | 'shadow' | 'element' | 'text' | 'frame' | 'mask' | 'tile'
 export type Mirror2Form = { value: string; checked: boolean; selected_index: number; selection_start: number | null; selection_end: number | null }
 // Protocol 492: UA state with no attribute footprint (records carry non-default values only).

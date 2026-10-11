@@ -282,4 +282,7 @@ pub use workspace::*;
 /// mirror viewer (`set`, `blur`; the unused `composition` action is retired) and
 /// adds sampled UA state (`state` op), the document `fragment` header and
 /// custom-element definitions to mirror v2 packets.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 492;
+/// MP-08/MP-10/MP-11: version 501 adds `mirror_next.resend` (the viewer asks for the
+/// packet after its base at once: a lost reply or a failed credit), custom validity
+/// (`state.custom_invalid`) and external SVG `<use>` sprites (sanitized resources).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 501;

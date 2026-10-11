@@ -31,6 +31,11 @@ pub enum KernelBrowserCommand {
         drift_nodes: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wait_ms: Option<u32>,
+        /// Protocol 501: the viewer lacks the packet after `after_sequence` (a reply
+        /// lost with its socket, or a failed credit): the controller resends it from
+        /// its history at once, ending earlier long polls.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resend: Option<bool>,
     },
     MirrorClose {
         subscription_id: String,

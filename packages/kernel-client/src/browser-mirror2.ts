@@ -1,11 +1,11 @@
-// MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 492). The page's own
+// MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 501). The page's own
 // sanitized stylesheets and attributes are rebuilt in a script-free sandbox;
 // deltas apply in place. No origin I/O: resources arrive as kernel bytes.
 import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp } from './browser-mirror2-security.js'
 import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2State, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
-export const browserMirror2MinimumProtocolVersion = 492
+export const browserMirror2MinimumProtocolVersion = 501
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 const CREDIT_WINDOW = 4 // credits in flight at most (attachBrowserMirror2)
@@ -595,11 +595,11 @@ type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'fram
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
 export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; packet?(packet: Mirror2Packet): void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
-  if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 492')
+  if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 501')
   const request = async (command: unknown): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } }) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
-  let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0, failGeneration = 0
+  let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, wantResend = false, resendOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0, failGeneration = 0
   const buffered = new Map<number, Mirror2WirePacket>()
   // In sequence order: inflate in the context, then restore what a compact delta implies.
   let inflater: Mirror2Inflater | null = null, base: Mirror2Packet | null = null
@@ -637,14 +637,18 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       base = next; failures = 0; failingSince = 0
       if (next.reset || next.ops?.length || next.resources.length || next.tiles.length) activeAt = performance.now()
       applied = next.sequence
-      if (next.reset) wantReset = false
+      if (next.reset) { wantReset = false; wantResend = false }
       handlers.packet?.(next)
     }
     if (buffered.size > 8) { buffered.clear(); wantReset = true }
-    // Credits and replies may overtake each other by milliseconds; a gap that
-    // outlives that is permanent (a reply lost with a dropped socket): reset.
+    // A gap is a reply lost with a dropped socket (or one overtaken by milliseconds: its duplicate is ignored):
+    // the missing packet is asked for at once (protocol 501 resend). A gap that outlives its resend resets.
     if (!buffered.size) gapSince = 0
-    else if (!gapSince) { const since = gapSince = performance.now(); setTimeout(() => { if (gapSince === since && buffered.size && !closed) { buffered.clear(); gapSince = 0; wantReset = true; fill() } }, GAP_MS) }
+    else if (!gapSince) {
+      const since = gapSince = performance.now(); wantResend = true; fill()
+      const check = (): void => { if (gapSince !== since || !buffered.size || closed) return; if (resendOutstanding) { setTimeout(check, GAP_MS); return } buffered.clear(); gapSince = 0; wantReset = true; fill() }
+      setTimeout(check, GAP_MS)
+    }
   }); chain = run.catch(() => { buffered.clear(); gapSince = 0 }); return run }
   // A retired subscription or generation never recovers by itself.
   // Stopping local credits and releasing the kernel subscription are separate: the latter happens once.
@@ -653,11 +657,14 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   const terminal = (error: unknown): boolean => error instanceof Error && /stale or foreign mirror/.test(error.message)
   const fatal = (error: unknown): boolean => error instanceof Error && /MP-11: (invalid|unsafe|foreign|executable|active|protected|mirror resource digest|mirror packet bounds)/.test(error.message)
   const credit = (): void => {
-    const reset = wantReset && !resetOutstanding, generation = failGeneration
+    const reset = wantReset && !resetOutstanding, resend = !reset && wantResend && !resendOutstanding && applied > 0, generation = failGeneration
     if (reset) resetOutstanding = true
+    if (resend) { resendOutstanding = true; wantResend = false }
     inflight++
-    request({ op: 'mirror_next', subscription_id, generation: binding.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms: waitMs })
+    let answered = false
+    request({ op: 'mirror_next', subscription_id, generation: binding.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms: waitMs, ...(resend ? { resend: true } : {}) })
       .then(async (packet: Mirror2WirePacket) => {
+        answered = true
         if (!packet || packet.wire !== 2 || !Number.isSafeInteger(packet.sequence) || packet.sequence <= 0) throw Error('MP-11: foreign mirror packet')
         if (packet.reset) resetOutstanding = false
         // A replayed or late copy of an applied packet is not a gap.
@@ -665,20 +672,23 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
         await drain()
       })
       .catch(error => {
-        // A failed credit asks for a reset: the kernel still holds the long poll of a credit lost with a
-        // dropped socket, and only a reset ends it (a plain re-credit waits behind it, then for the resend).
+        // A credit that failed (a dropped socket, a relay re-authentication) asks for a resend: the kernel may still
+        // hold its long poll, which the resend's hurry ends, and the packet that poll issued comes back from history
+        // (no full snapshot). A reply that could not be applied asks for a reset.
         // Credits sent before a failure that fail too (the same socket) count as that one failure for the backoff.
         if (reset) resetOutstanding = false
         if (generation === failGeneration) { failures++; failGeneration++ }
-        wantReset = true; failingSince ||= performance.now()
+        if (answered) wantReset = true; else wantResend = true
+        failingSince ||= performance.now()
         if (!closed && (fatal(error) || terminal(error) || performance.now() - failingSince > failingMs)) { closed = true; inflater?.close(); renderer.close(); handlers.failure(error); void closeRemote() }
       })
-      .finally(() => { inflight--; if (!closed) setTimeout(fill, failures ? Math.min(4000, 250 * 2 ** (failures - 1)) : 0) })
+      .finally(() => { if (resend) resendOutstanding = false; inflight--; if (!closed) setTimeout(fill, failures ? Math.min(4000, 250 * 2 ** (failures - 1)) : 0) })
   }
-  // Pipelined credits start once a snapshot is applied; a reset is a single
-  // credit and never waits behind credits in flight (the kernel ends their wait).
+  // Pipelined credits start once a snapshot is applied; a reset or a resend is a single credit and never waits
+  // behind credits in flight (the kernel ends their wait).
   const fill = (): void => {
     if (!closed && applied && wantReset && !resetOutstanding) credit()
+    else if (!closed && applied && wantResend && !resendOutstanding) credit()
     while (!closed && inflight < (wantReset || !applied || performance.now() - activeAt > 3000 ? 1 : credits)) credit()
   }
   fill()

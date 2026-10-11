@@ -48,6 +48,19 @@
   {
     "KernelBrowser": {
       "command": {
+        "op": "mirror_next",
+        "subscription_id": "s",
+        "generation": 2,
+        "after_sequence": 3,
+        "drift_nodes": [],
+        "wait_ms": 1500,
+        "resend": true
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
         "op": "mirror_close",
         "subscription_id": "s",
         "generation": 2

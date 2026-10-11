@@ -232,13 +232,18 @@ export class Mirror2 {
     const replayKey = typeof command.command_id === 'string' && command.command_id.length <= 128 ? command.command_id : null;
     const replayed = replayKey && stream.replies?.get(replayKey);
     if (replayed) { if (!replayed.done) this.hurry(stream); return replayed.run; }
-    const lost = this.lost(stream, command, scope);
+    // Protocol 501: a resend credit (the viewer saw a gap, or a credit failed with its socket) wants the packet
+    // after its base now: from history when it was issued (its reply lost), else once earlier long polls, which
+    // it ends, have answered (a failed credit's orphan issues it), else it is an ordinary credit.
+    if (command.resend !== undefined && command.resend !== true) throw new Error('MP-11: invalid mirror resend');
+    const resend = command.resend === true && command.after_sequence > 0;
+    const lost = this.lost(stream, command, scope, resend);
     if (lost) return lost;
     const arrival = Date.now(), wait = command.wait_ms ?? 0;
     // A reset credit (lost base) must not queue behind a waiting long poll.
-    if (command.after_sequence === 0) this.hurry(stream);
+    if (command.after_sequence === 0 || resend) this.hurry(stream);
     const hurry = stream.hurry;
-    const run = stream.chain.then(() => this.packet(stream, command, scope, signal, Math.min(arrival + 3 * wait, Date.now() + wait), hurry));
+    const run = stream.chain.then(() => resend && this.lost(stream, command, scope, true) || this.packet(stream, command, scope, signal, Math.min(arrival + 3 * wait, Date.now() + wait), hurry));
     stream.chain = run.catch(() => {});
     if (replayKey) { const entry = { run, done: false }; run.finally(() => { entry.done = true; }).catch(() => {}); (stream.replies ??= new Map()).set(replayKey, entry); if (stream.replies.size > 8) stream.replies.delete(stream.replies.keys().next().value); }
     return run;
@@ -385,11 +390,12 @@ export class Mirror2 {
     const bytes = JSON.stringify(wire).length; stream.history.set(sequence, { wire, at: Date.now(), bytes }); stream.historyBytes += bytes;
     for (const [old, entry] of stream.history) { if (stream.history.size <= 16 && stream.historyBytes <= HISTORY_BYTES || old === sequence) break; stream.history.delete(old); stream.historyBytes -= entry.bytes; }
   }
-  lost(stream, command, scope) {
+  // A resend (protocol 501) names the packet it lacks: the one after its base, without the in-flight window.
+  lost(stream, command, scope, resend = false) {
     const after = command.after_sequence;
     if (!Number.isSafeInteger(after) || after <= 0 || after >= stream.issued || this.service.streams.get(command.subscription_id) !== stream) return null;
-    const next = Math.max(after, stream.resent ?? 0) + 1, entry = stream.history?.get(next);
-    if (!entry || Date.now() - entry.at < RESEND_MS) return null;
+    const next = resend ? after + 1 : Math.max(after, stream.resent ?? 0) + 1, entry = stream.history?.get(next);
+    if (!entry || !resend && Date.now() - entry.at < RESEND_MS) return null;
     this.service.require(command.subscription_id, scope, command.generation);
     stream.resent = next; this.host.timing?.('mirror2_resend', timestamp());
     return entry.wire;
