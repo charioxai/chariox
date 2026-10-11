@@ -101,22 +101,25 @@ func nativeInputPlan(_ input: [String: Any], surface: NativeSurface) throws -> N
     }
 }
 
-struct NativeReleaseFence<Element> {
+@MainActor struct NativeReleaseFence<Element> {
     let destination: NativeDestinationFence<Element>
     let request: Request
     let element: Element
     let plan: NativeInputPlan
     let geometry: ClickGeometry
-    let observer: () throws -> Void
+    let observer: any PhysicalInputObserver
+    let foreignHeld: () -> Bool
     let postingAllowed: () -> Bool
     func check() throws {
-        try observer()
+        try observer.checkHealth()
         // A cancelled Action can release only to its still-admitted destination.
         // Observer health, target focus/visibility/geometry and posting permission
         // stay mandatory even though the cancelled Action's authority is retired.
         try destination.check(request, element: element, typing: plan.typing,
             clickGeometry: geometry, eventLocation: plan.point ?? geometry.location,
             physicalKey: plan.typing, checkAuthority: false)
+        try observer.checkHealth()
+        guard !observer.fence.foreignPressObserved, !foreignHeld() else { throw tagged(.disabled, "foreign-input-held") }
         guard postingAllowed() else { throw Refusal.permission }
     }
 }
@@ -134,8 +137,9 @@ extension MacSource {
         let element = try target(request)
         let geometry = try self.geometry(request, element: element)
         let release = NativeReleaseFence(destination: destinationFence(for: request), request: request,
-            element: element, plan: plan, geometry: geometry, observer: { try observer.check() },
-            postingAllowed: { CGPreflightPostEventAccess() })
+            element: element, plan: plan, geometry: geometry, observer: observer,
+            foreignHeld: { foreignInputHeld(excludingOwned: plan.events.last) },
+            postingAllowed: { CGPreflightPostEventAccess() && AXIsProcessTrusted() })
         try await seat.dispatch(plan, fence: {
             try observer.check()
             try checkPermission(.click)
