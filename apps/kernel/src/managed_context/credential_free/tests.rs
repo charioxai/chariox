@@ -682,6 +682,24 @@ pub(crate) fn malformed(text: &str) -> Vec<Vec<u8>> {
 // in every malformed variant, plus the ordinary inputs that must stay data.
 // `true` = copies as ordinary data; `false` = Vault-routed (or refused).
 pub(crate) fn classification_cases() -> Vec<(&'static str, Vec<u8>, bool)> {
+    cases(true)
+}
+
+// MP-08/MP-11: the four boundary paths run every bypass input and every
+// malformed variant kind (one variant per input, rotating), not the full
+// cross product, which `mp08_mp11_classification_table_fails_closed` covers.
+pub(crate) fn boundary_cases() -> Vec<(&'static str, Vec<u8>, bool)> {
+    cases(false)
+}
+
+fn cases(full: bool) -> Vec<(&'static str, Vec<u8>, bool)> {
+    let variants = |index: usize, text: &str| {
+        let mut all = malformed(text);
+        if !full {
+            all = vec![all.swap_remove(index % all.len())];
+        }
+        all
+    };
     let escaped = r#"{"api\u005fkey":"synthetic-canary"}"#;
     let credentials: &[(&str, &str)] = &[
         // Wide text with a control character (#903 @39df80b71).
@@ -741,23 +759,28 @@ pub(crate) fn classification_cases() -> Vec<(&'static str, Vec<u8>, bool)> {
         ("app.js", "const status = ok ? \"PASS\" : \"FAIL\";\n"),
     ];
     let mut cases = Vec::new();
-    for (path, text) in credentials {
+    for (index, (path, text)) in credentials.iter().enumerate() {
         cases.push((*path, text.as_bytes().to_vec(), false));
         cases.extend(
-            malformed(text)
+            variants(index, text)
                 .into_iter()
                 .map(|bytes| (*path, bytes, false)),
         );
     }
-    for (path, text) in ordinary.iter().copied().chain(
-        PACKAGE_METADATA
-            .iter()
-            .map(|(path, bytes)| (*path, std::str::from_utf8(bytes).unwrap())),
-    ) {
+    for (index, (path, text)) in ordinary
+        .iter()
+        .copied()
+        .chain(
+            PACKAGE_METADATA
+                .iter()
+                .map(|(path, bytes)| (*path, std::str::from_utf8(bytes).unwrap())),
+        )
+        .enumerate()
+    {
         cases.push((path, text.as_bytes().to_vec(), true));
         // Malformed text is unclassifiable even when its content is ordinary.
         cases.extend(
-            malformed(text)
+            variants(credentials.len() + index, text)
                 .into_iter()
                 .map(|bytes| (path, bytes, false)),
         );
@@ -836,7 +859,7 @@ fn mp08_mp11_target_classification_table_in_overlay_and_history() {
     crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     for history in [false, true] {
-        for (path, bytes, data) in classification_cases() {
+        for (path, bytes, data) in boundary_cases() {
             eprintln!("MP-08/MP-11 case {path} history={history} {bytes:?}");
             InlineShellFixture::file(path, &bytes, history).assert_target_result(data);
         }

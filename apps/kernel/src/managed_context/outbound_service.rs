@@ -2096,11 +2096,9 @@ mod tests {
     fn mp08_mp11_source_vault_classification_table_in_overlay_and_history() {
         crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
-        use crate::managed_context::credential_free::tests::{
-            classification_cases, InlineShellFixture,
-        };
+        use crate::managed_context::credential_free::tests::{boundary_cases, InlineShellFixture};
         for history in [false, true] {
-            for (path, bytes, data) in classification_cases() {
+            for (path, bytes, data) in boundary_cases() {
                 eprintln!("MP-08/MP-11 case {path} history={history} {bytes:?}");
                 assert_source_fixture_result(InlineShellFixture::file(path, &bytes, history), data);
             }
