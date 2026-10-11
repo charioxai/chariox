@@ -198,7 +198,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     await runOpenCodeAttach({
       proxyUrl,
       providerSessionId,
-      workingDirectory: worktree,
+      workingDirectory: run.working_directory?.trim() || worktree,
     })
   } finally {
     pump?.stop()
