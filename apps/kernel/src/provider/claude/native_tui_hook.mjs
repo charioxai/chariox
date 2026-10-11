@@ -96,6 +96,11 @@ function utf8ContextChunk(value, chunkIndex, maximumBytes = 6000) {
 }
 
 async function freshContext() {
+  // Structured print turns already carry the kernel-dispatched envelope.
+  // The primary hook freezes it once for this invocation's chunk delivery.
+  if (process.env.CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE === "dispatched") {
+    return readFileSync(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT, "utf8")
+  }
   const responseDir = process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES
   if (!hookContextRequestId || !responseDir) throw new Error("missing context response route")
   const responseFile = join(responseDir, `${hookContextRequestId}.txt`)
