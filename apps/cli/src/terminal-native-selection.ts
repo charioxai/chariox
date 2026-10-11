@@ -24,7 +24,9 @@ function erasePaintedPadding(buffer: OptimizedBuffer): string {
     const color = [0, 1, 2].map(channel => Math.round(bg[last * 4 + channel]! * 255))
     rows.push(`\x1b[${y + 1};${x + 2}H\x1b[0m\x1b[48;2;${color.join(";")}m\x1b[K`)
   }
-  return rows.length ? `\x1b7\x1b]8;;\x1b\\${rows.join("")}\x1b8` : ""
+  // Cursor save/restore does not restore OSC 8. These control-only erasures
+  // must retain the renderer's active link so its next frame stays in sync.
+  return rows.length ? `\x1b7${rows.join("")}\x1b8` : ""
 }
 
 export function installTerminalNativeSelection(renderer: CliRenderer): () => void {
