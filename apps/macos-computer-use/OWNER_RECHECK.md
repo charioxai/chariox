@@ -1,6 +1,6 @@
 # One owner session for the matching Mac build
 
-R11 source handoff, 2026-10-11. This session is BLOCKED until the coordinator
+R12 source handoff, 2026-10-11. This session is BLOCKED until the coordinator
 supplies the matching combined build and the real integration callbacks. It is
 not staged. Miguel's morning K re-grant remains pending. The retained r6 helper
 has not been rebuilt, signed, replaced or launched during source work.
@@ -88,10 +88,18 @@ retry may manufacture PASS.
    must precede the structured stale/not-granted/not-requested denial.
 4. M3, healthy local-human observer, admitted native input, physical/remote
    takeover, denied input with unchanged independent selection and explicit
-   safe release/resume. Defer fatal owned-press death until the end.
+   safe release/resume. Exercise idle physical ownership released by the
+   authenticated owner terminal and in-flight move/pre-down click interruption.
+   Require explicit `browser_action_cancelled`, successful reset and release,
+   and continued use of that exact pairing generation. A safely released local
+   pause must not disconnect; terminal/grant authority retirement must still
+   disconnect. Failed helper reset must leave Desktop owned and input fenced.
+   Defer fatal owned-press death until the end.
 5. M4, existing snapshot/OCR/target_action paths on the signed public fixture.
    Independently prove the button counter. Refuse refs stale after layout/focus,
-   observer changes, process reuse, protection, new observation or Stop. Test
+   observer changes, process reuse, protection, new observation or Stop. Verify
+   expiry during resolution and final native validation, with zero AXPress
+   effects after the two-second reference deadline. Test
    protected OCR at 1x/2x and negative origins, ambiguity, queries, languages and
    opaque AX. Require absent password metadata/children and no output on failed
    secure classification. Synthetic Vault-filled plain-text canaries must be
@@ -109,7 +117,12 @@ retry may manufacture PASS.
    public-fixture key-down during the pending Action and kills only the exact
    paired helper. Require `owner_reset_required` and Stop/Start denial. No later
    input runs until Miguel physically releases and explicitly restarts. Restart
-   alone is not release proof. Preserve this failure/reset receipt.
+   alone is not release proof. Preserve this failure/reset receipt. Post-down
+   programmatic focus loss, foreign or same-process cover, changed geometry,
+   hit mismatch and changed key focus must also refuse cleanup and retain
+   `owner_reset_required`. Those destructive variants belong at this final gate,
+   never before another unattended input. Keep any unrun variant BLOCKED; do
+   not chain it after an unresolved press or manufacture a release receipt.
 
 On any functional or cleanup failure, stop further mutations, retain evidence,
 revoke the runner's seat if release can be proved, and close only verified owned
@@ -122,7 +135,7 @@ Keep historical M0 aggregate FAIL and prior accepted M0 click/scroll/capture and
 M1 receipts unchanged until exact new-build proofs exist. M2-M5 stay BLOCKED on
 missing prerequisites. Local protocol 497, relay peer 106, frozen display #950,
 existing CXD1/crypto/events and Cloud #325 remain fixed. No wire allocation,
-push, CI, provider run, hosted acceptance or new grant occurred in r11.
+push, CI, provider run, hosted acceptance or new grant occurred in r12.
 
 The earlier r6/r8/r9/r10 recipes are historical evidence, preserved in Git and
 in the lane's `OWNER_RECHECK_R10_HISTORY.md`. They are not additional owner
