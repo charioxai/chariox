@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: bounded timing records must survive batching/shutdown.
 import test from 'node:test';import assert from 'node:assert/strict';
 import {mkdtempSync,readFileSync,existsSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import path from 'node:path';
-import {displayTiming} from './kernel-browser-timing.mjs';
+import {displayTiming,timedHostRequests} from './kernel-browser-timing.mjs';
 test('MP-08/MP-10 native diagnostics batch without losing order or final shutdown records',()=>{
  const root=mkdtempSync(path.join(tmpdir(),'chariox-mp24-timing-')),old=process.env.CHARIOX_BROWSER_DISPLAY_TIMING;
  const timing=displayTiming(root),file=path.join(root,'display-timing.jsonl');
@@ -26,4 +26,15 @@ test('MP-08/MP-10 input/frame join records keep finite numbers only',()=>{
   assert.equal(record.stage,'frame_out');assert.equal(record.started_ms,5);assert.equal(record.sequence,7);assert.equal(record.published_ms,6);
   assert(!('text' in record)&&!('encoded_ms' in record)&&!('at' in record));
  }finally{timing.flush();if(old===undefined)delete process.env.CHARIOX_BROWSER_DISPLAY_TIMING;else process.env.CHARIOX_BROWSER_DISPLAY_TIMING=old;rmSync(root,{recursive:true,force:true})}
+});
+
+test('MP-08/MP-10/MP-11 scheduler attribution records only input waiting time',()=>{
+ const events=[],handled=[],host={timing:(...args)=>events.push(args),handle:(...args)=>(handled.push(args),'result')};
+ const adapter=timedHostRequests(host,()=>({kind:'barrier'}));
+ const input={method:'host.browser',params:{op:'input',input:{kind:'text',text:'must never be logged'},document_id:'private-binding'}};
+ const read={method:'host.browser',params:{op:'state'}};
+ assert.deepEqual(adapter.scheduleRequest(input),{kind:'barrier'});adapter.scheduleRequest(read);
+ assert.equal(adapter.handleRequest(input,{signal:null}),'result');adapter.handleRequest(read,{});
+ assert.equal(events.length,1);assert.equal(events[0].length,2);assert.equal(events[0][0],'host_input_queue');assert(Number.isFinite(events[0][1]));
+ assert.equal(handled[0][0],input);assert.equal(handled[1][0],read);
 });

@@ -1018,9 +1018,42 @@ fn runtime_tool_content_preserves_objects_and_extracts_images() {
 }
 
 #[test]
+fn mp08_browser_snapshot_remains_readable_after_provider_line_truncation() {
+    // Real OpenCode stores large MCP results in a file, then caps each Read
+    // line at 2,000 characters. A compact snapshot hides later public nodes.
+    let mut nodes = (0..80)
+        .map(|i| serde_json::json!({"node_ref":i,"node_name":"DIV","text":"public article text"}))
+        .collect::<Vec<_>>();
+    nodes.push(
+        serde_json::json!({"node_ref":80,"node_name":"INPUT","attributes":{"id":"searchInput"}}),
+    );
+    let payload = serde_json::json!({"snapshot":{
+        "document_id":"document-a", "dom_nodes":nodes,
+        "accessibility_nodes":[{"node_ref":80,"value":""}]
+    }});
+    let (content, structured) = super::runtime_tool_content(payload.clone());
+    let text = content[0]["text"].as_str().unwrap();
+    assert_eq!(serde_json::from_str::<Value>(text).unwrap(), payload);
+    assert_eq!(structured, payload);
+    let readable = text
+        .lines()
+        .map(|line| line.chars().take(2_000).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        readable.contains("searchInput"),
+        "MP-08/MP-10/MP-11: public input must survive native Read's line cap"
+    );
+    assert!(
+        readable.contains("\"value\": \"\""),
+        "empty input proof must remain readable"
+    );
+}
+
+#[test]
 fn primitive_mcp_result_shape_is_versioned_and_hashed() {
     use sha2::{Digest, Sha256};
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 498);
     let (content, structured) = super::runtime_tool_content(serde_json::json!("crm result"));
     let response = serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": {
         "content": content, "structuredContent": structured, "isError": false

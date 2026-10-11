@@ -269,6 +269,5 @@ pub use workspace::*;
 /// host browser, App views, Notes, grants, captures and DOM mirror contract.
 /// MP-08/MP-10: version 466 makes display frame events binary (raw payload
 /// segments) and adds lossless WebP tiles and scroll move rectangles.
-/// MP-08/MP-10: version 475 adds pushed display (`display_ack` drives the
-/// kernel push pump of a relay display subscription; `display_next` remains).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 475;
+/// MP-08/MP-10/MP-11: version498 adds bounded browser keyboard modifiers.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 498;

@@ -53,7 +53,7 @@ test('MP-08/MP-10 native exact preparation bypasses Node pixel workers and retai
  let held=0,prepared;const raw={width:1280,height:800,retain(){held++},release(){held--},nativeExact:async request=>{prepared=request;return {native_exact:true,data_base64:'exact',width:1280,height:800}},[displayMaskRegions]:[]};
  Object.defineProperty(raw,'pixels',{get(){throw Error('MP-10: Node pixels')}});
  const sample={raw,signature:'serial-1',motion:true};
- const refiner=new NativeRefiner(async()=>sample,{now:()=>100,pixels:{run(){throw Error('MP-10: Node render')},close:async()=>{}},prepareTiles:true});
+ const refiner=new NativeRefiner(async()=>sample,{now:()=>200,pixels:{run(){throw Error('MP-10: Node render')},close:async()=>{}},prepareTiles:true});
  try{refiner.request({native:true,sample,source:{},document:'d',policy:{},epoch:0,serial:1,encoder:'e',repairLimit:192000},0,()=>true);await refiner.active;assert.equal(refiner.failure,undefined);assert.equal(held,0);assert.equal(refiner.latest.native_exact,true);assert.equal(refiner.latest.data_base64,'exact');assert.equal(prepared.encoder,'e');assert.equal(prepared.repair_only,true,'refinement prepares only the viewport tiles; opaque fallback keeps its full PNG path');}finally{await refiner.close()}
 });
 test('MP-08/MP-10 native exact frames retain ordinary sequencing and byte pacing without Node decode',async()=>{

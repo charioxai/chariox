@@ -3227,3 +3227,15 @@ existing terminal/passkey gate and shared pending-interaction authority;
 a detached passkey popup has an empty session routing field. Room App views
 retain their existing protocol. See [App views without a session](MULTIDOMAIN_APP_VIEWS.md)
 for host isolation, lifecycle and migration. No relay-peer shape changes.
+
+### MP-08 / MP-10 / MP-11 bounded host-browser keys (498 / peer107)
+
+`KernelBrowserInput` keys accept an optional `modifiers` integer in 0..15,
+using Chromium's Alt=1, Control=2, Meta=4 and Shift=8 bits. Omitted/zero
+modifiers preserve the legacy key wire shape. Modified keys dispatch paired
+CDP key events under the existing document, cancellation, mirror and live
+sensitive-focus fences. Control/Meta/Alt chords emit no inserted text and
+cannot read or modify protected fields. Native input remains available for
+unmodified and Shift keys on the admitted owned display. Canvas clients send
+modifiers only to protocol498 or newer; trusted local paste retains the
+existing text-ingress path. The kernel remains the input authority.
