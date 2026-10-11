@@ -320,13 +320,17 @@ impl Link {
         }
         if self.physical_input {
             if method == "host.computer"
-                && request["params"]["op"] == "input"
+                && matches!(
+                    request["params"]["op"].as_str(),
+                    Some("input" | "target_action")
+                )
                 && human == Some(true)
                 && response["input_released"] == true
                 && response["ok"] == false
                 && response["error"]["code"] != "owner_reset_required"
             {
-                // Publish before the callback cancels the Action. The watcher
+                // Input and AX target actions can both safely pause after physical
+                // activity. Publish before the callback cancels the Action. The watcher
                 // must not race a confirmed safe pause into socket shutdown.
                 self.released_physical_pause.store(true, Ordering::Release);
             }
