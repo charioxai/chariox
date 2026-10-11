@@ -20,7 +20,8 @@ export async function attachNativeDisplay(canvas, transport, target, options = {
     async request({KernelBrowser:{command}}) {
       let native;
       switch(command.op) {
-        case 'display_subscribe': native={op:'display_subscribe',target,codecs:command.codecs,bitrate:command.bitrate};break;
+        // Protocol 497 accepts only target/codecs; native bitrate is kernel-owned.
+        case 'display_subscribe': native={op:'display_subscribe',target,codecs:command.codecs};break;
         case 'display_next': native={op:'display_next',target,subscription_id:command.subscription_id,after_sequence:command.after_sequence,repair:false};break;
         case 'unsubscribe': native={op:'display_close',target,subscription_id:command.subscription_id};break;
         // M2 is an observer. Existing bounded Computer input remains separate.

@@ -16,8 +16,10 @@ deadline bound each admitted encode. Raster and output packet limits remain.
 The existing shared `avc1.420033` whole-video packet carries Annex B SPS/PPS and
 an independent keyframe. No decoder configuration, wire version or crypto is
 added. Independent frames prevent abandoned credits from dropping a dependency
-chain. The private subscribe forwards the existing codec/bitrate offer; the
-native presenter can explicitly choose AVC while retaining PNG. Default stays
+chain. The private helper subscribe receives the kernel's codec/bitrate offer.
+The protocol 497 native presenter forwards only target/codecs and can explicitly
+choose AVC while retaining PNG. Browser bitrate options do not cross that native
+command boundary. The kernel owns the native bitrate. Default stays
 PNG and the experimental Mac observer remains feature-disabled.
 
 Bootstrap, lost base, explicit repair, geometry/protection change and 200 ms
