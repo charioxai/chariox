@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+mod agent_deletion_provenance;
 pub(crate) mod agent_lifecycle;
 pub(crate) mod app_activation;
 pub(crate) mod app_active_release;

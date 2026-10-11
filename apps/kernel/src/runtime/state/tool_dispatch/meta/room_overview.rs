@@ -84,17 +84,11 @@ impl KernelRuntimeState {
                 if !ownership.contains_key(id) {
                     // Deletion retains a kernel-owned provenance record. Read only
                     // its ownership fields; never return the deleted AgentInstance.
-                    let events = self.owned.durable_state_store.load_subject_events_by_kind(
+                    let owned = self.owned.durable_state_store.deleted_agent_is_owned(
+                        session.id(),
                         id,
-                        "agent.deleted",
-                        1,
+                        user_id,
                     )?;
-                    let owned = events.last().is_some_and(|event| {
-                        let agent = &event.payload["agent"];
-                        agent["id"].as_str() == Some(id)
-                            && agent["session_id"].as_str() == Some(session.id())
-                            && agent["owner_user_id"].as_str() == Some(user_id)
-                    });
                     ownership.insert(id.to_string(), owned);
                 }
                 if !ownership[id] {

@@ -119,6 +119,68 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
                     .with_owner_user_id(actor.owner_user_id()),
             )
             .unwrap();
+        // MP-11: workflow cleanup keys deletion events by session, not agent.
+        // Several retired copies ensure provenance is not the latest deletion alone.
+        let runtime_worktree = app
+            .config()
+            .workflow_runtime_artifact_root()
+            .join("instances")
+            .join(session.id())
+            .join("retained-history");
+        let runtime_owned = (0..3)
+            .map(|_| {
+                app.agents.materialize_workflow_runtime_agent(
+                    actor.clone(),
+                    session.id(),
+                    &runtime_worktree.to_string_lossy(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let runtime_foreign = app.agents.materialize_workflow_runtime_agent(
+            foreign.clone(),
+            session.id(),
+            &runtime_worktree.to_string_lossy(),
+        );
+        let runtime_owned_run = WorkflowRun::new(
+            "runtime-owned-history-run",
+            "owned-workflow",
+            "owned-endpoint",
+            "owned-node",
+            Some("synthetic-authorized-runtime-history".into()),
+            None,
+            runtime_owned
+                .iter()
+                .enumerate()
+                .map(|(index, worker)| {
+                    WorkflowNodeRun::new(
+                        format!("runtime-owned-node-{index}"),
+                        format!("node-{index}"),
+                        worker.id(),
+                        0,
+                        WorkflowNodeRunStatus::Completed,
+                    )
+                })
+                .collect(),
+            vec![],
+        )
+        .with_creator(Some(actor.id().into()));
+        let runtime_mixed_run = WorkflowRun::new(
+            "runtime-mixed-history-run",
+            "owned-workflow",
+            "owned-endpoint",
+            "owned-node",
+            Some("synthetic-foreign-history-runtime-worker".into()),
+            None,
+            vec![WorkflowNodeRun::new(
+                "runtime-foreign-node",
+                "foreign-node",
+                runtime_foreign.id(),
+                0,
+                WorkflowNodeRunStatus::Completed,
+            )],
+            vec![],
+        )
+        .with_creator(Some(actor.id().into()));
         let mut node = WorkflowNodeRun::new(
             "foreign-node-run",
             "foreign-node",
@@ -242,7 +304,9 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
             retired_run,
             mixed_run,
             unknown_run,
-            no_creator_run
+            no_creator_run,
+            runtime_owned_run,
+            runtime_mixed_run
         ]);
         for member in serialized["members"].as_array_mut().unwrap() {
             if member["user_id"] == actor.owner_user_id() {
@@ -250,10 +314,31 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
             }
         }
         app.sessions_mut()
-            .restore_session(serde_json::from_value(serialized).unwrap());
+            .restore_session(serde_json::from_value(serialized.clone()).unwrap());
         let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
         let state = crate::runtime::router::CommandRouter::with_interactive_capacity(app, 1)
             .runtime_state();
+        state
+            .owned
+            .workflow_cleanup_runtime_instances_exclusive(session.id())
+            .unwrap();
+        for worker in runtime_owned
+            .iter()
+            .chain(std::iter::once(&runtime_foreign))
+        {
+            assert!(state.owned.agent_store.get_agent(worker.id()).is_err());
+        }
+        // Cleanup archives terminal runs; reconstruct the retained-history view
+        // after exercising its real deletion producer.
+        let mut retained =
+            serde_json::to_value(state.owned.session_store.get_session(session.id()).unwrap())
+                .unwrap();
+        retained["workflow_runs"] = serialized["workflow_runs"].clone();
+        state
+            .owned
+            .session_store
+            .write()
+            .restore_session(serde_json::from_value(retained).unwrap());
         let result = state
             .meta_session_overview(&session, &actor, Default::default())
             .unwrap();
@@ -271,6 +356,10 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
                 representation.contains("synthetic-authorized-retired-history"),
                 "MP-11 authorized deleted-agent history lost at {level:?}"
             );
+            assert!(
+                representation.contains("synthetic-authorized-runtime-history"),
+                "MP-11 authorized workflow-cleanup history lost at {level:?}"
+            );
             assert_eq!(
                 representation.contains("synthetic-foreign-history-"),
                 level.can_view_agent_trace(),
@@ -286,7 +375,7 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
         }
         assert_eq!(
             structured["workflow_runs"].as_array().unwrap().len(),
-            if level.can_view_agent_trace() { 6 } else { 2 }
+            if level.can_view_agent_trace() { 8 } else { 3 }
         );
     }
 }
