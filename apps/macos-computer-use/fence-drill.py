@@ -20,11 +20,26 @@ cover_pid = None
 jitter = None
 report = {'status': 'FAIL', 'checks': []}
 pointer = None
+
+
+def fence_helper(label, arguments, expected=None):
+    try:
+        receipt = d.launch_helper(E, label, arguments)
+        if expected is not None:
+            refusals = re.findall(r'^refused:.*$', receipt, re.MULTILINE)
+            if refusals != [f'refused: target ({expected})'] or 'dispatched' in receipt:
+                raise RuntimeError(f'unexpected-fence-receipt: {label}')
+        return receipt
+    except Exception:
+        pointer.retired = True
+        raise
+
+
 try:
     d.wait_for_gui()
     d.require_gui()
     pointer = PointerLease(d.desktop, run_pointer_script, d.desktop()["pointer"])
-    permission = d.launch_helper(E, 'preflight', ['--drill-permissions'])
+    permission = fence_helper('preflight', ['--drill-permissions'])
     if 'accessibility=granted' not in permission:
         report['status'] = 'BLOCKED'; raise RuntimeError('helper-regrant-required')
     subprocess.run(['open', '-n', '--stdout', str(E / 'fixture.out'), '--stderr', str(E / 'fixture.err'),
@@ -53,7 +68,7 @@ try:
     state = d.desktop()
     (E / 'covered-desktop.json').write_text(json.dumps(state, indent=2) + '\n')
     selected_before = d.selection(E)
-    receipt = d.launch_helper(E, 'nonactivating-cover-click', scope + ['--click-at', x, y, '--click'])
+    receipt = fence_helper('nonactivating-cover-click', scope + ['--click-at', x, y, '--click'], 'foreign-window-cover')
     time.sleep(.2)
     selected_after = d.selection(E)
     match = re.search(r'coverPID=(\d+) windowID=(\d+)', d.read(E, 'cover.out'))
@@ -66,7 +81,7 @@ try:
                              'frontmostUnchanged': state['frontmostPID'] == pid, 'foreignWindowCoversPoint': covers,
                              'beforeSelection': selected_before, 'afterSelection': selected_after, 'receipt': receipt})
     pointer.warp({'x': float(x), 'y': float(y)})
-    receipt = d.launch_helper(E, 'nonactivating-cover-pointer', scope + ['--click-at-pointer', '--click'])
+    receipt = fence_helper('nonactivating-cover-pointer', scope + ['--click-at-pointer', '--click'], 'foreign-window-cover')
     time.sleep(.1)
     report['checks'].append({'name': 'pointer-foreign-cover-refusal',
         'passed': 'refused: target (foreign-window-cover)' in receipt and d.selection(E) == selected_before,
@@ -82,13 +97,14 @@ try:
     with (E / 'jitter.out').open('w') as out, (E / 'jitter.err').open('w') as err:
         jitter = subprocess.Popen(['osascript', '-l', 'JavaScript', '-e', script], stdout=out, stderr=err)
     time.sleep(.1)
-    receipt = d.launch_helper(E, 'stale-pointer', scope + ['--click-at-pointer', '--click'])
+    receipt = fence_helper('stale-pointer', scope + ['--click-at-pointer', '--click'], 'stale-pointer')
     jitter.wait(timeout=4)
     pointer.finish_jitter(d.read(E, "jitter.out"))
     report['checks'].append({'name': 'live-stale-pointer-tag', 'passed': 'refused: target (stale-pointer)' in receipt and d.selection(E) == stale_before, 'receipt': receipt,
                              'fixtureSelection': d.selection(E)})
     report['status'] = 'PASS' if all(c['passed'] for c in report['checks']) else 'FAIL'
 except Exception as error:
+    if pointer: pointer.retired = True
     report['failure'] = str(error)
 finally:
     if cover_pid:
