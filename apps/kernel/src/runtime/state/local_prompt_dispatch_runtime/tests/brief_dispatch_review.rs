@@ -414,6 +414,7 @@ async fn native_policy_rejects_explicit_snapshot_after_room_change() {
         &fixture.agent_id,
         fixture.run.id(),
         &fixture.prompt_id,
+        false,
         String::new(),
     );
     assert!(
@@ -450,6 +451,7 @@ async fn native_hook_rebuild_excludes_the_current_managed_prompt() {
         &fixture.agent_id,
         fixture.run.id(),
         &fixture.prompt_id,
+        false,
         String::new(),
     )
     .unwrap();

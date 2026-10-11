@@ -1,6 +1,51 @@
 //! MP-08 / MP-10 / MP-11: assemble current managed hook context before handoff rendering.
 use super::*;
 
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize, Serialize)]
+pub(super) struct ManagedPromptInputs {
+    pub(super) prompt_id: String,
+    pub(super) origin_prompt_id: String,
+    pub(super) prompt: String,
+    pub(super) hidden_system_context: String,
+    pub(super) attachments: Vec<PromptAttachment>,
+}
+
+pub(super) fn stage_managed_inputs(
+    context_file: &str,
+    prompt: &ClaudeNativePromptInjection<'_>,
+) -> Result<(), DaemonError> {
+    let inputs = ManagedPromptInputs {
+        prompt_id: prompt.id.into(),
+        origin_prompt_id: prompt.origin_prompt_id.into(),
+        prompt: prompt.prompt.into(),
+        hidden_system_context: prompt.hidden_system_context.into(),
+        attachments: prompt.attachments.to_vec(),
+    };
+    fs::write(
+        format!("{context_file}.managed-inputs"),
+        serde_json::to_vec(&inputs).expect("managed prompt inputs are serializable"),
+    )
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "claude_managed_inputs_write",
+        message: error.to_string(),
+    })
+}
+
+pub(super) fn load_managed_inputs(context_file: &str) -> Result<ManagedPromptInputs, DaemonError> {
+    let raw = fs::read(format!("{context_file}.managed-inputs")).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "claude_managed_inputs_read",
+            message: error.to_string(),
+        }
+    })?;
+    serde_json::from_slice(&raw).map_err(|_| DaemonError::LocalTransport {
+        operation: "claude_managed_inputs_read",
+        message: "Invalid managed prompt input metadata".into(),
+    })
+}
+
 impl ProviderOutputClaudeNativeBridge<'_> {
     pub(super) fn managed_base_context(
         &mut self,

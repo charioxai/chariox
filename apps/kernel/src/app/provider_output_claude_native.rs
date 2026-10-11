@@ -118,6 +118,7 @@ pub(crate) trait NativePromptHandoffPolicy: Send + Sync {
         agent_id: &str,
         run_id: &str,
         prompt_id: &str,
+        steering: bool,
         base: String,
     ) -> Result<String, DaemonError>;
     fn protect_inputs(
@@ -502,27 +503,26 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         // The official hook waits for this turn's response even
                         // when a managed dispatch already staged hidden context.
                         let context = if let Some(policy) = self.prompt_handoff {
-                            let Some(active) = active_prompt
-                                .as_ref()
-                                .filter(|active| active.id() == dispatch_prompt_id)
-                            else {
+                            let Some(active) = active_prompt.as_ref() else {
                                 continue;
                             };
-                            let hidden = self.app.agents.hidden_context_with_failed_requests(
-                                &agent_id,
-                                active.hidden_system_context(),
-                            );
+                            let inputs = hidden_context::load_managed_inputs(context_file)?;
+                            if inputs.prompt_id != dispatch_prompt_id
+                                || inputs.origin_prompt_id != active.id()
+                            {
+                                continue;
+                            }
                             let base = self.managed_base_context(
                                 session_id,
                                 &agent_id,
                                 context_file,
                                 provider_run,
                                 &ClaudeNativePromptInjection {
-                                    id: active.id(),
-                                    origin_prompt_id: active.id(),
-                                    prompt: active.prompt(),
-                                    hidden_system_context: &hidden,
-                                    attachments: active.attachments(),
+                                    id: &inputs.prompt_id,
+                                    origin_prompt_id: &inputs.origin_prompt_id,
+                                    prompt: &inputs.prompt,
+                                    hidden_system_context: &inputs.hidden_system_context,
+                                    attachments: &inputs.attachments,
                                     context_handoff: &|_| String::new(),
                                 },
                             )?;
@@ -530,7 +530,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                                 session_id,
                                 &agent_id,
                                 provider_run_id,
-                                active.id(),
+                                dispatch_prompt_id,
+                                inputs.prompt_id != inputs.origin_prompt_id,
                                 base,
                             )?
                         } else {
@@ -594,6 +595,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             &agent_id,
                             provider_run_id,
                             "",
+                            false,
                             base,
                         )?,
                         None => base,
@@ -1853,6 +1855,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             provider_run_id,
             &hidden_context,
         )?;
+        if provider_run
+            .pty_env()
+            .get("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS")
+            .is_some_and(|v| v == "1")
+        {
+            // Preserve full scheduled inputs before rendering, and before any PTY submission.
+            // The hook re-protects these inputs under the current Room barrier.
+            hidden_context::stage_managed_inputs(context_file, prompt)?;
+        }
         fs::write(context_file, hidden_context).map_err(|error| DaemonError::ProviderProtocol {
             provider_run_id: provider_run_id.to_string(),
             operation: "claude_hidden_context_write",
