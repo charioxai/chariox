@@ -476,10 +476,14 @@ fn a12_blocked_fifo_delivery_cannot_hide_a_goal_check_in() {
             now, busy_recipients: vec![], held_work: vec![],
         });
         if !blocker_first { sweep(60_005); }
-        let Outcome::Event(event) = f.apply(Operation::Occur(occurrence(
+        let mut message = occurrence(
             "room", "parent", "peer", "uncertain-message", "message",
             serde_json::json!({"message":"public evidence available"}),
-        ))) else { panic!() };
+        );
+        // Only urgent steering can be admitted ahead of the older pending wake.
+        // This exercises a later blocked attempt without bypassing FIFO admission.
+        message.urgent = !blocker_first;
+        let Outcome::Event(event) = f.apply(Operation::Occur(message)) else { panic!() };
         f.apply(Operation::Attempt {
             room:"room".into(), agent:"parent".into(), sequence:event.sequence,
             prompt:"event".into(), target:Some("independent".into()),
