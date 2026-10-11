@@ -1,3 +1,6 @@
+mod sessions;
+use sessions::HttpState;
+pub(super) use sessions::{dispatch, release_run, release_session};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::net::IpAddr;
@@ -12,6 +15,7 @@ pub(super) fn forward_streamable_http_mcp_request(
     env_http_headers: &BTreeMap<String, String>,
     payload: serde_json::Value,
     timeout_sec: Option<u64>,
+    state: &mut HttpState,
 ) -> Result<serde_json::Value, DaemonError> {
     let request_id = payload.get("id").cloned();
     let expects_response = |message: &serde_json::Value| {
@@ -26,33 +30,27 @@ pub(super) fn forward_streamable_http_mcp_request(
         message: error.to_string(),
     })?;
     let timeout = Duration::from_secs(timeout_sec.unwrap_or(30).max(1));
-    let agent = streamable_http_agent(url, timeout)?;
-    let mut request = agent
-        .post(url)
-        .set("Content-Type", "application/json")
-        .set("Accept", "application/json, text/event-stream");
-    for (key, value) in http_headers {
-        if !reserved_header(key) {
-            request = request.set(key, value);
-        }
+    let initialize =
+        payload.get("method").and_then(serde_json::Value::as_str) == Some("initialize");
+    if initialize {
+        *state = HttpState::default();
     }
-    for (key, env_var) in env_http_headers {
-        if reserved_header(key) {
-            continue;
-        }
-        if let Ok(value) = std::env::var(env_var) {
-            request = request.set(key, &value);
-        }
-    }
-    if let Some(env_var) = bearer_token_env_var {
-        if let Ok(value) = std::env::var(env_var) {
-            request = request.set("Authorization", &format!("Bearer {value}"));
-        }
-    }
+    let request = http_request(
+        url,
+        "POST",
+        bearer_token_env_var,
+        http_headers,
+        env_http_headers,
+        timeout,
+        state,
+    )?;
 
     let response = match request.send_bytes(&body) {
         Ok(response) => response,
         Err(ureq::Error::Status(status, response)) => {
+            if status == 404 {
+                *state = HttpState::default();
+            }
             let body = response
                 .into_string()
                 .unwrap_or_else(|error| format!("<failed to read response body: {error}>"));
@@ -81,23 +79,97 @@ pub(super) fn forward_streamable_http_mcp_request(
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
-    if content_type == "text/event-stream" {
-        return read_sse_json_rpc_response(
+    let assigned_session = if initialize {
+        response
+            .header("Mcp-Session-Id")
+            .map(|id| {
+                if id.is_empty()
+                    || id.len() > 4096
+                    || !id.bytes().all(|b| (0x21..=0x7e).contains(&b))
+                {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "mcp.proxy.http.session",
+                        message: "invalid upstream MCP session header".into(),
+                    });
+                }
+                Ok(zeroize::Zeroizing::new(id.to_owned()))
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let message = if content_type == "text/event-stream" {
+        read_sse_json_rpc_response(
             url,
             BufReader::new(response.into_reader()),
             request_id.as_ref(),
-        );
+        )?
+    } else {
+        let text = response
+            .into_string()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "mcp.proxy.http.read",
+                message: format!("failed to read MCP HTTP response from `{url}`: {error}"),
+            })?;
+        serde_json::from_str(&text).map_err(|error| DaemonError::LocalTransport {
+            operation: "mcp.proxy.http.parse",
+            message: format!("upstream `{url}` returned invalid JSON: {error}"),
+        })?
+    };
+    if initialize && message.get("error").is_none() && message.get("result").is_some() {
+        state.session_id = assigned_session;
+        state.protocol_version = message
+            .get("result")
+            .and_then(|r| r.get("protocolVersion"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|v| {
+                !v.is_empty() && v.len() <= 128 && v.bytes().all(|b| (0x21..=0x7e).contains(&b))
+            })
+            .map(str::to_owned);
     }
-    let text = response
-        .into_string()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "mcp.proxy.http.read",
-            message: format!("failed to read MCP HTTP response from `{url}`: {error}"),
-        })?;
-    serde_json::from_str(&text).map_err(|error| DaemonError::LocalTransport {
-        operation: "mcp.proxy.http.parse",
-        message: format!("upstream `{url}` returned invalid JSON: {error}"),
-    })
+    Ok(message)
+}
+
+fn http_request(
+    url: &str,
+    method: &str,
+    bearer_token_env_var: Option<&str>,
+    http_headers: &BTreeMap<String, String>,
+    env_http_headers: &BTreeMap<String, String>,
+    timeout: Duration,
+    state: &HttpState,
+) -> Result<ureq::Request, DaemonError> {
+    let agent = streamable_http_agent(url, timeout)?;
+    let mut request = agent
+        .request(method, url)
+        .set("Content-Type", "application/json")
+        .set("Accept", "application/json, text/event-stream");
+    for (key, value) in http_headers {
+        if !reserved_header(key) {
+            request = request.set(key, value);
+        }
+    }
+    for (key, env_var) in env_http_headers {
+        if reserved_header(key) {
+            continue;
+        }
+        if let Ok(value) = std::env::var(env_var) {
+            request = request.set(key, &value);
+        }
+    }
+    if let Some(env_var) = bearer_token_env_var {
+        if let Ok(value) = std::env::var(env_var) {
+            request = request.set("Authorization", &format!("Bearer {value}"));
+        }
+    }
+
+    if let Some(id) = &state.session_id {
+        request = request.set("Mcp-Session-Id", id);
+    }
+    if let Some(version) = &state.protocol_version {
+        request = request.set("Mcp-Protocol-Version", version);
+    }
+    Ok(request)
 }
 
 fn read_sse_json_rpc_response(
@@ -296,6 +368,12 @@ fn split_no_proxy_entry(entry: &str) -> (&str, Option<u16>) {
 fn reserved_header(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
-        "host" | "content-length" | "connection" | "content-type" | "accept"
+        "host"
+            | "content-length"
+            | "connection"
+            | "content-type"
+            | "accept"
+            | "mcp-session-id"
+            | "mcp-protocol-version"
     )
 }
