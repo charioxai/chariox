@@ -56,3 +56,6 @@ mod aggregate_tests;
 
 #[cfg(test)]
 mod detect_tests;
+
+#[cfg(test)]
+mod review1118_metadata_tests;

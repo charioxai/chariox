@@ -226,6 +226,13 @@ fn validate_draft(
                         if entry.folder_id != *folder_id
                             || !super::detect_index::safe_metadata(&entry.relative_path)
                             || super::detect_index::credential_metadata(&entry.relative_path)
+                            || entry.reason.as_ref().is_some_and(|reason| {
+                                !super::detect_index::safe_metadata(reason)
+                                    || super::detect_index::credential_metadata(reason)
+                            })
+                            || entry.content_digest.as_ref().is_some_and(|digest| {
+                                digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+                            })
                         {
                             return Err(environment_error("invalid or protected File metadata"));
                         }
