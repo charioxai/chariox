@@ -103,3 +103,31 @@ function keyEvent(name: string, options: { ctrl?: boolean } = {}) {
   }
   return event
 }
+
+// MP-08 / MP-11: A provider-account dialog must leave native kernel approvals reachable.
+test("kernel approval shortcuts run before account recovery", () => {
+  const calls: string[] = []
+  const controller = createGlobalKeyboardShortcutController({
+    handleKernelApprovalKey: () => { calls.push("approval"); return true },
+    handleProviderAccountRecoveryKey: () => { calls.push("recovery"); return true },
+    handleHotkeysToggleShortcut: () => { calls.push("hotkeys"); return false },
+    dialogOverlayOpen: () => false, requestExit: () => {}, requestPromptStop: () => {}, hasActiveTurnWork: () => false,
+  })
+  assert.equal(controller.handleKey(keyEvent("f8")), true)
+  assert.deepEqual(calls, ["approval"])
+})
+
+test("account recovery owns unclaimed keys before general shortcuts", () => {
+  const calls: string[] = []
+  const controller = createGlobalKeyboardShortcutController({
+    handleKernelApprovalKey: () => { calls.push("approval"); return false },
+    handleProviderAccountRecoveryKey: () => { calls.push("recovery"); return true },
+    handleHotkeysToggleShortcut: () => { calls.push("hotkeys"); return true },
+    dialogOverlayOpen: () => false, requestExit: () => {}, requestPromptStop: () => {}, hasActiveTurnWork: () => false,
+  })
+  const event = keyEvent("enter")
+  assert.equal(controller.handleKey(event), true)
+  assert.equal(event.prevented, true)
+  assert.equal(event.stopped, true)
+  assert.deepEqual(calls, ["approval", "recovery"])
+})

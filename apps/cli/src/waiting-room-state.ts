@@ -44,7 +44,7 @@ import {
   waitingRoomConfiguresNewManagedMachine,
   waitingRoomProjectRepositoryOptions,
 } from "./waiting-room-managed-environments.js"
-import { providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
+import { normalizeProviderAccountProfileId } from "./waiting-room-provider-accounts.js"
 
 export function createWaitingRoomState(
   sessions: SessionListEntry[],
@@ -121,12 +121,7 @@ export function normalizeWaitingRoomState(
     selectedKernelRef: placement.selectedKernelRef,
   })
   const providerId = normalizeBackendProvider(state.providerId)
-  const providerAccounts = providerAccountsForProvider(remote.providerAccounts, providerId)
-  const accountProfileId = providerAccounts.some((profile) => profile.profile_id === state.accountProfileId)
-    ? state.accountProfileId ?? "default"
-    : providerAccounts.find((profile) => profile.is_default)?.profile_id
-      ?? providerAccounts[0]?.profile_id
-      ?? "default"
+  const accountProfileId = normalizeProviderAccountProfileId(remote.providerAccounts, providerId, state.accountProfileId)
   const selected = selectConfiguredModel(catalog, state.modelId, providerId)
   const configuredModelPending = catalog.source === "local_fallback"
     && Boolean(state.modelId && state.modelId !== "default")

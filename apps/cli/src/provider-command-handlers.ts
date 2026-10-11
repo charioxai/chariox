@@ -8,6 +8,7 @@ import type {
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import { isBackendProviderId } from "./provider-catalog.js"
+import { TERMINAL_LINK_OPEN_HINT } from "./external-url.js"
 import {
   providerAccountDisplayLabel,
   providerAccountsForProvider,
@@ -479,14 +480,16 @@ function formatProviderLoginNotice(
   action: string,
   accountLabel: string,
 ): string {
-  return [
+  const url = login.verification_url ?? login.auth_url ?? null
+  const message = [
     `${providerAccountSubject(login.provider, accountLabel)} ${action}`,
     login.login_kind.startsWith("terminal") && login.login_id
       ? `run /provider login-status ${login.login_id}; respond with /provider login-input ${login.login_id}`
       : null,
     login.user_code ? `code ${login.user_code}` : null,
-    login.verification_url ?? login.auth_url ?? null,
+    url,
   ].filter(Boolean).join(" • ")
+  return url ? `${message}\n${TERMINAL_LINK_OPEN_HINT}` : message
 }
 
 function providerAccountSubject(provider: string, accountLabel: string): string {

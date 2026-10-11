@@ -59,6 +59,8 @@ import { commandTreeFromTerminalCommandCatalog } from "./terminal-command-catalo
 import { createAgentPaneRuntimeResetController } from "./agent-pane-runtime-reset-controller.js"
 import { createAgentPaneRuntimeStoreController } from "./agent-pane-runtime-store-controller.js"
 import { createFooterFlashController } from "./footer-flash-controller.js"
+import { createProviderAccountRecoveryController } from "./provider-account-recovery-controller.js"
+import { providerAccountCapacity, providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
 import { createHistoryLoadingRenderController } from "./history-loading-render-controller.js"
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
@@ -404,6 +406,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     refreshWaitingRoomDataNow, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults,
     waitingRoomTargets, editWaitingRoomWorkspace,
   } = createCliWaitingRoomComposition({
+    onLaunchRefused: (message, retry) => providerAccountRecovery.showLaunchRefusal(message, retry),
     client, cloudClient, options, appLogger, formatError,
     isAttached, kernelConnected, waitingRoomState, setWaitingRoomState, setWaitingRoomStateProjection,
     waitingRoomLaunchOwnershipRevision,
@@ -459,7 +462,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     getProviderCatalog: providerCatalogState,
     getProviderCommandCatalogs: providerCommandCatalogState,
     getCurrentProvider: () => normalizeBackendProviderId(currentProviderSelection().provider),
-    getProviderAccounts: providerAccountsState,
+    getProviderAccounts: () => providerAccountsState() ?? [],
     getCurrentAccount: () => currentProviderSelection().accountProfile,
     getFocusedProvider: focusedBackendProvider,
     getCurrentModel: currentModelId,
@@ -631,7 +634,51 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setFooterFlash,
     onFooterFlashChange: () => updateSessionChrome(),
   })
-  const flashFooter = footerFlashController.flash
+  let blockedAccountTarget: {sessionId: string; agentId: string} | undefined
+  const providerAccountRecovery = createProviderAccountRecoveryController({
+    renderer,
+    dimensions,
+    actions: target => {
+      const agent = (!target || target.sessionId === sessionState().id) ? sessionState().agents.find(candidate => candidate.id === (target?.agentId ?? focusedAgentId())) : undefined
+      const provider = agent?.provider ?? waitingRoomState().providerId
+      const currentProfile = agent?.account_profile ?? waitingRoomState().accountProfileId
+      const alternative = providerAccountsForProvider(providerAccountsState(), provider)
+        .find(profile => profile.auth_state === "authenticated" && profile.profile_id !== currentProfile
+          && providerAccountCapacity(profile, Date.now(), agent?.model ?? waitingRoomState().modelId).state !== "exhausted")
+      return [
+        { label: "Open Provider Accounts", run: () => { setFatalError(null); void executeCommandCenterCommand("/provider accounts"); promptInputRefController.focus() } },
+        { label: alternative ? `Switch account to ${alternative.label}` : "Switch account", run: () => {
+          setFatalError(null)
+          if (alternative) void Promise.resolve(applyAccountSelection(alternative.profile_id, target)).catch(error => flashFooter(formatError(error), "error"))
+          else if (isAttached()) {
+            const rejectedTarget = target ?? (agent ? {sessionId: sessionState().id, agentId: agent.id} : undefined)
+            if (!rejectedTarget || rejectedTarget.sessionId !== sessionState().id) return
+            const profiles = providerAccountsForProvider(providerAccountsState(), provider)
+            if (!profiles.length) {
+              void executeCommandCenterCommand("/provider accounts")
+              promptInputRefController.focus()
+              return
+            }
+            providerAccountRecovery.showAccountChoices(`Select an account for ${provider} agent ${rejectedTarget.agentId}.`, profiles.map(profile => ({
+              label: `${profile.label} · ${profile.auth_state.replaceAll("_", " ")}`,
+              run: () => { void applyAccountSelection(profile.profile_id, rejectedTarget).catch(error => flashFooter(formatError(error), "error")) },
+            })))
+          } else { setWaitingRoomState({ ...waitingRoomState(), focus: "account" }); reconcileWaitingRoom(waitingRoomState()) }
+        } },
+        { label: "Retry", run: () => {
+          setFatalError(null)
+          if (!isAttached() && !promptTextController.currentText().trim()) void startSessionFromWaitingRoomDefaults().catch(() => {})
+          else void submitPrompt()
+        } },
+      ]
+    },
+  })
+  const flashFooter = (message: string, tone: "info" | "error") => {
+    footerFlashController.flash(message, tone)
+    if (tone === "error") providerAccountRecovery.show(message, blockedAccountTarget)
+    blockedAccountTarget = undefined
+  }
+  onCleanup(providerAccountRecovery.close)
   void cloudClient.resume(() => {
     setPreferencesState(current => mergeRelayCloudProfile(current, null))
     void saveRelayCloudProfile(null).catch(() => {})
@@ -895,6 +942,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
+    onProviderAccountPromptBlocked: (target: {sessionId: string; agentId: string}) => { blockedAccountTarget = target },
+    providerAccountRecoveryOwnsInput: providerAccountRecovery.ownsInput,
+    handleProviderAccountRecoveryKey: providerAccountRecovery.handleKey,
     appHostTerminal: createAppHostTerminal(renderer),
     lastViewedAppHostOperationId: kernelApprovals.lastViewedAppHostOperationId,
     client, cloudClient, kernelConnected, options, appLogger, formatError, appFileInstaller, appDevLoop, appPublisherEnrollment,
@@ -1035,7 +1085,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}
       promptAreaBackground={promptAreaBackground()}
-      retainPromptFocus={() => { if (!kernelApprovals.ownsInput()) retainPromptFocus() }}
+      retainPromptFocus={() => { if (!kernelApprovals.ownsInput() && !providerAccountRecovery.ownsInput()) retainPromptFocus() }}
       handlePromptSelectionSurfaceMouseUp={handlePromptSelectionSurfaceMouseUp}
       responsePaneRenderRefStore={responsePaneRenderRefStore}
       historyLoadingRenderController={historyLoadingRenderController}
@@ -1050,6 +1100,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       assignKernelApprovalBox={kernelApprovals.assignBox}
       assignKernelApprovalBanner={kernelApprovals.assignBanner}
       assignPasskeyPopupBox={kernelApprovals.assignPopupBox}
+      assignProviderAccountRecoveryBox={providerAccountRecovery.assignBox}
       kernelApprovalOwnsInput={kernelApprovals.ownsInput}
       handlePromptKeyDown={handlePromptKeyDown}
       handlePromptContentChange={handlePromptContentChange}

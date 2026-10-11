@@ -715,3 +715,27 @@ test("MP-08/MP-11 defaults recover after the first live report when relay routin
   assert.equal(reads, 2)
   assert.equal(disposed, 1)
 })
+
+test("MP-08 / MP-11 direct session creation checks the default account before creating work", async () => {
+  let created = false
+  await assert.rejects(bootstrapSession({} as never, {
+    clientId: "cli-1", createSession: true, provider: "codex", model: "default", accountProfile: "default", effort: "",
+  }, "/workspace", "/workspace", {}, {
+    listProviderAccountProfiles: async () => [{ owner_user_id: "owner-1", provider: "codex", profile_id: "codex-1", label: "codex-1", origin: "default", is_default: true, auth_state: "not_configured", materializations: [], identity_summary: null, usage: { profile_id: "codex-1", provider: "codex", availability: "unavailable", meters: [], source: "test" } }],
+    listSessions: async () => [],
+    getProviderCatalog: async () => fallbackProviderCatalog(),
+    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(),
+    createSession: async () => { created = true; throw new Error("must not create") },
+    resolveSession: async () => { throw new Error("must not resolve") },
+    attachToSession: async () => { throw new Error("must not attach") },
+    getSessionState: async () => { throw new Error("must not fetch") },
+    launchProviderRun: async () => { throw new Error("must not launch") },
+    tryGetProviderRun: async () => null,
+    catchUpAttachedSession: async () => undefined,
+    getSessionHistoryOutline: async () => ({ agents: [] }),
+    resolveVisibleAgentId: () => null,
+    prepareHistoryOutlineAgent: () => [],
+  }), /codex-1 needs sign-in/)
+  assert.equal(created, false)
+})

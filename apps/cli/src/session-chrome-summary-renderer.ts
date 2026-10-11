@@ -33,6 +33,7 @@ export function createSessionChromeSummaryRenderState(): SessionChromeSummaryRen
 }
 
 export function renderSessionChromeSummary(options: SessionChromeSummaryRenderOptions): void {
+  if (options.promptStateBox?.isDestroyed || options.footerSummaryBox?.isDestroyed) return
   ensureSessionChromeSummaryRenderables(options)
   setTextRenderable(
     options.state.promptStateText,
@@ -73,7 +74,7 @@ function setTextRenderable(
   fg: (typeof theme)[keyof typeof theme],
   attributes = TextAttributes.NONE,
 ): void {
-  if (!text) {
+  if (!text || text.isDestroyed) {
     return
   }
   text.content = content

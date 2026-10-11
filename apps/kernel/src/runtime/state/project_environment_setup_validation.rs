@@ -7,8 +7,10 @@ use super::project_environment_setup_storage::{
     wait_for_process_group_absence, ValidationProcessIdentity,
 };
 
-pub(super) const VALIDATION_COMMAND_TIMEOUT_MS: u64 = 120_000;
 pub(super) const VALIDATION_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
+// Cold toolchain setup may need the full stage budget. Each command still
+// shares the earlier overall deadline, so a sequence cannot extend it.
+pub(super) const VALIDATION_COMMAND_TIMEOUT_MS: u64 = VALIDATION_TOTAL_TIMEOUT.as_millis() as u64;
 const VALIDATION_OUTPUT_SETTLE_TIMEOUT: Duration = Duration::from_secs(1);
 const VALIDATION_OUTPUT_UNSETTLED_PREFIX: &str =
     "validation cleanup incomplete: output pipes remained open after process settlement";
@@ -1519,7 +1521,7 @@ fn run_worker_setup_steps_until(
     overall_deadline: Instant,
     should_cancel: impl Fn() -> bool,
 ) -> Result<bool, String> {
-    for command in commands {
+    for (command_index, command) in commands.iter().enumerate() {
         if should_cancel() {
             return Err("worker setup command cancelled".to_string());
         }
@@ -1535,8 +1537,26 @@ fn run_worker_setup_steps_until(
             environment,
             || should_cancel(),
             Some(overall_deadline),
-        )?;
+        )
+        .map_err(|error| {
+            crate::logging::warn_with_fields(
+                "project.environment_setup.command",
+                "project environment setup command could not complete",
+                serde_json::json!({
+                    "command_index": command_index,
+                    "timed_out": error.contains("timed out"),
+                    "cancelled": error.contains("cancelled"),
+                    "cleanup_incomplete": error.contains("cleanup"),
+                }),
+            );
+            error
+        })?;
         if exit_code != 0 {
+            crate::logging::warn_with_fields(
+                "project.environment_setup.command",
+                "project environment setup command failed",
+                serde_json::json!({"command_index": command_index, "exit_code": exit_code}),
+            );
             return Ok(false);
         }
     }

@@ -1,4 +1,5 @@
 import type { LocalIpcClient } from "./ipc.js"
+import { normalizeProviderAccountProfileId } from "./waiting-room-provider-accounts.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import { createWaitingRoomWorkspaceController, createWaitingRoomWorkspacePlacementController, waitingRoomWorkspaceSelection } from "./waiting-room-workspace-controller.js"
 import { getCloudClientControlProfile } from "./cloud-client-control.js"
@@ -108,6 +109,7 @@ type AnyFn = (...args: any[]) => any
 
 export type CliWaitingRoomCompositionDeps = {
   cloudClient?: CloudClient
+  onLaunchRefused?: (message: string, retry: () => void) => void
   client: any
   options: any
   appLogger: any
@@ -679,6 +681,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   }
 
   const waitingRoomActivationController = createWaitingRoomActivationController({
+    onLaunchRefused: (message, retry) => deps.onLaunchRefused?.(message, () => { if (!deps.isAttached()) retry() }),
     isKernelConnected: deps.kernelConnected,
     connectKernel: () => connectDetachedKernelFromWaitingRoom(),
     getWaitingRoomState: deps.waitingRoomState,
@@ -760,6 +763,15 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       await replaceClientForKernel(launch.ownerKernelRef, launch.ownerMachineRef)
       const inventory = await waitingRoomWorkspaceController.readInventory(() => getWaitingRoomInventory(deps.client.currentClient()))
       await waitingRoomWorkspaceController.applyInventory(inventory)
+      // MP-08/MP-11: workspace previews retain home account state. Admission
+      // after the owner pivot must use the destination's fresh inventory.
+      deps.setProviderAccountsState(inventory.providerAccounts ?? [])
+      // Profile IDs are kernel-scoped. Preserve a matching destination choice;
+      // otherwise use its normal Waiting Room default before admission.
+      launch.accountProfile = normalizeProviderAccountProfileId(
+        inventory.providerAccounts, launch.provider, launch.accountProfile,
+      )
+      deps.setWaitingRoomStateProjection({ ...deps.waitingRoomState(), accountProfileId: launch.accountProfile })
     },
     prepareManagedSessionLaunch,
     prepareExistingSessionClient: async (session) => {
