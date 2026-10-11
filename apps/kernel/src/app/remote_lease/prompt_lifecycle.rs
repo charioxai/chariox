@@ -748,6 +748,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let home_prompt_id = git_context
             .as_ref()
             .map(|context| context.home_prompt_id.clone());
+        // MP-08 / MP-10 / MP-11: authenticated home origin is execution policy,
+        // not merely Git observation metadata. Preserve it before admission.
+        let prompt_origin = git_context
+            .as_ref()
+            .and_then(|context| context.prompt_origin)
+            .unwrap_or_default();
         let must_wait_for_capacity = self.leased_turn_must_wait_for_capacity();
         let (outcome, dispatch) = crate::app::KernelAgentService::new(self.app)
             .submit_prompt_holding_dispatch(
@@ -756,6 +762,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 Some(&leased_agent.backing_agent_id),
                 &prompt,
                 &hidden_system_context,
+                prompt_origin,
                 materialized_attachments,
             )?;
         let held_for_capacity = must_wait_for_capacity && dispatch.is_some();

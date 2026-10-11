@@ -6,7 +6,9 @@ use crate::app::{
 };
 use crate::error::DaemonError;
 use crate::provider::ProviderRunState;
-use crate::session::{PromptAttachment, PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
+use crate::session::{
+    PromptAttachment, PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+};
 
 fn remote_workspace_live_sync_mode_for_submission(
     app: &crate::app::DaemonApp,
@@ -84,6 +86,7 @@ impl<'a> KernelAgentService<'a> {
             target_agent_id,
             prompt,
             hidden_system_context,
+            PromptOrigin::Chariox,
             attachments,
         )?;
         self.finish_compat_prompt_dispatch(dispatch)?;
@@ -92,7 +95,8 @@ impl<'a> KernelAgentService<'a> {
     }
 
     /// Admits a prompt like `submit_prompt_with_hidden_system_context`, but
-    /// returns its local provider dispatch instead of sending it.
+    /// returns its local provider dispatch instead of sending it. The admitted
+    /// origin must survive queueing so provider policy follows the home turn.
     pub(crate) fn submit_prompt_holding_dispatch(
         &mut self,
         session_id: &str,
@@ -100,6 +104,7 @@ impl<'a> KernelAgentService<'a> {
         target_agent_id: Option<&str>,
         prompt: &str,
         hidden_system_context: &str,
+        prompt_origin: PromptOrigin,
         attachments: Vec<PromptAttachment>,
     ) -> Result<(PromptSubmissionOutcome, Option<KernelPromptDispatch>), DaemonError> {
         crate::app::KernelSessionReadService::new(self.app)
@@ -124,7 +129,8 @@ impl<'a> KernelAgentService<'a> {
             PromptStatus::Queued,
         )
         .with_attachments(attachments)
-        .with_hidden_system_context(hidden_system_context);
+        .with_hidden_system_context(hidden_system_context)
+        .with_prompt_origin(prompt_origin);
         let submitted = self.submit_prepared_prompt_for_kernel(KernelPreparedPromptSubmission {
             session_id: session_id.to_string(),
             prompt: prepared_prompt,

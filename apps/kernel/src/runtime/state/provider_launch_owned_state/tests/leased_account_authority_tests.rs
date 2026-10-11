@@ -83,6 +83,7 @@ async fn leased_account_authority_preserves_prompt_admission_and_queue() {
             Some(&leased.backing_agent_id),
             "MP-08/MP-10/MP-11 actual cold-start admission guard",
             "",
+            crate::session::PromptOrigin::Chariox,
             vec![],
         );
     let _ = admitted.expect("leased prompt admission must keep the account");
