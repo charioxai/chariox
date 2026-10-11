@@ -119,12 +119,8 @@ pub(super) fn health_until(
             if roots.iter().any(|r| p.starts_with(r)) {
                 return Err("worker_required");
             }
-            let mut c = std::process::Command::new(p);
-            c.args(args)
-                .current_dir("/")
-                .env_clear()
-                .env("LANG", "C")
-                .env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            let mut c = super::check_executable::command(&p, roots)?;
+            c.args(args);
             let exit = crate::local::provider_requests::capture_inventory_probe(
                 c,
                 super::check_inventory::remaining(
