@@ -127,6 +127,15 @@ pub(super) fn task_public_outputs<'a>(
     else {
         return vec![];
     };
+    // MP-08 / MP-09 / MP-10 / MP-11 A12: an official-provider history
+    // import can replay a previous item under the current reused run. Prefer
+    // its managed stream receipt, wherever its original prompt boundary was.
+    // Keep genuine native-TUI imports whose item has no managed counterpart.
+    let managed_items = entries
+        .iter()
+        .filter(|e| e.kind == Kind::ProviderOutput && !e.is_external_provider_observed())
+        .filter_map(|e| e.merge_key.as_deref())
+        .collect::<std::collections::HashSet<_>>();
     entries
         .iter()
         .skip(start + 1)
@@ -138,6 +147,13 @@ pub(super) fn task_public_outputs<'a>(
         })
         .filter(|e| {
             e.kind == Kind::ProviderOutput && run.is_some() && e.provider_run_id.as_deref() == run
+        })
+        .filter(|e| {
+            !e.is_external_provider_observed()
+                || e.merge_key
+                    .as_deref()
+                    .and_then(crate::history::parse_external_provider_observed_id)
+                    .is_none_or(|id| !managed_items.contains(id.provider_turn_id.as_str()))
         })
         .map(|e| e.text.as_str())
         .collect()
@@ -183,6 +199,62 @@ mod tests {
         assert!(task_public_outputs(&entries, "absent", Some("run")).is_empty());
         assert!(task_public_outputs(&entries, "current", None).is_empty());
     }
+    // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: live d4 check contamination.
+    #[test]
+    fn a12_native_check_excludes_imported_replay_but_keeps_native_tui_answers() {
+        let entry = |kind: &str, key: &str, text: &str, observed: bool| {
+            serde_json::from_value(serde_json::json!({
+                "session_id":"room", "kind":kind, "merge_key":key,
+                "provider_run_id":"provider-run-2", "text":text,"timestamp_ms":1,
+                "source":if observed {Some("external_provider_observed")} else {None},
+            }))
+            .unwrap()
+        };
+        let entries = vec![
+            entry("user_prompt", "prompt:old", "original work", false),
+            entry("provider_output", "msg_old", "preceding answer", false),
+            entry("user_prompt", "prompt:check", "native assessment", false),
+            entry(
+                "provider_output",
+                "external:codex:thread:msg_old",
+                "preceding answer",
+                true,
+            ),
+            entry(
+                "provider_output",
+                "msg_check",
+                r#"{"status":"achieved"}"#,
+                false,
+            ),
+            entry(
+                "provider_output",
+                "external:codex:thread:msg_check",
+                r#"{"status":"achieved"}"#,
+                true,
+            ),
+            entry(
+                "user_prompt",
+                "prompt:native",
+                "real native TUI prompt",
+                true,
+            ),
+            entry(
+                "provider_output",
+                "external:codex:thread:msg_native",
+                "native answer",
+                true,
+            ),
+        ];
+        assert_eq!(
+            task_public_outputs(&entries, "check", Some("provider-run-2")).concat(),
+            r#"{"status":"achieved"}"#
+        );
+        assert_eq!(
+            task_public_outputs(&entries, "native", Some("provider-run-2")),
+            vec!["native answer"]
+        );
+    }
+
     // MP-08/MP-10/MP-11 R947: persisted completion/sweep lookup uses the
     // task's old worker run even after another lease or turn becomes current.
     #[test]

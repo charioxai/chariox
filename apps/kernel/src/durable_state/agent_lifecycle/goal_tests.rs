@@ -721,3 +721,49 @@ fn a12_check_preserves_an_earlier_registered_timer_deadline() {
     assert_eq!(t.state, ExecutionState::Waiting);
     assert_eq!(t.wait.unwrap().deadline_ms, 10_000);
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: a paused loop cannot advertise a new check.
+#[test]
+fn a12_interval_change_cannot_schedule_a_paused_goal() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.register();
+    f.subscribe();
+    f.settle("p", true);
+    let t = check(
+        &f,
+        serde_json::json!({"status":"waiting","reason":"source required","registration_ids":["reg"],"deadline_ms":600004}),
+    );
+    f.apply(Operation::ControlGoal {
+        task: "p".into(),
+        owner: "owner".into(),
+        revision: t.revision,
+        action: "pause".into(),
+        value: None,
+        now: 10,
+    });
+    let paused = f.task();
+    f.apply(Operation::ControlGoal {
+        task: "p".into(),
+        owner: "owner".into(),
+        revision: paused.revision,
+        action: "interval".into(),
+        value: Some("1".into()),
+        now: 11,
+    });
+    let t = f.task();
+    assert!(t.goal.as_ref().unwrap().paused);
+    assert_eq!(
+        t.goal.as_ref().unwrap().next_check_in_ms,
+        None,
+        "owner interval edits must not schedule checks on a paused goal"
+    );
+    assert_eq!(
+        t.obligations, paused.obligations,
+        "live obligations remain supervised while paused"
+    );
+    assert!(
+        t.wait.is_some(),
+        "retain source wait metadata for explicit owner revalidation"
+    );
+}

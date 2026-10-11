@@ -54,7 +54,9 @@ pub(in crate::durable_state::agent_lifecycle) fn control(
             t.goal.as_mut().unwrap().check_in_minutes = n;
             if let Some(w) = &mut t.wait {
                 w.deadline_ms = w.deadline_ms.min(now.saturating_add(n as u64 * 60_000));
-                t.goal.as_mut().unwrap().next_check_in_ms = Some(w.deadline_ms);
+                if t.state == ExecutionState::Waiting {
+                    t.goal.as_mut().unwrap().next_check_in_ms = Some(w.deadline_ms);
+                }
             }
         }
         "edit" => {
