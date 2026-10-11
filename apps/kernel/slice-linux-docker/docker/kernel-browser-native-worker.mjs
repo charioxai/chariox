@@ -52,7 +52,9 @@ export class NativeWorkerControl {
  // MP-08/MP-10/MP-11: diagnostic-only, ordered with native controls.
  rejected(reason){
   if(!['stale_document','epoch','region_revision','serial_skipped','shift_hold'].includes(reason))throw Error('MP-11: rejection reason');
-  this.notify({reject:reason});
+  // A document fence immediately closes this bridge: flush its diagnostic
+  // before cleanup discards the otherwise batched control notifications.
+  this.notify({reject:reason},true);
  }
  delivered(encoder,revision){this.notify({delivered:encoder,revision});}
  commit(encoder,serial,admit=true){this.notify({commit:encoder,serial,...(admit?{}:{admit:false})});}

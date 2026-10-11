@@ -27,19 +27,20 @@ export async function displayCredit(host, stream, command, signal) {
     assertNotCancelled(signal);
     if(empty())return {generation:host.generation,frame_sent:false,display_frame:null};
   }
-  const tab = await host.displayTarget({ tab_id: stream.tab_id, generation: command.generation });
+  const native = cachedSource?.native===true&&cachedSource.attested;
+  const tab = await host.displayTarget({ tab_id: stream.tab_id, generation: command.generation },native);
   // Recreate the closure when navigation changes the loader binding. Pixels
   // and pending repairs are then invalidated by the new document as usual.
   if (!stream.capture || stream.capture.document !== tab.document_id)
     stream.capture = new DisplayCapture((clip) => {
       return host.displayScreenshot(tab,clip);
     }, stream.device_scale_factor, host.timing);
-  const { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+  const { connection, sessionId } = native ? host.displayDocuments.connection(tab) : await host.browser.resolvePageTarget(tab.target_id);
   const layoutAt = timestamp();
   // MP-08/MP-10: an attested window supplies the complete viewport. Layout
   // is needed only to select safe CDP crops; a retired native source falls
   // back to full protected capture when no layout was read.
-  const viewport = cachedSource?.attested ? null : (await connection.send("Page.getLayoutMetrics", {}, sessionId)).cssVisualViewport;
+  const viewport = native ? null : (await connection.send("Page.getLayoutMetrics", {}, sessionId)).cssVisualViewport;
   host.timing('capture_layout_metrics', layoutAt);
   // Native CDP clips are page rectangles. Our private damage hints are
   // viewport rectangles; use full protected capture for scroll/zoom/unknown
@@ -139,9 +140,11 @@ export async function displayCredit(host, stream, command, signal) {
   const frame = await stream.frame(source, source.document_id, command.after_sequence, async () => {
     assertNotCancelled(signal);
     if(!source.motion&&(host.inputEpochs.get(tab.tab_id)??0)!==epoch)compositor?.rejected?.('epoch');
-    await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+    if(native){
+      if(!await host.displayDocuments.validate(tab)){compositor?.rejected?.('stale_document');return false;}
+    }else await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
     return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((host.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision))));
-  },()=>!compositor?.closed&&compositor?.regionRevision===regionRevision&&host.protection===capturePolicy&&(source.motion||((host.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision)))));
+  },()=>(!native||host.displayDocuments.current(tab))&&!compositor?.closed&&compositor?.regionRevision===regionRevision&&host.protection===capturePolicy&&(source.motion||((host.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision)))));
   if(frame)host.timing.event?.('frame_out',{at:source.captured_ms,sequence:frame.sequence,kind:frameKinds[frame.kind]??0,input_triggered:source.input_triggered?1:0,input_epoch:epoch,
     damage_ready_ms:source.raw?.damage_ready_ms,input_wake_ms:source.raw?.input_wake_ms,published_ms:source.published_ms,encode_offered_ms:Number.isFinite(source.offeredAt)?performance.timeOrigin+source.offeredAt:undefined,encode_started_ms:source.encode_started_ms,encoded_ms:source.encoded_ms,native_serial:source.raw?.serial});
   if(frame){stream.compositorMasks=JSON.stringify(source.raw?.[displayMaskRegions]??[]);stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact&&source.raw?.nativeCommit){source.raw.nativeCommit(stream.encoder.nativeSession,!source.moves);stream.compositorCommittedSerial=stream.compositorSerial;}}

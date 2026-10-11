@@ -46,12 +46,13 @@ export function attestationMask(regions,width,height){
 }
 export class LinuxCapture {
  constructor({display,pid,connection,sessionId,tab,scale,hostScale=1,policy,browser,screenshot,allowed,frames,timing=()=>{}}){
-  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
+  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,timing});this.native=true;this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
- valid(){return !this.closed&&ownsDisplay(this.display)&&this.allowed(this.policy)}
+ valid(){return !this.closed&&this.connection?.isOpen?.()!==false&&ownsDisplay(this.display)&&this.allowed(this.policy)}
  rejected(reason){this.nativeWorker?.rejected?.(reason);}
  onCdp(m){
+  if(m.method==='Chariox.browserDisconnected'||m.method==='Target.detachedFromTarget'&&m.params?.sessionId===this.sessionId||m.method==='Target.targetDestroyed'&&m.params?.targetId===this.tab?.target_id||m.sessionId===this.sessionId&&m.method==='Inspector.detached'){this.rejected('stale_document');this.fence();return;}
   if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId){if(this.latest||this.pending||this.publishingRaw)this.rejected('stale_document');this.fence();}
   if(m.method==='Target.targetCreated'&&m.params?.targetInfo?.type==='page')this.fence();
   // MP-11: attribute-only protection changes produce no XDamage. Retire even

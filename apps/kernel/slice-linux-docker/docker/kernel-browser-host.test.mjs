@@ -1165,3 +1165,50 @@ test('MP-08/MP-10 Tabs keep their order and new Tabs are appended', () => using(
   const order = (await host.request({ op: 'state' })).tabs.map(tab => tab.tab_id);
   assert.deepEqual(order, [a.tab_id, b.tab_id, c.tab_id]);
 }));
+
+// MP-08/MP-10/MP-11 step4: real credit/DisplayStream path, not empty-credit shortcut.
+test('MP-10 delivered native frames perform zero CDP calls after document admission',()=>using(async({host,sent})=>{
+ const {displayCredit}=await import('./kernel-browser-display-credit.mjs');
+ const {DisplayStream}=await import('./kernel-browser-display.mjs');
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ await host.displayTarget({tab_id:tab.tab_id,generation:opened.generation},true);
+ const source={native:true,attested:true,regionRevision:0,policy:host.protection,closed:false,allowed:()=>true,sample:()=>sample,valid:()=>true,close:async()=>{}};
+ let sample={serial:1,document_id:tab.document_id,tab_id:tab.tab_id,raw:{},width:1280,height:800,motion:true,data_base64:'signature',encoded:{key:true,data_base64:'YWJj'}};
+ const stream=new DisplayStream({subscription_id:'delivered',tab_id:tab.tab_id,codec:'avc1.420033',device_scale_factor:1,bitrate:8_000_000,dependencies:true},{encoder:{close:async()=>{}},wait:async()=>{}});
+ const refiner={request:()=>null,invalidate(){},close:async()=>{}};
+ const producer={source,frames:[sample],take:()=>producer.frames.shift(),feedback(){},retireUnsent(){},invalidate(){},close:async()=>{}};
+ Object.assign(stream,{compositorRegionRevision:0,refiner,refinerDocument:tab.document_id,producer});
+ host.compositors.set(tab.tab_id,{document:tab.document_id,source,ready:Promise.resolve(source)});
+ // The first frame has no base: its recovery invalidation must keep this pre-encoded key available.
+ stream.invalidate=()=>{stream.previous=null;stream.exact=false;stream.document_id=null;};
+ try{
+  const before=sent.length;
+  for(let serial=1;serial<=3;serial++){
+   sample={...sample,serial,data_base64:`signature${serial}`};producer.frames=[sample];
+   const reply=await displayCredit(host,stream,{generation:opened.generation,after_sequence:stream.sequence,push:{congested:false}});
+   assert.equal(reply.frame_sent,true);assert.equal(reply.display_frame.kind,'video');
+  }
+  assert.deepEqual(sent.slice(before).map(r=>r.method),[],'MP-10: zero calls per delivered frame');
+ }finally{await stream.close();}
+}));
+
+for(const change of ['navigation','protection'])test(`MP-11 ${change} between native readback and commit discards the frame`,()=>using(async({host,handlers,pages})=>{
+ const {displayCredit}=await import('./kernel-browser-display-credit.mjs');
+ const {DisplayStream}=await import('./kernel-browser-display.mjs');
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id);
+ await host.displayTarget({tab_id:tab.tab_id,generation:opened.generation},true);
+ const sample={serial:1,document_id:tab.document_id,tab_id:tab.tab_id,raw:{},width:1280,height:800,motion:true,data_base64:'signature',encoded:{key:true,data_base64:'YWJj'}};
+ const source={native:true,attested:true,regionRevision:0,policy:host.protection,closed:false,allowed:()=>true,sample:()=>sample,valid:()=>true,close:async()=>{}};
+ const producer={source,frames:[sample],feedback(){},retireUnsent(){},invalidate(){},close:async()=>{},take:()=>{
+  if(change==='navigation'){
+   pages.get(tab.target_id).document_id='next';
+   for(const handler of handlers)handler({method:'Page.frameNavigated',sessionId:`session-${tab.target_id}`,params:{frame:{id:'frame',loaderId:'next'}}});
+  }else source.regionRevision++;
+  return sample;
+ }};
+ const stream=new DisplayStream({subscription_id:'retired',tab_id:tab.tab_id,codec:'avc1.420033',device_scale_factor:1,bitrate:8_000_000,dependencies:true},{encoder:{close:async()=>{}},wait:async()=>{}});
+ Object.assign(stream,{compositorRegionRevision:0,refinerDocument:tab.document_id,refiner:{request:()=>null,invalidate(){},close:async()=>{}},producer});
+ stream.invalidate=()=>{stream.previous=null;stream.exact=false;stream.document_id=null;};
+ host.compositors.set(tab.tab_id,{document:tab.document_id,source,ready:Promise.resolve(source)});
+ try{const reply=await displayCredit(host,stream,{generation:opened.generation,after_sequence:0,push:{congested:false}});assert.equal(reply.frame_sent,false);assert.equal(stream.sequence,0,'no stale frame committed');}finally{await stream.close();}
+}));
