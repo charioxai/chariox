@@ -239,6 +239,26 @@ impl KernelRuntimeOwnedState {
                 });
             }
         }
+        // The worker has acknowledged the replacement profile. Completed turns
+        // can still have a running home projection; retire it so projection
+        // fallback and lagging snapshots cannot advertise the old profile.
+        if let Some(binding) = agent.remote_execution() {
+            self.provider_run_projection.retire_leased_agent_runs(
+                session_id,
+                agent_id,
+                &binding.leased_agent_id,
+            );
+            if let Some(run_id) = session.active_provider_run_id() {
+                if crate::provider::worker_provider_run_id_from_projected_leased_id(
+                    &binding.leased_agent_id,
+                    run_id,
+                )
+                .is_some()
+                {
+                    self.clear_active_provider_run_session_pointer(session_id, run_id)?;
+                }
+            }
+        }
         let resume_state = agent.provider_resume_state().after_profile_change(
             agent.provider(),
             agent.provider_account_profile(),
