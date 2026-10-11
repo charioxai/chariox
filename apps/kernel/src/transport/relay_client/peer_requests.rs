@@ -296,6 +296,38 @@ pub(super) async fn handle_daemon_peer_request(
         }
     };
     let response = match request {
+        RelayPeerRequest::SetLeasedComputerGrant {
+            leased_agent_id,
+            epoch,
+            grant,
+        } => {
+            match router
+                .runtime_state()
+                .install_leased_computer_grant(&leased_agent_id, &epoch, grant)
+                .await
+            {
+                Ok(()) => RelayPeerResponse::LeasedComputerGrantUpdated {},
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::CheckLeasedComputerGrant { context, epoch } => {
+            match router.runtime_state().check_leased_computer_grant(&context, &epoch) {
+                Ok(grant) => RelayPeerResponse::LeasedComputerGrantChecked { grant },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::RoomBrowserController {
             session_id,
             slice_id,
@@ -2372,7 +2404,8 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::SpawnLeasedAgent { lease_id, .. } => {
             Some(LeaseResource::ExecutionLease(lease_id))
         }
-        RelayPeerRequest::DestroyLeasedAgent { leased_agent_id }
+        RelayPeerRequest::SetLeasedComputerGrant { leased_agent_id, .. }
+        | RelayPeerRequest::DestroyLeasedAgent { leased_agent_id }
         | RelayPeerRequest::UpdateLeasedAgentConfig {
             leased_agent_id, ..
         }
@@ -2515,6 +2548,19 @@ mod tests {
         ManagedContextPackageKernel, ManagedContextPackageProviderAccounts,
     };
 
+    #[test]
+    fn mp11_leased_computer_set_requires_exact_lease_caller() {
+        let request = RelayPeerRequest::SetLeasedComputerGrant {
+            leased_agent_id: "leased".into(), epoch: "epoch".into(), grant: None,
+        };
+        assert!(matches!(lease_resource(&request), Some(LeaseResource::LeasedAgent("leased"))));
+        assert!(lease_worker_peer_request_allowed(&request));
+    }
+    #[tokio::test]
+    async fn mp11_leased_computer_check_rejects_unrelated_verified_peer() {
+        mp11_unrelated_forwarded_peer("computer").await;
+    }
+
     #[tokio::test]
     async fn mp11_forwarded_capability_rejects_unrelated_verified_peer() {
         mp11_unrelated_forwarded_peer("capability").await;
@@ -2559,7 +2605,16 @@ mod tests {
                 },
             )
             .unwrap();
-        let request = if kind == "credential" {
+        let request = if kind == "computer" {
+            RelayPeerRequest::CheckLeasedComputerGrant {
+                context: crate::transport::relay_peer::RemoteExtensionInvocationContext {
+                    home_kernel_id: home.daemon_id.clone(), home_session_id: session.id().into(),
+                    home_agent_id: agent.id().into(), leased_agent_id: "victim-leased-agent".into(),
+                    worker_kernel_id: Some("victim-worker".into()), worker_machine_id: Some("victim-machine".into()),
+                    worker_provider_run_id: "victim-run".into(),
+                }, epoch: "epoch".into(),
+            }
+        } else if kind == "credential" {
             RelayPeerRequest::ResolveHomeCredentialSecret {
                 context: crate::transport::relay_peer::RemoteExtensionInvocationContext {
                     home_kernel_id: home.daemon_id.clone(),

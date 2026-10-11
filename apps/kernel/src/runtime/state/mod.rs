@@ -194,6 +194,10 @@ struct KernelRuntimeOwnedState {
     slice_store: crate::slice::SliceStore,
     notes: crate::runtime::notes::NoteStore,
     kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
+    leased_computer_changes: Arc<std::sync::Mutex<()>>,
+    leased_computer_grants: Arc<
+        std::sync::Mutex<BTreeMap<String, crate::transport::relay_peer::LeasedComputerGrant>>,
+    >,
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
@@ -469,6 +473,9 @@ mod kernel_browser_receipts;
 mod kernel_browser_runtime;
 mod kernel_browser_secret_runtime;
 mod kernel_computer_runtime;
+mod leased_computer_runtime;
+#[cfg(test)]
+mod leased_computer_runtime_tests;
 mod notes_runtime;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
@@ -817,6 +824,8 @@ impl KernelRuntimeState {
                 slice_store,
                 notes: crate::runtime::notes::NoteStore::new(config.private_runtime_state_root()),
                 kernel_browser_host,
+                leased_computer_changes: Default::default(),
+                leased_computer_grants: Default::default(),
                 browser_controller_processes:
                     crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
                 browser_import_admission:

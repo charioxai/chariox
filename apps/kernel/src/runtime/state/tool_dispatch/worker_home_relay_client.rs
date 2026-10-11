@@ -5,7 +5,7 @@ use chariox_relay::protocol::ClientTarget;
 use super::*;
 
 impl KernelRuntimeState {
-    pub(super) async fn send_worker_home_runtime_request(
+    pub(in crate::runtime::state) async fn send_worker_home_runtime_request(
         &self,
         config: &crate::config::DaemonConfig,
         home_kernel_id: &str,

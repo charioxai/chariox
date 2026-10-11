@@ -46,10 +46,10 @@ test("unknown versions and unrelated requests retain existing transport behavior
 })
 
 
-test("MD-stack user App and browser surfaces require union protocol 443", () => {
+test("MD-stack MP-08 / MP-10 / MP-11 user App views require protocol 494", () => {
   for (const name of ["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"]) {
-    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 417), /443/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 443))
+    for (const predecessor of [417, 472, 487, 493]) assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, predecessor), /494/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 494))
   }
   assert.throws(() => requireKernelFeatureProtocol({KernelBrowser: {command:{op:"input"}}},416), /494/)
 })
@@ -74,4 +74,11 @@ test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated proto
   }
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "ordinary" } }, 435))
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "kernel-access", choice_id: "refuse" } }, 451))
+})
+
+test("MP-08 / MP-10 / MP-11 typed leased desktop grants require allocated protocol 500", () => {
+  for (const command of [{op:"grant_leased_computer",agent_id:"a",target:{surface_id:"s",generation:"g"}}, {op:"revoke_leased_computer",agent_id:"a"}]) {
+    for (const predecessor of [487, 494, 499]) assert.throws(() => requireKernelFeatureProtocol({KernelBrowser:{command}}, predecessor), /protocol ≥500/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({KernelBrowser:{command}}, 500))
+  }
 })

@@ -499,17 +499,29 @@ refresh_slice_support_files() {
   run_with_timeout 180 docker exec -u root "$SLICE_NAME" bash -lc '
     set -euo pipefail
     if ! command -v tint2 >/dev/null 2>&1 || ! command -v dbus-run-session >/dev/null 2>&1 \
-      || [[ ! -r /usr/share/dbus-1/services/org.a11y.Bus.service ]]; then
+      || [[ ! -r /usr/share/dbus-1/services/org.a11y.Bus.service ]] \
+      || ! /usr/bin/python3 -c '"'"'import Xlib, gi, pyatspi; from PIL import Image'"'"' >/dev/null 2>&1; then
       export DEBIAN_FRONTEND=noninteractive
       apt-get -qq update
-      apt-get -y -qq --no-install-recommends install dbus tint2 at-spi2-core
+      apt-get -y -qq --no-install-recommends install dbus tint2 at-spi2-core python3-xlib python3-gi python3-pyatspi python3-pil
       apt-get clean
       find /var/lib/apt/lists -mindepth 1 -delete
+    fi
+    /usr/bin/python3 -c '"'"'import Xlib, gi, pyatspi; from PIL import Image'"'"'
+    # The existing helper interpreter must see the same distro AT-SPI bindings.
+    if [[ -x /opt/chariox-selkies/bin/python ]]; then
+      sed -i "s/^include-system-site-packages = .*/include-system-site-packages = true/" /opt/chariox-selkies/pyvenv.cfg
+      /opt/chariox-selkies/bin/python -c '"'"'import Xlib, gi, pyatspi; from PIL import Image'"'"'
     fi
   ' || fail "could not prepare desktop services in the existing slice image"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/chariox-slice/start-runtime.sh" "runtime launcher"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-providers.sh" "$SLICE_NAME:/opt/chariox-slice/start-providers.sh" "provider launcher"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/chariox-slice/slice-screen.sh" "screen launcher"
+  # MP-08 / MP-10 / MP-11: preserved images need the Python closure too.
+  local native_python
+  for native_python in native-x11.py native-computer.py native-accessibility.py native-fill-targets.py native-clipboard.py room-native-protection.py browser-desktop-protection.py x11-text-keyboard.py slice-observation-mask.py linux-desktop-session.py; do
+    copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/$native_python" "$SLICE_NAME:/opt/chariox-slice/$native_python" "native Python dependency $native_python"
+  done
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-keyboard.py" "$SLICE_NAME:/opt/chariox-slice/slice-keyboard.py" "physical keyboard and secret target guard"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/tint2rc" "$SLICE_NAME:/opt/chariox-slice/tint2rc" \
     || log "applications taskbar configuration refresh unavailable; continuing"

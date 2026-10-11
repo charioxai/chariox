@@ -280,4 +280,4 @@ pub use workspace::*;
 /// explicit capability negotiation and recoverable target-offline handshakes.
 /// MP-08 / MP-10 / MP-11: PR5 carries the #904/main 472 union with 474/475 at 475.
 /// MP-08/MP-11: allocated494 adds bounded installed desktop discovery/launch.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 494;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 500;

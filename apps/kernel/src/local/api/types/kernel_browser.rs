@@ -4,6 +4,14 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KernelBrowserCommand {
+    /// MP-08/MP-11 local500: human grants only the leased worker's observed desktop.
+    GrantLeasedComputer {
+        agent_id: String,
+        target: KernelDesktopTarget,
+    },
+    RevokeLeasedComputer {
+        agent_id: String,
+    },
     Computer {
         command: KernelComputerCommand,
     },

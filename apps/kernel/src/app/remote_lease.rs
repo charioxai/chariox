@@ -125,6 +125,55 @@ pub(crate) struct RemoteLeaseRuntime<'a> {
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {
+    /// MP-08/MP-11: the transport has already checked the exact home lease caller.
+    pub(crate) fn leased_computer_agent(
+        &self,
+        leased_agent_id: &str,
+        grant: Option<&crate::transport::relay_peer::LeasedComputerGrant>,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let leased = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.into(),
+            }
+        })?;
+        let lease = self
+            .app
+            .execution_leases
+            .get(&leased.lease_id)
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
+                lease_id: leased.lease_id.clone(),
+            })?;
+        if let Some(grant) = grant {
+            if grant.leased_agent_id != leased_agent_id
+                || grant.home_kernel_id != lease.home_kernel_id
+                || grant.home_session_id != lease.home_session_id
+                || grant.home_agent_id != lease.home_agent_id
+                || grant.home_agent_id != leased.home_agent_id
+                || grant.desktop_kernel_id != lease.worker_kernel_id
+                || grant.desktop_kernel_id != self.app.config.daemon_id
+                || lease.machine_id != self.app.config.host_machine_id
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "leased Computer grant",
+                    message: "MP-11: grant does not match the owned lease".into(),
+                });
+            }
+        }
+        let agent = self.app.agents.get_agent(&leased.backing_agent_id)?;
+        let session = self.app.sessions.get_session(&leased.backing_session_id)?;
+        if agent.session_id() != session.id()
+            || agent.owner_user_id() != lease.owner_user_id
+            || session.owner_user_id() != lease.owner_user_id
+            || !session.has_member(agent.owner_user_id())
+            || session.status() == crate::session::SessionStatus::Ended
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "leased Computer grant",
+                message: "MP-11: lease agent authority ended".into(),
+            });
+        }
+        Ok(agent)
+    }
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
         Self { app }
     }
@@ -1710,6 +1759,52 @@ mod tests {
         )
     }
 
+    #[test]
+    fn mp11_leased_computer_grant_matches_every_lease_coordinate() {
+        let (mut app, leased) = leased_agent_fixture(false);
+        let grant = crate::transport::relay_peer::LeasedComputerGrant {
+            epoch: "epoch".into(),
+            home_kernel_id: "home-kernel".into(),
+            home_session_id: "home-session".into(),
+            home_agent_id: "home-agent".into(),
+            leased_agent_id: leased.id.clone(),
+            desktop_kernel_id: app.config.daemon_id.clone(),
+            target: crate::local::KernelDesktopTarget {
+                surface_id: "desktop".into(),
+                generation: "generation".into(),
+            },
+        };
+        assert_eq!(
+            RemoteLeaseRuntime::new(&mut app)
+                .leased_computer_agent(&leased.id, Some(&grant))
+                .unwrap()
+                .id(),
+            leased.backing_agent_id
+        );
+        for field in [
+            "home_kernel_id",
+            "home_session_id",
+            "home_agent_id",
+            "leased_agent_id",
+            "desktop_kernel_id",
+        ] {
+            let mut value = serde_json::to_value(&grant).unwrap();
+            value[field] = "foreign".into();
+            let forged = serde_json::from_value(value).unwrap();
+            assert!(
+                RemoteLeaseRuntime::new(&mut app)
+                    .leased_computer_agent(&leased.id, Some(&forged))
+                    .is_err(),
+                "MP-11: {field}"
+            );
+        }
+        app.sessions_mut()
+            .end_session(&leased.backing_session_id)
+            .unwrap();
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .leased_computer_agent(&leased.id, Some(&grant))
+            .is_err());
+    }
     fn leased_agent_fixture_with_config(
         home_agent_metaagent: bool,
         mut config: crate::config::DaemonConfig,

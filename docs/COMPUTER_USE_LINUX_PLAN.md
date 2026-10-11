@@ -192,7 +192,17 @@ existing capability loader/focus grant. Retained holders keep the same operation
 on granted resources across focus changes; busy turns/tools/subagents retain
 access, while fully idle holders enter the existing expiry window. Explicit
 revoke, expiry, session end, destruction and placement retirement cancel the
-grant epoch and active input. No cross-kernel user-domain control is added:
+grant epoch and active input. MP-08 / MP-11 protocol 500 / peer 109 adds one
+explicit leased-desktop exception: the agent's HOME owner issues
+`/access grant-computer <agent-id> <surface-id> <generation>` for the observed
+desktop on that agent's bound ordinary Linux worker. The typed grant binds
+home/session/agent/lease/worker, desktop generation and a revocable epoch.
+The worker checks HOME's live lease/run and grant on every Computer invocation,
+then uses the existing desktop mutation admission and human takeover service.
+`/access revoke-computer <agent-id>` and ordinary Access revoke retire that
+authority; stale epochs cannot revive queued input. Browser and Vault retain
+their existing local authority guards. No arbitrary desktop target or Room
+browser forwarding authority is accepted:
 remote agents receive the existing actionable kernel/focus refusal. A Room's
 membership never becomes an implicit grant to the user's host desktop.
 

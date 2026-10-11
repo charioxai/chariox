@@ -3297,6 +3297,34 @@ their existing path. A Cloud client must expose the native source and use this
 shared presenter before the desktop feature is user-visible.
 
 
+### MP-08 / MP-11: explicit leased desktop Computer grant (local500 / peer109)
+
+The authenticated HOME owner sends `KernelBrowser.command={op:"grant_leased_computer",
+agent_id,target:{surface_id,generation}}` for the agent's bound ordinary Linux
+desktop worker. `revoke_leased_computer` names the same agent; ordinary Access
+revoke also retires it. The TUI exposes `/access grant-computer <agent-id>
+<surface-id> <generation>` and `/access revoke-computer <agent-id>`, requiring
+local500 and worker peer109 before sending the new contract.
+
+`SetLeasedComputerGrant` uses the existing authenticated home lease caller gate.
+It binds HOME kernel/session/agent, leased agent, desktop kernel, surface,
+generation and epoch. The desktop validates the current observed generation
+and grants only the Computer resource; it does not change focus or grant
+Browser, Vault, video, shell, Room access or authority over another kernel.
+Before every provider Computer invocation, `CheckLeasedComputerGrant` returns
+to HOME through the authenticated forwarded-worker/run gate. HOME requires
+the current explicit grant epoch, owner membership and live session/lease/run.
+The desktop then uses its ordinary protected Computer service, mutation ledger
+and human takeover. Queued admissions retain the epoch and provider run.
+
+HOME commits revocation before sending it to the worker; failed delivery cannot
+authorize a subsequent call. Delivered revocation cancels in-flight admission.
+Delayed revocations name their epoch and cannot retire a newer grant. Idle
+expiry, ended runs/sessions, changed leases and worker restarts fail closed.
+Ordinary focus cannot revive an expired or revoked explicit grant. No grant
+is restored from disk or inferred from Room membership. Agent `start` reads the
+already granted desktop and cannot create a replacement generation.
+
 ### MP-08 / MP-11: installed graphical application launch (local494)
 
 `KernelBrowser.command={op:"computer",command:...}` and the official provider

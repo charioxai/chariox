@@ -67,7 +67,7 @@ impl KernelRuntimeState {
         let [run] = runs else {
             return Vec::new();
         };
-        let Some(agent) = self.kernel_browser_agent(run) else {
+        let Some(agent) = self.kernel_computer_agent(run) else {
             return Vec::new();
         };
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
@@ -128,7 +128,13 @@ impl KernelRuntimeState {
                 "MP-11: admitted local provider run required".into(),
             ));
         };
-        let agent = self.user_domain_tool_agent(run).await?;
+        let leased_grant = self.leased_computer_tool_authority(run).await?;
+        let agent = if leased_grant.is_some() {
+            self.kernel_computer_agent(run)
+                .ok_or_else(|| host_error("MP-11: not_granted: Computer grant revoked".into()))?
+        } else {
+            self.user_domain_tool_agent(run).await?
+        };
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         let host = self.owned.kernel_browser_host.clone();
         if name == LOADER {
@@ -137,8 +143,10 @@ impl KernelRuntimeState {
                     "MP-08: Computer loader accepts no arguments".into(),
                 ));
             }
-            host.load_for(&user, agent.id(), KernelBrowserCapability::Computer)
-                .map_err(host_error)?;
+            if leased_grant.is_none() {
+                host.load_for(&user, agent.id(), KernelBrowserCapability::Computer)
+                    .map_err(host_error)?;
+            }
             return Ok(RuntimeToolResult {
                 ok: true,
                 payload: serde_json::json!({"loaded":TOOL}),
@@ -163,6 +171,8 @@ impl KernelRuntimeState {
         let authority = self.clone();
         let auth_token = token.to_string();
         let run_id = run.id().to_string();
+        let expected_grant = leased_grant.clone();
+        let authority_agent = agent.id().to_string();
         let admission = host
             .admit_for(&user, agent.id(), KernelBrowserCapability::Computer)
             .map_err(host_error)?
@@ -174,16 +184,46 @@ impl KernelRuntimeState {
                 let [run] = current.as_slice() else {
                     return false;
                 };
-                run.id() == run_id && authority.kernel_browser_agent(run).is_some()
+                run.id() == run_id
+                    && authority.kernel_computer_agent(run).is_some()
+                    && expected_grant.as_ref().is_none_or(|grant| {
+                        authority
+                            .owned
+                            .leased_computer_grants
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .get(&authority_agent)
+                            == Some(grant)
+                    })
             });
+        let mut parameters = params(request.command)?;
+        if let Some(grant) = leased_grant.as_ref() {
+            if parameters["op"] == "start" {
+                parameters["op"] = "state".into();
+            }
+            if parameters["op"] != "state"
+                && (parameters["surface_id"].as_str() != Some(&grant.target.surface_id)
+                    || parameters["generation"].as_str() != Some(&grant.target.generation))
+            {
+                return Err(host_error(
+                    "MP-11: not_granted: Computer target differs from the explicit desktop grant"
+                        .into(),
+                ));
+            }
+        }
         let mut payload = self
-            .kernel_browser_operation_admitted(
-                &user,
-                Some(admission),
-                "host.computer",
-                params(request.command)?,
-            )
+            .kernel_browser_operation_admitted(&user, Some(admission), "host.computer", parameters)
             .await?;
+        if let Some(grant) = leased_grant {
+            if payload["surface_id"].is_string()
+                && (payload["surface_id"].as_str() != Some(&grant.target.surface_id)
+                    || payload["generation"].as_str() != Some(&grant.target.generation))
+            {
+                return Err(host_error(
+                    "MP-11: stale native surface or generation".into(),
+                ));
+            }
+        }
         // MCP receives one native image content block, with no base64 text copy.
         if let Some(data) = payload
             .as_object_mut()

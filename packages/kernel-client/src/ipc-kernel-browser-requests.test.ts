@@ -5,7 +5,7 @@ import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { userDomainWindowBadge } from "./index.js"
 
 test("MD-2: MP-08 / MP-10 / MP-11 protocol 494 browser requests carry no session or claimed user", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 494)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 500)
   assert.equal(kernelBrowserMinimumProtocolVersion, 494)
   assert.deepEqual(kernelBrowserRequest({ op: "open", url: "https://example.com" }), {
     KernelBrowser: { command: { op: "open", url: "https://example.com" } },

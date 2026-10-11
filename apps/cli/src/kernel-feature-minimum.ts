@@ -42,6 +42,8 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
   let feature = Object.hasOwn(features, name) ? features[name] : undefined
   if (name === "KernelBrowser" && record(payload?.command)?.op === "computer") {
     feature = { feature: "MP-08 owned Computer desktop", minimum: requests.kernelComputerMinimumProtocolVersion }
+  } else if (name === "KernelBrowser" && ["grant_leased_computer", "revoke_leased_computer"].includes(String(record(payload?.command)?.op))) {
+    feature = { feature: "MP-08 leased Computer grant", minimum: requests.leasedComputerMinimumProtocolVersion }
   } else if (requests.isGuardedKernelControl(request)) {
     feature = name === "KeepManagedEnvironmentRunning"
       ? { feature: "Managed environment keep running", minimum: requests.managedEnvironmentKeepRunningMinimumProtocolVersion }

@@ -78,7 +78,9 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
         .map_err(|_| host_error("MD-3: invalid browser command".into()))?;
     if matches!(
         &request.command,
-        KernelBrowserCommand::GrantRoomComputer { .. }
+        KernelBrowserCommand::GrantLeasedComputer { .. }
+            | KernelBrowserCommand::RevokeLeasedComputer { .. }
+            | KernelBrowserCommand::GrantRoomComputer { .. }
             | KernelBrowserCommand::ListGrants
             | KernelBrowserCommand::SubscribeGrants { .. }
             | KernelBrowserCommand::RevokeGrants { .. }
@@ -201,6 +203,14 @@ impl KernelRuntimeState {
                 let (user, actor) = self.kernel_browser_terminal_context(caller)?;
                 self.refresh_user_domain_grants();
                 match &command {
+                    KernelBrowserCommand::GrantLeasedComputer { agent_id, target } => {
+                        return self.grant_leased_computer(&user, agent_id, target.clone()).await;
+                    }
+                    KernelBrowserCommand::RevokeLeasedComputer { agent_id } => {
+                        self.revoke_leased_computer(&user, agent_id).await?;
+                        let kernel = self.owned.config_projection.snapshot().daemon_id;
+                        return self.room_computer_grant_snapshot(&user, &kernel);
+                    }
                     KernelBrowserCommand::GrantRoomComputer { .. }
                     | KernelBrowserCommand::ListGrants
                     | KernelBrowserCommand::RevokeGrants { .. }
@@ -210,6 +220,8 @@ impl KernelRuntimeState {
                         }
                         if let KernelBrowserCommand::RevokeGrants { agent_id } = &command {
                             self.set_room_computer_access(&user, agent_id.as_deref(), false)?;
+                            self.owned.kernel_browser_host.revoke_grants(&user, agent_id.as_deref());
+                            self.revoke_user_leased_computer(&user, agent_id.as_deref()).await?;
                             self.owned
                                 .kernel_browser_host
                                 .revoke_grants(&user, agent_id.as_deref());
@@ -466,7 +478,6 @@ impl KernelRuntimeState {
                 description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll. Vault input is separate.".into(),
                 input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","enum":["Tab","Enter","Escape","Backspace","Delete","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End"]},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
         }
-        tools.extend(self.kernel_computer_tool_specs(runs));
         tools.extend(self.notes_tool_specs(run, &agent));
         tools
     }

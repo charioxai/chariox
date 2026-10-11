@@ -1,6 +1,20 @@
 //! MP-08 / MP-11: public MCP loading/admission checks without paid execution.
 use super::*;
 #[test]
+fn mp11_leased_computer_requires_a_typed_explicit_desktop_grant() {
+    let grant = json!({"command":{"op":"grant_leased_computer","agent_id":"agent","target":{"surface_id":"desktop","generation":"generation"}}});
+    assert!(
+        serde_json::from_value::<KernelBrowserRequest>(grant).is_ok(),
+        "MP-08/MP-11: human must be able to grant the leased agent the observed desktop"
+    );
+    for value in [
+        json!({"command":{"op":"grant_leased_computer","agent_id":"agent"}}),
+        json!({"command":{"op":"grant_leased_computer","agent_id":"agent","target":{"surface_id":"desktop","generation":"generation"},"owner":"forged"}}),
+    ] {
+        assert!(serde_json::from_value::<KernelBrowserRequest>(value).is_err());
+    }
+}
+#[test]
 #[cfg(target_os = "linux")]
 fn mp11_kernel_computer_mcp_loader_revoke_and_human_channel_guards() {
     run_test(|| Box::pin(check()));

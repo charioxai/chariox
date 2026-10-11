@@ -103,3 +103,13 @@ test("slice packaging installs the physical keyboard and Computer secret target 
   assert.match(dockerfile, /docker\/slice-keyboard\.py\s+\/opt\/chariox-slice\/slice-keyboard\.py/)
   assert.match(provisioner, /copy_required_slice_overlay[^\n]*docker\/slice-keyboard\.py[^\n]*\/opt\/chariox-slice\/slice-keyboard\.py/)
 })
+
+// MP-08 / MP-10 / MP-11: recovery must install the same native closure as fresh images.
+test("preserved slices refresh the native Python dependency closure and distro bindings", async () => {
+  const provisioner = await readFile(provisionerPath, "utf8")
+  const refresh = provisioner.slice(provisioner.indexOf("refresh_slice_support_files() {"), provisioner.indexOf("\nwait_for_container_running()"))
+  for (const name of ["native-x11.py", "native-computer.py", "native-accessibility.py", "native-fill-targets.py", "native-clipboard.py", "room-native-protection.py", "browser-desktop-protection.py", "x11-text-keyboard.py", "slice-observation-mask.py", "linux-desktop-session.py"]) {
+    assert.ok(refresh.includes(name), `preserved slice refresh omits ${name}`)
+  }
+  for (const packageName of ["python3-xlib", "python3-gi", "python3-pyatspi", "python3-pil"]) assert.ok(refresh.includes(packageName), `preserved slice misses ${packageName}`)
+})

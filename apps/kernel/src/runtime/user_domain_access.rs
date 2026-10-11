@@ -26,6 +26,27 @@ pub(crate) struct UserDomainAccess {
 }
 
 impl UserDomainAccess {
+    /// MP-08/MP-11: a human-selected desktop grant never changes focus.
+    pub(crate) fn grant_desktop(&mut self, user: &str, agent: &str, surface: &str) {
+        let grant = self
+            .grants
+            .entry((user.into(), agent.into()))
+            .or_insert_with(|| Grant {
+                epoch: Arc::new(BrowserCancellation::default()),
+                resources: BTreeSet::new(),
+                subscriptions: BTreeMap::new(),
+                subscription_deadlines: BTreeMap::new(),
+                subscription_owner: format!("grant-{:032x}", rand::random::<u128>()),
+                session: String::new(),
+                since_ms: crate::session::unix_epoch_ms(),
+                idle_since: Some(Instant::now()),
+                idle_since_ms: Some(crate::session::unix_epoch_ms()),
+            });
+        grant.resources.insert(UserDomainResource::Desktop {
+            surface_id: surface.into(),
+        });
+        self.changed(user);
+    }
     pub(crate) fn focus(&mut self, user: &str, agent: Option<&str>) {
         if self.focused(user) == agent {
             return;

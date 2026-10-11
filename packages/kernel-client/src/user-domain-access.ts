@@ -1,10 +1,10 @@
 import type { KernelBrowserCommand, UserDomainGrant, UserDomainGrantEvent, UserDomainResource } from "./kernel-types-kernel-browser.js"
 
-export const userDomainAccessMinimumProtocol = 443
+export const userDomainAccessMinimumProtocol = 494
 // MP-08 / MP-10 / MP-11: only Room Computer grant consumers require 449.
-export const roomComputerAccessMinimumProtocol = 449
+export const roomComputerAccessMinimumProtocol = 494
 // MP-08 / MP-11: bulk restore (`agent_id: null`) after "revoke all" requires 461.
-export const roomComputerBulkGrantMinimumProtocol = 461
+export const roomComputerBulkGrantMinimumProtocol = 494
 // LocalIpcClient has a 5s response-stall watchdog and no per-request options.
 // Keep each owner observation below that watchdog on every client transport.
 export const userDomainGrantPollWaitMs = 1000
@@ -87,7 +87,7 @@ export class UserDomainAccessController {
     this.stop()
     this.client = client; this.binding = binding; this.protocol = client?.localDaemonProtocolVersion
     if (!client || (client.localDaemonProtocolVersion ?? 0) < userDomainAccessMinimumProtocol) {
-      this.error = "Update the connected kernel for access grants (protocol 443)."; this.publish(); return
+      this.error = "Update the connected kernel for access grants (protocol 494)."; this.publish(); return
     }
     this.abort = new AbortController()
     void this.poll(this.revision, this.abort.signal)

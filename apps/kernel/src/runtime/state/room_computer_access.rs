@@ -102,6 +102,10 @@ impl KernelRuntimeState {
 impl KernelRuntimeOwnedState {
     /// A removed agent id never returns, so its Room denial is dropped with it.
     pub(super) fn forget_room_computer_access(&self, agent_id: &str) {
+        self.leased_computer_grants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(agent_id);
         self.room_computer_revoked
             .lock()
             .unwrap_or_else(|e| e.into_inner())

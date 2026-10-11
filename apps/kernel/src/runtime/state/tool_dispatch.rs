@@ -158,6 +158,7 @@ impl KernelRuntimeState {
             .provider_store
             .get_runs_by_runtime_mcp_auth_token(auth_token);
         let mut specs = self.kernel_browser_tool_specs(&provider_runs);
+        specs.extend(self.kernel_computer_tool_specs(&provider_runs));
         if matches!(provider_runs.as_slice(), [run]
             if crate::provider::provider_run_uses_claude_permission_prompt_tool(run))
         {

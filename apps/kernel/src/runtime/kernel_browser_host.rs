@@ -865,6 +865,21 @@ fn require_loaded(
 mod tests {
     use super::*;
     #[test]
+    fn mp11_explicit_desktop_grant_preserves_focus_and_cancels_admissions() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/leased-computer"));
+        host.set_focus("owner", Some("local-agent"));
+        host.grant_desktop("owner", "leased-agent", "desktop");
+        assert_eq!(host.focused_agent("owner").as_deref(), Some("local-agent"));
+        assert!(!host.is_loaded("owner", "leased-agent"));
+        assert!(host.load("owner", "leased-agent").is_err());
+        let admission = host.admit_for("owner", "leased-agent", KernelBrowserCapability::Computer).unwrap();
+        assert!(host.claim_resource(Some(&admission), UserDomainResource::Desktop { surface_id: "desktop".into() }, false).is_ok());
+        assert!(host.claim_resource(Some(&admission), UserDomainResource::Desktop { surface_id: "foreign".into() }, false).is_err());
+        host.revoke_agent("leased-agent");
+        host.grant_desktop("owner", "leased-agent", "desktop");
+        assert!(host.check_admission(Some(&admission)).is_err(), "MP-11: regrant cannot revive a queued old action");
+    }
+    #[test]
     fn mdaccess_focus_switch_keeps_existing_grant_and_admission() {
         let host = KernelBrowserHost::new(PathBuf::from("/unused/mdaccess"));
         host.set_focus("owner", Some("waiting-agent"));

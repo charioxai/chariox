@@ -3,6 +3,16 @@ use super::*;
 use std::time::Instant;
 
 impl KernelBrowserHost {
+    /// MP-08/MP-11: called only by the typed human/lease desktop grant adapter.
+    pub(crate) fn grant_desktop(&self, user: &str, agent: &str, surface: &str) {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        state.access.grant_desktop(user, agent, surface);
+        state
+            .loaded
+            .insert((user.into(), agent.into(), KernelBrowserCapability::Computer));
+        drop(state);
+        crate::transport::mcp_server::catalog_changed();
+    }
     // MP-11: use while holding the grant lock; never run authority callbacks here.
     pub(super) fn check_admission_epoch(
         state: &HostState,
