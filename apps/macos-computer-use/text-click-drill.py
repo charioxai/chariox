@@ -270,6 +270,6 @@ if __name__ == '__main__':
         HELPER = BUILD / 'Chariox Computer Helper Recheck.app'
     wait_for_gui()
     results = [run_cell('text-click')]
-    if options.suite:
+    if options.suite and results == [0]:
         results.append(run_cell('fixture'))
     raise SystemExit(max(results))
