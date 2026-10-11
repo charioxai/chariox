@@ -17,6 +17,10 @@ spec.loader.exec_module(d)
 pid = None
 cover = None
 cover_pid = None
+cover_window_id = None
+cover_command = None
+cover_attempted = False
+cover_verified = False
 jitter = None
 report = {'status': 'FAIL', 'checks': []}
 pointer = None
@@ -33,6 +37,21 @@ def fence_helper(label, arguments, expected=None):
     except Exception:
         pointer.retired = True
         raise
+
+
+def stop_cover():
+    global cover_verified
+    if cover_pid is None:
+        return
+    command = subprocess.run(['ps', '-ww', '-p', str(cover_pid), '-o', 'command='], capture_output=True, text=True).stdout.strip()
+    if command and command != cover_command:
+        cover_verified = False
+        raise RuntimeError('cover-process-identity-changed')
+    if command:
+        try:
+            os.kill(cover_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
 
 try:
@@ -60,21 +79,31 @@ try:
     # A foreign opaque panel covers the probe without activating or changing AX focus.
     with (E / 'cover.out').open('w') as out, (E / 'cover.err').open('w') as err:
         top = d.desktop()['screens'][0]['frame']['origin']['y'] + d.desktop()['screens'][0]['frame']['size']['height']
-        cover = subprocess.Popen(['open', '-n', '-g', '--stdout', str(E / 'cover.out'), '--stderr', str(E / 'cover.err'), str(d.BUILD / 'Chariox Computer Cover.app'), '--args', str(float(x) - 60), str(top - float(y) - 60), '120', '120'], stdout=out, stderr=err)
+        cover_arguments = [str(float(x) - 60), str(top - float(y) - 60), '120', '120']
+        cover_command = ' '.join([str(d.BUILD / 'Chariox Computer Cover.app/Contents/MacOS/cover')] + cover_arguments)
+        cover_attempted = True
+        cover = subprocess.Popen(['open', '-n', '-g', '--stdout', str(E / 'cover.out'), '--stderr', str(E / 'cover.err'), str(d.BUILD / 'Chariox Computer Cover.app'), '--args'] + cover_arguments, stdout=out, stderr=err)
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and 'coverPID=' not in d.read(E, 'cover.out'):
         time.sleep(.05)
+    match = re.search(r'coverPID=(\d+) windowID=(\d+)', d.read(E, 'cover.out'))
+    if not match or int(match[1]) <= 0 or int(match[2]) <= 0:
+        raise RuntimeError('cover-identity-missing')
+    command = subprocess.run(['ps', '-ww', '-p', match[1], '-o', 'command='], capture_output=True, text=True).stdout.strip()
+    if command != cover_command:
+        raise RuntimeError('cover-process-identity-unverified')
+    cover_pid = int(match[1]); cover_window_id = int(match[2])
     time.sleep(.15)
     state = d.desktop()
+    foreign_window = next((w for w in state['windows'] if w['pid'] == cover_pid and w['windowID'] == cover_window_id), None)
+    if foreign_window is None:
+        raise RuntimeError('cover-window-identity-unverified')
+    cover_verified = True
     (E / 'covered-desktop.json').write_text(json.dumps(state, indent=2) + '\n')
     selected_before = d.selection(E)
     receipt = fence_helper('nonactivating-cover-click', scope + ['--click-at', x, y, '--click'], 'foreign-window-cover')
     time.sleep(.2)
     selected_after = d.selection(E)
-    match = re.search(r'coverPID=(\d+) windowID=(\d+)', d.read(E, 'cover.out'))
-    if match:
-        cover_pid = int(match[1])
-    foreign_window = next((w for w in state['windows'] if match and w['windowID'] == int(match[2])), None)
     covers = bool(foreign_window and foreign_window['bounds']['X'] <= float(x) <= foreign_window['bounds']['X'] + foreign_window['bounds']['Width']
                   and foreign_window['bounds']['Y'] <= float(y) <= foreign_window['bounds']['Y'] + foreign_window['bounds']['Height'])
     report['checks'].append({'name': 'nonactivating-foreign-cover-refusal', 'passed': 'refused: target (foreign-window-cover)' in receipt and selected_after == selected_before and covers and state['frontmostPID'] == pid,
@@ -86,9 +115,10 @@ try:
     report['checks'].append({'name': 'pointer-foreign-cover-refusal',
         'passed': 'refused: target (foreign-window-cover)' in receipt and d.selection(E) == selected_before,
         'receipt': receipt})
-    if cover_pid:
-        os.kill(cover_pid, signal.SIGTERM)
-        time.sleep(.2)
+    stop_cover()
+    time.sleep(.2)
+    if any(w['pid'] == cover_pid or w['windowID'] == cover_window_id for w in d.desktop()['windows']):
+        raise RuntimeError('cover-window-still-open')
     stale_before = d.selection(E)
     # Move the real pointer between the helper's one-time snapshot and its later fence.
     point_a = {'x': float(x), 'y': float(y)}
@@ -107,11 +137,11 @@ except Exception as error:
     if pointer: pointer.retired = True
     report['failure'] = str(error)
 finally:
-    if cover_pid:
-        try:
-            os.kill(cover_pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+    try:
+        stop_cover()
+    except Exception as error:
+        report['coverCleanupFailure'] = str(error)
+        report['status'] = 'FAIL'
     for process in [cover, jitter]:
         if process and process.poll() is None:
             process.terminate(); process.wait(timeout=3)
@@ -123,7 +153,9 @@ finally:
         command = subprocess.run(['ps', '-p', str(pid), '-o', 'command='], capture_output=True, text=True).stdout.strip()
         if command == str(d.BUILD / 'Chariox Computer Fixture.app/Contents/MacOS/fixture') + ' --unattended --text-drill':
             os.kill(pid, signal.SIGTERM)
-    finish_cleanup(report, lambda: not any(w['pid'] == pid or w['pid'] == cover_pid for w in d.desktop()['windows']))
+    report['coverIdentityVerified'] = cover_verified
+    finish_cleanup(report, lambda: (not cover_attempted or cover_verified) and not any(
+        w['pid'] == pid or w['pid'] == cover_pid or w['windowID'] == cover_window_id for w in d.desktop()['windows']))
     (E / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2))
 raise SystemExit(0 if report['status'] == 'PASS' else 1)

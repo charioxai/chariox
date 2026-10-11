@@ -12,6 +12,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from fence_cleanup import finish_cleanup
 
 spec = importlib.util.spec_from_file_location('fence_vm', Path(__file__).with_name('caret-pointer.test.py'))
 vm = importlib.util.module_from_spec(spec)
@@ -32,6 +33,13 @@ class FenceLifecycleCase(unittest.TestCase):
         self.launches = []; self.warps = []; self.jitters = 0
         self.fail_label = None; self.helper_failure = None; self.restore_failure = None
         self.restored_facts = False
+        self.cover_identity_failure = None; self.cover_close_failure = None
+        self.cover_signals = 0
+        self.clock = 0; self.cover_process_reads = 0
+
+    def now(self):
+        self.clock += .05
+        return self.clock
 
     def tearDown(self):
         inventory = list(self.root.rglob('*'))
@@ -63,6 +71,12 @@ class FenceLifecycleCase(unittest.TestCase):
     def native(self, args, **kwargs):
         if args[0] == 'ps':
             build = Path('/Users/miguel/.chariox/dev/cumac/build')
+            if args[args.index('-p') + 1] == '43':
+                self.cover_process_reads += 1
+                command = str(build / 'Chariox Computer Cover.app/Contents/MacOS/cover') + ' -20.0 910.0 120 120'
+                if self.cover_identity_failure == 'process' or (self.cover_identity_failure == 'process-after' and self.cover_process_reads > 1):
+                    command = '/unrelated/process'
+                return SimpleNamespace(stdout=command, returncode=0)
             return SimpleNamespace(stdout=str(build / 'Chariox Computer Fixture.app/Contents/MacOS/fixture') + ' --unattended --text-drill', returncode=0)
         if args[0] == 'codesign': return SimpleNamespace(stderr='CDHash=' + 'a' * 40 + '\n', stdout='', returncode=0)
         if args[0] == 'osascript':
@@ -95,8 +109,16 @@ class FenceLifecycleCase(unittest.TestCase):
 
     def popen(self, args, **kwargs):
         if args[0] == 'open':
-            Path(args[args.index('--stdout') + 1]).write_text('coverPID=43 windowID=8\n')
-            self.state['windows'].append({'pid': 43, 'windowID': 8, 'bounds': {'X': 0, 'Y': 0, 'Width': 100, 'Height': 100}})
+            receipt = 'coverPID=43 windowID=8\n'
+            if self.cover_identity_failure == 'missing': receipt = ''
+            elif self.cover_identity_failure == 'malformed': receipt = 'coverPID=invalid windowID=8\n'
+            elif self.cover_identity_failure == 'zero-pid': receipt = 'coverPID=0 windowID=8\n'
+            elif self.cover_identity_failure == 'zero-window': receipt = 'coverPID=43 windowID=0\n'
+            Path(args[args.index('--stdout') + 1]).write_text(receipt)
+            self.state['windows'].append({'pid': 99 if self.cover_identity_failure == 'window-pid' else 43,
+                'windowID': 9 if self.cover_identity_failure == 'window-id' else 8,
+                'bounds': {'X': 0, 'Y': 0, 'Width': 100, 'Height': 100}})
+            if self.cover_identity_failure == 'launch': raise RuntimeError('cover-launch-failed')
         else:
             self.assertEqual(args[0], 'osascript')
             self.jitters += 1
@@ -105,12 +127,19 @@ class FenceLifecycleCase(unittest.TestCase):
 
     def kill(self, pid, sig):
         self.assertIn(pid, [42, 43])
+        if pid == 43:
+            self.cover_signals += 1
+            if self.cover_close_failure == 'permission': raise PermissionError('cover-signal-denied')
+            if self.cover_close_failure == 'gone': raise ProcessLookupError('cover-process-gone')
+            if self.cover_close_failure == 'sticky': return
         self.state['windows'] = [w for w in self.state['windows'] if w['pid'] != pid]
 
     def invoke(self):
+        cleanup = lambda report, closed: finish_cleanup(report, closed, now=self.now, wait=lambda seconds: None)
         with redirect_stdout(io.StringIO()), patch.object(Path, 'home', return_value=self.root), \
              patch.object(subprocess, 'run', side_effect=self.native), patch.object(subprocess, 'Popen', side_effect=self.popen), \
-             patch('os.kill', side_effect=self.kill), patch('time.sleep'), patch('time.strftime', return_value='case'):
+             patch('os.kill', side_effect=self.kill), patch('time.sleep'), patch('time.monotonic', side_effect=self.now), \
+             patch('fence_cleanup.finish_cleanup', side_effect=cleanup), patch('time.strftime', return_value='case'):
             # Both GUI guards use desktop(), whose native boundary is injected.
             with patch.dict('os.environ', {'CUMAC_BUILD_DIR': '/Users/miguel/.chariox/dev/cumac/build'}):
                 try: runpy.run_path(str(Path(__file__).with_name('fence-drill.py')), run_name='__main__')
