@@ -28,3 +28,16 @@ test("MP-08/MP-09/MP-10/MP-11 A02 malformed wait is safely blocked", () => {
   const session = { agent_tasks: [{ ...task("waiting"), wait: null }] } as RuntimeSession
   assert.match(sessionAgentTaskStatus(session, "agent")!.label, /^BLOCKED: Invalid wait deadline/)
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11 #971 R3: current ordinary work wins over history.
+for (const terminal of ["done", "cancelled"] as const) {
+  for (const current of ["working", "blocked"] as const) {
+    test(`terminal ${terminal} Goal cannot hide current ${current} ordinary task`, () => {
+      const history = { ...task(terminal), obligations: [], goal: { id:"goal:history", objective:"old", paused:false, active_elapsed_ms:0, waiting_elapsed_ms:0, state_since_ms:0, check_in_minutes:10, next_check_in_ms:null, check_count:1, evaluation:null } } as AgentTaskExecution
+      const session = { agent_tasks:[history,task(current)] } as RuntimeSession
+      assert.deepEqual(sessionAgentTaskStatus(session,"agent",1), current === "blocked"
+        ? {label:"BLOCKED: delegate result (1 obligations)",tone:"error"}
+        : {label:"WORKING (1 obligations)",tone:"working"})
+    })
+  }
+}
