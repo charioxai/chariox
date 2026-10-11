@@ -801,12 +801,13 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
             operation: "send relay peer request",
             message: "relay_token is not configured".to_string(),
         })?;
+    let discovery_config = super::remote_inventory::metadata_discovery_config(config).await?;
     #[cfg(test)]
     let kernel = {
         let peer_call_id = test_trace.peer_call_id();
         test_trace.record("metadata_discovery_started", None);
         match relay_discovery::get_live_kernel_for_temporary_peer_test_call(
-            config,
+            &discovery_config,
             target_ref,
             peer_call_id,
         )
@@ -823,7 +824,7 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
         }
     };
     #[cfg(not(test))]
-    let kernel = relay_discovery::get_live_kernel(config, target_ref).await?;
+    let kernel = relay_discovery::get_live_kernel(&discovery_config, target_ref).await?;
     authorize()?;
     let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize relay peer request",
@@ -1423,3 +1424,7 @@ mod relay_rtt_tests {
         assert_eq!(fields["error"], serde_json::json!("timed out"));
     }
 }
+
+#[cfg(test)]
+#[path = "peer_metadata_auth_tests.rs"]
+mod metadata_auth_tests;
