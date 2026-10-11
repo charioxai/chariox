@@ -668,6 +668,25 @@ mod tests {
                 None,
             )
             .unwrap();
+        // MP-08 / MP-10 / MP-11: #945 admits a registered Claude token
+        // for its first-use check even after an expired observation. Remove
+        // this disposable home credential to test denial without that exception.
+        runtime
+            .owned
+            .require_agent_account_authenticated(
+                &completed_agent,
+                Some(&completed),
+                "MP-08 / MP-10 / MP-11 registered Claude first use",
+            )
+            .unwrap();
+        crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .remove(&crate::provider::provider_account_credential_id(
+                "local",
+                "claude",
+                &profile.profile_id,
+            ))
+            .unwrap();
         assert!(
             runtime
                 .owned

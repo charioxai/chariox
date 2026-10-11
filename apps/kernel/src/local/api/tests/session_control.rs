@@ -1076,6 +1076,7 @@ fn same_agent_profile_update_keeps_active_provider_run() {
         LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         _ => panic!("unexpected local response"),
     };
+    let model = agent.model().expect("created agent model").to_string();
     let active_run_id = harness.with_app_mut(|app| {
         crate::test_support::authenticate_provider_account(
             &app.provider_account_profile_registry(),
@@ -1085,7 +1086,7 @@ fn same_agent_profile_update_keeps_active_provider_run() {
         )
         .expect("synthetic provider account should be authenticated");
         app.launch_provider(
-            LaunchProviderRequest::new(session.id(), "dev-stub", "codex", "default", "gpt-5.4")
+            LaunchProviderRequest::new(session.id(), "dev-stub", "codex", "default", &model)
                 .with_agent_id(agent.id()),
         )
         .expect("provider launch should succeed")
@@ -1100,7 +1101,7 @@ fn same_agent_profile_update_keeps_active_provider_run() {
                 agent_id: agent.id().to_string(),
                 provider: Some("codex".to_string()),
                 account_profile: None,
-                model: Some("gpt-5.4".to_string()),
+                model: Some(model),
                 effort: None,
                 clear_effort: false,
             },
