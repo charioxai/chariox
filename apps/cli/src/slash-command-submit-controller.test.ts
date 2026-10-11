@@ -317,3 +317,24 @@ test("/approvals clears command UI before opening and bypasses shared shell exec
   assert.equal((await controller.submit("/approvals", { allowSlashCommandSubmission: true }))?.kind, "approvals")
   assert.equal(opened, 1)
 })
+
+for (const rejects of [false, true]) {
+  test(`MP-08 / MP-10 / MP-11 pending focus preserves the next draft (${rejects ? "error" : "success"})`, async () => {
+    let prompt = "/agent focus reviewer"
+    let settle!: () => void
+    const pending = new Promise<void>(resolve => { settle = resolve })
+    const h = createHarness({ attached: true, clearPromptText: () => { prompt = "" } })
+    h.deps.handleAgentCommand = async () => {
+      await pending
+      if (rejects) throw new Error("focus unavailable")
+    }
+    const controller = createSlashCommandSubmitController(h.deps)
+    const submission = controller.submit(prompt, { allowSlashCommandSubmission: true })
+    prompt = "Read the public README next."
+    settle()
+    await submission
+    assert.equal(prompt, "Read the public README next.")
+    assert.equal(h.clearPromptCount(), 1)
+    assert.equal(h.commandCenterClearCount(), 1)
+  })
+}
