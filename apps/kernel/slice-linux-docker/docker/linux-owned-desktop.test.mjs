@@ -1,6 +1,7 @@
 // MP-08 / MP-11: fail-first host lifecycle contracts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { setTimeout as delay } from 'node:timers/promises';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import readline from 'node:readline';
 import os from 'node:os';
@@ -59,7 +60,7 @@ test('MP-08 desktop is lazy and failed start cleans its private runtime', async 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('MP-08 / MP-11 detached GUI launch remains an owned descendant', async () => {
+test('MP-08 / MP-10 / MP-11 detached GUI survives its successful launcher exit', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'culinux-session-test-'));
   const desktop = new LinuxOwnedDesktop(root, { commands: { openbox: '/usr/bin/python3' } });
   let detached;
@@ -74,7 +75,7 @@ if first==0:
  os.write(w,json.dumps({'pid':os.getpid(),'started':fields[19]}).encode())
  os.close(w);time.sleep(30);os._exit(0)
 os.close(w);data=os.read(r,4096);os.close(r);os.waitpid(first,0)
-time.sleep(.2);print(data.decode(),flush=True);time.sleep(30)
+time.sleep(.2);print(data.decode(),flush=True);os._exit(0)
 `;
     const child = await desktop.launch('openbox', ['-c', code], process.env, ['ignore','pipe','ignore']);
     const lines = readline.createInterface({ input: child.stdout });
@@ -83,6 +84,8 @@ time.sleep(.2);print(data.decode(),flush=True);time.sleep(30)
       lines.once('line',line=>{clearTimeout(timer);resolve(JSON.parse(line));});
     });
     lines.close();
+    await delay(300);
+    assert.equal(child.exitCode, null, 'supervision must remain live after launcher success');
     assert((await desktop.ownedProcesses()).some(item=>item.pid===detached.pid));
   } finally {
     // The base deliberately loses this child; the creating fixture supplied

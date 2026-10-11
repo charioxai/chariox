@@ -84,8 +84,14 @@ def run(command):
         os.close(fd)
     code = None
     try:
-        while code is None and not stopping:
-            code = reap(child.pid)
+        while not stopping:
+            ended = reap(child.pid)
+            if ended is not None:
+                code = ended
+            # A successful Exec launcher may hand its GUI to adopted children.
+            # Keep owning them until they exit or this supervisor is cancelled.
+            if code is not None and (code != 0 or not children()):
+                break
             time.sleep(.02)
     finally:
         deadline = time.monotonic() + 1
