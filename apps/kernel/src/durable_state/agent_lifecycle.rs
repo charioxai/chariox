@@ -86,6 +86,7 @@ impl DurableKernelStateStore {
         let (response, receive) = mpsc::channel();
         self.writer
             .enqueue(DurableWriterRequest::AgentLifecycle(Box::new(Request {
+                enqueued_at: std::time::Instant::now(),
                 operation,
                 response,
             })))?;
@@ -214,13 +215,39 @@ impl DurableKernelStateStore {
     }
 }
 pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
+    // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: no objective or operation payload in diagnostics.
+    let trace = match &request.operation {
+        Operation::ControlGoal { task, action, .. } => match action.as_str() {
+            "pause" => Some((task.clone(), "pause")),
+            "resume" => Some((task.clone(), "resume")),
+            "cancel" => Some((task.clone(), "cancel")),
+            "interval" => Some((task.clone(), "interval")),
+            "edit" => Some((task.clone(), "edit")),
+            _ => None,
+        },
+        _ => None,
+    };
+    let started = std::time::Instant::now();
     let mut uncertain = false;
     let result = (|| {
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql)?;
+        let begun = std::time::Instant::now();
         let value = apply(&tx, request.operation)?;
-        if let Err(e) = tx.commit() {
+        let applied = std::time::Instant::now();
+        let committed = tx.commit();
+        if let Some((key, action)) = trace {
+            crate::runtime::command_latency::log_goal_writer_phases(
+                &key,
+                action,
+                started.duration_since(request.enqueued_at),
+                begun.duration_since(started),
+                applied.duration_since(begun),
+                applied.elapsed(),
+            );
+        }
+        if let Err(e) = committed {
             uncertain = !super::storage_full::observe(&e);
             return Err(error(if uncertain {
                 "commit uncertain; restart required".into()

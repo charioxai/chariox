@@ -390,6 +390,7 @@ pub(crate) enum Outcome {
     Saved,
 }
 pub(crate) struct Request {
+    pub(super) enqueued_at: std::time::Instant,
     pub(super) operation: Operation,
     pub(super) response: mpsc::Sender<Result<Outcome, DaemonError>>,
 }
