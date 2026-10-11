@@ -51,15 +51,18 @@ test("MD-stack user App and browser surfaces require union protocol 443", () => 
     assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 417), /443/)
     assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 443))
   }
-  assert.throws(() => requireKernelFeatureProtocol({KernelBrowser: {command:{op:"input"}}},416), /443/)
+  assert.throws(() => requireKernelFeatureProtocol({KernelBrowser: {command:{op:"input"}}},416), /494/)
 })
 
-// MP-08 / MP-11: only the new Computer command depends on local446.
-test("MP-08 Computer refuses pre446 before sending input", () => {
-  const request = {KernelBrowser:{command:{op:"computer",command:{op:"state"}}}}
-  assert.throws(() => requireKernelFeatureProtocol(request,443),/446/)
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(request,446))
-  assert.doesNotThrow(() => requireKernelFeatureProtocol({KernelBrowser:{command:{op:"state"}}},443))
+// MP-08 / MP-10 / MP-11: main protocol 487 has no KernelBrowser union.
+test("MP-08 / MP-10 / MP-11 Browser and Computer refuse the actual main predecessors", () => {
+  for (const command of [{op:"state"}, {op:"computer",command:{op:"state"}}, {op:"revoke_grants",agent_id:null}]) {
+    const request = {KernelBrowser:{command}}
+    for (const predecessor of [472, 487, 493]) {
+      assert.throws(() => requireKernelFeatureProtocol(request, predecessor), /needs protocol ≥494/)
+    }
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request,494))
+  }
 })
 
 test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated protocol 470", () => {
