@@ -195,7 +195,7 @@ impl ProjectEnvironmentManifest {
                     }
                 }
                 (
-                    ProjectEnvironmentEntryKind::ConfigFile,
+                    ProjectEnvironmentEntryKind::Variable | ProjectEnvironmentEntryKind::ConfigFile,
                     ProjectEnvironmentLocator::ConfigFile { path },
                 ) => relative_environment_path(path)?,
                 (_, ProjectEnvironmentLocator::Vault { service, key })
