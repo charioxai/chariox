@@ -355,3 +355,15 @@ mod review0212_excluded;
 mod review0212_platform;
 #[path = "review0212_metadata_tests.rs"]
 mod review0212_metadata;
+
+// MP-08 / MP-10 / MP-11: first Apply includes its recovery controls.
+#[test]
+fn envp05a_first_apply_advertises_durable_controls_together() {
+    let root = crate::test_support::TestWorktree::new("envp05-capabilities");
+    let project = RuntimeProject::new("project", "owner", "/plain/one", "Apply", RuntimeProjectKind::Named);
+    let env = ProjectEnvironmentStore::new(root.path()).snapshot(&project).unwrap();
+    for capability in [EnvironmentCapability::Plan, EnvironmentCapability::Apply,
+        EnvironmentCapability::GetOperation, EnvironmentCapability::CancelOperation, EnvironmentCapability::RetryOperation] {
+        assert!(env.delivered_capabilities.enabled_environment_operations.contains(&capability), "missing {capability:?}");
+    }
+}

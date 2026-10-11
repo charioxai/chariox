@@ -4,6 +4,9 @@
 mod aggregate;
 mod aggregate_projection;
 mod aggregate_store;
+mod apply_bindings;
+mod apply_plan;
+mod apply_store;
 mod check;
 mod check_admission;
 mod check_assets;
@@ -42,6 +45,9 @@ mod transfer;
 
 pub use aggregate::*;
 pub use aggregate_projection::*;
+pub(crate) use apply_bindings::*;
+pub(crate) use apply_plan::*;
+pub(crate) use apply_store::*;
 pub(crate) use check::*;
 pub(crate) use check_selection::*;
 pub(crate) use check_store::*;
@@ -74,3 +80,6 @@ mod detect_tests;
 
 #[cfg(test)]
 mod check_tests;
+
+#[cfg(test)]
+mod apply_tests;

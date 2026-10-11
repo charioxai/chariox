@@ -24,6 +24,8 @@ impl KernelRuntimeState {
             &crate::project_environment::current_check_target(&config),
             crate::session::unix_epoch_ms(),
         )?;
+        // MP-08 / MP-10 / MP-11: reconnect reads durable Apply and recovery facts.
+        store.attach_applies(&mut environment, &crate::project_environment::current_check_target(&config))?;
         Ok(LocalDaemonResponse::ProjectEnvironment { environment })
     }
 
@@ -33,6 +35,8 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
     ) -> Result<(), DaemonError> {
+        // MP-08 / MP-10 / MP-11: new agents recheck applied package references
+        // through the ordinary grant service before their next provider turn.
         let session = self.owned.session_store.get_session(session_id)?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if agent.remote_execution().is_some()
@@ -44,6 +48,7 @@ impl KernelRuntimeState {
         {
             return Ok(());
         }
+        self.apply_environment_agent_bindings(session_id, agent_id)?;
         let Some(run) = self
             .owned
             .provider_store
