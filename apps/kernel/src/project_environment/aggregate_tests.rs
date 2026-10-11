@@ -332,3 +332,5 @@ fn review954_detached_unchanged_files_remain_reviewable() {
 
 #[path = "review0212_excluded_tests.rs"]
 mod review0212_excluded;
+#[path = "review0212_platform_tests.rs"]
+mod review0212_platform;
