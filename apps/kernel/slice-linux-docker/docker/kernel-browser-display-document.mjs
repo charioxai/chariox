@@ -29,9 +29,9 @@ export class DisplayDocuments {
    }else if(message.method==='Page.frameStartedLoading'&&message.params?.frameId===entry.frame){
     // Refuse captures while a document transition is not yet identified.
     entry.revision++;entry.pending=true;
-   }else if(message.method==='Page.loadEventFired'){
-    // This event has no loader ID. Resolve it on the event path, once per
-    // load, rather than adding a query to each display credit.
+   }else if(message.method==='Page.loadEventFired'||message.method==='Page.frameStoppedLoading'&&message.params?.frameId===entry.frame){
+    // Completion can retain the old loader (cancelled load/download).
+    // Resolve it on the event path with the existing revision fence.
     entry.revision++;entry.pending=true;void this.refresh(entry).catch(()=>{entry.retired=true;});
    }else if(message.method==='Inspector.detached'){entry.retired=true;entry.revision++;}
   });

@@ -47,3 +47,29 @@ test('MP-11 connection retirement invalidates cached pixels through the event se
  f.event('Chariox.browserDisconnected');
  assert.equal(f.cache.current(tab),false);assert.equal(await f.cache.validate(tab),false);assert.deepEqual(f.calls,[]);f.cache.clear();
 });
+
+// MP-08/MP-10/MP-11: cancelled navigation and download retain the loader.
+test('MP-10 stopped top-level load recovers an unchanged document off the credit path',async()=>{
+ const f=fixture(),old=await f.cache.target(f.browser,f.stored);
+ f.event('Page.frameStartedLoading',{frameId:'root'});
+ assert.equal(f.cache.current(old),false);
+ f.event('Page.frameStoppedLoading',{frameId:'child'});
+ await assert.rejects(f.cache.target(f.browser,f.stored),/unavailable/);
+ let finish;f.block(new Promise(r=>finish=r));f.calls.length=0;
+ f.event('Page.frameStoppedLoading',{frameId:'root'});
+ assert.deepEqual(f.calls,['Page.getFrameTree']);
+ await assert.rejects(f.cache.target(f.browser,f.stored),/unavailable/);
+ finish();await new Promise(r=>setImmediate(r));
+ const fresh=await f.cache.target(f.browser,f.stored);
+ assert.equal(fresh.document_id,'a');assert.equal(f.cache.current(fresh),true);
+ assert.equal(f.cache.current(old),false);f.cache.clear();
+});
+test('MP-11 stopped-load refresh cannot overwrite a newer navigation',async()=>{
+ const f=fixture();await f.cache.target(f.browser,f.stored);
+ f.event('Page.frameStartedLoading',{frameId:'root'});
+ let finish;f.block(new Promise(r=>finish=r));
+ f.event('Page.frameStoppedLoading',{frameId:'root'});
+ f.event('Page.frameNavigated',{frame:{id:'root',loaderId:'b'}});
+ finish();await new Promise(r=>setImmediate(r));
+ assert.equal((await f.cache.target(f.browser,f.stored)).document_id,'b');f.cache.clear();
+});
