@@ -40,6 +40,22 @@ pub(crate) fn parse_goal_prompt(text: &str) -> Result<Option<GoalPrompt>, Daemon
     }))
 }
 
+pub(super) fn goal_resume_has_unsettled_turn(
+    task: &AgentTaskExecution,
+    active: Option<&str>,
+) -> bool {
+    active.is_some_and(|id| {
+        id == task.prompt_id
+            || task.pending_prompt_id.as_deref() == Some(id)
+            || task
+                .goal
+                .as_ref()
+                .is_some_and(|goal| goal.original_prompt_id == id)
+            || ledger::completion::evaluation(task)
+                .is_some_and(|check| check.prompt_id == id || check.work_prompt_id == id)
+    })
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn validate_goal_prompt(
         &self,
@@ -275,11 +291,14 @@ impl KernelRuntimeState {
             .find(|t| t.goal.as_ref().is_some_and(|g| g.id == id))
             .ok_or_else(|| ledger::error("goal unavailable in this room"))?;
         if action == "resume"
-            && self
-                .owned
-                .prompt_state_owner
-                .active_prompt_for_agent(&session, &task.agent_id)
-                .is_some()
+            && goal_resume_has_unsettled_turn(
+                &task,
+                self.owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &task.agent_id)
+                    .as_ref()
+                    .map(|p| p.id()),
+            )
         {
             return Err(ledger::error(
                 "wait for the stopped goal turn to settle before resuming",

@@ -108,3 +108,142 @@ async fn a12_assessment_context_exposes_unhandled_correlated_receipts() {
         "continue normal handling/verification before owner-blocking on terminal sources"
     );
 }
+
+#[tokio::test]
+async fn a12_resume_queues_behind_independent_work_but_fences_unsettled_goal_turns() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    use crate::runtime::state::agent_goal_runtime::goal_resume_has_unsettled_turn;
+    let (_app, runtime, room, agent) = agent_config_runtime().await;
+    let store = &runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "owner".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: "goal-original".into(),
+            run: Some("run".into()),
+            now: 1,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::StartGoal {
+            task: "goal-original".into(),
+            owner: "owner".into(),
+            objective: "Verify public artifacts".into(),
+            minutes: 1,
+            now: 1,
+        })
+        .unwrap();
+    let mut task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .remove(0);
+    assert!(
+        !goal_resume_has_unsettled_turn(&task, Some("independent-peer-message")),
+        "Resume must enter the shared queue behind independent work"
+    );
+    assert!(!goal_resume_has_unsettled_turn(&task, None));
+    assert!(goal_resume_has_unsettled_turn(&task, Some("goal-original")));
+    task.prompt_id = "goal-later-work".into();
+    task.pending_prompt_id = Some("goal-check".into());
+    task.goal.as_mut().unwrap().evaluation = Some(
+        crate::durable_state::agent_lifecycle::goals::GoalEvaluation {
+            origin: "completion_check".into(),
+            prompt_id: "goal-check".into(),
+            work_prompt_id: "goal-later-work".into(),
+            work_provider_run_id: Some("run".into()),
+            objective_revision: 1,
+            ledger_revision: task.revision,
+            started_at_ms: 2,
+            deadline_ms: 60002,
+            result: None,
+        },
+    );
+    for id in ["goal-original", "goal-later-work", "goal-check"] {
+        assert!(
+            goal_resume_has_unsettled_turn(&task, Some(id)),
+            "stopped goal-owned work/check must settle first"
+        );
+    }
+    assert!(!goal_resume_has_unsettled_turn(
+        &task,
+        Some("independent-peer-message")
+    ));
+}
+
+#[tokio::test]
+async fn a12_assessment_exposes_expired_wake_with_unresolved_source_outcome() {
+    use crate::durable_state::agent_lifecycle::{Operation, Registration};
+    let (_app, runtime, room, agent) = agent_config_runtime().await;
+    let store = &runtime.owned.durable_state_store;
+    let apply = |op| store.agent_lifecycle(op).unwrap();
+    apply(Operation::Begin {
+        owner: "owner".into(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: "p".into(),
+        run: Some("run".into()),
+        now: 1,
+    });
+    apply(Operation::StartGoal {
+        task: "p".into(),
+        owner: "owner".into(),
+        objective: "Review public peer evidence".into(),
+        minutes: 1,
+        now: 1,
+    });
+    apply(Operation::RegisterObligation {
+        owner: "owner".into(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: "p".into(),
+        run: Some("run".into()),
+        id: "peer".into(),
+        kind: "delegate".into(),
+        resource: Some("child".into()),
+        now: 1,
+    });
+    apply(Operation::Subscribe {
+        task: "p".into(),
+        prompt: "p".into(),
+        registration: Registration {
+            id: "completion".into(),
+            task_id: "p".into(),
+            source_id: "child".into(),
+            obligation_id: Some("peer".into()),
+            source_cursor: 0,
+            live: true,
+        },
+    });
+    apply(Operation::SourceOutcome {
+        room: room.clone(),
+        source: "child".into(),
+        occurrence: "result".into(),
+        success: true,
+        public_answer: Some(serde_json::json!({"private_body":"DO_NOT_INCLUDE_EXPIRED_BODY"})),
+        now: 2,
+    });
+    let event = store
+        .agent_work_inbox(&room, &agent, 0, Some("p"))
+        .unwrap()
+        .remove(0);
+    apply(Operation::Expire {
+        room: room.clone(),
+        agent: agent.clone(),
+        sequence: event.sequence,
+    });
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .remove(0);
+    let context = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    assert!(
+        context.contains("\"state\":\"expired\""),
+        "ordinary continuation must be able to review and handle the retained exact source outcome"
+    );
+    assert!(!context.contains("DO_NOT_INCLUDE_EXPIRED_BODY"));
+}

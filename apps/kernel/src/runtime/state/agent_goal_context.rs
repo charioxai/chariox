@@ -22,9 +22,13 @@ impl KernelRuntimeOwnedState {
             Some(&task.task_id),
         )?;
         let next_after = page.last().map_or(0, |e| e.sequence);
+        let actionable = |event: &&ledger::InboxEvent| {
+            !matches!(event.state.as_str(), "handled" | "cancelled" | "expired")
+                || (event.state == "expired" && ledger::unresolved_source_outcome(task, event))
+        };
         let receipts = page
             .iter()
-            .filter(|e| !matches!(e.state.as_str(), "handled" | "cancelled" | "expired"))
+            .filter(actionable)
             .take(64)
             .map(|e| {
                 serde_json::json!({
@@ -34,10 +38,7 @@ impl KernelRuntimeOwnedState {
                 })
             })
             .collect::<Vec<_>>();
-        let receipt_total = page
-            .iter()
-            .filter(|e| !matches!(e.state.as_str(), "handled" | "cancelled" | "expired"))
-            .count();
+        let receipt_total = page.iter().filter(actionable).count();
         let receipt_coverage = serde_json::json!({
             "shown":receipts.len(), "page_total":receipt_total,
             "page_complete":page.len() < 128, "next_after":next_after,

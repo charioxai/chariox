@@ -399,3 +399,16 @@ impl std::fmt::Debug for Request {
             .finish_non_exhaustive()
     }
 }
+
+// An expired automatic wake may still carry an unresolved resource outcome.
+// Explicit ordinary handling can settle that exact source without replaying delivery.
+pub(crate) fn unresolved_source_outcome(task: &AgentTaskExecution, event: &InboxEvent) -> bool {
+    task.room_id == event.room_id
+        && task.agent_id == event.agent_id
+        && !matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
+        && matches!(event.kind.as_str(), "source_completed" | "source_lost")
+        && task.obligations.iter().any(|obligation| {
+            obligation.completion_source() == Some(event.source_id.as_str())
+                && matches!(obligation.status.as_str(), "settling" | "failed")
+        })
+}

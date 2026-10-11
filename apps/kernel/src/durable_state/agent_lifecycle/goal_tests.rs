@@ -767,3 +767,151 @@ fn a12_interval_change_cannot_schedule_a_paused_goal() {
         "retain source wait metadata for explicit owner revalidation"
     );
 }
+
+#[test]
+fn a12_unadmitted_checkin_ack_cannot_consume_a_waiting_goal_deadline() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    f.register();
+    f.subscribe();
+    f.settle("p", true);
+    let waiting = check(
+        &f,
+        serde_json::json!({"status":"waiting","reason":"required peer remains live","registration_ids":["reg"],"deadline_ms":60004}),
+    );
+    f.apply(Operation::Sweep {
+        now: 60005,
+        busy_recipients: vec![("room".into(), "parent".into())],
+        held_work: vec![],
+    });
+    let event = f
+        .store
+        .agent_work_inbox("room", "parent", 0, Some("p"))
+        .unwrap()
+        .into_iter()
+        .find(|e| e.kind == "deadline_reached")
+        .unwrap();
+    for handled in [false, true] {
+        assert!(f.store.agent_lifecycle(Operation::Ack {room:"room".into(),agent:"parent".into(),sequence:event.sequence,handled,now:60006}).is_err(),"an independent turn reading the inbox cannot swallow a not-yet-delivered goal check-in");
+    }
+    assert_eq!(f.task().state, waiting.state);
+    assert_eq!(f.task().no_progress_wakes, waiting.no_progress_wakes);
+    assert_eq!(
+        f.store
+            .agent_delivery_front("room", "parent")
+            .unwrap()
+            .unwrap()
+            .state,
+        "pending"
+    );
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: event.sequence,
+        prompt: "goal-wake".into(),
+        target: None,
+        work: Some("p".into()),
+        run: None,
+        now: 60007,
+    });
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: event.sequence,
+        state: "accepted".into(),
+        now: 60008,
+    });
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: event.sequence,
+        handled: true,
+        now: 60009,
+    });
+    assert_eq!(f.task().state, ExecutionState::Working);
+    assert_eq!(f.task().no_progress_wakes, waiting.no_progress_wakes + 1);
+}
+
+#[test]
+fn a12_handled_paused_goal_outcome_preserves_nonzero_guard() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    f.register();
+    f.subscribe();
+    f.settle("p", true);
+    check(
+        &f,
+        serde_json::json!({"status":"waiting","reason":"peer required","registration_ids":["reg"],"deadline_ms":60004}),
+    );
+    f.apply(Operation::Sweep {
+        now: 60005,
+        busy_recipients: vec![],
+        held_work: vec![],
+    });
+    let event = f
+        .store
+        .agent_work_inbox("room", "parent", 0, Some("p"))
+        .unwrap()
+        .remove(0);
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: event.sequence,
+        prompt: "goal-wake".into(),
+        target: None,
+        work: Some("p".into()),
+        run: None,
+        now: 60006,
+    });
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: event.sequence,
+        state: "accepted".into(),
+        now: 60007,
+    });
+    f.apply(Operation::ControlGoal {
+        task: "p".into(),
+        owner: "owner".into(),
+        revision: f.task().revision,
+        action: "pause".into(),
+        value: None,
+        now: 60008,
+    });
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "completed-while-paused".into(),
+        success: true,
+        public_answer: None,
+        now: 60009,
+    });
+    let event = f
+        .store
+        .agent_work_inbox("room", "parent", 0, Some("p"))
+        .unwrap()
+        .into_iter()
+        .find(|e| e.kind == "source_completed")
+        .unwrap();
+    f.apply(Operation::Expire {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: event.sequence,
+    });
+    let before = f.task();
+    assert_eq!(before.no_progress_wakes, 1);
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: event.sequence,
+        handled: true,
+        now: 60010,
+    });
+    let after = f.task();
+    assert_eq!(after.obligations[0].status, "satisfied");
+    assert_eq!(after.state, ExecutionState::Blocked);
+    assert!(after.goal.unwrap().paused);
+    assert_eq!(after.no_progress_wakes, 1);
+    assert_eq!(after.progress_sequence, before.progress_sequence);
+    assert_eq!(after.blocked_revision, before.blocked_revision);
+}

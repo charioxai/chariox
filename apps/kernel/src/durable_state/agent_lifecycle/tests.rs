@@ -2947,3 +2947,154 @@ fn a02_requested_reply_survives_deferred_and_rejected_idle_delivery() {
         assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
     }
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: retiring an automatic wake must not discard its resource outcome.
+#[test]
+fn a12_expired_completion_receipt_can_settle_matching_goal_after_pause() {
+    for pause in [false, true] {
+        let f = Fixture::new();
+        f.begin("p");
+        f.register();
+        f.subscribe();
+        f.apply(Operation::StartGoal {
+            task: "p".into(),
+            owner: "owner".into(),
+            objective: "Verify real peer artifacts".into(),
+            minutes: 1,
+            now: 2,
+        });
+        if pause {
+            f.apply(Operation::ControlGoal {
+                task: "p".into(),
+                owner: "owner".into(),
+                revision: f.task().revision,
+                action: "pause".into(),
+                value: None,
+                now: 3,
+            });
+        }
+        f.apply(Operation::SourceOutcome {
+            room: "room".into(),
+            source: "child".into(),
+            occurrence: "verified-result".into(),
+            success: true,
+            public_answer: None,
+            now: 4,
+        });
+        let event = f
+            .store
+            .agent_work_inbox("room", "parent", 0, Some("p"))
+            .unwrap()
+            .remove(0);
+        f.apply(Operation::Expire {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: event.sequence,
+        });
+        assert!(
+            f.store
+                .agent_delivery_front("room", "parent")
+                .unwrap()
+                .is_none(),
+            "expired wake cannot dispatch itself"
+        );
+        let before = f.task();
+        f.apply(Operation::Ack {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: event.sequence,
+            handled: true,
+            now: 5,
+        });
+        let after = f.task();
+        assert_eq!(
+            after.obligations[0].status, "satisfied",
+            "explicit handling must retain the exact source outcome"
+        );
+        assert_eq!(
+            after.state, before.state,
+            "handling must not resume a paused/blocked goal"
+        );
+        assert_eq!(after.goal.as_ref().unwrap().paused, pause);
+        assert_eq!(
+            after.no_progress_wakes, before.no_progress_wakes,
+            "blocked guard is preserved"
+        );
+        if pause {
+            assert_eq!(after.blocked_revision, before.blocked_revision);
+            assert_eq!(after.progress_sequence, before.progress_sequence);
+        }
+        assert_eq!(
+            f.store
+                .agent_work_inbox("room", "parent", 0, Some("p"))
+                .unwrap()[0]
+                .state,
+            "handled"
+        );
+    }
+}
+#[test]
+fn a12_expired_message_or_unhandled_ack_never_revives_delivery() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    let Outcome::Event(event) = f.apply(Operation::Occur(occurrence(
+        "room",
+        "parent",
+        "child",
+        "message-expired",
+        "message",
+        serde_json::json!({}),
+    ))) else {
+        panic!()
+    };
+    f.apply(Operation::Expire {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: event.sequence,
+    });
+    let before = f.task();
+    for handled in [false, true] {
+        f.apply(Operation::Ack {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: event.sequence,
+            handled,
+            now: 5,
+        });
+    }
+    assert_eq!(f.task(), before);
+    assert_eq!(
+        f.store.agent_inbox("room", "parent", 0).unwrap()[0].state,
+        "expired"
+    );
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "completed-expired".into(),
+        success: true,
+        public_answer: None,
+        now: 6,
+    });
+    let e = f
+        .store
+        .agent_work_inbox("room", "parent", 0, Some("p"))
+        .unwrap()
+        .into_iter()
+        .find(|e| e.kind == "source_completed")
+        .unwrap();
+    f.apply(Operation::Expire {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: e.sequence,
+    });
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: e.sequence,
+        handled: false,
+        now: 7,
+    });
+    assert_eq!(f.task().obligations[0].status, "settling");
+}
