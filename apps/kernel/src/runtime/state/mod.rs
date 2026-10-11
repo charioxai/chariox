@@ -36,7 +36,9 @@ mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
 mod context_handoff;
 mod failed_request_owned_state;
+mod native_prompt_handoff;
 pub(crate) use context_handoff::PendingAgentContextHandoffStore;
+use context_handoff::PendingAgentContextHandoff;
 mod app_automation_owned_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_connection_runtime;

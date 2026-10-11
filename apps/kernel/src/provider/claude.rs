@@ -141,6 +141,7 @@ fn plan_claude_launch_unlocked(
             "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
             native.context_file.display().to_string(),
         );
+        pty_env.insert("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS".into(), "1".into());
         pty_env.insert(
             "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
             native.context_response_dir.display().to_string(),
@@ -192,6 +193,7 @@ fn plan_claude_launch_unlocked(
             "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
             native.context_file.display().to_string(),
         );
+        pty_env.insert("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS".into(), "1".into());
         pty_env.insert(
             "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
             native.context_response_dir.display().to_string(),
@@ -248,6 +250,7 @@ fn plan_claude_launch_unlocked(
         "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
         native.context_file.display().to_string(),
     );
+    pty_env.insert("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS".into(), "1".into());
     pty_env.insert(
         "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
         native.context_response_dir.display().to_string(),

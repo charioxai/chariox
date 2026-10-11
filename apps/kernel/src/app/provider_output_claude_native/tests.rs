@@ -1,4 +1,5 @@
 mod account_usage;
+mod native_permission_race;
 mod prepared_context;
 
 use super::transcript::ClaudeTranscriptCursor;
@@ -2933,6 +2934,20 @@ fn claude_headless_bypass_selection_marker_is_distinct_from_prompt_state() {
 
 #[test]
 fn queued_claude_failed_request_note_reaches_hook_context_and_waits_for_acceptance() {
+    queued_claude_failed_request_note_impl(false, false);
+}
+
+#[test]
+fn managed_hook_delivery_receipt_fences_headless_acknowledgement() {
+    queued_claude_failed_request_note_impl(true, false);
+}
+
+#[test]
+fn managed_steering_delivery_receipt_follows_target_active_prompt() {
+    queued_claude_failed_request_note_impl(true, true);
+}
+
+fn queued_claude_failed_request_note_impl(receipts: bool, steering: bool) {
     let worktree = crate::test_support::TestWorktree::new("claude-queued-failed-note");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -2966,6 +2981,9 @@ fn queued_claude_failed_request_note_reaches_hook_context_and_waits_for_acceptan
     run.mark_running();
     let mut ready_run = serde_json::to_value(&run).unwrap();
     ready_run["started_at_ms"] = serde_json::json!(unix_epoch_ms().saturating_sub(5_000));
+    if receipts {
+        ready_run["pty_env"]["CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS"] = serde_json::json!("1");
+    }
     run = serde_json::from_value(ready_run).unwrap();
     app.pty.spawn_for_run(&run).unwrap();
     app.providers_mut().insert_run_for_test(run.clone());
@@ -2998,6 +3016,57 @@ fn queued_claude_failed_request_note_reaches_hook_context_and_waits_for_acceptan
         )
         .unwrap();
     let context_path = context_file.display().to_string();
+    if steering {
+        // MP-08 / MP-10 / MP-11: dispatch identity differs from its still-active target.
+        let steering_id = "native-steering-request";
+        write_claude_native_marker(&context_path, &format!("injected:{steering_id}"));
+        fs::write(
+            format!("{context_path}.context-delivery"),
+            serde_json::json!({
+                "request_id":"steering-receipt", "run_id":run.id(), "prompt_id":steering_id,
+                "active_prompt_id":prompt.id(), "managed":true,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .accept_context_delivery(
+                session.id(),
+                agent.id(),
+                run.id(),
+                &context_path,
+                &serde_json::json!({"hook_context_request_id":"steering-receipt"}),
+            )
+            .unwrap();
+        let marker = claude_native_marker(&context_path);
+        let active = app
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .unwrap()
+            .unwrap();
+        let failed = app
+            .agents
+            .get_agent(agent.id())
+            .unwrap()
+            .failed_requests()
+            .len();
+        app.pty.remove_process(run.id()).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            marker.as_deref(),
+            Some("accepted:native-steering-request"),
+            "steering receipt could not acknowledge its current active target"
+        );
+        assert_eq!(
+            active.id(),
+            prompt.id(),
+            "steering must not replace the active turn"
+        );
+        assert_eq!(
+            failed, 1,
+            "steering delivery must retain active-turn failure context"
+        );
+        return;
+    }
     write_claude_native_marker(&context_path, &format!("post-stop-ready:{}", prompt.id()));
     ProviderOutputClaudeNativeBridge::new(&mut app)
         .process(session.id(), run.id(), &run, None)
@@ -3041,13 +3110,47 @@ fn queued_claude_failed_request_note_reaches_hook_context_and_waits_for_acceptan
         &events_file,
         serde_json::json!({
             "hook_event_name": "UserPromptSubmit", "prompt": prompt.prompt(),
+            "hook_context_request_id": if receipts { Some("managed-current") } else { None },
         })
         .to_string(),
     )
     .unwrap();
+    if receipts {
+        acknowledge_claude_headless_dispatch_from_hook_events(
+            &context_path,
+            events_file.to_str().unwrap(),
+            prompt.id(),
+            true,
+        );
+        assert_eq!(
+            claude_native_marker(&context_path).as_deref(),
+            Some(format!("injected:{}", prompt.id()).as_str()),
+            "headless shortcut consumed context before hook delivery"
+        );
+    }
     ProviderOutputClaudeNativeBridge::new(&mut app)
         .process(session.id(), run.id(), &run, None)
         .unwrap();
+    if receipts {
+        assert_eq!(
+            app.agents
+                .get_agent(agent.id())
+                .unwrap()
+                .failed_requests()
+                .len(),
+            1,
+            "managed response creation must not acknowledge delivery"
+        );
+        assert!(root
+            .join("hook-context-responses/managed-current.txt")
+            .exists());
+        fs::write(&events_file, serde_json::json!({
+            "hook_event_name":"CharioxContextDelivered", "hook_context_request_id":"managed-current",
+        }).to_string()).unwrap();
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .process(session.id(), run.id(), &run, None)
+            .unwrap();
+    }
     assert!(app
         .agents
         .get_agent(agent.id())
