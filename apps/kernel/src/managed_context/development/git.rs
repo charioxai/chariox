@@ -397,6 +397,7 @@ fn create_git_bundle_to_writer(
         .wait()
         .map_err(|error| context_io_error("wait for Git bundle", error))?;
     let stderr = stderr_reader.join().unwrap_or_default();
+    require_git_not_interrupted(status, "create Git bundle")?;
     if !status.success() {
         return Err(context_error(format!(
             "create Git bundle failed: {}",
@@ -787,12 +788,14 @@ where
     let mut output_bytes = 0u64;
     let mut record = Vec::new();
     let mut buffer = [0_u8; 64 * 1024];
+    let mut reached_eof = false;
     let result = 'stream: loop {
         let read = match stdout.read(&mut buffer) {
             Ok(read) => read,
             Err(error) => break Err(context_io_error("read streaming Git output", error)),
         };
         if read == 0 {
+            reached_eof = true;
             break if record.is_empty() {
                 Ok(())
             } else {
@@ -832,13 +835,23 @@ where
             }
         }
     };
-    if result.is_err() && child.id() > 1 {
+    let killed_for_refusal = result.is_err() && !reached_eof;
+    if killed_for_refusal && child.id() > 1 {
         let _ = child.kill();
     }
     let status = child
         .wait()
         .map_err(|error| context_io_error("wait for streaming Git command", error))?;
     let stderr = stderr_reader.join().unwrap_or_default();
+    // A parser/policy refusal kills its own child with SIGKILL. Preserve that
+    // refusal; a shutdown signal must not turn truncated output into invalidity.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if !killed_for_refusal || status.signal() != Some(9) {
+            require_git_not_interrupted(status, "run streaming Git command")?;
+        }
+    }
     result?;
     if !status.success() {
         return Err(context_error(format!(
@@ -896,10 +909,31 @@ fn read_bounded_bundle_header_line(
     }
 }
 
+fn require_git_not_interrupted(
+    status: std::process::ExitStatus,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return Err(context_io_error(
+                operation,
+                io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    format!("Git interrupted by signal {signal}"),
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn require_git_success(output: Output, operation: &'static str) -> Result<Output, DaemonError> {
     if output.status.success() {
         return Ok(output);
     }
+    require_git_not_interrupted(output.status, operation)?;
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Err(context_error(format!(
@@ -923,4 +957,92 @@ pub(super) fn split_nul(bytes: &[u8]) -> Result<Vec<String>, DaemonError> {
                 .map_err(|_| context_error("Git returned a non-UTF-8 repository path"))
         })
         .collect()
+}
+
+#[cfg(all(test, unix))]
+mod interruption_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    // MP-08 / MP-10 / MP-11: stopping the target can interrupt Git after
+    // the upload completes. That must retain the import for a fresh retry.
+    #[test]
+    fn terminated_git_command_remains_retryable_for_copy_recovery() {
+        let output = Command::new("sh")
+            .args([
+                "-c",
+                "if [ \"$$\" -gt 1 ]; then kill -TERM \"$$\"; else exit 1; fi",
+            ])
+            .output()
+            .expect("run owned interruption probe");
+        assert_eq!(output.status.signal(), Some(15));
+        let error = require_git_success(output, "run Git command")
+            .expect_err("interrupted Git must fail retryably");
+        assert!(matches!(
+            error,
+            DaemonError::ManagedContext {
+                code: "managed_context_unavailable",
+                retryable: true,
+                ..
+            }
+        ));
+
+        let output = Command::new("sh")
+            .args(["-c", "exit 1"])
+            .output()
+            .expect("run ordinary command failure probe");
+        assert!(matches!(
+            require_git_success(output, "run Git command"),
+            Err(DaemonError::ManagedContext {
+                code: "invalid_managed_context",
+                retryable: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn interrupted_git_path_stream_does_not_retire_a_truncated_import() {
+        // The alias's parent is the Git command this test launched. Reject any
+        // other parent before signalling; the short-lived shell exits itself.
+        for signal in ["TERM", "KILL"] {
+            let alias = format!(
+                "alias.copy-interrupt=!if [ \"$PPID\" -gt 1 ] && [ \"$(cat /proc/$PPID/comm)\" = git ]; then printf truncated; kill -{signal} \"$PPID\"; fi"
+            );
+            let error = stream_git_nul_records(
+                &std::env::current_dir().expect("test working directory"),
+                &["-c", &alias, "copy-interrupt"],
+                1,
+                |_| Ok(()),
+            )
+            .expect_err("signal-truncated Git output must remain retryable");
+            assert!(matches!(
+                error,
+                DaemonError::ManagedContext {
+                    code: "managed_context_unavailable",
+                    retryable: true,
+                    ..
+                }
+            ));
+        }
+    }
+    #[test]
+    fn interrupted_policy_refusal_keeps_its_terminal_classification() {
+        let error = stream_git_nul_records(
+            &std::env::current_dir().expect("test working directory"),
+            &["ls-files", "-z"],
+            1,
+            |_| Err(context_error("refused by repository policy")),
+        )
+        .expect_err("policy refusal must survive killing its own Git child");
+        assert!(matches!(
+            error,
+            DaemonError::ManagedContext {
+                code: "invalid_managed_context",
+                retryable: false,
+                ..
+            }
+        ));
+    }
 }
