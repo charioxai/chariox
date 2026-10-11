@@ -40,7 +40,9 @@ names from the coordinator and protected owner inventory, not guessed defaults.
 `CUMAC_SIGN_IDENTITY` is the approved public certificate SHA-1 fingerprint.
 The coordinator must link the fresh kernel with `-no_adhoc_codesign`, for
 example `RUSTFLAGS="-C link-arg=-no_adhoc_codesign"` in its approved build.
-The unsigned helper build uses the same linker option. Do not remove a signature
+The unsigned bundle executables use the same linker option. The build driver
+keeps its executable policy tests ad-hoc signed so they can run on Apple Silicon.
+Those tests are not release payloads. Do not remove a signature
 from an existing kernel or helper to satisfy this prerequisite.
 
 ```bash
