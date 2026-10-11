@@ -93,6 +93,7 @@ async fn native_origin_first_turn_receives_handoff_once_after_session_start() {
             pty_program: Some("/bin/cat".into()),
             pty_args: vec![],
             pty_env: std::collections::BTreeMap::from([
+                ("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS".into(), "1".into()),
                 (
                     "CHARIOX_CLAUDE_NATIVE_CONTEXT".into(),
                     context.display().to_string(),
@@ -142,6 +143,64 @@ async fn native_origin_first_turn_receives_handoff_once_after_session_start() {
                 .unwrap(),
             agent.id(),
         )
+        .unwrap();
+    let current_run = runtime.owned.provider_store.get_run(run.id()).unwrap();
+    assert!(
+        runtime
+            .owned
+            .context_handoff_for_dispatch(
+                session.id(),
+                agent.id(),
+                &current_run,
+                "retry-before-receipt",
+                false,
+            )
+            .is_some(),
+        "creating the response file prematurely consumed native context before delivery"
+    );
+    for (request_id, receipt_session) in [
+        ("stale-native-request", "new-claude-session"),
+        ("native-first", "old-claude-session"),
+    ] {
+        std::fs::write(
+            &events,
+            serde_json::json!({
+                "hook_event_name":"CharioxContextDelivered",
+                "hook_context_request_id":request_id, "session_id":receipt_session,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        runtime
+            .pump_owned_provider_output(session.id(), run.id(), vec![], true)
+            .await
+            .unwrap();
+        assert!(
+            runtime
+                .owned
+                .context_handoff_for_dispatch(
+                    session.id(),
+                    agent.id(),
+                    &current_run,
+                    "retry-before-receipt",
+                    false,
+                )
+                .is_some(),
+            "a stale delivery receipt consumed the current native context"
+        );
+    }
+    std::fs::write(
+        &events,
+        serde_json::json!({
+            "hook_event_name":"CharioxContextDelivered", "hook_context_request_id":"native-first",
+            "native_prompt_id":first_prompt.id(),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    runtime
+        .pump_owned_provider_output(session.id(), run.id(), vec![], true)
+        .await
         .unwrap();
     runtime
         .owned

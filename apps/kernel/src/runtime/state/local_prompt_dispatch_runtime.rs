@@ -3825,6 +3825,24 @@ impl KernelRuntimeState {
                 match attempt {
                     crate::app::ClaudeNativeDispatchAttempt::Completed => break,
                     crate::app::ClaudeNativeDispatchAttempt::AwaitingInjection => {
+                        // Workflow/native dispatch must service the same official
+                        // hook bridge even with no terminal client polling output.
+                        // The bridge writes the fresh response and waits for its
+                        // delivery receipt; PTY injection is not acceptance.
+                        if provider_run
+                            .pty_env()
+                            .get("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS")
+                            .is_some_and(|v| v == "1")
+                        {
+                            Box::pin(self.pump_owned_provider_output(
+                                &dispatch.session_id,
+                                &dispatch.provider_run_id,
+                                Vec::new(),
+                                true,
+                            ))
+                            .await?;
+                        }
+
                         if let Some(message) =
                             claude_native_dispatch_terminal_failure(&provider_run)
                         {

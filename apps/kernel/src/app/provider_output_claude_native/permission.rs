@@ -290,6 +290,22 @@ fn compact_claude_permission_text(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
+pub(super) fn validate_context_request_id(
+    request_id: &str,
+) -> Result<(), crate::error::DaemonError> {
+    if request_id.is_empty()
+        || !request_id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err(crate::error::DaemonError::LocalTransport {
+            operation: "claude_hook_context_response",
+            message: "Invalid native context response request id".into(),
+        });
+    }
+    Ok(())
+}
+
 pub(super) fn write_claude_hook_context_response(
     context_file: &str,
     request_id: &str,
@@ -299,19 +315,19 @@ pub(super) fn write_claude_hook_context_response(
         operation: "claude_hook_context_response",
         message,
     };
-    if request_id.is_empty()
-        || !request_id
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
-    {
-        return Err(error("Invalid native context response request id".into()));
-    }
+    validate_context_request_id(request_id)?;
     let root = std::path::Path::new(context_file)
         .parent()
         .ok_or_else(|| error("Missing native context response directory".into()))?;
     let dir = root.join("hook-context-responses");
     fs::create_dir_all(&dir).map_err(|e| error(e.to_string()))?;
-    fs::write(dir.join(format!("{request_id}.txt")), context).map_err(|e| error(e.to_string()))
+    let pending = dir.join(format!("{request_id}.tmp"));
+    let response = dir.join(format!("{request_id}.txt"));
+    let result = fs::write(&pending, context).and_then(|()| fs::rename(&pending, &response));
+    if result.is_err() {
+        let _ = fs::remove_file(&pending);
+    }
+    result.map_err(|e| error(e.to_string()))
 }
 
 pub(super) fn write_claude_permission_response(
