@@ -21,3 +21,18 @@ fn review0212_partial_check_expires_dependency_journal_evidence() {
     assert!(journal.observations.iter().find(|o|o.requirement_id=="a").is_some_and(|a|a.stale || a.status!=EnvironmentObservationStatus::Ready),"expired prerequisite must not certify a fresh dependent");
     assert_eq!(journal.observations.iter().find(|o|o.requirement_id=="b").unwrap().status,EnvironmentObservationStatus::NeedsYourInput);
 }
+#[cfg(unix)]
+#[test]
+fn review0212_pnpm_contained_package_links_and_escaping_links() {
+    use std::os::unix::fs::symlink;
+    let root=crate::test_support::TestWorktree::new("review0212-pnpm");
+    for name in ["react","@scope/tool"] {
+        let folder=name.replace('/',"+");let package=root.path().join(format!("node_modules/.pnpm/{folder}@1.2.3/node_modules/{name}"));std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("package.json"),serde_json::to_vec(&serde_json::json!({"name":name,"version":"1.2.3"})).unwrap()).unwrap();
+        let link=root.path().join(format!("node_modules/{name}"));std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        let prefix=if name.starts_with('@'){"../"}else{""};symlink(format!("{prefix}.pnpm/{folder}@1.2.3/node_modules/{name}"),&link).unwrap();
+        assert_eq!(inventory::software_version(name,Some("npm package"),Some(root.path()),&[]),Ok(Some("1.2.3".into())),"normal installed pnpm dependency must be proven");
+        std::fs::remove_file(&link).unwrap();let outside=crate::test_support::TestWorktree::new("review0212-pnpm-outside");std::fs::write(outside.path().join("package.json"),serde_json::to_vec(&serde_json::json!({"name":name,"version":"1.2.3"})).unwrap()).unwrap();symlink(outside.path(),&link).unwrap();
+        assert!(inventory::software_version(name,Some("npm package"),Some(root.path()),&[]).is_err(),"escaping package links remain unproven");
+    }
+}
