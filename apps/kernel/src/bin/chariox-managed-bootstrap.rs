@@ -4,6 +4,12 @@ const _: () = chariox_app_runtime::assert_production_build();
 fn main() -> Result<(), chariox_kernel::DaemonError> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let command = args.first().and_then(|arg| arg.to_str());
+    if command == Some("--control-state") && args.len() == 3 {
+        return chariox_kernel::managed_bootstrap::control_state::run(
+            args[1].to_str().unwrap_or(""),
+            std::path::Path::new(&args[2]),
+        );
+    }
     let disposable_worker = match (command, args.len()) {
         (None, 0) => false,
         (Some("--disposable-worker"), 1) => true,

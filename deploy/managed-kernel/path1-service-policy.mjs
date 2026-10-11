@@ -109,10 +109,7 @@ export function verifyPath1ServicePolicy(source, role) {
   }
   const state = all.filter((line) => line.startsWith("StateDirectory="))
   const stateMode = all.filter((line) => line.startsWith("StateDirectoryMode="))
-  if (role === "worker") {
-    exact("StateDirectory=", "StateDirectory=chariox")
-    exact("StateDirectoryMode=", "StateDirectoryMode=0700")
-  } else if (state.length || stateMode.length) fail("contains StateDirectory=")
+  if (state.length || stateMode.length) fail("contains StateDirectory=")
   // Only direct, unquoted one-assignment environment declarations are supported.
   // Otherwise a later quoted/multiple assignment could override a validated HOME.
   if (all.some((line) => /^(EnvironmentFile|PassEnvironment|UnsetEnvironment)=/.test(line)

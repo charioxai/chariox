@@ -817,10 +817,11 @@ impl WorkerReceipt {
     }
 
     fn read(path: &Path) -> Result<Option<Self>, DaemonError> {
-        if !path.exists() {
+        let Some(value) =
+            super::control_state::read_optional::<Self>(path, "disposable worker receipt")?
+        else {
             return Ok(None);
-        }
-        let value: Self = read_bounded_json(path, "disposable worker receipt")?;
+        };
         let status_valid = match (value.status, value.confirmed_at.as_deref()) {
             (WorkerReceiptStatus::Exchanged, None) => true,
             (WorkerReceiptStatus::Confirmed, Some(time)) => {
@@ -856,8 +857,7 @@ impl WorkerReceipt {
         if bytes.len() > 96 * 1024 {
             return Err(worker_error("worker receipt is too large"));
         }
-        write_private_file(path, &bytes)
-            .map_err(|error| worker_error(format!("write worker receipt: {error}")))
+        super::control_state::persist(path, &bytes)
     }
 
     fn validate_identity(&self, identity: &ManagedRuntimeIdentity) -> Result<(), DaemonError> {

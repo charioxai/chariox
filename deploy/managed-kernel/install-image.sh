@@ -406,10 +406,13 @@ esac
 
 require_real_ancestor_chain "$state_root" "managed kernel state root"
 require_real_ancestor_chain "$managed_home" "managed service-account home"
-install -d -o root -g root -m 0750 "$state_root"
+install -d -o root -g root -m 0755 "$state_root"
 validate_state_root_entries
 migrate_legacy_home_transaction
 validate_state_root_entries
+# MP-03: bootstrap receipt I/O uses the signed root helper, never provider ownership.
+repair_root_control_state
+install -d -o root -g root -m 0700 "$state_root/managed" "$state_root/disposable-worker"
 
 if ! id chariox-docker >/dev/null 2>&1; then
   useradd --system --gid chariox-docker --home-dir /var/lib/chariox-docker/home --shell /usr/sbin/nologin chariox-docker

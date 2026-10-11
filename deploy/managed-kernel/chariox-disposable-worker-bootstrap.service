@@ -34,8 +34,6 @@ RestartSec=2s
 RestartSteps=8
 RestartMaxDelaySec=5min
 KillMode=control-group
-StateDirectory=chariox
-StateDirectoryMode=0700
 
 [Install]
 WantedBy=multi-user.target

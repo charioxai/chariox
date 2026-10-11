@@ -405,10 +405,9 @@ fn cleanup_attempt_storage(update_id: &str) -> Result<(), DaemonError> {
 }
 
 fn running_release_digest(receipt_path: &Path) -> Result<String, DaemonError> {
-    let bytes = std::fs::read(receipt_path)
-        .map_err(|error| update_error(format!("read bootstrap receipt: {error}")))?;
-    let receipt: Value = serde_json::from_slice(&bytes)
-        .map_err(|error| update_error(format!("decode bootstrap receipt: {error}")))?;
+    let receipt: Value =
+        crate::managed_bootstrap::control_state::read_optional(receipt_path, "bootstrap receipt")?
+            .ok_or_else(|| update_error("bootstrap receipt is missing"))?;
     receipt
         .get("runtimeReleaseDigest")
         .and_then(Value::as_str)

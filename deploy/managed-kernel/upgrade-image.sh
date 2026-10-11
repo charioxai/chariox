@@ -939,6 +939,21 @@ require_root_owned_directory "$releases_root"
 if path_exists "$update_result_path"; then
   require_root_owned_private_regular_file "$update_result_path" "managed release update result"
 fi
+# MP-03: retire old provider-owned deployment receipts before writing target/rollback state.
+if [ "$managed_provider_topology" = path1 ]; then
+  require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
+  control_parent=$(dirname "$receipt_path")
+  chown root:root "$control_parent"
+  chmod 0700 "$control_parent"
+  for control_file in "$receipt_path" "$control_parent/bootstrap-grant-binding.json" "$control_parent/release-override.json"; do
+    if [ -e "$control_file" ] || [ -L "$control_file" ]; then
+      [ -f "$control_file" ] && [ ! -L "$control_file" ] || { echo "managed control file is unsafe" >&2; exit 1; }
+      [ "$(stat -c '%h' "$control_file")" -eq 1 ] || { echo "managed control file has aliases" >&2; exit 1; }
+      chown root:root "$control_file"
+      chmod 0600 "$control_file"
+    fi
+  done
+fi
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
 select_supervisor_service
