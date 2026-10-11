@@ -35,7 +35,9 @@ echo '127.0.0.1 STREAM'
     let ctx = context(root.path());
     let r = mcp_requirement("http://stalled.example.invalid/mcp");
     let began = Instant::now();
-    let observation = check_requirement(root.path(), ctx, r, Duration::from_secs(4));
+    // MP-08 / MP-10 / MP-11: include the new one-second lease-release
+    // reserve; the stalled DNS dispatch retains its one-second timeout.
+    let observation = check_requirement(root.path(), ctx, r, Duration::from_secs(5));
     let elapsed = began.elapsed();
     std::env::set_var("PATH", old);
     std::thread::sleep(Duration::from_millis(700));
