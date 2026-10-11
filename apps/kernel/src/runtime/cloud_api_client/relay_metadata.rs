@@ -22,8 +22,9 @@ pub(crate) async fn scoped_metadata_config(
 ) -> Result<DaemonConfig, DaemonError> {
     let mut discovery = config.clone();
     if issue_cloud_grant && config.cloud_relay.is_some() {
-        discovery.relay_token =
-            Some(crate::transport::relay_discovery::authorization::metadata_token(config).await?);
+        discovery.relay_token = Some(
+            crate::transport::relay_discovery::authorization::cloud_metadata_token(config).await?,
+        );
     }
     discovery.cloud_relay = None;
     Ok(discovery)

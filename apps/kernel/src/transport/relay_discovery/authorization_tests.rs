@@ -189,12 +189,12 @@ async fn denied_metadata_issuance_never_falls_back_to_runtime_grant() {
 }
 
 #[tokio::test]
-async fn self_hosted_metadata_keeps_the_configured_relay_grant() {
+async fn self_hosted_metadata_keeps_its_grant_with_an_unrelated_cloud_profile() {
     let (api_url, issuer) = metadata_issuer(200).await;
     let query = RelayMetadataQuery::ListLiveMachines;
     let (relay_url, relay, _) = metadata_relay(&query, "synthetic-machine-runtime-grant").await;
     let mut config = hosted_config(api_url, relay_url);
-    config.cloud_relay = None;
+    config.cloud_relay.as_mut().unwrap().relay_url = "wss://unrelated-cloud.example/relay".into();
     query_relay_once(&config, query).await.unwrap();
     assert!(relay.await.unwrap());
     assert!(!issuer.is_finished());
