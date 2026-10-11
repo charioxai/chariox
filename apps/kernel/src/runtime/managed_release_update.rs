@@ -280,6 +280,11 @@ impl ManagedReleaseUpdateClient {
             UPDATE_UNIT,
             "--collect",
             "--quiet",
+            // Recovery must outlive a kernel outage after target activation.
+            "--property=Restart=on-failure",
+            "--property=RestartSec=2s",
+            "--property=StartLimitIntervalSec=60s",
+            "--property=StartLimitBurst=5",
         ]);
         if let Some(directory) = std::env::var_os("CHARIOX_RUNTIME_DIAGNOSTICS_DIR") {
             let mut setting = std::ffi::OsString::from("CHARIOX_RUNTIME_DIAGNOSTICS_DIR=");
