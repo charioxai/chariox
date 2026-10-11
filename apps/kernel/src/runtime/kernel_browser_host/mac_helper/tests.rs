@@ -11,6 +11,7 @@ enum Fake {
     PhysicalHuman,
     PhysicalHumanIdle,
     PhysicalAfterReset,
+    PhysicalTargetAction,
     WrongToken,
     StaleReply,
     StaleGeneration,
@@ -87,6 +88,20 @@ fn helper(dir: &Path, fake: Fake, seen: &Mutex<Vec<String>>) {
                 stream,
                 "{}",
                 json!({"id":request["id"],"epoch":epoch,"ok":false,"error":{"code":code}})
+            )
+            .unwrap();
+            continue;
+        }
+        if fake == Fake::PhysicalTargetAction
+            && request["params"]["op"] == "target_action"
+            && !reported_physical
+        {
+            reported_physical = true;
+            writeln!(
+                stream,
+                "{}",
+                json!({"id":request["id"],"epoch":epoch,"ok":false,
+                "physical_human":true,"input_released":true,"error":{"code":"unsupported"}})
             )
             .unwrap();
             continue;
@@ -669,10 +684,20 @@ fn m1_authenticated_no_press_refusal_leaves_the_seat_usable() {
 fn m3_released_physical_pause_preserves_pairing_with_real_actor_cancellation() {
     use crate::runtime::kernel_browser_actors::KernelBrowserActors;
     use crate::session::{EnvironmentActionTerminal, EnvironmentActor, EnvironmentActorKind};
-    for kind in ["move", "click"] {
+    for kind in ["move", "click", "target_action"] {
         for revoke_authority in [false, true] {
             for terminal_owns in [false, true] {
-                let (mut seat, root, _) = seat("always", Fake::PhysicalHuman);
+                let fake = if kind == "target_action" {
+                    Fake::PhysicalTargetAction
+                } else {
+                    Fake::PhysicalHuman
+                };
+                let (mut seat, root, _) = seat("always", fake);
+                let op = if kind == "target_action" {
+                    "target_action"
+                } else {
+                    "input"
+                };
                 seat.physical_input = true;
                 let model = Arc::new(Mutex::new(KernelBrowserActors::default()));
                 let authority = Arc::new(AtomicBool::new(true));
@@ -714,7 +739,7 @@ fn m3_released_physical_pause_preserves_pairing_with_real_actor_cancellation() {
                         } else {
                             EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "A")
                         },
-                        &json!({"op":"input","_native":true}),
+                        &json!({"op":op,"_native":true}),
                     )
                     .unwrap();
                 let cancel = Arc::new(BrowserCancellation::for_authority(
@@ -723,7 +748,7 @@ fn m3_released_physical_pause_preserves_pairing_with_real_actor_cancellation() {
                 ));
                 let result = seat.request(
                     "host.computer",
-                    json!({"op":"input","input":{"kind":kind}}),
+                    json!({"op":op,"input":{"kind":kind}}),
                     Some(cancel),
                 );
                 assert!(
@@ -766,6 +791,33 @@ fn m3_released_physical_pause_preserves_pairing_with_real_actor_cancellation() {
                     )
                     .unwrap();
                     assert_eq!(state(&mut seat).unwrap()["generation"], epoch);
+                    if kind == "target_action" {
+                        model
+                            .lock()
+                            .unwrap()
+                            .release_desktop("human:physical-owner", "macos-seat", &epoch)
+                            .unwrap();
+                        let params = json!({"op":"input","_native":true,"input":{"kind":"move"}});
+                        let (resumed, cancellation) = model
+                            .lock()
+                            .unwrap()
+                            .begin(
+                                EnvironmentActor::new(
+                                    "agent:resumed",
+                                    EnvironmentActorKind::Agent,
+                                    "Resumed",
+                                ),
+                                &params,
+                            )
+                            .unwrap();
+                        seat.request("host.computer", params, Some(cancellation))
+                            .unwrap();
+                        model
+                            .lock()
+                            .unwrap()
+                            .finish(&resumed, EnvironmentActionTerminal::Completed);
+                        assert_eq!(state(&mut seat).unwrap()["generation"], epoch);
+                    }
                 }
                 seat.shutdown().unwrap();
                 std::fs::remove_dir_all(root).unwrap();
