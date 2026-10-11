@@ -12,6 +12,7 @@ pub(crate) struct KernelBrowserActors {
     tab_activity: BrowserTabActivity,
     generation: u64,
     desktop: Option<(String, String)>,
+    desktop_takeover_revision: u64,
     viewport: (u64, u64),
     tabs: TabRegistry,
     actors: BTreeMap<String, EnvironmentActor>,
@@ -37,6 +38,7 @@ impl Default for KernelBrowserActors {
             tab_activity: BrowserTabActivity::default(),
             generation: 0,
             desktop: None,
+            desktop_takeover_revision: 0,
             viewport: (1280, 800),
             tabs: TabRegistry::new(),
             actors: BTreeMap::new(),
@@ -366,6 +368,10 @@ impl KernelBrowserActors {
         generation: &str,
     ) -> Result<TakeoverOutcome, String> {
         self.desktop_current(surface, generation)?;
+        let revision = self
+            .desktop_takeover_revision
+            .checked_add(1)
+            .ok_or("MP-11: desktop takeover revision exhausted")?;
         self.register(actor.clone())?;
         let effect = self
             .ledger
@@ -376,6 +382,7 @@ impl KernelBrowserActors {
                 &self.tabs,
             )
             .map_err(|_| "MP-11: desktop takeover denied")?;
+        self.desktop_takeover_revision = revision;
         for action in effect.cancellation_requested_action_ids {
             if let Some(cancel) = self.active.get(&action) {
                 cancel.request_cancel();
@@ -390,6 +397,10 @@ impl KernelBrowserActors {
         generation: &str,
     ) -> Result<TakeoverOutcome, String> {
         self.desktop_current(surface, generation)?;
+        let revision = self
+            .desktop_takeover_revision
+            .checked_add(1)
+            .ok_or("MP-11: desktop takeover revision exhausted")?;
         self.register(EnvironmentActor::new(
             "human:physical-owner",
             EnvironmentActorKind::Human,
@@ -399,6 +410,7 @@ impl KernelBrowserActors {
             .ledger
             .request_physical_desktop_takeover(&self.actors, &self.tabs)
             .map_err(|_| "MP-11: physical desktop takeover denied")?;
+        self.desktop_takeover_revision = revision;
         for action in effect.cancellation_requested_action_ids {
             if let Some(cancel) = self.active.get(&action) {
                 cancel.request_cancel();
@@ -415,6 +427,24 @@ impl KernelBrowserActors {
         self.desktop_current(surface, generation)?;
         if !self.desktop_owner_is(actor) {
             return Err("MP-11: only the desktop owner may release".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn desktop_takeover_revision(&self) -> u64 {
+        self.desktop_takeover_revision
+    }
+    pub(crate) fn check_desktop_release_revision(
+        &self,
+        actor: &str,
+        surface: &str,
+        generation: &str,
+        revision: u64,
+    ) -> Result<(), String> {
+        self.check_desktop_release(actor, surface, generation)?;
+        if self.desktop_takeover_revision != revision {
+            return Err(
+                "MP-11: desktop takeover changed during release; explicit release required".into(),
+            );
         }
         Ok(())
     }

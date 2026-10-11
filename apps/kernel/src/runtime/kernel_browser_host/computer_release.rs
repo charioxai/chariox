@@ -10,7 +10,7 @@ impl KernelBrowserHost {
         generation: &str,
     ) -> Result<Value, crate::error::HostFailure> {
         let model = self.actor_model(user)?;
-        let mut model = model
+        let model = model
             .lock()
             .map_err(|_| "MP-11: desktop actor lock unavailable")?;
         // Keep ownership until native keys are reset. Another actor cannot
@@ -29,6 +29,7 @@ impl KernelBrowserHost {
             &actor.actor_id
         };
         model.check_desktop_release(release_owner, surface, generation)?;
+        let revision = model.desktop_takeover_revision();
         drop(model);
         let backend = self.computer_backend(user)?;
         let mut backend = backend
@@ -39,7 +40,7 @@ impl KernelBrowserHost {
         let model = model
             .lock()
             .map_err(|_| "MP-11: desktop actor lock unavailable")?;
-        model.check_desktop_release(release_owner, surface, generation)?;
+        model.check_desktop_release_revision(release_owner, surface, generation, revision)?;
         drop(model);
         backend.request(
             "host.computer.reset",
@@ -51,7 +52,7 @@ impl KernelBrowserHost {
         let mut model = model
             .lock()
             .map_err(|_| "MP-11: desktop actor lock unavailable")?;
-        model.check_desktop_release(release_owner, surface, generation)?;
+        model.check_desktop_release_revision(release_owner, surface, generation, revision)?;
         model.release_desktop(release_owner, surface, generation)?;
         return Ok(serde_json::json!({"released":true}));
     }
