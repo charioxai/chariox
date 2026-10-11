@@ -119,15 +119,8 @@ pub(crate) async fn execute_rename_remote_machine_request(
 pub(crate) async fn live_registry_machines(
     config: &crate::config::DaemonConfig,
 ) -> Result<Vec<chariox_relay::protocol::RelayMachinePresence>, DaemonError> {
-    let mut discovery_config = config.clone();
-    if let Some(profile) = config.cloud_relay.as_ref() {
-        let token = crate::runtime::cloud_api_client::issue_cloud_relay_inventory_discovery_token(
-            profile,
-            &config.daemon_id,
-        )
-        .await?;
-        discovery_config.relay_token = Some(token.token);
-    }
+    let discovery_config =
+        crate::runtime::cloud_api_client::scoped_metadata_config(config, true).await?;
     crate::transport::relay_discovery::list_live_machines(&discovery_config).await
 }
 

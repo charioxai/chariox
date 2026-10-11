@@ -207,13 +207,11 @@ async fn resolve_projection_target_public_key(
         return Ok(public_key);
     }
     let config = router.relay_config_snapshot();
-    let target_kernel = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        async {
-            let discovery = crate::runtime::cloud_api_client::relay_metadata_discovery_config(&config).await?;
-            relay_discovery::get_live_kernel(&discovery, target_daemon_id).await
-        },
-    )
+    let target_kernel = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let discovery =
+            crate::runtime::cloud_api_client::relay_metadata_discovery_config(&config).await?;
+        relay_discovery::get_live_kernel(&discovery, target_daemon_id).await
+    })
     .await
     .map_err(|_| DaemonError::LocalTransport {
         operation: "resolve relay peer event target",

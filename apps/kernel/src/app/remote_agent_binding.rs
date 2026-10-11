@@ -2854,7 +2854,9 @@ mod tests {
         let mut local_relay = app.config().clone();
         local_relay.relay_url = Some("ws://127.0.0.1:9".to_string());
         local_relay.relay_token = Some("self-hosted-token".to_string());
-        let discovery = app.remote_worker_discovery_config("worker", local_relay.clone()).unwrap();
+        let discovery = app
+            .remote_worker_discovery_config("worker", local_relay.clone())
+            .unwrap();
         assert_eq!(discovery.relay_url, local_relay.relay_url);
         assert_eq!(discovery.relay_token, local_relay.relay_token);
     }
@@ -2865,7 +2867,8 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let fixture = std::thread::spawn(move || {
-            let (mut stream, _) = accept_cloud_request(&listener, std::time::Duration::from_secs(30)).unwrap();
+            let (mut stream, _) =
+                accept_cloud_request(&listener, std::time::Duration::from_secs(30)).unwrap();
             let request = read_http_request(&mut stream);
             let body = r#"{"token":"worker-metadata-token","expiresAt":"2099-01-01T00:00:00Z"}"#;
             stream.write_all(format!("HTTP/1.1 201 Created\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}", body.len(), body).as_bytes()).unwrap();
@@ -2878,12 +2881,23 @@ mod tests {
         profile.api_url = format!("http://{address}");
         config.cloud_relay = Some(profile);
         let app = DaemonApp::bootstrap(config).unwrap();
-        let discovery = app.remote_worker_discovery_config("ordinary-worker", app.config().clone()).unwrap();
-        assert_eq!(discovery.relay_token.as_deref(), Some("worker-metadata-token"));
-        assert_eq!(app.config().relay_token.as_deref(), Some("kernel-registration-token"));
+        let discovery = app
+            .remote_worker_discovery_config("ordinary-worker", app.config().clone())
+            .unwrap();
+        assert_eq!(
+            discovery.relay_token.as_deref(),
+            Some("worker-metadata-token")
+        );
+        assert_eq!(
+            app.config().relay_token.as_deref(),
+            Some("kernel-registration-token")
+        );
         let request = fixture.join().unwrap();
         assert!(request.starts_with("POST /relay/token HTTP/1.1"));
-        assert!(request.contains(&format!(r#""subject":"relay-inventory:{}""#, app.config().daemon_id)));
+        assert!(request.contains(&format!(
+            r#""subject":"relay-inventory:{}""#,
+            app.config().daemon_id
+        )));
         assert!(request.contains(r#""subjectKind":"client""#));
         assert!(request.contains(r#""allowedActions":["client.metadata.read"]"#));
     }
