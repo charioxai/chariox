@@ -73,6 +73,9 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
         )
         .await?;
         discovery_config.relay_token = Some(token.token);
+    } else {
+        discovery_config =
+            relay_discovery::ordinary_hosted_discovery_config(discovery_config).await?;
     }
 
     let machine_ref =
@@ -1708,18 +1711,8 @@ impl DaemonApp {
         mut config: DaemonConfig,
     ) -> Result<DaemonConfig, DaemonError> {
         if !self.hosted_shared_slice_uses_connected_relay(kernel_ref) {
-            if let Some(profile) = config.cloud_relay.clone() {
-                let owner_kernel_ref = self.config.daemon_id.clone();
-                let token = self.block_on_relay_future(async move {
-                    crate::runtime::cloud_api_client::issue_cloud_relay_inventory_discovery_token(
-                        &profile,
-                        &owner_kernel_ref,
-                    )
-                    .await
-                })?;
-                config.relay_token = Some(token.token);
-            }
-            return Ok(config);
+            return self
+                .block_on_relay_future(relay_discovery::ordinary_hosted_discovery_config(config));
         }
         let profile = config
             .cloud_relay
@@ -2848,8 +2841,9 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let fixture = std::thread::spawn(move || {
-            let (mut stream, _) = accept_cloud_request(&listener, std::time::Duration::from_secs(30))
-                .expect("ordinary worker discovery must request scoped admission");
+            let (mut stream, _) =
+                accept_cloud_request(&listener, std::time::Duration::from_secs(30))
+                    .expect("ordinary worker discovery must request scoped admission");
             let request = read_http_request(&mut stream);
             let body = r#"{"token":"inventory-metadata-token","expiresAt":"2099-01-01T00:00:00Z"}"#;
             stream.write_all(format!("HTTP/1.1 201 Created\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}", body.len(), body).as_bytes()).unwrap();
