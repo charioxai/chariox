@@ -323,7 +323,7 @@ async fn prompt_complete_advances_queued_prompt_with_owned_runtime_state_without
         .started_next
         .as_ref()
         .expect("queued prompt should promote");
-    assert_ne!(started_next.id(), second.id());
+    assert_eq!(started_next.id(), second.id());
     assert!(started_next.pending_prompt_id().is_none());
     assert_eq!(started_next.prompt(), second.prompt());
     let projected_active = session_projection

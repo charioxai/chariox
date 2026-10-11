@@ -1825,10 +1825,10 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
             };
             let active_prompt = active_prompt.expect("ordinary queue advancement should start");
             assert_eq!(active_prompt.prompt(), "REMOTE_QUEUE_STEER_DELIVERY\n");
-            assert_ne!(
+            assert_eq!(
                 active_prompt.id(),
                 queued_prompt_id,
-                "promotion must allocate one new active-turn identity"
+                "promotion must retain the admitted active-turn identity"
             );
             assert_eq!(active_prompt.pending_prompt_id(), None);
             assert_eq!(

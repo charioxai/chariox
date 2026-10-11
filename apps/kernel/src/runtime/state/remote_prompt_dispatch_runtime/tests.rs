@@ -1355,7 +1355,8 @@ mod receipt_reconciliation {
             .active_prompt_for_agent(&session, &fixture.agent_id)
             .expect("queued successor should be active");
         assert_eq!(active.prompt(), fixture.successor_prompt.prompt());
-        assert_ne!(active.id(), fixture.successor_prompt_id.as_str());
+        assert_eq!(active.id(), fixture.successor_prompt_id.as_str());
+        assert_eq!(active.pending_prompt_id(), None);
         assert!(
             claim.release_or_restart(),
             "queued dispatch should wake its owner"
@@ -1542,8 +1543,7 @@ mod receipt_reconciliation {
             .prompt_state_owner
             .state_parts(&session, &fixture.agent_id);
         let active = active.expect("exactly one queued successor should be admitted");
-        assert_ne!(active.id(), fixture.successor_prompt_id);
-        assert!(active.id().starts_with("prompt-"));
+        assert_eq!(active.id(), fixture.successor_prompt_id);
         assert_eq!(active.pending_prompt_id(), None);
         assert_eq!(active.prompt(), fixture.successor_prompt.prompt());
         assert!(queued.is_empty(), "the successor should be promoted once");

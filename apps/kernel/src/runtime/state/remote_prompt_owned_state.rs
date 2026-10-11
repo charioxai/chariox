@@ -1710,7 +1710,8 @@ mod tests {
         let started_next = completion
             .started_next
             .expect("queued remote prompt should start");
-        assert_ne!(started_next.id(), queued_prompt.id());
+        assert_eq!(started_next.id(), queued_prompt.id());
+        assert_eq!(started_next.pending_prompt_id(), None);
         assert_eq!(started_next.prompt(), queued_prompt.prompt());
         assert!(
             projection_store.session_change_sequence(&session_id) > before_completion_sequence,

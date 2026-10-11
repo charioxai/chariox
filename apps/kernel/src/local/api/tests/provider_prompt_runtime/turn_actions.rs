@@ -409,7 +409,7 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
                 .is_some_and(|active| {
                     active.prompt() == prompt.prompt()
                         && active.pending_prompt_id().is_none()
-                        && active.id() != prompt.id()
+                        && active.id() == prompt.id()
                         && active.durable_delivery_phase()
                             == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
                 })
