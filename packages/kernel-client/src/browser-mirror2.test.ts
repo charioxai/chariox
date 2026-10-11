@@ -350,9 +350,9 @@ test('MP-10: review #320-2 a removed frame releases its nested records and a ret
   assert.equal(retired.deref(), undefined, 'MP-10: a bound document no longer in use can be collected')
 })
 
-// Round 10 hosted drop drill: a dropped socket fails every credit in flight at once. That is one failure: the viewer
-// re-credits after the first backoff step from its applied base (no 2 s backoff, no reset snapshot).
-test('MP-10: credits that fail together (a dropped socket) count as one failure: quick re-credit, no reset', async () => {
+// Round 10 hosted drop drill: a dropped socket fails every credit in flight at once. That is one failure for the
+// backoff (no 2 s wait), and a reset: only a reset ends the long polls the kernel still holds for the lost credits.
+test('MP-10: credits that fail together (a dropped socket) count as one failure: the reset follows after one backoff step', async () => {
   let sequence = 0, dropped = false, released: Array<() => void> = []
   const applied: number[] = [], requests: Array<Record<string, unknown>> = []
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
@@ -373,5 +373,5 @@ test('MP-10: credits that fail together (a dropped socket) count as one failure:
   await view.close()
   const after = requests.filter(c => c.op === 'mirror_next' && (c.at as number) > droppedAt)
   assert.ok(after.length > 0 && (after[0]!.at as number) - droppedAt < 600, `MP-10: re-credit within one backoff step (${after.length ? (after[0]!.at as number) - droppedAt : 'none'} ms)`)
-  assert.equal(after.filter(c => c.after_sequence === 0).length, 0, 'MP-10: no reset snapshot after a dropped socket')
+  assert.equal(after[0]!.after_sequence, 0, 'MP-10: the first credit after the drop is the reset that ends the lost long polls')
 })
