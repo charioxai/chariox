@@ -1081,7 +1081,7 @@ fn same_agent_profile_update_keeps_active_provider_run() {
     assert_eq!(agent.provider(), "codex");
     let model = agent.model().expect("created agent model").to_string();
     let active_run_id = harness.with_app_mut(|app| {
-        crate::test_support::authenticate_provider_account(
+        let profile = crate::test_support::authenticate_provider_account(
             &app.provider_account_profile_registry(),
             crate::session::DEFAULT_LOCAL_USER_ID,
             "codex",
@@ -1089,8 +1089,14 @@ fn same_agent_profile_update_keeps_active_provider_run() {
         )
         .expect("synthetic provider account should be authenticated");
         app.launch_provider(
-            LaunchProviderRequest::new(session.id(), "dev-stub", "codex", "default", &model)
-                .with_agent_id(agent.id()),
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "codex",
+                profile.profile_id(),
+                &model,
+            )
+            .with_agent_id(agent.id()),
         )
         .expect("provider launch should succeed")
         .id()
