@@ -3,6 +3,7 @@
 pub(crate) mod completion;
 mod delegation;
 mod delivery;
+mod delivery_waits;
 #[cfg(test)]
 mod goal_tests;
 pub(crate) mod goals;

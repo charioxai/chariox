@@ -318,6 +318,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
             }
+            changed.extend(super::delivery_waits::block_undeliverable_waits(tx, now)?);
             Ok(Outcome::Swept(changed))
         }
         Operation::CancelTask {

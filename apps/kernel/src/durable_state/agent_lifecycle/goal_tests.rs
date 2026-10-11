@@ -452,6 +452,65 @@ fn a12_overdue_restart_coalesces_and_blocked_source_events_never_resume() {
     assert!(f.task().obligations.iter().any(|o| o.status == "failed"));
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: the real overdue restart
+// retained an older uncertain message ahead of the Goal's check-in.
+#[test]
+fn a12_blocked_fifo_delivery_cannot_hide_a_goal_check_in() {
+    for blocker_first in [true, false] {
+        let f = Fixture::new();
+        goal(&f, 1);
+        f.register();
+        f.subscribe();
+        f.settle("p", true);
+        let continued = check(&f, assessment("continue"));
+        let work = continued.pending_prompt_id.unwrap();
+        f.begin(&work);
+        f.settle(&work, true);
+        let waiting = check(&f, serde_json::json!({
+            "status":"waiting","reason":"delegate needed",
+            "registration_ids":["reg"],"deadline_ms":60_004
+        }));
+        assert_eq!(waiting.no_progress_wakes, 1);
+        f.begin("independent");
+        let sweep = |now| f.apply(Operation::Sweep {
+            now, busy_recipients: vec![], held_work: vec![],
+        });
+        if !blocker_first { sweep(60_005); }
+        let Outcome::Event(event) = f.apply(Operation::Occur(occurrence(
+            "room", "parent", "peer", "uncertain-message", "message",
+            serde_json::json!({"message":"public evidence available"}),
+        ))) else { panic!() };
+        f.apply(Operation::Attempt {
+            room:"room".into(), agent:"parent".into(), sequence:event.sequence,
+            prompt:"event".into(), target:Some("independent".into()),
+            run:Some("run".into()), now:60_006, work:None,
+        });
+        sweep(180_006);
+        let task = f.task();
+        assert_eq!(task.state, if blocker_first {
+            ExecutionState::Blocked
+        } else { ExecutionState::Waiting },
+            "an older blocked delivery must surface the undeliverable Goal check-in");
+        assert_eq!(task.no_progress_wakes, 1);
+        assert_eq!(task.goal.as_ref().unwrap().id, waiting.goal.as_ref().unwrap().id);
+        assert_eq!(task.obligations, waiting.obligations);
+        assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().iter()
+            .filter(|e| e.kind == "deadline_reached").count(), 1);
+        if blocker_first {
+            assert!(task.reason.contains(&format!("delivery {}", event.sequence)));
+            assert!(task.goal.as_ref().unwrap().next_check_in_ms.is_none());
+            sweep(240_006);
+            assert_eq!(f.task(), task, "a repeat sweep cannot re-block or reset the guard");
+            f.apply(Operation::Receipt {
+                room:"room".into(), agent:"parent".into(), sequence:event.sequence,
+                state:"accepted".into(), now:240_007,
+            });
+            sweep(300_006);
+            assert_eq!(f.task(), task, "a late receipt cannot resume a blocked Goal");
+        }
+    }
+}
+
 #[test]
 fn a12_current_ledger_is_rechecked_after_a_source_changes_during_assessment() {
     let f = Fixture::new();
