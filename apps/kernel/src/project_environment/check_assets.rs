@@ -55,7 +55,7 @@ pub(super) fn check_assets(
                     f.requirements.push(selected);
                 }
             }
-            if super::manual_files::verify_manual_files(&current, &mut draft).is_err() {
+            if super::manual_files::verify_check_files(&current, &mut draft).is_err() {
                 return outcome(
                     Missing,
                     "file_unavailable",
