@@ -55,6 +55,7 @@ export async function displayCredit(host, stream, command, signal) {
     // masks/base are identical; pending codecs/refinements always retire.
     if(nativeRegionPending(stream,compositor,tab.document_id,host.protection)){
       stream.producer?.retireUnsent();stream.refiner?.invalidate();
+      compositor?.rejected?.('region_revision');
       return {generation:host.generation,frame_sent:false,display_frame:null};
     }
     // MP-08/MP-10/MP-11: keep only a COMPLETE exact canvas after a fresh
@@ -104,6 +105,7 @@ export async function displayCredit(host, stream, command, signal) {
         // A refused plan holds lossless frames until exactness returns
         // and re-offers the latest sample to the video encoder.
         stream.shiftHold=true;stream.producer.retry(compositor.sample()??sample);
+        compositor?.rejected?.('shift_hold');
         return {generation:host.generation,frame_sent:false,display_frame:null};
       }
       if(reply.native_packet)stream.encoder.adoptPacket(reply.native_packet);
@@ -136,6 +138,7 @@ export async function displayCredit(host, stream, command, signal) {
   assertNotCancelled(signal);
   const frame = await stream.frame(source, source.document_id, command.after_sequence, async () => {
     assertNotCancelled(signal);
+    if(!source.motion&&(host.inputEpochs.get(tab.tab_id)??0)!==epoch)compositor?.rejected?.('epoch');
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
     return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((host.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision))));
   },()=>!compositor?.closed&&compositor?.regionRevision===regionRevision&&host.protection===capturePolicy&&(source.motion||((host.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision)))));

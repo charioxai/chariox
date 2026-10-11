@@ -24,6 +24,11 @@ struct Config {
 #[derive(Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 enum Command {
+    // MP-08/MP-10/MP-11: upstream fences cannot be inferred from raster
+    // pixels. Count their fixed reasons at the native worker, never content.
+    Reject {
+        reject: Rejection,
+    },
     Encode {
         encode: Encode,
     },
@@ -66,6 +71,21 @@ enum Command {
     Plans {
         plans: bool,
     },
+}
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Rejection {
+    StaleDocument,
+    Epoch,
+    RegionRevision,
+    SerialSkipped,
+    ShiftHold,
+}
+impl Rejection {
+    fn index(self) -> usize { self as usize }
+    fn label(self) -> &'static str {
+        ["stale_document", "epoch", "region_revision", "serial_skipped", "shift_hold"][self.index()]
+    }
 }
 /// MP-08/MP-10/MP-11: pointer input is a request: the reply says whether the
 /// owned window received it, so Node falls back to CDP on a refusal.
@@ -197,6 +217,11 @@ pub(super) fn run() -> Result<(), String> {
         .collect::<Result<Vec<_>, _>>()?;
     let mut control = Vec::new();
     let mut serial = 0u64;
+    let mut rejected = [0u64; 5];
+    for reason in [Rejection::StaleDocument, Rejection::Epoch, Rejection::RegionRevision,
+        Rejection::SerialSkipped, Rejection::ShiftHold] {
+        eprintln!("MD-DISPLAY: native rejected {} 0", reason.label());
+    }
     let mut admitted = 0u64;
     let exact = ExactWorker::new();
     let mut dirty = true;
@@ -373,6 +398,11 @@ pub(super) fn run() -> Result<(), String> {
                 Ok(s)
             };
             match command {
+                Command::Reject { reject } => {
+                    let count = &mut rejected[reject.index()];
+                    *count = count.saturating_add(1);
+                    eprintln!("MD-DISPLAY: native rejected {} {}", reject.label(), count);
+                }
                 Command::Wake { wake: true } => wake = Some(epoch()),
                 Command::Refresh { refresh: true } => {
                     dirty = true;
