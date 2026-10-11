@@ -1069,13 +1069,16 @@ fn same_agent_profile_update_keeps_active_provider_run() {
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            worktree.session_request(),
+            worktree.session_request().with_agent_defaults(
+                crate::session::SessionAgentDefaults::new("codex").with_model("gpt-6.1-sol"),
+            ),
         ))
         .expect("session create should succeed")
     {
         LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         _ => panic!("unexpected local response"),
     };
+    assert_eq!(agent.provider(), "codex");
     let model = agent.model().expect("created agent model").to_string();
     let active_run_id = harness.with_app_mut(|app| {
         crate::test_support::authenticate_provider_account(
