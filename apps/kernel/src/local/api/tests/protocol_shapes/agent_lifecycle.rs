@@ -5,7 +5,7 @@ use crate::durable_state::agent_lifecycle::{
 };
 #[test]
 fn agent_task_projection_shape_is_bound_to_protocol452() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 484);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 493);
     let task = AgentTaskExecution {
         goal: None,
         completion_check: None,
@@ -65,7 +65,7 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
 
 #[test]
 fn agent_wake_projection_shape_is_bound_to_protocol459() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 485);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 493);
     let wake = crate::durable_state::agent_lifecycle::AgentWake {
         id: "wake".into(),
         task_id: "task".into(),

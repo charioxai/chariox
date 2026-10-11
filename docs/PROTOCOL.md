@@ -663,9 +663,10 @@ invocation reference, and tracks the existing run/nodes as covered obligations.
 It never replays a template launch. Completed/cancelled runs stay terminal;
 restart retains the migration receipt, source cursors and finite check-in.
 
-The goal shape and `completion_check` origin belong to the coordinator-assigned
-local 493 / relay-peer 102 union; the integration lane reconciles its version
-and aggregate snapshots before publication.
+The goal shape, compact task acknowledgements and `completion_check` origin use
+the coordinator-assigned local protocol 493, published with matching snapshots
+and dependent Goal client gates. The integration lane still owns relay-peer 102;
+this change retains the current peer version and snapshots until that union lands.
 
 ## 3.4 Workflow Coordination Semantics
 

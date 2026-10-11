@@ -37,7 +37,7 @@ fn handoff() -> RuntimeHandoff {
 #[test]
 fn mp08_mp10_mp11_owner_handoff_protocol_477_snapshot_and_hash() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 477);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 493);
     let interaction = RuntimeInteraction::for_kernel_operation(
         "handoff-obligation",
         "handoff-obligation",
