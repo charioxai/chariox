@@ -32,5 +32,5 @@ test("MP-08/MP-10/MP-11 peer101 preflight rejects predecessors and accepts only 
     } })
     assert.equal(result.status === 0, expected, `peer=${imageVersion}, source=${imageRevision}: ${result.stderr}`)
   }
-  assert.equal(version, 100)
+  assert.equal(version, 101)
 })
