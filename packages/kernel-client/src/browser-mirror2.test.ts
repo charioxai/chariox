@@ -152,8 +152,10 @@ test('MP-08/MP-10: a retired subscription surfaces a failure; transient failures
   assert.deepEqual(flaky.failures, [], 'MP-10: a short failure streak is not terminal')
 })
 
-// Audit 2026-10-10 §4.8: a lost credit reply (dropped socket) is not a reset; the kernel resends from the applied base.
-test('MP-10: one failed credit re-credits from the applied sequence (the kernel resends lost packets); a second consecutive failure asks for a reset', async () => {
+// Round 10 hosted drop drill (reverses audit 2026-10-10 §4.8): a failed credit asks for a reset. A plain re-credit
+// waited behind the kernel's long poll for the lost credit and then for the 1.5 s resend (3.25 s after reconnect);
+// a reset's hurry ends that poll (0.1-0.25 s after reconnect).
+test('MP-10: a failed credit asks for a reset (it ends the kernel long poll of the lost credit); the stream continues', async () => {
   let sequence = 0, failures = 0
   const viewer = flow(async command => {
     if (command.op === 'mirror_subscribe') return { subscription_id: 's' }
@@ -167,8 +169,9 @@ test('MP-10: one failed credit re-credits from the applied sequence (the kernel 
   await until(() => viewer.applied.length >= 4)
   await view.close()
   const afters = viewer.requests.filter(command => command.op === 'mirror_next').map(command => command.after_sequence)
-  assert.deepEqual(afters.filter(after => after === 0).length, 1, `MP-10: one snapshot only, no reset after the lost reply: ${JSON.stringify(afters)}`)
-  assert.deepEqual(viewer.applied.slice(0, 4), [1, 2, 3, 4])
+  const lost = afters.indexOf(2)
+  assert.equal(afters[lost + 1], 0, `MP-10: the credit after the failed one is a reset: ${JSON.stringify(afters)}`)
+  assert.ok(viewer.applied.length >= 4)
 })
 
 test('MP-10: removing an inline style forgets it, so a later resource cannot restore it', () => {

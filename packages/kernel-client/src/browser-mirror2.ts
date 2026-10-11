@@ -660,13 +660,12 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
         await drain()
       })
       .catch(error => {
-        // One failed credit (its reply lost with a dropped socket) re-credits from the applied base: the
-        // kernel resends what it lost. A failed reset, or a second failure in a row, asks for a snapshot.
-        // Credits sent before a failure that fail too (the same dropped socket) count as that one failure for
-        // the backoff, but ask for a reset: the kernel still holds their long polls, and only a reset ends them.
+        // A failed credit asks for a reset: the kernel still holds the long poll of a credit lost with a
+        // dropped socket, and only a reset ends it (a plain re-credit waits behind it, then for the resend).
+        // Credits sent before a failure that fail too (the same socket) count as that one failure for the backoff.
         if (reset) resetOutstanding = false
-        if (generation === failGeneration) { failures++; failGeneration++ } else wantReset = true
-        if (reset || failures > 1) wantReset = true; failingSince ||= performance.now()
+        if (generation === failGeneration) { failures++; failGeneration++ }
+        wantReset = true; failingSince ||= performance.now()
         if (!closed && (fatal(error) || terminal(error) || performance.now() - failingSince > failingMs)) { closed = true; inflater?.close(); renderer.close(); handlers.failure(error); void closeRemote() }
       })
       .finally(() => { inflight--; if (!closed) setTimeout(fill, failures ? Math.min(4000, 250 * 2 ** (failures - 1)) : 0) })
