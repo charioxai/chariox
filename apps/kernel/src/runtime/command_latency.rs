@@ -411,6 +411,32 @@ fn sampled(key: &str) -> bool {
     hasher.finish().is_multiple_of(sample_rate)
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: locate owner-control latency
+// without recording the objective, input, receipts or provider payloads.
+pub(crate) fn log_goal_control_phases(
+    task: &str,
+    action: &str,
+    lookup: std::time::Duration,
+    mutation: std::time::Duration,
+    effects: std::time::Duration,
+    projection: std::time::Duration,
+) {
+    if !sampled(task) {
+        return;
+    }
+    crate::logging::info_with_fields(
+        "daemon.goal_latency",
+        "goal control phases completed",
+        json!({
+            "action": action,
+            "lookup_ms": duration_ms(lookup),
+            "mutation_ms": duration_ms(mutation),
+            "effects_ms": duration_ms(effects),
+            "projection_ms": duration_ms(projection),
+        }),
+    );
+}
+
 fn elapsed_ms(start_ms: u64, end_ms: u64) -> u64 {
     end_ms.saturating_sub(start_ms)
 }

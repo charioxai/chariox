@@ -247,6 +247,7 @@ impl KernelRuntimeState {
         if !matches!(action, "pause" | "resume" | "cancel" | "interval" | "edit") {
             return Ok(None);
         }
+        let started = std::time::Instant::now();
         let id = words
             .next()
             .ok_or_else(|| ledger::error("usage: /goal <control> <goal-id> <revision> [value]"))?;
@@ -304,6 +305,7 @@ impl KernelRuntimeState {
                 "wait for the stopped goal turn to settle before resuming",
             ));
         }
+        let looked_up = std::time::Instant::now();
         let Outcome::Task(next) =
             self.owned
                 .durable_state_store
@@ -318,6 +320,7 @@ impl KernelRuntimeState {
         else {
             unreachable!()
         };
+        let committed = std::time::Instant::now();
         if action == "resume" {
             let agent = self.owned.agent_store.get_agent(&next.agent_id)?;
             let attachment = self.ensure_agent_message_attachment(&next.room_id, &agent)?;
@@ -336,6 +339,7 @@ impl KernelRuntimeState {
         } else if action == "pause" || action == "edit" {
             self.stop_goal_turn(&task).await?;
         }
+        let effects_completed = std::time::Instant::now();
         let snapshot = self.owned.session_snapshot(session.id())?;
         self.owned
             .terminal_stream
@@ -346,6 +350,14 @@ impl KernelRuntimeState {
             .find(|t| t.task_id == next.task_id)
             .cloned()
             .ok_or_else(|| ledger::error("controlled task projection unavailable"))?;
+        crate::runtime::command_latency::log_goal_control_phases(
+            &task.task_id,
+            action,
+            looked_up.duration_since(started),
+            committed.duration_since(looked_up),
+            effects_completed.duration_since(committed),
+            effects_completed.elapsed(),
+        );
         Ok(Some(LocalDaemonResponse::AgentTaskUpdated {
             session_id: session.id().to_owned(),
             task: Box::new(task),
