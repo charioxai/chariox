@@ -6,7 +6,7 @@ patchedDependencies:
   '@opentui/core@0.1.87': patches/@opentui__core@0.1.87.patch
 
 # MP-08/MP-10/MP-11: 0.1.88 fixes native URL reference retention and resize.
-# Its native exports are unchanged; keep the patched 0.1.87 JS wrapper.
+# Keep the patched JS wrapper, including its u32 default-attribute ABI fix.
 overrides:
   '@opentui/core-darwin-x64': 0.1.88
   '@opentui/core-darwin-arm64': 0.1.88
