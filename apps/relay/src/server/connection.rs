@@ -8,7 +8,8 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, RwLock};
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
+use crate::socket::accept_relay_socket;
 
 use crate::auth::{RelayAction, RelayAuthVerifier, VerifiedRelayIdentity};
 use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayError, RelayMetadataQuery};
@@ -106,7 +107,7 @@ pub(crate) async fn handle_connection(
     relay_request_counter: Arc<AtomicU64>,
 ) -> Result<(), std::io::Error> {
     let socket =
-        match tokio::time::timeout(RELAY_WEBSOCKET_HANDSHAKE_TIMEOUT, accept_async(stream)).await {
+        match tokio::time::timeout(RELAY_WEBSOCKET_HANDSHAKE_TIMEOUT, accept_relay_socket(stream)).await {
             Ok(Ok(socket)) => socket,
             Ok(Err(error)) => return Err(std::io::Error::other(error.to_string())),
             Err(_) => return Ok(()),
