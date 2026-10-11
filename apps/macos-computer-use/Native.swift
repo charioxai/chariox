@@ -4,6 +4,73 @@ import Carbon
 import ScreenCaptureKit
 import Security
 
+// AX/WindowServer reads are injected here; admission and release share the
+// same destination checks. Cleanup bypasses Action authority, never destination.
+struct NativeDestinationFence<Element> {
+    let validateTarget: (Request) throws -> Void
+    let pointerPoint: () throws -> CGPoint
+    let selectedWindow: (Request) throws -> Element
+    let focusedElement: (Element) throws -> Element
+    let bind: (Element, Element) throws -> Void
+    let geometry: (Element) throws -> ClickGeometry
+    let windowBounds: (Request) throws -> CGRect
+    let bounds: (Element) throws -> CGRect
+    let role: (Element) throws -> String?
+    let hitAt: (CGPoint) throws -> Element
+    let parent: (Element) throws -> Element?
+    let equal: (Element, Element) -> Bool
+    let occlusion: (Request, CGPoint, CGRect) throws -> Void
+    let authority: () throws -> Void
+    func check(_ request: Request, element: Element, typing: Bool,
+               clickGeometry: ClickGeometry? = nil, eventLocation: CGPoint? = nil,
+               physicalKey: Bool = false, checkAuthority: Bool = true) throws {
+        try validateTarget(request)
+        if request.clickAtPointer {
+            try checkPointerSnapshot(request, currentPoint: try pointerPoint())
+        }
+        let window = try selectedWindow(request)
+        let focused = try focusedElement(window)
+        try bind(element, window)
+        let geometry = try self.geometry(element)
+        guard try bounds(window) == geometry.windowBounds else { throw tagged(.target, "window-bounds-changed") }
+        _ = try geometry.checkedLocation(geometry.location, current: geometry)
+        if request.ownerWindow {
+            guard equal(focused, element) else { throw tagged(.target, "owner-focus-changed") }
+        }
+        if typing {
+            if let clickGeometry {
+                _ = try clickGeometry.checkedLocation(clickGeometry.location, current: geometry)
+            }
+            guard equal(focused, element), request.ownerWindow || request.target == "ordinary" || (physicalKey && request.target == "text"),
+                  let role = try role(element),
+                  [kAXTextFieldRole, kAXTextAreaRole].contains(role) else { throw tagged(.target, "typing-target-focus-or-role") }
+        } else {
+            let location: CGPoint
+            if let clickGeometry {
+                guard let eventLocation, try windowBounds(request) == geometry.windowBounds else { throw tagged(.target, "saved-window-changed") }
+                location = try clickGeometry.checkedLocation(eventLocation, current: geometry)
+            } else { location = geometry.location }
+            let hit = try hitAt(location)
+            var candidate = hit, matched = false
+            for _ in 0..<8 {
+                if equal(candidate, element) { matched = true; break }
+                guard request.target == "scroll", let parent = try parent(candidate) else { break }
+                candidate = parent
+            }
+            guard matched else { throw tagged(.target, "hit-target-mismatch") }
+            if let clickGeometry {
+                // AX hit-testing can itself race a move or resize. Recheck its snapshot.
+                _ = try clickGeometry.checkedLocation(location, current:
+                    self.geometry(element))
+                guard try bounds(window) == clickGeometry.windowBounds else { throw tagged(.target, "window-changed-after-hit") }
+            }
+        }
+        // AX hit-testing is app-scoped. A foreign nonactivating panel can leave
+        // both focus and AX hits unchanged; prove visibility using current CG order.
+        try occlusion(request, geometry.location, geometry.windowBounds)
+        if checkAuthority { try authority() }
+    }
+}
 struct MacSource: NativeSource {
     var authority: () throws -> Void = {}
     var tagInput: (CGEvent) -> Void = { _ in }
@@ -125,54 +192,30 @@ struct MacSource: NativeSource {
         }
         throw tagged(.target, "focused-element-outside-window")
     }
+    func destinationFence(for request: Request) -> NativeDestinationFence<AXUIElement> {
+        let app = AXUIElementCreateApplication(request.pid)
+        return NativeDestinationFence(validateTarget: validateTarget, pointerPoint: currentPointerPoint,
+            selectedWindow: { try selectedWindow($0, app: app) },
+            focusedElement: { try focusedElement(app: app, window: $0) },
+            bind: { try bind($0, to: $1, pid: request.pid) },
+            geometry: { try geometry(request, element: $0) }, windowBounds: windowBounds, bounds: bounds,
+            role: { try attribute($0, kAXRoleAttribute) as? String },
+            hitAt: { point in
+                var hit: AXUIElement?
+                guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success,
+                      let hit else { throw tagged(.target, "no-hit-at-point") }
+                return hit
+            }, parent: { node in
+                guard let parent = try? attribute(node, kAXParentAttribute),
+                      CFGetTypeID(parent) == AXUIElementGetTypeID() else { return nil }
+                return (parent as! AXUIElement)
+            }, equal: { CFEqual($0, $1) },
+            occlusion: { try checkWindowOcclusion($0, point: $1, windowBounds: $2) }, authority: authority)
+    }
     func fence(_ request: Request, element: AXUIElement, typing: Bool,
                clickGeometry: ClickGeometry? = nil, eventLocation: CGPoint? = nil, physicalKey: Bool = false) throws {
-        try validateTarget(request)
-        if request.clickAtPointer {
-            try checkPointerSnapshot(request, currentPoint: currentPointerPoint())
-        }
-        let app = AXUIElementCreateApplication(request.pid)
-        let window = try selectedWindow(request, app: app)
-        let focused = try focusedElement(app: app, window: window)
-        try bind(element, to: window, pid: request.pid)
-        let geometry = try geometry(request, element: element)
-        guard try bounds(window) == geometry.windowBounds else { throw tagged(.target, "window-bounds-changed") }
-        _ = try geometry.checkedLocation(geometry.location, current: geometry)
-        if request.ownerWindow {
-            guard CFEqual(focused, element) else { throw tagged(.target, "owner-focus-changed") }
-        }
-        if typing {
-            guard CFEqual(focused, element), request.ownerWindow || request.target == "ordinary" || (physicalKey && request.target == "text"),
-                  let role = try attribute(element, kAXRoleAttribute) as? String,
-                  [kAXTextFieldRole, kAXTextAreaRole].contains(role) else { throw tagged(.target, "typing-target-focus-or-role") }
-        } else {
-            let location: CGPoint
-            if let clickGeometry {
-                guard let eventLocation, try windowBounds(request) == geometry.windowBounds else { throw tagged(.target, "saved-window-changed") }
-                location = try clickGeometry.checkedLocation(eventLocation, current: geometry)
-            } else { location = geometry.location }
-            var hit: AXUIElement?
-            guard AXUIElementCopyElementAtPosition(app, Float(location.x), Float(location.y), &hit) == .success,
-                  let hit else { throw tagged(.target, "no-hit-at-point") }
-            var candidate = hit, matched = false
-            for _ in 0..<8 {
-                if CFEqual(candidate, element) { matched = true; break }
-                guard request.target == "scroll", let parent = try? attribute(candidate, kAXParentAttribute),
-                      CFGetTypeID(parent) == AXUIElementGetTypeID() else { break }
-                candidate = parent as! AXUIElement
-            }
-            guard matched else { throw tagged(.target, "hit-target-mismatch") }
-            if let clickGeometry {
-                // AX hit-testing can itself race a move or resize. Recheck its snapshot.
-                _ = try clickGeometry.checkedLocation(location, current:
-                    self.geometry(request, element: element))
-                guard try bounds(window) == clickGeometry.windowBounds else { throw tagged(.target, "window-changed-after-hit") }
-            }
-        }
-        // AX hit-testing is app-scoped. A foreign nonactivating panel can leave
-        // both focus and AX hits unchanged; prove visibility using current CG order.
-        try checkWindowOcclusion(request, point: geometry.location, windowBounds: geometry.windowBounds)
-        try authority()
+        try destinationFence(for: request).check(request, element: element, typing: typing,
+            clickGeometry: clickGeometry, eventLocation: eventLocation, physicalKey: physicalKey)
     }
     func bind(_ element: AXUIElement, to ancestor: AXUIElement, pid: pid_t) throws {
         var actual: pid_t = 0, candidate = element

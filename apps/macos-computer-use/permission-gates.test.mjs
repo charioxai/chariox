@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const native = readFileSync(new URL('./Native.swift', import.meta.url), 'utf8');
+const destination = native.slice(native.indexOf('struct NativeDestinationFence'), native.indexOf('struct MacSource'));
+const reads = native.slice(native.indexOf('func destinationFence('), native.indexOf('func fence('));
 const policy = readFileSync(new URL('./Policy.swift', import.meta.url), 'utf8');
 const pointer = readFileSync(new URL('./PointerInput.swift', import.meta.url), 'utf8');
 const textClick = readFileSync(new URL('./TextClick.swift', import.meta.url), 'utf8');
@@ -50,13 +52,16 @@ test('AX mutation and observation keep permission, ownership and hit-test fences
   assert.match(ax, /AXUIElementSetAttributeValue[\s\S]*AXUIElementPerformAction/);
   assert.match(ax, /Task.sleep[\s\S]*checkPermission\(operation\)[\s\S]*fence\(request, element: element, typing: false\)[\s\S]*scrollValue/);
   assert.match(ax, /bind\(scroller, to: element, pid: request.pid\)/);
-  assert.match(native, /bind\(element, to: window, pid: request.pid\)[\s\S]*geometry\(request, element: element\)[\s\S]*geometry.checkedLocation\(geometry.location, current: geometry\)/);
-  assert.match(native, /AXUIElementCopyElementAtPosition[\s\S]*guard matched/);
+  assert.match(destination, /bind\(element, window\)[\s\S]*self.geometry\(element\)[\s\S]*geometry.checkedLocation\(geometry.location, current: geometry\)/);
+  assert.match(reads, /bind: \{ try bind\(\$0, to: \$1, pid: request.pid\)/);
+  assert.match(reads, /geometry: \{ try geometry\(request, element: \$0\)/);
+  assert.match(destination, /hitAt\(location\)[\s\S]*guard matched/);
+  assert.match(reads, /AXUIElementCopyElementAtPosition\(app, Float\(point.x\), Float\(point.y\)/);
   assert.doesNotMatch(ax, /postToPid|post\(tap:|kAXFocusedAttribute|kAXRaiseAction/);
 });
 
 test('AX text clicks retain saved geometry and hit-test the resolved point', () => {
-  assert.match(native, /location = try clickGeometry.checkedLocation\(eventLocation, current: geometry\)[\s\S]*AXUIElementCopyElementAtPosition\(app, Float\(location.x\), Float\(location.y\)/);
+  assert.match(destination, /location = try clickGeometry.checkedLocation\(eventLocation, current: geometry\)[\s\S]*hitAt\(location\)/);
   assert.match(native, /guard matched else[\s\S]*clickGeometry.checkedLocation\(location, current:/);
   assert.match(pointer, /guard current == self, eventLocation == location/);
 });
@@ -72,7 +77,7 @@ test('owned text releases retain permission and target fences', () => {
 test('unresolved text clicks refuse; only typing reaches per-PID event posting', () => {
   assert.match(pointer, /guard let range = try rangeAtPoint\(point\) else \{ throw tagged\(\.target, "[^"]+"\) \}/);
   assert.match(native, /if operation == .click \{\s*return try await performTextClick[\s\S]*guard case .text\(let text\) = operation/);
-  assert.match(native, /post: \{ \$0.postToPid\(request.pid\) \}/);
+  assert.match(native, /post: \{ tagInput\(\$0\); \$0.postToPid\(request.pid\) \}/);
   assert.doesNotMatch(native + pointer + textClick, /post\(tap:|cghidEventTap|hidClickEvents|mouseEventWindowUnderMousePointer/);
   assert.doesNotMatch(native, /CGWarpMouseCursorPosition|activate\(ignoringOtherApps/);
 });
@@ -107,13 +112,17 @@ test('pointer clicks use one AppKit snapshot and reject a changed live pointer b
   assert.equal(clickSnapshot.match(/currentPointerPoint\(\)/g)?.length, 1);
   assert.match(helper, /if request.publicTextDrillDocument != nil \{[\s\S]*request.publicDrillLegacyPointer = CGEvent\(source: nil\)\?\.location[\s\S]*\}\s*if request.clickAtPointer/);
   const fence = native.slice(native.indexOf('func fence('), native.indexOf('func bind('));
-  assert.match(fence, /checkPointerSnapshot\(request, currentPoint: currentPointerPoint\(\)\)[\s\S]*selectedWindow/);
+  assert.match(fence, /destinationFence\(for: request\).check\(request/);
+  assert.match(reads, /pointerPoint: currentPointerPoint/);
+  assert.match(destination, /checkPointerSnapshot\(request, currentPoint: try pointerPoint\(\)\)[\s\S]*selectedWindow/);
 });
 
 // The r5 nonactivating cover left AX hit-testing and frontmost PID unchanged.
 test('every native mutation fence checks fresh WindowServer ownership after AX hit-testing', () => {
   const fence = native.slice(native.indexOf('func fence('), native.indexOf('func bind('));
-  assert.match(fence, /checkWindowOcclusion\(request, point: geometry.location, windowBounds: geometry.windowBounds\)/);
+  assert.match(fence, /destinationFence\(for: request\).check\(request/);
+  assert.match(reads, /occlusion: \{ try checkWindowOcclusion\(\$0, point: \$1, windowBounds: \$2\)/);
+  assert.match(destination, /hitAt\(location\)[\s\S]*occlusion\(request, geometry.location, geometry.windowBounds\)/);
   const source = readFileSync(new URL('./WindowFence.swift', import.meta.url), 'utf8');
   assert.match(source, /CGWindowListCopyWindowInfo\(\[.optionOnScreenOnly\]/);
   assert.match(source, /foreign-window-cover/);
