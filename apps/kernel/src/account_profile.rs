@@ -1610,6 +1610,38 @@ impl ProviderAccountProfileRegistry {
             .is_some_and(claude_credentials_are_portable))
     }
 
+    /// MP-08/MP-10/MP-11: a token observation does not establish a native macOS login.
+    pub(crate) fn has_claude_keychain_credentials(
+        &self,
+        owner_user_id: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let locator = {
+            let document = self.read_document()?;
+            resolve_stored_profile(&document, owner_user_id, "claude", profile_id)?
+                .locator
+                .clone()
+        };
+        let ProviderAccountLocator::Claude {
+            claude_config_dir,
+            ambient_default,
+            ..
+        } = locator else {
+            return Ok(false);
+        };
+        let mut files = Vec::new();
+        collect_claude_keychain_credentials_for_scope(
+            &claude_config_dir,
+            ambient_default.unwrap_or(false),
+            &mut files,
+        )?;
+        let available = materialization_has_file(&files, ".credentials.json");
+        for file in &mut files {
+            zeroize::Zeroize::zeroize(&mut file.contents_base64);
+        }
+        Ok(available)
+    }
+
     pub fn create_managed(
         &self,
         owner_user_id: &str,
