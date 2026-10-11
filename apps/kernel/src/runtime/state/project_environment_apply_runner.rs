@@ -167,9 +167,11 @@ fn run_apply(
                         &op.operation_id,
                         &mut checks.public_bindings,
                     );
-                    if (uncertain || previous_receipt.is_some())
-                        && !probes.is_empty()
-                        && checked.status == EnvironmentObservationStatus::Ready
+                    if setup_reconciliation_allowed(
+                        previous_receipt.is_some(), uncertain,
+                        crate::runtime::state::project_environment_setup::setup_commands_completed(state, env, r, op),
+                        !probes.is_empty() && checked.status == EnvironmentObservationStatus::Ready,
+                    )
                     {
                         observation = checked;
                         result = apply_item_result(

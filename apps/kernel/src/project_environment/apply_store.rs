@@ -84,6 +84,15 @@ pub(crate) fn apply_active(op: &EnvironmentOperation) -> bool {
             | EnvironmentOperationPhase::Validating
     )
 }
+// MP-11: target inventory alone cannot prove an interrupted command completed.
+pub(crate) fn setup_reconciliation_allowed(
+    has_receipt: bool,
+    uncertain: bool,
+    commands_confirmed: bool,
+    checks_ready: bool,
+) -> bool {
+    (has_receipt || (uncertain && commands_confirmed)) && checks_ready
+}
 impl ProjectEnvironmentStore {
     pub(crate) fn load_applies(&self, project: &str) -> Result<EnvironmentApplies, DaemonError> {
         let mut options = std::fs::OpenOptions::new();

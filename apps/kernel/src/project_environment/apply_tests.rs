@@ -288,3 +288,12 @@ fn envp05a_reviewed_manual_binding_needs_no_invented_source_use() {
         "no-use metadata cannot bypass discovery reference admission"
     );
 }
+
+#[test]
+fn envp05a_inventory_ready_does_not_prove_interrupted_setup_completed() {
+    assert!(!setup_reconciliation_allowed(false, true, false, true));
+    assert!(!setup_reconciliation_allowed(false, true, true, false));
+    assert!(setup_reconciliation_allowed(false, true, true, true));
+    assert!(setup_reconciliation_allowed(true, false, false, true));
+    assert!(!setup_reconciliation_allowed(false, false, true, true));
+}

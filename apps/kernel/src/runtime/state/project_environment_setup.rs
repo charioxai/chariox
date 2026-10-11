@@ -110,7 +110,7 @@ use project_environment_setup_validation::*;
 
 #[path = "project_environment_apply_setup.rs"]
 mod apply_setup;
-pub(super) use apply_setup::{apply_setup_requirement, apply_setup_cleanup_settled, setup_retry_is_settled};
+pub(super) use apply_setup::{apply_setup_requirement, apply_setup_cleanup_settled, setup_retry_is_settled, setup_commands_completed};
 
 pub(super) fn current_worker_platform() -> String {
     actual_worker_platform()

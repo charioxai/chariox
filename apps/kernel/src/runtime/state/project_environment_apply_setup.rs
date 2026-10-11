@@ -49,6 +49,23 @@ pub(in crate::runtime::state) fn setup_retry_is_settled(
     })
 }
 
+pub(in crate::runtime::state) fn setup_commands_completed(
+    state: &KernelRuntimeState,
+    env: &ProjectEnvironment,
+    requirement: &Requirement,
+    operation: &EnvironmentOperation,
+) -> bool {
+    let RequirementSpec::SetupChecks { commands, .. } = &requirement.spec else {
+        return false;
+    };
+    let Some(owner) = &env.reviewed_by else { return false; };
+    !commands.is_empty() && commands.iter().enumerate().all(|(index, _)| {
+        state.owned.project_environment_setups
+            .get(&command_identity(operation, requirement, index), owner)
+            .is_ok_and(|status| status.phase == ProjectEnvironmentSetupPhase::Ready)
+    })
+}
+
 // Cancellation cannot claim settlement while the existing runner reports
 // an owned descendant or durable process lease with incomplete cleanup.
 pub(in crate::runtime::state) fn apply_setup_cleanup_settled(
