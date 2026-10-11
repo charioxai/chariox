@@ -20,9 +20,10 @@ pub(super) fn check_tool(
     vault_refs: &[EnvironmentVaultReference],
     roots: &[PathBuf],
     operation: &str,
+    deadline: std::time::Instant,
 ) -> (EnvironmentObservationStatus, String, String) {
     for runtime in runtimes {
-        match inventory::version(runtime, roots) {
+        match inventory::version_until(runtime, roots, deadline) {
             Ok(Some(_)) => {}
             Ok(None) => {
                 return result(
@@ -135,8 +136,23 @@ pub(super) fn check_tool(
                     "MCP named credentials require authorization",
                 );
             };
-            backing.startup_timeout_sec = Some(3);
-            backing.tool_timeout_sec = Some(3);
+            // Reserve one bounded interval for each handshake dispatch. The
+            // existing adapter expresses seconds, so never round up a fraction
+            // past the operation's remaining budget or create another authority.
+            let seconds = deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs()
+                / 3;
+            if seconds == 0 {
+                return result(
+                    NeedsYourInput,
+                    "check_budget_exceeded",
+                    "Check has insufficient remaining MCP handshake budget; check fewer items",
+                );
+            }
+            let seconds = seconds.min(3);
+            backing.startup_timeout_sec = Some(seconds);
+            backing.tool_timeout_sec = Some(seconds);
             // Distinct check ownership reuses the provider-native MCP adapter and settles its own leases.
             let owner = format!(
                 "environment-check-{operation}-{:032x}",

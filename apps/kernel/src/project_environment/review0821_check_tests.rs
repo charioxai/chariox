@@ -50,3 +50,5 @@ mod excluded;
 mod wildcard;
 #[path = "review0821_dns_tests.rs"]
 mod dns;
+#[path = "review0821_budget_tests.rs"]
+mod budget;

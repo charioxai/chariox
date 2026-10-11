@@ -5,8 +5,25 @@ impl ProjectEnvironmentStore {
         &self,
         ctx: EnvironmentCheckContext,
         env: ProjectEnvironment,
+        operation: EnvironmentOperation,
+        validate: impl Fn() -> Result<crate::session::RuntimeProject, crate::error::DaemonError>,
+    ) -> Result<(), crate::error::DaemonError> {
+        self.run_check_until(
+            ctx,
+            env,
+            operation,
+            validate,
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        )
+    }
+    // MP-08 / MP-10 / MP-11: one absolute budget for the whole operation.
+    pub(super) fn run_check_until(
+        &self,
+        ctx: EnvironmentCheckContext,
+        env: ProjectEnvironment,
         mut operation: EnvironmentOperation,
         validate: impl Fn() -> Result<crate::session::RuntimeProject, crate::error::DaemonError>,
+        deadline: std::time::Instant,
     ) -> Result<(), crate::error::DaemonError> {
         let target = operation.target.clone();
         let lock = self.lock(&env.local_project_id)?;
@@ -29,7 +46,6 @@ impl ProjectEnvironmentStore {
         }
         self.save_checks(project.id(), &checks)?;
         drop(lock);
-        let began = std::time::Instant::now();
         for r in env
             .project_requirements
             .iter()
@@ -42,7 +58,7 @@ impl ProjectEnvironmentStore {
                 }
             })
         {
-            let observation = if began.elapsed() > std::time::Duration::from_secs(60) {
+            let observation = if std::time::Instant::now() >= deadline {
                 MachineObservation {
                     environment_id: env.lineage.environment_id.clone(),
                     requirement_id: r.requirement_id.clone(),
@@ -66,6 +82,7 @@ impl ProjectEnvironmentStore {
                     &target,
                     &operation.operation_id,
                     &mut checks.public_bindings,
+                    deadline,
                 )
             };
             let _lock = self.lock(&env.local_project_id)?;

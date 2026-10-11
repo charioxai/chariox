@@ -9,13 +9,29 @@ pub(super) fn health(
     expectation: &Option<EnvironmentHealthExpectation>,
     roots: &[PathBuf],
 ) -> Result<bool, &'static str> {
+    health_until(
+        probe,
+        expectation,
+        roots,
+        Instant::now() + Duration::from_secs(5),
+    )
+}
+pub(super) fn health_until(
+    probe: &EnvironmentProbe,
+    expectation: &Option<EnvironmentHealthExpectation>,
+    roots: &[PathBuf],
+    deadline: Instant,
+) -> Result<bool, &'static str> {
     match probe {
         EnvironmentProbe::Tcp {
             host,
             port,
             timeout_ms,
         } => {
-            let timeout = Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64);
+            let timeout = super::check_inventory::remaining(
+                deadline,
+                Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64),
+            )?;
             let began = Instant::now();
             let addresses = resolve_host(host, timeout, roots)?;
             for ip in addresses {
@@ -52,7 +68,10 @@ pub(super) fn health(
                 Some(EnvironmentHealthExpectation::HttpStatus { status }) => *status,
                 _ => *expected_status,
             };
-            let timeout = Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64);
+            let timeout = super::check_inventory::remaining(
+                deadline,
+                Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64),
+            )?;
             let began = Instant::now();
             let addresses = match parsed.host().ok_or("invalid_probe_host")? {
                 url::Host::Domain(host) => resolve_host(host, timeout, roots)?,
@@ -108,7 +127,10 @@ pub(super) fn health(
                 .env("PATH", "/usr/local/bin:/usr/bin:/bin");
             let exit = crate::local::provider_requests::capture_inventory_probe(
                 c,
-                Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64),
+                super::check_inventory::remaining(
+                    deadline,
+                    Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64),
+                )?,
             )
             .map_err(|_| "probe_failed")?
             .status
