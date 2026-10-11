@@ -339,3 +339,5 @@ mod review0212_metadata;
 
 #[path = "review0821_platform_tests.rs"]
 mod review0821_platform;
+#[path = "review0821_metadata_tests.rs"]
+mod review0821_metadata;
