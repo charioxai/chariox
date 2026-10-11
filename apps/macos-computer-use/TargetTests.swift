@@ -36,18 +36,26 @@ import AppKit
         let consumed = try registry.consume(finalRead[1].ref, context: context, validate: { _, _ in true })
         var dispatched = 0
         do {
-            try consumed.perform(validate: { _, _ in clock = finalReadTime + 2.01 },
+            try consumed.perform(authority: {}, validate: { _, _ in clock = finalReadTime + 2.01 },
                 mutation: { _ in dispatched += 1 })
         } catch { }
         precondition(dispatched == 0, "target expired during final AX validation still mutated")
+        let authorityRead = try registry.observe(root: "root", context: context, reader: reader, scrub: { $0 })
+        let authorityTarget = try registry.consume(authorityRead[1].ref, context: context, validate: { _, _ in true })
+        let authorityReadTime = clock
+        expectRefusal {
+            try authorityTarget.perform(authority: { clock = authorityReadTime + 2.01 },
+                validate: { _, _ in }, mutation: { _ in dispatched += 1 })
+        }
+        precondition(dispatched == 0, "reference expired during final authority check still mutated")
         let validRead = try registry.observe(root: "root", context: context, reader: reader, scrub: { $0 })
         let valid = try registry.consume(validRead[1].ref, context: context, validate: { _, _ in true })
         expectRefusal { _ = try registry.resolve(validRead[1].ref, context: context, validate: { _, _ in true }) }
         // resolve's failed replay invalidates the pending mutation too.
-        expectRefusal { try valid.perform(validate: { _, _ in }, mutation: { _ in dispatched += 1 }) }
+        expectRefusal { try valid.perform(authority: {}, validate: { _, _ in }, mutation: { _ in dispatched += 1 }) }
         let currentRead = try registry.observe(root: "root", context: context, reader: reader, scrub: { $0 })
         let current = try registry.consume(currentRead[1].ref, context: context, validate: { _, _ in true })
-        try current.perform(validate: { _, _ in }, mutation: { _ in dispatched += 1 })
+        try current.perform(authority: {}, validate: { _, _ in }, mutation: { _ in dispatched += 1 })
         precondition(dispatched == 1, "fresh consumed target did not dispatch")
         let crossing = try registry.observe(root: "root", context: context, reader: reader, scrub: { $0 })
         let admittedAt = clock

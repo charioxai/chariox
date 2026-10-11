@@ -57,6 +57,7 @@ import AppKit
         let result = try registry.observe(root: root, context: bound, reader: reader, scrub: scrub)
         try source.fence(scope, element: target, typing: false)
         guard try bind(scope, stamp: stamp, observer: observer) == bound, try nativeSurface(scope) == stamp.surface else { throw Refusal.target }
+        try source.authority()
         completed = true
         return result
     }
@@ -69,7 +70,7 @@ import AppKit
         }
         // Consume before dispatch so a failed post-effect receipt cannot replay.
         let node = consumed.node
-        try consumed.perform(validate: { node, expected in
+        try consumed.perform(authority: source.authority, validate: { node, expected in
             try source.checkPermission(.click)
             try source.fence(scope, element: node, typing: false)
             guard try validate(node, expected: expected, scope: scope, stamp: stamp, source: source) else { throw Refusal.target }
