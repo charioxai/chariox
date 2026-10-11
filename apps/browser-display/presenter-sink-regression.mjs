@@ -25,13 +25,13 @@ await mkdir(output,{recursive:true});await new Promise(resolve=>server.listen(0,
 let browser;const rows=[];
 try{
  browser=await chromium.launch({executablePath:'/opt/google/chrome/chrome',headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
- for(const dpr of [1,2])for(const native of [false,true])for(const push of [false,true]){
+ for(const dpr of [1,2])for(const native of [false,true])for(const push of [false,true])for(const hiddenKey of [false,true]){
   const context=await browser.newContext({viewport:{width:1280,height:800},deviceScaleFactor:dpr});const page=await context.newPage();
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
-  const name=`dpr${dpr}-${native?'track':'canvas'}-${push?'push':'credit'}`;
+  const name=`dpr${dpr}-${native?'track':'canvas'}-${push?'push':'credit'}-hidden-${hiddenKey?'key':'delta'}`;
   try{
    await page.goto(`http://127.0.0.1:${server.address().port}`);
-   const result=await page.evaluate(async({dpr,native,push,mode})=>{
+   const result=await page.evaluate(async({dpr,native,push,mode,hiddenKey})=>{
     const {attachBrowserDisplay}=await import('/presenter.mjs');
     if(!native)globalThis.MediaStreamTrackGenerator=undefined;
     const canvas=document.querySelector('#display'),originalBackground=canvas.style.background;
@@ -39,10 +39,10 @@ try{
     const source=new OffscreenCanvas(1280,800),draw=source.getContext('2d');
     const encoder=new VideoEncoder({output:chunk=>{const data=new Uint8Array(chunk.byteLength);chunk.copyTo(data);encoded.push({data,key:chunk.type==='key'});},error:e=>{throw e;}});
     encoder.configure({codec:'vp8',width:1280,height:800,bitrate:2000000,framerate:60,latencyMode:'realtime'});
-    for(let n=0;n<6;n++){
-     draw.fillStyle=n<4?'rgb(0,255,0)':'rgb(0,0,255)';draw.fillRect(0,0,1280,800);
+    for(let n=0;n<7;n++){
+     draw.fillStyle=n===0||n===4?'rgb(0,255,0)':'rgb(0,0,255)';draw.fillRect(0,0,1280,800);
      draw.fillStyle='rgb(255,255,0)';draw.fillRect(0,100,1280,100);
-     const image=new VideoFrame(source,{timestamp:n*16667});encoder.encode(image,{keyFrame:n===0||n===3||n===5});image.close();
+     const image=new VideoFrame(source,{timestamp:n*16667});encoder.encode(image,{keyFrame:n===0||n===1&&hiddenKey||n===4||n===6});image.close();
     }
     await encoder.flush();encoder.close();
     let nextFrame;
@@ -62,56 +62,75 @@ try{
      else{nextFrame=frame;await stream.next();}
     };
     try{
-     // Force the actual worker output to be hidden after decode, before rAF.
-     const raf=window.requestAnimationFrame;let queued=0;
-     if(!native&&mode!=='repair')window.requestAnimationFrame=()=>++queued;
-     const first=deliver(video(0,1));first.catch(()=>{});
-     if(!native&&mode!=='repair'){await wait(()=>queued>0);Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));}
-     await first;
-     if(!native&&mode!=='repair'){
-      await deliver(video(1,2));
-      if(shown.length)throw Error('MP-10: hidden outputs reported as visible');
-      delete document.hidden;window.requestAnimationFrame=raf;document.dispatchEvent(new Event('visibilitychange'));
-     }else await deliver(video(1,2));
-     await deliver(video(2,3));await new Promise(r=>setTimeout(r,80));
-     if(stream.error||ops.some(o=>o.op==='display_ack'&&o.lost))throw Error('MP-10: hidden output caused transport recovery');
-     // Leave the presenter alive for external screenshot pixel assertions.
-     globalThis.regression={stream,canvas,deliver,video,originalBackground};
-     return {sequence:stream.presenter.sequence,shown,track:Boolean(stream.presenter.videoSink.track),hiddenAdvanced:!native,ops:ops.map(({op,sequence,lost})=>({op,sequence,lost}))};
+     await deliver(video(0,1));await new Promise(r=>setTimeout(r,80));
+     const tile=async(sequence,base_sequence,x=0)=>{
+      const c=new OffscreenCanvas(16,16),ctx=c.getContext('2d');ctx.fillStyle='red';ctx.fillRect(0,0,16,16);
+      const data=new Uint8Array(await (await c.convertToBlob()).arrayBuffer());
+      await deliver({...common,kind:'tiles',sequence,base_sequence,tiles:[{x,y:0,width:16,height:16,format:'png',data}]});
+     };
+     // Existing repairs distinguish a hidden key (retires them) from a delta.
+     await tile(2,1,64*dpr);
+     globalThis.regression={stream,canvas,deliver,video,tile,originalBackground,ops,shown,wait};
+     return {sequence:stream.presenter.sequence,shown,track:Boolean(stream.presenter.videoSink.track),hiddenKey};
     }catch(error){await stream.close();throw error;}
-   },{dpr,native,push,mode});
+   },{dpr,native,push,mode,hiddenKey});
    // Screenshots test the CSS/compositor pixels, rather than sink.snapshot().
    const sample=async(label,expected)=>{
     const png=await page.screenshot({path:path.join(output,`${name}-${label}.png`)});
     const pixels=await page.evaluate(async base64=>{
      const image=await createImageBitmap(await (await fetch('data:image/png;base64,'+base64)).blob());
      const c=new OffscreenCanvas(image.width,image.height),ctx=c.getContext('2d');ctx.drawImage(image,0,0);image.close();
-     return {patch:[...ctx.getImageData(4*devicePixelRatio,4*devicePixelRatio,1,1).data],band:[...ctx.getImageData(40*devicePixelRatio,50*devicePixelRatio,1,1).data],outside:[...ctx.getImageData(300*devicePixelRatio,300*devicePixelRatio,1,1).data]};
+     return {patch:[...ctx.getImageData(4*devicePixelRatio,4*devicePixelRatio,1,1).data],prior:[...ctx.getImageData(68*devicePixelRatio,4*devicePixelRatio,1,1).data],band:[...ctx.getImageData(40*devicePixelRatio,50*devicePixelRatio,1,1).data],outside:[...ctx.getImageData(300*devicePixelRatio,300*devicePixelRatio,1,1).data]};
     },png.toString('base64'));
-    rows.push({MP:'MP-08/MP-10/MP-11',name,label,pixels,...result,errors});
+    const state=await page.evaluate(()=>({sequence:regression.stream.presenter.sequence,shown:regression.shown,acks:regression.ops.filter(o=>o.op==='display_ack').map(({sequence,lost})=>({sequence,lost}))}));
+    rows.push({MP:'MP-08/MP-10/MP-11',name,label,pixels,...result,...state,errors});
     for(const [key,channels]of Object.entries(expected))if(channels.some((value,i)=>Math.abs(pixels[key][i]-value)>30))throw Error(`MP-10: ${label} ${key} pixels ${pixels[key]}`);
    };
-   await sample('key',{outside:[0,255,0],band:[0,255,0]});
+   await sample('visible-A',{prior:[255,0,0],outside:[0,255,0],band:[0,255,0]});
    if(mode!=='repair'){
+    await page.evaluate(async native=>{
+     const {deliver,video,wait,shown}=regression;
+     // Force hiding between a real worker decode and the fallback's rAF.
+     regression.raf=window.requestAnimationFrame;let queued=0;
+     if(!native)window.requestAnimationFrame=()=>++queued;
+     const hidden=deliver(video(1,3));hidden.catch(()=>{});
+     if(!native)await wait(()=>queued>0);
+     Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));
+     await hidden;await deliver(video(2,4));
+     if(!native&&shown.some(sequence=>sequence>=3))throw Error('MP-10: hidden outputs reported as visible');
+    },native);
+    await sample('hidden-B',{});
+    // A post-key repair is newer than the hidden key; old repairs must retire.
+    await page.evaluate(()=>regression.tile(5,4));
+    await page.evaluate(()=>{delete document.hidden;window.requestAnimationFrame=regression.raf;document.dispatchEvent(new Event('visibilitychange'));});
+    // The source is quiet: no further video may rescue a stale canvas base.
+    await sample('quiet-resume-B',mode==='hidden-repair'?{}:{patch:[255,0,0],prior:hiddenKey?[0,0,255]:[255,0,0],outside:[0,0,255],band:[0,0,255]});
+    await page.evaluate(()=>regression.deliver(regression.video(3,6)));
+    await sample('post-hidden-repair-delta',{patch:[255,0,0],prior:hiddenKey?[0,0,255]:[255,0,0],outside:[0,0,255]});
     await page.evaluate(()=>regression.stream.input({kind:'scroll',delta_x:0,delta_y:100}));
-    await sample('predicted-key',{outside:[0,255,0],band:[255,255,0]});
+    await sample('predicted-B',{outside:[0,0,255],band:[255,255,0]});
+    await page.evaluate(()=>regression.tile(7,6));
+    await sample('repair-B',{patch:[255,0,0],outside:[0,0,255],band:[0,0,255]});
+    await page.evaluate(()=>regression.deliver({...regression.stream.binding,document_id:'d',kind:'tiles',sequence:8,base_sequence:7,width:1280*devicePixelRatio,height:800*devicePixelRatio,css_width:1280,css_height:800,device_scale_factor:devicePixelRatio,moves:[[0,0,1280*devicePixelRatio,100*devicePixelRatio,-100*devicePixelRatio]],tiles:[]}));
+    await sample('scroll-move-B',{patch:[255,255,0],outside:[0,0,255],band:[255,255,0]});
+   }else{
+    await page.evaluate(async()=>{await regression.deliver(regression.video(1,3));await regression.deliver(regression.video(2,4));});
    }
-   await page.evaluate(()=>regression.deliver(regression.video(3,4)));
+   await page.evaluate(()=>regression.deliver(regression.video(4,9)));
    await sample('authoritative-key',{outside:[0,255,0],band:[0,255,0]});
-   await page.evaluate(async()=>{
-    const c=new OffscreenCanvas(16,16),ctx=c.getContext('2d');ctx.fillStyle='red';ctx.fillRect(0,0,16,16);
-    const data=new Uint8Array(await (await c.convertToBlob()).arrayBuffer());const {binding}=regression.stream;
-    await regression.deliver({...binding,document_id:'d',kind:'tiles',sequence:5,base_sequence:4,width:1280*devicePixelRatio,height:800*devicePixelRatio,css_width:1280,css_height:800,device_scale_factor:devicePixelRatio,tiles:[{x:0,y:0,width:16,height:16,format:'png',data}]});
-   });
+   await page.evaluate(()=>regression.tile(10,9));
    await sample('repair',{patch:[255,0,0],outside:[0,255,0]});
    if(mode!=='repair'){
     await page.evaluate(()=>regression.stream.input({kind:'scroll',delta_x:0,delta_y:100}));
     await sample('predicted-repair',{outside:[0,255,0],band:[255,255,0]});
    }
-   await page.evaluate(()=>regression.deliver(regression.video(4,6)));
+   await page.evaluate(()=>regression.deliver(regression.video(5,11)));
    await sample('delta',{patch:[255,0,0],outside:[0,0,255],band:[0,0,255]});
-   await page.evaluate(()=>regression.deliver(regression.video(5,7)));
+   await page.evaluate(()=>regression.deliver(regression.video(6,12)));
    await sample('final-key',{patch:[0,0,255],outside:[0,0,255]});
+   await page.evaluate(()=>{
+    if(regression.stream.error||regression.ops.some(o=>o.op==='display_ack'&&o.lost))throw Error('MP-10: hidden output caused transport recovery');
+   });
    await page.evaluate(async()=>{
     await regression.stream.close({preserveFrame:true});
     if(regression.canvas.style.background!==regression.originalBackground)throw Error('MP-10: original background not restored');
@@ -133,5 +152,5 @@ try{
  await browser?.close();await new Promise(resolve=>server.close(resolve));
  await writeFile(path.join(output,'results.json'),JSON.stringify({MP:'MP-08/MP-10/MP-11',acceptance:false,checkout,assets,...identity,rows},null,2)+'\n');
 }
-console.log(JSON.stringify({MP:'MP-08/MP-10/MP-11',cells:8,failures:rows.filter(r=>r.error)}));
+console.log(JSON.stringify({MP:'MP-08/MP-10/MP-11',cells:16,failures:rows.filter(r=>r.error)}));
 if(rows.some(r=>r.error||r.errors.length))process.exitCode=1;
