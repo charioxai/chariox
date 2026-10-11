@@ -529,3 +529,41 @@ test('MP-10: protocol 501 an external <use> sprite renders from a validated blob
     }
   } finally { await page.close(); }
 });
+
+// MP-10 strict Selkies scroll gap: precise wheel steps every 50 ms (a CDP pixel wheel) jumped once per step, so the
+// viewer presented one change per step (~20 fps) where a browser animating its wheel ticks presents every frame.
+// The viewer eases each step over the frames until the next one and ends exactly where the native steps would.
+test('MP-10: spaced precise wheel steps scroll the viewer every frame (document, inner scroller, reversal) and end at the exact native position; frame-rate steps stay immediate; snap scrollers stay native', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0;height:6000px;background:linear-gradient(red,blue)' } },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'div', attrs: { id: 'inner', style: 'position:fixed;left:0;top:0;width:400px;height:300px;overflow:auto' } }, { id: 'n5', parent: 'n4', kind: 'element', tag: 'div', attrs: { style: 'height:3000px' } },
+      { id: 'n6', parent: 'n3', kind: 'element', tag: 'div', attrs: { id: 'snap', style: 'position:fixed;left:600px;top:0;width:300px;height:300px;overflow:auto;scroll-snap-type:y mandatory' } },
+      ...[7, 8, 9].map(n => ({ id: `n${n}`, parent: 'n6', kind: 'element', tag: 'div', attrs: { style: 'height:300px;scroll-snap-align:start' } }))]));
+    await frames();
+    // Every animation frame, the scroll positions the viewer presents.
+    const run = async (x, y, steps, interval, read) => {
+      await page.mouse.move(x, y);
+      await page.evaluate(read => { window.seen = []; const doc = window.r.frame.contentDocument; const sample = () => { window.seen.push(read === 'window' ? doc.defaultView.scrollY : doc.getElementById(read).scrollTop); window.sampling = requestAnimationFrame(sample); }; sample(); }, read);
+      for (const [n, dy] of steps.entries()) { await page.mouse.wheel(0, dy); if (n < steps.length - 1) await page.waitForTimeout(interval); }
+      await page.waitForTimeout(400);
+      return page.evaluate(() => { cancelAnimationFrame(window.sampling); return window.seen; });
+    };
+    const distinct = seen => seen.filter((v, i) => i && v !== seen[i - 1]).length;
+    const down = Array(10).fill(16), reversal = [...Array(5).fill(16), ...Array(5).fill(-16)];
+    let seen = await run(900, 600, down, 50, 'window');
+    assert.equal(seen.at(-1), 160, 'MP-10: the document ends exactly at the sum of its steps');
+    assert(distinct(seen) >= 25, `MP-10: 10 spaced steps present at least 25 document frames, got ${distinct(seen)}`);
+    seen = await run(200, 150, reversal, 50, 'inner');
+    assert.equal(seen.at(-1), 0, 'MP-10: the inner scroller takes the wheel (chaining) and a reversal returns exactly');
+    assert(distinct(seen) >= 25, `MP-10: inner scroller frames, got ${distinct(seen)}`);
+    assert.equal(await page.evaluate(() => window.r.frame.contentWindow.scrollY), 160, 'MP-10: the document stays while the inner scroller moves');
+    // Steps at frame rate (a trackpad) are not delayed: each one is where native scrolling would put it at once.
+    await page.mouse.move(900, 600);
+    const immediate = await page.evaluate(async () => { const doc = window.r.frame.contentDocument, at = []; for (let n = 0; n < 8; n++) { doc.querySelector('body').dispatchEvent(new WheelEvent('wheel', { deltaY: 10, bubbles: true, cancelable: true, composed: true })); at.push(doc.defaultView.scrollY); await new Promise(r => setTimeout(r, 8)); } return at; });
+    assert.deepEqual(immediate.slice(1), [180, 190, 200, 210, 220, 230, 240], 'MP-10: frame-rate steps apply immediately');
+    // A snap container keeps the native wheel (the browser's own snapping); the event is not taken.
+    const taken = await page.evaluate(() => { const snap = window.r.frame.contentDocument.getElementById('snap'), e = new WheelEvent('wheel', { deltaY: 16, bubbles: true, cancelable: true, composed: true }); snap.dispatchEvent(e); return e.defaultPrevented; });
+    assert.equal(taken, false, 'MP-10: a snap scroller keeps the native wheel');
+  } finally { await page.close(); }
+});

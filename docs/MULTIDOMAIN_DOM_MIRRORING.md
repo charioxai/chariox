@@ -169,8 +169,10 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   multiple select's option with the state it last sent until the kernel echoes
   it. Keystroke forwarding remains for text controls.
 - **Scroll** is shared (owner decision): the kernel tab has one position. A
-  viewer scrolls its own copy natively for frame rate and sends coalesced
-  `scroll_to`; the kernel applies it and every other viewer follows the
+  viewer scrolls its own copy locally for frame rate (spaced pixel wheel
+  steps ease over the frames until the next step, like a browser's animated
+  wheel tick; frame-rate steps, zoom and snap scrollers stay native) and sends
+  coalesced `scroll_to`; the kernel applies it and every other viewer follows the
   kernel's position (last writer wins). A viewer ignores kernel echoes only
   while it is scrolling itself, and the kernel does not send a viewer its own
   scroll position back. Wheel over opaque regions drives the kernel.

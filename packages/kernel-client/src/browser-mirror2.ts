@@ -2,6 +2,7 @@
 // sanitized stylesheets and attributes are rebuilt in a script-free sandbox;
 // deltas apply in place. No origin I/O: resources arrive as kernel bytes.
 import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp, validMirror2Sprite } from './browser-mirror2-security.js'
+import { Mirror2Wheel } from './browser-mirror2-wheel.js'
 import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2State, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
@@ -59,6 +60,7 @@ export class BrowserMirror2Renderer {
   private localScrollAt = -Infinity
   private applied = new WeakMap<Node, [number, number]>() // kernel-applied positions (their scroll events are not viewer input)
   private deferred = new Map<Node, [number, number]>() // latest kernel position per scroller that arrived while the viewer scrolled
+  private wheel = new Mirror2Wheel(fn => requestAnimationFrame(fn), handle => cancelAnimationFrame(handle))
   constructor(private container: HTMLElement, private send: (action: Mirror2Action, epoch: { sequence: number; document_id: string }) => Promise<unknown>, _failure?: (error: unknown) => void) {
     const owner = container.ownerDocument
     this.empty = URL.createObjectURL(new Blob([]))
@@ -159,8 +161,8 @@ export class BrowserMirror2Renderer {
     on('auxclick', event => event.preventDefault())
     on('dragstart', event => event.preventDefault())
     on('submit', event => event.preventDefault())
-    // Native, local scrolling; opaque regions (canvas, video, foreign stills) take the wheel themselves.
-    on('wheel', event => { const hit = element(event), wheel = event as WheelEvent; if (!hit || this.records.get(hit.id)?.kind !== 'tile') { this.localScrollAt = performance.now(); return } event.preventDefault(); this.enqueue({ kind: 'scroll', node_id: hit.id, ...offset(hit.el, wheel), delta_x: Math.trunc(wheel.deltaX), delta_y: Math.trunc(wheel.deltaY) }) })
+    // Local scrolling, eased per frame (MP-10); opaque regions (canvas, video, foreign stills) take the wheel themselves.
+    on('wheel', event => { const hit = element(event), wheel = event as WheelEvent; if (!hit || this.records.get(hit.id)?.kind !== 'tile') { if (this.wheel.take(wheel, target(event))) event.preventDefault(); this.localScrollAt = performance.now(); return } event.preventDefault(); this.enqueue({ kind: 'scroll', node_id: hit.id, ...offset(hit.el, wheel), delta_x: Math.trunc(wheel.deltaX), delta_y: Math.trunc(wheel.deltaY) }) })
     on('scroll', this.scrolled)
     on('keydown', event => {
       const { key, shiftKey, ctrlKey, metaKey, altKey, isComposing, keyCode } = event as KeyboardEvent
@@ -462,7 +464,7 @@ export class BrowserMirror2Renderer {
       this.target(packet.fragment ?? null)
       // The viewer owns scroll while it scrolls; the kernel's positions (the latest per
       // scroller, kept while deferred) apply on reset or once the viewer settles.
-      if (packet.reset) this.deferred.clear()
+      if (packet.reset) { this.deferred.clear(); this.wheel.cancel() }
       for (const [element, x, y] of scrolls) this.deferred.set(element, [x, y])
       if (packet.reset || !this.scrolling()) {
         const pending = this.deferred; this.deferred = new Map()
@@ -583,7 +585,7 @@ export class BrowserMirror2Renderer {
     this.disposed = true; this.doc = null
     for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    URL.revokeObjectURL(this.empty); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frame.remove()
+    URL.revokeObjectURL(this.empty); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frame.remove()
   }
 }
 
