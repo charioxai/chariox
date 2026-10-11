@@ -1,6 +1,30 @@
 //! MP-08 / MP-10 / MP-11: Check acknowledgement journal durability and recovery.
 use super::*;
 #[test]
+fn deleting_a_project_removes_only_its_private_check_journal() {
+    let root = crate::test_support::TestWorktree::new("envp04-check-journal-delete");
+    let store = ProjectEnvironmentStore::new(root.path());
+    store
+        .save_checks("deleted", &EnvironmentChecks::default())
+        .unwrap();
+    store
+        .save_checks("retained", &EnvironmentChecks::default())
+        .unwrap();
+    let deleted = store.path("deleted").with_extension("checks.wal");
+    let retained = store.path("retained").with_extension("checks.wal");
+    assert!(deleted.exists() && retained.exists());
+    store.remove("deleted").unwrap();
+    assert!(
+        !deleted.exists(),
+        "Project deletion must remove its private observation journal"
+    );
+    assert!(
+        retained.exists(),
+        "other Projects' journals must survive deletion"
+    );
+    store.load_checks("retained").unwrap();
+}
+#[test]
 fn check_projection_waits_for_the_durable_writer() {
     use std::sync::mpsc;
     let root = crate::test_support::TestWorktree::new("envp04-check-read-fence");
