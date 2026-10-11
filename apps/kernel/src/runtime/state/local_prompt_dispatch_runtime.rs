@@ -144,6 +144,7 @@ impl KernelRuntimeOwnedState {
 
 #[cfg(test)]
 mod tests {
+    mod brief_dispatch_review;
     mod native_cancellation;
 
     use super::*;
@@ -3963,6 +3964,7 @@ impl KernelRuntimeState {
                     handoff,
                     &hidden_system_context,
                 )
+                .await
                 .map(|submitted| {
                     if submitted {
                         PromptDispatchAcceptance::Submitted

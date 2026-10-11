@@ -44,12 +44,15 @@ impl KernelRuntimeState {
             if !state.owned.handoff_brief_dispatch_is_current(&dispatch) {
                 return;
             }
-            match state.submit_structured_prompt_with_handoff(
-                &dispatch,
-                &provider_run,
-                Some(handoff),
-                &hidden_system_context,
-            ) {
+            match state
+                .submit_structured_prompt_with_handoff(
+                    &dispatch,
+                    &provider_run,
+                    Some(handoff),
+                    &hidden_system_context,
+                )
+                .await
+            {
                 Ok(true) => state
                     .owned
                     .update_metaagent_event_prompt_delivery_for_prompt(
@@ -65,7 +68,7 @@ impl KernelRuntimeState {
         });
     }
 
-    pub(super) fn submit_structured_prompt_with_handoff(
+    pub(super) async fn submit_structured_prompt_with_handoff(
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
         provider_run: &crate::provider::RuntimeProviderRun,
@@ -73,6 +76,11 @@ impl KernelRuntimeState {
         hidden_system_context: &str,
     ) -> Result<bool, DaemonError> {
         let owned = &self.owned;
+        let _room_guard = owned
+            .room_secret_observations
+            .barrier(&dispatch.session_id)?
+            .read_owned()
+            .await;
         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
             return Ok(false);
         }
@@ -85,11 +93,21 @@ impl KernelRuntimeState {
                 operation: "submit prompt",
             });
         }
-        let prompt_with_handoff = handoff
-            .map(|handoff| {
-                super::context_handoff::inject_context_handoff(&dispatch.prompt, &handoff)
-            })
-            .unwrap_or_else(|| dispatch.prompt.clone());
+        let prompt_with_handoff = match handoff {
+            Some(handoff) => {
+                let handoff = owned.revalidate_context_handoff(
+                    handoff,
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                )?;
+                owned.room_secret_observations.scrub(
+                    &dispatch.session_id,
+                    super::context_handoff::inject_context_handoff(&dispatch.prompt, &handoff),
+                )?
+            }
+            None => dispatch.prompt.clone(),
+        };
         let granted_skill_context = owned.granted_skill_hidden_context(
             &dispatch.session_id,
             &dispatch.agent_id,

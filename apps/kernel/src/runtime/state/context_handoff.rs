@@ -7,6 +7,7 @@ mod brief;
 pub(super) mod brief_refresh;
 mod builder;
 mod facts;
+mod protection;
 use builder::{load_agent_conversation, AgentConversation};
 
 const HIDDEN_HANDOFF_SUFFIX: &str = "The active user request is supplied separately.";
@@ -29,6 +30,8 @@ pub(super) struct PendingAgentContextHandoff {
     /// Derived from history for a provider switch, so it carries the agent's
     /// handoff brief.
     pub(super) derived: bool,
+    /// Explicit snapshots cannot outlive the Room policy that protected them.
+    pub(super) room_revision: Option<u64>,
 }
 
 /// Explicit handoffs for runs that start outside the agent's own conversation:
@@ -305,6 +308,7 @@ impl super::KernelRuntimeOwnedState {
     ) {
         self.pending_agent_context_handoffs
             .clear(session_id, agent_id);
+        let room_revision = self.room_secret_observations.revision(session_id).ok();
         if let Some(conversation) =
             self.agent_conversation(session_id, source_history_agent_id, None)
         {
@@ -320,6 +324,7 @@ impl super::KernelRuntimeOwnedState {
                     target_model: target_model.map(str::to_string),
                     conversation,
                     derived: false,
+                    room_revision,
                 },
             );
         }
@@ -492,6 +497,7 @@ impl super::KernelRuntimeOwnedState {
             target_model: Some(target_run.model().to_string()),
             conversation,
             derived: true,
+            room_revision: self.room_secret_observations.revision(session_id).ok(),
         })
     }
 
@@ -568,6 +574,16 @@ impl super::KernelRuntimeOwnedState {
             .filter(|queued| queued.id() != prompt_id)
             .map(|queued| queued.prompt().to_string())
             .collect();
+        let facts = (
+            std::mem::take(&mut conversation.facts.open_interactions),
+            std::mem::take(&mut conversation.facts.queued_prompts),
+        );
+        let (interactions, prompts) = self
+            .room_secret_observations
+            .scrub_cached_result(session_id, facts)
+            .unwrap_or_default();
+        conversation.facts.open_interactions = interactions;
+        conversation.facts.queued_prompts = prompts;
     }
 
     pub(super) fn prompt_with_pending_context_handoff(
@@ -712,6 +728,7 @@ mod tests {
                 target_model: Some("model-new".to_string()),
                 conversation: conversation("prior context"),
                 derived: false,
+                room_revision: Some(0),
             },
         );
 
@@ -1444,6 +1461,7 @@ mod tests {
             target_model: None,
             conversation: AgentConversation::default(),
             derived: true,
+            room_revision: Some(0),
         };
         let codex = test_run_in_session("run", "agent", "codex", "gpt-5.5", None);
         let claude = test_run_in_session("run", "agent", "claude", "opus", None);
@@ -1607,6 +1625,7 @@ mod tests {
                 target_model: None,
                 conversation: conversation("workflow context"),
                 derived: false,
+                room_revision: Some(0),
             },
         );
 
@@ -1632,6 +1651,7 @@ mod tests {
             target_model: Some("claude-opus-4-7".to_string()),
             conversation: conversation("prior context"),
             derived: false,
+            room_revision: Some(0),
         };
         let hidden = handoff.render_hidden(MAX_HANDOFF_BYTES);
 
@@ -1659,6 +1679,7 @@ mod tests {
                 target_model: Some("gpt-5".to_string()),
                 conversation: conversation("prior context"),
                 derived: false,
+                room_revision: Some(0),
             },
         );
 
