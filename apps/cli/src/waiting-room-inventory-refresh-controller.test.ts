@@ -649,7 +649,7 @@ test("MP-08 / MP-11 reconnect replaces the closed transport row baseline", async
   assert.deepEqual(harness.projects().map(row => row.id), ["kept-project"])
   assert.deepEqual(harness.availableSessions().map(row => row.id).sort(), ["kept", "other-session"])
   assert.deepEqual(persisted.at(-1)?.sessions.map(row => row.id), ["kept"])
-  assert.deepEqual(persisted.at(-1)?.projects.map(row => row.id), ["kept-project"])
+  assert.deepEqual(persisted.at(-1)?.projects?.map(row => row.id), ["kept-project"])
   await harness.controller.refreshNow()
   assert.deepEqual(harness.availableSessions().map(row => row.id).sort(), ["kept", "other-session"])
   harness.controller.applyRowsChanged({
@@ -684,7 +684,7 @@ test("MP-08 / MP-11 rejects a pre-disconnect snapshot resolved before the replac
   assert.deepEqual(harness.projects().map(row => row.id), ["kept-project"])
   assert.deepEqual(harness.availableSessions().map(row => row.id).sort(), ["kept", "other-session"])
   assert.deepEqual(persisted.at(-1)?.sessions.map(row => row.id), ["kept"])
-  assert.deepEqual(persisted.at(-1)?.projects.map(row => row.id), ["kept-project"])
+  assert.deepEqual(persisted.at(-1)?.projects?.map(row => row.id), ["kept-project"])
   await harness.controller.refreshNow()
   assert.deepEqual(harness.availableSessions().map(row => row.id).sort(), ["kept", "other-session"])
   harness.controller.applyRowsChanged({
