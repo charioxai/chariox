@@ -80,6 +80,13 @@ additional release gates.
 
 ## Owner and evidence
 
+R13 closes the late #964 P1 and both P2 findings. See
+`COMPUTER_USE_MACOS_R13_REVIEW_FIXES.md` for fail-first evidence. The codec
+driver accepts `CUMAC_BUILD_DIR` and `CUMAC_EVIDENCE_DIR`, creates both roots
+and passes the same public H264 artifact path to its encoder and decoder.
+The executable policy tests remain ad-hoc signed in unsigned owner mode;
+only release bundle executables use the unsigned linker option.
+
 `apps/macos-computer-use/OWNER_RECHECK.md` is one conditional owner appointment.
 If ready, owner Developer ID signing/notarization happens before publishing pins
 and granting the one combined M0-M4 helper. The unattended suite follows; fatal

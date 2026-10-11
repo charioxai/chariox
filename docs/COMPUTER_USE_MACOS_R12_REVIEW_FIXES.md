@@ -1,6 +1,9 @@
 # R12 review fixes
 
-The new reviews contain four P2 findings. #964 @6101151bd has no findings.
+The r12 fixes cover four P2 findings from #962/#963. The late #964
+@6101151bd review contains one P1 and two P2 findings, addressed in
+`COMPUTER_USE_MACOS_R13_REVIEW_FIXES.md`. The earlier no-findings statement
+was incorrect.
 Each finding has one source commit, mirrored to every milestone containing the
 implementation. M0-M2 have neither M3 physical input nor M4 target references;
 their heads stay unchanged.

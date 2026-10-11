@@ -11,6 +11,8 @@ private final class FailingEncoder: ProtectedVideoEncoding {
 
 @main struct CodecTests {
     @MainActor static func main() async throws {
+        precondition(CommandLine.arguments.count == 2, "codec test requires an artifact path")
+        let artifact = URL(fileURLWithPath: CommandLine.arguments[1])
         var clock: TimeInterval = 1
         let attachment = CaptureAttachment(now: { clock })
         let surface = NativeSurface(bounds: CGRect(x: -10, y: 0, width: 128, height: 128), scale: 1)
@@ -33,7 +35,7 @@ private final class FailingEncoder: ProtectedVideoEncoding {
         let bytes = Data(base64Encoded: motion["data_base64"] as! String)!
         precondition(Array(bytes.prefix(4)) == [0, 0, 0, 1] && bytes[4] & 31 == 7)
         precondition(bytes[5] == 0x42 && bytes[6] == 0 && bytes[7] == 0x33)
-        try bytes.write(to: URL(fileURLWithPath: "/Users/miguel/.codex/evidence/browser-computer-use-macos/cumac-r11-20261011/public-protected.h264"))
+        try bytes.write(to: artifact)
         let quiet = try await sample(2); precondition(quiet == nil)
         clock += 3
         let settled = try await sample(2); precondition(settled?["kind"] as? String == "png", "settled video must repair exact pixels")

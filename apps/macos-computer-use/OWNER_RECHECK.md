@@ -1,6 +1,6 @@
 # One owner session for the matching Mac build
 
-R12 source handoff, 2026-10-11. This session is BLOCKED until the coordinator
+R13 source handoff, 2026-10-11. This session is BLOCKED until the coordinator
 supplies the matching combined build and the real integration callbacks. It is
 not staged. Miguel's morning K re-grant remains pending. The retained r6 helper
 has not been rebuilt, signed, replaced or launched during source work.
@@ -27,6 +27,16 @@ Supply the independent public fixture/native event receipts and fatal press
 hook. M4 opaque AX, query and language coverage remains incomplete. These are
 blocking source/integration dependencies. Headless tests cannot clear them.
 Whole-kernel tests belong on b3. Do not run them on this Mac.
+
+R13 closes all three findings in #964 @6101151bd. Native subscribe conforms to
+protocol 497 with only target/codecs; browser bitrate options are omitted and
+the kernel keeps the native bitrate. The unsigned owner build runs ad-hoc signed
+policy tests before linking unsigned release bundle executables. Before the
+appointment, run `check-codec.sh` with fresh `CUMAC_BUILD_DIR` and
+`CUMAC_EVIDENCE_DIR` paths under the approved build/evidence roots. The driver
+creates the evidence directory and supplies one artifact path to both encoder
+and independent decoder. Record both PASS lines. These component checks do not
+clear the matching-build, signing, grant or real-route acceptance gates.
 
 All builds live under `/Users/miguel/.chariox/dev/cumac/build`, one Swift build
 at a time with `-j2`. Use a fresh bundle path, verify public helper/kernel SHA-256
@@ -135,7 +145,7 @@ Keep historical M0 aggregate FAIL and prior accepted M0 click/scroll/capture and
 M1 receipts unchanged until exact new-build proofs exist. M2-M5 stay BLOCKED on
 missing prerequisites. Local protocol 497, relay peer 106, frozen display #950,
 existing CXD1/crypto/events and Cloud #325 remain fixed. No wire allocation,
-push, CI, provider run, hosted acceptance or new grant occurred in r12.
+push, CI, provider run, hosted acceptance or new grant occurred in r13.
 
 The earlier r6/r8/r9/r10 recipes are historical evidence, preserved in Git and
 in the lane's `OWNER_RECHECK_R10_HISTORY.md`. They are not additional owner
