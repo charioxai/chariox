@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { MarkdownRenderable, SyntaxStyle, TextRenderable, getLinkId } from "@opentui/core"
+import { CodeRenderable, MarkdownRenderable, SyntaxStyle, TextRenderable, getLinkId } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { applyTranscriptTextContent } from "./transcript-text-render.js"
 import type { TranscriptEntry } from "./cli-types.js"
@@ -59,4 +59,36 @@ test("MP-08/MP-10/MP-11 transcript links keep exact targets and clean text, incl
     assert.deepEqual(chunks.filter(value => value.link).map(value => value.link!.url),[urls[0],...urls])
     assert.ok(!chunks.some(value => value.link?.url.includes("fake")))
   } finally { harness.renderer.destroy() }
+})
+
+
+test("MP-08/MP-10/MP-11 visible URLs stay clickable while syntax highlighting is pending", async () => {
+  const harness = await createTestRenderer({width:80,height:4,useThread:false})
+  const syntax = SyntaxStyle.fromStyles({})
+  const url = "https://github.com/charioxai/chariox"
+  let settle!: (result:{highlights:[]}) => void
+  const pending = new Promise<{highlights:[]}>(resolve => {settle = resolve})
+  const worker = {highlightOnce: () => pending} as unknown as NonNullable<ConstructorParameters<typeof CodeRenderable>[1]["treeSitterClient"]>
+  const node = new CodeRenderable(harness.renderer, {
+    content:"NATIVE COPY READY\n"+url,filetype:"markdown",syntaxStyle:syntax,
+    streaming:true,drawUnstyledText:true,treeSitterClient:worker,
+  })
+  const renderNode = createTranscriptMarkdownNodeRenderer(harness.renderer)
+  renderNode({type:"paragraph",raw:node.content,text:node.content} as Parameters<typeof renderNode>[0], {
+    syntaxStyle:syntax,conceal:false,concealCode:false,treeSitterClient:worker,defaultRender:()=>node,
+  })
+  harness.renderer.root.add(node)
+  try {
+    for (const width of [80,81,80]) {
+      harness.resize(width,4)
+      await harness.renderOnce()
+      const native = harness.renderer as unknown as {rendererPtr:number,lib:{getCurrentBuffer(ptr:number):{buffers:{char:Uint32Array,attributes:Uint32Array}},linkGetUrl(id:number):string}}
+      const {char,attributes} = native.lib.getCurrentBuffer(native.rendererPtr).buffers
+      const index = [...char].map(value=>String.fromCodePoint(value)).join("").indexOf(url)
+      assert.ok(index>=0,"repository URL is visible before the worker finishes")
+      const id = getLinkId(attributes[index]!)
+      assert.ok(id>0,"a visible fallback URL must already carry native metadata")
+      assert.equal(native.lib.linkGetUrl(id),url)
+    }
+  } finally { settle({highlights:[]}); await pending; harness.renderer.destroy(); syntax.destroy() }
 })
