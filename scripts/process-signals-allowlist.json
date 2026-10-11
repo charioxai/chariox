@@ -90,13 +90,6 @@
       "reason": "MP-11 inert exact command admission comparison for a broker-owned container; this source line sends no signal, and the admitted command executes in that container\u2019s PID namespace."
     },
     {
-      "path": "apps/kernel/slice-linux-docker/provision-resource-limits.test.mjs",
-      "kind": "name-signal",
-      "text": "assert.match(source, /pkill -TERM -f \"codex\\[\\^ \\]\\* app-server\"/)",
-      "count": 1,
-      "reason": "MP-11 source-only assertion of the slice probe cleanup command; no signal is executed by this assertion."
-    },
-    {
       "path": "apps/kernel/slice-linux-docker/slice-browser-profile.drill.mjs",
       "kind": "name-signal",
       "text": "else await exec(\"pkill\", [\"-KILL\", \"-f\", \"^/usr/lib/chromium/chromium( |$)\"]);",
