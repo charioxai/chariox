@@ -1,7 +1,7 @@
 // Run with the coordinator's admitted agent/owner transport and exact public
 // fixture. Hooks do not bootstrap credentials or manufacture an acceptance PASS.
 export async function runNativeInputDrill({ agentInput, ownerRequest, binding, click,
-  selection, expectedSelection, physicalHuman, fatalPress, stop }) {
+  selection, expectedSelection, resumeClick, expectedResumeSelection, physicalHuman, fatalPress, stop }) {
   const receipt = { status: 'FAIL', checks: [] };
   const check = (name, ok) => {
     receipt.checks.push({ name, passed: !!ok });
@@ -13,6 +13,10 @@ export async function runNativeInputDrill({ agentInput, ownerRequest, binding, c
   };
   const input = command => agentInput({ op: 'input', ...binding, input: command });
   try {
+    const initial = await selection();
+    check('fresh-click-selection-precondition', expectedSelection !== undefined && initial !== expectedSelection &&
+      expectedResumeSelection !== undefined && expectedResumeSelection !== expectedSelection &&
+      resumeClick?.kind === 'click' && (resumeClick.x !== click.x || resumeClick.y !== click.y));
     await input(click);
     check('native-click-independent-selection', await selection() === expectedSelection);
     const before = await selection();
@@ -22,8 +26,10 @@ export async function runNativeInputDrill({ agentInput, ownerRequest, binding, c
       ['user_domain_not_granted', 'unsupported', 'browser_action_cancelled'].includes(error?.code)));
     check('paused-agent-made-no-mutation', await selection() === before);
     await ownerRequest({ op: 'release', ...binding });
-    await input(click);
-    check('explicit-owner-release-resumes', await selection() === expectedSelection);
+    const released = await selection();
+    check('fresh-resume-selection-precondition', released !== expectedResumeSelection);
+    await input(resumeClick);
+    check('explicit-owner-release-resumes', await selection() === expectedResumeSelection);
     // This hook must observe a real public-fixture keyDown while the bounded
     // 100 ms Action is pending, then kill only the pinned paired helper. It
     // returns the kernel's actual failure and independent fixture receipt.

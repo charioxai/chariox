@@ -67,7 +67,10 @@ execution belongs on b3. No helper bundle was built, signed or launched in r9.
 `native-input-drill.mjs:runNativeInputDrill` is the unattended M3 runner boundary.
 It needs the coordinator's real admitted agent/owner transports, independently
 observed fixture selection, foreign-event/actor receipt, verified fatal helper
-press hook and owned-seat cleanup. Prepare the fixture with
+press hook and owned-seat cleanup. Supply `click`/`expectedSelection` and a
+second `resumeClick`/`expectedResumeSelection` at a different destination and
+selection. Both dispatches require a fresh independently observed change;
+preexisting expected selection or acknowledged no-effect input fails. Prepare the fixture with
 `prepare-seat.py --input-drill`; its value-free local event monitor supports the
 fatal press oracle. The fatal hook must observe key-down while the bounded
 100 ms Action is pending and kill only the verified paired helper. A timeout,

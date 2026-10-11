@@ -99,6 +99,14 @@ receipt on any failed check or cleanup. A mocked hook is component evidence only
 No implementation of that real transport/fatal-hook orchestration was executed
 here; this dependency remains BLOCKED and is not silently replaced by a mock.
 
+R14 requires terminal takeover and completed terminal input before idle physical
+activity, plus in-flight terminal move/click interruption. Physical ownership
+must supersede the terminal, keep input fenced through cancellation and reset,
+and release/resume on the same pairing generation. The input runner requires
+`resumeClick` at a different destination and `expectedResumeSelection` different
+from `expectedSelection`. Independently read selection before each dispatch;
+a preexisting expected value or an acknowledged input with no change fails.
+
 The observer performs nonprompting listen-event preflight. If Input Monitoring
 is separately needed, report the missing opt-in and stop the M3 gate. No agent
 requests TCC, changes Keychain or retries mutation to turn a failure into PASS.
