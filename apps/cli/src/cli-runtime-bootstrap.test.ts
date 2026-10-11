@@ -517,7 +517,8 @@ test("Cloud-free pairing keeps operator transport while the kernel admits the pe
 })
 
 // MP-08 / MP-11: exercise the final production bootstrap client, commands and events.
-test("Cloud pairing bootstrap keeps commands and events across repeated grant expiries", async t => {
+for (const source of ["automatic", "argv", "environment"] as const) {
+test(`Cloud pairing ${source} bootstrap keeps commands and events across repeated grant expiries`, async t => {
   const server = new WebSocketServer({host:"127.0.0.1",port:0})
   await new Promise<void>(resolve => server.once("listening",resolve))
   const address = server.address()
@@ -529,7 +530,7 @@ test("Cloud pairing bootstrap keeps commands and events across repeated grant ex
   const daemon=createCliRelayIdentityStore(`${root}/daemon.json`).getOrCreate()
   const timers = new Set<ReturnType<typeof setTimeout>>()
   const streams = new Set<ReturnType<typeof setInterval>>()
-  let renewals=0, events=0, subscriptions=0, receivingChecks=0, receivingRevoked=false
+  let renewals=0, events=0, subscriptions=0, receivingChecks=0, receivingDenials=0, receivingRevoked=false
   const grant = () => {
     const expiresAtMs=Date.now()+400
     const payload=Buffer.from(JSON.stringify({sub:"paired-subject",public_key_thumbprint:identity.publicKeyThumbprint,allowed_targets:["home"],expires_at_ms:expiresAtMs})).toString("base64url")
@@ -550,10 +551,15 @@ test("Cloud pairing bootstrap keeps commands and events across repeated grant ex
         let response: unknown={accepted:true}
         if(request.JoinTerminalPairingLink) {
           const g=grant()
-          response={TerminalPairingLinkJoined:{terminal:{terminal_id:"paired-subject",terminal_type:"cli",paired_at_ms:1,revoked:false},pairing:{intent:"client",subject_id:"paired-subject",relay_url:relayUrl,target_daemon_id:"home",public_key_thumbprint:identity.publicKeyThumbprint,paired_at_ms:1},relay_token:g.token}}
+          response={TerminalPairingLinkJoined:{terminal:{terminal_id:"paired-subject",terminal_type:"cli",paired_at_ms:1,revoked:false},pairing:{intent:"client",subject_id:"paired-subject",relay_url:relayUrl,target_daemon_id:"home",public_key_thumbprint:identity.publicKeyThumbprint,paired_at_ms:1},kernel_pairing:false,relay_token:g.token}}
         }
         if(request.IssueCloudRelayClientToken) {
           assert.deepEqual(request.IssueCloudRelayClientToken,{target_daemon_alias:"home",client_id:`cli:${identity.publicKeyThumbprint}`,session_id:null,public_key_thumbprint:identity.publicKeyThumbprint})
+          if(receivingRevoked) {
+            receivingDenials++
+            socket.send(JSON.stringify({kind:"client_response",request_id:frame.request_id,encrypted_response:daemon.encrypt(frame.encrypted_request.sender_public_key,JSON.stringify({Error:{message:"receiving client revoked",code:"authorization_denied",retryable:false}})),error:null}))
+            return
+          }
           renewals++
           const g=grant()
           response={CloudRelayClientTokenIssued:{profile:{api_url:"http://cloud.test",email:"owner@example.test",account_id:"account",user_id:"owner",account_slug:"account",realm_id:"realm",relay_url:relayUrl,issuer_id:"fixture"},token:{relay_url:relayUrl,relay_token:g.token,token_expires_at:new Date(g.expiresAtMs).toISOString()}}}
@@ -571,7 +577,13 @@ test("Cloud pairing bootstrap keeps commands and events across repeated grant ex
   })
   let finalClient: LocalIpcClient | undefined
   try {
-    const result=await bootstrapCliRuntime({argv:[terminalLink("cloud-client-token-required", relayUrl, "home")],cwd:"/repo"},createDeps({parseArgs:()=>cliOptions({clientId:"terminal-1",relayUrl,relayToken:"cloud-client-token-required",targetDaemonId:"home"}),getRelayIdentity:()=>identity,resolvePairingBootstrapToken:async()=>{receivingChecks++;if(receivingRevoked)throw new CloudClientAuthError("client_revoked");return "bootstrap"},createClient:(endpoint,opts)=>new LocalIpcClient(endpoint,opts)}))
+    const link=terminalLink("cloud-client-token-required", relayUrl, "home")
+    const envName="CHARIOX_TEST_RENEWAL_CLIENT"
+    const previous=process.env[envName]
+    process.env[envName]="bootstrap"
+    t.after(()=>{if(previous===undefined)delete process.env[envName];else process.env[envName]=previous})
+    const argv=["--terminal-pairing-link",link,...(source==="automatic"?[]:source==="argv"?["--relay-token","bootstrap"]:["--relay-token-env",envName])]
+    const result=await bootstrapCliRuntime({argv,cwd:"/repo"},createDeps({parseArgs,getRelayIdentity:()=>identity,resolvePairingBootstrapToken:async()=>{receivingChecks++;if(source!=="automatic")throw new CloudClientAuthError("client_signed_out");if(receivingRevoked)throw new CloudClientAuthError("client_revoked");return "bootstrap"},createClient:(endpoint,opts)=>new LocalIpcClient(endpoint,opts)}))
     assert.equal(result.kind,"ready")
     if(result.kind!=="ready")throw new Error("expected ready")
     finalClient=result.bootstrap.client
@@ -581,14 +593,16 @@ test("Cloud pairing bootstrap keeps commands and events across repeated grant ex
     while(Date.now()<deadline){assert.deepEqual(await finalClient.send({GetDaemonHealth:null}),{accepted:true});await new Promise(resolve=>setTimeout(resolve,25))}
     assert.ok(renewals>=5,"final paired client renews repeatedly")
     // MP-08 / MP-10 / MP-11: kernel pivot renewal cannot outlive receiver CLIENT authority.
-    assert.ok(receivingChecks>=renewals+1,"every kernel pivot renewal rechecks the independently enrolled receiving CLIENT")
+    if(source==="automatic")assert.ok(receivingChecks>=renewals+1,"every automatic kernel pivot renewal rechecks the independently enrolled receiving CLIENT")
+    else assert.equal(receivingChecks,0,"explicit renewal needs no private receiving Cloud profile")
     assert.ok(events>40,"event lane remains active")
     assert.equal(subscriptions,1,"renewal preserves event subscription")
     receivingRevoked=true
     const issuedBeforeRevoke=renewals
     await new Promise(resolve=>setTimeout(resolve,500))
-    await assert.rejects(finalClient.send({GetDaemonHealth:null}), /revoked|authorization|client/i)
+    await assert.rejects(finalClient.send({GetDaemonHealth:null}), /revoked|authorization|client|authority has expired/i)
     assert.equal(renewals,issuedBeforeRevoke,"revoked receiving CLIENT cannot get another kernel pivot")
+    if(source!=="automatic")assert.ok(receivingDenials>0,"kernel/Cloud must reject the revoked receiving CLIENT")
   } finally {
     await finalClient?.close()
     for(const timer of timers)clearTimeout(timer)
@@ -597,3 +611,4 @@ test("Cloud pairing bootstrap keeps commands and events across repeated grant ex
     await new Promise<void>(resolve=>server.close(()=>resolve()))
   }
 })
+}

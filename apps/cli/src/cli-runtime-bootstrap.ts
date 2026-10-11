@@ -188,6 +188,7 @@ export async function bootstrapCliRuntime(
     ? deps.getRelayIdentity(Boolean(pairingLink))
     : null
   const receivingClientAuthority = Boolean(pairingLink && parseTerminalPairingLink(pairingLink).relayToken === "cloud-client-token-required")
+  const receivingProfileBootstrap = receivingClientAuthority && cliOptions.relayToken === "cloud-client-token-required"
   if (receivingClientAuthority) {
     if (!relayIdentity || !cliOptions.relayUrl || !cliOptions.targetDaemonId) throw new Error("Cloud pairing requires the receiving terminal's client credentials and key")
     // MP-08 / MP-10 / MP-11: the link labels an invitation, not receiving authority.
@@ -220,7 +221,10 @@ export async function bootstrapCliRuntime(
         startPairedRelayRenewal(client, {
           token: joined.relay_token, subject: joined.pairing.subject_id, endpoint: kernelEndpoint, target: joined.pairing.target_daemon_id,
           terminalId: cliOptions.clientId, identity: relayIdentity, createClient: deps.createClient,
-          ...(receivingClientAuthority && deps.resolvePairingBootstrapToken ? {bootstrapToken: () => deps.resolvePairingBootstrapToken!(joined.pairing.relay_url, joined.pairing.target_daemon_id, relayIdentity)} : {}),
+          // MP-08 / MP-10 / MP-11: explicit CLIENT grants need no private
+          // login. Renew with the admitted paired grant; the issuer still
+          // checks the receiving identity, key and active Cloud session.
+          ...(receivingProfileBootstrap && deps.resolvePairingBootstrapToken ? {bootstrapToken: () => deps.resolvePairingBootstrapToken!(joined.pairing.relay_url, joined.pairing.target_daemon_id, relayIdentity)} : {}),
         })
       }
     } catch (error) {

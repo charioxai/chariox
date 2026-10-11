@@ -174,3 +174,12 @@ log out disposable CLIENT profiles, unlink disposable kernels, stop every
 owned process and stack, remove shaping and peer allowances, and record cleanup
 before releasing the receiver. Rental expiry is a hard stop; a shortened run
 does not pass `OWN-TUI-2H`.
+
+MP-08 / MP-10 / MP-11: explicit CLIENT-token receivers renew through their
+still-valid, key-bound paired grant without requiring a private Cloud login.
+The kernel and Cloud retain receiving identity, key, target and active-session
+checks on every issuance. Automatic CLIENT acquisition continues to refresh its
+private profile. Validate both explicit token sources beyond the original
+five-minute grant expiry with an absent private profile, active commands/events
+and a real provider response; revoke the disposable receiving CLIENT and require
+renewal refusal. A join-only receipt does not establish renewal acceptance.
