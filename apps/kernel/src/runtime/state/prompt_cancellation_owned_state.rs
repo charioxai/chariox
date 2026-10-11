@@ -189,11 +189,10 @@ impl KernelRuntimeOwnedState {
                         let activity_mutation = self.begin_managed_activity_mutation();
                         let started_next = self
                             .prompt_state_owner
-                            .activate_next_queued_prompt_with_prompt_id(
+                            .activate_next_queued_prompt_for_dispatch(
                                 &self.session_store.get_session(session_id)?,
                                 agent_id,
                                 Some(next_prompt.id()),
-                                self.session_store.reserve_prompt_id(),
                             )?;
                         if let Some(started_next) = started_next.as_ref() {
                             let (active_prompt, queued_prompts) =

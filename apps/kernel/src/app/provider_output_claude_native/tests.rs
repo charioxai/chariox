@@ -1040,13 +1040,11 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
     let next_active_prompt_id = if let Some(queued_prompt) = queued_prompt {
         app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
             .expect("stopped prompt should complete");
-        let next_prompt_id = app.sessions_mut().reserve_prompt_id();
         let next = app
-            .prompt_owner_activate_next_queued_prompt_with_prompt_id(
+            .prompt_owner_activate_next_queued_prompt_for_dispatch(
                 session.id(),
                 agent.id(),
                 Some(queued_prompt.id()),
-                next_prompt_id,
             )
             .expect("next prompt activation should succeed")
             .expect("next prompt should activate");

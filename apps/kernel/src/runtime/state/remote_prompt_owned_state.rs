@@ -152,19 +152,14 @@ impl KernelRuntimeOwnedState {
         };
         let activity_mutation = self.begin_managed_activity_mutation();
         let started = if let Some(claim) = profile_transition {
-            claim.finish_and_activate_next(
-                &session,
-                agent_id,
-                self.session_store.reserve_prompt_id(),
-            )?
+            claim.finish_and_activate_next(&session, agent_id)?
         } else {
             let next_prompt = next_prompt.expect("ordinary queue advance checked its queue front");
             self.prompt_state_owner
-                .activate_next_queued_prompt_with_prompt_id(
+                .activate_next_queued_prompt_for_dispatch(
                     &session,
                     agent_id,
                     Some(next_prompt.id()),
-                    self.session_store.reserve_prompt_id(),
                 )?
         };
         let Some(started) = started else {
@@ -506,11 +501,10 @@ impl KernelRuntimeOwnedState {
                     let activity_mutation = self.begin_managed_activity_mutation();
                     let active = self
                         .prompt_state_owner
-                        .activate_next_queued_prompt_with_prompt_id(
+                        .activate_next_queued_prompt_for_dispatch(
                             &session,
                             agent_id,
                             Some(expected_next.id()),
-                            self.session_store.reserve_prompt_id(),
                         )?;
                     if active.is_some() {
                         let (active_prompt, queued_prompts) =

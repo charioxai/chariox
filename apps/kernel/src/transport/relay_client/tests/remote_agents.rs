@@ -1641,11 +1641,10 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
             app.prompt_owner_complete_active_prompt_only(&session_id, &remote_agent_id)
                 .expect("the active turn should be able to complete while steer reply waits");
             let completion_path_activation = app
-                .prompt_owner_activate_next_queued_prompt_with_prompt_id(
+                .prompt_owner_activate_next_queued_prompt_for_dispatch(
                     &session_id,
                     &remote_agent_id,
                     Some(&queued_prompt_id),
-                    "prompt-should-remain-queued".to_string(),
                 )
                 .expect("remote completion activation should inspect the reserved queue head");
             queue_advance_deferred = completion_path_activation.is_none();
@@ -1708,11 +1707,10 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                     "restart must not promote an uncertain queued steer"
                 );
                 assert!(restarted_prompt_owner
-                    .activate_next_queued_prompt_with_prompt_id(
+                    .activate_next_queued_prompt_for_dispatch(
                         &restarted_session,
                         &remote_agent_id,
                         Some(&queued_prompt_id),
-                        "restart-must-not-promote-uncertain-steer".to_string(),
                     )
                     .expect("restored uncertain queue should remain fail closed")
                     .is_none());

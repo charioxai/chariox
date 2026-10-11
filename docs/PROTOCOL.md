@@ -334,6 +334,7 @@ Semantics:
 - a native TUI launch never attaches to an existing provider run; every native TUI agent owns its own provider run
 - prompts from the provider TUI are intercepted and submitted through the same kernel prompt path as Chariox clients
 - prompts from Chariox clients are forwarded through the kernel-managed provider run so the provider TUI observes the same turns
+- MP-08 / MP-10 / MP-11: a queued prompt retains its kernel-owned identity when promoted to active work; promotion clears its pending marker without replacing its ID, so native display turns, permissions and exact-prompt controls keep one binding
 - native TUI provider runs are marked with `client_interface = native_tui`
 - Chariox clients must treat model/variant controls for those runs as provider-controlled; provider-native changes may be recorded when observable, but Chariox-side parameter mutation is disabled for the active native TUI run
 - daemon health reports `duplicate_chariox_agent_bindings` when more than one active Chariox provider run is bound to one session/agent, and `multi_interface_agent_bindings` when active Chariox and native TUI provider runs are bound to the same session/agent

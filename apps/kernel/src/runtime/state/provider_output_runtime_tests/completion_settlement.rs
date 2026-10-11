@@ -752,12 +752,7 @@ async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
     let promoted = runtime
         .owned
         .prompt_state_owner
-        .activate_next_queued_prompt_with_prompt_id(
-            &current_session,
-            agent.id(),
-            None,
-            runtime.owned.session_store.reserve_prompt_id(),
-        )
+        .activate_next_queued_prompt_for_dispatch(&current_session, agent.id(), None)
         .expect("workflow prompt promotion should succeed")
         .expect("workflow prompt should promote");
     assert_eq!(promoted.workflow_node_run_id(), Some(node_run_id.as_str()));

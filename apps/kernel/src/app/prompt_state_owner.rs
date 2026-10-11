@@ -377,22 +377,16 @@ impl DaemonApp {
             .peek_next_queued_prompt(&session, agent_id))
     }
 
-    pub(crate) fn prompt_owner_activate_next_queued_prompt_with_prompt_id(
+    pub(crate) fn prompt_owner_activate_next_queued_prompt_for_dispatch(
         &mut self,
         session_id: &str,
         agent_id: &str,
         expected_prompt_id: Option<&str>,
-        prompt_id: String,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         let session = self.sessions.get_session(session_id)?;
         let next = self
             .prompt_state_owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                agent_id,
-                expected_prompt_id,
-                prompt_id,
-            )?;
+            .activate_next_queued_prompt_for_dispatch(&session, agent_id, expected_prompt_id)?;
         self.mirror_prompt_owner_agent_state(session_id, agent_id)?;
         Ok(next)
     }
