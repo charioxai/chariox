@@ -28,6 +28,13 @@ pub(super) fn check_assets(
                     "Protected selection requires Vault; no plaintext digest exposed",
                 );
             }
+            if entries.is_empty()
+                || entries
+                    .iter()
+                    .any(|e| e.transfer_inclusion != EnvironmentTransferInclusion::Include)
+            {
+                return outcome(NeedsYourInput, "files_unmeasured", "Required Files include an excluded or unreviewed selection; no presence or digest was measured");
+            }
             let mut current = env.clone();
             current.proposals.clear();
             current.project_requirements.clear();
