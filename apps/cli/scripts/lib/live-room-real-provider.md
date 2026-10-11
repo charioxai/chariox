@@ -206,3 +206,19 @@ Claude user interruption does not emit Stop. The kernel sends native Escape and
 uses the timestamped interruption transcript record, through the existing
 deferred transcript drain, only for the current run's matching Cancelling prompt.
 Verify stale receipts, a superseded run and an uncancelled prompt cannot settle it.
+
+### MP-08 / MP-10 / MP-11: native home MCP launch and reconnect
+
+Grant a real home MCP before starting each official native provider against a
+leased worker and a managed slice. The provider must initialize that granted MCP
+on its first launch, read public MDN and GitHub sources through it, and write a
+cited report. Record its native screen, MCP status and exact home/worker run IDs.
+Then submit another prompt through the native composer after reconnect and relay
+authorization renewal; it must remain writable and finish on the same leased run.
+Repeat over hosted WSS with the shaped WAN, DPR 1 and 2, and the two-hour session.
+
+A native MCP bootstrap can precede home's launch receipt. Only its read-only
+bootstrap waits, for at most eight seconds of binding rejection, through the
+existing forwarding request. Every attempt retains home authorization and the
+current worker-run fence. Tool calls, ordinary clients and other admission errors
+are never replayed. Source fixtures establish those bounds, not live acceptance.

@@ -32,6 +32,7 @@ mod home_mcp_proxy_executor;
 mod home_room_browser_runtime;
 mod home_script_executor;
 mod meta;
+mod native_mcp_bootstrap;
 mod permission_prompt;
 mod recall;
 mod remote_capability_sync;

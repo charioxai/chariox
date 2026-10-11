@@ -162,20 +162,53 @@ impl KernelRuntimeState {
         let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
         self.register_remote_home_extension_invocation(&context, &metadata)
             .await;
-        let response = self
-            .send_worker_home_runtime_request(
-                &relay_config,
-                &home_kernel_id,
-                RelayPeerRequest::InvokeHomeMcpProxy {
-                    context: context.clone(),
-                    metadata: metadata.clone(),
-                    name: name.to_string(),
-                    tool,
-                    payload: payload.clone(),
-                },
-                Duration::from_millis(relay_config.relay_request_timeout_ms),
-            )
-            .await;
+        let request = RelayPeerRequest::InvokeHomeMcpProxy {
+            context: context.clone(),
+            metadata: metadata.clone(),
+            name: name.to_string(),
+            tool,
+            payload: payload.clone(),
+        };
+        let response = native_mcp_bootstrap::wait_for_native_binding(
+            !provider_run.client_interface().is_chariox(),
+            &payload,
+            Duration::from_secs(8),
+            || {
+                let request = request.clone();
+                let relay_config = &relay_config;
+                let home_kernel_id = &home_kernel_id;
+                async move {
+                    let current = provider_run.agent_instance_id().and_then(|agent_id| {
+                        self.owned
+                            .provider_store
+                            .get_run_for_agent(provider_run.session_id(), agent_id)
+                    });
+                    if !provider_run.client_interface().is_chariox()
+                        && !current.is_some_and(|run| {
+                            run.id() == provider_run.id()
+                                && matches!(
+                                    run.state(),
+                                    crate::provider::ProviderRunState::Starting
+                                        | crate::provider::ProviderRunState::Running
+                                )
+                        })
+                    {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "remote MCP proxy",
+                            message: "native MCP provider run is no longer current".into(),
+                        });
+                    }
+                    self.send_worker_home_runtime_request(
+                        relay_config,
+                        home_kernel_id,
+                        request,
+                        Duration::from_millis(relay_config.relay_request_timeout_ms),
+                    )
+                    .await
+                }
+            },
+        )
+        .await;
         self.unregister_remote_home_extension_invocation(&context, &metadata)
             .await;
         let response = response?;
