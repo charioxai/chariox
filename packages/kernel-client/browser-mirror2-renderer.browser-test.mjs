@@ -491,3 +491,17 @@ test('MP-10: review #320@90c1195fc-2 a custom tag defined in one source document
     assert.deepEqual(await display(), ['none'], 'MP-10: the replaced frame document\'s undefined card is not :defined');
   } finally { await page.close(); }
 });
+
+// Protocol 501: the kernel's custom validity (setCustomValidity) makes the viewer's copy :invalid too (form included).
+test('MP-10: protocol 501 the viewer takes the kernel\'s custom validity (record state, state ops): :invalid styles match', async () => {
+  const page = await viewer();
+  try {
+    const css = 'input:invalid{outline:3px solid rgb(255, 0, 0)} form:invalid{background-color:rgb(255, 255, 0)}';
+    await apply(page, snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'style', css }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'form' },
+      { id: 'n6', parent: 'n5', kind: 'element', tag: 'input', state: { custom_invalid: true }, form: textForm('abc', null) }, { id: 'n7', parent: 'n5', kind: 'element', tag: 'input', form: textForm('ok', null) }])));
+    const seen = () => page.evaluate(() => { const d = window.r.frame.contentDocument, [a, b] = d.querySelectorAll('input'); return [getComputedStyle(a).outlineColor, getComputedStyle(b).outlineStyle, getComputedStyle(d.querySelector('form')).backgroundColor]; });
+    assert.deepEqual(await seen(), ['rgb(255, 0, 0)', 'none', 'rgb(255, 255, 0)'], 'MP-10: the invalid control (and its form) match :invalid');
+    await apply(page, delta(2, [{ op: 'state', id: 'n6', state: { custom_invalid: false } }, { op: 'state', id: 'n7', state: { custom_invalid: true } }]));
+    assert.deepEqual(await seen(), ['rgb(0, 0, 0)', 'solid', 'rgb(255, 255, 0)'], 'MP-10: state ops move the invalidity');
+  } finally { await page.close(); }
+});

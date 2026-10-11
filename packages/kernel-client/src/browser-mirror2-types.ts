@@ -1,8 +1,8 @@
 // MP-08/MP-10/MP-11 — DOM mirror v2 wire (local protocol 501); kernel remains browser authority.
 export type Mirror2Kind = 'document' | 'shadow' | 'element' | 'text' | 'frame' | 'mask' | 'tile'
 export type Mirror2Form = { value: string; checked: boolean; selected_index: number; selection_start: number | null; selection_end: number | null }
-// Protocol 492: UA state with no attribute footprint (records carry non-default values only).
-export type Mirror2State = { popover_open?: boolean; modal?: boolean; indeterminate?: boolean; defined?: boolean }
+// Protocol 492: UA state with no attribute footprint (records carry non-default values only); 501: custom validity.
+export type Mirror2State = { popover_open?: boolean; modal?: boolean; indeterminate?: boolean; defined?: boolean; custom_invalid?: boolean }
 export type Mirror2Record = {
   id: string; parent: string | null; kind: Mirror2Kind
   tag?: string; ns?: 'svg' | 'math'; attrs?: Record<string, string>; text?: string; css?: string; res?: string

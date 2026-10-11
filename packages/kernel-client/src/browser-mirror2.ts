@@ -310,6 +310,8 @@ export class BrowserMirror2Renderer {
         else if (!state.modal && dialog.matches(':modal')) { dialog.close(); if (record.attrs?.open !== undefined) dialog.show() }
       }
       if (element.localName === 'input') (element as HTMLInputElement).indeterminate = Boolean(state.indeterminate)
+      // Protocol 501: the kernel's custom validity, without its message (the viewer never reports it).
+      if ('setCustomValidity' in element) (element as HTMLInputElement).setCustomValidity(state.custom_invalid ? 'invalid' : '')
     } catch { /* a state the viewer cannot take stays at its default */ }
   }
   // `:target` (rewritten to [chariox-target] by the kernel's sanitizer) marks the element the fragment names.

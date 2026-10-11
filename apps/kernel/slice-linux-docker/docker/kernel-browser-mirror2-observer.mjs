@@ -185,7 +185,8 @@ export function installMirror2(sanitizeMirrorCss) {
         const listen = (type, fn) => root.addEventListener(type, fn, { capture: true, passive: true, signal: listening.signal });
         listen('scroll', event => { const target = event.target; dirty.scroll.add(target.nodeType === 9 ? target.documentElement : target); wake(); });
         // The composed target: a control inside an open shadow root, not its retargeted host.
-        const formEvent = event => { const target = event.composedPath()[0] ?? event.target; changedForm(target); if (stateNodes.has(mirrored(target))) dirty.state.add(target); if (target.type === 'radio' && target.name) for (const radio of target.getRootNode().querySelectorAll?.('input[type=radio]') ?? []) if (radio.name === target.name) dirty.form.add(radio); wake(); };
+        // State the page's own handlers set in reaction (setCustomValidity) is sampled again after them.
+        const formEvent = event => { const target = event.composedPath()[0] ?? event.target; changedForm(target); if (stateNodes.has(mirrored(target))) { dirty.state.add(target); setTimeout(() => { dirty.state.add(target); wake(); }, 0); } if (target.type === 'radio' && target.name) for (const radio of target.getRootNode().querySelectorAll?.('input[type=radio]') ?? []) if (radio.name === target.name) dirty.form.add(radio); wake(); };
         listen('input', formEvent); listen('change', formEvent); listen('reset', event => { for (const control of event.target.elements ?? []) changedForm(control); wake(); });
         // Focus and selection taken by a pointer press wait (50 ms at most) for the rest of its click, so the
         // click's own changes (a menu rendered a frame later) leave in the same packet; other moves wake now.
@@ -264,12 +265,15 @@ export function installMirror2(sanitizeMirrorCss) {
       sentForms.set(node, form); ops.push({ op: 'form', id, form: changed });
     };
     // Protocol 492: UA state without an attribute footprint (open popover, modal dialog, indeterminate
-    // checkbox, custom element definition), sampled like form state. Records carry non-default values only.
-    const stateNodes = new Map(), STATE_DEFAULT = { popover_open: false, modal: false, indeterminate: false, defined: true };
+    // checkbox, custom element definition), sampled like form state; protocol 501: custom validity
+    // (setCustomValidity: :invalid with no message travelling). Records carry non-default values only.
+    const stateNodes = new Map(), STATE_DEFAULT = { popover_open: false, modal: false, indeterminate: false, defined: true, custom_invalid: false };
+    const VALIDATED = new Set(['input', 'select', 'textarea', 'button']);
     let sentStates = new Map();
-    const stateful = node => node.nodeType === 1 && node.namespaceURI === HTML && (node.hasAttribute('popover') || node.localName === 'dialog' || node.localName === 'input' && node.type === 'checkbox' || node.localName.includes('-'));
+    const stateful = node => node.nodeType === 1 && node.namespaceURI === HTML && (node.hasAttribute('popover') || node.localName === 'dialog' || VALIDATED.has(node.localName) || node.localName.includes('-'));
     const stateOf = node => {
       const out = {};
+      if (VALIDATED.has(node.localName)) out.custom_invalid = node.validity.customError;
       if (node.hasAttribute('popover')) out.popover_open = node.matches(':popover-open');
       if (node.localName === 'dialog') out.modal = node.matches(':modal');
       if (node.localName === 'input' && node.type === 'checkbox') out.indeterminate = node.indeterminate;

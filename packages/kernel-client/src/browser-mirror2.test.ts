@@ -58,6 +58,9 @@ test('MP-11: deltas reference known nodes; ops cannot write attributes into mask
   for (const state of [{ open: true }, { modal: 'yes' }, null, []]) assert.throws(() => validateMirror2Packet(delta([{ op: 'state', id: 'n2', state } as unknown as NonNullable<Mirror2Packet['ops']>[number]]), previous), /unsafe mirror op/, JSON.stringify(state))
   assert.throws(() => validateMirror2Packet(delta([{ op: 'state', id: 'n5', state: { modal: true } }]), previous), /unsafe mirror op/)
   assert.throws(() => validateMirror2Record({ id: 'n3', parent: 'n2', kind: 'text', text: 'x', state: { defined: true } } as Mirror2Record), /unsafe mirror/)
+  // Protocol 501: custom validity is one more boolean; a message never travels.
+  validateMirror2Record({ id: 'n3', parent: 'n2', kind: 'element', tag: 'input', state: { custom_invalid: true } })
+  assert.throws(() => validateMirror2Record({ id: 'n3', parent: 'n2', kind: 'element', tag: 'input', state: { custom_invalid: 'too short' } } as unknown as Mirror2Record), /unsafe mirror/)
   validateMirror2Packet({ ...delta([]), fragment: 'section-2' }, previous)
   assert.throws(() => validateMirror2Packet({ ...delta([]), fragment: 'x'.repeat(2049) }, previous), /unsafe mirror header/)
   assert.throws(() => validateMirror2Packet(base(tree(element('p', { 'chariox-target': '' }))), new Map()), /unsafe mirror/)

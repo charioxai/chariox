@@ -1001,3 +1001,22 @@ test("MP-10: protocol 501 a resend credit gets the packet after its base at once
   assert.deepEqual(resent, await orphan, "MP-10: the orphan's packet is the resend");
   assert.equal((await credit(resent.sequence, { wait_ms: 0 })).sequence, resent.sequence + 1, "MP-10: then the stream continues");
 }));
+
+// Protocol 501 (PUSH_READY r10 repro 1): setCustomValidity makes a control :invalid with no attribute or event
+// footprint; the viewer's copy must match (snapshot, script, a page input handler reacting to mirrored typing).
+test("MP-10: protocol 501 custom validity reaches the viewer as `state.custom_invalid` (snapshot, script, a page input handler)", () => mirrored(
+  '<input id="i"><input id="v"><select id="s"><option>a</option></select><input id="j" value="abcd"><script>v.setCustomValidity("taken");j.addEventListener("input",()=>j.setCustomValidity(j.value.length<3?"short":""))</script>', async ({ next, evaluate, input }) => {
+    const snapshot = await next(), ids = Object.fromEntries(elements(snapshot).filter(([, , attrs]) => attrs.id).map(([id, , attrs]) => [attrs.id, id]));
+    const records = new Map(); let n = 0; for (const row of snapshot.nodes) { n += row[0]; records.set(`n${n}`, row[4] ?? {}); }
+    assert.deepEqual(records.get(ids.v).state, { custom_invalid: true }, "MP-10: a control invalid at snapshot carries it");
+    assert.equal(records.get(ids.i).state, undefined, "MP-10: a valid control carries nothing");
+    const states = async (id, want) => { for (let i = 0; i < 6; i++) for (const op of (await next(1000)).ops) if (op.op === "state" && op.id === id && op.state.custom_invalid === want) return true; return false; };
+    await evaluate("i.setCustomValidity('nope');s.setCustomValidity('pick one');true");
+    assert(await states(ids.i, true), "MP-10: a script's custom validity reaches the viewer");
+    await evaluate("v.setCustomValidity('');true");
+    assert(await states(ids.v, false), "MP-10: cleared custom validity reaches the viewer");
+    const started = Date.now();
+    await input(snapshot.sequence, { kind: "focus", node_id: ids.j }); await input(snapshot.sequence, { kind: "selection", anchor_id: ids.j, anchor_offset: 0, focus_id: ids.j, focus_offset: 4 }); await input(snapshot.sequence, { kind: "text", text: "x" });
+    assert(await states(ids.j, true), "MP-10: the page's input handler's verdict reaches the viewer");
+    assert.ok(Date.now() - started < 1500, `MP-10: with the typing, not the 2 s sampler (${Date.now() - started} ms)`);
+  }));
