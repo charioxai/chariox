@@ -25,7 +25,7 @@ export class MotionEncoder {
  // MP-08/MP-10: encode a sample previously skipped as a lossless candidate.
  // Nothing was encoded for it, so no reference chain is retired.
  retry(sample){if(sample?.serial===this.lastSerial&&!this.pending&&!this.closed){this.lastSerial=sample.serial-1;this.offer(sample)}}
- offer(sample){if(!sample||this.closed||!this.valid()||sample.serial<=this.lastSerial)return;this.lastSerial=sample.serial;if(!this.shouldEncode(sample)){this.wakeReady();return;}this.pending?.raw?.release?.();sample.raw?.retain?.();this.pending={...sample,offeredAt:this.now()};this.pump();}
+ offer(sample){if(!sample||this.closed||!this.valid()||sample.serial<=this.lastSerial)return;this.lastSerial=sample.serial;if(!this.shouldEncode(sample)){this.wakeReady();return;}if(this.pending)this.source.rejected?.('serial_skipped');this.pending?.raw?.release?.();sample.raw?.retain?.();this.pending={...sample,offeredAt:this.now()};this.pump();}
  // MP-08/MP-10: coalesce only unencoded samples. Every completed
  // packet retains its decoder reference until delivery.
  pump(){if(this.active||!this.pending||this.closed||this.frames.length>=2)return;this.active=this.run().catch(()=>{if(!this.closed)this.failure=Error('MD-DISPLAY: motion encoder failed')}).finally(()=>{this.active=null;if(this.failure)this.wakeReady();if(this.pending&&!this.closed&&!this.failure)this.pump()});}
