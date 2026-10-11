@@ -353,3 +353,5 @@ fn envp04_independent_check_is_delivered_for_unsaved_legacy() {
 mod review0212_excluded;
 #[path = "review0212_platform_tests.rs"]
 mod review0212_platform;
+#[path = "review0212_metadata_tests.rs"]
+mod review0212_metadata;
