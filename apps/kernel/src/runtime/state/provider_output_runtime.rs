@@ -66,15 +66,23 @@ impl KernelRuntimeState {
 
         if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
             let provider_run = provider_run.clone();
+            // Keep registration/retirement out of the final protected hook replay.
+            let room_guard = owned
+                .room_secret_observations
+                .barrier(session_id)?
+                .read_owned()
+                .await;
             let outcome = self
                 .with_app_side_effect(|app| {
-                    app.process_claude_native_bridge_for_runtime(
+                    app.process_claude_native_bridge_with_handoff_for_runtime(
                         session_id,
                         provider_run_id,
                         &provider_run,
+                        owned,
                     )
                 })
                 .await?;
+            drop(room_guard);
             if let Some(message) = outcome.terminal_failure {
                 let run = owned
                     .provider_store

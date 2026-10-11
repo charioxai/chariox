@@ -136,6 +136,7 @@ impl KernelRuntimeOwnedState {
 
 #[cfg(test)]
 mod tests {
+    mod native_origin_handoff_review;
     use super::*;
     use crate::agent::CreateAgentRequest;
     use crate::app::KernelSessionService;

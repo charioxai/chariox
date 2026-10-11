@@ -107,8 +107,22 @@ pub(crate) struct ClaudeNativeProcessOutcome {
     pub(crate) terminal_failure: Option<String>,
 }
 
+/// Kernel-owned conversation policy for native-origin turns. The bridge only
+/// wires its hidden hook context and acknowledgement into that shared policy.
+pub(crate) trait NativePromptHandoffPolicy: Send + Sync {
+    fn prepare_context(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        run_id: &str,
+        base: String,
+    ) -> Result<String, DaemonError>;
+    fn accepted(&self, session_id: &str, agent_id: &str, run_id: &str) -> Result<(), DaemonError>;
+}
+
 pub(crate) struct ProviderOutputClaudeNativeBridge<'a> {
     app: &'a mut DaemonApp,
+    prompt_handoff: Option<&'a dyn NativePromptHandoffPolicy>,
 }
 
 /// Ctrl-U clears only a managed composer that Claude has not acknowledged.
@@ -279,7 +293,15 @@ fn acknowledge_claude_headless_steering_enqueue(
 
 impl<'a> ProviderOutputClaudeNativeBridge<'a> {
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
+        Self {
+            app,
+            prompt_handoff: None,
+        }
+    }
+
+    pub(crate) fn with_prompt_handoff(mut self, policy: &'a dyn NativePromptHandoffPolicy) -> Self {
+        self.prompt_handoff = Some(policy);
+        self
     }
 
     pub(crate) fn process(
@@ -463,13 +485,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         continue;
                     }
                 }
-                if event
-                    .get("hook_context_request_id")
-                    .and_then(Value::as_str)
-                    .is_some()
-                {
-                    let context =
-                        self.claude_native_prompt_context(session_id, &agent_id, prompt)?;
+                let hook_request_id = event.get("hook_context_request_id").and_then(Value::as_str);
+                let hook_context = if hook_request_id.is_some() {
+                    let base = self.claude_native_prompt_context(session_id, &agent_id, prompt)?;
+                    let context = match self.prompt_handoff {
+                        Some(policy) => {
+                            policy.prepare_context(session_id, &agent_id, provider_run_id, base)?
+                        }
+                        None => base,
+                    };
                     crate::provider::ensure_claude_native_hidden_context_fits(
                         provider_run_id,
                         &context,
@@ -481,7 +505,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             message: error.to_string(),
                         }
                     })?;
-                }
+                    Some(context)
+                } else {
+                    None
+                };
                 let Some(runtime_attachment_id) = runtime_attachment_id.as_deref() else {
                     continue;
                 };
@@ -503,6 +530,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     prompt,
                     attachments,
                 )?;
+                let native_started = matches!(
+                    &outcome,
+                    crate::session::PromptSubmissionOutcome::Started { .. }
+                );
                 if let crate::session::PromptSubmissionOutcome::Started { prompt } = outcome {
                     fs::write(format!("{context_file}.approval-origin"), prompt.id()).map_err(
                         |error| DaemonError::LocalTransport {
@@ -512,11 +543,17 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     )?;
                     write_claude_native_marker(context_file, &format!("native:{}", prompt.id()));
                 }
-                if let Some(request_id) =
-                    event.get("hook_context_request_id").and_then(Value::as_str)
+                if let (Some(request_id), Some(context)) =
+                    (hook_request_id, hook_context.as_deref())
                 {
-                    let context = fs::read_to_string(context_file).unwrap_or_default();
-                    write_claude_hook_context_response(context_file, request_id, &context);
+                    // Reply with the protected packet just prepared, never a
+                    // mutable cache reread or an empty fallback after read failure.
+                    write_claude_hook_context_response(context_file, request_id, context)?;
+                    if native_started {
+                        if let Some(policy) = self.prompt_handoff {
+                            policy.accepted(session_id, &agent_id, provider_run_id)?;
+                        }
+                    }
                 }
             } else if event_name == "StopFailure" {
                 outcome.terminal_failure = crate::provider::claude_native_stop_failure(&event);

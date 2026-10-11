@@ -294,16 +294,24 @@ pub(super) fn write_claude_hook_context_response(
     context_file: &str,
     request_id: &str,
     context: &str,
-) {
-    if request_id.trim().is_empty() {
-        return;
-    }
-    let Some(root) = std::path::Path::new(context_file).parent() else {
-        return;
+) -> Result<(), crate::error::DaemonError> {
+    let error = |message: String| crate::error::DaemonError::LocalTransport {
+        operation: "claude_hook_context_response",
+        message,
     };
+    if request_id.is_empty()
+        || !request_id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err(error("Invalid native context response request id".into()));
+    }
+    let root = std::path::Path::new(context_file)
+        .parent()
+        .ok_or_else(|| error("Missing native context response directory".into()))?;
     let dir = root.join("hook-context-responses");
-    let _ = fs::create_dir_all(&dir);
-    let _ = fs::write(dir.join(format!("{request_id}.txt")), context);
+    fs::create_dir_all(&dir).map_err(|e| error(e.to_string()))?;
+    fs::write(dir.join(format!("{request_id}.txt")), context).map_err(|e| error(e.to_string()))
 }
 
 pub(super) fn write_claude_permission_response(

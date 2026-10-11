@@ -1269,6 +1269,24 @@ impl DaemonApp {
         )
     }
 
+    pub(crate) fn process_claude_native_bridge_with_handoff_for_runtime(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        provider_run: &RuntimeProviderRun,
+        policy: &dyn crate::app::NativePromptHandoffPolicy,
+    ) -> Result<crate::app::ClaudeNativeProcessOutcome, DaemonError> {
+        let interaction_bridge = self.providers.native_interaction_bridge();
+        ProviderOutputClaudeNativeBridge::new(self)
+            .with_prompt_handoff(policy)
+            .process(
+                session_id,
+                provider_run_id,
+                provider_run,
+                interaction_bridge,
+            )
+    }
+
     pub(crate) fn finish_deferred_claude_native_stop_for_runtime(
         &mut self,
         session_id: &str,
