@@ -36,3 +36,19 @@ fn review0212_pnpm_contained_package_links_and_escaping_links() {
         assert!(inventory::software_version(name,Some("npm package"),Some(root.path()),&[]).is_err(),"escaping package links remain unproven");
     }
 }
+#[cfg(unix)]
+#[test]
+fn review0212_files_check_does_not_launch_path_git_or_inherit_probe_environment() {
+    use std::os::unix::fs::PermissionsExt;
+    let root=crate::test_support::TestWorktree::new("review0212-git");let store=ProjectEnvironmentStore::new(root.path());let project=project(root.path(),"git");let mut env=store.snapshot(&project).unwrap();let mut draft=environment_draft(&env);let folder=draft.folders[0].folder_id.clone();
+    std::fs::write(root.path().join("README.md"),"public project documentation").unwrap();draft.folders[0].requirements.push(serde_json::from_value(serde_json::json!({"requirement_id":"file","title":"Public document","scope":{"kind":"folder","folder_id":folder},"origins":[],"spec":{"kind":"files","folder_id":folder,"entries":[{"relative_path":"README.md","kind":"file","content_digest":null,"folder_id":folder,"user_selected":true,"git_ignored":null,"byte_count":null,"credential_filter_verdict":"not_checked","transfer_inclusion":"include","reason":null,"secret_looking":false}]},"depends_on":[],"platform_variants":[],"required":true,"legacy_entry":null})).unwrap());
+    let save=crate::local::SaveProjectEnvironmentRevisionRequest{project_id:project.id().into(),expected_revision:env.revision,expected_content_digest:env.content_digest.clone(),draft,accepted_proposal_ids:vec![],excluded_proposal_ids:vec![]};store.save_revision_locked(&env,&save,"owner").unwrap();env=store.snapshot(&project).unwrap();
+    let ctx=context(root.path());let _guard=crate::env_lock::lock();let marker=root.path().join("git-pid");let bin=root.path().join("bin");std::fs::create_dir(&bin).unwrap();std::fs::write(bin.join("git"),format!("#!/bin/sh\nprintf '%s' \"$$\" > '{}'\nexec /bin/sleep 30\n",marker.display())).unwrap();std::fs::set_permissions(bin.join("git"),std::fs::Permissions::from_mode(0o700)).unwrap();
+    struct PathGuard(Option<std::ffi::OsString>);impl Drop for PathGuard {fn drop(&mut self){match &self.0{Some(path)=>std::env::set_var("PATH",path),None=>std::env::remove_var("PATH")}}}
+    let _path_guard=PathGuard(std::env::var_os("PATH"));std::env::set_var("PATH",&bin);
+    let marker_copy=marker.clone();let watchdog=std::thread::spawn(move||{
+        for _ in 0..200 {if marker_copy.exists(){let pid=std::fs::read_to_string(&marker_copy).unwrap().parse::<i32>().unwrap();assert!(pid>1);unsafe{libc::kill(pid,libc::SIGKILL);}return;}std::thread::sleep(std::time::Duration::from_millis(5));}
+    });
+    let target=EnvironmentTargetBinding{machine_id:"machine".into(),target_instance_generation:"boot".into(),slice_ref:None};let op=operation(&env,&target,vec!["file"]);let mut journal=EnvironmentChecks::default();journal.operations.push(op.clone());store.save_checks(project.id(),&journal).unwrap();let began=std::time::Instant::now();let result=store.run_check(ctx,env,op,||Ok(project.clone()));let elapsed=began.elapsed();
+    watchdog.join().unwrap();result.unwrap();assert!(!marker.exists(),"Check must not call Save-only PATH git metadata");assert!(elapsed<std::time::Duration::from_secs(1));
+}
