@@ -17,6 +17,68 @@ fn matching_scope(
     }
 }
 impl KernelRuntimeState {
+    // MP-11: names-only guidance uses the existing human-only interaction
+    // service. Answers never carry a value or authorize a new Vault/grant path.
+    // Unrelated eligible items have already settled before this notification.
+    pub(super) fn notify_environment_named_inputs(
+        &self,
+        env: ProjectEnvironment,
+        operation: EnvironmentOperation,
+        owner: String,
+    ) {
+        let names: Vec<_> = environment_requirements(&env)
+            .filter(|r| {
+                operation.per_item_results.iter().any(|result| {
+                    result.requirement_id == r.requirement_id
+                        && matches!(
+                            result.status,
+                            EnvironmentObservationStatus::Missing
+                                | EnvironmentObservationStatus::NeedsYourInput
+                        )
+                })
+            })
+            .filter_map(|r| match &r.spec {
+                RequirementSpec::Variables { name, .. } | RequirementSpec::Secrets { name, .. } => {
+                    Some(name.clone())
+                }
+                _ => None,
+            })
+            .filter(|name| {
+                name.len() <= 128 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            })
+            .collect();
+        if names.is_empty() {
+            return;
+        }
+        let Some(session) = self
+            .owned
+            .session_store
+            .sessions_in_project(&env.local_project_id)
+            .into_iter()
+            .find(|s| s.owner_user_id() == owner)
+        else {
+            return;
+        };
+        let state = self.clone();
+        tokio::spawn(async move {
+            if state.authorize_current_external_command().is_err() {
+                return;
+            }
+            let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
+                format!("apply-inputs-{:032x}", rand::random::<u128>()),
+                format!("environment-inputs:{}", operation.operation_id),
+                "Review Project inputs",
+                format!("Missing Project input names: {}. Open the existing Vault or selected public sources, then Check and explicitly retry. This decision never asks for or stores a secret value. Unrelated scoped work has already been recorded.", names.join(", ")),
+                vec![crate::session::RuntimeInteractionChoice::new("review", "Review inputs", "review", None)],
+            ).with_timeout_sec(60);
+            if let Ok(answer) = state
+                .create_kernel_operation_interaction(session.id(), &owner, interaction)
+                .await
+            {
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(60), answer).await;
+            }
+        });
+    }
     pub(super) async fn apply_project_capability(
         &self,
         env: &ProjectEnvironment,

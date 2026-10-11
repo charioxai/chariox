@@ -60,11 +60,7 @@ fn current_attempt<'a>(
     journal: &'a mut EnvironmentApplies,
     op: &EnvironmentOperation,
 ) -> Option<&'a mut ApplyAttempt> {
-    journal.attempts.iter_mut().rev().find(|a| {
-        a.operation.operation_id == op.operation_id
-            && a.operation.attempt == op.attempt
-            && a.operation.target == op.target
-    })
+    latest_apply_attempt(journal, op)
 }
 fn cancelled(store: &ProjectEnvironmentStore, op: &EnvironmentOperation) -> bool {
     store
@@ -388,5 +384,12 @@ fn run_apply(
     }
     a.operation.updated_at_ms = crate::session::unix_epoch_ms();
     a.operation.recovery_state = EnvironmentRecoveryState::Settled;
-    store.save_applies(project.id(), &journal)
+    let needs_input = a.operation.phase == EnvironmentOperationPhase::AwaitingInput;
+    let operation = a.operation.clone();
+    store.save_applies(project.id(), &journal)?;
+    drop(_lock);
+    if needs_input {
+        state.notify_environment_named_inputs(env.clone(), operation, ctx.owner.clone());
+    }
+    Ok(())
 }

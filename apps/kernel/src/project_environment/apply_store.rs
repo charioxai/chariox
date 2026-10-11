@@ -25,6 +25,19 @@ pub(crate) struct EnvironmentApplies {
     pub plans: Vec<StoredApplyPlan>,
     pub attempts: Vec<ApplyAttempt>,
 }
+pub(crate) fn latest_apply_attempt<'a>(
+    journal: &'a mut EnvironmentApplies,
+    op: &EnvironmentOperation,
+) -> Option<&'a mut ApplyAttempt> {
+    // Find the newest identity first: an old completion must not fall back to
+    // its historical attempt after an explicit retry has superseded it.
+    journal
+        .attempts
+        .iter_mut()
+        .rev()
+        .find(|a| a.operation.operation_id == op.operation_id)
+        .filter(|a| a.operation.attempt == op.attempt && a.operation.target == op.target)
+}
 pub(crate) fn apply_active(op: &EnvironmentOperation) -> bool {
     matches!(
         op.phase,

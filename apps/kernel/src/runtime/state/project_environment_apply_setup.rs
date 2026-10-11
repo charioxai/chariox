@@ -42,8 +42,9 @@ pub(in crate::runtime::state) fn setup_retry_is_settled(
                         && status.failure_code.as_deref() == Some("apply_command_unconfirmed")
                         && status.retryable)
             }
-            // No gated command intent exists, so no command could have run.
-            Err(_) => true,
+            // Missing/corrupt restored command state cannot prove that no
+            // effect occurred. Explicit retry rechecks facts; it never guesses.
+            Err(_) => false,
         }
     })
 }

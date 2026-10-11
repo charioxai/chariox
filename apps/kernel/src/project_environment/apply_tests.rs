@@ -190,6 +190,18 @@ fn envp05a_restart_retains_receipt_and_uncertain_item_without_replay() {
         .recover_applies(&env.local_project_id, &target("two"))
         .unwrap();
     assert_eq!(again.attempts[0].operation, a.operation);
+    let mut journal = again.clone();
+    let old = journal.attempts[0].operation.clone();
+    let mut retry = journal.attempts[0].clone();
+    retry.operation.attempt += 1;
+    retry.operation.target = target("two");
+    let current = retry.operation.clone();
+    journal.attempts.push(retry);
+    assert!(
+        latest_apply_attempt(&mut journal, &old).is_none(),
+        "late old completion cannot select a historical attempt"
+    );
+    assert!(latest_apply_attempt(&mut journal, &current).is_some());
     store.remove(&env.local_project_id).unwrap();
     assert!(store
         .load_applies(&env.local_project_id)
