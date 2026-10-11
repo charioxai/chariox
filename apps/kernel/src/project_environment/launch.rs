@@ -29,12 +29,18 @@ pub(crate) fn project_public_setup_environment(
     directory: &Path,
     permitted: &std::collections::BTreeSet<&str>,
 ) -> Result<crate::provider::ProviderCredentialEnvironment, DaemonError> {
-    project_launch_environment_selected(config, project_id, workspace_id, directory, |entry| {
+    let environment = project_launch_environment_selected(config, project_id, workspace_id, directory, |entry| {
         permitted.contains(entry.name.as_str())
             && entry.classification == ProjectEnvironmentClassification::NonSecret
             && !matches!(entry.locator, ProjectEnvironmentLocator::Vault { .. })
             && !crate::secret::secret_like_env_name(&entry.name)
-    })
+    })?;
+    // MP-08 / MP-10 / MP-11: a missing required public input is preparation,
+    // never permission to execute the command with a silently reduced environment.
+    if permitted.iter().any(|name| !environment.iter().any(|(binding, _)| binding == *name)) {
+        return Err(super::resolver::environment_error("Setup public prerequisites unavailable"));
+    }
+    Ok(environment)
 }
 
 fn project_launch_environment_selected(
