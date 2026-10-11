@@ -15,12 +15,14 @@ export async function proxyOpenCodeEventsForNativeTui(
   upstreamBaseUrl: string,
   state: OpenCodeEventProxyState,
   debug: OpenCodeProxyDebug,
+  signal: AbortSignal,
 ): Promise<void> {
   const target = new URL(request.url ?? "/", upstreamBaseUrl)
   const headers = requestHeadersForFetch(request)
   const upstream = await fetch(target, {
     method: request.method ?? "GET",
     headers,
+    signal,
   })
 
   response.statusCode = upstream.status
@@ -50,6 +52,7 @@ export async function proxyOpenCodeEventsForNativeTui(
         directory: target.searchParams.get("directory"),
         counter: refreshCounter,
         debug,
+        signal,
       })
     } finally {
       refreshInFlight = false
@@ -81,6 +84,7 @@ export async function proxyOpenCodeEventsForNativeTui(
             directory: target.searchParams.get("directory"),
             counter: refreshCounter,
             debug,
+            signal,
           })
         }
         carry = carry.slice(separator.index + separator.length)
@@ -209,13 +213,14 @@ async function emitNativeTranscriptRefresh(options: {
   directory: string | null
   counter: number
   debug: OpenCodeProxyDebug
+  signal: AbortSignal
 }): Promise<number> {
   const url = new URL(`/session/${encodeURIComponent(options.sessionId)}/message`, options.upstreamBaseUrl)
   url.searchParams.set("limit", "100")
   if (options.directory) {
     url.searchParams.set("directory", options.directory)
   }
-  const refresh = await fetch(url)
+  const refresh = await fetch(url, { signal: options.signal })
   if (!refresh.ok) {
     options.debug("native_refresh_failed", {
       sessionId: options.sessionId,

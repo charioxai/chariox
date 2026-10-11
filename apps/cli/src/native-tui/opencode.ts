@@ -203,7 +203,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
   } finally {
     pump?.stop()
     if (proxy) {
-      await new Promise<void>((resolve) => proxy!.server.close(() => resolve()))
+      await proxy.close()
     }
     if (openCodeServer && openCodeServer.exitCode == null) {
       signalNativeChild(openCodeServer, "SIGTERM")
