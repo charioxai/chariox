@@ -101,6 +101,26 @@ func nativeInputPlan(_ input: [String: Any], surface: NativeSurface) throws -> N
     }
 }
 
+struct NativeReleaseFence<Element> {
+    let destination: NativeDestinationFence<Element>
+    let request: Request
+    let element: Element
+    let plan: NativeInputPlan
+    let geometry: ClickGeometry
+    let observer: () throws -> Void
+    let postingAllowed: () -> Bool
+    func check() throws {
+        try observer()
+        // A cancelled Action can release only to its still-admitted destination.
+        // Observer health, target focus/visibility/geometry and posting permission
+        // stay mandatory even though the cancelled Action's authority is retired.
+        try destination.check(request, element: element, typing: plan.typing,
+            clickGeometry: geometry, eventLocation: plan.point ?? geometry.location,
+            physicalKey: plan.typing, checkAuthority: false)
+        guard postingAllowed() else { throw Refusal.permission }
+    }
+}
+
 extension MacSource {
     @MainActor func performPhysical(_ plan: NativeInputPlan, request: Request,
                                    observer: any PhysicalInputObserver, seat: NativeInputSeat) async throws -> [String] {
@@ -113,18 +133,16 @@ extension MacSource {
         request.clickPoint = plan.point
         let element = try target(request)
         let geometry = try self.geometry(request, element: element)
+        let release = NativeReleaseFence(destination: destinationFence(for: request), request: request,
+            element: element, plan: plan, geometry: geometry, observer: { try observer.check() },
+            postingAllowed: { CGPreflightPostEventAccess() })
         try await seat.dispatch(plan, fence: {
             try observer.check()
             try checkPermission(.click)
             try self.fence(request, element: element, typing: plan.typing,
                 clickGeometry: plan.point == nil ? nil : geometry, eventLocation: plan.point, physicalKey: plan.typing)
             guard CGPreflightPostEventAccess() else { throw tagged(.permission, "post-permission-denied") }
-        }, releaseFence: {
-            // Never release over a human takeover or unknown target. Failed
-            // cleanup retains the latch; no all-keys-up or target-app kill.
-            try observer.check()
-            try validateTarget(request)
-            guard CGPreflightPostEventAccess() else { throw Refusal.permission }
+        }, releaseFence: { try release.check()
         }, post: { event in
             observer.fence.tag(event)
             event.post(tap: .cgSessionEventTap)

@@ -37,6 +37,52 @@ import AppKit
             do { _ = try nativeInputPlan(bad, surface: surface); preconditionFailure("unsafe input accepted") }
             catch { }
         }
+        // Inject AX/CG reads at the production destination fence. No native
+        // event is posted, and the release fence itself is never replaced.
+        for loss in ["focus", "cover", "same-process-cover", "geometry", "hit", "key-focus", "key-geometry", "authority"] {
+            var changed = false
+            let request = Request(pid: 42, window: 7, target: "text")
+            let saved = ClickGeometry(windowBounds: CGRect(x: 0, y: 0, width: 100, height: 100),
+                elementBounds: CGRect(x: 10, y: 10, width: 50, height: 50))
+            let destination = NativeDestinationFence<Int>(validateTarget: { _ in }, pointerPoint: { saved.location },
+                selectedWindow: { _ in
+                    try checkWindowBinding(pid: 42, frontmostPID: changed && loss == "focus" ? 43 : 42,
+                        axMatches: 1, cgMatches: 1, focused: true)
+                    return 1
+                }, focusedElement: { _ in changed && loss == "key-focus" ? 3 : 2 },
+                bind: { _, _ in }, geometry: { _ in
+                    ClickGeometry(windowBounds: saved.windowBounds,
+                        elementBounds: changed && ["geometry", "key-geometry"].contains(loss) ? saved.elementBounds.offsetBy(dx: 1, dy: 0) : saved.elementBounds)
+                }, windowBounds: { _ in saved.windowBounds }, bounds: { _ in saved.windowBounds },
+                role: { _ in kAXTextAreaRole }, hitAt: { _ in changed && loss == "hit" ? 3 : 2 },
+                parent: { _ in nil }, equal: ==, occlusion: { request, point, rect in
+                    let target = WindowOwnership(id: 7, pid: 42, bounds: rect, alpha: 1)
+                    let cover = WindowOwnership(id: 9, pid: loss == "same-process-cover" ? 42 : 43, bounds: rect, alpha: 1)
+                    try checkWindowStack(changed && ["cover", "same-process-cover"].contains(loss) ? [cover, target] : [target],
+                        request: request, point: point, windowBounds: rect)
+                }, authority: { if changed { throw Refusal.disabled } })
+            let keyboard = ["key-focus", "key-geometry"].contains(loss)
+            let admitted = try nativeInputPlan(keyboard ? ["kind":"key", "key":"left"] :
+                ["kind":"click", "x":UInt32(35), "y":UInt32(35)],
+                surface: NativeSurface(bounds: saved.windowBounds, scale: 1))
+            let release = NativeReleaseFence(destination: destination, request: request, element: 2,
+                plan: admitted, geometry: saved, observer: {}, postingAllowed: { true })
+            let seat = NativeInputSeat()
+            var sent: [CGEventType] = []
+            do {
+                try await seat.dispatch(admitted, fence: {
+                    try destination.check(request, element: 2, typing: keyboard,
+                        clickGeometry: keyboard ? nil : saved, eventLocation: admitted.point, physicalKey: keyboard)
+                }, releaseFence: { try release.check() }, post: { sent.append($0.type); changed = true })
+                preconditionFailure("lost release destination admitted")
+            } catch { precondition(refusalKind(error) == (loss == "authority" ? .disabled : .ownedInput), "\(loss): incorrect cleanup verdict") }
+            if loss == "authority" {
+                precondition(sent.count == 2 && !seat.unresolved, "safe cancelled Action could not release")
+            } else {
+                precondition(sent.count == 1 && seat.unresolved, "\(loss): release posted over lost destination")
+            }
+        }
+        print("PASS production release fence refuses seven destination losses; safe Action cancellation releases")
         print("PASS paired native coordinate conversion, owned release/cancel/reset fencing and bounded input refusals")
     }
 }
