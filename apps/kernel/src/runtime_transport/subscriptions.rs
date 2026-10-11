@@ -476,13 +476,11 @@ fn build_session_snapshot(
         attachment_owner_user_id,
         &app.durable_state_store(),
     )?;
-    snapshot.agent_activity.retain(|agent_id, _| {
-        snapshot
-            .session
-            .agents()
-            .iter()
-            .any(|agent| agent.id() == agent_id)
-    });
+    snapshot.agent_activity =
+        crate::runtime::session_projection_refresh::redact_agent_activity_for_session(
+            snapshot.agent_activity,
+            &snapshot.session,
+        );
     if snapshot
         .provider_run
         .as_ref()
@@ -492,7 +490,7 @@ fn build_session_snapshot(
                 .session
                 .agents()
                 .iter()
-                .any(|agent| agent.id() == agent_id)
+                .any(|agent| agent.id() == agent_id && agent.visible_in_freeform())
         })
     {
         snapshot.provider_run = None;
