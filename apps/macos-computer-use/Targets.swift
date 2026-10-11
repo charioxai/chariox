@@ -57,6 +57,21 @@ struct TargetReader<Node> {
     let metadata: (Node) throws -> TargetMetadata
     let children: (Node) throws -> [Node]
 }
+struct ConsumedTarget<Node> {
+    let node: Node
+    let metadata: TargetMetadata
+    let deadline: TimeInterval
+    let now: () -> TimeInterval
+    let current: () -> Bool
+    func perform(validate: (Node, TargetMetadata) throws -> Void,
+                 mutation: (Node) throws -> Void) throws {
+        try validate(node, metadata)
+        // Synchronous AX reads may consume the entire reference lifetime.
+        // This is the final check immediately before the caller's mutation.
+        guard current(), now() < deadline else { throw tagged(.target, "target-ref-stale") }
+        try mutation(node)
+    }
+}
 final class TargetRegistry<Node> {
     private var entries: [String: (node: Node, metadata: TargetMetadata)] = [:]
     private var context: TargetContext?
@@ -100,10 +115,22 @@ final class TargetRegistry<Node> {
         self.context = context; expires = now() + 2; complete = true
         return result
     }
+    func consume(_ ref: String, context: TargetContext,
+                 validate: (Node, TargetMetadata) throws -> Bool) throws -> ConsumedTarget<Node> {
+        let deadline = expires
+        let node = try resolve(ref, context: context, validate: validate)
+        guard let metadata = entries[ref]?.metadata else { throw tagged(.target, "target-ref-stale") }
+        invalidate()
+        let consumedRevision = revision
+        return ConsumedTarget(node: node, metadata: metadata, deadline: deadline, now: now,
+            current: { self.revision == consumedRevision })
+    }
     func resolve(_ ref: String, context: TargetContext, validate: (Node, TargetMetadata) throws -> Bool) throws -> Node {
         do {
             guard self.context == context, now() < expires, let entry = entries[ref],
-                  try validate(entry.node, entry.metadata) else { throw tagged(.target, "target-ref-stale") }
+                  try validate(entry.node, entry.metadata),
+                  self.context == context, entries[ref] != nil, now() < expires
+            else { throw tagged(.target, "target-ref-stale") }
             return entry.node
         } catch { invalidate(); throw error }
     }

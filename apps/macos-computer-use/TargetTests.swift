@@ -31,6 +31,35 @@ import AppKit
         let fourth = try registry.observe(root: "root", context: context, reader: reader, scrub: { $0 })
         clock = 3
         expectRefusal { _ = try registry.resolve(fourth[1].ref, context: context, validate: { _, _ in true }) }
+        let finalRead = try registry.observe(root: "root", context: context, reader: reader, scrub: { $0 })
+        let finalReadTime = clock
+        let consumed = try registry.consume(finalRead[1].ref, context: context, validate: { _, _ in true })
+        var dispatched = 0
+        do {
+            try consumed.perform(validate: { _, _ in clock = finalReadTime + 2.01 },
+                mutation: { _ in dispatched += 1 })
+        } catch { }
+        precondition(dispatched == 0, "target expired during final AX validation still mutated")
+        let validRead = try registry.observe(root: "root", context: context, reader: reader, scrub: { $0 })
+        let valid = try registry.consume(validRead[1].ref, context: context, validate: { _, _ in true })
+        expectRefusal { _ = try registry.resolve(validRead[1].ref, context: context, validate: { _, _ in true }) }
+        // resolve's failed replay invalidates the pending mutation too.
+        expectRefusal { try valid.perform(validate: { _, _ in }, mutation: { _ in dispatched += 1 }) }
+        let currentRead = try registry.observe(root: "root", context: context, reader: reader, scrub: { $0 })
+        let current = try registry.consume(currentRead[1].ref, context: context, validate: { _, _ in true })
+        try current.perform(validate: { _, _ in }, mutation: { _ in dispatched += 1 })
+        precondition(dispatched == 1, "fresh consumed target did not dispatch")
+        let crossing = try registry.observe(root: "root", context: context, reader: reader, scrub: { $0 })
+        let admittedAt = clock
+        var effects = 0
+        do {
+            _ = try registry.resolve(crossing[1].ref, context: context, validate: { _, _ in
+                clock = admittedAt + 2.01
+                return true
+            })
+            effects += 1
+        } catch { }
+        precondition(effects == 0, "target expired during AX validation still admitted mutation")
         let cycle = TargetReader<String>(secure: { _ in false }, metadata: reader.metadata, children: { [$0] })
         expectRefusal { _ = try registry.observe(root: "root", context: context, reader: cycle, scrub: { $0 }) }
         let duringWalk = TargetReader<String>(secure: reader.secure, metadata: { node in
