@@ -1174,6 +1174,7 @@ mod access;
 mod computer_tests;
 
 mod computer;
+mod computer_release;
 mod computer_backend;
 #[cfg(target_os = "macos")]
 mod mac_helper;
