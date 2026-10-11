@@ -9,7 +9,6 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { LocalIpcClient } from "../../../packages/kernel-client/dist/ipc.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "../../../packages/kernel-client/dist/kernel-types.js"
 import { cloudRelayStatusRequest, pollCloudRelayLoginRequest, relayStatusRequest } from "../../../packages/kernel-client/dist/ipc-requests.js"
-import { pollCloudDeviceLogin } from "../dist/cloud-relay.js"
 import { pollCloudRelayLogin, startCloudRelayLogin } from "../dist/relay-api.js"
 import { startHostedCloudLink } from "../dist/cloud-command-lifecycle.js"
 
@@ -141,7 +140,6 @@ try {
     status: "access_denied", interval_seconds: null, expires_at: null, profile: null,
   } } })
   assert.deepEqual(await pollCloudRelayLogin(client, apiUrl, "synthetic-device-code"), { status: "access_denied" })
-  assert.deepEqual(await pollCloudDeviceLogin(apiUrl, "synthetic-device-code"), { status: "access_denied" })
   const notices = []
   let lifecyclePolls = 0
   await startHostedCloudLink({
@@ -175,9 +173,10 @@ try {
   rejectedPoll = undefined
   legacyServer = true
   legacyRequests.length = 0
+  // MP-08 / MP-10 / MP-11: kernel ownership removed the CLI's direct Cloud
+  // device client; every terminal login polls through its kernel.
   for (const poll of [
     () => pollCloudRelayLogin(client, apiUrl, "synthetic-device-code"),
-    () => pollCloudDeviceLogin(apiUrl, "synthetic-device-code"),
   ]) {
     assert.equal((await poll()).status, "authorization_pending")
     const approved = await poll()
@@ -187,7 +186,7 @@ try {
   const approvedProfile = (await client.send(cloudRelayStatusRequest())).CloudRelayStatus.profile
   assert.equal(approvedProfile.account_id, "fixture-account")
   assert.equal((await client.send(relayStatusRequest())).RelayStatus.status.configured, false)
-  assert.deepEqual(legacyRequests, [true, false, true, false, true, false, true, false].map((advertised) => ({
+  assert.deepEqual(legacyRequests, [true, false, true, false].map((advertised) => ({
     deviceCode: "synthetic-device-code", ...(advertised ? { supportsAccessDenied: true } : {}),
   })))
   for (const [status, code, message, expectedRequests] of [
@@ -210,10 +209,10 @@ try {
   }
   rejectedPoll = undefined
   console.log(JSON.stringify({ passed: true, protocolVersion: LOCAL_DAEMON_PROTOCOL_VERSION,
-    legacyKernelCliStatus: "expired_token", legacyDirectCliStatus: "expired_token", unadvertisedDenialRetainsLegacyStatus: true,
-    advertised, kernelStatus: wire.CloudRelayLoginPolled.result.status, directCliStatus: "access_denied",
+    legacyKernelCliStatus: "expired_token", unadvertisedDenialRetainsLegacyStatus: true,
+    advertised, kernelStatus: wire.CloudRelayLoginPolled.result.status,
     lifecyclePolls, notice: notices.at(-1), denialCredentialsSaved: false, relayConfigured: false,
-    legacyServerKernelStatus: "approved", legacyServerDirectCliStatus: "approved", boundedValidationFallback: true,
+    legacyServerKernelStatus: "approved", boundedValidationFallback: true,
     privateHome }, null, 2))
 } finally {
   await client?.close()
