@@ -73,11 +73,11 @@ class TextEditLifecycleCase(unittest.TestCase):
     def helper(self, evidence, label, arguments):
         self.launches.append(label)
         if '--drill-permissions' in arguments: return 'drillPermission accessibility=granted'
+        if label == self.reference_failure:
+            # The helper saw takeover, but desktop facts are already restored.
+            if self.reference_error: raise RuntimeError('helper-launch-identity-mismatch')
+            return 'refused: target (not-frontmost)'
         if '--ax-read' in arguments:
-            if label == self.reference_failure:
-                # The helper saw takeover, but desktop facts are already restored.
-                if self.reference_error: raise RuntimeError('helper-launch-identity-mismatch')
-                return 'refused: target (not-frontmost)'
             if '--close-public-text-drill' in arguments:
                 self.state['windows'] = []
                 return 'closed public TextEdit drill window=7'
