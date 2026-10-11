@@ -474,16 +474,22 @@ export class BrowserCdpClient {
         `browser target ${JSON.stringify(target.targetId)} has no top-level loader identity`,
       );
     }
-    const focus = await this.readFocus(connection, sessionId, target.targetId, frame);
+    // MP-08/MP-10/MP-11: overlap independent observations, retaining both
+    // fences and draining their work before a failed observation returns.
+    const [focus, frames] = await Promise.allSettled([
+      this.readFocus(connection, sessionId, target.targetId, frame),
+      registerBrowserFrameTargets(connection, sessionId, target.targetId, documentId, this.targetsByFrame),
+    ]);
+    if (focus.status === "rejected") throw focus.reason;
+    if (frames.status === "rejected") throw frames.reason;
     this.documentIdsByTarget.set(target.targetId, documentId);
-    await registerBrowserFrameTargets(connection, sessionId, target.targetId, documentId, this.targetsByFrame);
     return {
       target_id: target.targetId,
       ...(typeof target.openerId === "string" ? { opener_target_id: target.openerId } : {}),
       document_id: documentId,
       url: typeof target.url === "string" ? target.url : "",
       title: typeof target.title === "string" ? target.title : "",
-      focused: focus === true,
+      focused: focus.value === true,
     };
   }
 
