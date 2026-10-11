@@ -100,6 +100,16 @@ pub(crate) async fn execute_set_provider_account_credential_request(
         &provider,
         &request.account_profile,
     )?;
+    // MP-08 / MP-09 / MP-10 / MP-11: supplied tokens use the same official
+    // verification as interactive setup-token enrollment before being stored.
+    let token = zeroize::Zeroizing::new(request.value.trim().to_string());
+    claude_setup_token_login::verify_account_token(
+        runtime_state,
+        &owner_user_id,
+        &profile.profile_id,
+        &token,
+    )
+    .await?;
     let _vault_unlock = runtime_state
         .ensure_vault_unlocked_for_command_context(
             command,
@@ -114,9 +124,21 @@ pub(crate) async fn execute_set_provider_account_credential_request(
         &owner_user_id,
         &provider,
         &profile.profile_id,
-        &request.value,
+        &token,
         request.overwrite,
     )?;
+    runtime_state
+        .provider_account_profile_registry()
+        .update_observation(
+            &owner_user_id,
+            &provider,
+            &profile.profile_id,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            None,
+            None,
+            None,
+            None,
+        )?;
     runtime_state.record_waiting_room_change();
     Ok(LocalDaemonResponse::ProviderAccountCredentialStored {
         provider,

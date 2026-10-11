@@ -223,9 +223,18 @@ async fn verify(
     record: &ProviderLoginProcessRecord,
     token: &Zeroizing<String>,
 ) -> Result<(), DaemonError> {
+    verify_account_token(runtime_state, owner_user_id, &record.account_profile, token).await
+}
+
+pub(super) async fn verify_account_token(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    account_profile: &str,
+    token: &Zeroizing<String>,
+) -> Result<(), DaemonError> {
     let registry = runtime_state.provider_account_profile_registry().clone();
     let owner_user_id = owner_user_id.to_string();
-    let account_profile = record.account_profile.clone();
+    let account_profile = account_profile.to_string();
     let token = token.clone();
     tokio::task::spawn_blocking(move || {
         let mut environment =

@@ -264,7 +264,23 @@ pub(crate) fn observe_provider_auth_status(
             Ok(status)
         }
         Some("claude") => {
-            let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
+            let mut status = claude_auth_status(provider, &profile.profile_id, &environment)?;
+            // A file-only probe cannot invalidate a verified Vault token.
+            // Explicit logout/error/expiry observations are never revived.
+            if status.auth_state != "authenticated"
+                && profile.auth_state
+                    == crate::account_profile::ProviderAccountAuthState::Authenticated
+                && crate::provider::provider_account_credential_registered(
+                    owner_user_id,
+                    provider,
+                    &profile.profile_id,
+                )?
+            {
+                status.auth_state = "authenticated".into();
+                status.identity_summary = profile.identity_summary;
+                status.plan = profile.plan;
+                status.login_hint = None;
+            }
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             Ok(status)
         }
@@ -1458,6 +1474,130 @@ mod tests {
         };
         assert_eq!(status.auth_state, "not_logged_in");
         assert!(status.login_hint.is_some());
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11: a valid file-only logout observation
+    // must not erase a previously verified, account-bound Vault login.
+    #[test]
+    fn claude_file_status_preserves_verified_vault_account_without_reviving_logout() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-verified-vault-status-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir(&root).unwrap();
+        struct Cleanup(
+            std::path::PathBuf,
+            Option<std::ffi::OsString>,
+            Option<std::ffi::OsString>,
+        );
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                for (name, value) in [
+                    ("CHARIOX_HOME", self.1.take()),
+                    ("CHARIOX_CLAUDE_BIN", self.2.take()),
+                ] {
+                    match value {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(
+            root.clone(),
+            std::env::var_os("CHARIOX_HOME"),
+            std::env::var_os("CHARIOX_CLAUDE_BIN"),
+        );
+        std::env::set_var("CHARIOX_HOME", root.join("state"));
+        let executable = root.join("claude");
+        fs::write(&executable, "#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'Claude test version\n'; else printf '%s\n' '{\"loggedIn\":false}'; fi\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("CHARIOX_CLAUDE_BIN", executable);
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .unwrap();
+        registry
+            .migrate_effective_defaults("local", &root.join("home"))
+            .unwrap();
+        let profile_id = registry
+            .get("local", "claude", "default")
+            .unwrap()
+            .profile_id;
+        let credential_id =
+            crate::provider::provider_account_credential_id("local", "claude", &profile_id);
+        crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .upsert(crate::config::UserCredentialConfig {
+                id: credential_id.clone(),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Vault { key: credential_id },
+                allowed_hosts: vec![],
+                allowed_uses: vec![crate::config::UserCredentialUse::Provider],
+                injection: crate::config::UserCredentialInjectionConfig::Provider,
+                metadata: None,
+            })
+            .unwrap();
+        registry
+            .update_observation(
+                "local",
+                "claude",
+                "default",
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(crate::provider::provider_account_credential_registered(
+            "local",
+            "claude-p",
+            &profile_id
+        )
+        .unwrap());
+        let status =
+            observe_provider_auth_status(&registry, "local", "claude-p", "default").unwrap();
+        assert_eq!(status.auth_state, "authenticated");
+        registry
+            .require_authenticated(
+                "local",
+                "claude",
+                "default",
+                None,
+                "test verified token admission",
+            )
+            .unwrap();
+        registry
+            .mark_logged_out("local", "claude", "default")
+            .unwrap();
+        assert_eq!(
+            observe_provider_auth_status(&registry, "local", "claude-p", "default")
+                .unwrap()
+                .auth_state,
+            "not_logged_in"
+        );
+        assert!(registry
+            .require_authenticated("local", "claude", "default", None, "test logout fence")
+            .is_err());
+        for state in [
+            crate::account_profile::ProviderAccountAuthState::Expired,
+            crate::account_profile::ProviderAccountAuthState::Error,
+        ] {
+            registry
+                .update_observation("local", "claude", "default", state, None, None, None, None)
+                .unwrap();
+            assert_ne!(
+                observe_provider_auth_status(&registry, "local", "claude-p", "default")
+                    .unwrap()
+                    .auth_state,
+                "authenticated"
+            );
+        }
     }
 
     #[test]
