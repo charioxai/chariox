@@ -29,3 +29,10 @@ test('MP-03 unknown and overridden signed policy versions fail closed', () => {
     assert.throws(() => verifyPath1ServicePolicy(v2(home).replace('VERSION=2','VERSION='+version), 'home'), /policy version/)
   }
 })
+
+test('MP-03 quoted or combined policy markers cannot hide a v2 override', () => {
+  const bare = worker.replace(/^Environment=CHARIOX_PATH1_SERVICE_POLICY_VERSION=.*\n/gm, '')
+  for (const marker of ['Environment="CHARIOX_PATH1_SERVICE_POLICY_VERSION=2"', 'Environment=OTHER=1 CHARIOX_PATH1_SERVICE_POLICY_VERSION=2', 'Environment=CHARIOX_PATH1_SERVICE_POLICY_VERSION="2"']) {
+    assert.throws(() => verifyPath1ServicePolicy(bare.replace('[Service]', '[Service]\n'+marker), 'worker'), /policy version/)
+  }
+})

@@ -109,7 +109,7 @@ export function verifyPath1ServicePolicy(source, role) {
   }
   // MP-03/MP-07: v1 is the signed compatibility bridge for frozen H/I.
   // v2 units require private control state and must never let systemd re-own it.
-  const versions = all.filter((line) => line.startsWith("Environment=CHARIOX_PATH1_SERVICE_POLICY_VERSION="))
+  const versions = all.filter((line) => line.includes("CHARIOX_PATH1_SERVICE_POLICY_VERSION"))
   let policyVersion = 1
   if (versions.length) {
     if (versions.length !== 1 || !lines.includes(versions[0])
