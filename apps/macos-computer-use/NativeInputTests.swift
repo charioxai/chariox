@@ -1,5 +1,13 @@
 import AppKit
 
+@MainActor final class ReleaseObserverForDestinationTests: PhysicalInputObserver {
+    let fence = PhysicalHumanFence()
+    init() { fence.observerReady = true }
+    func start() throws { fence.observerReady = true }
+    func check() throws { try fence.check() }
+    func stop() { fence.observerReady = false }
+}
+
 @main struct NativeInputTests {
     @MainActor static func main() async throws {
         let surface = NativeSurface(bounds: CGRect(x: -100, y: 50, width: 200, height: 100), scale: 2)
@@ -66,7 +74,7 @@ import AppKit
                 ["kind":"click", "x":UInt32(35), "y":UInt32(35)],
                 surface: NativeSurface(bounds: saved.windowBounds, scale: 1))
             let release = NativeReleaseFence(destination: destination, request: request, element: 2,
-                plan: admitted, geometry: saved, observer: {}, postingAllowed: { true })
+                plan: admitted, geometry: saved, observer: ReleaseObserverForDestinationTests(), foreignHeld: { false }, postingAllowed: { true })
             let seat = NativeInputSeat()
             var sent: [CGEventType] = []
             do {
