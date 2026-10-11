@@ -89,6 +89,22 @@ const batchFingerprint = createHash("sha256").update(JSON.stringify([
   input.session_id ?? null, input.transcript_path ?? null, input.prompt ?? null,
 ])).digest("hex")
 let primaryBatch = null
+let pendingHookCancelled = false
+const cancellationFile = !contextOnlyHook && eventName === "UserPromptSubmit" && hookContextRequestId
+    && process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES
+  ? join(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES, `${hookContextRequestId}.cancelled`)
+  : null
+function observePendingCancellation() {
+  if (!pendingHookCancelled && cancellationFile && existsSync(cancellationFile)) {
+    pendingHookCancelled = true
+    if (primaryBatch) {
+      primaryBatch.ready = true
+      primaryBatch.cancelled = true
+      publishBatch(primaryBatch)
+    }
+  }
+  return pendingHookCancelled
+}
 function publishBatch(batch) {
   const temporary = `${batchPath}.${process.pid}.tmp`
   writeFileSync(temporary, JSON.stringify(batch), { mode: 0o600 })
@@ -129,6 +145,7 @@ async function finishContextBatch() {
   if (!batchEnabled) return
   if (primaryBatch) {
     while (Date.now() < primaryBatch.deadline) {
+      observePendingCancellation()
       if (Array.from({ length: expectedContextChunks - 1 }, (_, index) => index + 1)
           .every(index => existsSync(chunkReceiptPath(primaryBatch, index)))) return
       await sleep(10)
@@ -187,10 +204,14 @@ if (eventName === "UserPromptSubmit") {
   try {
     additionalContext = readFileSync(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT, "utf8")
   } catch {}
-  if (!additionalContext && contextChunkIndex === 0 && hookContextRequestId && process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES) {
+  // Preloaded context is not acknowledgement of this request. Waiting on the
+  // existing bridge response also lets cancellation that precedes publication
+  // decline the prompt before the main hook and its helpers finish.
+  if (contextChunkIndex === 0 && hookContextRequestId && process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES) {
     const responseFile = join(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES, `${hookContextRequestId}.txt`)
     const deadline = Date.now() + 5000
     while (Date.now() < deadline) {
+      if (observePendingCancellation()) break
       if (existsSync(responseFile)) {
         additionalContext = readFileSync(responseFile, "utf8")
         writeFileSync(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT, additionalContext)
@@ -205,7 +226,9 @@ if (eventName === "UserPromptSubmit") {
     while (Date.now() < deadline) {
       const batch = readLiveBatch()
       if (batch?.ready) {
-        try { additionalContext = readFileSync(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT, "utf8") } catch {}
+        if (!batch.cancelled) {
+          try { additionalContext = readFileSync(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT, "utf8") } catch {}
+        } else additionalContext = ""
         break // An empty approved context is ready too.
       }
       await sleep(10)
@@ -224,6 +247,20 @@ if (eventName === "UserPromptSubmit") {
   }
   additionalContext = utf8ContextChunk(additionalContext, contextChunkIndex ?? 0)
   await finishContextBatch()
+  if (observePendingCancellation()) {
+    // The documented UserPromptSubmit blocking response declines the turn
+    // before execution. Context helpers never emit admission decisions.
+    await new Promise((resolve, reject) => {
+      process.stdout.write(JSON.stringify({ decision: "block", reason: "Request cancelled through Chariox." }),
+        error => error ? reject(error) : resolve())
+    })
+    appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
+      at: new Date().toISOString(), hook_event_name: "UserPromptSubmitInterrupted",
+      hook_context_request_id: hookContextRequestId, decision: "block",
+    }) + "\n")
+    try { unlinkSync(cancellationFile) } catch {}
+    process.exit(0)
+  }
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "UserPromptSubmit",

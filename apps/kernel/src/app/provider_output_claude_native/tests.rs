@@ -3109,20 +3109,48 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
 
 // MP-08 / MP-10 / MP-11: native interruption is a prompt-bound receipt.
 #[test]
+fn mp11_claude_hook_context_requests_cannot_escape_the_mailbox() {
+    let root = std::env::temp_dir().join(format!("integ2-hook-path-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("context").display().to_string();
+    let canary = root.join("public-canary.txt");
+    fs::write(&canary, "public canary").unwrap();
+    write_claude_hook_context_response(&context_file, "../public-canary", "approved context");
+    let unchanged = fs::read_to_string(&canary).unwrap() == "public canary";
+    write_claude_hook_context_response(&context_file, "current-request", "approved context");
+    let approved =
+        fs::read_to_string(root.join("hook-context-responses/current-request.txt")).unwrap();
+    fs::remove_dir_all(root).unwrap();
+    assert!(
+        unchanged,
+        "hook request IDs cannot address files outside their mailbox"
+    );
+    assert_eq!(approved, "approved context");
+}
+
+#[test]
 fn native_claude_cancel_settles_only_from_a_fresh_exact_run_interruption() {
-    for (hook_receipt, matching_request, cancelling, fresh, current_run, matching_prompt) in [
-        (false, true, true, true, true, true),
-        (false, true, false, true, true, true),
-        (false, true, true, false, true, true),
-        (false, true, true, true, false, true),
-        (false, true, true, true, true, false),
-        (true, true, true, true, true, true),
-        (true, false, true, true, true, true),
-        (true, true, false, true, true, true),
-        (true, true, true, false, true, true),
-        (true, true, true, true, false, true),
-        (true, true, true, true, true, false),
+    for (receipt_kind, matching_request, cancelling, fresh, current_run, matching_prompt) in [
+        (0, true, true, true, true, true),
+        (0, true, false, true, true, true),
+        (0, true, true, false, true, true),
+        (0, true, true, true, false, true),
+        (0, true, true, true, true, false),
+        (1, true, true, true, true, true),
+        (1, false, true, true, true, true),
+        (1, true, false, true, true, true),
+        (1, true, true, false, true, true),
+        (1, true, true, true, false, true),
+        (1, true, true, true, true, false),
+        (2, true, true, true, true, true),
+        (2, false, true, true, true, true),
+        (2, true, false, true, true, true),
+        (2, true, true, false, true, true),
+        (2, true, true, true, false, true),
+        (2, true, true, true, true, false),
+        (3, true, true, true, true, true),
     ] {
+        let hook_receipt = receipt_kind != 0;
         let worktree = crate::test_support::TestWorktree::new("claude-native-cancel-receipt");
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -3195,6 +3223,14 @@ fn native_claude_cancel_settles_only_from_a_fresh_exact_run_interruption() {
             other => panic!("{other:?}"),
         };
         write_claude_native_marker(&context_file, &format!("native:{}", prompt.id()));
+        let requested_at_ms = prompt.created_at_ms() + 100;
+        if receipt_kind == 3 {
+            app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
+                .unwrap();
+            app.active_turns
+                .mark_interruption_requested(run.id(), prompt.id(), requested_at_ms);
+        }
+        let mut prebinding_requested = false;
         if hook_receipt {
             write_claude_native_marker(&context_file, &format!("injected:{}", prompt.id()));
             fs::write(
@@ -3210,12 +3246,16 @@ fn native_claude_cancel_settles_only_from_a_fresh_exact_run_interruption() {
             ProviderOutputClaudeNativeBridge::new(&mut app)
                 .process(session.id(), run.id(), &run, None)
                 .unwrap();
+            if receipt_kind == 3 {
+                prebinding_requested = root
+                    .join("hook-context-responses/current-submit-hook.cancelled")
+                    .exists();
+            }
         }
-        if cancelling {
+        if cancelling && receipt_kind != 3 {
             app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
                 .unwrap();
         }
-        let requested_at_ms = prompt.created_at_ms() + 100;
         app.active_turns
             .mark_interruption_requested(run.id(), prompt.id(), requested_at_ms);
         if !matching_prompt {
@@ -3236,7 +3276,8 @@ fn native_claude_cancel_settles_only_from_a_fresh_exact_run_interruption() {
             fs::write(&events_file, serde_json::json!({
                 "hook_event_name": "UserPromptSubmitInterrupted", "at": timestamp,
                 "hook_context_request_id": if matching_request { "current-submit-hook" } else { "stale-submit-hook" },
-                "signal": "SIGTERM"
+                "signal": if receipt_kind == 1 { Some("SIGTERM") } else { None },
+                "decision": if receipt_kind >= 2 { Some("block") } else { None }
             }).to_string()+"\n").unwrap();
         }
         if !current_run {
@@ -3261,6 +3302,10 @@ fn native_claude_cancel_settles_only_from_a_fresh_exact_run_interruption() {
         ProviderOutputClaudeNativeBridge::new(&mut app)
             .process(session.id(), run.id(), &run, None)
             .unwrap();
+        let cancellation_requested = root
+            .join("hook-context-responses/current-submit-hook.cancelled")
+            .exists();
+
         ProviderOutputClaudeNativeBridge::new(&mut app)
             .finish_deferred_stop(session.id(), run.id(), &run)
             .unwrap();
@@ -3268,6 +3313,14 @@ fn native_claude_cancel_settles_only_from_a_fresh_exact_run_interruption() {
             .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
             .unwrap();
         fs::remove_dir_all(root).unwrap();
+        if receipt_kind == 3 {
+            assert!(prebinding_requested, "cancellation before hook publication must decline admission in the same bridge pass");
+        }
+        assert_eq!(
+            cancellation_requested,
+            hook_receipt && cancelling && current_run && matching_prompt,
+            "decline request must belong to the exact current cancelled turn"
+        );
         assert_eq!(
             active.is_none(),
             cancelling && fresh && current_run && matching_prompt && matching_request,

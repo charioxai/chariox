@@ -312,6 +312,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 );
             }
         }
+        interruption::request_pending_prompt_hook_cancellation(
+            self.app,
+            session_id,
+            provider_run_id,
+            context_file,
+        )?;
         if let Some(settled) = self.process_pending_claude_stop(
             session_id,
             provider_run_id,
@@ -434,10 +440,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         )?;
                         interruption::bind_prompt_hook_request(
                             self.app,
+                            session_id,
                             provider_run_id,
+                            context_file,
                             dispatch_prompt_id,
                             &event,
-                        );
+                        )?;
                         continue;
                     }
                     if active_prompt.is_some() {
@@ -494,10 +502,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     write_claude_native_marker(context_file, &format!("native:{}", prompt.id()));
                     interruption::bind_prompt_hook_request(
                         self.app,
+                        session_id,
                         provider_run_id,
+                        context_file,
                         prompt.id(),
                         &event,
-                    );
+                    )?;
+                    continue; // Binding already published this request's context response.
                 }
                 if let Some(request_id) =
                     event.get("hook_context_request_id").and_then(Value::as_str)

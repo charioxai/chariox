@@ -233,13 +233,19 @@ rejected. Connection-local MCP request IDs cannot identify provider tool calls.
 
 Cancel both while Claude runs a real public-site tool and while its native
 UserPromptSubmit hook is preparing the next real research turn. In the latter
-case Claude can terminate the hook before writing a user transcript record.
+case Claude can ignore Esc or terminate the hook before writing a user transcript record.
+When Esc is ignored, the current hook must decline admission using its documented
+blocking response to the exact kernel-owned cancellation request. A flushed
+blocking receipt uses the same bridge and settlement fences as hook termination.
 The existing hook bridge must receipt that exact request; home settles only
 from a fresh receipt for its current cancelled prompt and current worker run.
 Keep stale request, stale timestamp, wrong run and non-cancelling controls.
 The primary hook must remain alive until its context-only helpers finish, so
 Esc during preparation still reaches that same request. Include an empty hidden
 context: it is a completed response, and must not hold helpers for their timeout.
+Repeat with preloaded context: the primary hook must still await the current
+bridge response, and helpers must receive the current approved context. An
+earlier turn's context must not bypass that acknowledgement or pending cancel.
 Generated-hook subprocess checks supplement the real native-provider drill.
 The original Esc must settle the exact home prompt and leave the native composer
 writable for a real public-site continuation. Supplemental terminal/RPC input

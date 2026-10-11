@@ -167,3 +167,94 @@ fn mp08_mp10_primary_hook_remains_alive_until_context_chunks_finish() {
         .any(|r| r["hook_event_name"] == "UserPromptSubmitInterrupted"
             && r["hook_context_request_id"] == request["hook_context_request_id"]));
 }
+
+#[test]
+fn mp08_mp10_pending_prompt_hook_blocks_only_its_cancelled_request() {
+    for matching in [true, false] {
+        let root = std::env::temp_dir().join(format!(
+            "native-hook-block-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        fs::create_dir_all(root.join("responses")).unwrap();
+        fs::write(root.join("context"), "").unwrap();
+        let handler = root.join("hook.mjs");
+        let events = root.join("events.jsonl");
+        fs::write(&handler, claude_native_hook_handler()).unwrap();
+        let mut child = Command::new("node")
+            .arg(&handler)
+            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &events)
+            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", root.join("context"))
+            .env(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES",
+                root.join("responses"),
+            )
+            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK", "0")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(br#"{"hook_event_name":"UserPromptSubmit","prompt":"Read the public documentation"}"#).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let request = loop {
+            if let Ok(raw) = fs::read_to_string(&events) {
+                if let Some(line) = raw.lines().next() {
+                    break serde_json::from_str::<serde_json::Value>(line).unwrap();
+                }
+            }
+            if Instant::now() >= deadline {
+                assert!(child.id() > 1);
+                child.kill().unwrap();
+                child.wait().unwrap();
+                fs::remove_dir_all(&root).unwrap();
+                panic!("pending hook did not publish its request");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let id = request["hook_context_request_id"].as_str().unwrap();
+        fs::write(
+            root.join("responses").join(format!(
+                "{}.cancelled",
+                if matching { id } else { "stale-hook-request" }
+            )),
+            "",
+        )
+        .unwrap();
+        if !matching {
+            fs::write(
+                root.join("responses").join(format!("{id}.txt")),
+                "public source review context",
+            )
+            .unwrap();
+        }
+        let output = child.wait_with_output().unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let records: Vec<serde_json::Value> = fs::read_to_string(&events)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            response["decision"].as_str() == Some("block"),
+            matching,
+            "only the current request's cancellation can block provider admission"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .any(|r| r["hook_event_name"] == "UserPromptSubmitInterrupted"
+                    && r["decision"] == "block"
+                    && r["hook_context_request_id"] == id),
+            matching
+        );
+        if !matching {
+            assert_eq!(
+                response["hookSpecificOutput"]["additionalContext"],
+                "public source review context"
+            );
+        }
+    }
+}

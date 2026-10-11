@@ -308,12 +308,20 @@ fn compact_claude_permission_text(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
+pub(super) fn valid_claude_hook_request_id(request_id: &str) -> bool {
+    !request_id.is_empty()
+        && request_id.len() <= 128
+        && request_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 pub(super) fn write_claude_hook_context_response(
     context_file: &str,
     request_id: &str,
     context: &str,
 ) {
-    if request_id.trim().is_empty() {
+    if !valid_claude_hook_request_id(request_id) {
         return;
     }
     let Some(root) = std::path::Path::new(context_file).parent() else {

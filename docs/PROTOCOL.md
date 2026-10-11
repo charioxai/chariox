@@ -399,7 +399,7 @@ Native TUI hidden context:
 - Claude hook context responses are scoped to the session, agent, and provider run; they must not expose broad kernel authority or accept arbitrary provider-origin file paths
 - if a Claude hook context response is unavailable before timeout, the provider-facing hidden context is empty and the native TUI remains coherent; Chariox MUST NOT fall back to visible PTY prompt injection for skill bodies or system prompt blocks
 - local Claude native TUI can answer hook context requests through the launcher bridge and home kernel; remote/slice Claude native TUI answers them on the provider-execution side so worker-local or slice-isolated skill material is used
-- MP-08 / MP-10 / MP-11: native Claude cancellation settles through the normal kernel finalizer after a fresh interruption transcript receipt, or termination of the exact current `UserPromptSubmit` hook request before a transcript message exists. Hook termination alone cannot settle a running prompt without the same kernel-owned cancellation intent and current provider-run binding.
+- MP-08 / MP-10 / MP-11: native Claude cancellation settles through the normal kernel finalizer after a fresh interruption transcript receipt, or termination of the exact current `UserPromptSubmit` hook request before a transcript message exists. While that exact hook is pending, the kernel may ask it to decline admission through the documented `UserPromptSubmit` response `decision: "block"`; its flushed response is receipted through the same bridge. Neither hook termination nor a blocking receipt can settle a running prompt without the same kernel-owned cancellation intent and current provider-run binding.
 
 Provider-specific transport:
 
