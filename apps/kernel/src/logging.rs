@@ -2,7 +2,10 @@ use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+
+mod background_writer;
+use background_writer::{BackgroundWriter, WriteAction};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
@@ -44,7 +47,7 @@ struct ProcessLogger {
     pid: u32,
     level: LogLevel,
     log_path: Option<PathBuf>,
-    writer: Option<Mutex<BoundedLogWriter>>,
+    writer: Option<BackgroundWriter>,
 }
 
 struct BoundedLogWriter {
@@ -59,6 +62,29 @@ struct BoundedLogWriter {
     bytes_since_flush: u64,
     max_file_bytes: u64,
     flush_interval_bytes: u64,
+}
+
+/// Drains pending process logs after the runtime and its producers have stopped.
+/// Construct before the runtime so this guard is dropped last.
+pub struct ProcessLogGuard;
+
+impl Drop for ProcessLogGuard {
+    fn drop(&mut self) {
+        if let Some(writer) = LOGGER.get().and_then(|logger| logger.writer.as_ref()) {
+            writer.flush();
+        }
+    }
+}
+
+fn start_log_writer(mut writer: BoundedLogWriter) -> std::io::Result<BackgroundWriter> {
+    BackgroundWriter::start(move |action| match action {
+        WriteAction::Line(line, flush) => {
+            let _ = writer.write_line(&line, flush);
+        }
+        WriteAction::Flush => {
+            let _ = writer.file.flush();
+        }
+    })
 }
 
 pub fn init_process_logger(process_kind: &str) -> std::io::Result<PathBuf> {
@@ -78,13 +104,13 @@ pub fn init_process_logger(process_kind: &str) -> std::io::Result<PathBuf> {
     let writer = if level == LogLevel::Off {
         None
     } else {
-        Some(Mutex::new(BoundedLogWriter::new(
+        Some(start_log_writer(BoundedLogWriter::new(
             log_root.clone(),
             startup_epoch_ms,
             process_kind,
             std::process::id(),
             log_path.clone(),
-        )?))
+        )?)?)
     };
 
     let logger = ProcessLogger {
@@ -216,18 +242,13 @@ fn log(level: LogLevel, component: &str, message: String, fields: Value) {
 }
 
 fn write_log_record(
-    writer: &Mutex<BoundedLogWriter>,
+    writer: &BackgroundWriter,
     record: Map<String, Value>,
     flush_immediately: bool,
     encode: impl FnOnce(Map<String, Value>) -> String,
 ) {
     let line = encode(record);
-    let mut writer = match writer.lock() {
-        Ok(guard) => guard,
-        Err(_) => return,
-    };
-
-    let _ = writer.write_line(&line, flush_immediately);
+    writer.write(line, flush_immediately);
 }
 
 fn configured_log_level() -> LogLevel {
@@ -656,10 +677,13 @@ mod tests {
 
         let dir = temp_log_dir("concurrent-encoding");
         let path = dir.join("100-daemon-7.ndjson");
-        let writer = Arc::new(Mutex::new(
-            BoundedLogWriter::new(dir.clone(), 100, "daemon", 7, path.clone())
-                .expect("create bounded writer"),
-        ));
+        let writer = Arc::new(
+            start_log_writer(
+                BoundedLogWriter::new(dir.clone(), 100, "daemon", 7, path.clone())
+                    .expect("create bounded writer"),
+            )
+            .expect("start log writer"),
+        );
         let (encoding_started, wait_for_encoding) = mpsc::channel();
         let (release_encoding, encoding_released) = mpsc::channel();
         let slow_writer = Arc::clone(&writer);
@@ -698,6 +722,73 @@ mod tests {
             completed,
             "another record waited for unrelated slow encoding"
         );
+    }
+
+    #[test]
+    fn info_submission_does_not_wait_for_a_busy_log_sink() {
+        use std::sync::{mpsc, Arc};
+
+        let dir = temp_log_dir("busy-sink");
+        let path = dir.join("100-daemon-7.ndjson");
+        let mut sink = BoundedLogWriter::new(dir.clone(), 100, "daemon", 7, path.clone())
+            .expect("create bounded writer");
+        let (sink_started, wait_for_sink) = mpsc::channel();
+        let (release_sink, sink_released) = mpsc::channel();
+        let writer = Arc::new(
+            BackgroundWriter::start(move |action| {
+                if let WriteAction::Line(line, flush) = action {
+                    sink_started.send(()).expect("signal busy sink");
+                    sink_released.recv().expect("release busy sink");
+                    sink.write_line(&line, flush)
+                        .expect("write complete record");
+                }
+            })
+            .expect("start log writer"),
+        );
+        let (submitted, wait_for_submission) = mpsc::channel();
+        let producer_writer = Arc::clone(&writer);
+        let producer = std::thread::spawn(move || {
+            write_log_record(&producer_writer, Map::new(), false, encode_log_record);
+            submitted.send(()).expect("signal submitted info");
+        });
+        let completed = wait_for_submission
+            .recv_timeout(Duration::from_secs(1))
+            .is_ok();
+        wait_for_sink.recv().expect("sink has started");
+        release_sink.send(()).expect("release sink I/O");
+        producer.join().expect("join producer");
+        drop(writer);
+        let records = fs::read_to_string(path).expect("read complete record");
+        assert_eq!(records.lines().count(), 1);
+        fs::remove_dir_all(dir).expect("remove own log state");
+        assert!(completed, "info submission waited for blocked sink I/O");
+    }
+
+    #[test]
+    fn process_log_guard_flushes_the_final_info_record() {
+        crate::test_support::isolated_env_test!();
+        let _environment = crate::env_lock::lock();
+        let dir = temp_log_dir("normal-exit-flush");
+        std::env::set_var("CHARIOX_LOG_DIR", &dir);
+        std::env::set_var("CHARIOX_LOG_LEVEL", "info");
+        let guard = ProcessLogGuard;
+        let path = init_process_logger("exit-test").expect("initialize process logger");
+        for index in 0..800 {
+            info_with_fields(
+                "exit-test",
+                "final queued records",
+                json!({ "index": index }),
+            );
+        }
+        drop(guard);
+        let records = fs::read_to_string(path).expect("read flushed process log");
+        let records = records
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("whole JSON record"))
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 801);
+        assert_eq!(records.last().unwrap()["index"], 799);
+        fs::remove_dir_all(dir).expect("remove own process log state");
     }
 
     #[test]
