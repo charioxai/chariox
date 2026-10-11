@@ -1295,12 +1295,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        if leased_agent.active_home_prompt_id.as_deref() != Some(expected_home_prompt_id) {
-            return Err(DaemonError::LocalTransport {
-                operation: "cancel leased prompt",
-                message: "active home prompt did not match the cancellation identity".to_string(),
-            });
-        }
         let active_prompt = self
             .app
             .prompt_owner_active_prompt_for_agent(
@@ -1310,7 +1304,31 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: leased_agent.backing_session_id.clone(),
             })?;
-        if leased_agent.active_home_prompt_started_at_ms != Some(active_prompt.created_at_ms())
+        let current_run = self.app.providers.get_run_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        );
+        // MP-08 / MP-10 / MP-11: a native-origin turn has the exact worker
+        // prompt ID projected to home, rather than a managed submit receipt.
+        let native_origin = leased_agent.active_home_prompt_id.is_none()
+            && active_prompt.id() == expected_home_prompt_id
+            && leased_agent
+                .projected_prompt_ids
+                .iter()
+                .any(|id| id == active_prompt.id())
+            && current_run.as_ref().is_some_and(|run| {
+                !run.client_interface().is_chariox() && run.id() == expected_worker_provider_run_id
+            });
+        if !native_origin
+            && leased_agent.active_home_prompt_id.as_deref() != Some(expected_home_prompt_id)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "cancel leased prompt",
+                message: "active home prompt did not match the cancellation identity".to_string(),
+            });
+        }
+        if (!native_origin
+            && leased_agent.active_home_prompt_started_at_ms != Some(active_prompt.created_at_ms()))
             || !matches!(
                 active_prompt.status(),
                 crate::session::PromptStatus::Dispatching

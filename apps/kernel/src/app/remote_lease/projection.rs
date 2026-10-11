@@ -1473,7 +1473,30 @@ impl<'a> RemoteLeaseRuntime<'a> {
             prompt.attachments(),
         )?;
         if matches!(outcome, PromptSubmissionOutcome::Started { .. }) {
-            crate::transport::flow_control::note_prompt_started(self.app, provider_run_id);
+            // The authenticated, run-fenced worker projection is this native
+            // turn's receipt. Use the ordinary durable delivery contract so
+            // controls can dispatch to that exact worker run.
+            self.app.mark_active_prompt_delivery(
+                session_id,
+                agent_id,
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(provider_run_id.to_string()),
+                None,
+            )?;
+            let home_run_id = self
+                .app
+                .agents
+                .get_agent(agent_id)?
+                .remote_execution()
+                .map(|remote| {
+                    crate::provider::projected_leased_provider_run_id(
+                        &remote.leased_agent_id,
+                        provider_run_id,
+                    )
+                })
+                .unwrap_or_else(|| provider_run_id.to_string());
+            crate::transport::flow_control::note_prompt_started(self.app, &home_run_id);
         }
         Ok(())
     }
@@ -2620,6 +2643,21 @@ mod explicit_completion_tests {
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].text, "native prompt from home TUI\n");
         assert_eq!(prompts[0].prompt_id, native_prompt.id());
+        // MP-08 / MP-10 / MP-11: native-origin turns use the projected exact ID,
+        // without a managed submit ACK. They still need the normal cancel fence.
+        for (prompt_id, run_id) in [
+            ("stale-native-prompt", provider_run.id()),
+            (native_prompt.id(), "stale-native-run"),
+        ] {
+            assert!(RemoteLeaseRuntime::new(&mut app)
+                .cancel_leased_prompt(&leased_agent.id, prompt_id, run_id)
+                .is_err());
+        }
+        let cancellation = RemoteLeaseRuntime::new(&mut app)
+            .cancel_leased_prompt(&leased_agent.id, native_prompt.id(), provider_run.id())
+            .expect("exact projected native turn should admit cancellation on its worker");
+        assert_eq!(cancellation.prompt.id(), native_prompt.id());
+        assert_eq!(cancellation.prompt.status(), PromptStatus::Cancelling);
 
         let worktree = crate::test_support::TestWorktree::new("native-worker-prompt-home");
         let (home, home_agent) = crate::app::KernelSessionService::new(&mut app)
@@ -2646,6 +2684,18 @@ mod explicit_completion_tests {
                 .unwrap()
                 .id(),
             prompts[0].prompt_id
+        );
+        let received = app
+            .prompt_owner_active_prompt_for_agent(home.id(), home_agent.id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            received.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+        assert_eq!(
+            received.durable_delivery_provider_run_id(),
+            Some(provider_run.id())
         );
     }
 
