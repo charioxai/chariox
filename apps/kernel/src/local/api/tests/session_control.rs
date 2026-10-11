@@ -1308,7 +1308,7 @@ fn envp01_project_read_without_agents_denies_foreign_owner() {
 }
 
 #[test]
-fn envp01_future_operations_are_known_but_unsupported_without_side_effects() {
+fn envp01_delivered_operations_authorize_and_future_operations_remain_unsupported() {
     let harness = LocalRouterTestHarness::new();
     let target = serde_json::json!({"machine_id":"machine","target_instance_generation":"generation","slice_ref":null});
     let future = vec![
@@ -1323,7 +1323,16 @@ fn envp01_future_operations_are_known_but_unsupported_without_side_effects() {
         serde_json::json!({"CommitEnvironmentImport":{"operationId":"op","previewId":"absent","previewDigest":"digest","choice":{"kind":"new"}}}),
     ];
     for value in future {
+        let delivered = value.as_object().unwrap().keys().any(|name| matches!(name.as_str(),
+            "PlanProjectEnvironment" | "ApplyProjectEnvironment" | "CheckProjectEnvironment"
+            | "GetEnvironmentOperation" | "CancelEnvironmentOperation" | "RetryEnvironmentOperation"));
         let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
+        if delivered {
+            // MP-08 / MP-10 / MP-11: P04/P05a are delivered, but an absent
+            // Project must fail authorization before any operation is admitted.
+            assert!(harness.dispatch(request).unwrap_err().to_string().contains("was not found"));
+            continue;
+        }
         assert!(matches!(
             harness.dispatch(request).unwrap(),
             LocalDaemonResponse::EnvironmentUnsupportedFeature {
