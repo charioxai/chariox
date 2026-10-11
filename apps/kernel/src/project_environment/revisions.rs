@@ -225,6 +225,7 @@ fn validate_draft(
                     for entry in entries {
                         if entry.folder_id != *folder_id
                             || !super::detect_index::safe_metadata(&entry.relative_path)
+                            || super::detect_index::credential_metadata(&entry.relative_path)
                         {
                             return Err(environment_error("invalid or protected File metadata"));
                         }
