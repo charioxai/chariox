@@ -120,8 +120,9 @@ export async function cancelActivePrompt(
   client: LocalIpcClient,
   sessionId: string,
   attachmentId: string,
+  targetAgentId?: string | null,
 ): Promise<void> {
-  await client.send<Record<string, unknown>>(cancelActivePromptRequest(sessionId, attachmentId))
+  await client.send<Record<string, unknown>>(cancelActivePromptRequest(sessionId, attachmentId, targetAgentId))
 }
 
 export async function steerQueuedPrompt(

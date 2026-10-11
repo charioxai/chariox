@@ -1,4 +1,5 @@
 import { createCliUserAppViewsComposition } from "./cli-user-app-views-composition.js"
+import { sessionActivePromptForAgent } from "@chariox/kernel-client/session-prompt-identity"
 import type { MutableLocalIpcClient } from "./mutable-local-ipc-client.js"
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
@@ -363,10 +364,10 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
   const promptStopController = createPromptStopController({
     getAttachment: attachmentState,
-    getActivePrompt: activePrompt,
+    getActivePrompt: () => sessionActivePromptForAgent(sessionState(), focusedAgentId() ?? sessionState().focused_agent_id ?? ""),
     getSessionId: () => sessionState().id,
-    getFallbackStreamingAgentId: streamingAgentId,
-    cancelActivePrompt: (sessionId, attachmentId) => cancelActivePrompt(client, sessionId, attachmentId),
+    getFallbackStreamingAgentId: () => focusedAgentId() ?? streamingAgentId(),
+    cancelActivePrompt: (sessionId, attachmentId, targetAgentId) => cancelActivePrompt(client, sessionId, attachmentId, targetAgentId),
     onCancellationRequested: (targetAgentId) => {
       appLogger?.info("requested active prompt cancellation")
       setStatusLine("Cancellation requested.")

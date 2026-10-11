@@ -327,3 +327,19 @@ test("MP-08/MP-11 setup-token run starts kernel capture without asking for the t
   assert.deepEqual(requests[0], { SetProviderAccountCredential: { provider: "claude", account_profile: "work", value: "", run: true, overwrite: true, session_id: "session-1", agent_id: "agent-1" } })
   assert.match(result.message ?? "", /login-status capture-1/)
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11 A10/G03: peer focus must reach kernel cancellation.
+test("stop targets the focused peer instead of the default session agent", async () => {
+  const requests: Record<string, unknown>[] = []
+  const result = await executeShellCommand(parseShellCommand("stop"),
+    createDefaultShellContext({ sessionId: "room", attachmentId: "terminal", agentId: "peer" }), {
+      client: { send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        return { PromptCancelled: { cancellation: { prompt: { id: "peer-turn" } } } }
+      } },
+    })
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests, [{ CancelActivePrompt: {
+    session_id: "room", attachment_id: "terminal", target_agent_id: "peer",
+  } }])
+})
