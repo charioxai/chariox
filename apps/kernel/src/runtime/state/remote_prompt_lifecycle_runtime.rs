@@ -332,7 +332,7 @@ impl KernelRuntimeState {
                 operation: "cancel remote prompt",
                 message: format!("unexpected remote prompt cancellation response: {other:?}"),
             }),
-            Err(error) if remote_prompt_completion_should_treat_as_settled(&error) => {
+            Err(error) if remote_prompt_cancellation_should_treat_as_settled(&error) => {
                 crate::logging::warn_with_fields(
                     "daemon.remote_prompt_dispatch",
                     "remote prompt cancellation already settled on worker",
@@ -811,6 +811,22 @@ impl KernelRuntimeState {
     }
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11 A10/G03: this worker has lost the
+// exact lease whose cancellation we verified. Release cancelled work only;
+// a missing lease remains insufficient evidence for successful completion.
+fn remote_prompt_cancellation_should_treat_as_settled(error: &DaemonError) -> bool {
+    remote_prompt_completion_should_treat_as_settled(error)
+        || matches!(
+            error,
+            DaemonError::RelayTransport {
+                operation: "read relay peer response" | "read temporary relay peer response",
+                code,
+                retryable: false,
+                ..
+            } if code == "leased_agent_not_found"
+        )
+}
+
 fn remote_prompt_completion_should_treat_as_settled(error: &DaemonError) -> bool {
     match error {
         DaemonError::NoActivePrompt { .. } => true,
@@ -948,6 +964,36 @@ mod tests {
             Some(&attempted),
             &attempted,
         ));
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 A10/G03: a cancelled lost lease
+    // cannot release a success receipt, but its exact worker denial settles
+    // cancellation. A disconnected target never proves that.
+    #[test]
+    fn remote_cancellation_settles_exact_missing_lease_without_completing_it() {
+        let missing = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "leased_agent_not_found".to_string(),
+            message: "leased agent `lost-lease` was not found".to_string(),
+            retryable: false,
+        };
+        assert!(remote_prompt_cancellation_should_treat_as_settled(&missing));
+        assert!(!remote_prompt_completion_should_treat_as_settled(&missing));
+        for (operation, code, retryable) in [
+            ("write relay peer request", "leased_agent_not_found", false),
+            ("read relay peer response", "leased_agent_not_found", true),
+            ("read relay peer response", "target_not_connected", true),
+            ("read relay peer response", "unauthorized", false),
+        ] {
+            assert!(!remote_prompt_cancellation_should_treat_as_settled(
+                &DaemonError::RelayTransport {
+                    operation,
+                    code: code.to_string(),
+                    message: "leased agent `lost-lease` was not found".to_string(),
+                    retryable,
+                }
+            ));
+        }
     }
 
     #[test]
