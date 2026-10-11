@@ -55,6 +55,7 @@ pub(super) enum ProviderRunActorCommand {
     Abort {
         session_id: String,
         provider_run_id: String,
+        prompt_id: String,
         run: RuntimeProviderRun,
     },
     Terminate {
@@ -146,6 +147,7 @@ impl ProviderRunWorkerDeps {
             ProviderRunActorCommand::Abort {
                 session_id,
                 provider_run_id,
+                prompt_id,
                 run,
             } => {
                 let result = execute_abort_command(&self.runtime_registry, run);
@@ -153,6 +155,7 @@ impl ProviderRunWorkerDeps {
                 let finished = FinishedProviderPromptAbortJob {
                     session_id,
                     provider_run_id: provider_run_id.clone(),
+                    prompt_id,
                     result,
                 };
                 push_finished_abort(&self.finished_aborts, finished);

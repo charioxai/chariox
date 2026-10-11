@@ -1,3 +1,4 @@
+import { signalNativeChild } from "./native-child-signals.js"
 import { execFile, spawn } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
@@ -68,7 +69,7 @@ export async function startClaudeAttachedPty(options: {
 
   const stdin = child.stdin
   if (!stdin) {
-    child.kill("SIGTERM")
+    signalNativeChild(child, "SIGTERM")
     throw new Error("failed to start attached Claude PTY: script stdin was unavailable")
   }
   const ready = sleep(1_500)
@@ -104,9 +105,9 @@ export async function startClaudeAttachedPty(options: {
       if (stopped) return
       stopped = true
       if (child.exitCode == null && child.signalCode == null) {
-        child.kill("SIGTERM")
+        signalNativeChild(child, "SIGTERM")
         await Promise.race([waitForExit, sleep(2_000)]).catch(() => {})
-        if (child.exitCode == null && child.signalCode == null) child.kill("SIGKILL")
+        if (child.exitCode == null && child.signalCode == null) signalNativeChild(child, "SIGKILL")
       }
     },
   }

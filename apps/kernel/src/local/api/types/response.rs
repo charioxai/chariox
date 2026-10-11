@@ -3,6 +3,10 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
+    WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
+    WorkflowNotificationDetached { subscription_id: String },
+    WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     EnvironmentUnsupportedFeature { feature: crate::project_environment::EnvironmentCapability, supported_schema: u32 },
     ProjectEnvironmentDiff { diff: crate::project_environment::EnvironmentRevisionDiff },
     ProjectEnvironmentSaved { environment: crate::project_environment::ProjectEnvironment, diff: crate::project_environment::EnvironmentRevisionDiff },
@@ -86,7 +90,12 @@ pub enum LocalDaemonResponse {
     ProjectEnvironmentSetupRetried { status: ProjectEnvironmentSetupStatus, },
     SessionsListed { sessions: Vec<RuntimeSession>, },
     SessionResolved { session: RuntimeSession, },
+    RoomWorkflowRunsControlled {
+        results: Vec<RoomWorkflowRunControlResult>,
+        inventory: crate::runtime::projection::RoomWorkflowInventory,
+    },
     SessionState {
+        room_workflows: crate::runtime::projection::RoomWorkflowInventory,
         session: RuntimeSession,
         agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
         #[serde(default)]
@@ -367,6 +376,7 @@ pub enum LocalDaemonResponse {
     },
     PromptCompleted { completion: PromptCompletion, },
     PromptCancelled { cancellation: PromptCancellation, },
+    ActivePromptSteered { prompt: PromptQueueItem, },
     QueuedPromptSteered {
         prompt: PromptQueueItem,
         session: RuntimeSession,

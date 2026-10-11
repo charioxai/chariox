@@ -233,6 +233,7 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
     } else if let Some(alias) = target.daemon_alias.as_deref() {
         let discovery = crate::runtime::cloud_api_client::relay_metadata_discovery_config(config).await?;
         let peer = relay_discovery::get_live_kernel(&discovery, alias).await?;
+        authorize()?;
         if peer.public_key != target_public_key {
             return Err(DaemonError::LocalTransport {
                 operation: "resolve relay peer alias",
@@ -1433,3 +1434,7 @@ mod relay_rtt_tests {
         assert_eq!(fields["error"], serde_json::json!("timed out"));
     }
 }
+
+#[cfg(test)]
+#[path = "peer_metadata_auth_tests.rs"]
+mod metadata_auth_tests;

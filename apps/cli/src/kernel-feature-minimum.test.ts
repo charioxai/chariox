@@ -3,6 +3,12 @@ import test from "node:test"
 import { acceptAppHostActionRequest, appHostActionMinimumProtocolVersion, restoreAppDataSnapshotRequest, startSliceRequest, submitRoomEnvironmentBrowserActionRequest } from "@chariox/kernel-client/ipc-requests"
 import { requireKernelFeatureProtocol } from "./kernel-feature-minimum.js"
 
+test("MP-08 MP-10 native active steering requires allocated protocol 491", () => {
+  const request = { SteerActivePrompt: {} }
+  assert.throws(() => requireKernelFeatureProtocol(request, 482), /Active prompt steering needs protocol ≥491/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 491))
+})
+
 test("protocol-388 kernel gets actionable App host refusal before a request is sent", () => {
   assert.throws(() => requireKernelFeatureProtocol(acceptAppHostActionRequest("s", "o"), 388), {
     message: "kernel too old: App host actions needs protocol ≥409; this kernel is 388; update the kernel",
@@ -70,4 +76,15 @@ test("standalone and reserved Project Environment operations require protocol 48
     assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 472), /Project Environment needs protocol ≥487/)
     assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 487))
   }
+})
+
+// MP-08 / MP-10 / MP-11: old decoders may ignore an optional cancellation fence.
+test("MP-08 MP-10 exact prompt cancellation rejects old and unknown kernels", () => {
+  const request = { CancelActivePrompt: { expected_prompt_id: "home-prompt" } }
+  for (const version of [undefined, 0, NaN, -1, 490.5, 490, 489]) {
+    assert.throws(() => requireKernelFeatureProtocol(request, version), /Exact prompt cancellation needs protocol ≥491/)
+  }
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 491))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: {} }, undefined))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: {} }, 490))
 })

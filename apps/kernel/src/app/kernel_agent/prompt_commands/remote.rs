@@ -497,14 +497,8 @@ impl<'a> KernelAgentService<'a> {
             .ensure_remote_agent_binding_protocol(remote_execution)?;
         let workflow_context = crate::app::RemoteWorkflowTurnContextResolver::new(self.app)
             .remote_workflow_turn_context_for_prompt(session_id, agent_id, &peeked)?;
-        let home_prompt_id = self.app.sessions_mut().reserve_prompt_id();
-        let (_session, next_candidate) = self
-            .activate_next_queued_prompt_for_mirror_with_prompt_id(
-                session_id,
-                agent_id,
-                Some(&peeked),
-                home_prompt_id,
-            )?;
+        let (_session, next_candidate) =
+            self.activate_next_queued_prompt_for_mirror(session_id, agent_id, Some(&peeked))?;
         let Some(active) = next_candidate else {
             return Ok(None);
         };
@@ -580,13 +574,8 @@ impl<'a> KernelAgentService<'a> {
                     message: format!("agent `{agent_id}` lost its remote binding"),
                 })?;
         self.app.ensure_remote_agent_binding_protocol(&remote)?;
-        let prompt_id = self.app.sessions_mut().reserve_prompt_id();
-        let (_, Some(active)) = self.activate_next_queued_prompt_for_mirror_with_prompt_id(
-            session_id,
-            agent_id,
-            Some(&candidate),
-            prompt_id,
-        )?
+        let (_, Some(active)) =
+            self.activate_next_queued_prompt_for_mirror(session_id, agent_id, Some(&candidate))?
         else {
             // The expected candidate can disappear before promotion. Do not
             // spin under the app lock when authoritative state cannot admit it.
@@ -775,7 +764,7 @@ mod tests {
             .expect("second prompt should remain queued");
         assert_eq!(peeked.id(), queued.id());
 
-        let canonical_prompt_id = app.sessions_mut().reserve_prompt_id();
+        let canonical_prompt_id = peeked.id().to_string();
         let context = remote_git_turn_context_for_prompt(
             &app,
             session.id(),
@@ -784,13 +773,8 @@ mod tests {
             &canonical_prompt_id,
         );
         let (_session, active) = KernelAgentService::new(&mut app)
-            .activate_next_queued_prompt_for_mirror_with_prompt_id(
-                session.id(),
-                agent.id(),
-                Some(&peeked),
-                canonical_prompt_id,
-            )
-            .expect("queued prompt should activate with the reserved id");
+            .activate_next_queued_prompt_for_mirror(session.id(), agent.id(), Some(&peeked))
+            .expect("queued prompt should activate with its submitted id");
         let active = active.expect("queued prompt should become active");
         let expected_merge_key = format!("prompt:{}", active.id());
         assert_eq!(

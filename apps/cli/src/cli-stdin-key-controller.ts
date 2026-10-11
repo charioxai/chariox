@@ -14,6 +14,7 @@ export type CliStdinParser = {
 }
 
 export type CliStdinKeyControllerDeps = {
+  roomWorkflowsOwnsInput?: () => boolean
   createStdinParser: (onTimeoutFlush: () => void) => CliStdinParser
   kernelApprovalOwnsInput?: () => boolean
   providerAccountRecoveryOwnsInput?: (() => boolean) | undefined
@@ -114,6 +115,19 @@ export function createCliStdinKeyController(
       }
       return true
     }
+    // Nothing selected: still never fall through to Ctrl+C stop/exit.
+    if (event.eventType !== "release" && copyKey) {
+      return true
+    }
+    if (event.ctrl && event.name === "c") {
+      if (deps.hasActiveTurnWork()) {
+        deps.requestPromptStop()
+      } else {
+        deps.requestExit()
+      }
+      return true
+    }
+    if (deps.roomWorkflowsOwnsInput?.()) return true
     if (event.eventType !== "release" && event.ctrl && event.name === "p") {
       if (deps.dialogOverlayOpen()) {
         return true
@@ -132,18 +146,6 @@ export function createCliStdinKeyController(
         deps.cycleWorkflowCanvasNode()
       } else {
         deps.cycleAgentFocus()
-      }
-      return true
-    }
-    // Nothing selected: still never fall through to Ctrl+C stop/exit.
-    if (event.eventType !== "release" && copyKey) {
-      return true
-    }
-    if (event.ctrl && event.name === "c") {
-      if (deps.hasActiveTurnWork()) {
-        deps.requestPromptStop()
-      } else {
-        deps.requestExit()
       }
       return true
     }

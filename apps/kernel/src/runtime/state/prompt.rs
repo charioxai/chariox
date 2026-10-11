@@ -471,11 +471,10 @@ impl KernelRuntimeOwnedState {
             };
         let Some(started_next) = self
             .prompt_state_owner
-            .activate_next_queued_prompt_with_prompt_id(
+            .activate_next_queued_prompt_for_dispatch(
                 &session,
                 agent_id,
                 Some(next_queued_prompt.id()),
-                self.session_store.reserve_prompt_id(),
             )?
         else {
             drop(activity_mutation);

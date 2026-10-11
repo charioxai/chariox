@@ -33,6 +33,8 @@ import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-c
 type AnyFn = (...args: any[]) => any
 
 export type CliInputRoutingCompositionDeps = {
+  roomWorkflowsOwnsInput?: () => boolean
+  handleRoomWorkflowsKey?: (event: import("./global-keyboard-shortcut-controller.js").GlobalKeyboardShortcutEvent) => boolean
   handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
   openKernelApprovals: () => void
   kernelApprovalOwnsInput?: () => boolean
@@ -543,7 +545,8 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     hasActiveTurnWork: deps.hasActiveTurnWork,
   })
   useKeyboard(event => {
-    globalKeyboardShortcutController.handleKey(event)
+    if (globalKeyboardShortcutController.handleKey(event)) return
+    if (!deps.kernelApprovalOwnsInput?.()) deps.handleRoomWorkflowsKey?.(event)
   })
   const handleSigint = globalKeyboardShortcutController.handleSigint
 
@@ -694,6 +697,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
 
   const stdinKeyController = createCliStdinKeyController({
     providerAccountRecoveryOwnsInput: deps.providerAccountRecoveryOwnsInput,
+    roomWorkflowsOwnsInput: () => deps.roomWorkflowsOwnsInput?.() ?? false,
     kernelApprovalOwnsInput: () => deps.kernelApprovalOwnsInput?.() ?? false,
     // Same settings as the renderer's own parser, so both agree on every chunk.
     createStdinParser: (onTimeoutFlush) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),

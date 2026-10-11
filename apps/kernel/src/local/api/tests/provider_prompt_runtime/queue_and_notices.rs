@@ -293,6 +293,7 @@ fn local_request_api_can_cancel_an_active_prompt() {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
                 target_agent_id: None,
+                expected_prompt_id: None,
             },
         ))
         .expect("cancel should succeed");

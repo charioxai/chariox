@@ -531,8 +531,7 @@ impl CommandRouter {
             | LocalDaemonRequest::GetProviderLoginStatus(_)
             | LocalDaemonRequest::SendProviderLoginInput(_)
             | LocalDaemonRequest::CancelProviderLogin(_)) => Box::pin(async move {
-                let caller_user_id = command_caller_user_id(&command);
-                execute_provider_auth_request(&self.runtime_state, &caller_user_id, request).await
+                execute_provider_auth_request(&self.runtime_state, &command, request).await
             }),
             request @ (LocalDaemonRequest::ListProviderAccountProfiles(_)
             | LocalDaemonRequest::GetProviderAccountProfile(_)
@@ -639,6 +638,11 @@ impl CommandRouter {
             LocalDaemonRequest::CancelActivePrompt(request) => Box::pin(async move {
                 self.agent_runtime
                     .dispatch_prompt_cancel(&command, request)
+                    .await
+            }),
+            LocalDaemonRequest::SteerActivePrompt(request) => Box::pin(async move {
+                self.agent_runtime
+                    .dispatch_prompt_steer_active(&command, request)
                     .await
             }),
             LocalDaemonRequest::SteerQueuedPrompt(request) => Box::pin(async move {

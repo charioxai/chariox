@@ -35,7 +35,7 @@ async function launch(identity, extraArguments = []) {
     ].map(name => [name, "synthetic-fixture"]))
     const result = spawnSync("bash", ["-c", script], {
       encoding: "utf8", timeout: 5_000,
-      env: { PATH: process.env.PATH, ...variables, ROOT: scratch, DAEMON_ID: identity.workerKernelRef, DAEMON_ALIAS: `slice:${identity.localName}`, MACHINE_ID: identity.machineId, SLICE_OWNER_KERNEL_ID: identity.ownerKernelId, SLICE_OWNER_MACHINE_ID: identity.machineId },
+      env: { PATH: process.env.PATH, ...variables, ROOT: scratch, LOGS: scratch, PRIVATE_RUNTIME_ROOT: join(scratch, "private"), DAEMON_ID: identity.workerKernelRef, DAEMON_ALIAS: `slice:${identity.localName}`, MACHINE_ID: identity.machineId, SLICE_OWNER_KERNEL_ID: identity.ownerKernelId, SLICE_OWNER_MACHINE_ID: identity.machineId },
     })
     assert.equal(result.status, 0, result.stderr)
     return result.stdout.trim().split("\n")

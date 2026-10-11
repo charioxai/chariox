@@ -372,6 +372,64 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mp08_mp10_owned_native_claude_initializes_before_credentials_are_separated() {
+        crate::test_support::isolated_env_test!();
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "chariox-owned-native-onboarding-{}",
+            std::process::id()
+        ));
+        let profile = root.join("selected");
+        std::fs::create_dir_all(&profile).unwrap();
+        let executable = root.join("claude");
+        std::fs::write(&executable, "#!/bin/sh\nsleep 60\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &executable);
+        let mut app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new("home", "home"))
+            .unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let mut credentials = crate::provider::ProviderCredentialEnvironment::default();
+        credentials.insert(
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            zeroize::Zeroizing::new("synthetic-setup-token".into()),
+        );
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude",
+            "selected",
+            "haiku",
+        )
+        .with_agent_id(agent.id())
+        .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
+        .with_provider_account_env(std::collections::BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            profile.to_string_lossy().into_owned(),
+        )]))
+        .with_provider_credential_env(credentials);
+        let started = runtime.owned.start_provider_launch(request).unwrap();
+        assert!(started
+            .provider_credential_env
+            .iter()
+            .any(|(name, _)| name == "CLAUDE_CODE_OAUTH_TOKEN"));
+        assert!(
+            !started
+                .run
+                .pty_env()
+                .contains_key("CLAUDE_CODE_OAUTH_TOKEN"),
+            "credentials must remain outside persisted launch metadata"
+        );
+        let state:serde_json::Value = serde_json::from_slice(&std::fs::read(profile.join(".claude.json")).expect("owned native launch must initialize selected onboarding before separating credentials")).unwrap();
+        assert_eq!(state["hasCompletedOnboarding"], true);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn home_default_launch_keeps_authority_when_replica_has_same_profile_id() {
         crate::test_support::isolated_env_test!();
@@ -1349,6 +1407,14 @@ mod tests {
             false,
         )
         .expect("provider credential should store");
+        // This test covers unlock policy; the token was already verified.
+        crate::test_support::authenticate_provider_account(
+            &app.provider_account_profile_registry(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap();
         crate::secret::lock_chariox_encrypted_vault(&vault_path).expect("vault should lock");
         crate::secret::clear_vault_secret_process_cache().expect("secret cache should clear");
 

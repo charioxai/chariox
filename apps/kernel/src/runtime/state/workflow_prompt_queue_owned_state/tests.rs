@@ -911,7 +911,7 @@ fn owned_launch_response_tracks_requested_prompt_when_older_prompt_starts() {
 }
 
 fn runtime_with_idle_workflow() -> (KernelRuntimeState, String, String, String, TestRoot) {
-    let test_root = TestRoot(std::env::temp_dir().join(format!(
+    let test_root = TestRoot(crate::test_support::test_workspace_root().join(format!(
         "chariox-owned-workflow-admission-{}-{}-{:032x}",
         std::process::id(),
         crate::session::unix_epoch_ms(),
@@ -919,8 +919,9 @@ fn runtime_with_idle_workflow() -> (KernelRuntimeState, String, String, String, 
     )));
     std::fs::create_dir_all(&test_root.0).expect("workflow test root should be created");
     let test_root_path = test_root.0.to_string_lossy().to_string();
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon bootstrap should succeed");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.state.path = Some(test_root.0.join("state.db").display().to_string());
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             &test_root_path,
@@ -1964,4 +1965,44 @@ pub(in crate::runtime) fn runtime_state_from_app(app: DaemonApp) -> KernelRuntim
         metaagent_events,
         workspace_coordinator,
     )
+}
+
+// MP-08 / MP-10: launch completion can inspect an empty queue after admission
+// observed Starting but before it committed the prompt. Recreate that ordering.
+#[test]
+fn workflow_queue_admission_wakes_a_provider_that_became_ready() {
+    let (runtime, session, workflow, endpoint, _root) = runtime_with_idle_workflow();
+    let providers = runtime.owned.provider_store.clone();
+    super::super::workflow::AFTER_WORKFLOW_QUEUE_ADMISSION.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |id| {
+            let run = providers.get_run(id).unwrap();
+            assert_eq!(run.state(), crate::provider::ProviderRunState::Starting);
+            providers.mark_run_running(id).unwrap();
+        }));
+    });
+    let (_, dispatches) = runtime
+        .owned
+        .workflow_enqueue_prompt_and_maybe_start(
+            &session,
+            &workflow,
+            &endpoint,
+            Some("ready while admitting".into()),
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(dispatches.starting_provider_runs.is_empty());
+    let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+    let agent = snapshot.workflow_runs()[0].node_runs()[0].agent_id();
+    let (active, queued) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&snapshot, agent);
+    assert!(active.is_none());
+    assert_eq!(queued.len(), 1);
+    assert_eq!(
+        dispatches.project_queue_promotions,
+        vec![(session, agent.to_string())],
+        "ready queue must carry a wakeup even though the launch-completion wakeup was missed"
+    );
 }

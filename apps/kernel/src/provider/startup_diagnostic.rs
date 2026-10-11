@@ -103,7 +103,7 @@ fn format_summary(diagnostic: &Diagnostic) -> String {
     {
         // MP-08/MP-10: describe the known boundary failure without provider
         // output or silently changing the user's container security choice.
-        summary.push_str("; provider namespace setup was denied by the execution environment. For a local Docker execution slice, enable slices.linux.allow_provider_sandbox_compatibility and recreate the slice before retrying");
+        summary.push_str("; provider namespace setup was denied by the execution environment. Local Docker slices enable slices.linux.allow_provider_sandbox_compatibility by default; if it was disabled, re-enable it and recreate the slice before retrying. If already enabled, verify the host supports the selected provider namespace boundary");
     }
     summary
 }

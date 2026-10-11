@@ -137,6 +137,12 @@ response_policies! {
         ProjectEnvironmentPlan,
     ],
     Public => [
+        WorkflowNotificationSourceRegistered,
+        WorkflowNotificationAttached,
+        WorkflowNotificationDetached,
+        WorkflowNotifications,
+        RoomWorkflowRunsControlled,
+        ActivePromptSteered,
         CloudRelayLoggedOut,
         KernelSudoRequested,
         KernelAccessGranted,

@@ -626,12 +626,7 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let prompt = self
             .prompt_state_owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                agent_id,
-                expected_prompt_id,
-                self.session_store.reserve_prompt_id(),
-            )?;
+            .activate_next_queued_prompt_for_dispatch(&session, agent_id, expected_prompt_id)?;
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state_with_activity_mutation(
@@ -728,11 +723,10 @@ impl KernelRuntimeOwnedState {
         let mut acquired_workflow_claim = None;
         let started_next = self
             .prompt_state_owner
-            .try_activate_next_queued_prompt_with_prompt_id(
+            .try_activate_next_queued_prompt_for_dispatch(
                 &session,
                 agent_id,
                 next_prompt.id(),
-                self.session_store.reserve_prompt_id(),
                 |prompt| {
                     acquired_workflow_claim =
                         self.ensure_workflow_prompt_workspace_claim(session_id, prompt)?;

@@ -2,6 +2,10 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
+    RegisterWorkflowNotificationSource(RegisterWorkflowNotificationSourceRequest),
+    AttachWorkflowNotification(AttachWorkflowNotificationRequest),
+    ListWorkflowNotifications(ListWorkflowNotificationsRequest),
+    DetachWorkflowNotification(DetachWorkflowNotificationRequest),
     RequestKernelAccess(RequestKernelAccessRequest),
     RequestKernelSudo(RequestKernelSudoRequest),
     ListKernelAccessGrants(ListKernelAccessGrantsRequest),
@@ -316,6 +320,7 @@ pub enum LocalDaemonRequest {
     CompletePrompt(CompletePromptRequest),
     CancelActivePrompt(CancelActivePromptRequest),
     SteerQueuedPrompt(SteerQueuedPromptRequest),
+    SteerActivePrompt(SteerActivePromptRequest),
     CancelQueuedPrompt(CancelQueuedPromptRequest),
     UpdateQueuedPrompt(UpdateQueuedPromptRequest),
     UpdateSessionConfig(UpdateSessionConfigRequest),
@@ -431,6 +436,7 @@ pub enum LocalDaemonRequest {
     ListWorkflowRuns(ListWorkflowRunsRequest),
     GetWorkflowRun(GetWorkflowRunRequest),
     CancelWorkflowRun(CancelWorkflowRunRequest),
+    ControlRoomWorkflowRuns(ControlRoomWorkflowRunsRequest),
     PauseWorkflowRun(PauseWorkflowRunRequest),
     ResumeWorkflowRun(ResumeWorkflowRunRequest),
     CreateWorkflowWatchdog(CreateWorkflowWatchdogRequest),

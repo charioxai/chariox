@@ -2424,6 +2424,11 @@ mod receipt_reconciliation {
         );
         assert_eq!(echoes[0].prompt_id.as_deref(), Some(active.id()));
         assert_eq!(
+            echoes[0].agent_id.as_deref(),
+            Some(agent.id()),
+            "MP-08 MP-10 remote echo must retain its home agent scope"
+        );
+        assert_eq!(
             echoes[0].provider_run_id,
             crate::provider::projected_leased_provider_run_id(
                 "leased-agent-1",

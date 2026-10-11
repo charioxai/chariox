@@ -291,7 +291,22 @@ test("MP-08 / MP-10 F6 copies without kitty keyboard support and never stops or 
   }
 })
 
+for (const activeTurnWork of [true, false]) test(`workflow composer preserves Ctrl+C ${activeTurnWork ? "stop" : "exit"}`, () => {
+  const harness = createHarness({ roomWorkflowInput: true, activeTurnWork, parsedEvent: keyEvent("c", { ctrl: true }) })
+  assert.equal(harness.controller.handleData("\u0003"), true)
+  assert.equal(harness.calls().at(-1), activeTurnWork ? "stop" : "exit")
+})
+
+test("workflow composer excludes agent navigation and editing shortcuts", () => {
+  for (const event of [keyEvent("p", { ctrl: true }), keyEvent("tab"), keyEvent("backspace")]) {
+    const harness = createHarness({ roomWorkflowInput: true, attached: true, promptFocused: true, parsedEvent: event })
+    assert.equal(harness.controller.handleData("x"), true)
+    assert.ok(!harness.calls().some(call => /toggle-workspace|cycle-agent|remove-edit|prompt-turn/.test(call)))
+  }
+})
+
 function createHarness(options: {
+  roomWorkflowInput?: boolean
   parsedEvent?: CliStdinKeyEvent | null
   handleProjectEnvironmentKey?: (event: CliStdinKeyEvent) => boolean
   clearTextSelection?: () => void
@@ -320,6 +335,7 @@ function createHarness(options: {
     ? keyEvent("x")
     : options.parsedEvent
   const deps: CliStdinKeyControllerDeps = {
+    roomWorkflowsOwnsInput: () => options.roomWorkflowInput ?? false,
     ...(options.clearTextSelection ? { clearTextSelection: options.clearTextSelection } : {}),
     createStdinParser: () => ({
       push: (data) => {
