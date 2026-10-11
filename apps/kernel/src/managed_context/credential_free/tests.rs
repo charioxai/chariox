@@ -634,6 +634,42 @@ pub(crate) fn utf16(text: &str, little_endian: bool) -> Vec<u8> {
     bytes
 }
 
+pub(crate) fn utf32(text: &str, little_endian: bool) -> Vec<u8> {
+    let mut bytes = if little_endian {
+        vec![0xff, 0xfe, 0, 0]
+    } else {
+        vec![0, 0, 0xfe, 0xff]
+    };
+    for ch in text.chars() {
+        bytes.extend(if little_endian {
+            (ch as u32).to_le_bytes()
+        } else {
+            (ch as u32).to_be_bytes()
+        });
+    }
+    bytes
+}
+
+// MP-08/MP-11: declared wide text followed by a NUL, an invalid unit or a
+// trailing partial unit; strict decoding fails for every case.
+pub(crate) fn malformed_wide(text: &str) -> Vec<Vec<u8>> {
+    let mut cases = Vec::new();
+    for little_endian in [true, false] {
+        let (nul16, surrogate, nul32, invalid32): (&[u8], &[u8], &[u8], &[u8]) = if little_endian {
+            (&[0, 0], &[0x00, 0xd8], &[0, 0, 0, 0], &[0, 0, 0x11, 0])
+        } else {
+            (&[0, 0], &[0xd8, 0x00], &[0, 0, 0, 0], &[0, 0x11, 0, 0])
+        };
+        for tail in [nul16, surrogate, &[0x41]] {
+            cases.push([utf16(text, little_endian).as_slice(), tail].concat());
+        }
+        for tail in [nul32, invalid32, &[0x41, 0]] {
+            cases.push([utf32(text, little_endian).as_slice(), tail].concat());
+        }
+    }
+    cases
+}
+
 pub(crate) const PACKAGE_METADATA: &[(&str, &[u8])] = &[
     ("package.json", br#"{"dependencies":{"js-tokens":"^4.0.0","secret-tool":"^1.0.0"},"devDependencies":{"@example/tokenizer":"^2.0.0"},"scripts":{"build":"node build.js"}}"#),
     ("package-lock.json", br#"{"lockfileVersion":3,"packages":{"":{"dependencies":{"js-tokens":"^4.0.0"}},"node_modules/js-tokens":{"version":"4.0.0","resolved":"https://registry.npmjs.org/js-tokens/-/js-tokens-4.0.0.tgz","integrity":"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}},"dependencies":{"js-tokens":{"version":"4.0.0"}}}"#),
@@ -652,6 +688,9 @@ fn mp08_mp11_target_refuses_utf16_in_overlay_and_history() {
                 history,
             )
             .assert_target_result(false);
+        }
+        for bytes in malformed_wide("$env:API_KEY = 'synthetic-canary'\n") {
+            InlineShellFixture::file("bootstrap.ps1", &bytes, history).assert_target_result(false);
         }
     }
 }
@@ -673,21 +712,9 @@ fn mp11_supported_encodings_are_inspected_and_binary_bytes_copy() {
     let ordinary = "Write-Output 'ready 🦀'\n";
     for text in [credential, ordinary] {
         for little_endian in [true, false] {
-            let mut utf32 = if little_endian {
-                vec![0xff, 0xfe, 0, 0]
-            } else {
-                vec![0, 0, 0xfe, 0xff]
-            };
-            for ch in text.chars() {
-                utf32.extend(if little_endian {
-                    (ch as u32).to_le_bytes()
-                } else {
-                    (ch as u32).to_be_bytes()
-                });
-            }
             for bytes in [
                 utf16(text, little_endian),
-                utf32,
+                utf32(text, little_endian),
                 [b"\xef\xbb\xbf".as_slice(), text.as_bytes()].concat(),
             ] {
                 assert_eq!(
@@ -712,6 +739,19 @@ fn mp11_supported_encodings_are_inspected_and_binary_bytes_copy() {
                 == bytes.windows(7).any(|w| w == b"API_KEY"),
             "MP-11 binary bytes match only a secret detector"
         );
+    }
+}
+
+#[test]
+fn mp08_mp11_malformed_wide_text_is_inspected_as_decoded_units() {
+    for bytes in malformed_wide("$env:API_KEY = 'synthetic-canary'\n") {
+        assert!(
+            validate_bytes("bootstrap.ps1", &bytes).is_err(),
+            "{bytes:?}"
+        );
+    }
+    for bytes in malformed_wide("Write-Output 'ready 🦀'\n") {
+        assert!(validate_bytes("bootstrap.ps1", &bytes).is_ok(), "{bytes:?}");
     }
 }
 

@@ -53,6 +53,21 @@ fn credential_url(url: &url::Url) -> bool {
         })
 }
 
+fn credential_runs(text: &str) -> bool {
+    text.split(|ch: char| {
+        ch == char::REPLACEMENT_CHARACTER || (ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+    })
+    .filter(|run| !run.is_empty())
+    .any(|run| {
+        text::credential_format(run)
+            || credential_text(run)
+            || run.split_whitespace().any(|word| {
+                url::Url::parse(word.trim_matches(['\'', '"', ',', ';']))
+                    .is_ok_and(|url| credential_url(&url))
+            })
+    })
+}
+
 pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError> {
     let name = path.to_ascii_lowercase();
     if text::credential_format(path)
@@ -69,26 +84,25 @@ pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError
     }
     // MP-08 / MP-11: undecodable artwork is ordinary data. Scan its printable
     // runs as well, so invalid UTF-8 cannot hide a recognized secret signature.
+    // Declared wide text is scanned as decoded units: its zero bytes would
+    // otherwise split every assignment into single-character runs.
     let text = match text::decode(bytes) {
         Ok(text) => text,
         Err(_) => {
-            for run in bytes.split(|byte| {
-                !byte.is_ascii()
-                    || (byte.is_ascii_control() && !matches!(*byte, b'\n' | b'\r' | b'\t'))
-            }) {
-                if !run.is_empty() {
-                    let text = std::str::from_utf8(run).map_err(|_| refused())?;
-                    if text::credential_format(text) || credential_text(text) {
-                        return Err(refused());
+            let ascii = bytes
+                .iter()
+                .map(|&byte| {
+                    if byte.is_ascii() {
+                        byte as char
+                    } else {
+                        char::REPLACEMENT_CHARACTER
                     }
-                    for word in text.split_whitespace() {
-                        if url::Url::parse(word.trim_matches(['\'', '"', ',', ';']))
-                            .is_ok_and(|url| credential_url(&url))
-                        {
-                            return Err(refused());
-                        }
-                    }
-                }
+                })
+                .collect::<String>();
+            if credential_runs(&ascii)
+                || text::decode_wide_lossy(bytes).is_some_and(|(text, _)| credential_runs(&text))
+            {
+                return Err(refused());
             }
             return Ok(());
         }

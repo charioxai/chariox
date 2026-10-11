@@ -2096,7 +2096,9 @@ mod tests {
     fn mp08_mp11_source_vault_seals_utf16_in_overlay_and_history() {
         crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
-        use crate::managed_context::credential_free::tests::{utf16, InlineShellFixture};
+        use crate::managed_context::credential_free::tests::{
+            malformed_wide, utf16, InlineShellFixture,
+        };
         for history in [false, true] {
             for little_endian in [true, false] {
                 assert_source_fixture_result(
@@ -2105,6 +2107,12 @@ mod tests {
                         &utf16("$env:API_KEY = 'synthetic-canary'\n", little_endian),
                         history,
                     ),
+                    false,
+                );
+            }
+            for bytes in malformed_wide("$env:API_KEY = 'synthetic-canary'\n") {
+                assert_source_fixture_result(
+                    InlineShellFixture::file("bootstrap.ps1", &bytes, history),
                     false,
                 );
             }
