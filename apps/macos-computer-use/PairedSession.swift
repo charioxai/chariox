@@ -110,7 +110,8 @@ import Darwin
                     let id = try capture.attachment.subscribe(owner: owner, generation: epoch,
                         codecs: params["codecs"] as? [String] ?? ["png"], bitrate: params["bitrate"] as? Int ?? 2_000_000)
                     reply["result"] = ["subscription_id": id, "surface_id": "macos-seat", "generation": epoch,
-                        "display_kind": "native", "width": surface.width, "height": surface.height, "device_scale_factor": surface.scale, "codec": "png"]
+                        "display_kind": "native", "width": surface.width, "height": surface.height, "device_scale_factor": surface.scale,
+                        "codec": (params["codecs"] as? [String])?.contains("avc1.420033") == true ? "avc1.420033" : "png"]
                 case "attach":
                     guard let id = params["subscription_id"] as? String else { throw Refusal.arguments }
                     try capture.attachment.attach(id: id, owner: owner, generation: epoch)

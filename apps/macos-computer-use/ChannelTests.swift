@@ -29,6 +29,20 @@ import Darwin
             do { _ = try pairedInput(input, scope: scope, surface: surface); preconditionFailure("unsupported input admitted") }
             catch { precondition([Refusal.target, .arguments, .text].contains(refusalKind(error))) }
         }
+        var displaySockets: [Int32] = [0, 0]
+        precondition(socketpair(AF_UNIX, SOCK_STREAM, 0, &displaySockets) == 0)
+        defer { close(displaySockets[0]); close(displaySockets[1]) }
+        let display = try PairedSession(fd: displaySockets[0], epoch: "display",
+            scope: ["pid": Int32(42), "window": UInt32(7), "owner_window": false, "target": "text"],
+            surfaceProvider: { _ in surface })
+        let started = await display.reply(["id": 1, "epoch": "display", "method": "host.computer", "params": ["op": "start"]])
+        precondition(started.reply["ok"] as? Bool == true)
+        let subscribed = await display.reply(["id": 2, "epoch": "display", "method": "host.display",
+            "params": ["op": "subscribe", "surface_id": "macos-seat", "generation": "display",
+                       "_attachment_owner": "viewer", "codecs": ["avc1.420033", "png"], "bitrate": 2_000_000]])
+        precondition(subscribed.reply["ok"] as? Bool == true)
+        precondition((subscribed.reply["result"] as? [String: Any])?["codec"] as? String == "avc1.420033", "private subscription must report the negotiated video codec")
+        print("PASS paired display forwards and reports the shared AVC/PNG negotiation")
         let identityOnly = try pairedScope(nil); precondition(identityOnly == nil)
         do { _ = try pairedScope(["pid": Int32(42), "window": UInt32(7), "owner_window": true, "target": "text"]); preconditionFailure() }
         catch { precondition(refusalKind(error) == .arguments) }

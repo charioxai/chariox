@@ -91,7 +91,8 @@ software decoder verifies SPS/PPS format, dimensions and protected black pixels.
 The 31 Python and 31 Node checks pass. Six focused capture executables pass;
 the complete helper source typechecks for arm64 macOS 14. Removing the full-PNG
 fallback after video makes the focused codec regression fail, then the final
-source passes. API-absence compile-red output is supplementary only. Owner
+source passes. The paired subscription codec receipt also went red before its
+AVC reporting fix and passes after. API-absence compile-red output is supplementary only. Owner
 command blocks pass `bash -n`; no signing/notary command was executed.
 
 Focused checks use `-j2`, one Swift compiler at a time, critical pressure and a
