@@ -17,9 +17,9 @@ import { listSlices } from "./slice-api.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
 
-export type RemoteMachineView = WaitingRoomRemoteMachineView
+export type RemoteMachineView = WaitingRoomRemoteMachineView & { displayFreshness?: "cached/refreshing" | "reconnecting" }
 
-export type RemoteKernelView = WaitingRoomRemoteKernelView
+export type RemoteKernelView = WaitingRoomRemoteKernelView & { displayFreshness?: "cached/refreshing" | "reconnecting" }
 
 export type WaitingRoomInventory = {
   schemaVersion: number

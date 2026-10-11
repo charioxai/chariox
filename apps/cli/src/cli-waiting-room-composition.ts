@@ -236,7 +236,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     getWorktree: deps.pendingWorktreeTarget,
     setWorkspace: deps.setPendingWorkspaceTarget,
     setWorktree: deps.setPendingWorktreeTarget,
-    resetSelection: () => deps.setWaitingRoomState({ ...deps.waitingRoomState(), worktreeSelectionId: "", projectSelectionId: "default" }),
+    resetSelection: () => deps.setWaitingRoomStateProjection({ ...deps.waitingRoomState(), worktreeSelectionId: "", projectSelectionId: "default" }),
     send: (request) => deps.client.send(request),
     getSelection: () => waitingRoomWorkspaceSelection(deps.waitingRoomState(), { machineId: homeMachineId, kernelId: homeKernelId }, managedEnvironmentCatalog?.environments ?? []),
     withClient: (token, read) => kernelConnectionController.readWorkspace({
@@ -426,6 +426,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     await waitingRoomInventoryRefreshController.refresh()
     await workspacePlacementController?.refreshDisabledWorkspace()
   }
+  const applyWaitingRoomTransportClosed = waitingRoomInventoryRefreshController.applyTransportClosed
   const applyWaitingRoomRowsChanged = waitingRoomInventoryRefreshController.applyRowsChanged
   const applyRelayStatusChanged = waitingRoomInventoryRefreshController.applyRelayStatusChanged
   const applyRemoteMachinesChanged = waitingRoomInventoryRefreshController.applyRemoteMachinesChanged
@@ -683,6 +684,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     getWaitingRoomState: deps.waitingRoomState,
     getRemoteState: () => ({
       ...managedWaitingRoomRemote(),
+      inventoryStatus: deps.waitingRoomInventoryStatus(),
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
@@ -1060,6 +1062,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     applyWaitingRoomSessionLifecycleAction,
     restoreWaitingRoomProject,
     renameWaitingRoomProject,
+    applyWaitingRoomTransportClosed,
     applyWaitingRoomRowsChanged,
     connectDetachedKernelFromWaitingRoom,
     currentModelId: providerPromptProjectionController.currentModelId,

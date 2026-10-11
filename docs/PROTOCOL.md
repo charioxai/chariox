@@ -3254,3 +3254,23 @@ WebSocket frames through the ordinary router and provider-native export paths
 with disposable synthetic Codex, Claude and OpenCode profiles. It establishes
 local protocol/portability behavior, not live provider login, provisioning or
 fresh-machine MP-10 acceptance.
+
+### Encrypted subscription rebinding (local protocol 491; MP-08 / MP-11)
+
+A relay subscription ID identifies one encrypted event binding, not the logical
+session or attachment. Each fresh binding gets a distinct ID, even when the
+client retains its relay identity. Session reconnect retains the acknowledged
+event cursor and session/attachment IDs. Inventory reconnect requests a current
+baseline because its events are not replayable. Concurrent UI/recovery callers
+join one binding attempt; a live binding on the same socket is reused. Clients
+remove the previous ID from event lookup before publishing the new key. Late
+old-ID ciphertext cannot decrypt with, reject, or advance the replacement stream.
+The relay envelope and peer frames are unchanged.
+
+Focused regression drills: `node --test
+packages/kernel-client/dist/ipc-relay-sender-pinning.test.js` after building the
+kernel client, and Cloud's `browser-kernel-subscription-rebind.test.js` after
+compilation. The latter uses real WebCrypto to deliver old ciphertext during a
+replacement ACK and races two resume callers. Real acceptance additionally
+requires hosted WSS drop/blip/reconnect at DPR 1/2 and the built TUI, retained
+lists, cache reconciliation, unique bindings and zero decrypt failures.

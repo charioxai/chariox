@@ -128,6 +128,9 @@ export function normalizeWaitingRoomState(
       ?? providerAccounts[0]?.profile_id
       ?? "default"
   const selected = selectConfiguredModel(catalog, state.modelId, providerId)
+  const configuredModelPending = catalog.source === "local_fallback"
+    && Boolean(state.modelId && state.modelId !== "default")
+    && selected?.id !== state.modelId && !selected?.id.endsWith(`/${state.modelId}`)
   const efforts = waitingRoomEfforts(selected)
   const sliceSelection = normalizeWaitingRoomSliceSelection(
     state.sliceSelectionId,
@@ -194,8 +197,8 @@ export function normalizeWaitingRoomState(
       : {}),
     ...(sliceSelection.sliceSelectionId !== undefined ? { sliceSelectionId: sliceSelection.sliceSelectionId } : {}),
     ...(sliceSelection.sliceDisplayMode !== undefined ? { sliceDisplayMode: sliceSelection.sliceDisplayMode } : {}),
-    modelId: selected?.id ?? state.modelId,
-    effort: efforts.includes(state.effort) ? state.effort : efforts[0] ?? "",
+    modelId: configuredModelPending ? state.modelId : selected?.id ?? state.modelId,
+    effort: configuredModelPending || efforts.includes(state.effort) ? state.effort : efforts[0] ?? "",
     executionMode: waitingRoomExecutionMode(state),
     permissionLevel: waitingRoomPermissionLevel(state),
     themeId: normalizeThemeName(state.themeId, themeRegistry),

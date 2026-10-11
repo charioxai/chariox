@@ -65,6 +65,7 @@ export function waitingRoomStartRows(
     | "managedCustomIdleDelaySeconds"
     | "providerId"
     | "accountProfileId"
+    | "modelId"
   >,
   choice: WaitingRoomStartRowsChoice,
   options: {
@@ -108,7 +109,7 @@ export function waitingRoomStartRows(
         ...managedRepositoryRows,
       ]
     : []
-  return [
+  const rows: WaitingRoomRow[] = [
     {
       id: "new",
       title: configuresManaged
@@ -197,7 +198,11 @@ export function waitingRoomStartRows(
     {
       id: "model",
       title: "Model",
-      value: choice.model ? formatWaitingRoomModelValue(choice.model, options.modelOptions, choice.providerCatalogFallback) : "No models available",
+      value: choice.model
+        ? formatWaitingRoomModelValue(choice.model, options.modelOptions, choice.providerCatalogFallback)
+        : choice.providerCatalogFallback
+          ? state.modelId && state.modelId !== "default" ? `${state.modelId} (refreshing)` : options.loadingText
+          : "No models available",
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "model",
@@ -284,6 +289,14 @@ export function waitingRoomStartRows(
       scrollbar: "",
     },
   ]
+  const cachedRows = options.visibleSessionCount > 0
+    || remote.machines?.some(row => row.displayFreshness)
+    || remote.kernels?.some(row => row.displayFreshness)
+  const pendingFields = new Set(["new", "launch-machine", "launch-kernel", "project", "provider", "account", "model", "effort", "workspace", "worktree"])
+  return options.inventoryLoading && !cachedRows
+    ? rows.map(row => pendingFields.has(row.id) ? { ...row, value: options.loadingText, selectable: false } : row)
+    : rows
+
 }
 
 function waitingRoomManagedRepositoryRows(

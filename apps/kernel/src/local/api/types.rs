@@ -265,5 +265,7 @@ pub use workspace::*;
 /// Version 490 requires bounded relay response framing and socket-local receipts.
 /// Version 491 adds credential-free Cloud kernel ownership projections, receiving
 /// CLIENT key-bound pivots, Cloud-free terminal pairing and provider account
-/// portability preflight (MP-08/MP-10/MP-11).
+/// portability preflight, and requires a distinct relay subscription identity for
+/// every fresh encrypted binding while retaining the logical session replay
+/// cursor (MP-08/MP-10/MP-11).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 491;

@@ -93,6 +93,16 @@ test("waiting room start rows place project selection below Kernel", () => {
   assert.equal(rows[3]?.value, "Frontend")
 })
 
+test("MP-08/MP-11 configured model remains visible while live model metadata loads", () => {
+  const rows = waitingRoomStartRows(
+    waitingRoomState({ providerId: "codex", modelId: "codex/gpt-6.1-sol", effort: "high" }),
+    { providerId: "codex", model: null, effort: "high", providerCatalogFallback: true },
+    { modelOptions: [], inventoryLoading: false, loadingText: "loading", visibleSessionCount: 1, titleWidth: 24 },
+  )
+  assert.equal(rows.find(row => row.id === "model")?.value, "codex/gpt-6.1-sol (refreshing)")
+  assert.match(rows.find(row => row.id === "effort")?.value ?? "", /High/)
+})
+
 test("waiting room start rows render loading placeholders before inventory arrives", () => {
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "opencode")
@@ -108,8 +118,10 @@ test("waiting room start rows render loading placeholders before inventory arriv
     },
   )
 
-  assert.equal(rows.find((row) => row.id === "model")?.value, "No models available")
-  assert.equal(rows.find((row) => row.id === "effort")?.value, "Default")
+  assert.equal(rows.find((row) => row.id === "launch-machine")?.value, "loading..")
+  assert.equal(rows.find((row) => row.id === "launch-kernel")?.value, "loading..")
+  assert.equal(rows.find((row) => row.id === "model")?.value, "loading..")
+  assert.equal(rows.find((row) => row.id === "effort")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "worktree")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off (default; all repositories unrestricted)")

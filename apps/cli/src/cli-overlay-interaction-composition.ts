@@ -1,5 +1,6 @@
 import { createProjectEnvironmentReadController, projectEnvironmentPageSize } from "./project-environment-read-controller.js"
 import { MouseButton } from "@opentui/core"
+import { createEffect, on } from "solid-js"
 
 import { createCliDialogOverlayController } from "./cli-dialog-overlay-controller.js"
 import {
@@ -159,6 +160,11 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
 
   const renderHotkeysOverlay = dialogOverlayController.render
   const closeSessionBrowserDialog = dialogOverlayController.closeSessionBrowser
+
+  createEffect(on(
+    () => deps.sessionBrowserOpen() ? [sessionBrowserSessions(), deps.sessionBrowserIndex()] : null,
+    state => { if (state) renderHotkeysOverlay() },
+  ))
 
   const sessionBrowserController = createSessionBrowserController({
     isOpen: deps.sessionBrowserOpen,
