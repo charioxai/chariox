@@ -17,6 +17,7 @@ struct Selection {
 }
 fn protected_path(path: &str) -> bool {
     !safe_metadata(path)
+        || super::detect_index::credential_metadata(path)
         || secret_looking_project_path(path)
         || path.split('/').any(|p| {
             matches!(
@@ -120,7 +121,7 @@ fn walk(
             .file_name()
             .into_string()
             .map_err(|_| environment_error("selected File path encoding unsupported"))?;
-        if !safe_metadata(&name) {
+        if !safe_metadata(&name) || super::detect_index::credential_metadata(&name) {
             selection.protected = true;
             continue;
         }
