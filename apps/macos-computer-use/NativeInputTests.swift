@@ -11,9 +11,15 @@ import AppKit
 @main struct NativeInputTests {
     @MainActor static func main() async throws {
         let surface = NativeSurface(bounds: CGRect(x: -100, y: 50, width: 200, height: 100), scale: 2)
-        let plan = try nativeInputPlan(["kind": "click", "x": UInt32(20), "y": UInt32(10), "button": 3], surface: surface)
+        let plan = try nativeInputPlan(["kind": "click", "x": UInt32(20), "y": UInt32(10), "button": 2], surface: surface)
         precondition(plan.point == CGPoint(x: -90, y: 55))
         precondition(plan.events.map(\.type) == [.otherMouseDown, .otherMouseUp])
+        for (number, down, up, button) in [(1, CGEventType.leftMouseDown, CGEventType.leftMouseUp, CGMouseButton.left),
+            (2, .otherMouseDown, .otherMouseUp, .center), (3, .rightMouseDown, .rightMouseUp, .right)] {
+            let click = try nativeInputPlan(["kind":"click", "x":UInt32(20), "y":UInt32(10), "button":number], surface: surface)
+            precondition(click.events.map(\.type) == [down, up], "shared button \(number) changed meaning")
+            precondition(click.events.allSatisfy { $0.getIntegerValueField(.mouseEventButtonNumber) == Int64(button.rawValue) })
+        }
         var posted: [CGEventType] = []
         let seat = NativeInputSeat()
         var safe = true
