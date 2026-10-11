@@ -227,22 +227,24 @@ export class Mirror2 {
     // credits do not come back together: one heartbeat per wait), bounded from
     // its arrival so it never outlives the client's 8 s request timeout.
     // A credit replayed after a reconnect (same command id) gets its original
-    // packet: running it again would issue a new sequence and leave a gap.
+    // packet: running it again would issue a new sequence and leave a gap. The
+    // viewer is back, so a still-waiting original stops its long poll now.
     const replayKey = typeof command.command_id === 'string' && command.command_id.length <= 128 ? command.command_id : null;
     const replayed = replayKey && stream.replies?.get(replayKey);
-    if (replayed) return replayed;
+    if (replayed) { if (!replayed.done) this.hurry(stream); return replayed.run; }
     const lost = this.lost(stream, command, scope);
     if (lost) return lost;
     const arrival = Date.now(), wait = command.wait_ms ?? 0;
     // A reset credit (lost base) must not queue behind a waiting long poll.
-    // Credits that arrived before it stop waiting (their hurry count is older).
-    if (command.after_sequence === 0) { stream.hurry = (stream.hurry ?? 0) + 1; if (stream.world) this.evaluate(stream.world, `${stream.world.ref}.wake()`).catch(() => {}); }
+    if (command.after_sequence === 0) this.hurry(stream);
     const hurry = stream.hurry;
     const run = stream.chain.then(() => this.packet(stream, command, scope, signal, Math.min(arrival + 3 * wait, Date.now() + wait), hurry));
     stream.chain = run.catch(() => {});
-    if (replayKey) { (stream.replies ??= new Map()).set(replayKey, run); if (stream.replies.size > 8) stream.replies.delete(stream.replies.keys().next().value); }
+    if (replayKey) { const entry = { run, done: false }; run.finally(() => { entry.done = true; }).catch(() => {}); (stream.replies ??= new Map()).set(replayKey, entry); if (stream.replies.size > 8) stream.replies.delete(stream.replies.keys().next().value); }
     return run;
   }
+  // Credits that arrived before this point stop waiting (their hurry count is older).
+  hurry(stream) { stream.hurry = (stream.hurry ?? 0) + 1; if (stream.world) this.evaluate(stream.world, `${stream.world.ref}.wake()`).catch(() => {}); }
   async packet(stream, command, scope, signal, deadline = Date.now(), hurry = stream.hurry) {
     const started = timestamp(); let stage = started;
     const mark = name => { this.host.timing?.(`mirror2_${name}`, stage); stage = timestamp(); };

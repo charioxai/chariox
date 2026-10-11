@@ -41,10 +41,10 @@ async function mirrored(html, run, routes = {}) {
         return { ops: [], resources: [], tiles: [], ...packet };
       };
       const input = async (sequence, action) => host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation, document_id: host.tabs.get(opened.tab_id).document_id, input: { kind: "mirror", subscription_id, sequence, action } });
-      return { next, input };
+      return { next, input, subscription_id, generation: opened.generation };
     };
-    const { next, input } = await subscribe();
-    await run({ next, evaluate, host, input, subscribe });
+    const { next, input, subscription_id, generation } = await subscribe();
+    await run({ next, evaluate, host, input, subscribe, subscription_id, generation });
   } finally {
     await host.stop();
     await new Promise(resolve => server.close(resolve));
@@ -870,3 +870,15 @@ test("MP-10: a click that focuses a button and renders its overlay a frame later
     assert.equal(first.focused, button, "MP-10: the focus travels");
     assert(first.ops.some(op => op.op === "children") && JSON.stringify(first.ops).includes("Switch branches/tags"), `MP-10: with the overlay in the same packet: ${JSON.stringify(first.ops).slice(0, 300)}`);
   }));
+
+// Round 10 drop drill (DPR1, 3.3 s after reconnect): the web transport replays the credit that was in flight when the
+// socket dropped; the kernel answers the replay with the original run, which was still long-polling.
+test("MP-10: a credit replayed after a reconnect ends the original credit's long poll (answered now, not after its wait)", () => mirrored('<p id="x">one</p>', async ({ next, host, subscription_id, generation }) => {
+  const first = await next();
+  const credit = () => host.request({ op: "mirror_next", subscription_id, generation, after_sequence: first.sequence, drift_nodes: [], wait_ms: 2000, command_id: "credit-lost-with-socket" });
+  const started = Date.now(), original = credit().catch(error => error);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const replay = await credit(); const replayMs = Date.now() - started;
+  assert.ok(replayMs < 800, `MP-10: the replay answered in ${replayMs} ms`);
+  assert.equal((await original).sequence, replay.sequence, "MP-10: the same packet as the original credit");
+}));
