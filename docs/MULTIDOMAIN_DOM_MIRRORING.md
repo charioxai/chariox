@@ -9,7 +9,7 @@ The screen tiers are native App views, mirrored web pages, then protected video.
 This implementation targets host Chromium on Linux. It does not introduce a
 browser inside a slice, a Cloud runtime proxy, or a second input authority.
 
-## Protocol 492: DOM mirror v2 (current; introduced in 482, compact wire in 489, control/UA state in 492)
+## Protocol 501: DOM mirror v2 (current; introduced in 482, compact wire in 489, control/UA state in 492, resend/custom validity/sprites in 501)
 
 `mirror_subscribe {wire: 2}` selects v2; the 443 computed-style packets below
 remain for one protocol version (TUI/tests) and are superseded for web clients.
@@ -41,29 +41,40 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   session and a `styleSheetChanged` marks the owner node (constructed sheets:
   the adopted lists; imported sheets: sheets with imports) in every observer
   instance of that frame's world; there is no periodic text compare and no
-  rule-count cap. A per-drain signature (rule count, `disabled`) covers what
-  Chrome does not report (`disabled` arrives as a removal, media-list edits not
-  at all). Attributes ship by denylist (492): every attribute except
+  rule-count cap. Events of a same-origin child document (observed by an
+  ancestor's world, no world of its own) are marked in every world of its CDP
+  session. A per-drain signature (rule count, `disabled`, the CSSOM media list)
+  covers what Chrome does not report (`disabled` arrives as a removal,
+  media-list edits not at all); style/link sheets carry their effective CSSOM
+  media list. Imports are found after leading `@layer` statements. Attributes
+  ship by denylist (492): every attribute except
   `src`-like/navigation names, `on*` handlers and credential-like names
   (`csrf`, `xsrf`, `token`, `nonce`, `secret`, `passw`) outside the rendered
   set; values outside the rendered set and `aria-*` are capped at 1 KB. Links
   carry `href="#"`; `:target` is rewritten to `[chariox-target]`, which the
-  viewer sets on the element the `fragment` header names.
+  viewer sets on the element the `fragment` header names, and `:defined` to
+  `:not([chariox-undefined])`, which the viewer sets on custom elements the
+  kernel reports undefined (no viewer registry definition outlives its source
+  document). Both markers are denied page attributes.
 - **Pushed credits.** `mirror_next {wait_ms <= 2000}` is a long poll answered
   by the next page change; the client keeps four credits outstanding, packets
-  apply strictly in sequence (`base_sequence`), and a gap asks for a reset
-  (`after_sequence: 0`). A packet that stays unacknowledged for 1.5 s while a
-  later credit still names an older base was lost with its reply (a dropped
-  socket): the kernel sends it again, in order, with its original bytes (its
-  last 16 packets, at most 8 MB). A failed credit asks for a reset: the
-  kernel still holds the long poll of a credit lost with a dropped socket, and
-  only the reset ends it (credits lost with one socket count as one failure for
-  the backoff). A credit the transport replays after a reconnect (same command
-  id) gets its original packet, and a still-waiting original stops its long poll.
-  Replies arrive in credit order, so a gap with no older
-  credit outstanding resets at once; the reset credit does not wait for credits
-  in flight, and the kernel ends the long poll of every credit that arrived
-  before it. A queued credit's wait starts when its predecessor is answered
+  apply strictly in sequence (`base_sequence`). The kernel keeps its last 16
+  packets (at most 8 MB) with their original bytes. A gap (a reply lost with a
+  dropped socket, or one overtaken by milliseconds) sends one
+  `mirror_next {resend: true}` at once (501): the kernel ends earlier long polls
+  and answers with the packet after the credit's base from that history
+  (also once an ended long poll issued it), else as an ordinary credit; a
+  duplicate is ignored, and a gap that outlives its resend asks for a reset
+  (`after_sequence: 0`). A failed credit (a dropped socket, a relay
+  re-authentication that rejects pending KernelBrowser requests) also asks for
+  a resend instead of a full snapshot; a reply that could not be applied asks
+  for a reset (credits lost with one socket count as one failure for the
+  backoff). Without a resend, a packet that stays unacknowledged for 1.5 s
+  while a later credit still names an older base is sent again in order. A
+  credit the transport replays after a reconnect (same command id) gets its
+  original packet, and a still-waiting original stops its long poll. The reset
+  and resend credits do not wait for credits in flight, and the kernel ends
+  the long poll of every credit that arrived before them. A queued credit's wait starts when its predecessor is answered
   (one heartbeat per wait instead of one per credit), at most three waits from
   its arrival (below the client's 8 s request timeout).
 - **Compact wire (489).** A reset packet carries the binding and header
@@ -88,6 +99,13 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   tree, or Chrome's cache without credentials for Resource Timing URLs), typed
   by magic bytes; fonts ride with the snapshot, images follow it. SVG renders as
   a `data:` image; the sandbox CSP is `img-src blob: data:; font-src blob:`.
+  An external `<use href="file.svg#icon">` (501) carries its fragment as `href`
+  and the file as a `sprite` resource: the page's bytes parsed inert in the
+  observer's world and rebuilt (shapes, symbols, paint servers, sanitized
+  `<style>`; href and url() only to fragments; no script, foreign content,
+  image, link or animation). `<use>` does not follow `data:` URLs, so the
+  viewer validates the file again and uses it as a same-origin blob; a refused
+  file renders nothing.
   Element images (`<img>` in the top document) travel only within one viewport
   of the view, nearest first; the rest wait until the view comes near them.
   While the view moves (a viewer `scroll_to` or a page scroll, and 300 ms
@@ -111,18 +129,23 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   regions, stills at most 1 Hz until video regions land: a canvas bitmap or a
   video frame travels as the element's own pixels (overlays above it stay
   mirrored DOM); tainted media, plugins, closed roots and unattached frames are
-  masked screenshot crops, and such a crop under a scale/rotate transform or a
-  filter hands the page to labelled video (`region_transform`). Region and
+  masked screenshot crops, and such a crop under any transform beyond a
+  translation (also size-preserving ones such as `rotate(180deg)`,
+  `scaleX(-1)`, the `rotate`/`scale` properties), a filter, or opacity/blending
+  on it or an ancestor hands the page to labelled video (`region_transform`):
+  the crop already holds that compositing. Region and
   mask records carry their layout size; sizes and a mask's display are
   reconciled every drain.
 - **UA state (492).** State without an attribute footprint is sampled from a
   declared set (elements with `popover`, dialogs, checkboxes, custom elements)
   on toggle/close/input/change, attribute changes, morphs and the 2 s cursor:
-  `state {popover_open, modal, indeterminate, defined}` (records carry
-  non-default values). The viewer shows/hides popovers (its copies are
+  `state {popover_open, modal, indeterminate, defined, custom_invalid}`
+  (records carry non-default values; `custom_invalid` (501) is a control's
+  `setCustomValidity` without its message, sampled again after the page's own
+  input/change handlers). The viewer shows/hides popovers (its copies are
   `manual`: no viewer light dismiss), opens modal dialogs in its top layer,
-  sets `indeterminate`, and defines each custom tag the kernel has defined in
-  its sandbox registry (an empty class) so `:defined` matches.
+  sets `indeterminate`, marks undefined custom elements (`chariox-undefined`)
+  and sets a custom validity on its copy so `:invalid` matches.
 - **Input** is node-addressed with the viewer's offset inside the node; the
   kernel clamps to the live box, hit-tests at dispatch (through frames/shadow),
   refuses protected ancestry and targets whose attributes changed after the
@@ -141,7 +164,10 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   typeahead, arrows; only Tab/Enter go to the kernel); their committed value
   travels as `set {node_id, value | checked | selected_index}`, which the kernel
   validates live (protected/sensitive/disabled/epoch) and writes with
-  input + change events. Keystroke forwarding remains for text controls.
+  input + change events; the viewer listens for committed changes on every
+  mirrored document and shadow root (`change` is not composed), and compares a
+  multiple select's option with the state it last sent until the kernel echoes
+  it. Keystroke forwarding remains for text controls.
 - **Scroll** is shared (owner decision): the kernel tab has one position. A
   viewer scrolls its own copy natively for frame rate and sends coalesced
   `scroll_to`; the kernel applies it and every other viewer follows the
@@ -158,8 +184,8 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
 - **Stated bounds (unsupported).** JS-only styling without a sheet or attribute
   (`element.animate`/WAAPI, `FontFace`/`document.fonts.add`,
   `CSS.registerProperty`, `CSS.highlights`); CSS animations restart at the
-  snapshot; ElementInternals custom states (`:state()`) and custom validity
-  (`setCustomValidity`); external `<use>` sprite files; closed shadow roots on
+  snapshot; ElementInternals custom states (`:state()`) and form-associated
+  custom element validity (`ElementInternals.setValidity`); closed shadow roots on
   non-custom hosts (open ones attached late are found within 2 s); select popups
   and pickers use the viewer's OS UI. Font and
   scrollbar parity assumes the viewer resolves the same fonts and scrollbar
@@ -178,8 +204,13 @@ masked, by node identity (top-level `backend:N` and child-frame
 `frame:<id>:<loader>:backend:N` targets), and only while they are not password
 fields (any other input type, textarea, contenteditable: the pixel path's rule);
 the type is checked on every capture, so a show-password toggle becomes a mask.
-A target stays masked until its node leaves, its document changes or the policy
-changes (the pixel path also retires a target whose value the user changed). A password field
+A target is masked only while it holds the fill (coordinator decision
+2026-10-11, consistent with #950): the kernel registers it with the secret's
+value hash and fill revision before the insertion, so it is masked from then
+until the field first holds the fill, stays masked while it does, and becomes a
+plain field for every viewer once its value is no longer the fill (an edit);
+a refill (new revision) masks it again. Targets without a hash stay masked
+(never under-masking). A password field
 renders as dots of the same length and its value never leaves, nor does a
 hidden input's. No page-text, attribute or CSS value scanning and no
 container, frame or media masks: cross-origin frames are mirrored. Fonts and
