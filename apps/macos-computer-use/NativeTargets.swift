@@ -63,18 +63,19 @@ import AppKit
     func press(_ ref: String, revision: UInt64, observer: String, scope: Request, stamp: CaptureStamp, source: MacSource) async throws {
         guard registry.currentRevision == revision else { throw tagged(.target, "target-ref-stale") }
         let bound = try bind(scope, stamp: stamp, observer: observer)
-        var original: TargetMetadata?
-        let node = try registry.resolve(ref, context: bound) { node, expected in
+        let consumed = try registry.consume(ref, context: bound) { node, expected in
             guard expected.enabled, expected.role == kAXButtonRole, expected.actions.contains(kAXPressAction) else { return false }
-            original = expected
             return try self.validate(node, expected: expected, scope: scope, stamp: stamp, source: source)
         }
-        // A failed post-effect receipt may not replay this reference.
-        registry.invalidate()
-        try source.checkPermission(.click)
-        try source.fence(scope, element: node, typing: false)
-        guard let original, try validate(node, expected: original, scope: scope, stamp: stamp, source: source) else { throw Refusal.target }
-        guard AXUIElementPerformAction(node, kAXPressAction as CFString) == .success else { throw tagged(.native, "press-mutation-failed") }
+        // Consume before dispatch so a failed post-effect receipt cannot replay.
+        let node = consumed.node
+        try consumed.perform(validate: { node, expected in
+            try source.checkPermission(.click)
+            try source.fence(scope, element: node, typing: false)
+            guard try validate(node, expected: expected, scope: scope, stamp: stamp, source: source) else { throw Refusal.target }
+        }, mutation: { node in
+            guard AXUIElementPerformAction(node, kAXPressAction as CFString) == .success else { throw tagged(.native, "press-mutation-failed") }
+        })
         try source.authority()
         try source.checkPermission(.click)
         try source.fence(scope, element: node, typing: false)
