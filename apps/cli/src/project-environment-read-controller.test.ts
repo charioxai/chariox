@@ -159,3 +159,25 @@ test("P04 idle TUI expires Ready without another kernel snapshot",async()=>{
  const controller=createProjectEnvironmentReadController({send:async()=>{requests++;return {ProjectEnvironment:{environment}}},render(){renders++},pageSize:()=>100})
  try {await controller.open("project");assert(controller.visibleLines().some(l=>l.includes("Ready")));const settled=renders;await new Promise(resolve=>setTimeout(resolve,250));assert(controller.visibleLines().some(l=>l.includes("Last check stale")));assert(renders>settled);assert.equal(requests,1)} finally{controller.close()}
 })
+
+// MP-08 / MP-10 / MP-11: a later client's operation cannot hold this TUI's Check lock.
+test("review0212 TUI polls its acknowledged Check when a later operation replaces the aggregate",async()=>{
+ const requests:any[]=[]
+ let acknowledged=""
+ const environment:any={schema_version:1,local_project_id:"project",revision:1,content_digest:"digest",lineage:{project_id:"p",environment_id:"env"},delivered_capabilities:{enabled_environment_operations:["get","check"],supported_schema:1},project_requirements:[],folders:[],proposals:[],operations:[],observations:[]}
+ const controller=createProjectEnvironmentReadController({send:async request=>{
+  requests.push(request)
+  const r=request as any
+  if(r.RelayStatus!==undefined)return {RelayStatus:{status:{machine_id:"machine",daemon_id:"kernel"}}}
+  if(r.CheckProjectEnvironment){acknowledged=r.CheckProjectEnvironment.operationId;return {EnvironmentOperation:{operation:{operation_id:acknowledged,phase:"requested"}}}}
+  if(r.GetEnvironmentOperation)return {EnvironmentOperation:{operation:{operation_id:acknowledged,phase:"ready"}}}
+  return {ProjectEnvironment:{environment:{...environment,operations:acknowledged?[{operation_id:"later-client",kind:"check",phase:"running"}]:[]}}}
+ },render(){},pageSize:()=>100})
+ let pending:Promise<void>|undefined
+ try {
+  await controller.open("project");pending=controller.check()
+  await new Promise(resolve=>setTimeout(resolve,50))
+  assert(requests.some(r=>r.GetEnvironmentOperation?.operationId===acknowledged),"retained acknowledged operation must be queried")
+  await pending
+ } finally {controller.close();await pending}
+})

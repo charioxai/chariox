@@ -76,10 +76,16 @@ export function createProjectEnvironmentReadController(deps: {
           if (!snapshot || snapshot.local_project_id!==projectId) throw new Error("Check unavailable for this Project")
           if(g!==generation)return
           cache.remember(scope,snapshot); current=snapshot; lines=viewLines(snapshot); deps.render()
+          // MP-08 / MP-10 / MP-11: another client can replace the aggregate
+          // projection; retained acknowledgements use the shared kernel lookup.
           const op=snapshot.operations.find(o=>o.operation_id===request.CheckProjectEnvironment.operationId)
+            ?? (await deps.send(projectEnvironmentOperationRequest("GetEnvironmentOperation",{projectId,operationId:request.CheckProjectEnvironment.operationId})) as {EnvironmentOperation?:{operation?:ProjectEnvironment["operations"][number]}}).EnvironmentOperation?.operation
+          if(g!==generation)return
+          if(!op || op.operation_id!==request.CheckProjectEnvironment.operationId)throw new Error("Check operation unavailable")
           if(op && ["ready","failed","cancelled"].includes(op.phase))return
           await new Promise(resolve=>setTimeout(resolve,250))
         }
+        if(g===generation)throw new Error("Check polling deadline exceeded")
       } catch {if(g===generation)lines=["Check unavailable · refresh and try again",...viewLines(current!)]}
       finally {if(checkingGeneration===g)checkingGeneration=null;if(g===generation)deps.render()}
     },
