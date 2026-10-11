@@ -92,3 +92,29 @@ test("MP-08/MP-10/MP-11 visible URLs stay clickable while syntax highlighting is
     }
   } finally { settle({highlights:[]}); await pending; harness.renderer.destroy(); syntax.destroy() }
 })
+
+
+test("MP-08 already painted fallback URLs become linked while the syntax worker remains pending", async () => {
+  const harness = await createTestRenderer({width:80,height:4,useThread:false})
+  const syntax = SyntaxStyle.fromStyles({})
+  const url = "https://github.com/serde-rs/json"
+  let settle!: (value:{highlights:[]}) => void
+  const pending = new Promise<{highlights:[]}>(resolve => { settle = resolve })
+  const worker = {highlightOnce:()=>pending} as unknown as NonNullable<ConstructorParameters<typeof CodeRenderable>[1]["treeSitterClient"]>
+  const node = new CodeRenderable(harness.renderer,{content:url,filetype:"markdown",streaming:true,drawUnstyledText:true,syntaxStyle:syntax,treeSitterClient:worker})
+  harness.renderer.root.add(node)
+  try {
+    await harness.renderOnce()
+    assert.equal(node.isHighlighting,true)
+    const renderNode = createTranscriptMarkdownNodeRenderer(harness.renderer)
+    renderNode({type:"paragraph",raw:url,text:url} as Parameters<typeof renderNode>[0],{syntaxStyle:syntax,conceal:false,concealCode:false,treeSitterClient:worker,defaultRender:()=>node})
+    await harness.renderOnce()
+    const native = harness.renderer as unknown as {rendererPtr:number,lib:{getCurrentBuffer(ptr:number):{buffers:{char:Uint32Array,attributes:Uint32Array}},linkGetUrl(id:number):string}}
+    const {char,attributes} = native.lib.getCurrentBuffer(native.rendererPtr).buffers
+    const index = [...char].map(value=>String.fromCodePoint(value)).join("").indexOf(url)
+    assert.ok(index>=0)
+    const id = getLinkId(attributes[index]!)
+    assert.ok(id>0,"an already-visible fallback URL must become clickable without waiting for syntax")
+    assert.equal(native.lib.linkGetUrl(id),url)
+  } finally { settle({highlights:[]});await pending;harness.renderer.destroy();syntax.destroy() }
+})

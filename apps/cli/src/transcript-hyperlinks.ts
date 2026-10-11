@@ -50,6 +50,9 @@ function linkifyTranscriptFallback(node: CodeRenderable): void {
     if (chunks.some(chunk => chunk.link)) this.setStyledText(new StyledText(chunks))
     else setText.call(this, value)
   }
+  // The constructor may already have painted plain content before this hook.
+  // Link it immediately while its syntax worker remains pending.
+  if (node.content) buffer.setText(node.content)
 }
 
 export const createTranscriptMarkdownNodeRenderer = (renderer: ConstructorParameters<typeof CodeRenderable>[0]): NonNullable<MarkdownOptions["renderNode"]> => (token, context) => {
