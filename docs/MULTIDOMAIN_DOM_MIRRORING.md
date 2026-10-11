@@ -55,8 +55,10 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   (`after_sequence: 0`). A packet that stays unacknowledged for 1.5 s while a
   later credit still names an older base was lost with its reply (a dropped
   socket): the kernel sends it again, in order, with its original bytes (its
-  last 16 packets, at most 8 MB). One failed credit re-credits from the
-  applied sequence; a failed reset or a second failure in a row resets. Replies arrive in credit order, so a gap with no older
+  last 16 packets, at most 8 MB). A failed credit asks for a reset: the
+  kernel still holds the long poll of a credit lost with a dropped socket, and
+  only the reset ends it (credits lost with one socket count as one failure for
+  the backoff). Replies arrive in credit order, so a gap with no older
   credit outstanding (for example a credit replayed after a reconnect, which the
   kernel runs again) resets at once; the reset credit does not wait for credits
   in flight, and the kernel ends the long poll of every credit that arrived
