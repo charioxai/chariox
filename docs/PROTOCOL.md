@@ -579,16 +579,27 @@ Chunks remain encrypted kernel-to-kernel relay packets.
 
 MP-08 / MP-11 `source_kernel_without_credentials` is part of the canonical plan
 and package binding. Provider accounts and Git credentials are kernel-forced `none`.
-Its source exporter does not read the credential registry or Vault. Native source
+Its source exporter does not read the credential registry or Vault values. Native source
 confirmation gates packaging and transfer for every owner copy. A selected Project
 uses its native Project review; kernel-only copies use an idle source-owner session
 with an owner-bound, human-only kernel-operation RuntimeInteraction naming the destination
 Machine. Meta delegation, ordinary agents, Host clients and sudo agent turns cannot
 answer this review; the owner terminal can continue or cancel. Without such a session
 the copy is refused with retry guidance. Cancellation or expiry stops export. Environment
-values are omitted and Vault access is denied for Project review. Source and target checks reject credential dependencies, Vault
-snapshots, credential-bearing extension files, overlays/setup files, sealed Project
-environment values and recognized secrets in Git history. Target import uses an
+values are omitted and Vault value access is denied for Project review. Kernel payload
+checks reject credential dependencies, Vault snapshots and credential-bearing extension
+files; Project checks reject sealed Project environment values.
+Project files and Git history with recognized secrets travel only as Vault-routed
+artifacts. The review lists their paths and kinds, never contents. The source records
+each artifact in the owner's encrypted Chariox Vault, verifies the read-back and seals it
+to the target, bound to context, source, target, Project and object path. The target
+authenticates that binding, records the artifact in its own encrypted Vault, verifies the
+read-back and only then materializes it in the isolated workspace. Such a copy requires an
+unlocked encrypted Chariox Vault on both kernels. Admission keeps the 16 MiB per-file,
+1 GiB scan and 120 second limits. A write that would exceed the Vault size limit fails
+before the owner's Vault is replaced. Every plaintext artifact is still checked for
+credentials. Only context transfers run this Vault/history review; ordinary Project
+environment adjustments do not. Target import uses an
 isolated target-owned workspace and the existing additive extension publication
 journal/collision checks. It does not replace runtime configuration or credentials.
 
