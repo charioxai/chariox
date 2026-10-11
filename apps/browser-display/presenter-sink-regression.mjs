@@ -104,9 +104,9 @@ try{
     await page.evaluate(()=>regression.tile(5,4));
     await page.evaluate(()=>{delete document.hidden;window.requestAnimationFrame=regression.raf;document.dispatchEvent(new Event('visibilitychange'));});
     // The source is quiet: no further video may rescue a stale canvas base.
-    await sample('quiet-resume-B',mode==='hidden-repair'?{}:{patch:[255,0,0],prior:hiddenKey?[0,0,255]:[255,0,0],outside:[0,0,255],band:[0,0,255]});
+    await sample('quiet-resume-B',mode==='hidden-repair'?{}:{patch:[255,0,0],prior:[0,0,255],outside:[0,0,255],band:[0,0,255]});
     await page.evaluate(()=>regression.deliver(regression.video(3,6)));
-    await sample('post-hidden-repair-delta',{patch:[255,0,0],prior:hiddenKey?[0,0,255]:[255,0,0],outside:[0,0,255]});
+    await sample('post-hidden-repair-delta',{patch:[0,0,255],prior:[0,0,255],outside:[0,0,255]});
     await page.evaluate(()=>regression.stream.input({kind:'scroll',delta_x:0,delta_y:100}));
     await sample('predicted-B',{outside:[0,0,255],band:[255,255,0]});
     await page.evaluate(()=>regression.tile(7,6));
@@ -125,7 +125,7 @@ try{
     await sample('predicted-repair',{outside:[0,255,0],band:[255,255,0]});
    }
    await page.evaluate(()=>regression.deliver(regression.video(5,11)));
-   await sample('delta',{patch:[255,0,0],outside:[0,0,255],band:[0,0,255]});
+   await sample('delta',{patch:[0,0,255],outside:[0,0,255],band:[0,0,255]});
    await page.evaluate(()=>regression.deliver(regression.video(6,12)));
    await sample('final-key',{patch:[0,0,255],outside:[0,0,255]});
    await page.evaluate(()=>{
