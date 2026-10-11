@@ -594,14 +594,14 @@ export function installMirror2(sanitizeMirrorCss) {
       return out;
     };
     // A viewport screenshot of a region already holds its compositing (any transform beyond a translation,
-    // also size-preserving ones like rotate(180deg) or scaleX(-1); a filter; opacity or blending on it or an
-    // ancestor), which the mirrored DOM applies again: such regions are flagged (the service then needs the
+    // also size-preserving ones like rotate(180deg) or scaleX(-1); a filter; opacity or blending on it, an
+    // ancestor or a same-origin frame owner), which the mirrored DOM applies again: such regions are flagged (the service then needs the
     // element's own pixels, else labelled video).
     const linear = transform => { if (transform === 'none') return false; const m = new DOMMatrixReadOnly(transform); return !(m.is2D && m.a === 1 && m.b === 0 && m.c === 0 && m.d === 1); };
     const distorted = node => {
       const [, , width, height] = box(node), [layoutWidth, layoutHeight] = layoutSize(node);
       if (Math.abs(width - layoutWidth) > 1 || Math.abs(height - layoutHeight) > 1) return true;
-      for (let at = node, depth = 0; at && depth < DEPTH; depth++, at = at.parentElement ?? at.getRootNode?.()?.host) {
+      for (let at = node, depth = 0; at && depth < DEPTH; depth++, at = at.parentElement ?? at.getRootNode?.()?.host ?? at.ownerDocument?.defaultView?.frameElement) {
         if (at.nodeType !== 1) continue;
         const style = getComputedStyle(at);
         if (style.filter !== 'none' || linear(style.transform) || style.rotate !== 'none' || style.scale !== 'none' || Number(style.opacity) < 1 || style.mixBlendMode !== 'normal') return true;

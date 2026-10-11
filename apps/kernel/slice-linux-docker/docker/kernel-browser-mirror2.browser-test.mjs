@@ -1043,3 +1043,22 @@ test("MP-10: protocol 501 an external <use> sprite travels as a sanitized resour
     ops = (await next(1000)).ops.filter(op => op.id === use.id);
     assert.deepEqual(ops.map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", "#sym"]], "MP-10: a local reference drops the file");
   }, { "/sprite.svg": { type: "image/svg+xml", body: spriteFile } }));
+
+// Review #941 @f6fb77245 finding 4: the compositing check walks the frame-owner chain too (a screenshot-only region
+// inside a same-origin child frame whose owner element is translucent or rotated).
+test("MP-10: review #941@f6fb77245-4 a screenshot-crop region inside a same-origin frame under a translucent or rotated frame owner hands the page to labelled video", () => mirrored(
+  `<iframe id="f" width="200" height="100" srcdoc='<canvas id="c" width="120" height="60"></canvas><script>const i=new Image();i.onload=()=>{c.getContext("2d").drawImage(i,0,0);parent.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>'></iframe>`, async ({ next, evaluate }) => {
+    for (let i = 0; i < 100 && await evaluate("window.drawn === true") !== true; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    const plain = await next();
+    assert.equal(plain.fallback, undefined); assert.equal(plain.tiles.length, 1, "MP-10: the tainted canvas in the frame shows as a crop");
+    for (const style of ["opacity:0.5", "transform:rotate(180deg)"]) {
+      await evaluate(`f.style.cssText=${JSON.stringify(style)};true`);
+      await new Promise(resolve => setTimeout(resolve, 1100));
+      let packet = await next(1000); for (let i = 0; i < 3 && packet.fallback === undefined; i++) packet = await next(1000);
+      assert.equal(packet.fallback, "region_transform", `MP-10: frame owner ${style}`);
+      await evaluate("f.style.cssText='';true");
+      await new Promise(resolve => setTimeout(resolve, 1100));
+      let back = await next(1000); for (let i = 0; i < 3 && back.fallback !== undefined; i++) back = await next(1000);
+      assert.equal(back.fallback, undefined, `MP-10: the mirror returns after ${style}`);
+    }
+  }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="60" height="60" fill="rgb(255,0,0)"/><rect x="60" width="60" height="60" fill="rgb(0,0,255)"/></svg>' } }));
