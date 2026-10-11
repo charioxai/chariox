@@ -197,3 +197,33 @@ function debugLabels(entries: readonly unknown[], label: string) {
     && (entry as { payload?: unknown }).payload !== null
   )
 }
+
+for (const delayedDrain of [false, true]) {
+  test(`MP-08/MP-11 recovers skipped scoped completions with ${delayedDrain ? "delayed" : "same-batch"} output`, async () => {
+    const broadcasts: any[] = []
+    const lookups: string[][] = []
+    const projection = createCodexKernelOutputProjection({
+      agentId: "agent-1", broadcast: (message) => broadcasts.push(message), debug: () => {},
+      resolveSettledPrompts: async (ids: string[]) => {
+        lookups.push(ids)
+        return new Map([["A", 2000]])
+      },
+    })
+    projection.setThreadId("display")
+    const output = (promptId: string, timestamp: number) => ({ agent_id: "agent-1", prompt_id: promptId, timestamp_ms: timestamp, kind: "provider_output" as const, bytes: [...Buffer.from(promptId)] })
+    if (delayedDrain) projection.project([output("A", 1000)])
+    projection.project([...(delayedDrain ? [] : [output("A", 1000)]), output("B", 3000), output("newer", 1000)])
+    const session = { agent_activity: { "agent-1": { busy: false, last_completed_turn: { prompt_id: "B", completed_at_ms: 4000 } } } } as unknown as import("./cli-types.js").RuntimeSession
+    await projection.projectSessionState(session)
+    await projection.projectSessionState(session)
+    const completed = broadcasts.filter((message) => message.method === "item/completed")
+    assert.deepEqual(completed.map((message) => message.params.item.text).sort(), ["A", "B"])
+    assert.equal(broadcasts.filter((message) => message.method === "turn/completed").length, 2)
+    assert(lookups[0]?.includes("A"))
+    assert.equal(completed.find((message) => message.params.item.text === "A")?.params.completedAtMs, 2000)
+    // A later chunk from an ongoing newer turn stays live even with an older
+    // wall-clock timestamp; only its authoritative prompt lifecycle settles it.
+    projection.project([output("newer", 5000)])
+    assert.equal(broadcasts.filter((message) => message.method === "item/started").length, 3)
+  })
+}

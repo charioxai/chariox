@@ -10,6 +10,7 @@ import {
 import { LocalIpcClient } from "../ipc.js"
 import { handleCodexNativeTurnInterrupt } from "./codex-turn-control.js"
 import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
+import { loadCodexPromptSettlements } from "./codex-prompt-settlement.js"
 import { createCodexKernelOutputProjection } from "./codex-kernel-output-projection.js"
 import {
   type CodexJsonRpcMessage,
@@ -48,7 +49,7 @@ type CodexProxyOptions = {
 }
 
 export type CodexProxyServer = WebSocketServer & {
-  projectKernelSessionStateToTui: (session: import("../cli-types.js").RuntimeSession) => void
+  projectKernelSessionStateToTui: (session: import("../cli-types.js").RuntimeSession) => Promise<void>
   projectKernelOutputToTui: (records: TerminalOutputRecord[]) => void
 }
 
@@ -217,6 +218,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     agentId: options.agentId,
     broadcast: broadcastToNativeTuis,
     debug: options.debug,
+    resolveSettledPrompts: (ids) => loadCodexPromptSettlements(options.client, options.sessionId, options.agentId, ids),
   })
   const projectionThreadTracker = createCodexProjectionThreadTracker({
     setThreadId: kernelOutputProjection.setThreadId,

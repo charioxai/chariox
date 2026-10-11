@@ -12,7 +12,7 @@ export function startNativeKernelPumpLoop(
   sessionId: string,
   attachmentId: string,
   options: {
-    onSessionState?: ((session: RuntimeSession) => void) | undefined
+    onSessionState?: ((session: RuntimeSession) => void | Promise<void>) | undefined
     onTerminalRecords?: ((records: TerminalOutputRecord[]) => void) | undefined
     debug?: ((label: string, payload: unknown) => void) | undefined
     formatError?: ((error: unknown) => string) | undefined
@@ -48,7 +48,7 @@ export function startNativeKernelPumpLoop(
           }
         }
       }
-      if (session) options.onSessionState?.(session)
+      if (session) await options.onSessionState?.(session)
       if (options.pollRuntimeNotices !== false) {
         await client.send<Record<string, unknown>>(pollRuntimeNoticesRequest(sessionId, attachmentId))
       }

@@ -20,6 +20,7 @@ export function createCodexKernelOutputProjection(options: {
   agentId: string
   broadcast: (message: unknown) => void
   debug: (label: string, payload: unknown) => void
+  resolveSettledPrompts?: (promptIds: string[]) => Promise<Map<string, number>>
   nowMs?: () => number
 }) {
   const nowMs = options.nowMs ?? Date.now
@@ -231,15 +232,29 @@ export function createCodexKernelOutputProjection(options: {
       ? projectedUserTurn.promptId
       : [...projectedItems.values()].find((item) => item.turnId === turnId)?.promptId ?? null,
     recordForTurn: (turnId: string) => [...projectedItems.values()].find((item) => item.turnId === turnId)?.record ?? null,
-    projectSessionState: (session: RuntimeSession) => {
+    projectSessionState: async (session: RuntimeSession) => {
       const activity = session.agent_activity?.[options.agentId]
       const completed = activity?.last_completed_turn
-      if (!completed) return
       // The snapshot is read before draining output. Its completion timestamp
       // fences unscoped legacy records if another turn starts during the drain.
       for (const item of projectedItems.values()) {
-        if (item.promptId ? item.promptId !== completed.prompt_id : item.completedAtMs > completed.completed_at_ms) continue
+        if (!completed || (item.promptId ? item.promptId !== completed.prompt_id : item.completedAtMs > completed.completed_at_ms)) continue
         item.completedAtMs = completed.completed_at_ms
+        completeProjectedItem(item)
+      }
+      // last_completed_turn is a latest-value projection, not a completion
+      // log. Recover older outstanding IDs from kernel-owned durable history.
+      // Exact IDs, rather than timestamps or idle state, fence newer turns.
+      const promptState = session.prompt_states?.[options.agentId]
+      const liveIds = new Set([promptState?.active_prompt?.id, ...(promptState?.queued_prompts ?? []).map((prompt) => prompt.id)])
+      const unresolvedIds = [...new Set([...projectedItems.values()].flatMap((item) =>
+        item.promptId && !liveIds.has(item.promptId) ? [item.promptId] : []))]
+      if (!unresolvedIds.length || !options.resolveSettledPrompts) return
+      const settlements = await options.resolveSettledPrompts(unresolvedIds)
+      for (const item of projectedItems.values()) {
+        const completedAt = item.promptId ? settlements.get(item.promptId) : undefined
+        if (completedAt === undefined) continue
+        item.completedAtMs = completedAt
         completeProjectedItem(item)
       }
     },
