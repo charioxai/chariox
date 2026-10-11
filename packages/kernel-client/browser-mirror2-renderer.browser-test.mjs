@@ -429,3 +429,21 @@ test('MP-08: a packet drained before the kernel applied the viewer\'s focus (it 
     assert.equal(await active(), 2, 'MP-08: a new kernel focus inside the window applies immediately');
   } finally { await page.close(); }
 });
+
+// Review #941 @36a395b05 finding 1: `change` from native controls is not composed, so a select or picker inside an open
+// shadow root never reached the document listener; `set` is their only path to the kernel.
+test('MP-08: review #941@36a395b05-1 a select and a date picker inside an open shadow root commit their picks as `set`', async () => {
+  const page = await viewer();
+  try {
+    const option = (id, value) => [{ id, parent: 'n6', kind: 'element', tag: 'option', attrs: { value } }, { id: `${id}0`, parent: id, kind: 'text', text: value }];
+    await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'div' }, { id: 'n5', parent: 'n4', kind: 'shadow' },
+      { id: 'n6', parent: 'n5', kind: 'element', tag: 'select', form: { value: 'Apple', checked: false, selected_index: 0, selection_start: null, selection_end: null } }, ...option('n7', 'Apple'), ...option('n8', 'Banana'),
+      { id: 'n9', parent: 'n5', kind: 'element', tag: 'input', attrs: { type: 'date' }, form: textForm('', null) }])), focused: 'n6' });
+    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to'));
+    await page.keyboard.press('ArrowDown'); await frames();
+    assert.deepEqual(await sent(), [{ kind: 'set', node_id: 'n6', selected_index: 1 }], 'MP-08: the shadow select\'s pick reaches the kernel');
+    await apply(page, delta(2, [], { focused: 'n9' })); await sent();
+    await page.keyboard.type('10102026'); await frames();
+    assert.deepEqual((await sent()).at(-1), { kind: 'set', node_id: 'n9', value: '2026-10-10' }, 'MP-08: the shadow date commits as one value');
+  } finally { await page.close(); }
+});

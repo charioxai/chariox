@@ -154,13 +154,7 @@ export class BrowserMirror2Renderer {
       if (this.applying || !id || (event as FocusEvent).relatedTarget) return
       setTimeout(() => { const active = this.active(); if (this.disposed || this.applying || !this.doc?.hasFocus() || active === node || active && active !== active.ownerDocument.body && active !== active.ownerDocument.documentElement && active.localName !== 'iframe' || this.focusSent !== id) return; this.focusSent = null; this.enqueue({ kind: 'blur', node_id: id }) }, 0)
     })
-    on('change', event => {
-      const control = event.composedPath()[0] as HTMLSelectElement & HTMLInputElement, id = this.ids.get(control)
-      if (this.applying || !id || this.records.get(id)?.kind !== 'element' || !picked(control)) return
-      if (control.localName === 'input') this.enqueue({ kind: 'set', node_id: id, value: control.value })
-      else if (!control.multiple) this.enqueue({ kind: 'set', node_id: id, selected_index: control.selectedIndex })
-      else for (const option of Array.from(control.options)) { const option_id = this.ids.get(option), state = option_id ? this.records.get(option_id)?.form : undefined; if (option_id && state && state.checked !== option.selected) this.enqueue({ kind: 'set', node_id: option_id, checked: option.selected }) }
-    })
+    on('change', this.committed)
     on('auxclick', event => event.preventDefault())
     on('dragstart', event => event.preventDefault())
     on('submit', event => event.preventDefault())
@@ -198,6 +192,17 @@ export class BrowserMirror2Renderer {
     // The range a composition replaces is synced as it starts; its result is where the kernel's caret ends.
     on('compositionstart', () => this.syncRange())
     on('selectionchange', () => { if (this.applying) return; const selection = doc.getSelection(); if (!selection || selection.isCollapsed) return; const a = this.ids.get(selection.anchorNode!), b = this.ids.get(selection.focusNode!); if (a && b && this.records.get(a)?.kind === 'text' && this.records.get(b)?.kind === 'text') this.enqueue({ kind: 'selection', anchor_id: a, anchor_offset: selection.anchorOffset, focus_id: b, focus_offset: selection.focusOffset }) })
+  }
+  // Committed control state (protocol 492 `set`). Bound on documents and shadow roots: `change` is not composed.
+  private committed = (event: Event): void => {
+    const control = event.composedPath()[0] as HTMLSelectElement & HTMLInputElement, id = this.ids.get(control)
+    if (this.applying || !id || this.records.get(id)?.kind !== 'element' || !picked(control)) return
+    if (control.localName === 'input') this.enqueue({ kind: 'set', node_id: id, value: control.value })
+    else if (!control.multiple) this.enqueue({ kind: 'set', node_id: id, selected_index: control.selectedIndex })
+    else for (const option of Array.from(control.options)) {
+      const option_id = this.ids.get(option), state = option_id ? this.records.get(option_id)?.form : undefined
+      if (option_id && state && state.checked !== option.selected) this.enqueue({ kind: 'set', node_id: option_id, checked: option.selected })
+    }
   }
   // Viewer scrolls (documents and shadow roots: element scroll events do not cross a shadow boundary).
   private scrollTargets = new Set<Node>()
@@ -370,7 +375,7 @@ export class BrowserMirror2Renderer {
   }
   private attachShadow(host: Element, record: Mirror2Record, fragment: DocumentFragment): void {
     let root: ShadowRoot | null = host.shadowRoot
-    if (!root) try { root = host.attachShadow({ mode: 'open' }); root.addEventListener('scroll', this.scrolled, { capture: true, passive: true }) } catch { root = null }
+    if (!root) try { root = host.attachShadow({ mode: 'open' }); root.addEventListener('scroll', this.scrolled, { capture: true, passive: true }); root.addEventListener('change', this.committed, { capture: true }) } catch { root = null }
     if (!root) { this.forget(record.id); return }
     root.replaceChildren(...Array.from(fragment.childNodes))
     this.dom.set(record.id, root); this.ids.set(root, record.id)
