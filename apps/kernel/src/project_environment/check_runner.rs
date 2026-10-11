@@ -122,7 +122,7 @@ impl ProjectEnvironmentStore {
             &env,
             &mut checks.observations,
             &target,
-            &operation.operation_id,
+            Some(&operation.operation_id),
         );
         for result in &mut operation.per_item_results {
             if let Some(o) = checks.observations.iter().find(|o| {

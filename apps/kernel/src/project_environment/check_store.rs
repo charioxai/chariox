@@ -32,6 +32,7 @@ impl EnvironmentChecks {
                     checked > now || now.saturating_sub(checked) > OBSERVATION_TTL_MS
                 });
         }
+        super::check::invalidate_check_dependencies(env, &mut self.observations, target, None);
     }
     pub(crate) fn record_observation(&mut self, observation: MachineObservation) {
         self.observations.retain(|prior| {

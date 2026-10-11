@@ -116,10 +116,15 @@ fn review1118_mcp_notification_202_reaches_tools_list_in_check() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/mcp", listener.local_addr().unwrap());
     listener.set_nonblocking(true).unwrap();
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server_finished = finished.clone();
     let server = std::thread::spawn(move || {
         let mut methods = vec![];
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
-        while methods.len() < 3 && std::time::Instant::now() < deadline {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while methods.len() < 3
+            && !server_finished.load(std::sync::atomic::Ordering::SeqCst)
+            && std::time::Instant::now() < deadline
+        {
             let Ok((mut stream, _)) = listener.accept() else {
                 std::thread::sleep(std::time::Duration::from_millis(5));
                 continue;
@@ -172,6 +177,94 @@ fn review1118_mcp_notification_202_reaches_tools_list_in_check() {
     let ctx = context(root.path());
     let r = mcp_requirement(&url);
     let observation = check_requirement(root.path(), ctx, r, std::time::Duration::from_secs(10));
+    finished.store(true, std::sync::atomic::Ordering::SeqCst);
+    let methods = server.join().unwrap();
+    assert_eq!(
+        methods,
+        vec!["initialize", "notifications/initialized", "tools/list"]
+    );
+    assert_eq!(observation.status, EnvironmentObservationStatus::Ready);
+}
+
+#[test]
+fn review1301_mcp_notification_202_reaches_tools_list_in_check() {
+    use std::io::{Read, Write};
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let root = crate::test_support::TestWorktree::new("review1118-mcp");
+    std::env::set_var("CHARIOX_HOME", root.path());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    listener.set_nonblocking(true).unwrap();
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server_finished = finished.clone();
+    let server = std::thread::spawn(move || {
+        let mut methods = vec![];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while methods.len() < 3
+            && !server_finished.load(std::sync::atomic::Ordering::SeqCst)
+            && std::time::Instant::now() < deadline
+        {
+            let Ok((mut stream, _)) = listener.accept() else {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+                .unwrap();
+            let mut bytes = vec![];
+            let mut byte = [0];
+            while !bytes.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                bytes.push(byte[0]);
+            }
+            let headers = String::from_utf8(bytes).unwrap();
+            let length: usize = headers
+                .lines()
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().parse().unwrap())
+                })
+                .unwrap();
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body).unwrap();
+            let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let method = payload["method"].as_str().unwrap();
+            methods.push(method.to_string());
+            let session_present = headers
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("Mcp-Session-Id: synthetic-session"));
+            if method != "initialize" && !session_present {
+                stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                break;
+            }
+            let response = match method {
+                "initialize" => Some(
+                    serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"test","version":"1"}}}),
+                ),
+                "tools/list" => {
+                    Some(serde_json::json!({"jsonrpc":"2.0","id":2,"result":{"tools":[]}}))
+                }
+                _ => None,
+            };
+            if let Some(body) = response {
+                let body = body.to_string();
+                write!(stream,"HTTP/1.1 200 OK\r\nMcp-Session-Id: synthetic-session\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+            } else {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+            }
+        }
+        methods
+    });
+    let ctx = context(root.path());
+    let r = mcp_requirement(&url);
+    let observation = check_requirement(root.path(), ctx, r, std::time::Duration::from_secs(10));
+    finished.store(true, std::sync::atomic::Ordering::SeqCst);
     let methods = server.join().unwrap();
     assert_eq!(
         methods,

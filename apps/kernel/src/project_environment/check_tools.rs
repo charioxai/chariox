@@ -136,12 +136,14 @@ pub(super) fn check_tool(
                     "MCP named credentials require authorization",
                 );
             };
-            // Reserve one bounded interval for each handshake dispatch. The
+            // Reserve one second for bounded lease release and a bounded
+            // interval for each handshake dispatch. The
             // existing adapter expresses seconds, so never round up a fraction
             // past the operation's remaining budget or create another authority.
             let seconds = deadline
                 .saturating_duration_since(std::time::Instant::now())
                 .as_secs()
+                .saturating_sub(1)
                 / 3;
             if seconds == 0 {
                 return result(
