@@ -20,6 +20,7 @@ pub(crate) fn provider_account_credential_id(
     provider: &str,
     profile_id: &str,
 ) -> String {
+    let provider = crate::provider::canonical_provider_family(provider).unwrap_or(provider);
     let identity = format!(
         "{}\0{}\0{}",
         owner_user_id.trim(),
@@ -243,6 +244,31 @@ fn canonical_label(provider: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // MP-08 / MP-09 / MP-10 / MP-11: adapter aliases must resolve the
+    // canonical profile's existing Vault handle, never a second credential.
+    #[test]
+    fn claude_execution_aliases_reuse_the_enrolled_credential_handle() {
+        let canonical = provider_account_credential_id("owner", "claude", "work");
+        assert_eq!(
+            canonical,
+            "provider-account-claude-7c5263ec8de6df8703dc016fe277740a618d6110"
+        );
+        for provider in ["claude-p", "claude-headless"] {
+            assert_eq!(
+                provider_account_credential_id("owner", provider, "work"),
+                canonical
+            );
+        }
+        assert_ne!(
+            provider_account_credential_id("other-owner", "claude-p", "work"),
+            canonical
+        );
+        assert_ne!(
+            provider_account_credential_id("owner", "claude-p", "other-profile"),
+            canonical
+        );
+    }
 
     #[test]
     fn credential_handle_is_stable_and_registry_safe() {
