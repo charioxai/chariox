@@ -211,7 +211,7 @@ export class Mirror2 {
       if (!match) continue;
       try {
         const { object } = await world.connection.send('DOM.resolveNode', { backendNodeId: Number(match[1]), executionContextId: world.contextId }, world.sessionId);
-        const marked = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.protect.call(this)}`, returnByValue: true }, world.sessionId);
+        const marked = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.protect.call(this,${JSON.stringify(target.value_hash ?? null)},${JSON.stringify(target.fill_revision ?? null)})}`, returnByValue: true }, world.sessionId);
         if (marked.exceptionDetails || marked.result?.value !== true) throw new Error('MP-11: protected target unavailable');
         await world.connection.send('Runtime.releaseObject', { objectId: object.objectId }, world.sessionId).catch(() => {});
       } catch (error) {

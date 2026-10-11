@@ -53,6 +53,10 @@ export function installMirror2(sanitizeMirrorCss) {
   // Least recently used first; over the bound (twice the service's subscriptions:
   // only leaked instances) the oldest goes, and its subscription resyncs.
   const instances = new Map();
+  // Vault fill targets by node, shared by every viewer's instance: { token (value hash and fill revision), hash,
+  // state }. 'pending' until the field first holds the fill (registered before the insertion: masked), 'filled'
+  // while it holds it, 'retired' once it no longer does (an edit): a plain field until a refill (new revision).
+  const fills = new WeakMap();
   globalThis.__charioxMirror2 = Object.freeze({
     get: id => {
       let instance = instances.get(id);
@@ -66,6 +70,25 @@ export function installMirror2(sanitizeMirrorCss) {
     sheetChanged: owner => { for (const instance of instances.values()) instance.sheetChanged(owner); return true; },
   });
   return true;
+  // SHA-256 hex of a string's UTF-8 bytes (synchronous: the drain is; crypto.subtle needs a secure context).
+  function sha256(text) {
+    const prime = n => { for (let d = 2; d * d <= n; d++) if (n % d === 0) return false; return true; }, primes = [];
+    for (let n = 2; primes.length < 64; n++) if (prime(n)) primes.push(n);
+    const K = primes.map(p => Math.floor((Math.cbrt(p) % 1) * 2 ** 32) | 0), H = primes.slice(0, 8).map(p => Math.floor((Math.sqrt(p) % 1) * 2 ** 32) | 0);
+    const bytes = new TextEncoder().encode(text), total = Math.ceil((bytes.length + 9) / 64) * 64, data = new Uint8Array(total), view = new DataView(data.buffer), w = new Int32Array(64);
+    data.set(bytes); data[bytes.length] = 0x80; view.setUint32(total - 8, Math.floor(bytes.length / 0x20000000)); view.setUint32(total - 4, bytes.length * 8);
+    const rotr = (x, n) => x >>> n | x << (32 - n);
+    for (let at = 0; at < total; at += 64) {
+      for (let i = 0; i < 64; i++) w[i] = i < 16 ? view.getInt32(at + i * 4) : (rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ w[i - 2] >>> 10) + w[i - 7] + (rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ w[i - 15] >>> 3) + w[i - 16] | 0;
+      let [a, b, c, d, e, f, g, h] = H;
+      for (let i = 0; i < 64; i++) {
+        const t1 = h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + (e & f ^ ~e & g) + K[i] + w[i] | 0, t2 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + (a & b ^ a & c ^ b & c) | 0;
+        h = g; g = f; f = e; e = d + t1 | 0; d = c; c = b; b = a; a = t1 + t2 | 0;
+      }
+      [a, b, c, d, e, f, g, h].forEach((x, i) => { H[i] = H[i] + x | 0; });
+    }
+    return H.map(x => (x >>> 0).toString(16).padStart(8, '0')).join('');
+  }
   function create() {
     const HTML = 'http://www.w3.org/1999/xhtml', SVG = 'http://www.w3.org/2000/svg', MATH = 'http://www.w3.org/1998/Math/MathML';
     const NODE_BUDGET = 200000, BYTE_BUDGET = 64 * 1024 * 1024, RESOURCE_BUDGET = 4096, DEPTH = 512;
@@ -79,10 +102,10 @@ export function installMirror2(sanitizeMirrorCss) {
     const RENDERED = new Set('class id style title lang dir hidden tabindex role alt for placeholder width height colspan rowspan span type value checked selected disabled readonly multiple open start reversed size rows cols wrap label popover inert contenteditable slot part exportparts href align valign bgcolor border cellpadding cellspacing color face nowrap hspace vspace clear noshade frame rules text link vlink alink compact abbr scope summary datetime cite min max low high optimum media headers'.split(' '));
     const INPUT_TYPES = new Set('text search email url number tel checkbox radio range button submit reset date time datetime-local month week color hidden file image'.split(' '));
     const denied = lower => DENY_ATTR.has(lower) || lower.startsWith('on') || !RENDERED.has(lower) && !lower.startsWith('aria-') && /csrf|xsrf|token|nonce|secret|passw/.test(lower);
-    // Owner rule (MP-11, 2026-10-09): mask only the fields the kernel filled from
-    // the Vault, and only while they are plain text fields (a password field shows
-    // dots; its value never leaves). No page-text, attribute or CSS value scanning.
-    let serial = 0, targets = new WeakSet(), records = [], overflow = false, revision = 0;
+    // Owner rule (MP-11, 2026-10-09/11): mask only the fields the kernel filled from the Vault, only while
+    // they are plain text fields (a password field shows dots; its value never leaves) and only while they
+    // hold the fill (fills). No page-text, attribute or CSS value scanning.
+    let serial = 0, targets = new Set(), records = [], overflow = false, revision = 0;
     const ids = new WeakMap(), nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map(), resOf = new Map();
     const styleNodes = new Map(), roots = new Map(), pendingHosts = new Map(), foreign = new Set(), shapes = new Map();
     // Hosts of closed shadow roots (found by the kernel's trusted DOMSnapshot pass):
@@ -138,7 +161,13 @@ export function installMirror2(sanitizeMirrorCss) {
     const textBox = node => { const range = node.ownerDocument.createRange(); range.selectNodeContents(node); const r = range.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
     // Every non-password input counts, as on the pixel path (a filled month/date shows its value too).
     const plainText = node => node.localName === 'input' ? node.type !== 'password' : node.localName === 'textarea' || node.isContentEditable;
-    const secretElement = node => targets.has(node) && plainText(node);
+    const secretElement = node => targets.has(node) && plainText(node) && fills.get(node)?.state !== 'retired';
+    // A target's fill state follows its value (sampled every drain; input events wake one).
+    const verify = node => {
+      const fill = fills.get(node); if (!fill?.hash || fill.state === 'retired' || !node.isConnected) return;
+      const held = sha256(node.isContentEditable ? node.textContent : String(node.value ?? '')) === fill.hash;
+      if (held) fill.state = 'filled'; else if (fill.state === 'filled') fill.state = 'retired';
+    };
     const listened = new WeakSet(), listening = new AbortController();
     // Loaded resource URLs: a PerformanceObserver still sees entries once the page's
     // Resource Timing buffer is full (250 by default, or whatever the page set).
@@ -363,7 +392,7 @@ export function installMirror2(sanitizeMirrorCss) {
       return { scroll: [scrollX, scrollY], focused: focusId && kindOf.get(focusId) !== 'mask' ? focusId : null, selection, fragment: location.hash.length > 1 ? location.hash.slice(1, 2049) : null, revision };
     };
     const take = () => { const resources = newResources, sheets = pendingSheets; newResources = []; pendingSheets = []; return { resources, sheets }; };
-    const resetTargets = () => { targets = new WeakSet(); return true; };
+    const resetTargets = () => { targets = new Set(); return true; };
     // Full snapshot: forget every id. Resource keys stay stable per document.
     const snapshot = () => {
       observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map(); snapshotted = true;
@@ -453,6 +482,7 @@ export function installMirror2(sanitizeMirrorCss) {
         }
       }
       const ops = [], out = []; rebound = [];
+      for (const node of targets) { const before = secretElement(node); verify(node); if (secretElement(node) !== before) dirty.replace.add(node); }
       // Protection status and opaque-kind changes replace the node under a new id.
       for (const [node, names] of dirty.attrs) {
         const id = mirrored(node); if (!id) { const mask = insideMask(node); if (mask) dirty.masks.add(mask); continue; }
@@ -717,8 +747,13 @@ export function installMirror2(sanitizeMirrorCss) {
     const markClosedHost = function () { if (this && this.nodeType === 1) { closedHosts.add(this); replaceNode(this); } return true; };
     // Custom elements without an open root: only then is a DOMSnapshot pass worth it.
     const customHosts = () => { let n = 0; for (const e of document.querySelectorAll('*')) if (e.localName.includes('-') && !e.shadowRoot && ++n) break; return n; };
-    // Trusted-side: resolveNode() hands Vault target nodes to this world.
-    const protect = function () { if (this && this.nodeType === 1) { targets.add(this); replaceNode(this); } return true; };
+    // Trusted-side: resolveNode() hands Vault target nodes to this world, with the fill's value hash and revision.
+    const protect = function (hash = null, fillRevision = null) {
+      if (!this || this.nodeType !== 1) return true;
+      const token = `${hash}:${fillRevision}`;
+      if (fills.get(this)?.token !== token) fills.set(this, { token, hash: typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash) ? hash : null, state: 'pending' });
+      targets.add(this); verify(this); replaceNode(this); return true;
+    };
     // Diagnostics for the coverage oracle: viewport text runs of mirrored text.
     const textCoverage = () => {
       let mirroredText = 0, total = 0;

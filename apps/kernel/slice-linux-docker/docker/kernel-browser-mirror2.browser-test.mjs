@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { inflateRawSync, deflateSync, constants as zlib } from "node:zlib";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { KernelBrowserHost } from "./kernel-browser-host.mjs";
@@ -950,3 +951,31 @@ test("MP-10: review #941@36a395b05-2 same-count CSSOM edits in a same-origin chi
     await evaluate("f.contentWindow.sheet.cssRules[0].style.color='rgb(4, 5, 6)';true");
     assert(await sheets("rgb(4, 5, 6)"), "MP-10: the child's adopted sheet edit reaches the viewer");
   }, { "/child": { type: "text/html", body: '<!doctype html><style>#c{color:rgb(9, 9, 9)}</style><p id="c">c</p><p id="d">d</p><script>const s=new CSSStyleSheet();s.replaceSync("#d{color:rgb(7, 7, 7)}");document.adoptedStyleSheets=[s];window.sheet=s</script>' } }));
+
+// Coordinator 2026-10-11 (Vault rule): a Vault-filled plain field is masked only while it still holds the fill (by the
+// target's value_hash). Registered before the insertion, it stays masked until the fill lands; once the value is no
+// longer the fill (the user edited it) it is a plain field again, for every viewer; a refill (new revision) masks it.
+test("MP-11: a Vault-filled plain field is masked while it holds the fill: fill -> mask, edit -> unmask (every viewer), refill -> mask", () => mirrored('<form><input id="v"><p>after</p></form>', async ({ next, evaluate, host, subscribe }) => {
+  const tab = [...host.tabs.values()][0], { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+  const { root } = await connection.send("DOM.getDocument", { depth: 0 }, sessionId), { nodeId } = await connection.send("DOM.querySelector", { nodeId: root.nodeId, selector: "#v" }, sessionId);
+  const { node } = await connection.send("DOM.describeNode", { nodeId }, sessionId);
+  const secret = "s3cret-fill-42", value_hash = createHash("sha256").update(secret).digest("hex");
+  const protect = fill_revision => host.protect({ values: [secret], targets: [{ kind: "browser", target_id: tab.target_id, document_id: tab.document_id, node_ref: `backend:${node.backendNodeId}`, value_hash, fill_revision }] });
+  const kinds = packet => { const out = []; const scan = rows => { let id = 0; for (const row of rows ?? []) { id += row[0]; if (row[2] === 4) out.push("mask"); else if (row[2] === "input") out.push(["input", row[4]?.form?.value]); } }; scan(packet.nodes); for (const op of packet.ops ?? []) if (op.op === "children") scan(op.nodes); return out; };
+  const until = async (want, viewer = next) => { const seen = []; for (let i = 0; i < 6; i++) { const packet = await viewer(1000); seen.push(JSON.stringify(packet)); const k = kinds(packet); if (k.length && JSON.stringify(k) === JSON.stringify(want)) return seen; } assert.fail(`MP-11: expected ${JSON.stringify(want)}`); };
+  await protect(1);
+  assert.deepEqual(kinds(await next(0, true)), ["mask"], "MP-11: registered before the insertion: masked");
+  await evaluate(`v.value=${JSON.stringify(secret)};v.dispatchEvent(new Event('input',{bubbles:true}));true`);
+  const quiet = await next(1000);
+  assert.deepEqual(kinds(quiet), [], "MP-11: the fill keeps the mask");
+  await evaluate("v.select();v.value='user typed';v.dispatchEvent(new Event('input',{bubbles:true}));true");
+  const edited = await until([["input", "user typed"]]);
+  assert(![quiet, ...edited].some(text => JSON.stringify(text).includes(secret)), "MP-11: the fill never travels");
+  const other = await subscribe();
+  assert.deepEqual(kinds(await other.next(0, true)), [["input", "user typed"]], "MP-11: another viewer sees the edited field too");
+  await evaluate(`v.value=${JSON.stringify(secret)};v.dispatchEvent(new Event('input',{bubbles:true}));true`);
+  await protect(2);
+  const refilled = await next(0, true);
+  assert.deepEqual(kinds(refilled), ["mask"], "MP-11: a refill masks it again");
+  assert(!JSON.stringify(refilled).includes(secret));
+}));
