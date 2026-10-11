@@ -11,7 +11,10 @@ test('kernel cancellation fences an in-flight paired request without waiting for
 });
 test('paired native fences consult the kernel connection at the final mutation boundary', () => {
   const native = read('./Native.swift');
-  assert.match(native, /checkWindowOcclusion[\s\S]*try authority\(\)/);
+  const destination = native.slice(native.indexOf('struct NativeDestinationFence'), native.indexOf('struct MacSource'));
+  assert.match(destination, /occlusion\(request, geometry.location, geometry.windowBounds\)[\s\S]*if checkAuthority \{ try authority\(\) \}/);
+  assert.match(native, /occlusion: \{ try checkWindowOcclusion/);
+  assert.match(native, /windowBounds: windowBounds[\s\S]*authority: authority/);
   const channel = read('./PairedSession.swift');
   assert.match(channel, /MSG_PEEK \| MSG_DONTWAIT/);
   assert.match(channel, /grant-revoked/);
