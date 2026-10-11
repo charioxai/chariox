@@ -109,6 +109,7 @@ def verify_caret(evidence, label, scope, pid, x, y, expected, at_pointer):
     saved_pointer = before['pointer']
     lease = None
     warped = None
+    comparison = None
     try:
         if at_pointer:
             lease = PointerLease(desktop, run_pointer_script, saved_pointer)
@@ -133,8 +134,15 @@ def verify_caret(evidence, label, scope, pid, x, y, expected, at_pointer):
             lease.require()
         elif desktop()['frontmostPID'] != pid:
             raise RuntimeError('fixture-lost-frontmost; no helper mutation attempted')
-        receipt = launch_helper(evidence, label, scope + ['--target', 'text', *arguments])
-        require_caret_receipt(receipt, lease)
+        try:
+            receipt = launch_helper(evidence, label, scope + ['--target', 'text', *arguments])
+            require_caret_receipt(receipt, lease)
+        except Exception:
+            # A failed or unverified launch cannot authorize pointer restoration,
+            # even when desktop facts have returned before cleanup.
+            if lease:
+                lease.retired = True
+            raise
         deadline = time.monotonic() + 1
         while time.monotonic() < deadline and selection(evidence) != (expected, '0'):
             time.sleep(0.05)
@@ -145,15 +153,23 @@ def verify_caret(evidence, label, scope, pid, x, y, expected, at_pointer):
         after = lease.require() if lease else desktop()
         passed = bool(observed and observed[1] == expected and point_matches
                       and selection(evidence) == (expected, '0') and after['frontmostPID'] == pid)
-        (evidence / f'{label}.json').write_text(json.dumps({
+        comparison = {
             'requestedPoint': requested, 'pointerPoint': warped, 'expectedLocation': int(expected),
             'fixtureSelection': selection(evidence), 'passed': passed,
-            'before': before, 'after': after}, indent=2) + '\n')
-        return passed, receipt
+            'before': before, 'after': after}
     finally:
         # Do not undo a person's pointer movement if they took over mid-drill.
         if lease and warped is not None:
             lease.restore()
+        retired = bool(lease and lease.retired)
+        if comparison is not None:
+            comparison['passed'] = passed and not retired
+            comparison['pointerLeaseRetired'] = retired
+            (evidence / f'{label}.json').write_text(json.dumps(comparison, indent=2) + '\n')
+    if retired:
+        # Abort the cell before another probe can acquire fresh pointer ownership.
+        raise RuntimeError('fixture-pointer-lease-retired; no further probe mutation attempted')
+    return passed, receipt
 
 
 def fixture_probes(output):
@@ -254,6 +270,6 @@ if __name__ == '__main__':
         HELPER = BUILD / 'Chariox Computer Helper Recheck.app'
     wait_for_gui()
     results = [run_cell('text-click')]
-    if options.suite:
+    if options.suite and results == [0]:
         results.append(run_cell('fixture'))
     raise SystemExit(max(results))
