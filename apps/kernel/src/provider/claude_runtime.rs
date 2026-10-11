@@ -589,6 +589,7 @@ fn write_claude_hidden_context(
 
 #[cfg(test)]
 mod tests {
+    mod model_observation;
     #[cfg(target_os = "linux")]
     mod sandbox_lifetime;
     mod tool_results;
