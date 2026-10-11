@@ -328,7 +328,7 @@ fn ensure_apply_idle(journal: &EnvironmentApplies) -> Result<(), DaemonError> {
     }
     Ok(())
 }
-fn validate_project(
+pub(in crate::runtime::state) fn validate_project(
     state: &KernelRuntimeState,
     project: &crate::session::RuntimeProject,
     owner: &str,
@@ -339,8 +339,12 @@ fn validate_project(
     let current = state.owned.session_store.get_project(project.id())?;
     if current.owner_user_id() != owner
         || current.workspace_ids() != project.workspace_ids()
-        || store.snapshot_locked(&current)?.content_digest != env.content_digest
-        || folder_bindings_digest(&store.snapshot_locked(&current)?) != folder_bindings_digest(env)
+        || {
+            let saved = store.snapshot_locked(&current)?;
+            saved.revision != env.revision
+                || saved.content_digest != env.content_digest
+                || folder_bindings_digest(&saved) != folder_bindings_digest(env)
+        }
     {
         return Err(environment_error(
             "Project ownership, revision or folder binding changed during Apply",

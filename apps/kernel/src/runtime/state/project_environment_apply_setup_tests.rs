@@ -123,12 +123,24 @@ async fn envp05a_setup_protected_source_alias_admits_no_command() {
 }
 
 #[cfg(target_os = "linux")]
+#[tokio::test]
+async fn envp05a_setup_revision_save_stops_active_command_and_unstarted_suffix() {
+    setup_retry_regression(SetupScenario::RevisionChanged).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn envp05a_setup_admission_rechecks_project_owner_and_folder_bindings() {
+    setup_retry_regression(SetupScenario::AuthorityChanged).await;
+}
+
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
-enum SetupScenario { Retry, LockedSecret, MissingPublic, ChangedPublic, ForeignDependency, PlatformGap, FolderGap, FailedReadiness, ProtectedAlias }
+enum SetupScenario { Retry, LockedSecret, MissingPublic, ChangedPublic, ForeignDependency, PlatformGap, FolderGap, FailedReadiness, ProtectedAlias, RevisionChanged, AuthorityChanged }
 
 #[cfg(target_os = "linux")]
 async fn setup_retry_regression(scenario: SetupScenario) {
-    let locked_secret = !matches!(scenario, SetupScenario::Retry | SetupScenario::PlatformGap | SetupScenario::FolderGap | SetupScenario::FailedReadiness);
+    let locked_secret = !matches!(scenario, SetupScenario::Retry | SetupScenario::PlatformGap | SetupScenario::FolderGap | SetupScenario::FailedReadiness | SetupScenario::RevisionChanged | SetupScenario::AuthorityChanged);
     let preparation_failure = matches!(scenario, SetupScenario::MissingPublic);
     let changed_public = matches!(scenario, SetupScenario::ChangedPublic);
 
@@ -173,7 +185,7 @@ async fn setup_retry_regression(scenario: SetupScenario) {
     )
     .runtime_state();
     let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
-    let project = crate::session::RuntimeProject::new(
+    let mut project = crate::session::RuntimeProject::new(
         "setup-retry-project",
         "owner",
         workspace.to_string_lossy(),
@@ -250,9 +262,12 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         let second_workspace = root.path().join("second-workspace");
         std::fs::create_dir_all(&second_workspace).unwrap();
         std::fs::write(second_workspace.join("public-input"), "distinct second-folder input").unwrap();
-        let mut second = env.folders[0].clone();
-        second.folder_id = "second-folder".into();
-        second.local_workspace_binding = second_workspace.to_string_lossy().into();
+        state.owned.session_store.restore_projects(vec![project.clone()]);
+        project = state.owned.session_store.update_project_workspaces(
+            project.id(), vec![workspace.to_string_lossy().into(), second_workspace.to_string_lossy().into()], "owner",
+        ).unwrap();
+        let mut second = store.snapshot(&project).unwrap().folders.into_iter()
+            .find(|f| f.local_workspace_binding == second_workspace.to_string_lossy()).unwrap();
         let mut foreign = public.clone();
         foreign.requirement_id = "foreign-public".into();
         foreign.scope = RequirementScope::Folder { folder_id: second.folder_id.clone() };
@@ -315,6 +330,32 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         assert_eq!(attempt.operation.per_item_results[0].reason_code, if matches!(scenario, SetupScenario::PlatformGap) { "platform_gap" } else { "folder_unavailable" });
         return;
     }
+    state.owned.session_store.restore_projects(vec![project.clone()]);
+    if matches!(scenario, SetupScenario::ProtectedAlias) {
+        std::env::set_var("INHERITED_PASSWORD", "synthetic-opaque-input");
+        let locator = ProjectEnvironmentLocator::WorkspaceEnvironment { name: "INHERITED_PASSWORD".into() };
+        let RequirementSpec::Variables { locator: source, .. } = &mut env.project_requirements[1].spec else { panic!("public fixture") };
+        *source = locator.clone();
+        let mut legacy = store.load(project.id()).unwrap().unwrap();
+        legacy.manifest.entries.iter_mut().find(|e| e.name == "PUBLIC_BUILD_INPUT").unwrap().locator = locator;
+        store.save(&legacy).unwrap();
+    }
+    if matches!(scenario, SetupScenario::RevisionChanged) {
+        let RequirementSpec::SetupChecks { commands, .. } = &mut requirement.spec else { panic!("Setup fixture") };
+        *commands = vec![
+            command("printf started > command-started; while [ ! -f release-first ]; do sleep .02; done; printf finished > first-finished"),
+            command("printf forbidden > second-command-marker"),
+        ];
+        env.project_requirements = vec![requirement.clone()];
+    }
+    let current = store.snapshot(&project).unwrap();
+    env = store.save_revision_locked(&current, &crate::local::SaveProjectEnvironmentRevisionRequest {
+        project_id: project.id().into(), expected_revision: current.revision,
+        expected_content_digest: current.content_digest.clone(), draft: environment_draft(&env),
+        accepted_proposal_ids: vec![], excluded_proposal_ids: vec![],
+    }, "owner").unwrap().0;
+    requirement = environment_requirements(&env)
+        .find(|r| r.requirement_id == requirement.requirement_id).unwrap().clone();
     let mut operation = EnvironmentOperation {
         operation_id: "retry-operation".into(),
         attempt: 1,
@@ -358,6 +399,49 @@ async fn setup_retry_regression(scenario: SetupScenario) {
             },
         )
         .unwrap();
+    if matches!(scenario, SetupScenario::AuthorityChanged) {
+        for changed in [
+            crate::session::RuntimeProject::new(project.id(), "different-owner", workspace.to_string_lossy(), "Changed owner", crate::session::RuntimeProjectKind::Named),
+            crate::session::RuntimeProject::new(project.id(), "owner", root.path().to_string_lossy(), "Changed folder", crate::session::RuntimeProjectKind::Named),
+        ] {
+            state.owned.session_store.restore_projects(vec![changed]);
+            assert!(record_setup_admission(&state, &config, &env, &requirement, &operation, 1).is_err(), "changed Project authority must reject admission");
+            assert!(store.load_applies(project.id()).unwrap().attempts[0].setup_admitted_commands.is_empty());
+        }
+        return;
+    }
+    if matches!(scenario, SetupScenario::RevisionChanged) {
+        let run_state = state.clone(); let run_config = config.clone();
+        let run_env = env.clone(); let run_requirement = requirement.clone(); let run_operation = operation.clone();
+        let running = tokio::task::spawn_blocking(move || apply_setup_requirement(&run_state, &run_config, &run_env, &run_requirement, &run_operation, || false));
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !workspace.join("command-started").exists() {
+            assert!(!running.is_finished(), "first command must actually start");
+            assert!(Instant::now() < deadline, "paused command start timeout");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let mut draft = environment_draft(&env);
+        draft.project_requirements.retain(|r| r.requirement_id != "setup");
+        state.save_project_environment_revision(crate::local::SaveProjectEnvironmentRevisionRequest {
+            project_id: project.id().into(), expected_revision: env.revision,
+            expected_content_digest: env.content_digest.clone(), draft,
+            accepted_proposal_ids: vec![], excluded_proposal_ids: vec![],
+        }, "owner").await.unwrap();
+        // The live callback must stop command 1 even before the gate is released.
+        let stop_deadline = Instant::now() + Duration::from_secs(2);
+        while !running.is_finished() && Instant::now() < stop_deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let stopped_before_release = running.is_finished();
+        std::fs::write(workspace.join("release-first"), "release").unwrap();
+        let result = running.await.unwrap();
+        assert!(!workspace.join("second-command-marker").exists(), "a newer saved revision must fence command 2");
+        assert!(stopped_before_release, "running callback must revoke command 1 when saved authority changes");
+        assert!(result.is_err());
+        assert_eq!(store.load_applies(project.id()).unwrap().attempts[0].setup_admitted_commands.get("setup"), Some(&1));
+        assert!(record_setup_admission(&state, &config, &env, &requirement, &operation, 2).is_err(), "locked checkpoint must also fence stale revision");
+        return;
+    }
     if matches!(scenario, SetupScenario::ForeignDependency) {
         // B is the selected prerequisite; A has an independently applied equal name.
         assert!(apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false).is_err());
@@ -366,15 +450,19 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         // Explicitly selecting the local prerequisite restores eligible Setup.
         requirement.depends_on = vec!["public".into()];
         env.folders[0].requirements[0] = requirement.clone();
+        let current = store.snapshot(&project).unwrap();
+        env = store.save_revision_locked(&current, &crate::local::SaveProjectEnvironmentRevisionRequest {
+            project_id: project.id().into(), expected_revision: current.revision,
+            expected_content_digest: current.content_digest.clone(), draft: environment_draft(&env),
+            accepted_proposal_ids: vec![], excluded_proposal_ids: vec![],
+        }, "owner").unwrap().0;
+        operation.revision_digest = env.content_digest.clone();
+        let mut journal = store.load_applies(project.id()).unwrap();
+        journal.attempts[0].operation = operation.clone();
+        journal.attempts[0].folder_binding_digest = folder_bindings_digest(&env);
+        store.save_applies(project.id(), &journal).unwrap();
     }
     if matches!(scenario, SetupScenario::ProtectedAlias) {
-        std::env::set_var("INHERITED_PASSWORD", "synthetic-opaque-input");
-        let locator = ProjectEnvironmentLocator::WorkspaceEnvironment { name: "INHERITED_PASSWORD".into() };
-        let RequirementSpec::Variables { locator: source, .. } = &mut env.project_requirements[1].spec else { panic!("public fixture") };
-        *source = locator.clone();
-        let mut legacy = store.load(project.id()).unwrap().unwrap();
-        legacy.manifest.entries.iter_mut().find(|e| e.name == "PUBLIC_BUILD_INPUT").unwrap().locator = locator;
-        store.save(&legacy).unwrap();
         let error = apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false).unwrap_err();
         assert!(!workspace.join("successful-count").exists(), "protected aliases must prevent every command");
         assert_eq!(store.load_applies(project.id()).unwrap().attempts[0].setup_admitted_commands.get("setup"), Some(&0));

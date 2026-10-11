@@ -80,7 +80,24 @@ fn setup_retry_progress_is_settled(
         })
 }
 
+// MP-08 / MP-10 / MP-11: the Project lock protects this revision check and admission.
+fn validate_setup_project(
+    state: &KernelRuntimeState,
+    env: &ProjectEnvironment,
+    store: &ProjectEnvironmentStore,
+) -> Result<(), DaemonError> {
+    let owner = env
+        .reviewed_by
+        .as_deref()
+        .ok_or_else(|| environment_error("Setup revision is not reviewed"))?;
+    let project = state.owned.session_store.get_project(&env.local_project_id)?;
+    crate::runtime::state::project_environment_apply::validate_project(
+        state, &project, owner, env, store,
+    )
+}
+
 fn record_setup_admission(
+    state: &KernelRuntimeState,
     config: &DaemonConfig,
     env: &ProjectEnvironment,
     requirement: &Requirement,
@@ -89,6 +106,7 @@ fn record_setup_admission(
 ) -> Result<bool, DaemonError> {
     let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
     let _lock = store.lock(&env.local_project_id)?;
+    validate_setup_project(state, env, &store)?;
     let mut journal = store.load_applies(&env.local_project_id)?;
     let a = latest_apply_attempt(&mut journal, operation)
         .filter(|a| apply_active(&a.operation) && a.operation.cancellation.is_none())
@@ -191,7 +209,7 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
     };
     // MP-08 / MP-10 / MP-11: preparation errors precede every command.
     // Persist the zero frontier before workspace/public-input preparation.
-    record_setup_admission(config, env, requirement, operation, 0)?;
+    record_setup_admission(state, config, env, requirement, operation, 0)?;
     let root = match &requirement.scope {
         RequirementScope::Project => env.folders.first(),
         RequirementScope::Folder { folder_id } => {
@@ -224,10 +242,23 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
     for (name, value) in bindings.iter() {
         environment.insert(name.into(), value.into());
     }
+    // A different client may Save while the runner owns a live subprocess.
+    // Revoke that process through the existing cancellation/cleanup path when
+    // its saved Project authority changes or can no longer be established.
+    let should_stop = || {
+        if should_cancel() {
+            return true;
+        }
+        let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
+        let Ok(_lock) = store.lock_briefly(&env.local_project_id) else {
+            return true;
+        };
+        validate_setup_project(state, env, &store).is_err()
+    };
     let deadline = Instant::now() + VALIDATION_TOTAL_TIMEOUT;
     for (index, command) in commands.iter().enumerate() {
         state.authorize_current_external_command()?;
-        if should_cancel() {
+        if should_stop() {
             return Err(environment_error("Setup cancelled before command start"));
         }
         if let Some(path) = source_path {
@@ -289,7 +320,7 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
         // Publish intent before runner admission/spawn, including a new suffix
         // command. A crash after this write remains uncertain, never replayable.
         let previously_admitted =
-            record_setup_admission(config, env, requirement, operation, index + 1)?;
+            record_setup_admission(state, config, env, requirement, operation, index + 1)?;
         let store = &state.owned.project_environment_setups;
         let command_attempt = match store.get(&command_id, &execution.owner_user_id) {
             Ok(status) if status.phase == ProjectEnvironmentSetupPhase::Ready => continue,
@@ -344,7 +375,7 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
             &command_id,
             command_attempt,
             index,
-            &should_cancel,
+            &should_stop,
             Some(command_deadline),
         );
         match result {
