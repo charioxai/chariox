@@ -10,6 +10,7 @@ enum Fake {
     NoPressRefusal,
     PhysicalHuman,
     PhysicalHumanIdle,
+    PhysicalAfterReset,
     WrongToken,
     StaleReply,
     StaleGeneration,
@@ -51,6 +52,7 @@ fn helper(dir: &Path, fake: Fake, seen: &Mutex<Vec<String>>) {
     .unwrap();
     let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
     let mut reported_physical = false;
+    let mut reset_acknowledged = false;
     while let Some(Ok(line)) = lines.next() {
         let request: Value = serde_json::from_str(&line).unwrap();
         let method = request["method"].as_str().unwrap().to_string();
@@ -109,6 +111,24 @@ fn helper(dir: &Path, fake: Fake, seen: &Mutex<Vec<String>>) {
                 "{}",
                 json!({"id":request["id"],"epoch":epoch,"ok":true,
                 "result":{"surface_id":"macos-seat","generation":generation,"physical_human":true}})
+            )
+            .unwrap();
+            continue;
+        }
+        if fake == Fake::PhysicalAfterReset && method == "host.computer.reset" {
+            reset_acknowledged = true;
+        }
+        if fake == Fake::PhysicalAfterReset
+            && method == "heartbeat"
+            && reset_acknowledged
+            && !reported_physical
+        {
+            reported_physical = true;
+            writeln!(
+                stream,
+                "{}",
+                json!({"id":request["id"],"epoch":epoch,"ok":true,
+                "result":{"physical_human":true}})
             )
             .unwrap();
             continue;
@@ -838,4 +858,113 @@ fn m3_idle_physical_takeover_supersedes_terminal_on_same_pairing() {
         seat.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[test]
+fn m3_release_cannot_erase_heartbeat_takeover_after_reset_acknowledgement() {
+    use super::super::KernelBrowserHost;
+    use crate::runtime::command::TerminalLifetime;
+    use crate::session::{EnvironmentActor, EnvironmentActorKind, DEFAULT_LOCAL_USER_ID as OWNER};
+    struct ResetHeartbeatSeat(MacComputerHelper);
+    impl ComputerBackend for ResetHeartbeatSeat {
+        fn ready(&mut self) -> bool {
+            self.0.ready()
+        }
+        fn start(&mut self) -> Result<(), String> {
+            self.0.start()
+        }
+        fn stop(&mut self) -> Result<(), String> {
+            self.0.stop()
+        }
+        fn shutdown(&mut self) -> Result<(), String> {
+            self.0.shutdown()
+        }
+        fn request(
+            &mut self,
+            method: &str,
+            params: Value,
+            cancel: Option<Arc<BrowserCancellation>>,
+        ) -> Result<Value, HostFailure> {
+            let result = self.0.request(method, params, cancel)?;
+            if method == "host.computer.reset" {
+                // Schedule the real paired heartbeat callback after reset clears
+                // the link bit and before production ledger release completes.
+                self.0
+                    .link
+                    .as_ref()
+                    .unwrap()
+                    .call("heartbeat", json!({}), LEASE)?;
+            }
+            Ok(result)
+        }
+    }
+    let (mut seat, root, _) = seat("always", Fake::PhysicalAfterReset);
+    seat.physical_input = true;
+    let host = KernelBrowserHost::new(root.clone());
+    let model = host.actor_model(OWNER).unwrap();
+    let actors = model.clone();
+    seat.on_physical_human = Arc::new(move |epoch| {
+        actors
+            .lock()
+            .unwrap()
+            .physical_takeover_desktop("macos-seat", epoch)
+            .map(drop)
+    });
+    seat.start().unwrap();
+    let epoch = seat.link.as_ref().unwrap().epoch.clone();
+    model
+        .lock()
+        .unwrap()
+        .reconcile_desktop(&json!({"surface_id":"macos-seat","generation":epoch}))
+        .unwrap();
+    model
+        .lock()
+        .unwrap()
+        .physical_takeover_desktop("macos-seat", &epoch)
+        .unwrap();
+    seat.link
+        .as_ref()
+        .unwrap()
+        .physical_human
+        .store(true, Ordering::Release);
+    let seat = Arc::new(Mutex::new(ResetHeartbeatSeat(seat)));
+    host.register_computer_seat(OWNER, seat.clone()).unwrap();
+    let admission = host.admit_terminal(OWNER, TerminalLifetime::default());
+    let actor = EnvironmentActor::new("terminal:owner", EnvironmentActorKind::Human, "Owner");
+    let release =
+        host.release_computer_desktop(OWNER, Some(&admission), actor.clone(), "macos-seat", &epoch);
+    assert!(
+        release.is_err(),
+        "older release erased a fresh physical takeover: {release:?}"
+    );
+    assert!(model
+        .lock()
+        .unwrap()
+        .desktop_owner_is("human:physical-owner"));
+    assert!(seat
+        .lock()
+        .unwrap()
+        .0
+        .link
+        .as_ref()
+        .unwrap()
+        .physical_human
+        .load(Ordering::Acquire));
+    host.release_computer_desktop(OWNER, Some(&admission), actor, "macos-seat", &epoch)
+        .unwrap();
+    assert!(!model
+        .lock()
+        .unwrap()
+        .desktop_owner_is("human:physical-owner"));
+    let mut seat = seat.lock().unwrap();
+    assert_eq!(state(&mut seat.0).unwrap()["generation"], epoch);
+    seat.0
+        .request(
+            "host.computer",
+            json!({"op":"input","input":{"kind":"move"}}),
+            None,
+        )
+        .unwrap();
+    seat.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }
