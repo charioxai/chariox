@@ -19,6 +19,7 @@ use crate::terminal::TerminalOutputKind;
 
 mod attachments;
 mod context_delivery;
+mod hidden_context;
 mod permission;
 mod session_start;
 #[cfg(test)]
@@ -116,8 +117,16 @@ pub(crate) trait NativePromptHandoffPolicy: Send + Sync {
         session_id: &str,
         agent_id: &str,
         run_id: &str,
+        prompt_id: &str,
         base: String,
     ) -> Result<String, DaemonError>;
+    fn protect_inputs(
+        &self,
+        session_id: &str,
+        prompt: String,
+        hidden: String,
+        attachments: Vec<PromptAttachment>,
+    ) -> Result<(String, String, Vec<PromptAttachment>), DaemonError>;
     fn accepted(&self, session_id: &str, agent_id: &str, run_id: &str) -> Result<(), DaemonError>;
 }
 
@@ -492,13 +501,51 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     if matches_managed_dispatch {
                         // The official hook waits for this turn's response even
                         // when a managed dispatch already staged hidden context.
-                        let context = fs::read_to_string(context_file).map_err(|error| {
-                            DaemonError::ProviderProtocol {
-                                provider_run_id: provider_run_id.to_string(),
-                                operation: "claude_hidden_context_read",
-                                message: error.to_string(),
-                            }
-                        })?;
+                        let context = if let Some(policy) = self.prompt_handoff {
+                            let Some(active) = active_prompt
+                                .as_ref()
+                                .filter(|active| active.id() == dispatch_prompt_id)
+                            else {
+                                continue;
+                            };
+                            let hidden = self.app.agents.hidden_context_with_failed_requests(
+                                &agent_id,
+                                active.hidden_system_context(),
+                            );
+                            let base = self.managed_base_context(
+                                session_id,
+                                &agent_id,
+                                context_file,
+                                provider_run,
+                                &ClaudeNativePromptInjection {
+                                    id: active.id(),
+                                    origin_prompt_id: active.id(),
+                                    prompt: active.prompt(),
+                                    hidden_system_context: &hidden,
+                                    attachments: active.attachments(),
+                                    context_handoff: &|_| String::new(),
+                                },
+                            )?;
+                            policy.prepare_context(
+                                session_id,
+                                &agent_id,
+                                provider_run_id,
+                                active.id(),
+                                base,
+                            )?
+                        } else {
+                            fs::read_to_string(context_file).map_err(|error| {
+                                DaemonError::ProviderProtocol {
+                                    provider_run_id: provider_run_id.to_string(),
+                                    operation: "claude_hidden_context_read",
+                                    message: error.to_string(),
+                                }
+                            })?
+                        };
+                        crate::provider::ensure_claude_native_hidden_context_fits(
+                            provider_run_id,
+                            &context,
+                        )?;
                         if let Some(request_id) =
                             event.get("hook_context_request_id").and_then(Value::as_str)
                         {
@@ -542,9 +589,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 let hook_context = if hook_request_id.is_some() {
                     let base = self.claude_native_prompt_context(session_id, &agent_id, prompt)?;
                     let context = match self.prompt_handoff {
-                        Some(policy) => {
-                            policy.prepare_context(session_id, &agent_id, provider_run_id, base)?
-                        }
+                        Some(policy) => policy.prepare_context(
+                            session_id,
+                            &agent_id,
+                            provider_run_id,
+                            "",
+                            base,
+                        )?,
                         None => base,
                     };
                     crate::provider::ensure_claude_native_hidden_context_fits(
@@ -1793,38 +1844,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let visible = redact_native_hidden_instructions(prompt.prompt)
             .trim()
             .to_string();
-        let native_hidden = extract_native_hidden_instructions(prompt.prompt);
-        let attachment_context = format_claude_attachment_context(prompt.attachments, context_file);
-        let origin_context =
-            crate::prompt_assembly::agent_message_origin_context(prompt.origin_prompt_id);
-        let hidden_context = if provider_run.provider() == "claude-headless" {
-            let envelope = crate::prompt_assembly::PromptAssemblyService::from_env()?
-                .assemble_provider_turn(
-                    provider_run,
-                    &visible,
-                    Some(prompt.hidden_system_context),
-                    prompt.attachments.to_vec(),
-                    crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn,
-                )?;
-            let skill_context =
-                self.claude_native_prompt_context(session_id, agent_id, &visible)?;
-            join_claude_context([
-                envelope.hidden_system_context,
-                origin_context,
-                skill_context,
-                native_hidden,
-                attachment_context,
-            ])
-        } else {
-            let scheduled_hidden =
-                crate::prompt_assembly::strip_prompt_manifest_entries(prompt.hidden_system_context);
-            join_claude_context([
-                scheduled_hidden,
-                origin_context,
-                native_hidden,
-                attachment_context,
-            ])
-        };
+        let hidden_context =
+            self.managed_base_context(session_id, agent_id, context_file, provider_run, prompt)?;
         let handoff_room = crate::provider::claude_native_hidden_context_room(&hidden_context);
         let hidden_context =
             join_claude_context([hidden_context, (prompt.context_handoff)(handoff_room)]);

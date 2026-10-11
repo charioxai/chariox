@@ -4120,6 +4120,11 @@ impl KernelRuntimeState {
             // attempts, so this grace period does not block other sessions.
             let deadline = tokio::time::Instant::now() + CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT;
             loop {
+                let room_guard = owned
+                    .room_secret_observations
+                    .barrier(&dispatch.session_id)?
+                    .read_owned()
+                    .await;
                 let attempt = self
                     .with_app_side_effect(|app| {
                         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
@@ -4142,11 +4147,14 @@ impl KernelRuntimeState {
                             );
                         }
                         provider_run = current;
+                        let (protected_dispatch, protected_handoff) = owned
+                            .protect_native_dispatch(&native_dispatch, context_handoff.clone())?;
+                        context_handoff = protected_handoff;
                         app.process_claude_native_prompt_dispatch_attempt_for_runtime(
                             &dispatch.session_id,
                             &dispatch.provider_run_id,
                             &provider_run,
-                            &native_dispatch,
+                            &protected_dispatch,
                             &|room| {
                                 context_handoff
                                     .as_ref()
@@ -4157,6 +4165,7 @@ impl KernelRuntimeState {
                         .map(Some)
                     })
                     .await?;
+                drop(room_guard);
                 let Some(attempt) = attempt else {
                     // Cancellation owns the prompt now. Release the run lane
                     // so its abort can clear a still-unacknowledged composer.

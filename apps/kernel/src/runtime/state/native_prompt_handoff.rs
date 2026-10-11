@@ -7,6 +7,7 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: &str,
         run_id: &str,
+        prompt_id: &str,
         base: String,
     ) -> Result<String, DaemonError> {
         self.room_secret_observations.require(session_id, false)?;
@@ -19,9 +20,13 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
                 message: "Native context run does not own this agent".into(),
             });
         }
-        let handoff = self.context_handoff_for_dispatch(session_id, agent_id, &run, "", false);
+        let base = self.room_secret_observations.scrub(session_id, base)?;
+        let handoff =
+            self.context_handoff_for_dispatch(session_id, agent_id, &run, prompt_id, false);
         let hidden = match handoff {
             Some(handoff) => {
+                let handoff =
+                    self.revalidate_context_handoff(handoff, session_id, agent_id, prompt_id)?;
                 let rendered = handoff
                     .render_hidden(crate::provider::claude_native_hidden_context_room(&base));
                 if rendered.is_empty() {
@@ -45,9 +50,59 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
         self.room_secret_observations.scrub(session_id, context)
     }
 
+    fn protect_inputs(
+        &self,
+        session_id: &str,
+        prompt: String,
+        hidden: String,
+        attachments: Vec<crate::session::PromptAttachment>,
+    ) -> Result<(String, String, Vec<crate::session::PromptAttachment>), DaemonError> {
+        self.room_secret_observations
+            .scrub(session_id, (prompt, hidden, attachments))
+    }
+
     fn accepted(&self, session_id: &str, agent_id: &str, run_id: &str) -> Result<(), DaemonError> {
         let run = self.ensure_provider_run_in_session(session_id, run_id)?;
         self.consume_pending_context_handoff(session_id, agent_id, &run);
         Ok(())
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    /// MP-08 / MP-10 / MP-11: protect all native dispatch fields under the Room barrier.
+    pub(super) fn protect_native_dispatch(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+        handoff: Option<PendingAgentContextHandoff>,
+    ) -> Result<
+        (
+            crate::app::KernelPromptDispatch,
+            Option<PendingAgentContextHandoff>,
+        ),
+        DaemonError,
+    > {
+        let mut protected = dispatch.clone();
+        let (prompt, hidden, attachments) = self.room_secret_observations.scrub(
+            &dispatch.session_id,
+            (
+                protected.prompt,
+                protected.hidden_system_context,
+                protected.attachments,
+            ),
+        )?;
+        protected.prompt = prompt;
+        protected.hidden_system_context = hidden;
+        protected.attachments = attachments;
+        let handoff = handoff
+            .map(|handoff| {
+                self.revalidate_context_handoff(
+                    handoff,
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                )
+            })
+            .transpose()?;
+        Ok((protected, handoff))
     }
 }

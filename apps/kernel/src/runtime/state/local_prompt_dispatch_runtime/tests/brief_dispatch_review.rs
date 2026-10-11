@@ -380,3 +380,81 @@ async fn final_handoff_waits_for_room_input_before_rebuilding_protected_history(
     fixture.wait_for("final-provider-envelope").await;
     assert!(!fixture.envelope().contains(SECRET));
 }
+
+// MP-08 / MP-10 / MP-11: the new native policy must inherit explicit-snapshot replay fences.
+#[tokio::test]
+async fn native_policy_rejects_explicit_snapshot_after_room_change() {
+    let fixture = PausedBrief::new(false, false).await;
+    let mut handoff = fixture
+        .runtime
+        .owned
+        .context_handoff_for_dispatch(
+            &fixture.session_id,
+            &fixture.agent_id,
+            &fixture.run,
+            &fixture.prompt_id,
+            false,
+        )
+        .unwrap();
+    handoff.derived = false;
+    fixture.runtime.owned.pending_agent_context_handoffs.set(
+        &fixture.session_id,
+        &fixture.agent_id,
+        handoff,
+    );
+    fixture
+        .runtime
+        .owned
+        .room_secret_observations
+        .register(&fixture.session_id, SECRET)
+        .unwrap();
+    let result = crate::app::NativePromptHandoffPolicy::prepare_context(
+        &fixture.runtime.owned,
+        &fixture.session_id,
+        &fixture.agent_id,
+        fixture.run.id(),
+        &fixture.prompt_id,
+        String::new(),
+    );
+    assert!(
+        result.is_err(),
+        "native explicit snapshot replay ignored changed Room protection"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: hook-time rebuild must exclude the managed request already sent visibly.
+#[tokio::test]
+async fn native_hook_rebuild_excludes_the_current_managed_prompt() {
+    let fixture = PausedBrief::new(false, false).await;
+    fixture
+        .runtime
+        .owned
+        .operational_history_store
+        .append(&crate::history::HistoryEvent::transcript(
+            200,
+            &crate::history::SessionHistoryEntry::user_prompt(
+                &fixture.session_id,
+                "current",
+                &fixture.agent_id,
+                "unique-current-managed-request",
+            ),
+            crate::history::HistoryEventTurnContext {
+                prompt_id: Some(fixture.prompt_id.clone()),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    let context = crate::app::NativePromptHandoffPolicy::prepare_context(
+        &fixture.runtime.owned,
+        &fixture.session_id,
+        &fixture.agent_id,
+        fixture.run.id(),
+        &fixture.prompt_id,
+        String::new(),
+    )
+    .unwrap();
+    assert!(
+        !context.contains("unique-current-managed-request"),
+        "fresh native hook replayed the current managed request in its handoff"
+    );
+}
