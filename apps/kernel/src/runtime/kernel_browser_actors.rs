@@ -383,6 +383,29 @@ impl KernelBrowserActors {
         }
         Ok(effect.outcome)
     }
+    /// Called only by the paired helper's physical activity callback.
+    pub(crate) fn physical_takeover_desktop(
+        &mut self,
+        surface: &str,
+        generation: &str,
+    ) -> Result<TakeoverOutcome, String> {
+        self.desktop_current(surface, generation)?;
+        self.register(EnvironmentActor::new(
+            "human:physical-owner",
+            EnvironmentActorKind::Human,
+            "Mac owner",
+        ))?;
+        let effect = self
+            .ledger
+            .request_physical_desktop_takeover(&self.actors, &self.tabs)
+            .map_err(|_| "MP-11: physical desktop takeover denied")?;
+        for action in effect.cancellation_requested_action_ids {
+            if let Some(cancel) = self.active.get(&action) {
+                cancel.request_cancel();
+            }
+        }
+        Ok(effect.outcome)
+    }
     pub(crate) fn check_desktop_release(
         &self,
         actor: &str,
@@ -527,6 +550,38 @@ mod tests {
     }
     fn input(tab: &str) -> Value {
         json!({"op":"input","tab_id":tab,"generation":1,"input":{"kind":"text","text":"synthetic-private-value"}})
+    }
+    #[test]
+    fn physical_takeover_supersedes_pending_terminal_without_releasing_active_input() {
+        let mut model = ready();
+        model
+            .reconcile_desktop(&json!({"surface_id":"s","generation":"g"}))
+            .unwrap();
+        let params = json!({"op":"input","_native":true});
+        let (id, cancel) = model.begin(agent(), &params).unwrap();
+        assert!(matches!(
+            model
+                .takeover_desktop(human("terminal:a"), "s", "g")
+                .unwrap(),
+            TakeoverOutcome::CancellationRequired { .. }
+        ));
+        assert!(matches!(
+            model.physical_takeover_desktop("s", "g").unwrap(),
+            TakeoverOutcome::CancellationRequired { .. }
+        ));
+        assert!(cancel.requested());
+        assert!(model.begin(human("terminal:a"), &params).is_err());
+        assert!(model.begin(agent(), &params).is_err());
+        assert!(model
+            .release_desktop("human:physical-owner", "s", "g")
+            .is_err());
+        model.finish(&id, EnvironmentActionTerminal::Cancelled);
+        assert!(model.desktop_owner_is("human:physical-owner"));
+        assert!(model.release_desktop("terminal:a", "s", "g").is_err());
+        model
+            .release_desktop("human:physical-owner", "s", "g")
+            .unwrap();
+        assert!(model.begin(agent(), &params).is_ok());
     }
     #[test]
     fn mp11_input_cache_requires_exact_observed_generation_target_and_document() {

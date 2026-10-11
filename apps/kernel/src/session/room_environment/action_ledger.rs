@@ -478,6 +478,33 @@ impl EnvironmentActionLedger {
         actors: &BTreeMap<String, EnvironmentActor>,
         tabs: &TabRegistry,
     ) -> Result<ActionTakeoverEffect, EnvironmentError> {
+        self.request_takeover_inner(actor_id, target, actors, tabs, false)
+    }
+
+    /// Only the kernel's authenticated native observer may supersede a human.
+    /// Terminal requests continue to use ordinary request_takeover admission.
+    pub(crate) fn request_physical_desktop_takeover(
+        &mut self,
+        actors: &BTreeMap<String, EnvironmentActor>,
+        tabs: &TabRegistry,
+    ) -> Result<ActionTakeoverEffect, EnvironmentError> {
+        self.request_takeover_inner(
+            "human:physical-owner",
+            InputTarget::Desktop,
+            actors,
+            tabs,
+            true,
+        )
+    }
+
+    fn request_takeover_inner(
+        &mut self,
+        actor_id: &str,
+        target: InputTarget,
+        actors: &BTreeMap<String, EnvironmentActor>,
+        tabs: &TabRegistry,
+        physical: bool,
+    ) -> Result<ActionTakeoverEffect, EnvironmentError> {
         let actor = actors
             .get(actor_id)
             .ok_or_else(|| EnvironmentError::UnknownActor {
@@ -489,6 +516,14 @@ impl EnvironmentActionLedger {
             });
         }
         validate_target(tabs, &target)?;
+        if physical {
+            // Replace leases atomically under the actor lock. Active reservations
+            // remain until cancellation completes, fencing both terminal and agent.
+            self.input_owners
+                .retain(|t, owner| t != &target || owner == actor_id);
+            self.pending_takeovers
+                .retain(|t, owner| t != &target || owner == actor_id);
+        }
         if let Some(owner_actor_id) = self.input_owners.get(&target) {
             if owner_actor_id == actor_id {
                 return Ok(ActionTakeoverEffect {
@@ -511,7 +546,7 @@ impl EnvironmentActionLedger {
                     actor_id: pending_actor_id.clone(),
                 });
             }
-            let action_ids = self.blocking_action_ids(&target, actors);
+            let action_ids = self.blocking_action_ids(&target, actors, physical);
             let cancellation_requested_action_ids = self.request_action_cancellation(&action_ids);
             return Ok(ActionTakeoverEffect {
                 outcome: TakeoverOutcome::CancellationRequired { action_ids },
@@ -523,7 +558,7 @@ impl EnvironmentActionLedger {
         }
         let cancelled_action_ids =
             self.cancel_queued_actions_displaced_by_takeover(&target, actor_id);
-        let action_ids = self.blocking_action_ids(&target, actors);
+        let action_ids = self.blocking_action_ids(&target, actors, physical);
         let cancellation_requested_action_ids = self.request_action_cancellation(&action_ids);
         let outcome = if action_ids.is_empty() {
             self.input_owners.insert(target, actor_id.to_string());
@@ -731,15 +766,17 @@ impl EnvironmentActionLedger {
         &self,
         target: &InputTarget,
         actors: &BTreeMap<String, EnvironmentActor>,
+        include_humans: bool,
     ) -> Vec<String> {
         self.reservations
             .get(target)
             .into_iter()
             .filter_map(|action_id| self.actions.get(action_id))
             .filter(|action| {
-                actors
-                    .get(&action.actor_id)
-                    .is_some_and(|actor| actor.kind == EnvironmentActorKind::Agent)
+                include_humans
+                    || actors
+                        .get(&action.actor_id)
+                        .is_some_and(|actor| actor.kind == EnvironmentActorKind::Agent)
             })
             .map(|action| action.action_id.clone())
             .collect()
