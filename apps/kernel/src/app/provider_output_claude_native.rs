@@ -1120,6 +1120,17 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             clear_claude_yolo_rendered_permission_confirmation(context_file);
             return Ok(());
         }
+        // MP-08 / MP-10 / MP-11: the generated PermissionRequest hook owns
+        // this decision. Its PTY frame can arrive before the hook event; starting
+        // another interaction here steals the subject and denies the real tool.
+        if provider_run
+            .pty_env()
+            .get("CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES")
+            .is_some_and(|path| !path.is_empty())
+        {
+            clear_claude_permission_recent(context_file);
+            return Ok(());
+        }
         if take_matching_claude_hook_permission_tombstone(context_file, &recent) {
             clear_claude_permission_recent(context_file);
             return Ok(());

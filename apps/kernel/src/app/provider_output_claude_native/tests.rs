@@ -1,4 +1,5 @@
 mod account_usage;
+mod native_permission_race;
 mod prepared_context;
 
 use super::transcript::ClaudeTranscriptCursor;
