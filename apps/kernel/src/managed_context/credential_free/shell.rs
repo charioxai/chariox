@@ -37,7 +37,7 @@ fn safe_flag(flag: &str) -> bool {
     )
 }
 
-fn credential_word(word: &str) -> bool {
+fn credential_word(word: &str, dynamic_names: bool) -> bool {
     let word = word.trim_matches(['`', '\'', '"', ',', ';', '{', '}', '[', ']']);
     let word = word.strip_prefix("$env:").unwrap_or(word);
     if let Some(flag) = word.strip_prefix("--") {
@@ -50,7 +50,7 @@ fn credential_word(word: &str) -> bool {
         // MP-11: inspect all long flags by meaning, not a suffix-only denylist.
         if !safe_flag(&flag)
             && (sensitive(&flag)
-                || flag.contains(['$', '`'])
+                || (dynamic_names && flag.contains(['$', '`']))
                 || flag
                     .split(|ch: char| !ch.is_ascii_alphanumeric())
                     .any(|part| {
@@ -79,7 +79,8 @@ fn credential_word(word: &str) -> bool {
             // Such a joined word is not one assignment name; raw candidates and
             // recursive line inspection still check the actual embedded words.
             if !key.contains(['\n', '\r'])
-                && ((!count_or_path && sensitive(key)) || (ch == '=' && key.contains(['$', '`'])))
+                && ((!count_or_path && sensitive(key))
+                    || (dynamic_names && ch == '=' && key.contains(['$', '`'])))
             {
                 return true;
             }
@@ -97,7 +98,7 @@ fn credential_word(word: &str) -> bool {
         .is_some_and(|flags| !flags.starts_with('-') && sensitive(flags))
 }
 
-fn raw_credential_words(text: &str) -> bool {
+fn raw_credential_words(text: &str, dynamic_names: bool) -> bool {
     text.split(|ch: char| {
         ch.is_whitespace()
             || matches!(
@@ -105,7 +106,7 @@ fn raw_credential_words(text: &str) -> bool {
                 '\'' | '"' | ',' | ';' | '|' | '&' | '(' | ')' | '{' | '}' | '[' | ']'
             )
     })
-    .any(credential_word)
+    .any(|word| credential_word(word, dynamic_names))
 }
 
 // MP-11: shell-words handles quote concatenation, escapes and continuations.
@@ -207,7 +208,7 @@ fn inspect_words(text: &str, depth: usize) -> bool {
         })
         .map(str::to_string)
         .collect::<Vec<_>>();
-    if raw_credential_words(text)
+    if raw_credential_words(text, true)
         || command_credentials(&raw_words)
         || text.contains("$'")
         || text.contains("$\"")
@@ -223,11 +224,18 @@ fn inspect_words(text: &str, depth: usize) -> bool {
     };
     command_credentials(&words)
         || words.iter().any(|word| {
-            credential_word(word)
+            credential_word(word, true)
                 || (word != text
                     && word.contains([' ', '\t', '\n', ';', '|', '&', '\'', '"', '\\'])
                     && (depth >= 4 || inspect_words(word, depth + 1)))
         })
+}
+
+// MP-08/MP-11: asset runs get the same raw credential candidates as text.
+// Dynamic shell names in compressed bytes remain noise; recognized settings
+// and flags still apply. The shell lexer is reserved for classified text.
+pub(super) fn credential_settings(text: &str) -> bool {
+    credential_assignment(text) || raw_credential_words(text, false)
 }
 
 pub(super) fn credential_text(text: &str) -> bool {

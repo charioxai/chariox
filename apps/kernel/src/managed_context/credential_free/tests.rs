@@ -845,6 +845,25 @@ fn cases(full: bool) -> Vec<(&'static str, Vec<u8>, bool)> {
             false,
         ),
     ]);
+    // MP-08/MP-11 (#903 r20 P1): every candidate in a printable asset
+    // run must be inspected, even after an ordinary assignment or punctuation.
+    for (path, signature) in [
+        ("artwork.png", png.as_slice()),
+        ("font.woff2", b"wOF2\0\x01\0\0\xff".as_slice()),
+    ] {
+        for run in [
+            "FOO=bar API_KEY=synthetic-canary",
+            "FOO=bar;API_KEY=synthetic-canary",
+            "FOO=bar,API_KEY:synthetic-canary",
+            "FOO=bar AUTH_TOKEN=synthetic-canary PASSWORD=synthetic-canary",
+        ] {
+            cases.push((
+                path,
+                [signature, b"\0", run.as_bytes(), b"\0"].concat(),
+                false,
+            ));
+        }
+    }
     cases
 }
 

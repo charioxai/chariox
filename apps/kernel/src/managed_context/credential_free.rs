@@ -10,7 +10,7 @@ mod shell;
 mod text;
 pub(crate) use config::exportable_mcp;
 pub(crate) use history::scan_repository;
-use shell::{credential_assignment, credential_text, unsupported_shell};
+use shell::{credential_settings, credential_text, unsupported_shell};
 
 use super::development::{
     extract_verified_development_archive, DevelopmentFileState, DevelopmentSourceRepositoryBinding,
@@ -74,7 +74,7 @@ fn credential_runs(role: json::Role, bytes: &[u8]) -> bool {
             Ok(Some(value)) => json::validate(&value, role).is_err(),
             Ok(None) => {
                 text::credential_format(run)
-                    || credential_assignment(run)
+                    || credential_settings(run)
                     || credential_urls(run)
                     || json::validate_tokens(run).is_err()
             }
