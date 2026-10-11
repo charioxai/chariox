@@ -126,6 +126,7 @@ fn cloud_kernel_ownership_local_router_drill() {
             PollCloudRelayLoginRequest {
                 api_url: url,
                 device_code: "synthetic-device".into(),
+                supports_access_denied: None,
             },
         ))
         .unwrap();

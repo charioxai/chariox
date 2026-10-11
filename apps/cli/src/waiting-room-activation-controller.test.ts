@@ -959,7 +959,7 @@ function createHarness(options: {
     openSessionBrowserDialog: () => {
       calls.push("openSessionBrowserDialog")
     },
-    onLaunchRefused: options.onLaunchRefused,
+    ...(options.onLaunchRefused ? { onLaunchRefused: options.onLaunchRefused } : {}),
     createSession: async (workspacePath, worktreePath, launch) => {
       calls.push("createSession")
       options.createStarted?.()

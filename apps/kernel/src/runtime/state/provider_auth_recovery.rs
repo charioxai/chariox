@@ -1,6 +1,6 @@
 //! MP-08/MP-10/MP-11: receiving-kernel login; no credential synchronization.
 use super::*;
-use crate::local::LocalDaemonResponse;
+use crate::local::{LocalDaemonResponse, ProviderLoginProcessState};
 use crate::session::{
     RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
     RuntimeInteractionKind, RuntimeInteractionLevel,
