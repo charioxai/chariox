@@ -13,6 +13,7 @@ type ProjectedItem = {
   text: string
   completedAtMs: number
   promptId: string | null
+  record: Pick<TerminalOutputRecord, "timestamp_ms" | "kind" | "merge_key" | "source_attachment_id">
 }
 
 export function createCodexKernelOutputProjection(options: {
@@ -25,6 +26,7 @@ export function createCodexKernelOutputProjection(options: {
   let projectedThreadId: string | null = null
   let nextProjectedTurnId = 1
   const projectedItems = new Map<string, ProjectedItem>()
+  let projectedUserTurn: { turnId: string; promptId: string | null } | null = null
 
   const recordTimestampMs = (record: TerminalOutputRecord): number =>
     Number.isFinite(record.timestamp_ms) ? record.timestamp_ms : nowMs()
@@ -135,6 +137,9 @@ export function createCodexKernelOutputProjection(options: {
       if (recordProjection.transcriptRole === "user") {
         const turnId = startProjectedTurn(timestampMs)
         if (!turnId) continue
+        // Escape can arrive before the first assistant delta, while the TUI
+        // still identifies the projected user echo as its executing turn.
+        projectedUserTurn = { turnId, promptId: record.prompt_id ?? null }
         const itemId = `chariox-projected-user-${timestampMs}-${nextProjectedTurnId}`
         options.broadcast({
           jsonrpc: "2.0",
@@ -181,7 +186,14 @@ export function createCodexKernelOutputProjection(options: {
         const turnId = startProjectedTurn(timestampMs)
         if (!turnId) continue
         const itemId = `chariox-projected-${itemKind}-${timestampMs}-${nextProjectedTurnId}`
-        itemProjection = { key: itemKey, turnId, itemId, kind: itemKind, text: "", completedAtMs: timestampMs, promptId: record.prompt_id ?? null }
+        itemProjection = {
+          key: itemKey, turnId, itemId, kind: itemKind, text: "", completedAtMs: timestampMs, promptId: record.prompt_id ?? null,
+          record: {
+            timestamp_ms: timestampMs, kind: record.kind,
+            ...(record.merge_key !== undefined ? { merge_key: record.merge_key } : {}),
+            ...(record.source_attachment_id !== undefined ? { source_attachment_id: record.source_attachment_id } : {}),
+          },
+        }
         projectedItems.set(itemKey, itemProjection)
         options.broadcast({
           jsonrpc: "2.0",
@@ -215,6 +227,10 @@ export function createCodexKernelOutputProjection(options: {
 
   return {
     project,
+    promptIdForTurn: (turnId: string) => projectedUserTurn?.turnId === turnId
+      ? projectedUserTurn.promptId
+      : [...projectedItems.values()].find((item) => item.turnId === turnId)?.promptId ?? null,
+    recordForTurn: (turnId: string) => [...projectedItems.values()].find((item) => item.turnId === turnId)?.record ?? null,
     projectSessionState: (session: RuntimeSession) => {
       const activity = session.agent_activity?.[options.agentId]
       const completed = activity?.last_completed_turn

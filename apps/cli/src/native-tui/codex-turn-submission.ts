@@ -22,6 +22,7 @@ export async function handleCodexNativeTurnStart(
     agentId: string
     bindState: CodexNativeBindingState
     inlineLocalAttachments: boolean
+    onSubmitted?: (turnId: string, promptId: string, threadId: string) => void
     debug: (label: string, payload: unknown) => void
   },
   sendClient: (message: unknown) => void,
@@ -36,10 +37,14 @@ export async function handleCodexNativeTurnStart(
     const attachments = await preparePromptAttachmentsForSubmit(extractCodexAttachments(message.params), {
       inlineLocalFiles: options.inlineLocalAttachments,
     })
-    await options.client.send<Record<string, unknown>>(
+    const response = await options.client.send<Record<string, unknown>>(
       submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, attachments),
     )
+    const payload = response.PromptSubmitted as { outcome?: { Started?: { prompt: { id: string } }; Queued?: { prompt: { id: string } } } } | undefined
+    const promptId = (payload?.outcome?.Started ?? payload?.outcome?.Queued)?.prompt.id
+    if (!promptId || typeof message.params?.threadId !== "string") throw new Error("Kernel did not return a native prompt identity")
     const turnId = `chariox-native-${Date.now()}`
+    options.onSubmitted?.(turnId, promptId, message.params.threadId)
     sendClient({
       id: message.id,
       result: {

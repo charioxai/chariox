@@ -64,3 +64,89 @@ test("native proxy forwards ephemeral utility turns without binding a Room run",
   assert.deepEqual(kernelMessages, [])
   assert.equal(bindState.promise, null)
 })
+
+for (const origin of ["native", "chariox", "stale", "provider", "pending", "user", "unscoped", "unscoped-stale", "unscoped-blob", "unscoped-summary"] as const) {
+  test(`MP-08/MP-11 native interrupt correlates the ${origin} display turn to its kernel prompt`, { timeout: 10_000 }, async (t) => {
+    const upstream = new WebSocketServer({ port: 0, host: "127.0.0.1" })
+    await once(upstream, "listening")
+    const address = upstream.address()
+    assert.ok(address && typeof address !== "string")
+    const upstreamRequests: string[] = []
+    upstream.on("connection", (socket) => socket.on("message", (raw) => {
+      const message = JSON.parse(raw.toString())
+      upstreamRequests.push(message.method)
+      socket.send(JSON.stringify({ id: message.id, result: message.method === "thread/start"
+        ? { thread: { id: "display-thread" } } : {} }))
+    }))
+    const requests: string[] = []
+    let cancelled = false
+    const activeId = origin === "stale" || origin === "unscoped-stale" ? "newer-prompt" : "kernel-prompt"
+    const session = { agents: [{ id: "agent" }], prompt_states: { agent: { active_prompt: origin === "pending" ? { id: "execution-id", pending_prompt_id: "kernel-prompt" } : { id: activeId }, queued_prompts: [] } } }
+    const run = { id: "run" } as import("./cli-types.js").RuntimeProviderRun
+    const proxy = await startCodexProxy({
+      upstreamEndpoint: `ws://127.0.0.1:${address.port}`,
+      client: { send: async (request: Record<string, unknown>) => {
+        requests.push(Object.keys(request)[0]!)
+        if ("SubmitPrompt" in request) return { PromptSubmitted: { outcome: { Started: { prompt: { id: "kernel-prompt" } } }, session } }
+        if ("GetSessionState" in request) return { SessionState: { session } }
+        if ("GetSessionHistoryOutline" in request) return { SessionHistoryOutline: { agents: [{ agent_id: "agent", turns: [{
+          prompt_id: "kernel-prompt", started_at_ms: 900, completed_at_ms: origin === "unscoped-stale" ? 1100 : null,
+          entries: ["unscoped-blob", "unscoped-summary"].includes(origin) ? [] : [{ entry: { merge_key: "provider-item", kind: "provider_output", source_attachment_id: "attachment" } }],
+          summary: origin === "unscoped-summary" ? { entry: { merge_key: "provider-item", kind: "provider_output", source_attachment_id: "attachment" } } : null,
+          blobs: origin === "unscoped-blob" ? [{ blob_id: "history-output" }] : [],
+        }] }] } }
+        if ("GetSessionHistoryBlobContent" in request) return { SessionHistoryBlobContent: { entries: [{ entry: {
+          merge_key: "provider-item", kind: "provider_output", source_attachment_id: "attachment",
+        } }] } }
+        if ("CancelActivePrompt" in request) {
+          assert.deepEqual(request.CancelActivePrompt, { session_id: "room", attachment_id: "attachment", target_agent_id: "agent" })
+          cancelled = true
+          return { ActivePromptCancelled: { session } }
+        }
+        throw new Error(`unexpected request ${Object.keys(request)}`)
+      } } as unknown as LocalIpcClient,
+      sessionId: "room", attachmentId: "attachment", agentId: "agent", model: "model", effort: "medium",
+      bindState: { promise: Promise.resolve(run), run }, inlineLocalAttachments: false, debug: () => {},
+    })
+    const proxyAddress = proxy.address()
+    assert.ok(proxyAddress && typeof proxyAddress !== "string")
+    const native = new WebSocket(`ws://127.0.0.1:${proxyAddress.port}`)
+    t.after(async () => {
+      native.close()
+      await new Promise<void>((resolve) => proxy.close(() => resolve()))
+      await new Promise<void>((resolve) => upstream.close(() => resolve()))
+    })
+    await once(native, "open")
+    const notifications: any[] = []
+    native.on("message", (raw) => notifications.push(JSON.parse(raw.toString())))
+    const response = async (request: { id: number; method: string; params: unknown }) => {
+      const received = new Promise<any>((resolve) => {
+        const listener = (raw: WebSocket.RawData) => {
+          const message = JSON.parse(raw.toString())
+          if (message.id === request.id) { native.off("message", listener); resolve(message) }
+        }
+        native.on("message", listener)
+      })
+      native.send(JSON.stringify(request))
+      return received
+    }
+    await response({ id: 1, method: "thread/start", params: {} })
+    let turnId: string
+    if (origin === "native" || origin === "provider") {
+      const started = await response({ id: 2, method: "turn/start", params: { threadId: "display-thread", input: [{ type: "text", text: "work" }] } })
+      turnId = origin === "provider" ? "provider-executing-turn" : started.result.turn.id
+    } else {
+      const notification = once(native, "message")
+      proxy.projectKernelOutputToTui([{ agent_id: "agent", prompt_id: origin.startsWith("unscoped") ? null : "kernel-prompt", timestamp_ms: 1000,
+        merge_key: "provider-item", source_attachment_id: "attachment", kind: origin === "user" ? "prompt_echo" : "provider_output", bytes: [65] }])
+      await notification
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      turnId = notifications.find((message) => message.method === "turn/started").params.turn.id
+    }
+    const interrupted = await response({ id: 3, method: "turn/interrupt", params: { threadId: "display-thread", turnId } })
+    assert.deepEqual(interrupted.result, {})
+    assert.equal(cancelled, origin !== "stale" && origin !== "unscoped-stale" && origin !== "provider")
+    assert.equal(upstreamRequests.includes("turn/interrupt"), origin === "provider")
+    assert.equal(requests.includes("GetSessionState"), origin !== "provider")
+  })
+}

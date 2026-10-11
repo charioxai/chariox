@@ -8,6 +8,7 @@ import {
   type TerminalOutputRecord,
 } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
+import { handleCodexNativeTurnInterrupt } from "./codex-turn-control.js"
 import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
 import { createCodexKernelOutputProjection } from "./codex-kernel-output-projection.js"
 import {
@@ -74,6 +75,7 @@ export function createCodexProjectionThreadTracker(options: {
       tuiThreadId = threadId
       setProjectedThreadId(threadId)
     },
+    isTuiThread: (threadId: string) => tuiThreadId === threadId,
     isEphemeralThread: (threadId: string) => ephemeralThreadIds.has(threadId),
     observeUpstreamThread: (threadId: string, ephemeral = false) => {
       if (ephemeral) ephemeralThreadIds.add(threadId)
@@ -108,6 +110,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     method: string | undefined
     ephemeral: boolean
   }>()
+  let submittedTurn: { turnId: string; promptId: string; threadId: string } | null = null
   let nextUpstreamRequestId = 1
   let upstreamSocket: WebSocket | null = null
 
@@ -324,9 +327,31 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       if (message.method === "turn/start" && downstream.kind !== "kernel" && !ephemeral) {
         void handleCodexNativeTurnStart(
           message,
-          options,
+          { ...options, onSubmitted: (turnId, promptId, threadId) => { submittedTurn = { turnId, promptId, threadId } } },
           (response) => sendDownstream(downstream, response),
         )
+        return
+      }
+      if (message.method === "turn/interrupt" && downstream.kind !== "kernel") {
+        options.debug("native_interrupt_observed", {
+          threadId,
+          turnId: message.params?.turnId,
+          submittedTurnId: submittedTurn?.turnId,
+          projectedPromptId: typeof message.params?.turnId === "string"
+            ? kernelOutputProjection.promptIdForTurn(message.params.turnId) : null,
+          tuiThread: typeof threadId === "string" && projectionThreadTracker.isTuiThread(threadId),
+        })
+      }
+      if (message.method === "turn/interrupt" && downstream.kind !== "kernel" && !ephemeral
+        && typeof message.params?.turnId === "string" && message.params.turnId.startsWith("chariox-")) {
+        const turnId = message.params?.turnId
+        const promptId = typeof turnId === "string" && typeof threadId === "string" && projectionThreadTracker.isTuiThread(threadId)
+          ? (submittedTurn?.turnId === turnId && submittedTurn.threadId === threadId
+              ? submittedTurn.promptId : kernelOutputProjection.promptIdForTurn(turnId))
+          : null
+        const record = typeof turnId === "string" && typeof threadId === "string" && projectionThreadTracker.isTuiThread(threadId)
+          ? kernelOutputProjection.recordForTurn(turnId) : null
+        void handleCodexNativeTurnInterrupt(message, { ...options, promptId, record }, (response) => sendDownstream(downstream, response))
         return
       }
       forwardRequest(downstream, message)
