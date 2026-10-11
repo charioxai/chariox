@@ -367,7 +367,7 @@ pub(crate) fn refresh_provider_account_profile_response(
     }
 }
 
-fn claude_auth_status(
+pub(crate) fn claude_auth_status(
     provider: &str,
     account_profile: &str,
     environment: &BTreeMap<String, String>,

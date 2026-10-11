@@ -83,18 +83,17 @@ pub(crate) async fn execute_set_provider_account_credential_request(
     config_projection: &DaemonConfigProjectionStore,
     runtime_state: &KernelRuntimeState,
     command: &KernelCommand,
-    request: SetProviderAccountCredentialRequest,
+    mut request: SetProviderAccountCredentialRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     if request.run {
         return claude_setup_token_login::start(runtime_state, command, request).await;
     }
+    let value = zeroize::Zeroizing::new(std::mem::take(&mut request.value));
     let owner_user_id =
         runtime_state.provider_account_authority_owner_user_id(&command_caller_user_id(command));
-    let provider = crate::provider::validate_provider_account_credential_input(
-        &request.provider,
-        &request.value,
-    )?
-    .to_string();
+    let provider =
+        crate::provider::validate_provider_account_credential_input(&request.provider, &value)?
+            .to_string();
     let profile = runtime_state.provider_account_profile_registry().get(
         &owner_user_id,
         &provider,
@@ -108,15 +107,65 @@ pub(crate) async fn execute_set_provider_account_credential_request(
             "provider_account_credential_set",
         )
         .await?;
+    // MP-08/MP-10/MP-11: observe the credential actually being enrolled,
+    // in this account's scope, before storing it or opening prompt admission.
+    // Official auth status establishes configured authentication; real provider
+    // turns establish that the service accepts it.
+    let registry = runtime_state.provider_account_profile_registry().clone();
+    let probe_owner = owner_user_id.clone();
+    let probe_profile = profile.profile_id.clone();
+    let probe_value = zeroize::Zeroizing::new(value.trim().to_string());
+    let status = tokio::task::spawn_blocking(move || {
+        let mut environment =
+            registry.resolve_environment(&probe_owner, "claude", &probe_profile)?;
+        environment.insert(
+            crate::provider::CLAUDE_OAUTH_TOKEN_ENV.to_string(),
+            probe_value.to_string(),
+        );
+        let status = crate::local::provider_requests::claude_auth_status(
+            "claude",
+            &probe_profile,
+            &environment,
+        );
+        if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
+            zeroize::Zeroize::zeroize(value);
+        }
+        status
+    })
+    .await
+    .map_err(|_| DaemonError::LocalTransport {
+        operation: "verify Claude account credential",
+        message: "Claude authentication verification could not complete".to_string(),
+    })??;
+    if status.auth_state != "authenticated" {
+        return Err(DaemonError::LocalTransport {
+            operation: "verify Claude account credential",
+            message:
+                "Claude did not report authenticated status for the supplied account credential"
+                    .to_string(),
+        });
+    }
     let config = config_projection.snapshot();
     let stored = crate::provider::store_provider_account_credential(
         &config,
         &owner_user_id,
         &provider,
         &profile.profile_id,
-        &request.value,
+        &value,
         request.overwrite,
     )?;
+    runtime_state
+        .provider_account_profile_registry()
+        .update_observation(
+            &owner_user_id,
+            &provider,
+            &profile.profile_id,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            status.identity_summary,
+            status.plan,
+            status.detected_version,
+            None,
+        )?;
     runtime_state.record_waiting_room_change();
     Ok(LocalDaemonResponse::ProviderAccountCredentialStored {
         provider,
@@ -335,3 +384,7 @@ fn credential_vault_status(
     let user_config = config_projection.snapshot().user_config;
     crate::secret::chariox_encrypted_vault_status(&user_config.credential_vault.path)
 }
+
+#[cfg(all(test, unix))]
+#[path = "user_config_executor_existing_token_tests.rs"]
+mod existing_token_tests;
