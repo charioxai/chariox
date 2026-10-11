@@ -71,23 +71,29 @@ fn envp05a_setup_progress_proves_only_the_unstarted_suffix() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn envp05a_setup_retry_completes_suffix_without_replaying_successful_predecessor() {
-    setup_retry_regression(false, false).await;
+    setup_retry_regression(false, false, false).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn envp05a_setup_public_dependencies_ignore_locked_unrelated_secret() {
-    setup_retry_regression(true, false).await;
+    setup_retry_regression(true, false, false).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn envp05a_setup_preparation_failure_has_proven_unstarted_progress() {
-    setup_retry_regression(true, true).await;
+    setup_retry_regression(true, true, false).await;
 }
 
 #[cfg(target_os = "linux")]
-async fn setup_retry_regression(locked_secret: bool, preparation_failure: bool) {
+#[tokio::test]
+async fn envp05a_setup_rejects_fresh_credential_content_before_command_admission() {
+    setup_retry_regression(true, false, true).await;
+}
+
+#[cfg(target_os = "linux")]
+async fn setup_retry_regression(locked_secret: bool, preparation_failure: bool, changed_public: bool) {
     crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let root = crate::test_support::TestWorktree::new("envp05-setup-retry");
@@ -235,6 +241,17 @@ async fn setup_retry_regression(locked_secret: bool, preparation_failure: bool) 
             },
         )
         .unwrap();
+    if changed_public {
+        // Public at Check/Apply time, credential-shaped when Setup resolves it.
+        let replacement = format!("sk-{}", "s".repeat(48));
+        std::fs::write(workspace.join("public-input"), &replacement).unwrap();
+        let error = apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false).unwrap_err();
+        assert!(!workspace.join("successful-count").exists(), "fresh credential content must prevent command admission");
+        assert_eq!(store.load_applies(project.id()).unwrap().attempts[0].setup_admitted_commands.get("setup"), Some(&0));
+        assert!(!error.to_string().contains(&replacement));
+        assert!(setup_retry_is_settled(&state, &env, &requirement, &operation));
+        std::fs::write(workspace.join("public-input"), "public build input").unwrap();
+    }
     if preparation_failure {
         std::fs::remove_file(workspace.join("public-input")).unwrap();
         assert!(apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false).is_err());

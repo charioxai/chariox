@@ -40,6 +40,10 @@ pub(crate) fn project_public_setup_environment(
     if permitted.iter().any(|name| !environment.iter().any(|(binding, _)| binding == *name)) {
         return Err(super::resolver::environment_error("Setup public prerequisites unavailable"));
     }
+    // MP-11: saved classification cannot authorize freshly changed credential content.
+    if environment.iter().any(|(_, value)| super::detect_index::credential_content(value)) {
+        return Err(super::resolver::environment_error("Setup public input requires Vault classification"));
+    }
     Ok(environment)
 }
 
