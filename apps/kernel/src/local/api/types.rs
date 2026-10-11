@@ -262,4 +262,5 @@ pub use workspace::*;
 /// Version 487 adds value-free Project Environment aggregates and reserves the
 /// complete Environment operation contract on top of 472 (developed as 471;
 /// MP-02/MP-03/MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 487;
+/// Version 490 requires bounded relay response framing and socket-local receipts.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 490;
