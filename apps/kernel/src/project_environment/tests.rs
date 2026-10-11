@@ -12,6 +12,12 @@ fn mp08_mp10_discovery_indexed_decisions_preserve_kernel_evidence() {
         private_files: vec![],
         revision: None,
     };
+    // MP-08 / MP-10 / MP-11: models copy an explicit kernel index instead
+    // of counting entries in a large inventory or indexing unrelated hints.
+    let prompt = project_environment_discovery_prompt(&input).unwrap();
+    let metadata: serde_json::Value = serde_json::from_str(prompt.split_once("Metadata:\n").unwrap().1).unwrap();
+    assert_eq!(metadata["references"][0]["reference_index"], 0);
+    assert_eq!(metadata["references"][0]["evidence"]["name"], "NEEDED");
     let output = serde_json::json!({"schema_version":1,"project_id":"project",
         "evidence_digest":"a".repeat(64), "entries":[{"reference_index":0,"classification":"non_secret"}],
         "private_files":[],"toolchain_hints":[],"package_hints":[],"service_hints":[]});
