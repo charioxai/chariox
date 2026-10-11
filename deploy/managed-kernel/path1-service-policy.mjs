@@ -107,9 +107,21 @@ export function verifyPath1ServicePolicy(source, role) {
   for (const directive of forbidden) {
     if (all.some((line) => line.includes(directive))) fail(`contains ${directive}`)
   }
+  // MP-03/MP-07: v1 is the signed compatibility bridge for frozen H/I.
+  // v2 units require private control state and must never let systemd re-own it.
+  const versions = all.filter((line) => line.startsWith("Environment=CHARIOX_PATH1_SERVICE_POLICY_VERSION="))
+  let policyVersion = 1
+  if (versions.length) {
+    if (versions.length !== 1 || !lines.includes(versions[0])
+      || !/^Environment=CHARIOX_PATH1_SERVICE_POLICY_VERSION=[12]$/.test(versions[0])) fail("has an unsupported policy version")
+    policyVersion = Number(versions[0].slice(-1))
+  }
   const state = all.filter((line) => line.startsWith("StateDirectory="))
   const stateMode = all.filter((line) => line.startsWith("StateDirectoryMode="))
-  if (state.length || stateMode.length) fail("contains StateDirectory=")
+  if (role === "worker" && policyVersion === 1) {
+    exact("StateDirectory=", "StateDirectory=chariox")
+    exact("StateDirectoryMode=", "StateDirectoryMode=0700")
+  } else if (state.length || stateMode.length) fail("contains StateDirectory=")
   // Only direct, unquoted one-assignment environment declarations are supported.
   // Otherwise a later quoted/multiple assignment could override a validated HOME.
   if (all.some((line) => /^(EnvironmentFile|PassEnvironment|UnsetEnvironment)=/.test(line)

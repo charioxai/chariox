@@ -98,7 +98,18 @@ async function effectiveCharioxIdentity() {
   return { uid: 0, gid: 0 }
 }
 
-async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null, includeWorkerService = false, builderKeys = null, manifestSchema = 3, includeAppArtifacts = true) {
+async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null, includeWorkerService = false, builderKeys = null, manifestSchema = 3, includeAppArtifacts = true, servicePolicy = 1) {
+  const policyUnit = async filename => {
+    let unit = await readFile(join(repositoryRoot, "deploy/managed-kernel", filename), "utf8")
+    if (servicePolicy !== 1) unit = unit.replace(/^StateDirectory(?:Mode)?=.*\n/gm, "")
+    unit = unit.replace(/CHARIOX_PATH1_SERVICE_POLICY_VERSION=[12]/g, `CHARIOX_PATH1_SERVICE_POLICY_VERSION=${servicePolicy}`)
+    if (servicePolicy === 1 && filename === "chariox-disposable-worker-bootstrap.service"
+      && !unit.includes("StateDirectory=")) {
+      unit = unit.replace("KillMode=control-group", "KillMode=control-group\nStateDirectory=chariox\nStateDirectoryMode=0700")
+    }
+    if (servicePolicy === 0) unit = unit.replace(/^Environment=CHARIOX_PATH1_SERVICE_POLICY_VERSION=.*\n/gm, "")
+    return unit
+  }
   const rootfs = join(root, `image-${label}`)
   const kernel = join(rootfs, "usr/local/bin/chariox-kernel")
   const supervisor = join(rootfs, "usr/local/bin/chariox-managed-bootstrap")
@@ -195,13 +206,13 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   if (includeWorkerService) {
     const path = "/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
     const source = join(rootfs, path)
-    await put(source, await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-disposable-worker-bootstrap.service")))
+    await put(source, await policyUnit("chariox-disposable-worker-bootstrap.service"))
     artifactSpecs.push(["chariox-disposable-worker-bootstrap.service", path, source, "file"])
   }
   if (builderKeys) {
     const path = "/etc/systemd/system/chariox-path1-managed-bootstrap.service"
     const source = join(rootfs, path)
-    await put(source, await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-path1-managed-bootstrap.service")))
+    await put(source, await policyUnit("chariox-path1-managed-bootstrap.service"))
     artifactSpecs.push(["chariox-path1-managed-bootstrap.service", path, source, "file"])
     for (const [name, path, source] of [
       ["chariox-data-volume-admission.service", "/etc/systemd/system/chariox-data-volume-admission.service", dataVolumeAdmissionService],
@@ -252,6 +263,10 @@ async function makeHarness(context, {
   currentAppArtifacts = true,
   updaterPath = upgrade,
   builderInputLF = false,
+  installedRelease = null,
+  targetServicePolicy = 1,
+  currentServicePolicy = 1,
+  updaterShell = false,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-upgrade-"))
   await mkdir(join(root, "tmp"), { mode: 0o700 })
@@ -265,14 +280,20 @@ async function makeHarness(context, {
   const targetBuilderKeys = rotateBuilder ? generateKeyPairSync("ed25519") : builderKeys
   const nextTrustedBuilderKey = join(root, "next-trusted-builder-public-key")
   if (targetBuilderKeys) await put(nextTrustedBuilderKey, rawPublicKey(targetBuilderKeys.publicKey).toString("base64") + (builderInputLF ? "\n" : ""), 0o600)
-  const current = await makeRelease(
+  const current = installedRelease ?? await makeRelease(
     root, "current", currentProtocol, privateKey, publicKey, currentTransitionPolicy,
     path1Release || workerCapableCurrent || receiptKind === "allocation_worker", builderKeys, currentManifestSchema,
-    currentAppArtifacts,
+    currentAppArtifacts, currentServicePolicy,
   )
   const target = await makeRelease(
-    root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true, targetBuilderKeys, targetManifestSchema,
+    root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true, targetBuilderKeys, targetManifestSchema, true, targetServicePolicy,
   )
+  const nextTrustedReleaseKey = join(root, "next-trusted-release-public-key")
+  if (installedRelease) {
+    await put(nextTrustedReleaseKey, await readFile(trustedKey), 0o600)
+    await put(trustedKey, await readFile(installedRelease.releasePin), 0o600)
+    await put(trustedBuilderKey, await readFile(installedRelease.builderPin), 0o600)
+  }
   const installRoot = join(root, "host")
   if (path1Release) {
     await mkdir(join(installRoot, "etc/systemd/system/chariox-rootless-docker.service.d"), {
@@ -732,11 +753,13 @@ exec /usr/bin/stat "$@"
     CHARIOX_MANAGED_UPGRADE_HEALTH_PORT: String(port),
     CHARIOX_MANAGED_UPGRADE_HEALTH_TIMEOUT_MS: "1000",
   }
-  const run = (extraEnv = {}, args = [target.rootfs, current.digest, target.digest, trustedKey]) =>
-    spawnSync(updaterPath, args, { encoding: "utf8", env: { ...env, ...extraEnv } })
+  const run = (extraEnv = {}, args = [target.rootfs, current.digest, target.digest, trustedKey,
+    ...(installedRelease ? [nextTrustedReleaseKey] : [])]) =>
+    spawnSync(updaterShell ? "/bin/sh" : updaterPath, updaterShell ? [updaterPath, ...args] : args,
+      { encoding: "utf8", env: { ...env, ...extraEnv } })
   return {
     root, installRoot, receiptPath, receipt, bindingDigest, persistent, charioxIdentity,
-    current, target, trustedKey, trustedBuilderKey, nextTrustedBuilderKey, state, env, run,
+    current, target, trustedKey, nextTrustedReleaseKey, trustedBuilderKey, nextTrustedBuilderKey, state, env, run,
   }
 }
 

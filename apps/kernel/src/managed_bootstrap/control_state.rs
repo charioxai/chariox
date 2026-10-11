@@ -24,7 +24,25 @@ fn protected(path: &Path) -> bool {
 }
 
 fn uses_helper(path: &Path) -> bool {
-    protected(path) && std::env::var(super::MANAGED_PROVIDER_TOPOLOGY_ENV).as_deref() == Ok("path1")
+    if !protected(path)
+        || std::env::var(super::MANAGED_PROVIDER_TOPOLOGY_ENV).as_deref() != Ok("path1")
+    {
+        return false;
+    }
+    // MP-03/MP-07: the v1 bridge must boot after H/I's unchanged updater,
+    // which retains service-principal receipt ownership. A v2 service always
+    // uses the helper; v1 also uses it when provisioning supplied private state.
+    let version = std::env::var("CHARIOX_PATH1_SERVICE_POLICY_VERSION").ok();
+    let parent_uid = path
+        .parent()
+        .and_then(|parent| fs::metadata(parent).ok())
+        .map(|metadata| metadata.uid());
+    requires_helper(version.as_deref(), parent_uid)
+}
+
+fn requires_helper(version: Option<&str>, parent_uid: Option<u32>) -> bool {
+    // Unknown policy values cannot select legacy access.
+    !matches!(version, None | Some("1")) || parent_uid == Some(0)
 }
 
 fn error(message: &str) -> DaemonError {
@@ -233,6 +251,16 @@ mod tests {
         symlink(root.join("workspace/public-canary"), &receipt).unwrap();
         assert!(read_root(&receipt).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn signed_policy_bridge_keeps_legacy_access_until_private_activation() {
+        assert!(!requires_helper(None, Some(1000)));
+        assert!(!requires_helper(Some("1"), Some(1000)));
+        assert!(requires_helper(Some("1"), Some(0)));
+        assert!(requires_helper(Some("2"), Some(1000)));
+        assert!(requires_helper(Some("2"), None));
+        assert!(requires_helper(Some("3"), Some(1000)));
     }
 
     #[test]

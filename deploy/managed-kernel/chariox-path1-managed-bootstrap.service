@@ -8,6 +8,8 @@ ConditionPathExists=/usr/local/bin/chariox-managed-bootstrap
 StartLimitIntervalSec=0
 
 [Service]
+# MP-03/MP-07: signed v1 bridge; K-B opts into the root-private v2 policy.
+Environment=CHARIOX_PATH1_SERVICE_POLICY_VERSION=1
 Type=simple
 User=chariox
 Group=chariox
