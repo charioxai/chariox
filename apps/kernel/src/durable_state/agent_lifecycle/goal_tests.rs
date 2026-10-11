@@ -30,6 +30,37 @@ fn assessment(status: &str) -> serde_json::Value {
     serde_json::json!({"status":status,"reason":"Useful independent implementation remains"})
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: old work age cannot consume a fresh check's service bound.
+#[test]
+fn a12_fresh_completion_intent_keeps_its_bound_after_long_work() {
+    for is_goal in [false, true] {
+        let f = Fixture::new();
+        if is_goal { goal(&f, 1); } else { plain(&f); }
+        let started = DELIVERY_TIMEOUT_MS + 2;
+        f.apply(Operation::Settle {
+            room: "room".into(), agent: "parent".into(), prompt: "p".into(),
+            run: "run".into(), has_answer: true, cancelled: false, now: started,
+        });
+        let task = f.task();
+        let check = completion::evaluation(&task).unwrap();
+        assert_eq!(check.deadline_ms, started + goals::CHECK_BOUND_MS);
+        assert!(!lacks_live_executor(&task, started + 1, false, false),
+            "a durable pending check has its own bounded admission window");
+        assert!(!lacks_live_executor(&task, check.deadline_ms - 1, false, false));
+        assert!(lacks_live_executor(&task, check.deadline_ms, false, false));
+        let mut stale = task.clone();
+        stale.pending_prompt_id = Some("other-turn".into());
+        assert!(lacks_live_executor(&stale, started + 1, false, false),
+            "an unrelated check receipt is not a live admission");
+        f.apply(Operation::TimeoutGoal {
+            task: task.task_id.clone(), prompt: check.prompt_id.clone(), now: check.deadline_ms,
+        });
+        assert_eq!(f.task().state, ExecutionState::Blocked);
+        assert_eq!(if is_goal { f.task().goal.unwrap().check_count }
+            else { f.task().completion_check.unwrap().check_count }, 1);
+    }
+}
+
 #[test]
 fn a12_each_work_turn_gets_one_check_and_only_goals_continue() {
     let ordinary = Fixture::new();

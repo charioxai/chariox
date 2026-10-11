@@ -650,17 +650,25 @@ pub(crate) fn delivery_receipt_state(
 }
 
 /// MP-08/MP-09/MP-10/MP-11: a Working task whose prompt is neither active
-/// nor queued blocks after the delivery timeout.
+/// nor queued blocks after the delivery timeout. A matching completion intent
+/// retains its own bounded admission window, independent of the work turn's age.
 pub(crate) fn lacks_live_executor(
     task: &AgentTaskExecution,
     now: u64,
     active: bool,
     queued: bool,
 ) -> bool {
+    let awaiting_completion = completion::evaluation(task).is_some_and(|check| {
+        check.result.is_none()
+            && check.prompt_id == task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id)
+            && check.started_at_ms <= now
+            && now < check.deadline_ms
+    });
     task.state == ExecutionState::Working
         && now.saturating_sub(task.last_progress_at_ms) >= DELIVERY_TIMEOUT_MS
         && !active
         && !queued
+        && !awaiting_completion
 }
 
 /// MP-08/MP-09/MP-10/MP-11: a failed provider turn blocks a Working task;
