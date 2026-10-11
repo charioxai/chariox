@@ -1,8 +1,9 @@
 # MP-08 / MP-10 / MP-11 — owner A/B runtime scripts
 
 These scripts start the Chariox kernel/browser and the qualified Selkies wheel
-baseline on one quiet Ubuntu 26.04 CCX43. The web app and relay use the matching
-prebuilt hosted validation stack. The owner guide has the two links, five steps,
+baseline on one quiet Ubuntu 26.04 CCX43. The web app uses Miguel’s existing staging login. The kernel enrolls through
+normal product device approval and uses the relay in the approved Cloud profile.
+A lane-owned fixture stack is used only for rehearsal. The owner guide has the two links, five steps,
 public sites and rating table; the operator guide covers enrollment and cleanup.
 
 The distributable kit also needs these public, prebuilt assets beside the scripts:
@@ -23,7 +24,9 @@ assets; exclude runtime state, provider profiles, auth files and keys. OpenH264
 is fetched directly from Cisco at startup and is not redistributed in the kit.
 
 `ab-up.sh` accepts only the public settings listed in `OPERATOR.md`. Normal owner
-use rejects fixture authentication. Rehearsal must explicitly set
+use rejects fixture authentication, gated machine APIs and an artifact manifest
+without passing staging compatibility. The named staging490 sources lack the
+native video viewer; OPERATOR.md records the coordinator blocker. Rehearsal must explicitly set
 `AB_REHEARSAL=1`; `AB_SKIP_INSTALL=1` is only for a host with dependencies already
 installed. Startup and cleanup receipts do not establish latency, CPU parity,
 Mac usability, provider/Vault coverage or multi-hour stability. Preserve RED
