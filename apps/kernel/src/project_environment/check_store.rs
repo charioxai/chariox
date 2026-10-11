@@ -16,6 +16,23 @@ pub(crate) struct EnvironmentChecks {
 }
 // MP-08 / MP-10 / MP-11: current observations are separate from operation history.
 impl EnvironmentChecks {
+    pub(crate) fn invalidate_observations(
+        &mut self,
+        env: &ProjectEnvironment,
+        target: &EnvironmentTargetBinding,
+        now: u64,
+    ) {
+        let bindings = folder_bindings_digest(env);
+        for observation in &mut self.observations {
+            observation.stale |= observation.target != *target
+                || observation.revision_digest != env.content_digest
+                || observation.environment_id != env.lineage.environment_id
+                || self.folder_binding_digest != bindings
+                || observation.checked_at_ms.is_none_or(|checked| {
+                    checked > now || now.saturating_sub(checked) > OBSERVATION_TTL_MS
+                });
+        }
+    }
     pub(crate) fn record_observation(&mut self, observation: MachineObservation) {
         self.observations.retain(|prior| {
             // A new probe supersedes this machine/slice's previous process generation.
@@ -86,8 +103,8 @@ impl ProjectEnvironmentStore {
         target: &EnvironmentTargetBinding,
         now: u64,
     ) -> Result<(), crate::error::DaemonError> {
-        let checks = self.load_checks(&env.local_project_id)?;
-        let bindings = folder_bindings_digest(env);
+        let mut checks = self.load_checks(&env.local_project_id)?;
+        checks.invalidate_observations(env, target, now);
         let requirements: std::collections::HashSet<_> = env
             .project_requirements
             .iter()
@@ -98,15 +115,6 @@ impl ProjectEnvironmentStore {
             .observations
             .into_iter()
             .filter(|o| requirements.contains(&o.requirement_id))
-            .map(|mut o| {
-                o.stale |= o.target != *target
-                    || o.revision_digest != env.content_digest
-                    || o.environment_id != env.lineage.environment_id
-                    || checks.folder_binding_digest != bindings
-                    || o.checked_at_ms
-                        .is_none_or(|t| t > now || now.saturating_sub(t) > OBSERVATION_TTL_MS);
-                o
-            })
             .collect();
         // MP-08 / MP-10 / MP-11: the current view need not replay old result
         // bodies on every poll. Retained operation IDs remain queryable below.
