@@ -115,7 +115,10 @@ finally:
     for process in [cover, jitter]:
         if process and process.poll() is None:
             process.terminate(); process.wait(timeout=3)
-    if pointer: pointer.restore()
+    if pointer:
+        pointer.restore()
+        report['pointerLeaseRetired'] = pointer.retired
+        if pointer.retired: report['status'] = 'FAIL'
     if pid:
         command = subprocess.run(['ps', '-p', str(pid), '-o', 'command='], capture_output=True, text=True).stdout.strip()
         if command == str(d.BUILD / 'Chariox Computer Fixture.app/Contents/MacOS/fixture') + ' --unattended --text-drill':
