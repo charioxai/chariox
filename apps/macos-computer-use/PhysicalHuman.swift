@@ -7,6 +7,7 @@ import Carbon
     private let pid: Int64
     var observerReady = false
     private(set) var paused = false
+    private(set) var foreignPressObserved = false
     private var expected: [(CGEventType, CGPoint, TimeInterval)] = []
     init(marker: Int64 = Int64.random(in: 1...Int64.max), pid: Int64 = Int64(getpid())) {
         self.marker = marker; self.pid = pid
@@ -30,14 +31,20 @@ import Carbon
            let index = expected.firstIndex(where: { $0.0 == type && $0.1 == event.location }) {
             expected.remove(at: index); return
         }
+        if [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown].contains(type) {
+            foreignPressObserved = true
+        }
         paused = true
+    }
+    func checkHealth() throws {
+        guard observerReady else { throw tagged(.disabled, "physical-observer-unavailable") }
     }
     func check() throws {
         guard observerReady, !paused else { throw tagged(.disabled, "physical-human-paused") }
     }
     func release(foreignHeld: Bool) throws {
         guard observerReady, !foreignHeld else { throw tagged(.disabled, "physical-human-release-refused") }
-        expected.removeAll(); paused = false
+        expected.removeAll(); paused = false; foreignPressObserved = false
     }
 }
 
@@ -45,7 +52,12 @@ import Carbon
     var fence: PhysicalHumanFence { get }
     func start() throws
     func check() throws
+    func checkHealth() throws
     func stop()
+}
+
+extension PhysicalInputObserver {
+    func checkHealth() throws { try fence.checkHealth() }
 }
 
 @MainActor final class PhysicalHumanObserver: PhysicalInputObserver {
@@ -76,11 +88,15 @@ import Carbon
         fence.observerReady = CGEvent.tapIsEnabled(tap: tap)
         try fence.check()
     }
-    func check() throws {
-        guard let tap, CGEvent.tapIsEnabled(tap: tap), !IsSecureEventInputEnabled() else {
+    func checkHealth() throws {
+        guard CGPreflightListenEventAccess(), let tap, CGEvent.tapIsEnabled(tap: tap), !IsSecureEventInputEnabled() else {
             fence.observerReady = false
             throw tagged(.disabled, "physical-observer-unavailable")
         }
+        try fence.checkHealth()
+    }
+    func check() throws {
+        try checkHealth()
         try fence.check()
     }
     func stop() {
@@ -92,7 +108,26 @@ import Carbon
 }
 
 // Query physical state transiently. Do not retain or report human key identities.
-func foreignInputHeld() -> Bool {
-    (0..<128).contains { CGEventSource.keyState(.combinedSessionState, key: CGKeyCode($0)) } ||
-    [CGMouseButton.left, .right, .center].contains { CGEventSource.buttonState(.combinedSessionState, button: $0) }
+func foreignInputHeld() -> Bool { foreignInputHeld(excludingOwned: nil) }
+
+// An owned session-level down is present in combined state until its up posts.
+// Exempt only that exact control. Hardware holds and observed foreign downs,
+// including a foreign down on the owned control, still prevent cleanup.
+func foreignInputHeld(excludingOwned release: CGEvent?,
+                      keyState: (CGEventSourceStateID, CGKeyCode) -> Bool = { CGEventSource.keyState($0, key: $1) },
+                      buttonState: (CGEventSourceStateID, CGMouseButton) -> Bool = { CGEventSource.buttonState($0, button: $1) }) -> Bool {
+    let ownedKey: CGKeyCode? = release.flatMap { $0.type == .keyUp ? CGKeyCode($0.getIntegerValueField(.keyboardEventKeycode)) : nil }
+    let ownedButton: CGMouseButton?
+    switch release?.type {
+    case .leftMouseUp: ownedButton = .left
+    case .rightMouseUp: ownedButton = .right
+    case .otherMouseUp: ownedButton = .center
+    default: ownedButton = nil
+    }
+    return (0..<128).contains { code in
+        let key = CGKeyCode(code)
+        return keyState(.hidSystemState, key) || (key != ownedKey && keyState(.combinedSessionState, key))
+    } || [CGMouseButton.left, .right, .center].contains { button in
+        buttonState(.hidSystemState, button) || (button != ownedButton && buttonState(.combinedSessionState, button))
+    }
 }
