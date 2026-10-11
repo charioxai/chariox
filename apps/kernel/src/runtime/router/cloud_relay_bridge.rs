@@ -34,8 +34,15 @@ impl CommandRouter {
         else {
             return Ok(());
         };
-        let _: serde_json::Value =
-            post_cloud_json(profile.api_url.clone(), "/kernels/presence", body).await?;
+        crate::runtime_diagnostics::record(crate::runtime_diagnostics::Event::CloudPresenceStart);
+        let result: Result<serde_json::Value, DaemonError> =
+            post_cloud_json(profile.api_url.clone(), "/kernels/presence", body).await;
+        crate::runtime_diagnostics::record(if result.is_ok() {
+            crate::runtime_diagnostics::Event::CloudPresenceAcknowledged
+        } else {
+            crate::runtime_diagnostics::Event::CloudPresenceFailed
+        });
+        result?;
         Ok(())
     }
 }

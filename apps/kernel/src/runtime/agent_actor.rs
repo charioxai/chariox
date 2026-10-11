@@ -144,6 +144,7 @@ impl AgentRuntime {
         }
         request.target_agent_id = Some(agent_id.clone());
         let command_trace = CommandTrace::from_command(command);
+        crate::runtime_diagnostics::record(crate::runtime_diagnostics::Event::PromptDispatch);
         self.dispatch_to_agent(
             agent_id,
             command_trace.clone(),

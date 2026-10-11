@@ -1,5 +1,6 @@
 mod cloud;
 mod context_plan;
+pub mod control_state;
 mod data_volume_observation;
 mod freshness;
 mod provider_path;
@@ -221,7 +222,7 @@ fn confirmed_managed_kernel_registration_with_receipt_fallback(
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
         .unwrap_or(default_receipt_path);
-    if !receipt_path.exists() {
+    if !control_state::exists(&receipt_path)? {
         return Ok(None);
     }
     let config = BootstrapConfig::from_env()?;
@@ -254,7 +255,7 @@ pub(crate) fn authoritative_managed_release_evidence_from_env(
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| chariox_home.join("managed").join("bootstrap-receipt.json"));
-    if !receipt_path.exists() {
+    if !control_state::exists(&receipt_path)? {
         return Ok(None);
     }
     let config = BootstrapConfig::from_env()?;
@@ -332,7 +333,9 @@ fn prepare_managed_kernel_with_documents(
     receipt: Option<BootstrapReceipt>,
     envelope: Option<ManagedBootstrapEnvelope>,
 ) -> Result<PreparedManagedKernel, DaemonError> {
-    if state::disposable_worker_release_override_path(&config.receipt_path)?.exists() {
+    if control_state::exists(&state::disposable_worker_release_override_path(
+        &config.receipt_path,
+    )?)? {
         return Err(bootstrap_error(
             "disposable worker release override has no matching worker receipt",
         ));

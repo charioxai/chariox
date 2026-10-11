@@ -1218,7 +1218,20 @@ impl ProviderAccountProfileRegistry {
         model: Option<&str>,
         operation: &'static str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
-        let profile = self.get(owner_user_id, provider, profile_id)?;
+        let mut profile = self.get(owner_user_id, provider, profile_id)?;
+        if profile.provider == "claude" && profile.auth_state == ProviderAccountAuthState::Unknown {
+            // MP-08 / MP-10 / MP-11: a fresh/imported account has no native
+            // auth observation yet. Verify its selected scope before rejecting
+            // prompt or utility admission; /provider status must not be required.
+            // Confirmed logout/expiry/error observations still require recovery.
+            crate::local::provider_requests::observe_provider_auth_status(
+                self,
+                owner_user_id,
+                provider,
+                &profile.profile_id,
+            )?;
+            profile = self.get(owner_user_id, provider, &profile.profile_id)?;
+        }
         if profile.auth_state == ProviderAccountAuthState::Authenticated {
             if let Some(block) = provider_account_usage_block(
                 &profile.provider,
@@ -1595,6 +1608,38 @@ impl ProviderAccountProfileRegistry {
         Ok(credentials
             .as_deref()
             .is_some_and(claude_credentials_are_portable))
+    }
+
+    /// MP-08/MP-10/MP-11: a token observation does not establish a native macOS login.
+    pub(crate) fn has_claude_keychain_credentials(
+        &self,
+        owner_user_id: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let locator = {
+            let document = self.read_document()?;
+            resolve_stored_profile(&document, owner_user_id, "claude", profile_id)?
+                .locator
+                .clone()
+        };
+        let ProviderAccountLocator::Claude {
+            claude_config_dir,
+            ambient_default,
+            ..
+        } = locator else {
+            return Ok(false);
+        };
+        let mut files = Vec::new();
+        collect_claude_keychain_credentials_for_scope(
+            &claude_config_dir,
+            ambient_default.unwrap_or(false),
+            &mut files,
+        )?;
+        let available = materialization_has_file(&files, ".credentials.json");
+        for file in &mut files {
+            zeroize::Zeroize::zeroize(&mut file.contents_base64);
+        }
+        Ok(available)
     }
 
     pub fn create_managed(

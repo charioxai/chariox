@@ -296,3 +296,22 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
     ...overrides,
   }
 }
+
+for (const args of [["/managed-only/workspace"], ["--dir", "/managed-only/workspace"]]) {
+  test(`MP-02 session new validates ${args.join(" ")} at the destination kernel`, async () => {
+    let called = false
+    let message = ""
+    const handlers = createCommandActionHandlers(makeCommandDeps({
+      createSession: async (_workspace: string, worktree: string) => {
+        called = true
+        assert.equal(worktree, "/managed-only/workspace")
+        throw new Error("destination kernel: directory unavailable")
+      },
+      flashFooter: (text: string) => { message = text },
+      formatError: (error: unknown) => (error as Error).message,
+    }))
+    await handlers.handleSessionCommand({ kind: "session", action: "new", raw: "/session new", args, value: "" })
+    assert.equal(called, true)
+    assert.equal(message, "destination kernel: directory unavailable")
+  })
+}

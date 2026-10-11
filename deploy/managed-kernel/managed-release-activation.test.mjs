@@ -217,14 +217,15 @@ test("Path-1 install and upgrade keep the independent builder key available to r
   assert.ok(path1Service.includes(`Environment=CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=${keyPath}`))
   for (const source of [installSource, upgradeSource]) {
     assert.ok(source.includes(`trusted_builder_runtime_key=$install_root${keyPath}`))
-    assert.match(source, /cmp -s \"\$trusted_builder_public_key\" \"\$trusted_builder_runtime_key\"/)
+    assert.ok(source.includes('compare-builder-pins "$trusted_builder_public_key" "$trusted_builder_runtime_key"')
+      || source.includes('compare_builder_pins "$trusted_builder_public_key" "$trusted_builder_runtime_key"'))
     assert.match(source, /install -o root -g root -m 0644 \"\$trusted_builder_public_key\" \"\$trusted_builder_runtime_key\"/)
   }
   const publishKey = indexOf(installSource, 'install -o root -g root -m 0644 "$trusted_builder_public_key" "$trusted_builder_runtime_key"', "runtime builder key publication")
   const activate = indexOf(installSource, 'atomic_symlink "releases/$release_name" "$install_root/usr/lib/chariox/current"', "current activation")
   assert.ok(publishKey < activate)
   assert.ok(prepareSource.includes('runtime_builder_key=/etc/chariox/trusted-builder-public-key'))
-  assert.ok(prepareSource.includes('cmp -s "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" "$runtime_builder_key"'))
+  assert.ok(prepareSource.includes('compare-builder-pins "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" "$runtime_builder_key"'))
 })
 
 test("install durably publishes the verified release before activating current", () => {
@@ -354,14 +355,14 @@ test("upgrade recovers interrupted phases and rolls back failed migration or hea
 })
 
 test("Path-1 upgrade checks both effective units before recovery and after reload", async (context) => {
-  const guard = upgradeSource.match(/assert_path1_units_have_no_dropins\(\) \{\n[\s\S]*?^\}/m)?.[0]
+  const guard = upgradeSource.match(/assert_path1_service_overrides\(\) \{\n[\s\S]*?^\}/m)?.[0]
   assert.ok(guard, "upgrade must inspect effective systemd drop-ins")
 
-  const initialGuard = indexOf(upgradeSource, "assert_path1_units_have_no_dropins\nif [ \"$recover_only\" -eq 1 ]; then", "pre-recovery guard")
+  const initialGuard = indexOf(upgradeSource, "assert_path1_service_overrides\nif [ \"$recover_only\" -eq 1 ]; then", "pre-recovery guard")
   const transaction = indexOf(upgradeSource, "pending_transaction=$chariox_root/.managed-kernel-upgrade.pending", "transaction preparation")
   assert.ok(initialGuard < transaction, "drop-ins must block recovery and transaction writes")
-  assert.match(upgradeSource, /systemctl daemon-reload \|\| return 1\n\s*assert_path1_units_have_no_dropins \|\| return 1\n[\s\S]*?systemctl start "\$service_name"/, "rollback must recheck after reload before starting")
-  assert.match(upgradeSource, /if ! systemctl daemon-reload \\\n\s*\|\| ! assert_path1_units_have_no_dropins \\\n[\s\S]*?\|\| ! systemctl start "\$service_name"/, "activation must recheck after reload before starting")
+  assert.match(upgradeSource, /systemctl daemon-reload \|\| return 1\n\s*assert_path1_service_overrides \|\| return 1\n[\s\S]*?systemctl start "\$service_name"/, "rollback must recheck after reload before starting")
+  assert.match(upgradeSource, /if ! systemctl daemon-reload \\\n\s*\|\| ! assert_path1_service_overrides \\\n[\s\S]*?\|\| ! systemctl start "\$service_name"/, "activation must recheck after reload before starting")
 
   const scratch = await mkdtemp(join(tmpdir(), "chariox-upgrade-dropin-test-"))
   context.after(() => rm(scratch, { recursive: true, force: true }))
@@ -396,7 +397,7 @@ case "$2" in
 esac
 `)
   await chmod(systemctl, 0o755)
-  const command = `${guard}\nassert_path1_units_have_no_dropins\n`
+  const command = `${guard}\nassert_path1_service_overrides\n`
   const env = { ...process.env, PATH: `${scratch}:${process.env.PATH}`, managed_provider_topology: "path1" }
   for (const [name, overrides, expectedExit, expectedError] of [
     ["clean", {}, 0, null],

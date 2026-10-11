@@ -12,6 +12,22 @@ fail() {
   exit 1
 }
 
+# install-image.sh creates exactly these empty root-private control roots;
+# any content in them, or any other state-root entry, is runtime state.
+require_pristine_state_root() {
+  for control_root in "$1/managed" "$1/disposable-worker"; do
+    if [ -e "$control_root" ] || [ -L "$control_root" ]; then
+      [ -d "$control_root" ] && [ ! -L "$control_root" ] \
+        && [ "$(stat -c '%u:%a' "$control_root")" = 0:700 ] \
+        && [ -z "$(find "$control_root" -mindepth 1 -print -quit)" ] \
+        || fail "managed control state root is not empty and root-private: $control_root"
+    fi
+  done
+  if find "$1" -mindepth 1 ! -path "$1/managed" ! -path "$1/disposable-worker" -print -quit | grep -q .; then
+    fail "managed runtime state entered the image"
+  fi
+}
+
 assert_unmounted_probe_root() {
   probe_root=$1
   [ -d "$probe_root" ] && [ ! -L "$probe_root" ] || fail "probe data-root is not a real directory"
@@ -202,6 +218,7 @@ release_rootfs=$1
 release_digest=$2
 trusted_public_key=$3
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$script_root/image-preparation-progress.sh"
 provider_versions=$script_root/provider-versions.env
 
 case "${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-}" in
@@ -255,6 +272,7 @@ fi
 [ "${VERSION_ID:-}" = "26.04" ] || fail "the managed staging image must use Ubuntu 26.04"
 
 export DEBIAN_FRONTEND=noninteractive
+record_image_preparation_phase image_prepare_packages
 apt-get update
 # Bubblewrap remains installed for Docker-slice inner defense and explicit
 # shared-host images; Path 1 does not use it as the provider boundary.
@@ -320,7 +338,8 @@ if [ "$managed_provider_topology" = path1 ]; then
     || fail "Path-1 image is missing its independent runtime builder key"
   [ "$(stat -c '%u:%a' "$runtime_builder_key")" = "0:644" ] \
     || fail "Path-1 runtime builder key ownership or mode is unsafe"
-  cmp -s "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" "$runtime_builder_key" \
+  record_image_preparation_phase image_prepare_pin
+  node "$script_root/managed-kernel-upgrade-state.mjs" compare-builder-pins "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" "$runtime_builder_key" \
     || fail "Path-1 runtime builder key differs from the independent input"
 fi
 # The general installer journals even a no-op home migration. A fresh image
@@ -353,6 +372,7 @@ if [ -e "$migration_journal" ] || [ -L "$migration_journal" ] \
   rm -f -- "$migration_journal" "$migration_complete"
 fi
 provider_toolchain_source=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/toolchain
+record_image_preparation_phase image_prepare_providers
 provider_toolchain_root=/opt/chariox-provider-toolchain
 for toolchain_file in package.json package-lock.json; do
   [ -f "$provider_toolchain_source/$toolchain_file" ] \
@@ -374,6 +394,7 @@ ln -sfn "$provider_toolchain_root/node_modules/.bin/codex" /usr/local/bin/codex
 ln -sfn "$provider_toolchain_root/node_modules/.bin/opencode" /usr/local/bin/opencode
 ln -sfn "$provider_toolchain_root/node_modules/.bin/claude" /usr/local/bin/claude
 ln -sfn "$provider_toolchain_root/node_modules/.bin/pnpm" /usr/local/bin/pnpm
+record_image_preparation_phase image_prepare_provider_probe
 cleanup_provider_probe_home() {
   [ -z "$provider_probe_home" ] || rm -rf "$provider_probe_home"
 }
@@ -463,6 +484,7 @@ if [ ! -e /var/lib/chariox-docker/data ] && [ ! -L /var/lib/chariox-docker/data 
   install -d -o chariox-docker -g chariox-docker -m 0700 /var/lib/chariox-docker/data
 fi
 claim_empty_probe_root /var/lib/chariox-docker/data
+record_image_preparation_phase image_prepare_rootless
 systemctl start chariox-rootless-docker.service
 rootless_docker_ready=0
 for _attempt in $(seq 1 30); do
@@ -475,12 +497,14 @@ done
 [ "$rootless_docker_ready" -eq 1 ] || fail "rootless Docker daemon is not ready"
 "$script_root/verify-rootless-handle-lifecycle.sh"
 slice_base_image=node:22.17.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b731629c26f2e83caa6af390998bdc49c
+record_image_preparation_phase image_prepare_pull
 runuser -u chariox-docker -- env \
   DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
   docker pull "$slice_base_image" >/dev/null
 # Exercise BuildKit's client-side registry-auth resolution through the real
 # broker entrypoint. A Docker pull alone only tests daemon-side resolution.
 broker_namespace=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh
+record_image_preparation_phase image_prepare_build
 {
   printf '%s\n' '# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32'
   printf 'FROM %s\n' "$slice_base_image"
@@ -503,6 +527,7 @@ if runuser -u chariox -- env DOCKER_HOST=unix:///run/chariox-docker/docker.sock 
   fail "managed kernel user can access the rootless Docker daemon"
 fi
 systemctl stop chariox-rootless-docker.service
+record_image_preparation_phase image_prepare_freeze
 systemctl stop chariox-slice-disk-quota-allocator.service
 if systemctl is-active --quiet chariox-rootless-docker.service; then
   fail "rootless Docker remained active while freezing the image"
@@ -579,9 +604,7 @@ if [ -e /etc/chariox/bootstrap ] || [ -L /etc/chariox/bootstrap ]; then
   fi
 fi
 
-if find /var/lib/chariox -mindepth 1 -print -quit | grep -q .; then
-  fail "managed runtime state entered the image"
-fi
+require_pristine_state_root /var/lib/chariox
 if [ -L /home/chariox ] || [ ! -d /home/chariox ]; then
   fail "managed service-account home is missing or linked"
 fi

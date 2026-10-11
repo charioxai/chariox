@@ -1,7 +1,7 @@
 // MP-04/MP-07/MP-08/MP-10/MP-11: offline native-release transaction qualification.
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { chmod, chown, readFile, readlink, rm, stat } from "node:fs/promises"
+import { chmod, chown, mkdir, readFile, readdir, readlink, rm, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { test as nodeTest } from "node:test"
 // These tests qualify actual root ownership; other hosts report explicit skips.
@@ -12,12 +12,12 @@ import { makeHarness, put } from "./lib/managed-kernel-upgrade-fixture.mjs"
 
 const updateId = "managed_release_update_0123abcd-0000-4000-8000-0123456789ab"
 
-async function path1Harness(context) {
+async function path1Harness(context, options = {}) {
   const targetTransitionPolicy = JSON.parse(await readFile(
     new URL("../apps/kernel/managed-upgrade-protocol-transitions.json", import.meta.url), "utf8"))
   const harness = await makeHarness(context, { path1Release: true, rotateBuilder: true,
     currentProtocol: 370, targetProtocol: targetTransitionPolicy.protocol, targetTransitionPolicy,
-    currentAppArtifacts: false,
+    currentAppArtifacts: false, ...options,
   })
   const home = join(harness.installRoot, "home/chariox")
   const state = join(home, ".chariox")
@@ -81,6 +81,40 @@ async function assertSettled(harness, role, phase, before) {
     "environment-1", "machine-1", "kernel-1", phase, ""].join("\n"))
 }
 
+test("MP-07/MP-10 unexpected exit after stopping restores the previous release before cleanup", async context => {
+  const harness = await path1Harness(context)
+  const before = await snapshot(harness)
+  await put(join(harness.state, "fail-after-stopped"), "fail once\n")
+  const result = harness.run(harness.env)
+  assert.equal(result.status, 23, result.stderr)
+  await assertSettled(harness, "previous", "rolled_back", before)
+  assert.ok((await serviceMutations(harness)).includes("start chariox-path1-managed-bootstrap.service"))
+})
+
+test("MP-07/MP-10 activation diagnostics identify steps and unexpected exits without payloads", async context => {
+  const steps = ["builder_pin", "home_migration", "receipt", "release_override", "app_prepare",
+    "current_link", "data_volume_links", "app_storage", "slice_facade", "slice_facade_check"]
+  for (const fail of [false, true]) {
+    const harness = await path1Harness(context)
+    const directory = join(harness.state, "public-diagnostics")
+    await mkdir(directory, { mode: 0o700 })
+    if (fail) await put(join(harness.state, "fail-after-stopped"), "fail once\n")
+    const result = harness.run({ ...harness.env, CHARIOX_RUNTIME_DIAGNOSTICS_DIR: directory })
+    assert.equal(result.status, fail ? 23 : 0, result.stderr)
+    const records = (await Promise.all((await readdir(directory)).map(async name =>
+      (await readFile(join(directory, name), "utf8")).trim().split("\n").map(line => JSON.parse(line))))).flat()
+    for (const record of records) assert.deepEqual(Object.keys(record).sort(), ["atMs", "event", "pid", "schema"])
+    const events = records.sort((a, b) => a.atMs - b.atMs).map(record => record.event)
+    const pinSteps = ["builder_pin_journal_start", "builder_pin_journal_returned",
+      "builder_pin_runtime_start", "builder_pin_runtime_returned",
+      "builder_pin_compare_start", "builder_pin_compare_returned",
+      "builder_pin_atomic_start", "builder_pin_atomic_returned"]
+    assert.deepEqual(events, fail ? ["prepared", "update_unexpected_exit", ...pinSteps, "rolled_back"]
+      : ["prepared", "stopped", "activation_builder_pin_start", ...pinSteps,
+        ...steps.slice(1).map(step => `activation_${step}_start`), "activated", "committed"])
+  }
+})
+
 for (const [boundary, selected, phase] of [
   ["phase-prepared", "previous", "rolled_back"],
   ["phase-stopped", "previous", "rolled_back"],
@@ -99,7 +133,14 @@ for (const [boundary, selected, phase] of [
   }
   await put(join(harness.state, `crash-after-${boundary}`), "crash\n")
   const interrupted = harness.run(harness.env)
-  assert.equal(interrupted.signal, "SIGKILL", interrupted.stderr)
+  if (boundary === "builder-pin") {
+    // MP-07: the pin validator is isolated; its death now reaches the caller's
+    // rollback branch instead of killing the updater with a stopped kernel.
+    assert.equal(interrupted.status, 1, interrupted.stderr)
+    await assertSettled(harness, "previous", "rolled_back", before)
+  } else {
+    assert.equal(interrupted.signal, "SIGKILL", interrupted.stderr)
+  }
   const recovered = await recoverWithoutImage(harness)
   assert.equal(recovered.status, 0, recovered.stderr)
   await assertSettled(harness, selected, phase, before)
@@ -190,3 +231,40 @@ test("MP-04/MP-07/MP-08/MP-10 signed B-to-new-to-B-to-new fixture preserves stat
     assert.deepEqual(evidence, ["1", id, from.digest, target.digest, "environment-1", "machine-1", "kernel-1", "committed"])
   }
 })
+
+// MP-07/MP-11: reproduce the F same-identity inputs with LF and signed pins
+// without LF. These are supplementary transaction checks, not live Cloud proof.
+for (const scenario of ["forward", "forced-pin-failure", "stopped-reboot", "reboot-wrong-key"]) {
+  test(`MP-07 F newline journal settlement ${scenario}`, async context => {
+    const harness = await path1Harness(context, { rotateBuilder: false, builderInputLF: true })
+    const before = await snapshot(harness)
+    if (scenario === "forced-pin-failure") {
+      const nodeWrapper = join(harness.root, "bin/node")
+      let source = await readFile(nodeWrapper, "utf8")
+      source = source.replace('set -eu\n', `set -eu\nif [ "\${2:-}" = atomic-file ] && [ "\${3##*/}" = target-builder-public-key ]; then exit 29; fi\n`)
+      await put(nodeWrapper, source, 0o755)
+    }
+    if (scenario.startsWith("stopped") || scenario.startsWith("reboot")) {
+      await put(join(harness.state, "crash-after-phase-stopped"), "crash\n")
+      assert.equal(harness.run(harness.env).signal, "SIGKILL")
+      if (scenario === "reboot-wrong-key") {
+        await put(harness.runtimePin, Buffer.alloc(32, 77).toString("base64") + "\n", 0o644)
+        const calls = await serviceMutations(harness)
+        const recovered = await recoverWithoutImage(harness)
+        assert.equal(recovered.status, 1)
+        assert.match(recovered.stderr, /runtime builder pin does not belong/)
+        assert.ok(!(await serviceMutations(harness)).slice(calls.length).some(call => call.startsWith("start ")))
+        assert.equal((await readFile(join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade/phase"), "utf8")).trim(), "stopped")
+        await assert.rejects(stat(join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade-result")), { code: "ENOENT" })
+        return
+      }
+      const recovered = await recoverWithoutImage(harness)
+      assert.equal(recovered.status, 0, recovered.stderr)
+      await assertSettled(harness, "previous", "rolled_back", before)
+    } else {
+      const result = harness.run(harness.env)
+      assert.equal(result.status, scenario === "forward" ? 0 : 1, result.stderr)
+      await assertSettled(harness, scenario === "forward" ? "target" : "previous", scenario === "forward" ? "committed" : "rolled_back", before)
+    }
+  })
+}

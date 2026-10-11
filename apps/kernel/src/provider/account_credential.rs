@@ -23,7 +23,9 @@ pub(crate) fn provider_account_credential_id(
     let identity = format!(
         "{}\0{}\0{}",
         owner_user_id.trim(),
-        provider.trim().to_ascii_lowercase(),
+        crate::provider::canonical_provider_family(provider)
+            .map(str::to_string)
+            .unwrap_or_else(|| provider.trim().to_ascii_lowercase()),
         profile_id.trim()
     );
     let digest = Sha256::digest(identity.as_bytes());
@@ -102,12 +104,22 @@ fn claude_login_runs_agents(
     owner_user_id: &str,
     profile_id: &str,
 ) -> Result<bool, DaemonError> {
-    match std::env::consts::OS {
+    claude_login_runs_agents_for_os(profiles, owner_user_id, profile_id, std::env::consts::OS)
+}
+
+fn claude_login_runs_agents_for_os(
+    profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    profile_id: &str,
+    os: &str,
+) -> Result<bool, DaemonError> {
+    match os {
         "linux" => profiles.has_portable_claude_credentials(owner_user_id, profile_id),
         "macos" => Ok(profiles
             .get(owner_user_id, "claude", profile_id)?
             .auth_state
-            == crate::account_profile::ProviderAccountAuthState::Authenticated),
+            == crate::account_profile::ProviderAccountAuthState::Authenticated
+            && profiles.has_claude_keychain_credentials(owner_user_id, profile_id)?),
         _ => Ok(false),
     }
 }
@@ -250,6 +262,13 @@ mod tests {
         let second = provider_account_credential_id("local", "claude", "Work account");
 
         assert_eq!(first, second);
+        // MP-08/MP-10/MP-11: all Claude adapters use one account credential.
+        for mode in ["claude-p", "claude-headless"] {
+            assert_eq!(
+                first,
+                provider_account_credential_id("local", mode, "Work account")
+            );
+        }
         assert!(first.starts_with("provider-account-claude-"));
         assert!(first
             .bytes()
@@ -354,6 +373,19 @@ mod tests {
             "work",
         )
         .expect("provider credential should resolve");
+        for mode in ["claude-p", "claude-headless"] {
+            let resolved = resolve_provider_account_credentials(
+                &crate::config::DaemonConfig::for_tests(),
+                "local",
+                mode,
+                "work",
+            )
+            .expect("Claude modes must resolve the canonical account credential");
+            assert!(
+                !resolved.is_empty(),
+                "MP-08/MP-10 missing credential for {mode}"
+            );
+        }
         let values = environment.iter().collect::<Vec<_>>();
         assert_eq!(values, vec![(CLAUDE_OAUTH_TOKEN_ENV, "setup-token-secret")]);
         assert!(!format!("{environment:?}").contains("setup-token-secret"));
@@ -361,6 +393,77 @@ mod tests {
         std::env::remove_var("CHARIOX_TEST_CLAUDE_SETUP_TOKEN");
         std::env::remove_var("CHARIOX_HOME");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    // MP-08/MP-10/MP-11: token verification is not evidence of a native Keychain login.
+    #[test]
+    fn macos_enrolled_token_remains_required_for_agent_launch() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = crate::test_support::TestWorktree::new("claude-token-launch");
+        std::env::set_var("CHARIOX_HOME", root.path().join("home"));
+        std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
+        let profiles = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.path().join("accounts.json"),
+        )
+        .unwrap();
+        let profile = profiles
+            .create_managed("local", "claude", "Token only")
+            .unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::ProcessMemory;
+        store_provider_account_credential(
+            &config,
+            "local",
+            "claude",
+            &profile.profile_id,
+            "synthetic-token",
+            false,
+        )
+        .unwrap();
+        profiles
+            .update_observation(
+                "local",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(
+            !claude_login_runs_agents_for_os(&profiles, "local", &profile.profile_id, "macos")
+                .unwrap(),
+            "MP-08 verified Vault token must not count as a native Keychain login"
+        );
+        for provider in ["claude", "claude-p", "claude-headless"] {
+            let environment = resolve_provider_account_credentials_for_launch(
+                &config,
+                &profiles,
+                "local",
+                provider,
+                &profile.profile_id,
+                crate::provider::ProviderClientInterface::Chariox,
+            )
+            .unwrap();
+            assert_eq!(
+                environment.iter().collect::<Vec<_>>(),
+                vec![(CLAUDE_OAUTH_TOKEN_ENV, "synthetic-token")]
+            );
+            assert!(launch_uses_vault_credential(
+                &profiles,
+                "local",
+                provider,
+                &profile.profile_id,
+                crate::provider::ProviderClientInterface::Chariox,
+            )
+            .unwrap());
+        }
+        std::env::remove_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT");
+        std::env::remove_var("CHARIOX_HOME");
     }
 
     #[test]

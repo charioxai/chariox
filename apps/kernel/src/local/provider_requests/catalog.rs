@@ -367,7 +367,7 @@ pub(crate) fn refresh_provider_account_profile_response(
     }
 }
 
-fn claude_auth_status(
+pub(crate) fn claude_auth_status(
     provider: &str,
     account_profile: &str,
     environment: &BTreeMap<String, String>,
@@ -1458,6 +1458,170 @@ mod tests {
         };
         assert_eq!(status.auth_state, "not_logged_in");
         assert!(status.login_hint.is_some());
+    }
+
+    #[test]
+    fn fresh_claude_account_admission_verifies_normal_login_before_status_command() {
+        // MP-08 / MP-10 / MP-11: fresh kernels migrate native logins as Unknown.
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = crate::test_support::TestWorktree::new("claude-first-admission");
+        let executable = root.path().join("claude-status");
+        let calls = root.path().join("status-calls");
+        fs::write(
+            &executable,
+            format!(
+                r#"#!/bin/sh
+if [ "$1" = "--version" ]; then echo '2.1.289'; exit 0; fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  echo status >> '{}'
+  printf '%s\n' '{{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}}'
+  exit 0
+fi
+exit 2
+"#,
+                calls.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &executable);
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.path().join("profiles.json"),
+        )
+        .unwrap();
+        registry
+            .migrate_effective_defaults("local", &root.path().join("home"))
+            .unwrap();
+        assert_eq!(
+            registry
+                .get("local", "claude", "default")
+                .unwrap()
+                .auth_state,
+            crate::account_profile::ProviderAccountAuthState::Unknown
+        );
+        let admitted = registry.require_authenticated(
+            "local",
+            "claude-headless",
+            "default",
+            Some("haiku"),
+            "submit prompt",
+        );
+        let repeat = registry.require_authenticated(
+            "local",
+            "claude-p",
+            "default",
+            Some("haiku"),
+            "submit prompt",
+        );
+        let call_count = fs::read_to_string(&calls)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
+        assert!(
+            admitted.is_ok(),
+            "first prompt must verify native login: {admitted:?}"
+        );
+        assert!(repeat.is_ok());
+        assert_eq!(
+            call_count, 1,
+            "known account state must avoid repeated auth probes"
+        );
+    }
+
+    #[test]
+    fn fresh_claude_account_admission_keeps_rejected_and_unverifiable_logins_gated() {
+        // MP-08 / MP-10 / MP-11: Unknown never means authenticated by default.
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        use crate::account_profile::ProviderAccountAuthState as Auth;
+        for (initial, status, code, expected, probes) in [
+            (
+                Auth::Unknown,
+                r#"{"loggedIn":false}"#,
+                1,
+                Auth::NotConfigured,
+                1,
+            ),
+            (Auth::Unknown, r#"{"loggedIn":true}"#, 1, Auth::Unknown, 1),
+            (
+                Auth::Unknown,
+                r#"{"error":"private-fixture-marker"}"#,
+                0,
+                Auth::Unknown,
+                1,
+            ),
+            (Auth::Expired, r#"{"loggedIn":true}"#, 0, Auth::Expired, 0),
+            (
+                Auth::NotConfigured,
+                r#"{"loggedIn":true}"#,
+                0,
+                Auth::NotConfigured,
+                0,
+            ),
+            (Auth::Error, r#"{"loggedIn":true}"#, 0, Auth::Error, 0),
+        ] {
+            let root = crate::test_support::TestWorktree::new("claude-rejected-admission");
+            let executable = root.path().join("claude-status");
+            let calls = root.path().join("status-calls");
+            fs::write(
+                &executable,
+                format!(
+                    r#"#!/bin/sh
+if [ "$1" = "--version" ]; then echo '2.1.289'; exit 0; fi
+echo status >> '{}'
+printf '%s\n' '{}'
+exit {}
+"#,
+                    calls.display(),
+                    status,
+                    code
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+            std::env::set_var("CHARIOX_CLAUDE_BIN", &executable);
+            let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+                root.path().join("profiles.json"),
+            )
+            .unwrap();
+            registry
+                .migrate_effective_defaults("local", &root.path().join("home"))
+                .unwrap();
+            if initial != Auth::Unknown {
+                registry
+                    .update_observation(
+                        "local", "claude", "default", initial, None, None, None, None,
+                    )
+                    .unwrap();
+            }
+            let error = registry
+                .require_authenticated(
+                    "local",
+                    "claude-headless",
+                    "default",
+                    Some("haiku"),
+                    "submit prompt",
+                )
+                .unwrap_err();
+            assert!(!error.to_string().contains("private-fixture-marker"));
+            assert_eq!(
+                registry
+                    .get("local", "claude", "default")
+                    .unwrap()
+                    .auth_state,
+                expected
+            );
+            assert_eq!(
+                fs::read_to_string(&calls)
+                    .unwrap_or_default()
+                    .lines()
+                    .count(),
+                probes
+            );
+        }
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
     }
 
     #[test]
