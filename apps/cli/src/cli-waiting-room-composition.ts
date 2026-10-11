@@ -719,6 +719,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       await replaceClientForKernel(launch.ownerKernelRef, launch.ownerMachineRef)
       const inventory = await waitingRoomWorkspaceController.readInventory(() => getWaitingRoomInventory(deps.client.currentClient()))
       await waitingRoomWorkspaceController.applyInventory(inventory)
+      // MP-08/MP-11: workspace previews retain home account state. Admission
+      // after the owner pivot must use the destination's fresh inventory.
+      deps.setProviderAccountsState(inventory.providerAccounts ?? [])
     },
     prepareManagedSessionLaunch,
     prepareExistingSessionClient: async (session) => {

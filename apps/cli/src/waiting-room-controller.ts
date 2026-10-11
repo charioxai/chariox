@@ -324,7 +324,7 @@ export function deriveWaitingRoomActivationDecision(options: {
     if (typeof managedEnvironment === "string") {
       return { action: "error", message: managedEnvironment }
     }
-    const accountBlock = managedEnvironment || choice.sliceRef ? null : selectedProviderAccountStartBlockReason(
+    const accountBlock = managedEnvironment || choice.sliceRef || waitingRoomAccountInventoryIsRemote(options.state, options.remote ?? {}) ? null : selectedProviderAccountStartBlockReason(
       options.remote?.providerAccounts, launch.provider, launch.accountProfile, null, launch.model,
     )
     if (accountBlock) return { action: "error", message: accountBlock }
@@ -370,7 +370,7 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
   if (typeof managedEnvironment === "string") {
     return { action: "error", message: managedEnvironment }
   }
-  const accountBlock = managedEnvironment || choice.sliceRef ? null : selectedProviderAccountStartBlockReason(
+  const accountBlock = managedEnvironment || choice.sliceRef || waitingRoomAccountInventoryIsRemote(options.state, options.remote ?? {}) ? null : selectedProviderAccountStartBlockReason(
     options.remote?.providerAccounts, choice.providerId, options.state.accountProfileId, null, choice.model?.id,
   )
   if (accountBlock) return { action: "error", message: accountBlock }
@@ -426,6 +426,12 @@ function waitingRoomManagedLaunchSelection(
   return environmentId ? { kind: "existing", environmentId } : undefined
 }
 
+function waitingRoomAccountInventoryIsRemote(state: WaitingRoomState, remote: WaitingRoomRemoteState): boolean {
+  const placement = waitingRoomLaunchPlacement(state, remote)
+  return Boolean(placement.kernelRef && placement.kernelRef !== "local"
+    && placement.kernelRef !== remote.relay?.daemon_id)
+}
+
 function waitingRoomUnavailableSliceMessage(
   state: WaitingRoomState,
   remote: WaitingRoomRemoteState | undefined,
@@ -463,7 +469,8 @@ export function deriveWaitingRoomControlActivationDecision(options: {
     case "new": {
       // Source accounts are not authoritative until managed preparation has
       // started and connected the selected machine.
-      if (waitingRoomManagedLaunchSelection(options.state, remote)) return { action: "none" }
+      if (waitingRoomManagedLaunchSelection(options.state, remote)
+        || waitingRoomAccountInventoryIsRemote(options.state, remote)) return { action: "none" }
       const placement = waitingRoomLaunchPlacement(options.state, remote)
       const slices = waitingRoomSlices(remote, {
         worktreeSelectionId: options.state.worktreeSelectionId,
