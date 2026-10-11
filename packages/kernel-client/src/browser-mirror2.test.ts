@@ -61,6 +61,7 @@ test('MP-11: deltas reference known nodes; ops cannot write attributes into mask
   validateMirror2Packet({ ...delta([]), fragment: 'section-2' }, previous)
   assert.throws(() => validateMirror2Packet({ ...delta([]), fragment: 'x'.repeat(2049) }, previous), /unsafe mirror header/)
   assert.throws(() => validateMirror2Packet(base(tree(element('p', { 'chariox-target': '' }))), new Map()), /unsafe mirror/)
+  assert.throws(() => validateMirror2Packet(base(tree(element('x-card', { 'chariox-undefined': '' }))), new Map()), /unsafe mirror/)
   // Slices: 4-aligned offsets inside a bounded whole.
   const slice = (offset: unknown, total: unknown, data = 'AAAA') => ({ ...delta([]), resources: [{ key: 'r1', resource_id: 'a'.repeat(64), mime_type: 'image/png', data_base64: data, offset, total }] } as Mirror2Packet)
   validateMirror2Packet(slice(0, 8), previous); validateMirror2Packet(slice(4, 8), previous)

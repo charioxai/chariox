@@ -686,6 +686,7 @@ test("MP-10: protocol 492 popover/modal/indeterminate/definition state and the f
   assert.deepEqual(records.find(r => r.tag === "x-never").extra.state, { defined: false }, "MP-10: an undefined custom element is marked");
   assert.equal(records.find(r => r.attrs.id === "p").extra.state, undefined, "MP-10: default state travels as nothing");
   assert.match(JSON.stringify(snapshot.nodes), /\[chariox-target\] \{ color: rgb\(1, 2, 3\); \}/, "MP-10: :target follows the fragment marker");
+  assert.match(JSON.stringify(snapshot.nodes), /x-late:not\(:not\(\[chariox-undefined\]\)\) \{ display: none; \}/, "MP-10: :defined follows the viewer's undefined marker (review #320@90c1195fc-2)");
   await evaluate("document.getElementById('d').showModal();document.getElementById('p').showPopover();document.getElementById('i').indeterminate=true;customElements.define('x-late',class extends HTMLElement{});location.hash='sec';true");
   const states = new Map(); let fragment;
   for (let i = 0; i < 4 && (states.size < 4 || fragment === undefined); i++) { const packet = await next(2000); for (const op of packet.ops.filter(op => op.op === "state")) states.set(op.id, { ...states.get(op.id), ...op.state }); if (packet.fragment !== undefined) fragment = packet.fragment; }

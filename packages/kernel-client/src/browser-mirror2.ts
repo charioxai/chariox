@@ -279,7 +279,6 @@ export class BrowserMirror2Renderer {
       // The kernel opens and closes popovers (state ops): the viewer's copy never light-dismisses itself.
       else try { element.setAttribute(name, name === 'popover' ? 'manual' : value) } catch { /* invalid names were refused by validation */ }
     }
-    if (record.kind === 'element' && !record.ns && record.tag?.includes('-') && record.state?.defined !== false) this.define(record.tag, element.ownerDocument)
     if (record.state) this.states.push(element)
     if (record.kind === 'element' && record.tag === 'style') this.setStyled(record.id, { kind: 'css', raw: record.css ?? '', node: element, keys: [] })
     if (record.res !== undefined) this.image(record.id, element, record.res)
@@ -296,15 +295,13 @@ export class BrowserMirror2Renderer {
     // A select's state waits for its options (the build appends children after their parent).
     if (record.form) { if (element.localName === 'select') this.selects.push([element, record.form]); else this.form(element, record.form) }
   }
-  // Protocol 492: the kernel's definition of a custom tag, in the viewer's own registry (`:defined`).
-  private define(tag: string, doc: Document): void {
-    const view = doc.defaultView as (Window & typeof globalThis) | null
-    if (view && !view.customElements.get(tag)) try { view.customElements.define(tag, class extends view.HTMLElement {}) } catch { /* not a valid custom element name */ }
-  }
   private uaState(element: Element): void {
     const record = this.records.get(this.ids.get(element) ?? ''), state: Mirror2State = record?.state ?? {}
     if (!record || !element.isConnected) return
     const html = element as HTMLElement
+    // `:defined` is rewritten to :not([chariox-undefined]) by the kernel's sanitizer: no viewer registry
+    // definition outlives its source document (a reset or replaced frame document reuses the viewer's).
+    if (element.localName.includes('-')) element.toggleAttribute('chariox-undefined', state.defined === false)
     try {
       if (element.hasAttribute('popover') && html.matches(':popover-open') !== Boolean(state.popover_open)) { if (state.popover_open) html.showPopover(); else html.hidePopover() }
       if (element.localName === 'dialog') {
@@ -551,7 +548,7 @@ export class BrowserMirror2Renderer {
       case 'scroll': scrolls.push([node as Element, op.scroll[0], op.scroll[1]]); break
       case 'size': { const style = (node as HTMLElement).style; style.setProperty('width', `${op.size[0]}px`, 'important'); style.setProperty('height', `${op.size[1]}px`, 'important'); this.records.get(op.id)!.size = op.size; break }
       case 'res': this.image(op.id, node as Element, op.res); break
-      case 'state': { const record = this.records.get(op.id)!; record.state = { ...record.state, ...op.state }; if (op.state.defined) this.define(record.tag!, node.ownerDocument!); this.states.push(node as Element); break }
+      case 'state': { const record = this.records.get(op.id)!; record.state = { ...record.state, ...op.state }; this.states.push(node as Element); break }
     }
   }
   // Opaque region pixels paint as the element's own background: they scroll and

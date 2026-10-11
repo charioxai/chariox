@@ -334,13 +334,13 @@ test('MP-08: protocol 492 the kernel\'s blur (focused: null) blurs the viewer\'s
 test('MP-10: protocol 492 the viewer takes the kernel\'s UA state (open popover, modal dialog with backdrop, indeterminate checkbox, custom element definitions) and marks the fragment\'s target', async () => {
   const page = await viewer();
   try {
-    const css = '[popover]:popover-open{color:rgb(0, 0, 255)} dialog:modal{color:rgb(0, 128, 0)} input:indeterminate{width:31px} x-late:not(:defined),x-never:not(:defined){display:none} [chariox-target]{color:rgb(255, 0, 0)}';
+    const css = '[popover]:popover-open{color:rgb(0, 0, 255)} dialog:modal{color:rgb(0, 128, 0)} input:indeterminate{width:31px} x-late:not(:not([chariox-undefined])),x-never:not(:not([chariox-undefined])){display:none} [chariox-target]{color:rgb(255, 0, 0)}';
     await apply(page, snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'style', css }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'div', attrs: { popover: '', id: 'p' }, state: { popover_open: true } }, { id: 'n6', parent: 'n5', kind: 'text', text: 'pop' },
       { id: 'n7', parent: 'n3', kind: 'element', tag: 'dialog', attrs: { open: '' }, state: { modal: true } }, { id: 'n8', parent: 'n7', kind: 'text', text: 'dialog' },
       { id: 'n9', parent: 'n3', kind: 'element', tag: 'input', attrs: { type: 'checkbox' }, state: { indeterminate: true }, form: textForm('on', null) },
       { id: 'n10', parent: 'n3', kind: 'element', tag: 'x-ready' }, { id: 'n11', parent: 'n3', kind: 'element', tag: 'x-late', state: { defined: false } }, { id: 'n12', parent: 'n11', kind: 'text', text: 'late' }, { id: 'n13', parent: 'n3', kind: 'element', tag: 'x-never', state: { defined: false } },
       { id: 'n14', parent: 'n3', kind: 'element', tag: 'p', attrs: { id: 'sec' } }, { id: 'n15', parent: 'n14', kind: 'text', text: 'section' }])));
-    const seen = () => page.evaluate(() => { const d = window.r.frame.contentDocument, $ = s => d.querySelector(s); return { popover: $('#p').matches(':popover-open'), modal: $('dialog').matches(':modal'), backdrop: $('dialog').matches(':modal') ? getComputedStyle($('dialog'), '::backdrop').position : null, indeterminate: $('input').matches(':indeterminate'), ready: $('x-ready').matches(':defined'), late: getComputedStyle($('x-late')).display, never: $('x-never').matches(':defined'), target: getComputedStyle($('#sec')).color }; });
+    const seen = () => page.evaluate(() => { const d = window.r.frame.contentDocument, $ = s => d.querySelector(s); return { popover: $('#p').matches(':popover-open'), modal: $('dialog').matches(':modal'), backdrop: $('dialog').matches(':modal') ? getComputedStyle($('dialog'), '::backdrop').position : null, indeterminate: $('input').matches(':indeterminate'), ready: $('x-ready').matches(':not([chariox-undefined])'), late: getComputedStyle($('x-late')).display, never: $('x-never').matches(':not([chariox-undefined])'), target: getComputedStyle($('#sec')).color }; });
     assert.deepEqual(await seen(), { popover: true, modal: true, backdrop: 'fixed', indeterminate: true, ready: true, late: 'none', never: false, target: 'rgb(0, 0, 0)' });
     await apply(page, delta(2, [{ op: 'state', id: 'n5', state: { popover_open: false } }, { op: 'state', id: 'n7', state: { modal: false } }, { op: 'state', id: 'n9', state: { indeterminate: false } }, { op: 'state', id: 'n11', state: { defined: true } }], { fragment: 'sec' }));
     assert.deepEqual(await seen(), { popover: false, modal: false, backdrop: null, indeterminate: false, ready: true, late: 'inline', never: false, target: 'rgb(255, 0, 0)' });
@@ -464,5 +464,30 @@ test('MP-08: review #320@90c1195fc-1 selecting then deselecting a multiple-selec
     await apply(page, delta(2, [{ op: 'form', id: 'n5', form: { checked: true } }])); await apply(page, delta(3, [{ op: 'form', id: 'n5', form: { checked: false } }]));
     await page.keyboard.down('Control'); await page.mouse.click(at[0], at[1]); await page.keyboard.up('Control'); await frames();
     assert.deepEqual((await page.evaluate(() => window.sent.splice(0))).filter(action => action.kind === 'set'), [{ kind: 'set', node_id: 'n5', checked: true }]);
+  } finally { await page.close(); }
+});
+
+// Review #320 @90c1195fc finding 2: definitions lived in the sandbox registry, which a new source document (top-level
+// reset or a replaced frame document) reuses: an undefined tag of the new document still matched `:defined`. The kernel
+// rewrites `:defined` to `:not([chariox-undefined])`; the viewer marks undefined custom elements instead of registering.
+test('MP-10: review #320@90c1195fc-2 a custom tag defined in one source document is undefined in the next (reset, replaced frame document) and becomes defined by a state op', async () => {
+  const page = await viewer();
+  try {
+    const css = 'x-card:not(:not([chariox-undefined])){display:none}';
+    const doc = (id, extra) => [{ id: `${id}1`, parent: null, kind: 'document' }, { id: `${id}2`, parent: `${id}1`, kind: 'element', tag: 'html' }, { id: `${id}3`, parent: `${id}2`, kind: 'element', tag: 'body' }, { id: `${id}4`, parent: `${id}3`, kind: 'element', tag: 'style', css }, ...extra];
+    const card = (id, parent, state) => [{ id, parent, kind: 'element', tag: 'x-card', ...(state ? { state } : {}) }, { id: `${id}0`, parent: id, kind: 'text', text: 'card' }];
+    const display = () => page.evaluate(() => [...window.r.frame.contentDocument.querySelectorAll('x-card'), ...[...window.r.frame.contentDocument.querySelectorAll('iframe')].flatMap(f => [...f.contentDocument.querySelectorAll('x-card')])].map(e => getComputedStyle(e).display));
+    await apply(page, snapshot(doc('n', card('n5', 'n3'))));
+    assert.deepEqual(await display(), ['inline'], 'MP-10: a defined card shows');
+    await apply(page, { ...snapshot(doc('n', card('n5', 'n3', { defined: false }))), document_id: 'd2' });
+    assert.deepEqual(await display(), ['none'], 'MP-10: the next document\'s undefined card is not :defined');
+    await apply(page, { ...delta(2, [{ op: 'state', id: 'n5', state: { defined: true } }]), document_id: 'd2' });
+    assert.deepEqual(await display(), ['inline'], 'MP-10: its definition arrives as a state op');
+    // A frame document replaced by a children op on the frame.
+    const frameDoc = (base, state) => { const n = k => `n${base + k}`; return [{ id: n(1), parent: 'n7', kind: 'document' }, { id: n(2), parent: n(1), kind: 'element', tag: 'html' }, { id: n(3), parent: n(2), kind: 'element', tag: 'body' }, { id: n(4), parent: n(3), kind: 'element', tag: 'style', css }, ...card(n(5), n(3), state)]; };
+    await apply(page, { ...snapshot(doc('n', [{ id: 'n7', parent: 'n3', kind: 'frame', tag: 'iframe' }, ...frameDoc(20)])), document_id: 'd3' });
+    assert.deepEqual(await display(), ['inline'], 'MP-10: the frame\'s defined card shows');
+    await apply(page, { ...delta(2, [{ op: 'children', id: 'n7', children: ['n31'], nodes: frameDoc(30, { defined: false }) }]), document_id: 'd3' });
+    assert.deepEqual(await display(), ['none'], 'MP-10: the replaced frame document\'s undefined card is not :defined');
   } finally { await page.close(); }
 });
