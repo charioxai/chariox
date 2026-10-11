@@ -927,6 +927,21 @@ mod tests {
     }
 
     #[test]
+    fn selected_claude_profile_removes_ambient_cloud_provider_selectors() {
+        let removed = super::claude_provider_env_remove(None);
+        for name in [
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY",
+        ] {
+            assert!(
+                removed.iter().any(|value| value == name),
+                "{name} must be removed"
+            );
+        }
+    }
+
+    #[test]
     fn plans_claude_headless_onboarding_in_the_selected_account_profile() {
         crate::test_support::isolated_env_test!();
         let _guard = env_guard();
