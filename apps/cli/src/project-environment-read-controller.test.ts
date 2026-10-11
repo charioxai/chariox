@@ -181,3 +181,13 @@ test("review0212 TUI polls its acknowledged Check when a later operation replace
   await pending
  } finally {controller.close();await pending}
 })
+
+// MP-08 / MP-10 / MP-11: local dependency expiry needs no network refresh.
+test("review1301 idle TUI expires dependent Ready without another kernel snapshot",async()=>{
+ const environment:any={schema_version:1,local_project_id:"project",revision:1,content_digest:"digest",lineage:{project_id:"p",environment_id:"env"},delivered_capabilities:{enabled_environment_operations:["get"],supported_schema:1},project_requirements:[{requirement_id:"node",title:"Node",scope:{kind:"project"},origins:[],spec:{kind:"software",identity:"node",version_constraint:null,detect_only:true},depends_on:[],required:true}],folders:[],proposals:[],operations:[],observations:[{environment_id:"env",requirement_id:"node",revision_digest:"digest",status:"ready",checked_at_ms:Date.now()-300000+150,stale:false,safe_summary:"Named probe passed",target:{machine_id:"machine",target_instance_generation:"boot",slice_ref:null},measured_facts:{}}]}
+ environment.project_requirements.push({...environment.project_requirements[0],requirement_id:"dependent",title:"Dependent",depends_on:["node"]});
+ environment.observations.push({...environment.observations[0],requirement_id:"dependent",checked_at_ms:Date.now()});
+ let requests=0,renders=0
+ const controller=createProjectEnvironmentReadController({send:async()=>{requests++;return {ProjectEnvironment:{environment}}},render(){renders++},pageSize:()=>100})
+ try {await controller.open("project");assert(controller.visibleLines().some(l=>l.includes("Ready")));const settled=renders;await new Promise(resolve=>setTimeout(resolve,250));assert(controller.visibleLines().some(l=>l.includes("Dependent · Last check stale")));assert(renders>settled);assert.equal(requests,1)} finally{controller.close()}
+})

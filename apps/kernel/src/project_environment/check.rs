@@ -242,7 +242,7 @@ pub(crate) fn invalidate_check_dependencies(
     env: &ProjectEnvironment,
     observations: &mut [MachineObservation],
     target: &EnvironmentTargetBinding,
-    operation: &str,
+    operation: Option<&str>,
 ) {
     for _ in 0..observations.len() {
         let good: std::collections::BTreeSet<_> = observations
@@ -272,7 +272,8 @@ pub(crate) fn invalidate_check_dependencies(
                 dependencies.extend(depends_on.iter().cloned());
             }
             if dependencies.iter().any(|id| !good.contains(id)) {
-                o.stale |= o.check_operation_id.as_deref() != Some(operation);
+                o.stale |= operation
+                    .is_none_or(|operation| o.check_operation_id.as_deref() != Some(operation));
                 o.status = NeedsYourInput;
                 o.reason_code = "dependency_unready".into();
                 o.safe_summary =
