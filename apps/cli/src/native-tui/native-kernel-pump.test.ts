@@ -3,6 +3,28 @@ import test from "node:test"
 
 import { LocalIpcClient } from "../ipc.js"
 import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
+import type { RuntimeInteraction } from "../cli-types.js"
+
+test("MP-08 MP-10 permissions for agent A are bounded while agent B keeps output backlogged", async () => {
+  const harness = installTimerHarness()
+  const interaction = { id: "approval-a", agent_id: "agent-a", kind: "permission", native_origin: {
+    scope: "prompt", provider_run_id: "run-a", prompt_id: "prompt-a",
+  } } as RuntimeInteraction
+  let pages = 0
+  const projected: RuntimeInteraction[][] = []
+  const client = fakeClient(request => requestVariant(request) === "GetSessionState"
+    ? { SessionState: { session: { active_interactions: [interaction] }, agent_activity: {} } }
+    : { TerminalOutput: { records: (++pages, [{ agent_id: "agent-b", kind: "provider_output", bytes: [66] }]) } })
+  const pump = startNativeKernelPumpLoop(client, "session", "attachment", {
+    onTerminalRecords: () => {}, onAgentActivity: () => {},
+    onInteractions: interactions => { projected.push(interactions) }, pollRuntimeNotices: false,
+  })
+  try {
+    await flushPromises()
+    assert.equal(pages, 8, "a tick still bounds its output work")
+    assert.deepEqual(projected, [[interaction]], "unrelated session output cannot starve A's approval")
+  } finally { pump.stop(); harness.restore() }
+})
 
 test("MP-08 MP-10 native kernel pump drives home settlement when the provider renders output", async () => {
   const harness = installTimerHarness()

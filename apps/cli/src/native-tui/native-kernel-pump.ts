@@ -62,7 +62,9 @@ export function startNativeKernelPumpLoop(
       }
       traceCodexLifecycle("pump_tick", { outputDrained })
       if (!stopped && outputDrained && state?.SessionState?.agent_activity) options.onAgentActivity?.(state.SessionState.agent_activity)
-      if (!stopped && outputDrained && state?.SessionState?.session) options.onInteractions?.(state.SessionState.session.active_interactions ?? [])
+      // Permission projections establish their own prompt-scoped display
+      // barrier. Another agent's output must not hold their approval hostage.
+      if (!stopped && state?.SessionState?.session) options.onInteractions?.(state.SessionState.session.active_interactions ?? [])
       if (!stopped && options.pollRuntimeNotices !== false) {
         await client.send<Record<string, unknown>>(pollRuntimeNoticesRequest(sessionId, attachmentId))
       }
