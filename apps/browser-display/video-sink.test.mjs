@@ -22,7 +22,7 @@ test('MP-08/MP-10 native repairs cover only their pixels and remain through delt
 test('MP-08/MP-10 hiding between decode and rAF leaves output retirement to the presenter',async()=>{
  const document=new EventTarget();document.hidden=false;let cancelled=0;
  document.defaultView={requestAnimationFrame:()=>1,cancelAnimationFrame:()=>cancelled++};
- const sink=new VideoSink({ownerDocument:document},()=>{});let freed=0;
+ const sink=new VideoSink({ownerDocument:document,getContext:()=>({drawImage(){}})},()=>{});let freed=0;
  const job=sink.commit({image:{close(){freed++}},decodedAt:0},{width:1280,height:800});document.hidden=true;document.dispatchEvent(new Event('visibilitychange'));
  assert.equal((await job).drawn,false);assert.equal(cancelled,1);assert.equal(freed,0);sink.close();
 });
@@ -45,4 +45,37 @@ test('MP-08/MP-10 hidden key retires previous repairs on visible delta resume',a
  document.hidden=false;document.dispatchEvent(new Event('visibilitychange'));
  const resumed=sink.commit(image,{...frame,key:false});raf();assert.equal((await resumed).drawn,true);
  assert.equal(canvas.style.opacity,'0');assert.equal(sink.overlayActive,false);sink.close();
+});
+
+for(const key of [false,true])test(`MP-08/MP-10 hidden ${key?'key':'delta'} preserves its base without another visible video`,async()=>{
+ const document=new EventTarget();document.hidden=false;let raf;
+ document.defaultView={requestAnimationFrame:cb=>{raf=cb;return 1},cancelAnimationFrame(){}};
+ const draws=[],canvas={width:1280,height:800,style:{opacity:''},ownerDocument:document};
+ const sink=new VideoSink(canvas,()=>{});sink.canvasOpacity='';sink.overlayActive=true;
+ sink.video={width:1280,height:800,getContext:()=>({drawImage:image=>draws.push(image.n)}),remove(){}};
+ let clones=0,closed=0;
+ const image=n=>({n,clone(){clones++;return {n,close(){closed++}}}}),frame={width:1280,height:800};
+ const first=sink.commit(image(1),{...frame,key:false});raf();await first;
+ const hidden=sink.commit(image(2),{...frame,key});document.hidden=true;document.dispatchEvent(new Event('visibilitychange'));
+ assert.equal((await hidden).drawn,false);
+ // A second hidden output must replace the retained base, without waiting for rAF.
+ assert.equal((await sink.commit(image(3),{...frame,key:false})).drawn,false);
+ document.hidden=false;document.dispatchEvent(new Event('visibilitychange'));
+ assert.equal(draws.at(-1),3);assert.equal(sink.last.n,3);
+ assert.equal(sink.overlayActive,!key);assert.equal(canvas.style.opacity,key?'0':'');
+ sink.close();assert.equal(closed,clones);
+});
+
+test('MP-08/MP-10 hidden key retires old repairs before new repairs and a visible delta',async()=>{
+ const document=new EventTarget();document.hidden=true;let raf,cleared=0;
+ document.defaultView={requestAnimationFrame:cb=>{raf=cb;return 1},cancelAnimationFrame(){}};
+ const canvas={width:1280,height:800,style:{opacity:''},ownerDocument:document,getContext:()=>({clearRect(){cleared++}})};
+ const sink=new VideoSink(canvas,()=>{});sink.canvasOpacity='';sink.overlayActive=true;
+ sink.video={width:1280,height:800,getContext:()=>({drawImage(){}}),remove(){}};
+ const frame={width:1280,height:800},image={clone(){return {close(){}}}};
+ await sink.commit(image,{...frame,key:true});
+ sink.overlay(frame);assert.equal(cleared,1);
+ document.hidden=false;document.dispatchEvent(new Event('visibilitychange'));
+ const delta=sink.commit(image,{...frame,key:false});raf();await delta;
+ assert.equal(sink.overlayActive,true);assert.equal(canvas.style.opacity,'');sink.close();
 });

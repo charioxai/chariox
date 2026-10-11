@@ -13,8 +13,11 @@ rate-limited lost ACK/key recovery. Tiles and stripes remain on the transparent
 canvas overlay until the next key. Scroll moves snapshot video plus repairs.
 Closing or replacing a decoder freezes the composite for preserve-frame recovery,
 retires frame owners, stops the track, and removes the layer and observers.
-Hidden rAF jobs settle without drawing. The presenter validates and retires
-their outputs, and the next visible delta retires repairs from a hidden key.
+Hidden rAF jobs update the fallback canvas and its snapshot synchronously,
+then settle as not visibly drawn. The presenter validates and retires their
+outputs. Hidden keys retire old repairs immediately; hidden deltas preserve
+them. Visibility return needs no further video: the acknowledged pixel base
+is already ready for display, partial repairs, prediction and scroll moves.
 The existing lease heartbeat continues while hidden.
 
 The repair canvas overrides its CSS background to transparent until teardown,
@@ -60,7 +63,16 @@ node apps/browser-display/presenter-sink-regression.mjs \
   /absolute/path/to/chariox-cloud
 ```
 
-The optional fourth argument `repair` isolates the partial-repair CSS check
+The 16 cells cover DPR1/2, both sinks/transports and hidden key/delta sequences:
+visible A with repairs → changed hidden B → newer hidden repair → quiet
+visibility return → visible delta, partial repair and scroll move against B.
+Hidden keys clear the older repairs while preserving the newer ones through
+the visible delta. Screenshots inspect the actual compositor pixels;
+the fallback is hidden between worker decode and rAF. The checks also verify
+repair retirement/persistence, predictions and transparent restoration.
+
+The optional fourth argument `hidden-repair` isolates post-key repair retention
+through a visible delta; `repair` isolates the partial-repair CSS check
 when an earlier visibility/prediction regression blocks the combined flow.
 These are supplementary checks with a synthetic producer/transport. They do
 not establish real public-site, hosted-relay, provider or soak acceptance.
