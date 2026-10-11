@@ -12,6 +12,22 @@ fail() {
   exit 1
 }
 
+# install-image.sh creates exactly these empty root-private control roots;
+# any content in them, or any other state-root entry, is runtime state.
+require_pristine_state_root() {
+  for control_root in "$1/managed" "$1/disposable-worker"; do
+    if [ -e "$control_root" ] || [ -L "$control_root" ]; then
+      [ -d "$control_root" ] && [ ! -L "$control_root" ] \
+        && [ "$(stat -c '%u:%a' "$control_root")" = 0:700 ] \
+        && [ -z "$(find "$control_root" -mindepth 1 -print -quit)" ] \
+        || fail "managed control state root is not empty and root-private: $control_root"
+    fi
+  done
+  if find "$1" -mindepth 1 ! -path "$1/managed" ! -path "$1/disposable-worker" -print -quit | grep -q .; then
+    fail "managed runtime state entered the image"
+  fi
+}
+
 assert_unmounted_probe_root() {
   probe_root=$1
   [ -d "$probe_root" ] && [ ! -L "$probe_root" ] || fail "probe data-root is not a real directory"
@@ -588,9 +604,7 @@ if [ -e /etc/chariox/bootstrap ] || [ -L /etc/chariox/bootstrap ]; then
   fi
 fi
 
-if find /var/lib/chariox -mindepth 1 -print -quit | grep -q .; then
-  fail "managed runtime state entered the image"
-fi
+require_pristine_state_root /var/lib/chariox
 if [ -L /home/chariox ] || [ ! -d /home/chariox ]; then
   fail "managed service-account home is missing or linked"
 fi
