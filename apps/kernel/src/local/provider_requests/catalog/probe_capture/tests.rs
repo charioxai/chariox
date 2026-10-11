@@ -237,3 +237,38 @@ fn windows_captures_both_streams_and_times_out() {
     ));
     assert!(started.elapsed() < Duration::from_secs(2));
 }
+
+// MP-08 / MP-10 / MP-11: synchronized helpers close both capture pipes.
+#[cfg(unix)]
+#[test]
+fn review0821_redirected_descendants_stop_after_success_and_timeout() {
+    for stalled in [false, true] {
+        let root = crate::test_support::TestWorktree::new("review0821-redirected");
+        let mut command = shell(
+            r#"sh -c 'echo $$ > "$1/pid"; sleep .4; echo survived > "$1/survived"' helper "$1" >/dev/null 2>&1 & while [ ! -s "$1/pid" ]; do sleep .005; done; if [ "$2" = stall ]; then wait; else printf ok; fi"#,
+        );
+        command
+            .arg("launcher")
+            .arg(root.path())
+            .arg(if stalled { "stall" } else { "success" });
+        let result = capture(
+            command,
+            if stalled {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_secs(2)
+            },
+        );
+        // The helper is finite even on RED; do not leak test subprocesses.
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            !root.path().join("survived").exists(),
+            "redirected descendant executed after capture completed (stalled={stalled})"
+        );
+        if stalled {
+            assert!(matches!(result, Err(CaptureError::TimedOut)));
+        } else {
+            assert_eq!(result.unwrap().stdout, b"ok");
+        }
+    }
+}
