@@ -99,7 +99,7 @@ class CaretPointerTests(unittest.TestCase):
                     except RuntimeError: pass
             else:
                 self.state['windows'] = []
-                def reference(evidence, label, scope, document, close=False):
+                def reference(evidence, label, scope, document, close=False, lease=None):
                     if close: self.state['windows'] = []; return None
                     return {'probes': [{'name': 'probe', 'point': {'x': 20, 'y': 30}, 'expectedLocation': 125},
                                        {'name': 'second', 'point': {'x': 40, 'y': 50}, 'expectedLocation': 125}],
