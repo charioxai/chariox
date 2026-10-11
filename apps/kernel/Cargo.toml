@@ -1,6 +1,6 @@
 [package]
 name = "chariox-kernel"
-version = "0.1.0"
+version = "0.1.0-path1.20261011k.1"
 edition = "2021"
 
 [dependencies]
