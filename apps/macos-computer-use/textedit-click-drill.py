@@ -14,11 +14,24 @@ spec.loader.exec_module(drill)
 PUBLIC_TEXT = '\n'.join(f'line {index:02d} public caret probe' for index in range(1, 13)) + '\n'
 
 
-def reference(evidence, label, scope, document, close=False):
+def owned_helper(evidence, label, arguments, lease):
+    try:
+        receipt = drill.launch_helper(evidence, label, arguments)
+        if 'refused:' in receipt:
+            raise RuntimeError('TextEdit helper refused: ' + receipt.splitlines()[-1])
+        return receipt
+    except Exception:
+        # Refusals and launch/identity failures cannot be undone by later desktop facts.
+        if lease:
+            lease.retired = True
+        raise
+
+
+def reference(evidence, label, scope, document, close=False, lease=None):
     arguments = scope + ['--ax-read', '--public-text-drill-document', str(document)]
     if close:
         arguments += ['--close-public-text-drill']
-    receipt = drill.launch_helper(evidence, label, arguments)
+    receipt = owned_helper(evidence, label, arguments, lease)
     if close:
         if 'closed public TextEdit drill window=' not in receipt:
             raise RuntimeError('TextEdit cleanup not proven: ' + receipt.splitlines()[-1])
@@ -89,7 +102,7 @@ def run():
         (evidence / 'desktop.json').write_text(json.dumps(state, indent=2) + '\n')
         lease = drill.PointerLease(drill.desktop, drill.run_pointer_script, saved)
         lease.bind(pid, int(scope[4]))
-        initial = reference(evidence, 'reference', scope, document)
+        initial = reference(evidence, 'reference', scope, document, lease=lease)
         checks = []
         for at_pointer in [False, True]:
             for probe in initial['probes']:
@@ -111,10 +124,10 @@ def run():
                 else:
                     arguments = ['--click-at', str(point['x']), str(point['y']), '--click']
                     wanted = point
-                receipt = drill.launch_helper(evidence, label, scope + arguments)
+                receipt = owned_helper(evidence, label, scope + arguments, lease)
                 drill.require_caret_receipt(receipt, lease)
                 lease.require()
-                actual = reference(evidence, label + '-actual', scope, document)
+                actual = reference(evidence, label + '-actual', scope, document, lease=lease)
                 lease.require()
                 # Layout must stay unchanged during this comparison.
                 passed = (actual['probes'] == initial['probes']
@@ -136,7 +149,7 @@ def run():
             verdict = f'FAIL: cleanup incomplete: pointer lease retired; {verdict}'
         elif scope:
             try:
-                reference(evidence, 'close', scope, document, close=True)
+                reference(evidence, 'close', scope, document, close=True, lease=lease)
                 deadline = time.monotonic() + 2
                 while any(w['windowID'] == int(scope[4]) for w in drill.desktop()['windows']) and time.monotonic() < deadline:
                     time.sleep(0.05)
