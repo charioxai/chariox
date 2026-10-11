@@ -34,8 +34,8 @@ func nativeInputPlan(_ input: [String: Any], surface: NativeSurface) throws -> N
         let types: (CGEventType, CGEventType, CGMouseButton)
         switch button {
         case 1: types = (.leftMouseDown, .leftMouseUp, .left)
-        case 2: types = (.rightMouseDown, .rightMouseUp, .right)
-        case 3: types = (.otherMouseDown, .otherMouseUp, .center)
+        case 2: types = (.otherMouseDown, .otherMouseUp, .center)
+        case 3: types = (.rightMouseDown, .rightMouseUp, .right)
         default: throw tagged(.arguments, "invalid-native-button")
         }
         return NativeInputPlan(point: location, events: try [types.0, types.1].map { try mouse($0, at: location, button: types.2) }, typing: false)
