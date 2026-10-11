@@ -329,3 +329,6 @@ fn review954_detached_unchanged_files_remain_reviewable() {
         "changed selection still needs a live folder"
     );
 }
+
+#[path = "review0212_excluded_tests.rs"]
+mod review0212_excluded;

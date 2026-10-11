@@ -184,6 +184,11 @@ pub(crate) fn verify_manual_files(
         let RequirementSpec::Files { folder_id, entries } = &mut requirement.spec else {
             continue;
         };
+        // MP-08 / MP-10 / MP-11: exclusion is saved metadata, including
+        // imported selections deliberately absent from this machine.
+        if entries.iter().all(|entry| entry.transfer_inclusion == EnvironmentTransferInclusion::Exclude) {
+            continue;
+        }
         // MP-08 / MP-10 / MP-11: a detached folder cannot be rescanned, but
         // an unchanged saved Files selection remains valid revision metadata.
         let attached = current
@@ -205,6 +210,9 @@ pub(crate) fn verify_manual_files(
         let path = Path::new(&folder.local_workspace_binding);
         let root = EvidenceRoot::open(path)?;
         for entry in entries.iter_mut() {
+            if entry.transfer_inclusion == EnvironmentTransferInclusion::Exclude {
+                continue;
+            }
             let unchanged_detected = !entry.user_selected && current.project_requirements.iter().chain(current.folders.iter().flat_map(|f| &f.requirements)).chain(current.proposals.iter().map(|p| &p.requirement)).any(|r| r.requirement_id == requirement.requirement_id && matches!(&r.spec,RequirementSpec::Files{entries:old,..} if old.contains(entry)));
             if unchanged_detected {
                 continue;
