@@ -75,6 +75,8 @@ class FixtureLifecycleCase(unittest.TestCase):
             (evidence / 'fixture.out').write_text(output + '\n')
             return SimpleNamespace(stdout='', stderr='', returncode=0)
         self.assertEqual(args[0], 'osascript')
+        if 'var screens = [];' in args[-1]:
+            return SimpleNamespace(stdout=json.dumps(self.desktop()), stderr='', returncode=0)
         points = json.loads(re.search(r'points=(.*?), last=', args[-1])[1])
         failure = self.restore_failure if points == [self.saved] and len(self.pointer_clicks) == self.fail_on else None
         before = copy.deepcopy(self.state)
