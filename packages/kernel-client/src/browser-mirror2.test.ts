@@ -410,3 +410,30 @@ test('MP-10: protocol 501 a gap (a reply lost with its socket) asks for the miss
   assert.deepEqual(applied.slice(0, 3), [1, 2, 3], 'MP-10: the missing packet applies, then the buffered one')
   assert.equal(requests.filter(command => command.after_sequence === 0).length, 1, 'MP-10: no second snapshot')
 })
+
+// Round 11 final drop drill (b3, DPR2, 3.06 s): the transport replaced the dropped control socket without failing or
+// replaying the credit in flight, so that credit (and the packet the kernel gave it) was orphaned until the 8 s request
+// timeout; the gap only showed when the next heartbeat arrived 2.9 s later. The oldest outstanding credit is answered
+// within its wait: one overdue by a second asks for a resend.
+test('MP-10: protocol 501 an overdue oldest credit (orphaned by the transport) asks for a resend; its packet applies without waiting for a later one', async () => {
+  let sequence = 0
+  const applied: Array<[number, number]> = [], requests: Array<Record<string, unknown>> = [], started = Date.now()
+  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push([p.sequence, Date.now() - started]) } })
+  const transport = { protocolVersion: 501, request: async (request: unknown) => {
+    const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() - started })
+    if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
+    if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
+    if (command.after_sequence === 0) return { KernelBrowser: { result: packet(++sequence, true) } }
+    if (command.resend) return { KernelBrowser: { result: packet(command.after_sequence as number + 1, false) } }
+    if (sequence === 1) { ++sequence; return new Promise(() => {}) } // its reply never arrives, and the request never fails
+    await new Promise(resolve => setTimeout(resolve, 4000)); return { KernelBrowser: { result: packet(++sequence, false) } }
+  } }
+  const view = await attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: () => {} }, { credits: 1, waitMs: 500, renderer })
+  await until(() => applied.some(([s]) => s === 2), 3500)
+  await view.close()
+  const resend = requests.find(command => command.resend)
+  assert.ok(resend, `MP-10: a resend credit: ${JSON.stringify(requests.map(c => [c.after_sequence, c.resend, c.at]))}`)
+  assert.equal(resend.after_sequence, 1)
+  const at = applied.find(([s]) => s === 2)?.[1]
+  assert.ok(at !== undefined && at < 2500, `MP-10: the orphan's packet applied at ${at} ms (wait 500 ms)`)
+})
