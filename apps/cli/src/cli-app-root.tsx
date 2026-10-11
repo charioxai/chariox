@@ -1,3 +1,11 @@
+import { createProviderLoginLinkOpener, localDesktopAvailable } from "./provider-login-link.js"
+import { createProviderLoginInteractionController } from "./provider-login-interaction-controller.js"
+import { getRelayStatus } from "./relay-api.js"
+import { clipboardCopyMessage, copyTextToClipboard } from "./clipboard.js"
+import { openExternalUrl } from "./external-url.js"
+import { installTerminalNativeSelection } from "./terminal-native-selection.js"
+import { enableTerminalHyperlinks } from "./terminal-hyperlinks.js"
+import { providerAccountDisplayLabel, selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
 import { CloudClient } from "./cloud-client.js"
@@ -92,7 +100,9 @@ import {
   normalizeBackendProviderId,
 } from "./provider-catalog.js"
 import {
+  getProviderAuthStatus,
   getProviderCatalog,
+  getProviderLoginStatus,
   getProviderRun,
   tryGetProviderRun,
 } from "./provider-api.js"
@@ -224,7 +234,10 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     appLogger?.debug("relay subscription diagnostic", diagnostic)
   }))
   const renderer = useRenderer()
+  onCleanup(installTerminalNativeSelection(renderer))
+  void enableTerminalHyperlinks(renderer)
   const secretInput = createCliSecretInput(renderer)
+  const providerLoginLink = createProviderLoginLinkOpener()
   onCleanup(secretInput.cancel)
   const dimensions = useTerminalDimensions()
   const setCenterMode = (_mode: "transcript") => {}
@@ -237,6 +250,24 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   >()
   const splitPaneFooterRenderState = createSplitPaneFooterRenderState()
   const interactionChoiceStore = createInteractionChoiceStoreController()
+  // RelayStatus identifies even an unconfigured local kernel. Read only its
+  // public daemon ID; worker login IDs never enter the attached home's store.
+  const providerLoginInteractions = createProviderLoginInteractionController({
+    getKernelId: async () => relayStatusState()?.daemon_id ?? (await getRelayStatus(client)).daemon_id,
+    getLoginStatus: (loginId) => getProviderLoginStatus(client, loginId),
+    getAuthStatus: (provider, accountProfile) => getProviderAuthStatus(client, provider, accountProfile),
+    accountLabel: (provider, accountProfile) => {
+      const profile = selectedProviderAccount(providerAccountsState(), provider, accountProfile)
+      return profile ? providerAccountDisplayLabel(profile) : accountProfile
+    },
+    localDesktop: localDesktopAvailable,
+    openUrl: openExternalUrl,
+    copyUrl: async (url) => clipboardCopyMessage(await copyTextToClipboard(url, renderer)),
+    appendNotice: (message, tone) => appendNotice(message, tone),
+    flashFooter: (message, tone) => flashFooter(message, tone),
+    render: () => renderAgentInteractions(),
+  })
+  onCleanup(providerLoginInteractions.dispose)
   const agentPaneRuntimeStore = createAgentPaneRuntimeStoreController<
     ScrollBoxRenderable, TranscriptEntryRenderable, BoxRenderable,
     ToolTranscriptUpdate
@@ -765,7 +796,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => selectedQueuedPromptIndexForAgent(agentId),
     onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") =>
       handleQueuedPromptStripAction(item, action),
-    interactionChoiceStore, promptUsageMeta, sessionHydrating, setSessionHydrating,
+    interactionChoiceStore, providerLoginInteractions, promptUsageMeta, sessionHydrating, setSessionHydrating,
     setLoadingHistory, setHistoryLoadingMessage,
     rebuildTranscript: () => rebuildTranscript(),
     focusedStatusBadge, runtimeDebugLogger, logFocusedBadgeChange, splitAgentResponseMode,
@@ -810,7 +841,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   const {
-    mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript,
+    mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript, flushDeferredRebuild,
     replaceTranscriptEntries, primeAttachedSessionBinding, bumpHistoryLoadGeneration, transcriptHistoryAutoloadController,
   } = createCliPrimaryTranscriptComposition({
     waitingRoomLaunchOwnershipRevision,
@@ -955,6 +986,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentAccountProfileId: () => waitingRoomState().accountProfileId || options.accountProfile || "default",
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
     readSecret: secretInput.readSecret,
+    clearTextSelection: () => { renderer.clearSelection(); flushDeferredRebuild() },
+    showProviderLoginLink: providerLoginLink, providerLoginInteractions,
     attachBinding, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,
     applyVariantSelection, applyModeSelection, applyPermissionSelection,
     currentExecutionMode: () => waitingRoomState().executionMode ?? "build",
@@ -1009,7 +1042,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     processKernelTerminalOutputRecord: runtimeProcessKernelTerminalOutputRecord,
   } = createCliAppProcessRuntimeComposition({
     client, options, appLogger, formatError,
-    flashFooter, handleSigint, handleStdinData, clearTerminalOutputRecordTimer,
+    flashFooter, handleSigint,
+    handleStdinData,
+    clearTerminalOutputRecordTimer,
     workspaceScreenMode,
     workflowScreenActive: workflowActions.workflowScreenActive,
     daemonDisconnected, statusLine, sessionState, focusedAgentId,
@@ -1085,7 +1120,11 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}
       promptAreaBackground={promptAreaBackground()}
-      retainPromptFocus={() => { if (!kernelApprovals.ownsInput() && !providerAccountRecovery.ownsInput()) retainPromptFocus() }}
+      handleRootMouseUp={() => {
+        if (!kernelApprovals.ownsInput() && !providerAccountRecovery.ownsInput()) retainPromptFocus()
+        // OpenTUI finishes or clears the selection after this handler returns.
+        startTimeout(flushDeferredRebuild, 0)
+      }}
       handlePromptSelectionSurfaceMouseUp={handlePromptSelectionSurfaceMouseUp}
       responsePaneRenderRefStore={responsePaneRenderRefStore}
       historyLoadingRenderController={historyLoadingRenderController}

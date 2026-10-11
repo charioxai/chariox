@@ -12,7 +12,19 @@ test("cli stdin key controller ignores unparsable input", () => {
   const harness = createHarness({ parsedEvent: null })
 
   assert.equal(harness.controller.handleData("x"), false)
-  assert.deepEqual(harness.calls(), ["parse:x:true"])
+  assert.deepEqual(harness.calls(), ["parse:x"])
+})
+
+test("MP-08 / MP-10 key presses clear selection; key releases preserve it", () => {
+  for (const [event, shouldClear] of [
+    [keyEvent("x", { eventType: "press" }), true],
+    [keyEvent("x", { eventType: "release" }), false],
+  ] as const) {
+    let clears = 0
+    const harness = createHarness({ parsedEvent: event, clearTextSelection: () => { clears++ } })
+    harness.controller.handleData("x")
+    assert.equal(clears, shouldClear ? 1 : 0)
+  }
 })
 
 test("cli stdin key controller closes dialog overlays on escape before other handlers", () => {
@@ -23,7 +35,7 @@ test("cli stdin key controller closes dialog overlays on escape before other han
   })
 
   assert.equal(harness.controller.handleData("x"), true)
-  assert.deepEqual(harness.calls(), ["parse:x:true", "close-dialog"])
+  assert.deepEqual(harness.calls(), ["parse:x", "close-dialog"])
 })
 
 test("cli stdin key controller delegates session browser keys early", () => {
@@ -33,13 +45,13 @@ test("cli stdin key controller delegates session browser keys early", () => {
   })
 
   assert.equal(harness.controller.handleData("x"), true)
-  assert.deepEqual(harness.calls(), ["parse:x:true", "session-browser:down"])
+  assert.deepEqual(harness.calls(), ["parse:x", "session-browser:down"])
 })
 
 test("cli stdin key controller routes exit before prompt state", () => {
   const exitHarness = createHarness({ parsedEvent: keyEvent("e", { ctrl: true }) })
   assert.equal(exitHarness.controller.handleData("x"), true)
-  assert.deepEqual(exitHarness.calls(), ["parse:x:true", "session-browser:e", "exit"])
+  assert.deepEqual(exitHarness.calls(), ["parse:x", "session-browser:e", "exit"])
 })
 
 test("cli stdin key controller yields focused interactions to the focused prompt input", () => {
@@ -51,7 +63,7 @@ test("cli stdin key controller yields focused interactions to the focused prompt
   })
   assert.equal(promptHarness.controller.handleData("x"), true)
   assert.deepEqual(promptHarness.calls(), [
-    "parse:x:true",
+    "parse:x",
     "session-browser:p",
   ])
 
@@ -60,7 +72,7 @@ test("cli stdin key controller yields focused interactions to the focused prompt
     parsedEvent: keyEvent("return"),
   })
   assert.equal(focusedHarness.controller.handleData("x"), true)
-  assert.deepEqual(focusedHarness.calls(), ["parse:x:true", "session-browser:return", "focused:return"])
+  assert.deepEqual(focusedHarness.calls(), ["parse:x", "session-browser:return", "focused:return"])
 })
 
 test("cli stdin key controller delegates queued prompt shortcuts before command center prompt input", () => {
@@ -82,7 +94,7 @@ test("cli stdin key controller delegates queued prompt shortcuts before command 
   assert.equal(queuedEvent?.alt, true)
   assert.equal(queuedEvent?.meta, false)
   assert.deepEqual(harness.calls(), [
-    "parse:x:true",
+    "parse:x",
     "session-browser:s",
     "focused:s",
     "queued-prompt:s",
@@ -98,7 +110,7 @@ test("cli stdin key controller lets command center own prompt input", () => {
 
   assert.equal(harness.controller.handleData("x"), true)
   assert.deepEqual(harness.calls(), [
-    "parse:x:true",
+    "parse:x",
     "session-browser:escape",
     "focused:escape",
     "clear-command-center",
@@ -109,7 +121,7 @@ test("cli stdin key controller routes workspace and focus cycling shortcuts", ()
   const workspaceHarness = createHarness({ parsedEvent: keyEvent("p", { ctrl: true }) })
   assert.equal(workspaceHarness.controller.handleData("x"), true)
   assert.deepEqual(workspaceHarness.calls(), [
-    "parse:x:true",
+    "parse:x",
     "session-browser:p",
     "focused:p",
     "toggle-workspace",
@@ -118,7 +130,7 @@ test("cli stdin key controller routes workspace and focus cycling shortcuts", ()
   const focusHarness = createHarness({ attached: true, parsedEvent: keyEvent("tab") })
   assert.equal(focusHarness.controller.handleData("x"), true)
   assert.deepEqual(focusHarness.calls(), [
-    "parse:x:true",
+    "parse:x",
     "session-browser:tab",
     "focused:tab",
     "cycle-agent-focus",
@@ -131,7 +143,7 @@ test("cli stdin key controller routes workspace and focus cycling shortcuts", ()
   })
   assert.equal(workflowHarness.controller.handleData("x"), true)
   assert.deepEqual(workflowHarness.calls(), [
-    "parse:x:true",
+    "parse:x",
     "session-browser:tab",
     "focused:tab",
     "cycle-workflow-node",
@@ -145,10 +157,8 @@ test("cli stdin key controller routes copy and ctrl-c shortcuts", () => {
   })
   assert.equal(copyHarness.controller.handleData("x"), true)
   assert.deepEqual(copyHarness.calls(), [
-    "parse:x:true",
+    "parse:x",
     "session-browser:c",
-    "focused:c",
-    "queued-prompt:c",
     "copy",
   ])
 
@@ -158,7 +168,7 @@ test("cli stdin key controller routes copy and ctrl-c shortcuts", () => {
   })
   assert.equal(stopHarness.controller.handleData("x"), true)
   assert.deepEqual(stopHarness.calls(), [
-    "parse:x:true",
+    "parse:x",
     "session-browser:c",
     "focused:c",
     "stop",
@@ -167,7 +177,7 @@ test("cli stdin key controller routes copy and ctrl-c shortcuts", () => {
   const exitHarness = createHarness({ parsedEvent: keyEvent("c", { ctrl: true }) })
   assert.equal(exitHarness.controller.handleData("x"), true)
   assert.deepEqual(exitHarness.calls(), [
-    "parse:x:true",
+    "parse:x",
     "session-browser:c",
     "focused:c",
     "exit",
@@ -182,7 +192,7 @@ test("cli stdin key controller routes prompt attachment edits", () => {
   })
   assert.equal(editHarness.controller.handleData("x"), true)
   assert.deepEqual(editHarness.calls(), [
-    "parse:x:true",
+    "parse:x",
     "session-browser:backspace",
     "focused:backspace",
     "remove-edit:backspace",
@@ -196,7 +206,7 @@ test("cli stdin key controller routes prompt attachment edits", () => {
   })
   assert.equal(trailingHarness.controller.handleData("x"), true)
   assert.deepEqual(trailingHarness.calls(), [
-    "parse:x:true",
+    "parse:x",
     "session-browser:backspace",
     "focused:backspace",
     "remove-last-attachment",
@@ -212,7 +222,7 @@ test("cli stdin key controller routes workflow detail pane keys before prompt na
 
   assert.equal(harness.controller.handleData("x"), true)
   assert.deepEqual(harness.calls(), [
-    "parse:x:true",
+    "parse:x",
     "session-browser:l",
     "focused:l",
     "workflow-detail:l",
@@ -226,7 +236,7 @@ test("cli stdin key controller falls through to prompt-turn and waiting-room han
   })
   assert.equal(promptTurnHarness.controller.handleData("x"), true)
   assert.deepEqual(promptTurnHarness.calls(), [
-    "parse:x:true",
+    "parse:x",
     "session-browser:up",
     "focused:up",
     "prompt-turn:up",
@@ -238,7 +248,7 @@ test("cli stdin key controller falls through to prompt-turn and waiting-room han
   })
   assert.equal(waitingRoomHarness.controller.handleData("x"), true)
   assert.deepEqual(waitingRoomHarness.calls(), [
-    "parse:x:true",
+    "parse:x",
     "session-browser:down",
     "focused:down",
     "prompt-turn:down",
@@ -246,9 +256,45 @@ test("cli stdin key controller falls through to prompt-turn and waiting-room han
   ])
 })
 
+test("MP-08/MP-11 Meta+C copies a selection before queued-prompt cancel and cancels only without one", () => {
+  const copyHarness = createHarness({ parsedEvent: keyEvent("c", { meta: true }), queuedPromptHandled: true, copyHandled: true })
+  assert.equal(copyHarness.controller.handleData("x"), true)
+  assert.ok(copyHarness.calls().includes("copy"))
+  assert.ok(!copyHarness.calls().includes("queued-prompt:c"))
+
+  const cancelHarness = createHarness({ parsedEvent: keyEvent("c", { meta: true }), queuedPromptHandled: true, copyHandled: false })
+  assert.equal(cancelHarness.controller.handleData("x"), true)
+  assert.ok(cancelHarness.calls().includes("queued-prompt:c"))
+})
+
+test("MP-08/MP-11 Ctrl+Shift+C never stops the provider or exits when selection is empty", () => {
+  for (const copyHandled of [true, false]) {
+    const harness = createHarness({ parsedEvent: keyEvent("c", { ctrl: true, shift: true }), activeTurnWork: true, copyHandled })
+    assert.equal(harness.controller.handleData("x"), true)
+    assert.ok(harness.calls().includes("copy"))
+    assert.ok(!harness.calls().includes("stop"))
+    assert.ok(!harness.calls().includes("exit"))
+  }
+})
+
+test("MP-08 / MP-10 F6 copies without kitty keyboard support and never stops or exits", () => {
+  for (const copyHandled of [true, false]) {
+    for (const activeTurnWork of [true, false]) {
+      let clears = 0
+      const harness = createHarness({ parsedEvent: keyEvent("f6"), copyHandled, activeTurnWork, clearTextSelection: () => { clears++ } })
+      assert.equal(harness.controller.handleData("\x1b[17~"), true)
+      assert.ok(harness.calls().includes("copy"))
+      assert.ok(!harness.calls().includes("stop"))
+      assert.ok(!harness.calls().includes("exit"))
+      assert.equal(clears, 0)
+    }
+  }
+})
+
 function createHarness(options: {
   parsedEvent?: CliStdinKeyEvent | null
   handleProjectEnvironmentKey?: (event: CliStdinKeyEvent) => boolean
+  clearTextSelection?: () => void
   dialogOpen?: boolean
   sessionBrowserHandled?: boolean
   focusedInteractionActive?: boolean
@@ -274,10 +320,15 @@ function createHarness(options: {
     ? keyEvent("x")
     : options.parsedEvent
   const deps: CliStdinKeyControllerDeps = {
-    parseKeypress: (chunk, parseOptions) => {
-      calls.push(`parse:${String(chunk)}:${parseOptions.useKittyKeyboard}`)
-      return parsedEvent
-    },
+    ...(options.clearTextSelection ? { clearTextSelection: options.clearTextSelection } : {}),
+    createStdinParser: () => ({
+      push: (data) => {
+        calls.push(`parse:${Buffer.from(data).toString()}`)
+      },
+      drain: (onEvent) => {
+        if (parsedEvent) onEvent({ type: "key", key: parsedEvent })
+      },
+    }),
     ...(options.handleProjectEnvironmentKey ? { handleProjectEnvironmentKey: options.handleProjectEnvironmentKey } : {}),
     dialogOverlayOpen: () => options.dialogOpen ?? false,
     closeActiveDialogOverlay: () => {
@@ -389,5 +440,14 @@ test("Environment panel preserves Ctrl+E and Ctrl+C exit/stop through stdin", as
     const harness = createHarness({ parsedEvent: keyEvent(name, { ctrl: true }), activeTurnWork, handleProjectEnvironmentKey: panel.handleKey })
     assert.equal(harness.controller.handleData("x"), true)
     assert(harness.calls().includes(name === "c" && activeTurnWork ? "stop" : "exit"))
+  }
+})
+
+ test("MP-08 / MP-10 transcript copy precedes both active interaction paths", () => {
+  for (const promptFocused of [true, false]) for (const event of [keyEvent("f6"), keyEvent("c", {meta: true}), keyEvent("c", {ctrl: true, shift: true})]) {
+    const h = createHarness({parsedEvent: event, promptFocused, focusedInteractionActive: true, focusedInteractionHandled: true, copyHandled: true})
+    h.controller.handleData("x")
+    assert.ok(h.calls().includes("copy"))
+    assert.ok(!h.calls().includes(`focused:${event.name}`))
   }
 })
