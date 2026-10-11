@@ -38,6 +38,8 @@ class CaretPointerTests(unittest.TestCase):
         self.return_focus = False
         self.native_change = None
         self.run_id = 0
+        self.helper_refusal = False
+        self.clicks = []
 
     def tearDown(self):
         # Exact public fixture files only; no recursive removal or runtime home.
@@ -75,6 +77,11 @@ class CaretPointerTests(unittest.TestCase):
         if '--drill-permissions' in arguments: return 'drillPermission accessibility=granted'
         if '--click-at-pointer' in arguments and self.launch_change:
             self.state['frontmostPID'] = 99
+        if '--click' in arguments:
+            self.clicks.append(label)
+        if '--click-at-pointer' in arguments and self.helper_refusal:
+            # The helper saw focus loss; all facts have returned before Python samples.
+            return 'refused: target (not-frontmost)'
         point = self.state['pointer'] if '--click-at-pointer' in arguments else {'x': 20, 'y': 30}
         return f'dispatched; path=AXSelectedTextRange; observed AXSelectedTextRange location=125 length=0; point={point["x"]},{point["y"]}'
 
@@ -92,11 +99,22 @@ class CaretPointerTests(unittest.TestCase):
                 self.state['windows'] = []
                 def reference(evidence, label, scope, document, close=False):
                     if close: self.state['windows'] = []; return None
-                    return {'probes': [{'name': 'probe', 'point': {'x': 20, 'y': 30}, 'expectedLocation': 125}],
+                    return {'probes': [{'name': 'probe', 'point': {'x': 20, 'y': 30}, 'expectedLocation': 125},
+                                       {'name': 'second', 'point': {'x': 40, 'y': 50}, 'expectedLocation': 125}],
                             'selectedRange': {'location': 125, 'length': 0}}
                 with patch.object(Path, 'home', return_value=self.root), patch.object(textedit, 'reference', side_effect=reference), \
                      patch.object(textedit.time, 'strftime', return_value=f'takeover-{self.run_id}'):
                     textedit.run()
+
+    def test_helper_takeover_refusal_retires_lease_before_restored_facts_are_sampled(self):
+        for runner in ['fixture', 'textedit']:
+            with self.subTest(runner=runner):
+                self.state = {'frontmostPID': 42, 'pointer': {'x': 2, 'y': 3}, 'windows': [self.window]}
+                self.warps = []; self.clicks = []; self.helper_refusal = True
+                self.invoke(runner)
+                self.assertEqual(self.warps, [{'x': 20.0, 'y': 30.0}])
+                pointer_clicks = [name for name in self.clicks if name.endswith('pointer') or name == 'probe']
+                self.assertEqual(len(pointer_clicks), 1)
 
     def test_takeover_after_precheck_never_warps_in_either_runner(self):
         for runner in ['fixture', 'textedit']:
