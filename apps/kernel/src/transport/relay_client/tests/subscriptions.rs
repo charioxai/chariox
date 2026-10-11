@@ -1127,6 +1127,7 @@ async fn room_workflows_encrypted_relay_drill_inventory_updates_replay_and_last_
     let subscription_public_key =
         relay_crypto::public_key_from_private_key_base64(&subscription_private_key)
             .expect("subscription public key should derive");
+    approve_test_terminal(&config, &subscription_public_key);
     send_client_envelope(
         &mut client_socket,
         &RelayEnvelope::ClientSubscribe {

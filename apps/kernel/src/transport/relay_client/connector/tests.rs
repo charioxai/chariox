@@ -547,10 +547,10 @@ async fn exercise_post_connect_confirmation(
 }
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_100_hosted_confirmation_gate() {
+fn mp08_mp10_mp11_browser_artifact_peer_101_hosted_confirmation_gate() {
     let home = crate::config::DaemonConfig::for_tests();
     let worker = crate::config::DaemonConfig::for_tests();
-    for version in [99, 100] {
+    for version in [100, 101] {
         for (slice_id, nonce) in [
             ("slice-1", "nonce-1"),
             ("other", "nonce-1"),
@@ -590,7 +590,7 @@ fn mp08_mp10_mp11_browser_artifact_peer_100_hosted_confirmation_gate() {
                     "slice-1",
                     "nonce-1",
                 ),
-                version == 100 && slice_id == "slice-1" && activation_nonce == "nonce-1"
+                version == 101 && slice_id == "slice-1" && activation_nonce == "nonce-1"
             );
         }
     }
