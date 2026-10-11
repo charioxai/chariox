@@ -4,11 +4,6 @@ use super::*;
 use crate::account_profile::ProviderAccountAuthState;
 use crate::provider::{ClaudeCredentialCheckError, ProviderCredentialEnvironment};
 
-#[derive(Default)]
-pub(super) struct ClaudeTokenChecks(
-    Mutex<BTreeMap<String, Result<(), ClaudeCredentialCheckError>>>,
-);
-
 impl KernelRuntimeState {
     pub(in crate::runtime) async fn invalidate_claude_token_check(
         &self,
@@ -16,7 +11,7 @@ impl KernelRuntimeState {
         profile: &str,
     ) {
         let id = crate::provider::provider_account_credential_id(owner, "claude", profile);
-        self.owned.claude_token_checks.0.lock().await.remove(&id);
+        self.owned.claude_token_checks.invalidate(&id).await;
     }
 
     pub(super) async fn checked_claude_credentials(
@@ -40,25 +35,33 @@ impl KernelRuntimeState {
         }
         let credential_id =
             crate::provider::provider_account_credential_id(&owner, "claude", &profile.profile_id);
-        let mut checks = self.owned.claude_token_checks.0.lock().await;
-        // Serialize the single check across agents using the same account. The
-        // cache holds verdicts only; successful replacement invalidates it.
         let checked = if profile.auth_state == ProviderAccountAuthState::Expired {
             Err(ClaudeCredentialCheckError::Rejected)
-        } else if let Some(checked) = checks.get(&credential_id) {
-            checked.clone()
         } else {
-            let checked = crate::runtime::claude_setup_token_login::check(
-                self,
-                &owner,
-                &profile.profile_id,
-                &zeroize::Zeroizing::new(token.to_string()),
-            )
-            .await;
-            checks.insert(credential_id.clone(), checked.clone());
+            let checked = self
+                .owned
+                .claude_token_checks
+                .check(&credential_id, || async {
+                    crate::runtime::claude_setup_token_login::check(
+                        self,
+                        &owner,
+                        &profile.profile_id,
+                        &zeroize::Zeroizing::new(token.to_string()),
+                    )
+                    .await
+                })
+                .await;
+            let Some(checked) = checked else {
+                // A replacement invalidated this in-flight credential generation.
+                // Resolve it through the ordinary Vault path before retrying.
+                drop(credentials);
+                let fresh = self
+                    .resolve_signed_in_claude_credentials(request, &owner, &profile.profile_id)
+                    .await?;
+                return Box::pin(self.checked_claude_credentials(request, fresh)).await;
+            };
             checked
         };
-        drop(checks);
         match checked {
             Ok(()) => {
                 crate::runtime::claude_setup_token_login::record_verified_token(

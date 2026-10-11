@@ -225,7 +225,7 @@ struct KernelRuntimeOwnedState {
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     provider_login_processes: ProviderLoginProcessStore,
     provider_auth_recovery_runs: Arc<std::sync::Mutex<BTreeSet<String>>>,
-    claude_token_checks: Arc<claude_token_first_use::ClaudeTokenChecks>,
+    claude_token_checks: Arc<claude_token_checks::ClaudeTokenChecks>,
     event_connection_registry: crate::event_connection::EventConnectionRegistry,
     prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
     active_turns: ActiveTurnStore,
@@ -439,6 +439,7 @@ mod remote_queue_advance_tests;
 mod restart_recovery_runtime;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 mod agent_batch_runtime_state;
+mod claude_token_checks;
 mod claude_token_first_use;
 mod provider_login_workflow;
 mod runtime_interaction_owned_state;
