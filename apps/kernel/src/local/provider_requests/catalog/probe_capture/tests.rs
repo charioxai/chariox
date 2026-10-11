@@ -272,3 +272,37 @@ fn review0821_redirected_descendants_stop_after_success_and_timeout() {
         }
     }
 }
+
+// MP-08 / MP-10 / MP-11: group membership proves ownership only in a private session.
+#[cfg(unix)]
+#[test]
+fn review0821_probe_group_rejects_unrelated_siblings() {
+    use std::{os::unix::process::CommandExt, process::Stdio};
+    let mut command = shell("sleep 1");
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut probe = super::platform::Process::spawn(&mut command).unwrap();
+    let pid = probe.child.id();
+    assert!(pid > 1 && pid <= i32::MAX as u32);
+    let mut sibling = shell("sleep .1");
+    unsafe {
+        sibling.pre_exec(move || {
+            if libc::setpgid(0, pid as i32) < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    let rejected = match sibling.spawn() {
+        Err(error) => error.raw_os_error() == Some(libc::EPERM),
+        Ok(mut child) => {
+            // This fixture is ours; do not let it enter probe cleanup's ownership set.
+            assert!(child.id() > 1);
+            let _ = child.kill();
+            child.wait().unwrap();
+            false
+        }
+    };
+    probe.stop().unwrap();
+    assert!(rejected, "unrelated sibling could join the probe's cleanup group");
+}
