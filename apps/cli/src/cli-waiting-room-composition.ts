@@ -722,6 +722,12 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       // MP-08/MP-11: workspace previews retain home account state. Admission
       // after the owner pivot must use the destination's fresh inventory.
       deps.setProviderAccountsState(inventory.providerAccounts ?? [])
+      // Profile IDs are kernel-scoped. Preserve a matching destination choice;
+      // otherwise use its normal Waiting Room default before admission.
+      const destinationSelection = reconcileWaitingRoomProjection({
+        ...deps.waitingRoomState(), accountProfileId: launch.accountProfile,
+      })
+      launch.accountProfile = destinationSelection.accountProfileId ?? "default"
     },
     prepareManagedSessionLaunch,
     prepareExistingSessionClient: async (session) => {

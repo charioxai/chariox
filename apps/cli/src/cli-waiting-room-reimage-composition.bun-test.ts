@@ -60,6 +60,27 @@ for (const authState of ["not_configured", "authenticated"] as const) {
   }
 }
 
+for (const entry of ["keyboard", "direct"] as const) {
+  reimageTest(`MP-08/MP-10/MP-11 managed ${entry} Start resolves an absent home profile to the destination default`, async router => {
+    const harness = createHarness(router, { interactivePlacement: true, homeAccountState: "not_configured",
+      homeAccountProfile: "home-profile", targetAccountProfile: "destination-profile" })
+    try {
+      await harness.initialize()
+      assert.equal(harness.state().accountProfileId, "home-profile")
+      harness.composition.reconcileWaitingRoom({ ...harness.state(), focus: "new",
+        selectedMachineRef: managedEnvironmentMachineRef("environment-1"), selectedKernelRef: "kernel-old",
+      })
+      await new Promise(resolve => setImmediate(resolve))
+      if (entry === "keyboard") await harness.composition.activateWaitingRoom()
+      else await harness.composition.startSessionFromWaitingRoomDefaults()
+      const request = harness.old.requests.find(request => requestKind(request) === "CreateSession")!
+      const defaults = requestPayload(request, "CreateSession").agent_defaults as { account_profile: string }
+      assert.equal(defaults.account_profile, "destination-profile")
+      assert.equal(requestCount(harness.local, "CreateSession"), 0)
+    } finally { harness.cleanup() }
+  })
+}
+
 reimageTest("MP-08/MP-11 ready managed admission rejects a signed-out destination despite healthy home accounts", async router => {
   const harness = createHarness(router, { interactivePlacement: true, targetAccountState: "not_configured" })
   try {
@@ -546,6 +567,8 @@ function createHarness(router: TestRouter, options: {
   stoppedEnrolled?: boolean
   targetAccountState?: "not_configured" | "ready"
   homeAccountState?: "not_configured" | "authenticated"
+  homeAccountProfile?: string
+  targetAccountProfile?: string
   interactivePlacement?: boolean
   managedWorktrees?: Promise<unknown>
   managedInventory?: Promise<unknown>
@@ -587,7 +610,7 @@ function createHarness(router: TestRouter, options: {
             launch_target: { workspace_id: options.localLaunchTarget.workspace, worktree_id: options.localLaunchTarget.worktree },
           } } }
         }
-        return options.interactivePlacement ? placementSnapshot("kernel-local", "machine-local", "/home/local", options.homeAccountState)
+        return options.interactivePlacement ? placementSnapshot("kernel-local", "machine-local", "/home/local", options.homeAccountState, options.homeAccountProfile)
           : snapshotResponse("kernel-local", "machine-local", contextPlan)
       case "ListWorkspaceWorktrees":
         return { WorkspaceWorktreesListed: { worktrees: options.localWorktrees ?? [{ path: "/home/local", branch: "main", current: true }] } }
@@ -646,7 +669,7 @@ function createHarness(router: TestRouter, options: {
     switch (requestKind(request)) {
       case "GetWaitingRoomPublicSnapshot":
         if (options.managedInventory) return options.managedInventory
-        return options.interactivePlacement ? placementSnapshot("kernel-old", "machine-old", "/home/managed", options.targetAccountState ?? (options.homeAccountState ? "ready" : undefined))
+        return options.interactivePlacement ? placementSnapshot("kernel-old", "machine-old", "/home/managed", options.targetAccountState ?? (options.homeAccountState ? "ready" : undefined), options.targetAccountProfile)
           : snapshotResponse("kernel-old", "machine-old", contextPlan)
       case "ListWorkspaceWorktrees":
         return options.managedWorktrees ?? { WorkspaceWorktreesListed: { worktrees: options.managedRepositoryState && options.managedRepositoryState() !== "ready"
@@ -943,15 +966,15 @@ function snapshotResponse(kernelId: string, machineId: string, plan: ManagedEnvi
   }
 }
 
-function placementSnapshot(kernelId: string, machineId: string, workspace: string, accountState?: "not_configured" | "authenticated" | "ready") {
+function placementSnapshot(kernelId: string, machineId: string, workspace: string, accountState?: "not_configured" | "authenticated" | "ready", profileId = "shared-profile") {
   const response = snapshotResponse(kernelId, machineId, emptyPlan())
   return { WaitingRoomPublicSnapshot: { snapshot: {
     ...response.WaitingRoomPublicSnapshot.snapshot,
     provider_accounts: accountState ? [{
-      provider: "opencode", profile_id: "shared-profile", label: "Selected account", is_default: true,
+      provider: "opencode", profile_id: profileId, label: "Selected account", is_default: true,
       auth_state: accountState === "ready" ? "authenticated" : accountState,
       owner_user_id: "local", origin: "linked", usage: {
-        provider: "opencode", profile_id: "shared-profile", source: "test", availability: "available",
+        provider: "opencode", profile_id: profileId, source: "test", availability: "available",
         meters: accountState === "authenticated" ? [{meter_id: "credits", service_id: "opencode", observed_at_ms: Date.now(), kind: "credit_balance", label: "Credits", state: "exhausted"}] : [],
       },
     }] : response.WaitingRoomPublicSnapshot.snapshot.provider_accounts,
