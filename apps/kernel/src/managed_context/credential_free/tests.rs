@@ -101,34 +101,16 @@ fn mp08_mp11_every_text_fixture_has_asset_parity() {
             .into_iter()
             .map(|(path, bytes)| (path, bytes.to_vec())),
     );
-    fixtures.extend([
-        ("file", b"Authorization: Bearer synthetic-canary".to_vec()),
-        (
-            "file",
-            br#"{"args":["--api-key","synthetic-canary"]}"#.to_vec(),
-        ),
-        ("file", br#"{"x-api-key":"synthetic-canary"}"#.to_vec()),
-        ("file", b"-----BEGIN PRIVATE KEY-----".to_vec()),
-        (
-            "file",
-            b"https://user:synthetic-canary@example.test".to_vec(),
-        ),
-        (
-            "file",
-            b"https://example.test?token=synthetic-canary".to_vec(),
-        ),
-        ("origin-url", b"ssh://git@example.test/project.git".to_vec()),
-        ("file", br#"{"args":["--max-tokens","4096"]}"#.to_vec()),
-        (
-            "index.d.ts",
-            include_bytes!("fixtures/slugify-index.d.ts.txt").to_vec(),
-        ),
-        (
-            "commit-message.txt",
-            include_bytes!("fixtures/requests-commit-message.txt").to_vec(),
-        ),
-        ("file", b"a$b=c".to_vec()), // Short readable runs have the text policy too.
-    ]);
+    fixtures.extend(
+        guard_text_cases()
+            .into_iter()
+            .map(|(path, bytes, _)| (path, bytes.to_vec())),
+    );
+    fixtures.extend(
+        public_text_cases()
+            .into_iter()
+            .map(|(path, bytes, _)| (path, bytes)),
+    );
     let mut failures = Vec::new();
     for (index, (original_path, bytes)) in fixtures.into_iter().enumerate() {
         for (path, signature) in ASSET_SIGNATURES {
@@ -566,9 +548,8 @@ fn mp08_mp11_target_refuses_basic_auth_in_overlay() {
     )
     .assert_target_refuses();
 }
-#[test]
-fn mp11_owner_context_refuses_credentials_and_environment_files() {
-    for (path, bytes) in [
+fn guard_text_cases() -> Vec<(&'static str, &'static [u8], bool)> {
+    let mut cases = [
         (".env", b"canary-value".as_slice()),
         ("auth.json", b"canary-value"),
         ("file", b"API_KEY=synthetic-canary"),
@@ -583,12 +564,32 @@ fn mp11_owner_context_refuses_credentials_and_environment_files() {
             "file",
             br#"{"ciphertext":"synthetic-vault-canary","kdf":{}}"#,
         ),
-    ] {
-        assert!(validate_bytes(path, bytes).is_err(), "fixture path {path}");
+    ]
+    .into_iter()
+    .map(|(path, bytes)| (path, bytes, false))
+    .collect::<Vec<_>>();
+    cases.extend([
+        (
+            "README.md",
+            b"ordinary project instructions".as_slice(),
+            true,
+        ),
+        ("origin-url", b"ssh://git@example.test/project.git", true),
+        ("file", br#"{"args":["--max-tokens","4096"]}"#, true),
+        ("file", b"a$b=c", false), // Short runs receive the full text policy.
+    ]);
+    cases
+}
+
+#[test]
+fn mp11_owner_context_refuses_credentials_and_environment_files() {
+    for (path, bytes, data) in guard_text_cases() {
+        assert_eq!(
+            validate_bytes(path, bytes).is_ok(),
+            data,
+            "MP-08/MP-11 guard fixture {path}"
+        );
     }
-    assert!(validate_bytes("README.md", b"ordinary project instructions").is_ok());
-    assert!(validate_bytes("origin-url", b"ssh://git@example.test/project.git").is_ok());
-    assert!(validate_bytes("file", br#"{"args":["--max-tokens","4096"]}"#).is_ok());
 }
 #[test]
 fn mp08_mp11_owner_package_refuses_credentials_in_git_history() {
@@ -1242,34 +1243,53 @@ fn r3_guard_scans_every_gzip_member_the_importer_accepts() {
     ordinary.assert_target_archive(true, &archive);
 }
 
-// MP-08/MP-11: public sindresorhus/slugify at 3b17b2e84b97624a683aafaa38184bf2746fab22.
-// The POSIX tokenizer joined a Markdown fence and paragraphs into a dynamic name.
-#[test]
-fn mp08_mp11_public_slugify_declarations_are_not_a_shell_assignment() {
-    let public = include_bytes!("fixtures/slugify-index.d.ts.txt");
-    assert!(validate_bytes("index.d.ts", public).is_ok());
+// MP-08/MP-11: public-origin clean prose/source and every appended control.
+fn public_text_cases() -> Vec<(&'static str, Vec<u8>, bool)> {
+    let declarations = include_bytes!("fixtures/slugify-index.d.ts.txt");
+    let prose = include_bytes!("fixtures/requests-commit-message.txt");
+    let mut cases = vec![
+        ("index.d.ts", declarations.to_vec(), true),
+        ("", prose.to_vec(), true),
+    ];
     for secret in [
         b"API_KEY=synthetic-live-secret-canary".as_slice(),
         b"-----BEGIN PRIVATE KEY-----\nsynthetic-private-material\n-----END PRIVATE KEY-----",
         b"env API_${NAME}=synthetic-canary worker",
         b"sh -c 'API_`printf KEY`=synthetic-canary worker'",
     ] {
-        let mut with_secret = public.to_vec();
-        with_secret.extend_from_slice(b"\n");
-        with_secret.extend_from_slice(secret);
-        assert!(validate_bytes("index.d.ts", &with_secret).is_err());
+        cases.push((
+            "index.d.ts",
+            [declarations.as_slice(), b"\n", secret].concat(),
+            false,
+        ));
     }
+    cases.extend([
+        (
+            "",
+            [
+                prose.as_slice(),
+                b"\nAPI_KEY=synthetic-real-secret-format-control\n",
+            ]
+            .concat(),
+            false,
+        ),
+        ("", b"`API_KEY=synthetic-canary`".to_vec(), false),
+        (
+            "",
+            b"env API_`printf KEY`=synthetic-canary worker".to_vec(),
+            false,
+        ),
+    ]);
+    cases
 }
 
-// MP-08/MP-11: psf/requests public commit c0813a2d910ea6b4f8438b91d315b8d181302356.
-// Backticked timeout=value is documentation, not a computed shell assignment name.
 #[test]
-fn mp08_mp11_public_requests_prose_retains_secret_detection() {
-    let public = include_bytes!("fixtures/requests-commit-message.txt");
-    assert!(validate_bytes("", public).is_ok());
-    let mut changed = public.to_vec();
-    changed.extend_from_slice(b"\nAPI_KEY=synthetic-real-secret-format-control\n");
-    assert!(validate_bytes("", &changed).is_err());
-    assert!(validate_bytes("", b"`API_KEY=synthetic-canary`").is_err());
-    assert!(validate_bytes("", b"env API_`printf KEY`=synthetic-canary worker").is_err());
+fn mp08_mp11_public_source_retains_secret_detection() {
+    for (path, bytes, data) in public_text_cases() {
+        assert_eq!(
+            validate_bytes(path, &bytes).is_ok(),
+            data,
+            "MP-08/MP-11 public fixture {path}"
+        );
+    }
 }
