@@ -227,6 +227,9 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     if (frames.length >= 8 || queuedBytes + size > 1024 * 1024) throw Error('MD-DISPLAY: credited receive window exceeded');
     const presented = presentationQueue.submit(frame,async () => {
       if (!await presenter.present(frame)) throw Error('MD-DISPLAY: rejected window frame');
+      // MP-08/MP-10: accepted hidden pixels still define input/capture geometry.
+      // Keep this separate from visible presentation metrics.
+      options.onAccepted?.(frame);
       if(presenter.wasDrawn(frame) !== false) options.onPresented?.(frame,presenter.outcomes.get(frame));
     });
     presented.catch(error => { failure=error; running=false; });
@@ -271,6 +274,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     const presented = event.then(async frame => {
       if (!frame) return null;
       if (!await presenter.present(frame)) throw new Error('MD-DISPLAY: rejected frame');
+      options.onAccepted?.(frame);
       if(presenter.wasDrawn(frame)!==false) options.onPresented?.(frame,presenter.outcomes.get(frame));
       return frame;
     });
@@ -388,6 +392,7 @@ function pushDisplay(presenter, transport, request, binding, tab, options) {
       }
       recovering = false;
       onTiming('client_present_total', at);
+      options.onAccepted?.(frame);
       if (presenter.wasDrawn(frame) !== false) options.onPresented?.(frame,presenter.outcomes.get(frame));
       ack(frame.sequence);
       unread.push(frame); if (unread.length > 64) unread.shift();
