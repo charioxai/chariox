@@ -7,11 +7,11 @@ mod aggregate_store;
 mod check;
 mod check_admission;
 mod check_assets;
+mod check_gui_identity;
 mod check_health;
 mod check_inventory;
 mod check_package_inventory;
 mod check_platform;
-mod check_gui_identity;
 mod check_runner;
 mod check_store;
 mod check_tools;
@@ -72,3 +72,6 @@ mod detect_tests;
 
 #[cfg(test)]
 mod check_tests;
+
+#[cfg(test)]
+mod review1118_metadata_tests;

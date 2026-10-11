@@ -317,6 +317,11 @@ pub(crate) fn observe_provider_auth_status_until(
         Some("claude") => {
             let status =
                 claude_auth_status_until(provider, &profile.profile_id, &environment, deadline)?;
+            registry.record_claude_native_login(
+                owner_user_id,
+                &profile.profile_id,
+                status.auth_state == "authenticated",
+            )?;
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             Ok(status)
         }
@@ -364,6 +369,11 @@ pub(crate) fn refresh_provider_account_profile_response(
         }
         Some("claude") => {
             let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
+            registry.record_claude_native_login(
+                owner_user_id,
+                &profile.profile_id,
+                status.auth_state == "authenticated",
+            )?;
             if status.auth_state != "authenticated"
                 && crate::provider::provider_account_credential_registered(
                     owner_user_id,
@@ -452,6 +462,11 @@ fn claude_auth_status_until(
         "ANTHROPIC_CUSTOM_HEADERS",
     ] {
         command.env_remove(name);
+    }
+    // Native observations must not inherit an unrelated setup token. Explicit
+    // enrollment passes its token in the selected utility environment.
+    if !environment.contains_key(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
+        command.env_remove(crate::provider::CLAUDE_OAUTH_TOKEN_ENV);
     }
     let output = bounded_status_output_until(command, "Claude auth status", deadline)?;
     // The managed launcher can fail before Claude executes. Exit 1 alone
