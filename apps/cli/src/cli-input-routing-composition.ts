@@ -391,6 +391,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   })
 
   const normalPromptSubmitController = createNormalPromptSubmitController({
+    onPromptRejected: deps.onProviderAccountPromptBlocked,
     promptBlockReason: (agentId, alias) => {
       const agent = deps.sessionState().agents.find((candidate: { id: string; alias?: string | null }) =>
         alias ? candidate.alias?.toLowerCase() === alias.toLowerCase() : candidate.id === agentId,

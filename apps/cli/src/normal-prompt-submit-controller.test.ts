@@ -345,6 +345,7 @@ test("normal prompt submit failure preserves active session runtime state", asyn
 
 function createHarness(options: {
   promptBlockReason?: NormalPromptSubmitControllerDeps["promptBlockReason"]
+  onPromptRejected?: NormalPromptSubmitControllerDeps["onPromptRejected"]
   attachment?: RuntimeAttachment | null
   pendingAttachments?: PendingPromptAttachment[]
   inlineLocalFiles?: boolean
@@ -384,6 +385,7 @@ function createHarness(options: {
 
   const controller = createNormalPromptSubmitController({
     ...(options.promptBlockReason ? { promptBlockReason: options.promptBlockReason } : {}),
+    onPromptRejected: options.onPromptRejected,
     getPendingAttachments: () => options.pendingAttachments ?? [],
     waitForPendingAgentFocusTransition: async () => {},
     getFocusedAgentId: () => options.focusedAgentId === undefined ? "agent-1" : options.focusedAgentId,
@@ -586,4 +588,18 @@ function runtimeSession(
   assert.deepEqual(harness.submissions(), [])
   assert.deepEqual(harness.appendedPrompts(), [])
   assert.match(harness.footerMessages().at(-1)?.message ?? "", /needs sign-in.*chariox/)
+})
+
+test("MP-08/MP-10/MP-11 kernel auth rejection retains the addressed alias instead of focus", async () => {
+  const targets: unknown[] = []
+  const h = createHarness({
+    session: runtimeSession("session-1", null, { agents: [agent("agent-1"), agent("agent-b")] }),
+    promptBlockReason: () => null,
+    onPromptRejected: target => targets.push(target),
+    submitPrompt: async () => { throw Error("selected codex account b is not authenticated") },
+  })
+  await h.controller.submit("@agent-b read README")
+  assert.deepEqual(targets, [{sessionId: "session-1", agentId: "agent-b"}])
+  assert.equal(h.restoredSnapshots()[0]?.rawPrompt, "@agent-b read README")
+  assert.equal(h.footerMessages().at(-1)?.message, "selected codex account b is not authenticated")
 })
