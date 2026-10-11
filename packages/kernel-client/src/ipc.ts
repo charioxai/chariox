@@ -651,7 +651,9 @@ export class LocalIpcClient {
       && Date.now() < retryUntilMs
       && error instanceof LocalIpcError
       && error.retryable
-      && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout")
+      // This relay rejection precedes forwarding, so even a mutation has not
+      // run. A lost acknowledgement still follows the outcome_unknown guard.
+      && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout" || error.code === "target_not_connected")
   }
 
   private requestAttemptTimeoutMs(lane: KernelSocketLane, retryUntilMs: number): number {
