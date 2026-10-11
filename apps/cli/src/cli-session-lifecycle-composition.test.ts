@@ -47,6 +47,8 @@ test("waiting-room subscription failure retains rows and marks them reconnecting
     options: {}, renderer: {}, appLogger: { error: () => {}, debug: () => {} },
     closingStateController: { isClosing: () => false, setClosing: () => {} },
     supportsKernelEventStream: true,
+    // MP-08 / MP-10 / MP-11: #888 subscribes only once a kernel is connected.
+    kernelConnected: () => true,
     attachmentState: () => null,
     isAttached: () => false,
     formatError: (error: Error) => error.message,

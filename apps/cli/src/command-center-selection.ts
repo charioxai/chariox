@@ -76,18 +76,20 @@ export function nextCommandCenterIndex(
     if (normalized === "/" || input.startsWith("@")) {
       return 0
     }
-    const exactCommandIndex = items.findIndex((item) => (
-      item.kind === "command" && shouldSubmitExactCommandCenterMatch(item, input)
-    ))
-    if (exactCommandIndex >= 0) {
-      return exactCommandIndex
-    }
+    // A group named exactly as typed keeps Tab expansion (e.g. "/workflow");
+    // a typed command with its arguments wins over stale highlights (#888).
     const exactGroupIndex = items.findIndex((item) => (
       item.kind === "group"
       && (normalized === item.value.trim() || input === item.value)
     ))
     if (exactGroupIndex >= 0) {
       return exactGroupIndex
+    }
+    const exactCommandIndex = items.findIndex((item) => (
+      item.kind === "command" && shouldSubmitExactCommandCenterMatch(item, input)
+    ))
+    if (exactCommandIndex >= 0) {
+      return exactCommandIndex
     }
   }
 
