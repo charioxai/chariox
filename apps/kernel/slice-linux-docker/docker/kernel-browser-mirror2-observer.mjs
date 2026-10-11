@@ -259,7 +259,7 @@ export function installMirror2(sanitizeMirrorCss) {
     // A disabled sheet keeps its ordered slot as an empty sheet; a sheet's media list is its @media condition.
     const sheetIds = new WeakMap(), adoptedTexts = new WeakMap(); let sheetSerial = 0;
     const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base), media = sheet.media.mediaText; adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sanitizeMirrorCss(media ? `@media ${media}{${text}}` : text, base, resource)); } catch { sheets.push(''); } } return sheets; };
-    const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { let id = sheetIds.get(sheet); if (!id) sheetIds.set(sheet, id = ++sheetSerial); return `${id}:${sheetSignature(sheet)}:${sheet.media.mediaText}`; }).join(',');
+    const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { let id = sheetIds.get(sheet); if (!id) sheetIds.set(sheet, id = ++sheetSerial); return `${id}:${sheetSignature(sheet)}`; }).join(',');
     const adoptedEdited = () => {
       const edited = new Map(), out = new Set();
       for (const [id, root] of roots) for (const sheet of root.adoptedStyleSheets ?? []) {
@@ -268,15 +268,16 @@ export function installMirror2(sanitizeMirrorCss) {
       }
       return out;
     };
-    // Rule count ('x' when cross-origin rules are unreadable) and, independently, the disabled state.
+    // Rule count ('x' when cross-origin rules are unreadable) and, independently, the disabled state and the
+    // CSSOM media list (`sheet.media.mediaText = ...` / appendMedium make no mutation and no CSS event).
     const ruleCount = sheet => { try { return String(sheet.cssRules.length); } catch { return 'x'; } };
-    const sheetSignature = sheet => `${ruleCount(sheet)}:${sheet.disabled}`;
+    const sheetSignature = sheet => `${ruleCount(sheet)}:${sheet.disabled}:${sheet.media.mediaText}`;
     // @import rules lead, after any @layer statements (`@layer a; @import ...`).
     const imports = sheet => { try { for (const rule of sheet?.cssRules ?? []) { if (rule.type === 3) return true; if (!(rule instanceof CSSLayerStatementRule)) return false; } } catch {} return false; };
     const styleRecord = (node, record) => {
       record.tag = 'style'; record.attrs = {};
-      const media = node.getAttribute('media'); if (media && media.length <= 4096) record.attrs.media = media;
-      const sheet = node.sheet; record.css = '';
+      const sheet = node.sheet, media = sheet ? sheet.media.mediaText : node.getAttribute('media'); record.css = '';
+      if (media && media.length <= 4096) record.attrs.media = media;
       if (sheet) {
         if (sheet.disabled) record.attrs.media = 'not all';
         try { record.css = css(sheet, sheet.href ?? node.baseURI); } catch { if (sheet.href) pendingSheets.push({ id: record.id, url: sheet.href }); }
@@ -520,12 +521,12 @@ export function installMirror2(sanitizeMirrorCss) {
       for (const [id, entry] of styleNodes) {
         const sheet = entry.node.sheet, signature = sheet ? sheetSignature(sheet) : '';
         if (dirty.sheets.has(entry.node) || signature !== entry.signature) {
-          let text = ''; let media = entry.node.getAttribute('media'); if (media && media.length > 4096) media = null;
+          let text = '', media = sheet ? sheet.media.mediaText : entry.node.getAttribute('media'); if (media && media.length > 4096) media = null;
           // An unreadable sheet is re-read through CDP when it (re)loaded, not when only its disabled state changed.
           if (sheet) { try { text = css(sheet, sheet.href ?? entry.node.baseURI); } catch { if (sheet.href && (dirty.sheets.has(entry.node) || !entry.signature.startsWith('x:'))) pendingSheets.push({ id, url: sheet.href }); text = entry.text; } if (sheet.disabled) media = 'not all'; }
           entry.signature = signature; entry.imports = imports(sheet);
           if (text !== entry.text) { entry.text = text; ops.push({ op: 'css', id, css: text }); }
-          // Effective media: CSSOM `sheet.disabled` changes it without any mutation or event.
+          // Effective media: the CSSOM media list and `sheet.disabled` change it without any mutation or event.
           if ((media || null) !== entry.media) { entry.media = media || null; ops.push({ op: 'attr', id, name: 'media', value: entry.media }); }
         }
       }

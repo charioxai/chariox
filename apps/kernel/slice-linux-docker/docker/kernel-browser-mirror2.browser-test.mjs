@@ -899,3 +899,20 @@ test("MP-10: review #941@36a395b05-3 a same-count declaration edit inside a shee
     "/t.css": { type: "text/css", body: '@layer inner;\n@import url("n.css") layer(inner);\n#q{color:rgb(9, 9, 9)}' },
     "/n.css": { type: "text/css", body: "#r{color:rgb(8, 8, 8)}" },
   }));
+
+// Review #941 @36a395b05 finding 6: `sheet.media.mediaText = ...` / `appendMedium` change a style or link sheet's
+// effective condition without a mutation or CSS event; the viewer's copy must follow (readable and no-CORS sheets).
+test("MP-10: review #941@36a395b05-6 CSSOM media-list edits of style and no-CORS link sheets reach the viewer (deltas and the next snapshot)", () => mirrored(
+  '<style id="s">#q{color:rgb(9, 9, 9)}</style><link id="l" rel="stylesheet" href="http://localhost:PORT/x.css"><p id="q">q</p><p id="r">r</p>', async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const [s, l] = elements(await next()).filter(([, tag]) => tag === "style").map(([id]) => id);
+    const media = async (id, value) => { for (let i = 0; i < 4; i++) if ((await next(1000)).ops.some(op => op.op === "attr" && op.id === id && op.name === "media" && op.value === value)) return true; return false; };
+    await evaluate("s.sheet.media.mediaText='print';true");
+    assert(await media(s, "print"), "MP-10: the style sheet's new media list reaches the viewer");
+    await evaluate("l.sheet.media.appendMedium('print');true");
+    assert(await media(l, "print"), "MP-10: the no-CORS link sheet's appended medium reaches the viewer");
+    const snapshot = await next(0, true);
+    assert.deepEqual(elements(snapshot).filter(([, tag]) => tag === "style").map(([, , attrs]) => attrs.media), ["print", "print"], "MP-10: a snapshot serializes the effective media list");
+    await evaluate("s.sheet.media.mediaText='';true");
+    assert(await media(elements(snapshot).filter(([, tag]) => tag === "style")[0][0], null), "MP-10: clearing the media list reaches the viewer");
+  }, { "/x.css": { type: "text/css", body: "#r{color:rgb(8, 8, 8)}" } }));
