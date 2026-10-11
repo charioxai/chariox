@@ -4,6 +4,7 @@
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -503,5 +504,28 @@ test('MP-10: protocol 501 the viewer takes the kernel\'s custom validity (record
     assert.deepEqual(await seen(), ['rgb(255, 0, 0)', 'none', 'rgb(255, 255, 0)'], 'MP-10: the invalid control (and its form) match :invalid');
     await apply(page, delta(2, [{ op: 'state', id: 'n6', state: { custom_invalid: false } }, { op: 'state', id: 'n7', state: { custom_invalid: true } }]));
     assert.deepEqual(await seen(), ['rgb(0, 0, 0)', 'solid', 'rgb(255, 255, 0)'], 'MP-10: state ops move the invalidity');
+  } finally { await page.close(); }
+});
+
+// Protocol 501: an external <use> sprite. data: URLs are not followed by <use>, so the viewer validates the file and
+// uses it as a same-origin blob; a file that fails validation (a script) is refused and the use renders nothing.
+test('MP-10: protocol 501 an external <use> sprite renders from a validated blob of its file (fragment changes follow); an unsafe file is refused', async () => {
+  const page = await viewer();
+  try {
+    const file = text => { const bytes = Buffer.from(text); return { key: 'r1', resource_id: createHash('sha256').update(bytes).digest('hex'), mime_type: 'image/svg+xml', data_base64: bytes.toString('base64') }; };
+    const good = '<svg xmlns="http://www.w3.org/2000/svg"><style>.a{fill:rgb(255,0,0)}</style><symbol id="icon" viewBox="0 0 10 10"><rect class="a" width="10" height="10"/></symbol><symbol id="wide" viewBox="0 0 20 10"><rect width="20" height="10"/></symbol></svg>';
+    const nodes = page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'svg', ns: 'svg', attrs: { width: '40', height: '40' } }, { id: 'n5', parent: 'n4', kind: 'element', tag: 'use', ns: 'svg', attrs: { href: '#icon', width: '40', height: '40' }, res: 'r1' }]);
+    const seen = () => page.evaluate(() => { const use = window.r.frame.contentDocument.querySelector('use'), b = use.getBBox(); return { href: use.getAttribute('href'), box: [b.width, b.height] }; });
+    await apply(page, { ...snapshot(nodes), resources: [file(good)] }); await frames();
+    let at = await seen();
+    assert.match(at.href ?? '', /^blob:.*#icon$/, 'MP-10: the use names the validated blob and its fragment');
+    assert.deepEqual(at.box, [40, 40], 'MP-10: the symbol renders');
+    await apply(page, delta(2, [{ op: 'attr', id: 'n5', name: 'href', value: '#wide' }])); await frames();
+    assert.match((await seen()).href ?? '', /^blob:.*#wide$/, 'MP-10: a fragment change keeps the file');
+    for (const unsafe of [good.replace('</svg>', '<script>alert(1)</script></svg>'), good.replace('class="a"', 'class="a" onclick="alert(1)"'), good.replace('<rect class', '<image href="http://evil.test/x.png"/><rect class'), good.replace('fill:rgb(255,0,0)', 'fill:url(http://evil.test/p)')]) {
+      await apply(page, { ...snapshot(nodes), document_id: `d${unsafe.length}`, resources: [file(unsafe)] }); await frames();
+      at = await seen();
+      assert.deepEqual([at.href, at.box], [null, [0, 0]], `MP-10: refused: ${unsafe.slice(0, 120)}`);
+    }
   } finally { await page.close(); }
 });

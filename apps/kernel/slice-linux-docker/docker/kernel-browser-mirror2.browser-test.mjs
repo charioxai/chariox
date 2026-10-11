@@ -1020,3 +1020,26 @@ test("MP-10: protocol 501 custom validity reaches the viewer as `state.custom_in
     assert(await states(ids.j, true), "MP-10: the page's input handler's verdict reaches the viewer");
     assert.ok(Date.now() - started < 1500, `MP-10: with the typing, not the 2 s sampler (${Date.now() - started} ms)`);
   }));
+
+// Protocol 501 (PUSH_READY r10 repro 2): `<use href="/sprite.svg#icon">` showed the icon in the source and nothing in
+// the mirror. The sprite file travels as a sanitized resource and the fragment as the use's href.
+const spriteFile = '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><style>.a{fill:rgb(255,0,0)} .b{background:url(http://evil.test/x.png)}</style><defs><linearGradient id="g"><stop offset="0" stop-color="rgb(0,0,255)"/></linearGradient></defs><symbol id="icon" viewBox="0 0 10 10"><rect class="a" width="10" height="10" onclick="alert(1)" style="stroke:url(http://evil.test/s.png)"/><circle r="2" fill="url(#g)"/><image href="http://evil.test/i.png" width="5" height="5"/><a href="javascript:alert(1)"><rect width="1" height="1"/></a><use xlink:href="#other"/><foreignObject><p>html</p></foreignObject><animate attributeName="href" to="javascript:alert(1)"/></symbol><symbol id="other"><rect width="2" height="2"/></symbol><script>alert(1)</script></svg>';
+test("MP-10: protocol 501 an external <use> sprite travels as a sanitized resource and its fragment (snapshot, fragment change, to a local reference)", () => mirrored(
+  '<svg width="40" height="40"><use id="u" href="/sprite.svg#icon" width="40" height="40"/></svg><svg id="local" width="1" height="1"><symbol id="sym"><rect width="1" height="1"/></symbol></svg>', async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const packets = [await next()]; const use = rows(packets[0].nodes).find(r => r.tag === "use");
+    assert.equal(use.attrs.href, "#icon", "MP-10: the fragment travels");
+    assert.match(use.res ?? "", /^r[0-9]+$/, "MP-10: the file travels as a resource key");
+    for (let i = 0; i < 4 && !packets.some(p => p.resources.some(r => r.key === use.res)); i++) packets.push(await next(1000));
+    const text = Buffer.from(packets.flatMap(p => p.resources).find(r => r.key === use.res)?.data_base64 ?? "", "base64").toString();
+    assert.match(text, /<symbol id="icon" viewBox="0 0 10 10">/, `MP-10: the symbols arrived: ${text.slice(0, 200)}`);
+    assert.match(text, /fill="url\(#g\)"/, "MP-10: paint servers by fragment stay");
+    assert.match(text, /\.a ?\{ ?fill: ?rgb\(255, ?0, ?0\)/, "MP-10: the sprite's own styles stay");
+    for (const banned of ["script", "onclick", "evil.test", "<image", "<a ", "javascript", "foreignObject", "animate", "<p>"]) assert(!text.includes(banned), `MP-10: ${banned} never travels`);
+    await evaluate("u.setAttribute('href','/sprite.svg#other');true");
+    let ops = (await next(1000)).ops.filter(op => op.id === use.id);
+    assert.deepEqual(ops.map(op => [op.op, op.op === "res" ? op.res : op.value]), [["attr", "#other"]], "MP-10: the same file, another symbol");
+    await evaluate("u.setAttribute('href','#sym');true");
+    ops = (await next(1000)).ops.filter(op => op.id === use.id);
+    assert.deepEqual(ops.map(op => [op.op, op.op === "res" ? op.res : op.value]), [["res", null], ["attr", "#sym"]], "MP-10: a local reference drops the file");
+  }, { "/sprite.svg": { type: "image/svg+xml", body: spriteFile } }));

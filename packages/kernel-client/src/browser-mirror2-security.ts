@@ -34,6 +34,32 @@ function validateAttrs(record: Mirror2Record): void {
   if (!record.ns && record.tag === 'input' && record.attrs?.type !== undefined && !INPUT_TYPES.has(record.attrs.type.toLowerCase())) fail('form type')
   if (record.attrs?.contenteditable !== undefined && !['true', 'false', 'plaintext-only'].includes(record.attrs.contenteditable)) fail('editable state')
 }
+// Protocol 501: an external sprite file is used by <use> as a same-origin blob document, so the viewer validates
+// it independently, parsed inert: SVG shapes, paint servers and styles only; href and url() only to fragments.
+const SPRITE_TAGS = new Set([...mirror2SvgTags].filter(tag => !['image', 'a'].includes(tag)))
+export function validMirror2Sprite(text: string, view: Window & typeof globalThis): boolean {
+  if (text.length > 4 * 1024 * 1024) return false
+  const doc = new view.DOMParser().parseFromString(text, 'image/svg+xml'), root = doc.documentElement, svg = 'http://www.w3.org/2000/svg'
+  if (root?.namespaceURI !== svg || root.localName !== 'svg' || doc.doctype) return false
+  const elements = [root, ...Array.from(root.querySelectorAll('*'))]
+  if (elements.length > 20000) return false
+  try {
+    for (const element of elements) {
+      if (element.namespaceURI !== svg || !SPRITE_TAGS.has(element.localName)) return false
+      for (const node of Array.from(element.childNodes)) if (node.nodeType !== 1 && node.nodeType !== 3) return false
+      if (element.localName === 'style') validateMirror2Css(element.textContent)
+      for (const { name, value } of Array.from(element.attributes)) {
+        const lower = name.toLowerCase()
+        if (!/^[a-zA-Z_][-a-zA-Z0-9_.]*$/.test(name) && lower !== 'xmlns' && lower !== 'xmlns:xlink' || lower.startsWith('on') || /javascript:/i.test(value)) return false
+        if (lower === 'href') { if (!/^#[\w-]+$/.test(value)) return false; continue }
+        if (lower === 'style') { validateMirror2Css(value); continue }
+        if (DENY_ATTR.has(lower) || /url\s*\(/i.test(value) && !/^\s*url\(\s*["']?#[\w-]+["']?\s*\)\s*$/.test(value)) return false
+      }
+    }
+    for (const node of Array.from(doc.childNodes)) if (node !== root) return false
+  } catch { return false }
+  return true
+}
 // Compact wire rows (see the kernel encoder): [idDelta, parentBack, tag | kindCode, attrs | 0, extra].
 const KINDS = ['text', 'document', 'shadow', 'frame', 'mask', 'tile'] as const
 export function decodeMirror2Records(rows: unknown, context: string | null): Mirror2Record[] {

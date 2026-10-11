@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 501). The page's own
 // sanitized stylesheets and attributes are rebuilt in a script-free sandbox;
 // deltas apply in place. No origin I/O: resources arrive as kernel bytes.
-import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp } from './browser-mirror2-security.js'
+import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp, validMirror2Sprite } from './browser-mirror2-security.js'
 import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2State, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
@@ -34,6 +34,7 @@ export class BrowserMirror2Renderer {
   private records = new Map<string, Mirror2Record>()
   private ids = new WeakMap<Node, string>()
   private resources = new Map<string, string>()
+  private sprites = new Map<string, string>() // protocol 501: validated sprite files as blob URLs ('' when refused)
   private slices = new Map<string, Mirror2Resource>() // resources still arriving in slices
   private styled = new Map<string, Styled>()
   private tileUrls = new Map<string, string>()
@@ -234,6 +235,7 @@ export class BrowserMirror2Renderer {
     const bytes = bytesOf(resource.data_base64)
     if (await digest(bytes) !== resource.resource_id) throw Error('MP-11: mirror resource digest')
     const old = this.resources.get(resource.key); if (old?.startsWith('blob:')) URL.revokeObjectURL(old)
+    const sprite = this.sprites.get(resource.key); if (sprite) URL.revokeObjectURL(sprite); this.sprites.delete(resource.key)
     // SVG stays an image: data: URLs have an opaque origin if ever opened top-level.
     this.resources.set(resource.key, resource.mime_type === 'image/svg+xml' ? `data:image/svg+xml;base64,${resource.data_base64}` : URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: resource.mime_type })))
   }
@@ -321,9 +323,21 @@ export class BrowserMirror2Renderer {
     if (next === this.targeted && next?.hasAttribute('chariox-target') !== false) return
     this.targeted?.removeAttribute('chariox-target'); next?.setAttribute('chariox-target', ''); this.targeted = next
   }
+  // Protocol 501: a <use> needs a same-origin document (data: URLs are not followed), validated here first.
+  private sprite(key: string): string | null {
+    let url = this.sprites.get(key)
+    if (url === undefined) {
+      const data = this.resources.get(key); if (!data?.startsWith('data:image/svg+xml;base64,')) return null
+      const text = new TextDecoder().decode(bytesOf(data.slice(26)))
+      url = validMirror2Sprite(text, this.frame.ownerDocument.defaultView as Window & typeof globalThis) ? URL.createObjectURL(new Blob([text], { type: 'image/svg+xml' })) : ''
+      this.sprites.set(key, url)
+    }
+    return url || null
+  }
   private image(id: string, element: Element, key: string | null): void {
     const url = key ? this.resources.get(key) ?? null : null
     if (element.localName === 'img') { if (url) element.setAttribute('src', url); else element.removeAttribute('src') }
+    else if (element.localName === 'use') { const file = url && key ? this.sprite(key) : null; if (file) element.setAttribute('href', `${file}${this.records.get(id)?.attrs?.href ?? ''}`); else element.removeAttribute('href') }
     else if (element.namespaceURI === NS.svg) { if (url) element.setAttribute('href', url); else element.removeAttribute('href') }
     const record = this.records.get(id); if (record) { if (key) record.res = key; else delete record.res }
   }
@@ -429,7 +443,7 @@ export class BrowserMirror2Renderer {
     validateMirror2Packet(packet, this.records)
     // Resource keys are per document; a new document starts an empty map. A
     // reset restarts resources still in slices (the kernel sends them again).
-    if (packet.reset && packet.document_id !== this.documentId) { for (const url of this.resources.values()) if (url.startsWith('blob:')) URL.revokeObjectURL(url); this.resources.clear() }
+    if (packet.reset && packet.document_id !== this.documentId) { for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url); this.resources.clear(); this.sprites.clear() }
     if (packet.reset) this.slices.clear()
     const complete: Mirror2Resource[] = []
     for (const slice of packet.resources) { const resource = this.assemble(slice); if (resource) { await this.addResource(resource); complete.push(resource) } }
@@ -541,6 +555,7 @@ export class BrowserMirror2Renderer {
         record.attrs ??= {}
         if (op.value === null) { delete record.attrs[op.name]; if (op.name === 'style') this.styled.delete(`${op.id}#style`); element.removeAttribute(op.name) }
         else { record.attrs[op.name] = op.value; if (op.name === 'style') this.setStyled(op.id, { kind: 'attr', raw: op.value, node: element, keys: [] }); else element.setAttribute(op.name, op.name === 'popover' ? 'manual' : op.value) }
+        if (op.name === 'href' && record.res !== undefined && element.localName === 'use') this.image(op.id, element, record.res) // its sprite file + the new fragment
         break
       }
       case 'text': node.textContent = op.text; this.records.get(op.id)!.text = op.text; break
@@ -565,9 +580,9 @@ export class BrowserMirror2Renderer {
   }
   close(): void {
     this.disposed = true; this.doc = null
-    for (const url of this.resources.values()) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
+    for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    URL.revokeObjectURL(this.empty); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frame.remove()
+    URL.revokeObjectURL(this.empty); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frame.remove()
   }
 }
 

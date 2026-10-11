@@ -111,8 +111,9 @@ export function installMirror2(sanitizeMirrorCss) {
     // Hosts of closed shadow roots (found by the kernel's trusted DOMSnapshot pass):
     // this world cannot read their content, so they are opaque regions.
     const closedHosts = new WeakSet();
-    // Resource keys by URL, least recently used first: over the budget the oldest mapping goes (a later
-    // use gets a new key). Keys are never reused within a document, below the frame key slot.
+    // Resource keys by URL (and kind: an SVG sprite's bytes are its sanitized symbols, not the image), least
+    // recently used first: over the budget the oldest mapping goes (a later use gets a new key). Keys are never
+    // reused within a document, below the frame key slot.
     const urlKeys = new Map(); let keySerial = 0, snapshotted = false;
     let selectedDoc = null; // the document whose selection changed last
     let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, lastStateCheck = 0, stateCursor = 0, lastHostCheck = 0, hostCursor = 0, pressedAt = -Infinity;
@@ -126,10 +127,11 @@ export function installMirror2(sanitizeMirrorCss) {
       let url; try { url = new URL(raw, base); } catch { return null; }
       if (!['http:', 'https:', 'data:'].includes(url.protocol) || url.href.length > 4 * 1024 * 1024) return null;
       if (url.protocol === 'data:' && !/^data:(image\/(png|jpeg|gif|webp|svg\+xml)|font\/|application\/(font|x-font)|application\/octet-stream)/i.test(url.href)) return null;
-      const known = urlKeys.get(url.href); if (known) { urlKeys.delete(url.href); urlKeys.set(url.href, known); return known.key; }
+      const slot = kind === 'sprite' ? `sprite:${url.href}` : url.href;
+      const known = urlKeys.get(slot); if (known) { urlKeys.delete(slot); urlKeys.set(slot, known); return known.key; }
       if (keySerial >= 999999) return null;
       if (urlKeys.size >= RESOURCE_BUDGET) urlKeys.delete(urlKeys.keys().next().value);
-      const key = `r${++keySerial}`; urlKeys.set(url.href, { key, kind }); newResources.push({ key, url: url.href, kind }); return key;
+      const key = `r${++keySerial}`; urlKeys.set(slot, { key, kind, url: url.href }); newResources.push({ key, url: url.href, kind }); return key;
     };
     // With `clean`, each sheet's own rules are sanitized against that sheet's base
     // (an imported sheet's url() is relative to the imported sheet).
@@ -245,6 +247,8 @@ export function installMirror2(sanitizeMirrorCss) {
       const href = node.getAttribute('href') ?? node.getAttribute('xlink:href');
       if (href !== null) {
         if (!html && href.startsWith('#') && /^#[\w-]*$/.test(href)) attrs.href = href;
+        // An external sprite (protocol 501): the fragment travels; the file is a sanitized resource (`res`).
+        else if (!html && node.localName === 'use' && spriteKey(node) && /^#[\w-]+$/.test(href.slice(href.indexOf('#')))) attrs.href = href.slice(href.indexOf('#'));
         else if (html && ['a', 'area'].includes(node.localName)) attrs.href = '#'; // keeps :link (an empty href would match :visited), never navigates
       }
       if (html && node.localName === 'input' && !INPUT_TYPES.has((attrs.type ?? 'text').toLowerCase())) attrs.type = 'text';
@@ -365,7 +369,7 @@ export function installMirror2(sanitizeMirrorCss) {
         return id;
       }
       if (ns === HTML && tag === 'img' && node.currentSrc) { const key = resource(node.currentSrc, base, 'image'); if (key) { record.res = key; resOf.set(id, key); } }
-      if (ns === SVG && tag === 'image') { const key = svgImageKey(node); if (key) { record.res = key; resOf.set(id, key); } }
+      if (ns === SVG && (tag === 'image' || tag === 'use')) { const key = tag === 'image' ? svgImageKey(node) : spriteKey(node); if (key) { record.res = key; resOf.set(id, key); } }
       if (ns === HTML && formControl(node)) record.form = formRecord(node);
       if (stateful(node)) stateRecord(node, record);
       if (node.scrollLeft || node.scrollTop) record.scroll = [node.scrollLeft, node.scrollTop];
@@ -404,12 +408,14 @@ export function installMirror2(sanitizeMirrorCss) {
       for (const id of [...nodes.keys()]) { const node = nodes.get(id); if (node) ids.delete(node); }
       nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear();
       pendingSheets = []; budget = { nodes: 0, bytes: 0 };
-      newResources = [...urlKeys.entries()].map(([url, { key, kind }]) => ({ key, url, kind }));
+      newResources = [...urlKeys.values()].map(({ key, kind, url }) => ({ key, url, kind }));
       const out = [], root = serialize(document, null, out);
       adoptedDirty = false;
       return { root, nodes: out, ...take(), ...header() };
     };
     const svgImageKey = node => { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'); return href && !href.startsWith('#') ? resource(href, node.baseURI, 'image') : null; };
+    // Protocol 501: `<use href="sprite.svg#icon">` names a symbol in another document (no fragment: nothing).
+    const spriteKey = node => { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'), hash = href?.indexOf('#') ?? -1; return hash > 0 ? resource(href.slice(0, hash), node.baseURI, 'sprite') : null; };
     const imageOp = (node, id, ops, key = node.currentSrc ? resource(node.currentSrc, node.baseURI, 'image') : null) => { if ((key ?? null) === (resOf.get(id) ?? null)) return; if (key) resOf.set(id, key); else resOf.delete(id); ops.push({ op: 'res', id, res: key }); };
     // Morph (keystroke/typeahead bytes): a page that rebuilds a subtree with the
     // same shape (innerHTML of a suggestion list) keeps the viewer's nodes. A new
@@ -418,7 +424,7 @@ export function installMirror2(sanitizeMirrorCss) {
     // styles, opaque or custom elements, shadow hosts) are never morphed.
     let rebound = [];
     const morphable = node => node.nodeType === 3 ? node.parentNode?.localName !== 'style' : node.nodeType === 1 && !node.shadowRoot && !node.localName.includes('-') && !secretElement(node) && !closedHosts.has(node)
-      && (node.namespaceURI === HTML ? !DROP.has(node.localName) && !OPAQUE.has(node.localName) && !['style', 'link', 'iframe'].includes(node.localName) && !formControl(node) : node.namespaceURI === SVG && SVG_TAGS.has(node.localName) && !['style', 'image'].includes(node.localName));
+      && (node.namespaceURI === HTML ? !DROP.has(node.localName) && !OPAQUE.has(node.localName) && !['style', 'link', 'iframe'].includes(node.localName) && !formControl(node) : node.namespaceURI === SVG && SVG_TAGS.has(node.localName) && !['style', 'image', 'use'].includes(node.localName));
     const morph = (oldId, node, ops, depth) => {
       const old = nodes.get(oldId), kind = kindOf.get(oldId);
       if (!old || old.isConnected || depth > DEPTH || !morphable(node) || node.nodeType !== old.nodeType || (node.nodeType === 3 ? kind !== 'text' : kind !== 'element' || node.localName !== old.localName || node.namespaceURI !== old.namespaceURI || (kids.get(oldId) ?? []).some(child => kindOf.get(child) === 'shadow'))) return false;
@@ -502,10 +508,11 @@ export function installMirror2(sanitizeMirrorCss) {
         const attrs = attributes(node, node.baseURI);
         for (const name of names) {
           if (name === 'href' || name === 'xlink:href') {
-            // An SVG image's external URL travels as a resource key (the viewer sets href to the bytes).
-            const key = node.namespaceURI === SVG && node.localName === 'image' ? svgImageKey(node) : null;
-            if (node.namespaceURI === SVG && node.localName === 'image') imageOp(node, id, ops, key);
-            if (!key) ops.push({ op: 'attr', id, name: 'href', value: attrs.href ?? null });
+            // An SVG image's external URL travels as a resource key (the viewer sets href to the bytes); a
+            // sprite's as a key plus its fragment.
+            const keyed = node.namespaceURI === SVG && ['image', 'use'].includes(node.localName), key = keyed ? (node.localName === 'image' ? svgImageKey(node) : spriteKey(node)) : null;
+            if (keyed) imageOp(node, id, ops, key);
+            if (!key || node.localName === 'use') ops.push({ op: 'attr', id, name: 'href', value: attrs.href ?? null });
             continue;
           }
           if (denied(name.toLowerCase())) continue; // never travels (the viewer's own src/handlers stay)
@@ -792,7 +799,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const sanitize = (text, base) => sanitizeMirrorCss(String(text), String(base), resource);
     // URLs this document actually fetched (Resource Timing): the kernel reads
     // only those bytes, never a URL that a stylesheet merely mentions.
-    const loaded = () => { const names = new Set([...timed, ...performance.getEntriesByType('resource').map(entry => entry.name)]); for (const img of document.images) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].filter(url => urlKeys.has(url)).map(url => urlKeys.get(url).key); };
+    const loaded = () => { const names = new Set([...timed, ...performance.getEntriesByType('resource').map(entry => entry.name)]); for (const img of document.images) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].flatMap(url => [urlKeys.get(url), urlKeys.get(`sprite:${url}`)]).filter(Boolean).map(entry => entry.key); };
     // Changes when the page loads something (an image may complete without a new entry).
     const loadedCount = () => { let complete = 0; for (const img of document.images) if (img.complete) complete++; return timed.size + performance.getEntriesByType('resource').length + complete; };
     // MP-10 wheel bytes: images (by element) near the viewport, with their CSS
@@ -807,6 +814,35 @@ export function installMirror2(sanitizeMirrorCss) {
       }
       return { near, all };
     };
+    // Protocol 501: an external sprite file as the viewer may use it: its SVG shapes, paint servers and styles
+    // rebuilt element by element (no scripts, foreign content, images, links or animation; url() only to
+    // fragments; href only to fragments), parsed inert. Null when it is no SVG or over the bounds.
+    const SPRITE_TAGS = new Set([...SVG_TAGS].filter(tag => !['image', 'a'].includes(tag)));
+    const sprite = text => {
+      const source = new DOMParser().parseFromString(String(text), 'image/svg+xml').documentElement;
+      if (source?.namespaceURI !== SVG || source.localName !== 'svg') return null;
+      const doc = document.implementation.createDocument(SVG, 'svg', null); let count = 0;
+      const copy = (from, to, depth) => {
+        for (const child of from.childNodes) {
+          if (++count > 20000 || depth > 64) throw new Error('mirror2:sprite_budget');
+          if (child.nodeType === 3) { to.appendChild(doc.createTextNode(to.localName === 'style' ? sanitizeMirrorCss(child.data, location.href, () => null) : child.data)); continue; }
+          if (child.nodeType !== 1 || child.namespaceURI !== SVG || !SPRITE_TAGS.has(child.localName)) continue;
+          const element = doc.createElementNS(SVG, child.localName);
+          for (const { name, value } of child.attributes) {
+            const lower = name.toLowerCase();
+            if (!/^[a-zA-Z_][-a-zA-Z0-9_.]*$/.test(name) && lower !== 'xlink:href' || value.length > 65536 || lower.startsWith('on') || /^\s*javascript:/i.test(value)) continue;
+            if (lower === 'href' || lower === 'xlink:href') { if (/^#[\w-]+$/.test(value)) element.setAttribute('href', value); continue; }
+            if (lower === 'style') { element.setAttribute('style', sanitizeMirrorCss(value, location.href, () => null)); continue; }
+            if (DENY_ATTR.has(lower) || /url\s*\(/i.test(value) && !/^\s*url\(\s*["']?#[\w-]+["']?\s*\)\s*$/.test(value)) continue;
+            element.setAttribute(name, value);
+          }
+          to.appendChild(element); copy(child, element, depth + 1);
+        }
+      };
+      copy(source, doc.documentElement, 0);
+      const out = new XMLSerializer().serializeToString(doc);
+      return out.length <= 4 * 1024 * 1024 ? out : null;
+    };
     // A low-detail stand-in for page image bytes while the view moves: decoded
     // here (the bytes the page loaded), downscaled to half its CSS size, WebP; the
     // SVG keeps the original pixel size so the mirrored layout does not change.
@@ -819,6 +855,6 @@ export function installMirror2(sanitizeMirrorCss) {
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, nearImages, preview, idOfNode, frameOrigin, activeForeign, opaqueBoxes, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
   }
 }
