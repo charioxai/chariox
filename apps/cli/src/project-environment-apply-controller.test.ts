@@ -54,3 +54,25 @@ test("MP-08 MP-10 MP-11 reopening an active Apply resumes one status watch",asyn
   assert.equal(controller.busy(),false)
   controller.reset()
 })
+test("MP-08 MP-10 MP-11 a lost Apply ACK keeps its original request",async()=>{
+  const payloads:unknown[]=[]
+  let operation:EnvironmentOperation
+  const controller=createEnvironmentApplyController({current:()=>env,snapshot:()=>{},render:()=>{},send:async request=>{
+    if("RelayStatus" in (request as object))return {RelayStatus:{status:{machine_id:"machine",daemon_id:"kernel"}}}
+    if("PlanProjectEnvironment" in (request as object))return {ProjectEnvironmentPlan:{plan}}
+    if("ApplyProjectEnvironment" in (request as object)){
+      payloads.push(request);if(payloads.length===1)throw new Error("ACK lost")
+      const id=(request as {ApplyProjectEnvironment:{operationId:string}}).ApplyProjectEnvironment.operationId
+      operation={operation_id:id,local_project_id:"project",phase:"ready",kind:"apply",attempt:1,updated_at_ms:1,per_item_results:[],receipts:[]} as unknown as EnvironmentOperation
+      return {EnvironmentOperation:{operation}}
+    }
+    if("GetEnvironmentOperation" in (request as object))return {EnvironmentOperation:{operation}}
+    return {ProjectEnvironment:{environment:env}}
+  }})
+  controller.handleKey("s");await new Promise(r=>setTimeout(r,0))
+  controller.handleKey("return");await new Promise(r=>setTimeout(r,0))
+  controller.handleKey("return");await new Promise(r=>setTimeout(r,0))
+  assert.equal(payloads.length,2)
+  assert.deepEqual(payloads[1],payloads[0])
+  controller.reset()
+})
