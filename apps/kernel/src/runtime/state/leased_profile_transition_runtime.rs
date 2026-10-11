@@ -37,7 +37,7 @@ impl KernelRuntimeState {
                 Some(&prepared.profile.account_profile),
                 prepared.profile.model.as_deref(),
             )
-            .await;
+            .await?;
             Some(claim)
         } else {
             None

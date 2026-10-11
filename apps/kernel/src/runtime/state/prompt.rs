@@ -552,7 +552,7 @@ impl KernelRuntimeOwnedState {
                 started_next.id(),
                 started_next.prompt(),
                 false,
-            );
+            )?;
             let granted_skill_context =
                 self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
             let hidden_system_context = join_hidden_context(

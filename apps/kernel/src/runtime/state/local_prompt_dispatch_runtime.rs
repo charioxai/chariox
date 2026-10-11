@@ -3942,7 +3942,7 @@ impl KernelRuntimeState {
                 &provider_run,
                 &dispatch.prompt_id,
                 dispatch.steering,
-            );
+            )?;
             if handoff
                 .as_ref()
                 .is_some_and(|handoff| handoff.needs_brief())
@@ -3998,7 +3998,7 @@ impl KernelRuntimeState {
             &provider_run,
             &dispatch.prompt_id,
             dispatch.steering,
-        );
+        )?;
         // Claude native turns carry the handoff as hidden context, sized to
         // the room the turn's other hidden context leaves.
         let prompt_with_handoff = match &context_handoff {
@@ -4136,7 +4136,7 @@ impl KernelRuntimeState {
                                 &current,
                                 &dispatch.prompt_id,
                                 dispatch.steering,
-                            );
+                            )?;
                         }
                         provider_run = current;
                         app.process_claude_native_prompt_dispatch_attempt_for_runtime(

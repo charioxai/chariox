@@ -1031,7 +1031,7 @@ impl KernelRuntimeState {
                     Some(&target.account_profile),
                     target.model.as_deref(),
                 )
-                .await;
+                .await?;
             }
 
             let update = self.owned.update_agent_profile(

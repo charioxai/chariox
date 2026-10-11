@@ -29,23 +29,24 @@ impl KernelRuntimeState {
         provider: Option<&str>,
         account_profile: Option<&str>,
         model: Option<&str>,
-    ) {
+    ) -> Result<(), crate::error::DaemonError> {
         let Some(run) = self
             .owned
             .provider_store
             .get_run_for_agent(session_id, agent.id())
         else {
-            return;
+            return Ok(());
         };
         let target_provider = provider.unwrap_or(agent.provider());
         let target_account = account_profile.unwrap_or(agent.provider_account_profile());
         let Some(target_model) = model.or(agent.model()) else {
-            return;
+            return Ok(());
         };
         // Both local and leased callers hold the idle profile-transition claim.
         if !needs_compaction(&run, target_provider, target_account, target_model) {
-            return;
+            return Ok(());
         }
+        self.owned.prepare_compacted_session_context_handoff(&run)?;
         self.owned.record_notice(
             session_id,
             Some(run.id()),
@@ -75,7 +76,6 @@ impl KernelRuntimeState {
         });
         match result {
             Ok(_) => {
-                self.owned.prepare_compacted_session_context_handoff(&run);
                 crate::logging::info_with_fields(
                     "daemon.provider_context_handoff",
                     "compacted the session before a smaller context window",
@@ -88,6 +88,7 @@ impl KernelRuntimeState {
                 serde_json::json!({ "error": error.to_string(), "details": fields }),
             ),
         }
+        Ok(())
     }
 }
 

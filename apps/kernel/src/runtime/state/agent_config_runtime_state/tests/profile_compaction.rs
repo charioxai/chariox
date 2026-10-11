@@ -1,4 +1,6 @@
 use super::*;
+#[path = "profile_compaction/queue_head_review.rs"]
+mod queue_head_review;
 use crate::provider::{
     AgentEndpointMode, AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest,
     ProviderLaunchResult, ProviderResumeState, ProviderRunState, ProviderRunTokenUsage,
@@ -111,7 +113,7 @@ async fn compact_fixture_with_lease(
     let release = root.path().join("release");
     let mut run = RuntimeProviderRun::new("compact-run", &request, ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::Managed, process_label: "fixture".into(), pty_target: None, pty_program: Some("/bin/sh".into()),
-        pty_args: vec!["-c".into(), format!("while IFS= read -r line; do case \"$line\" in *'/compact'*) printf '%s' \"$line\" > '{}';; esac; n=0; while [ ! -f '{}' ] && [ $n -lt 30 ]; do sleep .1; n=$((n+1)); done; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done", marker.display(), release.display())],
+        pty_args: vec!["-c".into(), format!("while IFS= read -r line; do case \"$line\" in *'surviving queued request'*) touch '{}';; *'/compact'*) printf '%s' \"$line\" > '{}';; esac; n=0; while [ ! -f '{}' ] && [ $n -lt 30 ]; do sleep .1; n=$((n+1)); done; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done", root.path().join("surviving-submitted").display(), marker.display(), release.display())],
         pty_env: Default::default(), pty_env_remove: vec![], working_directory: None, structured_endpoint: None,
     });
     run.set_execution_config(AgentExecutionMode::Plan, AgentPermissionLevel::Required);
@@ -1124,7 +1126,8 @@ async fn profile_compaction_preserves_history_for_the_next_native_session_turn()
     let agent_snapshot = runtime.owned.agent_store.get_agent(&agent).unwrap();
     runtime
         .compact_before_window_downshift(&session, &agent_snapshot, None, None, Some("haiku"))
-        .await;
+        .await
+        .unwrap();
     let mut target = run.clone();
     target.set_model("haiku");
     target.set_provider_session_id(Some("same-native-session".into()));
@@ -1152,6 +1155,7 @@ async fn profile_compaction_preserves_history_for_the_next_native_session_turn()
     let dispatch = runtime
         .owned
         .context_handoff_for_dispatch(&session, &agent, &target, "next-turn", false)
+        .unwrap()
         .expect("the actual next run must receive the compacted records");
     assert_eq!(dispatch.target_model.as_deref(), Some("sonnet"));
     assert!(dispatch.render_hidden(24_000).contains("Continuity Ledger"));
