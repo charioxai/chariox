@@ -3,8 +3,8 @@
   "guards": [
     {
       "path": "apps/kernel/slice-linux-docker/owned-process-signals.mjs",
-      "sha256": "c13d140538bffbb99e2675a244ed0cfd6e3fa7e10f519b86425882a3aa60264b",
-      "reason": "MP-11 canonical Node guard; opaque generation handles required for PID/group signals, subgroups retain launch generation, all members verified immediately before signalling; no numeric fallback. Darwin census excludes only the exact reaped inspection PID."
+      "sha256": "99358198ec0581f92e52e7278373e6b2f8c7c7268bd2037b17350391cf5cc351",
+      "reason": "MP-11 canonical Node guard; opaque generation handles required for PID/group signals, subgroups retain launch generation, all members verified immediately before signalling; no numeric fallback. Darwin census excludes only the exact reaped inspection PID. Snapshot-indexed refresh (7309cd7ce) keeps the root-before-parent generation rules; collected PID/group handles are re-verified (PID/start, every group member) immediately before each send."
     },
     {
       "path": "apps/kernel/slice-linux-docker/owned_process_signals.py",
@@ -83,27 +83,6 @@
       "reason": "MP-11 slice-local startup replaces only provider servers with this slice\u2019s selected ports, within its isolated namespace; the image init sleep infinity is PID 1 and cannot match either provider pattern."
     },
     {
-      "path": "apps/kernel/slice-linux-docker/docker/start-runtime.sh",
-      "kind": "name-signal",
-      "text": "pkill -f \"$ROOT/provider-port-bridge.mjs\" >/dev/null 2>&1 || true",
-      "count": 1,
-      "reason": "MP-11 slice-local initialization/probe cleanup targets only bridge/kernel/provider descendants in the container namespace; PID 1 is the image init sleep infinity and does not match the fixed patterns."
-    },
-    {
-      "path": "apps/kernel/slice-linux-docker/docker/start-runtime.sh",
-      "kind": "name-signal",
-      "text": "pkill -TERM -f \"^$ROOT/bin/chariox-kernel\" >/dev/null 2>&1 || true",
-      "count": 1,
-      "reason": "MP-11 slice-local initialization/probe cleanup targets only bridge/kernel/provider descendants in the container namespace; PID 1 is the image init sleep infinity and does not match the fixed patterns."
-    },
-    {
-      "path": "apps/kernel/slice-linux-docker/docker/start-runtime.sh",
-      "kind": "name-signal",
-      "text": "pkill -TERM -f \"codex[^ ]* app-server\" >/dev/null 2>&1 || true",
-      "count": 1,
-      "reason": "MP-11 slice-local initialization/probe cleanup targets only bridge/kernel/provider descendants in the container namespace; PID 1 is the image init sleep infinity and does not match the fixed patterns."
-    },
-    {
       "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
       "kind": "name-signal",
       "text": "command[2] === \"screen -S chariox-slice-relay -X quit >/dev/null 2>&1 || true; screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true; pkill -f 'codex app-server' >/dev/null 2>&1 || true; pkill -f 'opencode serve' >/dev/null 2>&1 || true\"",
@@ -144,6 +123,13 @@
       "text": "const original = process.kill",
       "count": 1,
       "reason": "MP-11 test-only mock forwards the already guarded shared helper\u2019s call to the original process.kill and counts sends; it creates no independent signal target."
+    },
+    {
+      "path": "apps/kernel/slice-linux-docker/docker/runtime-process-owner.test.py",
+      "kind": "name-signal",
+      "text": "self.assertNotIn('pkill ', (ROOT / 'start-runtime.sh').read_text())",
+      "count": 1,
+      "reason": "MP-11 inert regression assertion that the slice runtime start script no longer signals by process name; the string is never executed."
     }
   ]
 }
