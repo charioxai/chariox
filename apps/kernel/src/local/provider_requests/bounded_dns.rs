@@ -31,7 +31,10 @@ pub(crate) fn resolve_bounded_host(
         return Ok(vec![ip]);
     }
     if host == "localhost" {
-        return Ok(vec![std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)]);
+        return Ok(vec![
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+        ]);
     }
     if host.is_empty()
         || host.len() > 253
@@ -93,5 +96,17 @@ pub(crate) fn resolve_bounded_host(
             }
         }
         Ok(addresses)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn localhost_keeps_both_loopback_families() {
+        let addresses =
+            super::resolve_bounded_host("localhost", std::time::Duration::from_millis(1), &[])
+                .unwrap();
+        assert!(addresses.contains(&std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)));
+        assert!(addresses.contains(&std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)));
     }
 }
