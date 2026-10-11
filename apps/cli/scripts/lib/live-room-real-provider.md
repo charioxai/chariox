@@ -237,6 +237,10 @@ case Claude can terminate the hook before writing a user transcript record.
 The existing hook bridge must receipt that exact request; home settles only
 from a fresh receipt for its current cancelled prompt and current worker run.
 Keep stale request, stale timestamp, wrong run and non-cancelling controls.
+The primary hook must remain alive until its context-only helpers finish, so
+Esc during preparation still reaches that same request. Include an empty hidden
+context: it is a completed response, and must not hold helpers for their timeout.
+Generated-hook subprocess checks supplement the real native-provider drill.
 The original Esc must settle the exact home prompt and leave the native composer
 writable for a real public-site continuation. Supplemental terminal/RPC input
 after a failure is diagnostic evidence and cannot count as a passing cell.
