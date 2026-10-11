@@ -179,3 +179,6 @@ fn review1118_mcp_notification_202_reaches_tools_list_in_check() {
     );
     assert_eq!(observation.status, EnvironmentObservationStatus::Ready);
 }
+
+#[path = "review1118_mcp_dns_tests.rs"]
+mod dns;

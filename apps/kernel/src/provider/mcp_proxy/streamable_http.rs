@@ -154,7 +154,36 @@ fn read_sse_json_rpc_response(
 }
 
 fn streamable_http_agent(url: &str, timeout: Duration) -> Result<ureq::Agent, DaemonError> {
-    let mut builder = ureq::AgentBuilder::new().timeout(timeout);
+    // ureq's synchronous default DNS is outside its transport timeout. Own
+    // each lookup (including proxies/redirects) under this dispatch deadline.
+    let deadline = std::time::Instant::now() + timeout;
+    let mut builder = ureq::AgentBuilder::new()
+        .timeout(timeout)
+        .try_proxy_from_env(false)
+        .resolver(move |address: &str| {
+            let (host, port) = address.rsplit_once(':').ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid MCP DNS address")
+            })?;
+            let port: u16 = port.parse().map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid MCP DNS port")
+            })?;
+            let host = host.trim_start_matches('[').trim_end_matches(']');
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "MCP DNS deadline exceeded",
+                ));
+            }
+            crate::local::provider_requests::resolve_bounded_host(host, remaining, &[])
+                .map(|addresses| {
+                    addresses
+                        .into_iter()
+                        .map(|ip| std::net::SocketAddr::new(ip, port))
+                        .collect()
+                })
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "MCP DNS unavailable"))
+        });
     if let Some(proxy) = configured_proxy_for_url(url)? {
         builder = builder.proxy(proxy);
     }

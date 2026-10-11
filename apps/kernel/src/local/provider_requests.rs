@@ -13,6 +13,8 @@ use super::api::{
 };
 
 mod blocking;
+mod bounded_dns;
+pub(crate) use bounded_dns::resolve_bounded_host;
 mod catalog;
 pub(crate) use catalog::probe_capture::capture as capture_inventory_probe;
 mod remote_machines;
