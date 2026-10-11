@@ -30,7 +30,9 @@ process.stdout.write(JSON.stringify({stdout:String(result),point,warps}));"""
 
 class CaretPointerTests(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix='caret-takeover-', dir=Path.home() / '.codex/evidence/browser-computer-use-macos'))
+        evidence = Path.home() / '.codex/evidence/browser-computer-use-macos'
+        evidence.mkdir(parents=True, exist_ok=True)
+        self.root = Path(tempfile.mkdtemp(prefix='caret-takeover-', dir=evidence))
         self.window = {'pid': 42, 'windowID': 7, 'layer': 0, 'bounds': {'X': 0, 'Y': 0, 'Width': 1000, 'Height': 1000}}
         self.state = {'frontmostPID': 42, 'pointer': {'x': 2, 'y': 3}, 'windows': [self.window]}
         self.warps = []
