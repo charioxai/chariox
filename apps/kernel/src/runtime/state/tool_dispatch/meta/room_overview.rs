@@ -8,10 +8,14 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         args: MetaSessionOverviewArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let session = self
-            .owned
-            .session_snapshot(session.id())?
-            .redacted_for_user(agent.owner_user_id());
+        let session = self.owned.session_snapshot(session.id())?;
+        let include_workflows = args.include_workflows.unwrap_or(true);
+        let workflow_runs = if include_workflows {
+            self.room_visible_workflow_runs(&session, agent.owner_user_id())?
+        } else {
+            Vec::new()
+        };
+        let session = session.redacted_for_user(agent.owner_user_id());
         let visible_agents = session
             .agents()
             .iter()
@@ -21,10 +25,6 @@ impl KernelRuntimeState {
             .iter()
             .map(|candidate| candidate.id())
             .collect::<std::collections::BTreeSet<_>>();
-        let can_view_all_agents = session
-            .agents()
-            .iter()
-            .all(|candidate| candidate.visible_in_freeform());
         let activity = self
             .agent_activity_for_session(&session)
             .into_iter()
@@ -37,16 +37,13 @@ impl KernelRuntimeState {
             .into_iter()
             .filter(|task| visible_ids.contains(task.agent_id.as_str()))
             .collect::<Vec<_>>();
-        let include_workflows = args.include_workflows.unwrap_or(true);
         return Ok(RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
                 "session_id": session.id(),
                 "agents": visible_agents.iter().map(|candidate| room_public_agent_ref_json(candidate)).collect::<Vec<_>>(),
                 "workflows": if include_workflows { session.workflows().to_vec() } else { Vec::new() },
-                "workflow_runs": if include_workflows { session.workflow_runs().iter().filter(|run| {
-                    can_view_all_agents || run.created_by_agent_id().is_some_and(|id| visible_ids.contains(id))
-                }).cloned().collect::<Vec<_>>() } else { Vec::new() },
+                "workflow_runs": workflow_runs,
                 "activity": activity,
                 "agent_tasks": tasks,
                 "pending_interactions": session.active_interactions().iter().filter(|interaction| {
@@ -55,6 +52,61 @@ impl KernelRuntimeState {
                 }).map(|interaction| serde_json::json!({ "id": interaction.id(), "agent_id": interaction.agent_id(), "kind": interaction.kind() })).collect::<Vec<_>>(),
             }),
         });
+    }
+
+    // MP-11: a shrinking roster cannot grant access to retained foreign traces.
+    fn room_visible_workflow_runs(
+        &self,
+        session: &crate::session::RuntimeSession,
+        user_id: &str,
+    ) -> Result<Vec<crate::session::WorkflowRun>, DaemonError> {
+        if session
+            .collaboration_level_for_user(user_id)
+            .is_some_and(|level| level.can_view_agent_trace())
+        {
+            return Ok(session.workflow_runs().to_vec());
+        }
+        let mut ownership = session
+            .agents()
+            .iter()
+            .map(|agent| (agent.id().to_string(), agent.owner_user_id() == user_id))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut visible = Vec::new();
+        for run in session.workflow_runs() {
+            let Some(creator) = run.created_by_agent_id() else {
+                continue;
+            };
+            let participants = std::iter::once(creator)
+                .chain(run.node_runs().iter().map(|node| node.agent_id()))
+                .chain(run.runtime_agent_ids_by_node().values().map(String::as_str));
+            let mut authorized = true;
+            for id in participants {
+                if !ownership.contains_key(id) {
+                    // Deletion retains a kernel-owned provenance record. Read only
+                    // its ownership fields; never return the deleted AgentInstance.
+                    let events = self.owned.durable_state_store.load_subject_events_by_kind(
+                        id,
+                        "agent.deleted",
+                        1,
+                    )?;
+                    let owned = events.last().is_some_and(|event| {
+                        let agent = &event.payload["agent"];
+                        agent["id"].as_str() == Some(id)
+                            && agent["session_id"].as_str() == Some(session.id())
+                            && agent["owner_user_id"].as_str() == Some(user_id)
+                    });
+                    ownership.insert(id.to_string(), owned);
+                }
+                if !ownership[id] {
+                    authorized = false;
+                    break;
+                }
+            }
+            if authorized {
+                visible.push(run.clone());
+            }
+        }
+        Ok(visible)
     }
 }
 

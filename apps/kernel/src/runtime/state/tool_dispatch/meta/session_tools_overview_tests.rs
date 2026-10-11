@@ -79,3 +79,214 @@ async fn room_overview_excludes_transport_and_provider_private_state_in_both_mcp
         "overview-worker-run"
     );
 }
+
+// MP-08 / MP-10 / MP-11: retained runs must not inherit authority from a smaller roster.
+#[tokio::test]
+async fn room_overview_historical_workflow_visibility_survives_foreign_agent_deletion() {
+    use crate::session::{
+        CollaborationLevel, WorkflowMessage, WorkflowNodeRun, WorkflowNodeRunStatus,
+        WorkflowOutputPayload, WorkflowRun, WorkflowRunStatus,
+    };
+    for level in [
+        CollaborationLevel::Private,
+        CollaborationLevel::Transparent,
+        CollaborationLevel::Full,
+    ] {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (session, actor) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "overview-history-workspace",
+                "overview-history-worktree",
+            ))
+            .unwrap();
+        let foreign = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_owner_user_id("foreign-history-owner"),
+            )
+            .unwrap();
+        let foreign_worker = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_owner_user_id("foreign-history-owner"),
+            )
+            .unwrap();
+        let retired_owned = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_owner_user_id(actor.owner_user_id()),
+            )
+            .unwrap();
+        let mut node = WorkflowNodeRun::new(
+            "foreign-node-run",
+            "foreign-node",
+            foreign_worker.id(),
+            0,
+            WorkflowNodeRunStatus::Completed,
+        );
+        node.add_thinking_trace("synthetic-foreign-history-trace");
+        let mut foreign_run = WorkflowRun::new(
+            "foreign-history-run",
+            "foreign-workflow",
+            "foreign-endpoint",
+            "foreign-node",
+            Some("synthetic-foreign-history-invocation".into()),
+            None,
+            vec![node],
+            vec![WorkflowMessage::new(
+                "foreign-message",
+                Some("foreign-node-run".into()),
+                "foreign-node",
+                "handoff",
+                "synthetic-foreign-history-summary",
+                "synthetic-foreign-history-handoff",
+            )],
+        )
+        .with_creator(Some(foreign.id().into()));
+        foreign_run.set_status(WorkflowRunStatus::Completed);
+        foreign_run.set_final_output(
+            Some(WorkflowOutputPayload::new(
+                "synthetic-foreign-history-output",
+                vec![],
+            )),
+            Some(true),
+            None,
+            None,
+        );
+        let mut owned_run = WorkflowRun::new(
+            "owned-history-run",
+            "owned-workflow",
+            "owned-endpoint",
+            "owned-node",
+            Some("synthetic-authorized-history-invocation".into()),
+            None,
+            vec![],
+            vec![],
+        )
+        .with_creator(Some(actor.id().into()));
+        owned_run.set_status(WorkflowRunStatus::Completed);
+        let retired_run = WorkflowRun::new(
+            "retired-owned-history-run",
+            "owned-workflow",
+            "owned-endpoint",
+            "owned-node",
+            Some("synthetic-authorized-retired-history".into()),
+            None,
+            vec![WorkflowNodeRun::new(
+                "owned-node-run",
+                "owned-node",
+                retired_owned.id(),
+                0,
+                WorkflowNodeRunStatus::Completed,
+            )],
+            vec![],
+        )
+        .with_creator(Some(retired_owned.id().into()));
+        let mixed_run = WorkflowRun::new(
+            "mixed-history-run",
+            "owned-workflow",
+            "owned-endpoint",
+            "owned-node",
+            Some("synthetic-foreign-history-mixed-worker".into()),
+            None,
+            vec![WorkflowNodeRun::new(
+                "mixed-node-run",
+                "mixed-node",
+                foreign_worker.id(),
+                0,
+                WorkflowNodeRunStatus::Completed,
+            )],
+            vec![],
+        )
+        .with_creator(Some(actor.id().into()));
+        let unknown_run = WorkflowRun::new(
+            "unknown-history-run",
+            "owned-workflow",
+            "owned-endpoint",
+            "owned-node",
+            Some("synthetic-unknown-history".into()),
+            None,
+            vec![],
+            vec![],
+        )
+        .with_creator(Some("missing-history-agent".into()));
+        let no_creator_run = WorkflowRun::new(
+            "no-creator-history-run",
+            "owned-workflow",
+            "owned-endpoint",
+            "owned-node",
+            Some("synthetic-no-creator-history".into()),
+            None,
+            vec![],
+            vec![],
+        );
+        crate::app::KernelSessionService::new(&mut app)
+            .destroy_agent(foreign.id())
+            .unwrap();
+        crate::app::KernelSessionService::new(&mut app)
+            .destroy_agent(foreign_worker.id())
+            .unwrap();
+        crate::app::KernelSessionService::new(&mut app)
+            .destroy_agent(retired_owned.id())
+            .unwrap();
+        assert!(app.agents.get_agent(foreign.id()).is_err());
+        assert!(app.agents.get_agent(foreign_worker.id()).is_err());
+        assert!(app.agents.get_agent(retired_owned.id()).is_err());
+        let mut serialized =
+            serde_json::to_value(app.sessions().get_session(session.id()).unwrap()).unwrap();
+        serialized["workflow_runs"] = serde_json::json!([
+            foreign_run,
+            owned_run,
+            retired_run,
+            mixed_run,
+            unknown_run,
+            no_creator_run
+        ]);
+        for member in serialized["members"].as_array_mut().unwrap() {
+            if member["user_id"] == actor.owner_user_id() {
+                member["collaboration_level"] = serde_json::to_value(level).unwrap();
+            }
+        }
+        app.sessions_mut()
+            .restore_session(serde_json::from_value(serialized).unwrap());
+        let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
+        let state = crate::runtime::router::CommandRouter::with_interactive_capacity(app, 1)
+            .runtime_state();
+        let result = state
+            .meta_session_overview(&session, &actor, Default::default())
+            .unwrap();
+        let (content, structured) =
+            crate::transport::mcp_server::runtime_tool_content_for_test(result.payload);
+        for representation in [
+            serde_json::to_string(&content).unwrap(),
+            structured.to_string(),
+        ] {
+            assert!(
+                representation.contains("synthetic-authorized-history-invocation"),
+                "MP-11 authorized history lost at {level:?}"
+            );
+            assert!(
+                representation.contains("synthetic-authorized-retired-history"),
+                "MP-11 authorized deleted-agent history lost at {level:?}"
+            );
+            assert_eq!(
+                representation.contains("synthetic-foreign-history-"),
+                level.can_view_agent_trace(),
+                "MP-11 deleted foreign workflow history visibility at {level:?}"
+            );
+            for canary in ["synthetic-unknown-history", "synthetic-no-creator-history"] {
+                assert_eq!(
+                    representation.contains(canary),
+                    level.can_view_agent_trace(),
+                    "MP-11 unproven history visibility at {level:?}"
+                );
+            }
+        }
+        assert_eq!(
+            structured["workflow_runs"].as_array().unwrap().len(),
+            if level.can_view_agent_trace() { 6 } else { 2 }
+        );
+    }
+}
