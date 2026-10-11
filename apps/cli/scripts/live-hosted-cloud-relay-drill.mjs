@@ -63,6 +63,7 @@ const trackedWorkspaceLiveSyncModel = process.env.CHARIOX_CLOUD_HOSTED_TRACKED_W
 const remoteCliPairingProvider = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_PROVIDER ?? "codex"
 const remoteCliPairingModel = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_MODEL ?? "gpt-5.2-codex"
 const remoteCliPairingEffort = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_EFFORT ?? "low"
+const remoteCliPairingAccountPath = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_ACCOUNT_PATH
 const remoteCliHost = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_HOST ?? "root@195.201.123.115"
 const remoteCliKey = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_KEY ?? path.join(os.homedir(), ".ssh/chariox_hetzner_staging")
 const remoteCliRepo = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_REPO ?? "/opt/chariox-cli-drill"
@@ -252,6 +253,7 @@ async function main() {
         remoteCliPairingProvider,
         remoteCliPairingModel,
         remoteCliPairingEffort,
+        remoteCliPairingAccountPath,
         pollTimeoutMs,
         log,
         assert,

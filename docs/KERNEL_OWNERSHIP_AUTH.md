@@ -142,6 +142,19 @@ run of the earlier scenario without that preparation, then require normal
 browser device approval and successful attachment using the real compiled TUI.
 An owner's key-bound grant must never be copied into the receiving profile.
 
+MP-08 / MP-10 / MP-11: before a fresh execution kernel's TUI provider turn,
+link the product-created credential scope and refresh that same profile through
+`RefreshProviderAccountProfile` (TUI: `/provider accounts refresh`). Linking
+registers the profile with `unknown` auth state; it does not verify login.
+Use `prepareHostedLinkedProviderAccount` in
+`apps/cli/scripts/lib/hosted-linked-provider-account.mjs` for drill setup and
+require `authenticated` before launching the TUI. The hosted relay drill accepts
+`CHARIOX_CLOUD_HOSTED_REMOTE_CLI_ACCOUNT_PATH` for this execution-kernel scope;
+both TUIs then select the verified profile explicitly. Retain the link-only RED
+prompt refusal and the refreshed GREEN real-provider turn. This changes drill
+preparation, not kernel admission or provider credential ownership.
+
+
 `OWN-TUI-2H` requires two uninterrupted hours through hosted WSS under the
 campaign's 8 Mbit/s uplink and at least 60 ms RTT. Keep the original command and
 event sockets, the session identity, and the receiving key stable. Drive real

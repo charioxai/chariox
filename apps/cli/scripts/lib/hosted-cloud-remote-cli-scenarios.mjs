@@ -2,6 +2,7 @@ import { rm } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
+import { prepareHostedLinkedProviderAccount } from "./hosted-linked-provider-account.mjs"
 import { prepareHostedRemoteTerminal } from "./hosted-cloud-remote-terminal-login.mjs"
 
 async function waitForLocalSocket(socketPath, timeoutMs = 20_000) {
@@ -155,6 +156,7 @@ export async function runHostedRemoteCliPairingAssertions({
   remoteCliPairingProvider,
   remoteCliPairingModel,
   remoteCliPairingEffort,
+  remoteCliPairingAccountPath,
   pollTimeoutMs,
   log,
   assert,
@@ -180,6 +182,10 @@ export async function runHostedRemoteCliPairingAssertions({
   const remoteSocket = `${remoteRoot}/automation.sock`
   const localMarker = `HOSTED_PAIRING_LOCAL_CLI_OK_${remoteId.replace(/[^a-zA-Z0-9]/g, "_")}`
   const remoteMarker = `HOSTED_PAIRING_REMOTE_CLI_OK_${remoteId.replace(/[^a-zA-Z0-9]/g, "_")}`
+  const providerAccount = remoteCliPairingAccountPath
+    ? await prepareHostedLinkedProviderAccount({client: homeClient, requests,
+      provider: remoteCliPairingProvider, label: `hosted-pairing-${remoteId}`, path: remoteCliPairingAccountPath})
+    : null
   const pairing = unwrap(
     await homeClient.send(requests.createTerminalPairingLinkRequest("cli", remoteAlias, 15 * 60 * 1000)),
     "TerminalPairingLinkCreated",
@@ -213,6 +219,7 @@ export async function runHostedRemoteCliPairingAssertions({
       shellQuote(remoteCliPairingModel),
       "--effort",
       shellQuote(remoteCliPairingEffort),
+      ...(providerAccount ? ["--account-profile", shellQuote(providerAccount.profile_id)] : []),
     ].join(" "),
   ].join("; ")
 
@@ -252,6 +259,7 @@ export async function runHostedRemoteCliPairingAssertions({
       remoteCliPairingModel,
       "--effort",
       remoteCliPairingEffort,
+      ...(providerAccount ? ["--account-profile", providerAccount.profile_id] : []),
       "--client-id",
       `hosted-local-pairing-cli-${remoteId}`,
     ]

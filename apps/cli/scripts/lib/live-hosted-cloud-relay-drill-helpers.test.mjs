@@ -209,7 +209,10 @@ test("MP-08 / MP-10 / MP-11: receiver device login feeds actual CLI pairing boot
     logouts++
     return Response.json(null)
   })
-  const pairingLink = "chariox://terminal-pairing/synthetic"
+  const pairingLink = "chariox-terminal-pair-v1." + Buffer.from(JSON.stringify({
+    relay_url: "wss://relay.test", relay_token: "cloud-client-token-required",
+    target_daemon_id: "home-kernel", terminal_id: "receiver",
+  })).toString("base64url")
   const options = {relayUrl: "wss://relay.test", relayToken: "cloud-client-token-required", targetDaemonId: "home-kernel", clientId: "receiver", workspace: root, worktree: root}
   let joins = 0, clients = 0
   const fakeClient = {close: async () => {}, send: async request => {
@@ -245,12 +248,20 @@ test("MP-08 / MP-10 / MP-11: receiver device login feeds actual CLI pairing boot
 
 test("MP-08 / MP-10 / MP-11: real-provider pairing prepares its own receiving CLIENT and cleans it on launch failure", async () => {
   let prepared = false, cleaned = false, command, server;
+  const providerCalls = [];
   try {
     await assert.rejects(runHostedRemoteCliPairingAssertions({
       requests: modules.requests,
-      homeClient: {send: async () => ({TerminalPairingLinkCreated: {pairing: {pairing_link: "synthetic-pairing", terminal_id: "terminal"}}})},
+      homeClient: {send: async request => {
+        providerCalls.push(request);
+        if (request.LinkProviderAccountProfile) return {ProviderAccountProfile: {profile: {provider: "opencode", profile_id: "verified-provider", auth_state: "unknown"}}};
+        if (request.RefreshProviderAccountProfile) return {ProviderAccountProfile: {profile: {provider: "opencode", profile_id: "verified-provider", auth_state: "authenticated"}}};
+        assert.ok(request.CreateTerminalPairingLink);
+        return {TerminalPairingLinkCreated: {pairing: {pairing_link: "synthetic-pairing", terminal_id: "terminal"}}};
+      }},
       workspace: "/workspace", kernelUrl: "ws://local", cliRoot: "/cli", repoRoot: "/repo",
       remoteCliRepo: "/receiver", remoteCliHost: "receiver", remoteCliPairingProvider: "opencode",
+      remoteCliPairingAccountPath: "/product/scope",
       remoteCliPairingModel: "opencode-go/gpt-5.6-luna", remoteCliPairingEffort: "default",
       apiUrl: "https://cloud.test", ownerAccountSlug: "owner", ownerAccountId: "account",
       log: () => {}, assert, unwrap, shellQuote: value => `'${value}'`,
@@ -258,6 +269,8 @@ test("MP-08 / MP-10 / MP-11: real-provider pairing prepares its own receiving CL
       runSsh: async () => ({code: 0}), terminateChild: async () => {},
       spawnProcess: (program, args) => {
         if (program === "ssh") throw new Error("synthetic remote launch boundary");
+        const launch = args.join(" ");
+        assert.match(launch, /--account-profile.*verified-provider/);
         const socket = process.platform === "linux"
           ? args[2].match(/'--automation-socket' '([^']+)'/)[1]
           : args[args.indexOf("--automation-socket") + 1];
@@ -277,10 +290,13 @@ test("MP-08 / MP-10 / MP-11: real-provider pairing prepares its own receiving CL
           cleanup: async () => {cleaned = true}};
       },
     }), /synthetic remote launch boundary/);
+    assert.deepEqual(providerCalls.slice(0, 2).map(request => Object.keys(request)[0]), ["LinkProviderAccountProfile", "RefreshProviderAccountProfile"]);
+    assert.deepEqual(providerCalls[1].RefreshProviderAccountProfile, {provider: "opencode", account_profile: "verified-provider"});
     assert.equal(prepared, true);
     assert.equal(cleaned, true);
     assert.match(command, /CHARIOX_HOME='\/isolated-pairing-receiver'/);
     assert.match(command, /--terminal-pairing-link 'synthetic-pairing'/);
+    assert.match(command, /--account-profile 'verified-provider'/);
     assert.doesNotMatch(command, /--relay-token/);
   } finally { await new Promise(resolve => server ? server.close(resolve) : resolve()); }
 });
