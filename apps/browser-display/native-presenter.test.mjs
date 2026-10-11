@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
 import {BrowserDisplayPresenter} from './presenter.mjs';
 
 // Public presentation boundary, with only OS image/canvas APIs replaced.
@@ -50,3 +51,54 @@ test('M2 native attachment uses the encrypted shared event route and never submi
   await assert.rejects(attachNativeDisplay({}, {...transport,kernelProtocolVersion:491,request(){attempts++;}},target),/497/);
   assert.equal(attempts,0);
 });
+
+test('M5 negotiates existing AVC and PNG repair offers within protocol 497', async () => {
+  const {attachNativeDisplay}=await import('./native-presenter.mjs');
+  let offer;
+  const target={surface_id:'macos-seat',generation:'e'};
+  const transport={kernelProtocolVersion:497,relayProtocolVersion:106,displayEventEncoding:'CXD1',
+    onEvent(){return()=>{}},async subscribeDisplay(){},async unsubscribeDisplay(){},
+    async request({KernelBrowser:{command:{command}}}){
+      if(command.op==='display_subscribe')offer=command;
+      return {KernelBrowser:{result:command.op==='display_subscribe'?{...target,display_kind:'native',subscription_id:'s',width:128,height:128,codec:'avc1.420033'}:{closed:true}}};
+    }};
+  const stream=await attachNativeDisplay({width:1,height:1},transport,target,{codec:'avc1.420033',bitrate:2_000_000});
+  assert.ok(offer.codecs.includes('avc1.420033'));assert.ok(offer.codecs.includes('png'));
+  assert.ok(!offer.codecs.includes('chariox-stripes-v1'));assert.equal(Object.hasOwn(offer,'bitrate'),false);
+  await stream.close();
+});
+
+for (const [name, options] of [
+  ['default PNG', {}],
+  ['AVC', {codec:'avc1.420033'}],
+  ['explicit browser bitrate', {codec:'avc1.420033',bitrate:500_000}],
+]) test(`native ${name} subscribe crosses the production protocol 497 serde boundary`,
+  {skip:!process.env.CUMAC_NATIVE_COMMAND_CHECKER}, async () => {
+    const {attachNativeDisplay}=await import('./native-presenter.mjs');
+    const target={surface_id:'macos-seat',generation:'epoch'};
+    let serialized;
+    const transport={kernelProtocolVersion:497,relayProtocolVersion:106,displayEventEncoding:'CXD1',
+      onEvent(){return()=>{}},async subscribeDisplay(){},async unsubscribeDisplay(){},
+      async request(request){
+        const command=request.KernelBrowser.command.command;
+        if(command.op==='display_subscribe') {
+          serialized=JSON.stringify(request);
+          const checked=spawnSync(process.env.CUMAC_NATIVE_COMMAND_CHECKER,[],{input:serialized,encoding:'utf8'});
+          assert.equal(checked.status,0,checked.stderr);
+          const accepted=JSON.parse(checked.stdout);
+          assert.deepEqual(accepted.target,target);
+          assert.ok(accepted.codecs.includes(options.codec??'png'));
+          assert.ok(accepted.codecs.includes('png'));
+        }
+        return {KernelBrowser:{result:command.op==='display_subscribe'
+          ? {...target,display_kind:'native',subscription_id:'s',width:128,height:128}
+          : {closed:true}}};
+      }};
+    const stream=await attachNativeDisplay({width:1,height:1},transport,target,options);
+    await stream.close();
+    const unsupported=JSON.parse(serialized);
+    unsupported.KernelBrowser.command.command.bitrate=2_000_000;
+    const rejected=spawnSync(process.env.CUMAC_NATIVE_COMMAND_CHECKER,[],{input:JSON.stringify(unsupported),encoding:'utf8'});
+    assert.equal(rejected.status,1);
+    assert.match(rejected.stderr,/unknown field `bitrate`/);
+  });

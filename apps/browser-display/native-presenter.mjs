@@ -20,7 +20,8 @@ export async function attachNativeDisplay(canvas, transport, target, options = {
     async request({KernelBrowser:{command}}) {
       let native;
       switch(command.op) {
-        case 'display_subscribe': native={op:'display_subscribe',target,codecs:['png']};break;
+        // Protocol 497 accepts only target/codecs; native bitrate is kernel-owned.
+        case 'display_subscribe': native={op:'display_subscribe',target,codecs:command.codecs};break;
         case 'display_next': native={op:'display_next',target,subscription_id:command.subscription_id,after_sequence:command.after_sequence,repair:false};break;
         case 'unsubscribe': native={op:'display_close',target,subscription_id:command.subscription_id};break;
         // M2 is an observer. Existing bounded Computer input remains separate.
@@ -29,7 +30,7 @@ export async function attachNativeDisplay(canvas, transport, target, options = {
       return transport.request({KernelBrowser:{command:{op:'computer',command:native}}});
     }
   };
-  const stream=await attachBrowserDisplay(canvas,adapter,{...target,display_kind:'native'}, {...options,push:false,codec:'png',stripes:false,creditWindow:1});
+  const stream=await attachBrowserDisplay(canvas,adapter,{...target,display_kind:'native'}, {...options,push:false,codec:options.codec==='avc1.420033'?'avc1.420033':'png',stripes:false,creditWindow:1});
   stream.repair=async()=>{
     // A lost base gets a new caller-bound subscription; never replay a credit.
     await stream.close();return attachNativeDisplay(canvas,transport,target,options);
