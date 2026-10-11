@@ -349,3 +349,29 @@ fn m2_native_display_requires_admitted_terminal_and_current_surface_without_crea
         )
         .is_err());
 }
+
+#[test]
+fn m3_authority_terminal_releases_physical_owner_through_kernel_request() {
+    let (host, seat) = seat_host();
+    computer(&host, json!({"op":"start"})).unwrap();
+    let model = host.actor_model(OWNER).unwrap();
+    model.lock().unwrap().takeover_desktop(
+        EnvironmentActor::new("human:physical-owner", EnvironmentActorKind::Human, "Physical"),
+        "macos-seat", "1").unwrap();
+    let release = json!({"op":"release","surface_id":"macos-seat","generation":"1"});
+    assert!(computer(&host, release.clone()).is_err());
+    assert!(model.lock().unwrap().desktop_owner_is("human:physical-owner"));
+    let life = crate::runtime::command::TerminalLifetime::default();
+    let admission = host.admit_terminal(OWNER, life.clone());
+    let mut stale = release.clone(); stale["generation"] = "old".into();
+    assert!(host.protected_request_admitted(OWNER, Some(&admission), "host.computer", stale, Value::Null).is_err());
+    host.protected_request_admitted(OWNER, Some(&admission), "host.computer", release.clone(), Value::Null).unwrap();
+    assert_eq!(seat.lock().unwrap().calls.last().unwrap(), "host.computer.reset");
+    assert!(!model.lock().unwrap().desktop_owner_is("human:physical-owner"));
+    model.lock().unwrap().takeover_desktop(
+        EnvironmentActor::new("human:physical-owner", EnvironmentActorKind::Human, "Physical"),
+        "macos-seat", "1").unwrap();
+    life.cancel();
+    assert!(host.protected_request_admitted(OWNER, Some(&admission), "host.computer", release, Value::Null).is_err());
+    assert!(model.lock().unwrap().desktop_owner_is("human:physical-owner"));
+}
