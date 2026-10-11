@@ -89,6 +89,17 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
     deps.render()
   }
 
+  const updateProblem = (login: TrackedLogin, output: string) => {
+    const problem = providerLoginProblem(output)
+    if (login.sentOutput !== null) {
+      if (output === login.sentOutput || !problem || problem === login.sentProblem) return false
+      login.sentOutput = null
+    }
+    const changed = login.problem !== problem
+    login.problem = problem
+    return changed && problem !== null
+  }
+
   const poll = async (login: TrackedLogin) => {
     if (tracked.get(keyOf(login.ref)) !== login) return
     let status: ProviderLoginStatus
@@ -112,13 +123,8 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
       await finish(login, status)
       return
     }
-    if (login.sentOutput !== null && status.terminal_output_base64 !== login.sentOutput) {
-      const problem = providerLoginProblem(status.terminal_output_base64)
-      if (problem && problem !== login.sentProblem) {
-        login.sentOutput = null
-        login.problem = problem
-        deps.flashFooter(`${subject(login.ref)}: ${problem}`, "error")
-      }
+    if (updateProblem(login, status.terminal_output_base64)) {
+      deps.flashFooter(`${subject(login.ref)}: ${login.problem}`, "error")
     }
     // Every poll also advances the visible countdown.
     deps.render()
@@ -168,12 +174,8 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
     // A code prompt shows its steps before the provider prints the link.
     if (!view.url && !view.takesCode) return null
     const login = ref ? tracked.get(keyOf(ref)) : undefined
-    if (login?.projectionOnly && login.sentOutput !== null && projection.terminal_output_base64 !== login.sentOutput) {
-      const problem = providerLoginProblem(projection.terminal_output_base64)
-      if (problem && problem !== login.sentProblem) {
-        login.sentOutput = null
-        login.problem = problem
-      }
+    if (login && (login.projectionOnly || !login.status)) {
+      updateProblem(login, projection.terminal_output_base64)
     }
     const startedAt = login?.status?.started_at_ms
     return {

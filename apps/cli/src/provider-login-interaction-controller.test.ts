@@ -215,3 +215,17 @@ test("MP-08/MP-11 the local slash-command watcher adopts its kernel projection o
   assert.equal(h.timers.length, 0)
   h.controller.dispose()
 })
+
+for (const kernelId of ["fleet", "worker"]) {
+  test(`MP-08/MP-10/MP-11 ${kernelId} login exposes a shared rejection without a local code submission`, async () => {
+    const error = "OAuth error: Request failed with status code 400"
+    const h = harness([status("running", error)])
+    const shared = { ...interaction, provider_login: { ...interaction.provider_login!, kernel_id: kernelId, terminal_output_base64: output(error) } }
+    try {
+      h.controller.stripState(shared)
+      await h.tick()
+      assert.equal(h.controller.stripState(shared)!.problem, error)
+      assert.equal(h.controller.stripState(shared)!.checking, false)
+    } finally { h.controller.dispose() }
+  })
+}
