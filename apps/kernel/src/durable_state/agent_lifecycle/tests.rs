@@ -2954,8 +2954,6 @@ fn a12_expired_completion_receipt_can_settle_matching_goal_after_pause() {
     for pause in [false, true] {
         let f = Fixture::new();
         f.begin("p");
-        f.register();
-        f.subscribe();
         f.apply(Operation::StartGoal {
             task: "p".into(),
             owner: "owner".into(),
@@ -2963,6 +2961,8 @@ fn a12_expired_completion_receipt_can_settle_matching_goal_after_pause() {
             minutes: 1,
             now: 2,
         });
+        f.register();
+        f.subscribe();
         if pause {
             f.apply(Operation::ControlGoal {
                 task: "p".into(),
