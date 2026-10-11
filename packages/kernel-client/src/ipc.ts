@@ -655,6 +655,7 @@ export class LocalIpcClient {
         requestId,
         lane,
         waitsForAuthorization ? 0 : replayAfterWrite ? this.requestAttemptTimeoutMs(lane, retryUntilMs) : IPC_TIMEOUT_MS,
+        IPC_TIMEOUT_MS,
       )
 
       try {
@@ -937,7 +938,12 @@ export class LocalIpcClient {
               return
             }
             try {
-              const text = this.isRelayMode() ? relayFrames.receive(String(data), frame => socket.send(frame)) : String(data)
+              const text = this.isRelayMode() ? relayFrames.receive(String(data), frame => {
+                // A receipt is emitted only after bounded, contiguous chunk validation.
+                // This keeps a progressing response alive without extending authority.
+                this.pendingRequests.noteTransportProgress(lane)
+                socket.send(frame)
+              }) : String(data)
               if (text !== null) this.handleWebSocketMessage(Buffer.from(text), lane)
             } catch {
               this.rejectPending("invalid relay transport frame", lane)
