@@ -916,3 +916,23 @@ test("MP-10: review #941@36a395b05-6 CSSOM media-list edits of style and no-CORS
     await evaluate("s.sheet.media.mediaText='';true");
     assert(await media(elements(snapshot).filter(([, tag]) => tag === "style")[0][0], null), "MP-10: clearing the media list reaches the viewer");
   }, { "/x.css": { type: "text/css", body: "#r{color:rgb(8, 8, 8)}" } }));
+
+// Review #941 @36a395b05 finding 5: rotate(180deg), scaleX(-1) and the rotate property keep the bounding size, and a
+// translucent ancestor composites too: a viewport crop already holds that compositing, which the mirrored DOM applies
+// again. Such regions hand the page to labelled video (it returns once the transform goes).
+test("MP-10: review #941@36a395b05-5 a screenshot-crop region under a size-preserving transform or a translucent ancestor hands the page to labelled video, and returns after", () => mirrored(
+  '<div id="wrap"><canvas id="c" width="120" height="60"></canvas></div><script>const i=new Image();i.onload=()=>{document.getElementById("c").getContext("2d").drawImage(i,0,0);window.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>', async ({ next, evaluate }) => {
+    for (let i = 0; i < 100 && await evaluate("window.drawn === true") !== true; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    const plain = await next();
+    assert.equal(plain.fallback, undefined); assert.equal(plain.tiles.length, 1, "MP-10: the tainted canvas shows as a screenshot crop");
+    for (const [element, style] of [["c", "transform:rotate(180deg)"], ["wrap", "transform:scaleX(-1)"], ["c", "rotate:180deg"], ["wrap", "opacity:0.5"]]) {
+      await evaluate(`${element}.style.cssText=${JSON.stringify(style)};true`);
+      await new Promise(resolve => setTimeout(resolve, 1100));
+      let packet = await next(1000); for (let i = 0; i < 3 && packet.fallback === undefined; i++) packet = await next(1000);
+      assert.equal(packet.fallback, "region_transform", `MP-10: ${element} ${style}`);
+      await evaluate(`${element}.style.cssText='';true`);
+      await new Promise(resolve => setTimeout(resolve, 1100));
+      let back = await next(1000); for (let i = 0; i < 3 && back.fallback !== undefined; i++) back = await next(1000);
+      assert.equal(back.fallback, undefined, `MP-10: the mirror returns after ${style}`);
+    }
+  }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="60" height="60" fill="rgb(255,0,0)"/><rect x="60" width="60" height="60" fill="rgb(0,0,255)"/></svg>' } }));
