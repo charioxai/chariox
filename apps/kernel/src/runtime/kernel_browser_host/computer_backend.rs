@@ -123,15 +123,7 @@ impl KernelBrowserHost {
                             &serde_json::json!({"surface_id":"macos-seat","generation":epoch}),
                         )?;
                         actors
-                            .takeover_desktop(
-                                crate::session::EnvironmentActor::new(
-                                    "human:physical-owner",
-                                    crate::session::EnvironmentActorKind::Human,
-                                    "Mac owner",
-                                ),
-                                "macos-seat",
-                                epoch,
-                            )
+                            .physical_takeover_desktop("macos-seat", epoch)
                             .map(drop)
                     }),
                 )
