@@ -85,11 +85,17 @@ pub(crate) fn apply_scoped_binding(
             locator: locator.clone(),
             status: ProjectEnvironmentEntryStatus::Found,
         };
+        let owned = stored.manifest.entries.iter().any(|e| {
+            e.workspace_id == entry.workspace_id
+                && e.name == entry.name
+                && binding_owned_by(&stored, r, e)
+        });
         if stored.manifest.entries.iter().any(|e| {
             e.workspace_id == entry.workspace_id
                 && e.name == entry.name
                 && e.locator != entry.locator
                 && !e.excluded
+                && !binding_owned_by(&stored, r, e)
         }) {
             return Err(environment_error(
                 "Existing scoped launch binding conflicts",
@@ -133,7 +139,6 @@ pub(crate) fn apply_scoped_binding(
         }
         // Never acquire ownership of an unrelated legacy binding just because
         // its locator happens to match. Ownership and entry publish together.
-        let owned = stored.apply_owned_bindings.iter().any(|o| o.entry == entry);
         let legacy =
             stored.manifest.entries.iter().any(|e| {
                 e.workspace_id == entry.workspace_id && e.name == entry.name && !e.excluded
@@ -205,4 +210,17 @@ pub(crate) fn retire_removed_apply_bindings(
         store.save(&stored)?;
     }
     Ok(())
+}
+
+// MP-11: reviewed replacement cannot seize another requirement or legacy authority.
+fn binding_owned_by(
+    stored: &StoredProjectEnvironment,
+    requirement: &Requirement,
+    entry: &ProjectEnvironmentEntry,
+) -> bool {
+    stored.apply_owned_bindings.iter().any(|owner| {
+        owner.requirement_id == requirement.requirement_id
+            && owner.scope == requirement.scope
+            && owner.entry == *entry
+    })
 }

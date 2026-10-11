@@ -447,3 +447,116 @@ fn envp05a_retirement_preserves_legacy_unselected_and_independently_edited_entri
     assert_eq!(stored.manifest.entries[1], edited);
     assert_eq!(stored.apply_owned_bindings.len(), 1);
 }
+
+// MP-08 / MP-10 / MP-11: a new reviewed locator replaces only its own prior Apply.
+#[test]
+fn envp05a_reviewed_apply_locator_updates_public_and_named_vault_sources() {
+    use crate::secret::CredentialVaultStore;
+    let root = crate::test_support::TestWorktree::new("envp05-locator");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::CharioxEncrypted;
+    config.user_config.credential_vault.path = root
+        .path()
+        .join("fixture-vault.json")
+        .to_string_lossy()
+        .into();
+    crate::secret::unlock_chariox_encrypted_vault(
+        &config.user_config.credential_vault.path,
+        "synthetic-fixture-passphrase",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    let vault = crate::secret::project_environment_vault(&config).unwrap();
+    vault
+        .set_secret("fixture-service", "first", "synthetic-first")
+        .unwrap();
+    vault
+        .set_secret("fixture-service", "second", "synthetic-second")
+        .unwrap();
+    let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
+    let project = crate::session::RuntimeProject::new(
+        "locator",
+        "owner",
+        root.path().to_string_lossy(),
+        "Locator",
+        crate::session::RuntimeProjectKind::Named,
+    );
+    let mut env = store.snapshot(&project).unwrap();
+    std::fs::write(root.path().join("first-input"), "PUBLIC_SITE=first-site\n").unwrap();
+    std::fs::write(
+        root.path().join("second-input"),
+        "SECOND_SITE=second-site\n",
+    )
+    .unwrap();
+    let mut public = requirement("public");
+    public.spec = RequirementSpec::Variables {
+        name: "PUBLIC_SITE".into(),
+        locator: ProjectEnvironmentLocator::EnvFile {
+            path: "first-input".into(),
+            key: "PUBLIC_SITE".into(),
+        },
+    };
+    let mut secret = requirement("secret");
+    secret.spec = RequirementSpec::Secrets {
+        name: "PROJECT_PRIVATE_INPUT".into(),
+        vault: Some(EnvironmentVaultReference {
+            service: "fixture-service".into(),
+            key: "first".into(),
+        }),
+    };
+    env.project_requirements = vec![public.clone(), secret.clone()];
+    apply_scoped_binding(&store, &config, &env, &public).unwrap();
+    apply_scoped_binding(&store, &config, &env, &secret).unwrap();
+    public.spec = RequirementSpec::Variables {
+        name: "PUBLIC_SITE".into(),
+        locator: ProjectEnvironmentLocator::EnvFile {
+            path: "second-input".into(),
+            key: "SECOND_SITE".into(),
+        },
+    };
+    secret.spec = RequirementSpec::Secrets {
+        name: "PROJECT_PRIVATE_INPUT".into(),
+        vault: Some(EnvironmentVaultReference {
+            service: "fixture-service".into(),
+            key: "second".into(),
+        }),
+    };
+    env.project_requirements = vec![public.clone(), secret.clone()];
+    assert!(
+        apply_scoped_binding(&store, &config, &env, &public).is_ok(),
+        "a reviewed public locator update must replace its prior Apply binding"
+    );
+    assert!(
+        apply_scoped_binding(&store, &config, &env, &secret).is_ok(),
+        "a reviewed named Vault reference update must replace its prior Apply binding"
+    );
+    let launch = project_launch_environment(
+        &config,
+        project.id(),
+        &root.path().to_string_lossy(),
+        root.path(),
+    )
+    .unwrap();
+    assert!(launch
+        .iter()
+        .any(|(name, value)| name == "PUBLIC_SITE" && value == "second-site"));
+    assert!(launch
+        .iter()
+        .any(|(name, value)| name == "PROJECT_PRIVATE_INPUT" && value == "synthetic-second"));
+    let mut legacy = store.load(project.id()).unwrap().unwrap();
+    legacy.apply_owned_bindings.clear();
+    store.save(&legacy).unwrap();
+    public.spec = RequirementSpec::Variables {
+        name: "PUBLIC_SITE".into(),
+        locator: ProjectEnvironmentLocator::EnvFile {
+            path: "first-input".into(),
+            key: "PUBLIC_SITE".into(),
+        },
+    };
+    assert!(
+        apply_scoped_binding(&store, &config, &env, &public).is_err(),
+        "unrelated legacy conflicts remain protected"
+    );
+    crate::secret::lock_chariox_encrypted_vault(&config.user_config.credential_vault.path).unwrap();
+}
