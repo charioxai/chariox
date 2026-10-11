@@ -409,6 +409,66 @@ mod tests {
         config
     }
 
+    // MP-08/MP-10/MP-11: many large secret-bearing blobs must be refused before
+    // they replace the owner's Vault with a file its readers reject.
+    #[test]
+    fn mp08_mp11_oversized_artifacts_leave_owner_vault_untouched() {
+        let root =
+            std::env::temp_dir().join(format!("mp08-vault-bound-{:032x}", rand::random::<u128>()));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = Cleanup(root.clone());
+        let source = config(&root, "source");
+        let target = config(&root, "target");
+        let path = PathBuf::from(&source.user_config.credential_vault.path);
+        let vault = ExportVault::new(
+            &source,
+            "context",
+            &target.daemon_id,
+            &target.relay_public_key,
+            "project",
+        );
+        let staging = root.join("staging");
+        let item = || {
+            vec![VaultItem {
+                path: "workspace/.env".into(),
+                kind: "workspace file".into(),
+            }]
+        };
+        let blob = |fill: u8| vec![fill; MAX_OVERLAY_FILE_BYTES as usize];
+        vault.stage(&staging, "a", &blob(b'a'), item()).unwrap();
+        vault.stage(&staging, "b", &blob(b'b'), item()).unwrap();
+        let before = fs::read(&path).unwrap();
+        assert!(vault.stage(&staging, "c", &blob(b'c'), item()).is_err());
+        assert!(
+            fs::read(&path).unwrap() == before,
+            "owner Vault was replaced"
+        );
+        let stored = Zeroizing::new(
+            crate::secret::get_chariox_encrypted_vault_secret_for_test(
+                &source.user_config.credential_vault.path,
+                SERVICE,
+                &sha256_bytes(&blob(b'a')),
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(stored.as_bytes())
+                .unwrap(),
+            blob(b'a')
+        );
+        assert!(!staging.join("c").exists());
+        assert_eq!(
+            fs::read_dir(&root).unwrap().count(),
+            3,
+            "temp Vault left behind"
+        );
+        crate::secret::lock_chariox_encrypted_vault(&source.user_config.credential_vault.path)
+            .unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&target.user_config.credential_vault.path)
+            .unwrap();
+    }
+
     #[test]
     fn mp08_mp11_vault_file_roundtrip_and_plain_archive_exclusion() {
         let root =

@@ -961,6 +961,13 @@ fn write_vault_file(
             "failed to serialize Chariox vault plaintext: {error}"
         ))
     })?;
+    // MP-08/MP-11: refuse growth before replacing the owner's Vault; a file the
+    // readers reject cannot be recovered afterwards. Cheap early check first.
+    if plaintext_bytes.len() as u64 > MAX_TRANSFERRED_VAULT_BYTES - AUTH_TAG_LEN as u64 {
+        return Err(secret_error(
+            "Chariox Vault ciphertext exceeds its size limit".to_string(),
+        ));
+    }
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(&nonce), plaintext_bytes.as_slice())
         .map_err(|error| secret_error(format!("failed to encrypt Chariox vault: {error}")))?;
@@ -973,6 +980,12 @@ fn write_vault_file(
     };
     let serialized = serde_json::to_vec_pretty(&file)
         .map_err(|error| secret_error(format!("failed to serialize Chariox vault: {error}")))?;
+    // Same bound as Vault transfer reads, including JSON and base64 expansion.
+    if serialized.len() as u64 > MAX_TRANSFERRED_VAULT_BYTES {
+        return Err(secret_error(
+            "Chariox Vault file exceeds its size limit".to_string(),
+        ));
+    }
     let tmp_path = vault_temp_path(path);
     let mut tmp_file = OpenOptions::new()
         .write(true)
