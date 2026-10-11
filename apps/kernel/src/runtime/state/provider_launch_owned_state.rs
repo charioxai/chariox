@@ -703,7 +703,7 @@ mod tests {
         );
         let credentials = runtime
             .resolve_provider_account_credentials_for_run_with_vault(
-                &run,
+                &completed,
                 "MP-08 / MP-10 / MP-11 home recovery",
             )
             .await
