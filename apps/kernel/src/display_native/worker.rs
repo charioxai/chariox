@@ -101,6 +101,24 @@ fn admit_default() -> bool {
     true
 }
 const RASTER_SLOTS: usize = super::RASTER_SLOT_NAMES.len();
+// MP-08/MP-10: damage-driven FramePace semantics described in the Selkies
+// audit (pixelflux pace.rs). Independently implemented here; no upstream
+// code copied. Input wakes retain their immediate readback admission.
+const READBACK_MIN: Duration = Duration::from_millis(3);
+pub(super) fn readback_due(dirty: bool, wake: bool, elapsed: Duration) -> bool {
+    dirty && (wake || elapsed >= READBACK_MIN)
+}
+pub(super) fn readback_wait(dirty: bool, free_slot: bool, elapsed: Duration) -> i32 {
+    if dirty && free_slot {
+        READBACK_MIN.saturating_sub(elapsed).as_micros().div_ceil(1000) as i32
+    } else if free_slot {
+        // Upper bound only; XDamage/control readiness wakes poll sooner.
+        16
+    } else {
+        // No slot can be overwritten. Release/control/XDamage still wake us.
+        1000
+    }
+}
 pub(super) fn epoch() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -276,7 +294,7 @@ pub(super) fn run() -> Result<(), String> {
             }
             dirty = true;
         }
-        let due = dirty && (wake.is_some() || last.elapsed() >= Duration::from_millis(16));
+        let due = readback_due(dirty, wake.is_some(), last.elapsed());
         if due {
             if let Some(slot) = slots.iter_mut().find(|s| s.available()) {
                 let at = epoch();
@@ -347,11 +365,7 @@ pub(super) fn run() -> Result<(), String> {
                 wake = None;
             }
         }
-        let timeout = if dirty && slots.iter().any(|s| s.available()) {
-            16u128.saturating_sub(last.elapsed().as_millis()).min(16) as i32
-        } else {
-            1000
-        };
+        let timeout = readback_wait(dirty, slots.iter().any(|s| s.available()), last.elapsed());
         let mut fds = [
             libc::pollfd {
                 fd: 0,

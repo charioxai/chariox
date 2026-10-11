@@ -4,6 +4,24 @@ use super::{
     raster,
 };
 #[test]
+fn mp10_damage_five_ms_after_readback_does_not_wait_for_frame_boundary() {
+    use std::time::Duration;
+    let elapsed = Duration::from_millis(5);
+    let wait = super::worker::readback_wait(true, true, elapsed);
+    assert!(wait <= 2, "MP-10: damage with a free slot waits {wait}ms");
+    assert!(super::worker::readback_due(true, false, elapsed + Duration::from_millis(wait as u64)));
+}
+#[test]
+fn mp11_capture_wait_keeps_slot_and_input_bounds() {
+    use std::time::Duration;
+    assert_eq!(super::worker::readback_wait(true, false, Duration::from_millis(5)), 1000);
+    assert!(!super::worker::readback_due(false, true, Duration::from_secs(1)));
+    assert!(super::worker::readback_due(true, true, Duration::ZERO));
+    assert!(!super::worker::readback_due(true, false, Duration::from_millis(2)));
+    assert_eq!(super::worker::readback_wait(true, true, Duration::from_micros(2999)), 1);
+    assert_eq!(super::worker::readback_wait(false, true, Duration::ZERO), 16);
+}
+#[test]
 fn mp08_retina_noise_exact_reply_survives_worker_emission() {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use serde_json::{json, Value};
