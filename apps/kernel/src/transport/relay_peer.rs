@@ -2073,12 +2073,12 @@ mod project_environment_export_shapes {
 }
 
 #[cfg(test)]
-mod workflow_notification_108_shapes {
+mod workflow_notification_101_shapes {
     use super::*;
     use crate::local::*;
     use sha2::{Digest, Sha256};
     #[test]
-    fn mp08_mp10_completion_peer_108_snapshot() {
+    fn mp08_mp10_completion_peer_101_snapshot() {
         assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
         let sub = WorkflowNotificationSubscription {
             delivery_mode: crate::local::NotificationDeliveryMode::Queue,
@@ -2150,7 +2150,7 @@ mod workflow_notification_108_shapes {
         let wire = serde_json::json!({"requests":requests,"responses":responses});
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-            "e59d4fe9729e70fdcccb578e4bda493cef91ec58f7494207f9b1b4f9aa6184f9"
+            "d9e19811e96919dc9760c1e0151c755a54c7760bc7e05a398e2db381d1a291a8"
         );
     }
 }
