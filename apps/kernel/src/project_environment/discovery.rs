@@ -41,7 +41,7 @@ pub fn project_environment_discovery_prompt(
         ));
     }
     Ok(format!(
-        "MP-08 / MP-10 / MP-11 Project environment discovery. Use only the kernel-provided metadata below. Tools are disabled. Never read files, execute commands, retrieve credentials, or return values. Classify uncertain entries as secret. Return only a JSON object (no Markdown or commentary) with schema_version 1, the exact project_id and evidence_digest, entries, private_files, toolchain_hints, package_hints and service_hints. Each entries item has ONLY reference_index (zero-based index into the supplied references array) and classification (secret or non_secret). Include every reference index exactly once. Do not emit or invent names, workspace IDs, kinds, use sites, locators, status or excluded fields: the kernel retains those fields from the indexed reference and resolves actual values. The kernel preserves unchanged previous entries. Decide every private_files candidate in private_files, with workspace_id/path/bring/reason (one line explaining project use or regeneration). Exclude caches, runtime files and secret-looking files from the plain overlay; referenced secrets use entries and Vault. Do not treat a missing configuration value as failed setup. Never claim readiness.\nMetadata:\n{encoded}"
+        "MP-08 / MP-10 / MP-11 Project environment discovery. Use only the kernel-provided metadata below. Tools are disabled. Never read files, execute commands, retrieve credentials, or return values. Classify uncertain entries as secret. Return only a JSON object (no Markdown or commentary) with schema_version 1, the exact project_id and evidence_digest, entries, private_files, toolchain_hints, package_hints and service_hints. Each entries item has ONLY reference_index (zero-based index into the supplied references array) and classification (secret or non_secret). The kernel starts every supplied reference as secret. Emit only indexes with a deliberate classification decision; omitted indexes remain secret. Do not enumerate uncertain references. Do not emit or invent names, workspace IDs, kinds, use sites, locators, status or excluded fields: the kernel retains those fields from the indexed reference and resolves actual values. The kernel preserves unchanged previous entries. Decide every private_files candidate in private_files, with workspace_id/path/bring/reason (one line explaining project use or regeneration). Exclude caches, runtime files and secret-looking files from the plain overlay; referenced secrets use entries and Vault. Do not treat a missing configuration value as failed setup. Never claim readiness.\nMetadata:\n{encoded}"
     ))
 }
 
@@ -186,26 +186,21 @@ pub fn parse_project_environment_discovery_decisions(
     }
     let decisions: Decisions = serde_json::from_str(output)
         .map_err(|_| environment_error("invalid Project environment discovery output"))?;
-    let mut entries = Vec::with_capacity(decisions.entries.len());
+    let mut entries = input.references.clone();
+    for entry in &mut entries {
+        entry.classification = ProjectEnvironmentClassification::Secret;
+    }
     let mut seen = std::collections::BTreeSet::new();
     for decision in decisions.entries {
-        let mut entry = input
-            .references
-            .get(decision.reference_index)
-            .ok_or_else(|| environment_error("discovery introduced unreferenced name or locator"))?
-            .clone();
+        let entry = entries.get_mut(decision.reference_index).ok_or_else(|| {
+            environment_error("discovery introduced unreferenced name or locator")
+        })?;
         if !seen.insert(decision.reference_index) {
             return Err(environment_error(
                 "invalid Project environment entry binding or evidence",
             ));
         }
         entry.classification = decision.classification;
-        entries.push(entry);
-    }
-    if seen.len() != input.references.len() {
-        return Err(environment_error(
-            "discovery omitted a Project environment reference",
-        ));
     }
     validate_discovery_manifest(
         ProjectEnvironmentManifest {
