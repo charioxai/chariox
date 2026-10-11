@@ -109,22 +109,19 @@ export function createSlashCommandSubmitController(
       if (slashCommand && deps.isAttached()) {
         deps.recordPromptAreaHistoryEntry(deps.getSessionId(), rawPrompt)
       }
+      if (slashCommand) {
+        // Consume this command before awaiting it; a user may type the next draft.
+        clearHandledCommandUi(slashCommand)
+      }
       if (slashCommand && slashCommand.kind !== "approvals" && deps.handleSharedShellCommand) {
         try {
           if (await deps.handleSharedShellCommand(rawPrompt)) {
-            clearHandledCommandUi(slashCommand)
             return slashCommand
           }
         } catch (error) {
           reportCommandError("shared shell command failed", trimmed, error)
-          clearHandledCommandUi(slashCommand)
           return slashCommand
         }
-      }
-      const clearBeforeHandler = slashCommand?.kind === "exit" || slashCommand?.kind === "approvals"
-        || slashCommand?.kind === "attachment"
-      if (clearBeforeHandler) {
-        clearHandledCommandUi(slashCommand)
       }
       const handledCommand = await executeSlashCommand(rawPrompt, {
         onExit: deps.onExit,
@@ -193,9 +190,6 @@ export function createSlashCommandSubmitController(
       })
       if (!handledCommand) {
         return null
-      }
-      if (!clearBeforeHandler) {
-        clearHandledCommandUi(handledCommand)
       }
       return handledCommand
     },
