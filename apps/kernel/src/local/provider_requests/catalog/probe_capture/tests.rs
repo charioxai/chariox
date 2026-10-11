@@ -292,6 +292,8 @@ fn review0212_timeout_settles_descendants_with_both_streams_redirected() {
         !running,
         "redirected owned descendant survived capture timeout"
     );
+}
+
 // MP-08 / MP-10 / MP-11: synchronized helpers close both capture pipes.
 #[cfg(unix)]
 #[test]
