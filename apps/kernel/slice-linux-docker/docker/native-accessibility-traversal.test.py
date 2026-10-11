@@ -125,6 +125,34 @@ class TraversalTest(unittest.TestCase):
         self.assertIsNone(self.driver.native_frame_scale([50,40,150,100],[100,80,300,240],[100,80,300,240]))
         self.assertIsNone(self.driver.native_frame_scale([50,40,150,100],[150,120,450,300],[150,120,450,300]))
 
+    def test_mp08_mp11_top_level_gtk_file_chooser_keeps_exact_window_focus_proof(self):
+        # Real Mousepad Save As exposes its top-level window as file chooser.
+        # The title, geometry, live PID and unique window proof still apply.
+        self.foreground()
+        leaf=Node('Filename','text')
+        leaf.getState=lambda:types.SimpleNamespace(contains=lambda flag:True)
+        leaf.queryComponent=lambda:types.SimpleNamespace(getExtents=lambda coords:types.SimpleNamespace(x=110,y=100,width=200,height=30))
+        chooser=Node('Writer','file chooser',[leaf])
+        chooser.getState=lambda:types.SimpleNamespace(contains=lambda flag:True)
+        chooser.rect=types.SimpleNamespace(x=100,y=80,width=300,height=200)
+        chooser.queryComponent=lambda:types.SimpleNamespace(getExtents=lambda coords:chooser.rect)
+        self.desktop=Node('Desktop','desktop',[Node('Office','application',[chooser])])
+        processes=[{'pid':200,'started':'1'}]
+        self.assertEqual(self.driver.input_target(processes)['path'],[0,0])
+        self.driver.input_guard(processes)()
+        for change in ['title','geometry','nested','ambiguous','password','browser']:
+            with self.subTest(change=change):
+                chooser.name='Writer';chooser.rect.width=300;leaf.secret=False;leaf.role='text'
+                roots=[chooser]
+                if change=='title':chooser.name='Other'
+                if change=='geometry':chooser.rect.width=301
+                if change=='nested':roots=[Node('Container','panel',[chooser])]
+                if change=='ambiguous':roots=[chooser,chooser]
+                if change=='password':leaf.secret=True
+                if change=='browser':leaf.role='document web'
+                self.desktop=Node('Desktop','desktop',[Node('Office','application',roots)])
+                with self.assertRaises(self.driver.NativeInputDenied):self.driver.input_target(processes)
+
     def test_mp11_unattributed_dock_does_not_block_owned_focus_input(self):
         # MP-11 (#904 Room drill): tint2 maps a dock without _NET_WM_PID. It stays
         # masked and the capture tree incomplete, but keys go to the proved frame.

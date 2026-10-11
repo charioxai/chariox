@@ -284,7 +284,12 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                 name=bytes(title.value).decode('utf-8',errors='replace') if title is not None else window.get_wm_name()
                 # MP-11: PID membership alone is never window coverage. Match
                 # a showing frame's title AND actual X11 screen geometry.
-                frames=[node for node in nodes if node['pid']==pid and node['role'] in ('frame','window','dialog') and
+                # MP-08 / MP-11: GTK Save As is a top-level file chooser,
+                # with the same exact title/geometry/owned-process proof.
+                # Embedded chooser widgets never stand in for a window.
+                frames=[node for node in nodes if node['pid']==pid and
+                        (node['role'] in ('frame','window','dialog') or
+                         (node['role']=='file chooser' and len(node['path'])==1)) and
                         node['name']==name and 'showing' in node['states'] and native_frame_scale(node['bounds'],rect,client_rect) is not None]
                 windows.append((int(window_id),pid,rect,frames,client_rect))
             for window_id,pid,rect,frames,client in windows:
