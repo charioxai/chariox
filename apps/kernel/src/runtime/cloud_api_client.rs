@@ -11,9 +11,9 @@ pub(crate) use account_client_token::issue_cloud_account_client_runtime_token;
 mod http;
 pub(crate) use http::{
     cloud_error_is_retryable, cloud_url_component, delete_cloud_json_authenticated, get_cloud_json,
-    get_cloud_json_authenticated, is_stale_cloud_link_error, normalize_cloud_api_url,
-    post_cloud_acknowledged, post_cloud_json, post_cloud_json_authenticated,
-    post_cloud_json_dynamic, post_cloud_to_file,
+    get_cloud_json_authenticated, get_cloud_kernel_directory, is_stale_cloud_link_error,
+    normalize_cloud_api_url, post_cloud_acknowledged, post_cloud_json,
+    post_cloud_json_authenticated, post_cloud_json_dynamic, post_cloud_to_file,
 };
 mod pairing;
 pub(crate) use pairing::request_account_pairing_token;
@@ -42,9 +42,7 @@ pub(crate) struct CloudDevicePollResponse {
     pub(crate) interval_seconds: Option<u64>,
     pub(crate) expires_at: Option<String>,
     pub(crate) profile: Option<CloudDeviceProfileResponse>,
-    pub(crate) cloud_session_token: Option<String>,
-    pub(crate) cloud_session_expires_at: Option<String>,
-    pub(crate) machine_credential: Option<String>,
+    pub(crate) kernel_credential: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,10 +55,10 @@ pub(crate) struct CloudDeviceProfileResponse {
     pub(crate) realm_id: String,
     pub(crate) relay_url: String,
     pub(crate) issuer_id: String,
-    pub(crate) client_id: Option<String>,
-    pub(crate) client_alias: Option<String>,
     pub(crate) machine_id: Option<String>,
     pub(crate) machine_alias: Option<String>,
+    pub(crate) kernel_id: Option<String>,
+    pub(crate) public_key_thumbprint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,7 +115,12 @@ pub(crate) async fn issue_event_generator_management_capability(
     management_url: &str,
 ) -> Result<CloudEventGeneratorManagementCapabilityResponse, DaemonError> {
     let mut body = serde_json::Map::new();
-    if let Some(machine_credential) = profile.machine_credential.clone() {
+    if let Some(kernel_credential) = profile.kernel_credential.clone() {
+        body.insert(
+            "kernelCredential".to_string(),
+            serde_json::Value::String(kernel_credential),
+        );
+    } else if let Some(machine_credential) = profile.machine_credential.clone() {
         body.insert(
             "machineCredential".to_string(),
             serde_json::Value::String(machine_credential),
@@ -169,7 +172,12 @@ pub(crate) async fn issue_cloud_runtime_token(
     options: CloudRuntimeTokenRequestOptions,
 ) -> Result<CloudRuntimeTokenResponse, DaemonError> {
     let mut body = serde_json::Map::new();
-    if let Some(machine_credential) = profile.machine_credential.clone() {
+    if let Some(kernel_credential) = profile.kernel_credential.clone() {
+        body.insert(
+            "kernelCredential".to_string(),
+            serde_json::Value::String(kernel_credential),
+        );
+    } else if let Some(machine_credential) = profile.machine_credential.clone() {
         body.insert(
             "machineCredential".to_string(),
             serde_json::Value::String(machine_credential),
@@ -272,7 +280,7 @@ pub(crate) async fn issue_cloud_slice_runtime_token(
             operation: "issue cloud slice relay token",
             message: "hosted slice relay requires a paired machine identity".to_string(),
         })?;
-    if profile.machine_credential.is_none() {
+    if profile.machine_credential.is_none() && profile.kernel_credential.is_none() {
         return Err(DaemonError::LocalTransport {
             operation: "issue cloud slice relay token",
             message: "hosted slice relay requires a machine credential".to_string(),
@@ -296,7 +304,7 @@ pub(crate) async fn issue_cloud_slice_recovery_token(
             operation: "issue cloud slice recovery token",
             message: "hosted slice recovery requires a paired machine identity".to_string(),
         })?;
-    if profile.machine_credential.is_none() {
+    if profile.machine_credential.is_none() && profile.kernel_credential.is_none() {
         return Err(DaemonError::LocalTransport {
             operation: "issue cloud slice recovery token",
             message: "hosted slice recovery requires a machine credential".to_string(),
@@ -324,7 +332,7 @@ pub(crate) async fn issue_cloud_slice_discovery_token(
             operation: "issue cloud slice discovery token",
             message: "hosted slice discovery requires a paired machine identity".to_string(),
         })?;
-    if profile.machine_credential.is_none() {
+    if profile.machine_credential.is_none() && profile.kernel_credential.is_none() {
         return Err(DaemonError::LocalTransport {
             operation: "issue cloud slice discovery token",
             message: "hosted slice discovery requires a machine credential".to_string(),
@@ -334,7 +342,19 @@ pub(crate) async fn issue_cloud_slice_discovery_token(
         profile,
         &cloud_slice_discovery_subject(owner_kernel_ref, worker_kernel_ref),
         "client",
-        cloud_slice_discovery_token_options(machine_id),
+        CloudRuntimeTokenRequestOptions {
+            public_key_thumbprint: if profile.kernel_credential.is_some() {
+                Some(profile_kernel_key(profile)?)
+            } else {
+                None
+            },
+            allowed_targets: if profile.kernel_credential.is_some() {
+                Some(vec![worker_kernel_ref.to_string()])
+            } else {
+                None
+            },
+            ..cloud_slice_discovery_token_options(machine_id)
+        },
     )
     .await
 }
@@ -342,6 +362,7 @@ pub(crate) async fn issue_cloud_slice_discovery_token(
 pub(crate) async fn issue_cloud_relay_inventory_discovery_token(
     profile: &PersistedCloudRelayProfile,
     kernel_ref: &str,
+    visible_targets: Option<Vec<String>>,
 ) -> Result<CloudRuntimeTokenResponse, DaemonError> {
     let machine_id = profile
         .machine_id
@@ -351,7 +372,7 @@ pub(crate) async fn issue_cloud_relay_inventory_discovery_token(
             message: "hosted relay inventory discovery requires a paired machine identity"
                 .to_string(),
         })?;
-    if profile.machine_credential.is_none() {
+    if profile.machine_credential.is_none() && profile.kernel_credential.is_none() {
         return Err(DaemonError::LocalTransport {
             operation: "issue cloud relay inventory discovery token",
             message: "hosted relay inventory discovery requires a machine credential".to_string(),
@@ -361,9 +382,27 @@ pub(crate) async fn issue_cloud_relay_inventory_discovery_token(
         profile,
         &cloud_relay_inventory_discovery_subject(kernel_ref),
         "client",
-        cloud_relay_inventory_discovery_token_options(machine_id),
+        CloudRuntimeTokenRequestOptions {
+            public_key_thumbprint: if profile.kernel_credential.is_some() {
+                Some(profile_kernel_key(profile)?)
+            } else {
+                None
+            },
+            allowed_targets: visible_targets,
+            ..cloud_relay_inventory_discovery_token_options(machine_id)
+        },
     )
     .await
+}
+
+fn profile_kernel_key(profile: &PersistedCloudRelayProfile) -> Result<String, DaemonError> {
+    profile
+        .kernel_public_key_thumbprint
+        .clone()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "Cloud discovery",
+            message: "kernel key pin is missing; enroll this kernel independently".into(),
+        })
 }
 
 fn cloud_slice_discovery_subject(owner_kernel_ref: &str, worker_kernel_ref: &str) -> String {
@@ -465,9 +504,11 @@ pub(crate) fn cloud_profile_from_persisted(
         client_alias: profile.client_alias.clone(),
         machine_id: profile.machine_id.clone(),
         machine_alias: profile.machine_alias.clone(),
-        machine_credential: profile.machine_credential.clone(),
-        cloud_session_token: profile.cloud_session_token.clone(),
-        cloud_session_expires_at_ms: profile.cloud_session_expires_at_ms,
+        kernel_id: profile.kernel_id.clone(),
+        kernel_enrolled: profile
+            .kernel_credential
+            .as_ref()
+            .is_some_and(|v| !v.is_empty()),
         token_expires_at_ms: profile.token_expires_at_ms,
     }
 }

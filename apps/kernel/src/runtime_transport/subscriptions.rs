@@ -893,7 +893,7 @@ async fn run_waiting_room_inventory_subscription_loop(
         let session_projection_change_sequence = router.session_projection_change_sequence();
         if inventory_dirty || tick.is_multiple_of(WAITING_ROOM_INVENTORY_INTERVAL_TICKS) {
             let Some(snapshot_result) = await_subscription_work_with_heartbeats(
-                router.waiting_room_public_snapshot(crate::session::DEFAULT_LOCAL_USER_ID),
+                router.waiting_room_public_snapshot(crate::session::DEFAULT_LOCAL_USER_ID, None),
                 &mut next_heartbeat_at,
                 subscription_heartbeat_interval(),
                 || {

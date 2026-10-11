@@ -1,5 +1,7 @@
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
+import { CloudClient } from "./cloud-client.js"
+import { mergeRelayCloudProfile, saveRelayCloudProfile } from "./preferences.js"
 import { AppDevLoop } from "./app-dev-loop.js"
 import { AppFileInstaller, formatInstallProgress } from "./app-install-file.js"
 import { AppPublisherEnrollment } from "./app-publisher-file.js"
@@ -214,6 +216,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     attachment_id: initialBinding?.attachment.id ?? null,
     client_id: options.clientId,
   })
+  const cloudClient = new CloudClient()
+  onCleanup(() => cloudClient.stop())
   const renderer = useRenderer()
   const secretInput = createCliSecretInput(renderer)
   onCleanup(secretInput.cancel)
@@ -397,7 +401,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     refreshWaitingRoomDataNow, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults,
     waitingRoomTargets, editWaitingRoomWorkspace,
   } = createCliWaitingRoomComposition({
-    client, options, appLogger, formatError,
+    client, cloudClient, options, appLogger, formatError,
     isAttached, kernelConnected, waitingRoomState, setWaitingRoomState, setWaitingRoomStateProjection,
     waitingRoomLaunchOwnershipRevision,
     availableSessions, setAvailableSessions, waitingRoomProjects, setWaitingRoomProjects,
@@ -625,6 +629,12 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     onFooterFlashChange: () => updateSessionChrome(),
   })
   const flashFooter = footerFlashController.flash
+  void cloudClient.resume(() => {
+    setPreferencesState(current => mergeRelayCloudProfile(current, null))
+    void saveRelayCloudProfile(null).catch(() => {})
+    flashFooter("Terminal sign-in was revoked. Run /cloud login.", "error")
+  })
+    .catch(() => flashFooter("Unable to read this terminal's Cloud profile", "error"))
 
   const promptAttachmentIntakeController = createPromptAttachmentIntakeController({
     client,
@@ -834,7 +844,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   } = createCliSessionLifecycleComposition({
     client, options, appLogger, renderer,
     drainAppInstall: async () => { await Promise.all([appDevLoop.dispose(), appFileInstaller.dispose(), appPublisherEnrollment.dispose()]) },
-    sleep, formatError, supportsKernelEventStream, closingStateController,
+    sleep, formatError, supportsKernelEventStream, kernelConnected, closingStateController,
     isAttached, daemonDisconnected, attachmentState, sessionState,
     providerRunState, createdSessionState, waitingRoomState, preferencesState,
     connectedClientCount, persistablePromptDraft, syncPromptTextSnapshot, flushPendingPromptDraftPersist,
@@ -882,7 +892,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   } = createCliAppCommandRoutingComposition({
     appHostTerminal: createAppHostTerminal(renderer),
     lastViewedAppHostOperationId: kernelApprovals.lastViewedAppHostOperationId,
-    client, options, appLogger, formatError, appFileInstaller, appDevLoop, appPublisherEnrollment,
+    client, cloudClient, kernelConnected, options, appLogger, formatError, appFileInstaller, appDevLoop, appPublisherEnrollment,
     preferencesState, setPreferencesState, initialWorkspaceTarget, initialWorktreeTarget,
     pendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorkspaceTarget, setPendingWorktreeTarget,
     isAttached, anyTurnWork, sessionState, attachmentState, providerRunState,

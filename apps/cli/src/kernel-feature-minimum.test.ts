@@ -45,6 +45,14 @@ test("unknown versions and unrelated requests retain existing transport behavior
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ ListSessions: null }, 388))
 })
 
+test("Cloud owner control and terminal pivots require allocated protocol 491", () => {
+  for (const name of ["CloudRelayStatus", "StartCloudRelayLogin", "PollCloudRelayLogin", "LogoutCloudRelay", "ConnectCloudRelay", "IssueCloudRelayClientToken", "ResolveKernelClientConnection", "PreflightProviderAccountPortability"]) {
+    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 472), /491/)
+    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 490), /491/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 491))
+  }
+})
+
 test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated protocol 470", () => {
   for (const request of [{ RequestKernelAccess: { holder_pid: 42 } },
     { RespondToInteraction: { session_id: "kernel-access", interaction_id: "grant", choice_id: "approve" } }]) {

@@ -263,4 +263,7 @@ pub use workspace::*;
 /// complete Environment operation contract on top of 472 (developed as 471;
 /// MP-02/MP-03/MP-08/MP-10/MP-11).
 /// Version 490 requires bounded relay response framing and socket-local receipts.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 490;
+/// Version 491 adds credential-free Cloud kernel ownership projections, receiving
+/// CLIENT key-bound pivots, Cloud-free terminal pairing and provider account
+/// portability preflight (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 491;
