@@ -642,7 +642,20 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
         { label: alternative ? `Switch account to ${alternative.label}` : "Switch account", run: () => {
           setFatalError(null)
           if (alternative) void Promise.resolve(applyAccountSelection(alternative.profile_id, target)).catch(error => flashFooter(formatError(error), "error"))
-          else { setWaitingRoomState({ ...waitingRoomState(), focus: "account" }); reconcileWaitingRoom(waitingRoomState()) }
+          else if (isAttached()) {
+            const rejectedTarget = target ?? (agent ? {sessionId: sessionState().id, agentId: agent.id} : undefined)
+            if (!rejectedTarget || rejectedTarget.sessionId !== sessionState().id) return
+            const profiles = providerAccountsForProvider(providerAccountsState(), provider)
+            if (!profiles.length) {
+              void executeCommandCenterCommand("/provider accounts")
+              promptInputRefController.focus()
+              return
+            }
+            providerAccountRecovery.showAccountChoices(`Select an account for ${provider} agent ${rejectedTarget.agentId}.`, profiles.map(profile => ({
+              label: `${profile.label} · ${profile.auth_state.replaceAll("_", " ")}`,
+              run: () => { void applyAccountSelection(profile.profile_id, rejectedTarget).catch(error => flashFooter(formatError(error), "error")) },
+            })))
+          } else { setWaitingRoomState({ ...waitingRoomState(), focus: "account" }); reconcileWaitingRoom(waitingRoomState()) }
         } },
         { label: "Retry", run: () => {
           setFatalError(null)

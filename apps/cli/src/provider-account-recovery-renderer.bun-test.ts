@@ -80,3 +80,26 @@ test("MP-08/MP-10/MP-11 no-draft launch refusal exposes and invokes Retry", asyn
     assert.equal(retries, 1)
   } finally {controller.close();h.renderer.destroy()}
 })
+
+test("MP-08/MP-10/MP-11 attached recovery opens visible choices and retains the rejected target", async () => {
+  const h = await createTestRenderer({width:100,height:40,useThread:false})
+  const box = new BoxRenderable(h.renderer, {position:"absolute",left:0,top:0})
+  h.renderer.root.add(box)
+  const invoked: unknown[] = []
+  const target = {sessionId: "session-a", agentId: "agent-b"}
+  const controller = createProviderAccountRecoveryController({renderer:h.renderer,dimensions:()=>({width:100,height:40}),actions:()=>[]})
+  try {
+    controller.assignBox(box)
+    controller.showAccountChoices("Select an account for the rejected Codex agent.", [
+      {label:"Account A · sign-in not checked",run:()=>invoked.push({profile:"a",target})},
+      {label:"Account B · needs sign-in",run:()=>invoked.push({profile:"b",target})},
+    ])
+    await h.renderOnce()
+    assert.match(h.captureCharFrame(), /Choose provider account/)
+    assert.match(h.captureCharFrame(), /Account A/)
+    assert.match(h.captureCharFrame(), /Account B/)
+    controller.handleKey({name:"down"})
+    controller.handleKey({name:"return"})
+    assert.deepEqual(invoked, [{profile:"b",target}])
+  } finally {controller.close();h.renderer.destroy()}
+})
