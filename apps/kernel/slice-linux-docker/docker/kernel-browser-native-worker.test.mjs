@@ -98,3 +98,10 @@ test('MP-08/MP-10: Retina whole-frame motion encodes at the reduced geometry; st
  await encoder.nativeEncode(raw(1280),8000000,false,false);
  assert.deepEqual(requests.map(r=>r.reduced===true),[true,false,false,false]);
 });
+
+test('MP-11 native rejection count is written before document retirement closes the bridge',()=>{
+ const writes=[],worker=new NativeWorkerControl({stdin:{destroyed:false,write:bytes=>writes.push(bytes)}});
+ worker.rejected('stale_document');worker.close();
+ assert.deepEqual(writes.map(s=>JSON.parse(s)),[{reject:'stale_document'}]);
+ assert.throws(()=>worker.rejected('page secret'),/rejection reason/);
+});

@@ -24,6 +24,11 @@ struct Config {
 #[derive(Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 enum Command {
+    // MP-08/MP-10/MP-11: upstream fences cannot be inferred from raster
+    // pixels. Count their fixed reasons at the native worker, never content.
+    Reject {
+        reject: Rejection,
+    },
     Encode {
         encode: Encode,
     },
@@ -67,6 +72,21 @@ enum Command {
         plans: bool,
     },
 }
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Rejection {
+    StaleDocument,
+    Epoch,
+    RegionRevision,
+    SerialSkipped,
+    ShiftHold,
+}
+impl Rejection {
+    fn index(self) -> usize { self as usize }
+    fn label(self) -> &'static str {
+        ["stale_document", "epoch", "region_revision", "serial_skipped", "shift_hold"][self.index()]
+    }
+}
 /// MP-08/MP-10/MP-11: pointer input is a request: the reply says whether the
 /// owned window received it, so Node falls back to CDP on a refusal.
 #[derive(Deserialize)]
@@ -81,6 +101,24 @@ fn admit_default() -> bool {
     true
 }
 const RASTER_SLOTS: usize = super::RASTER_SLOT_NAMES.len();
+// MP-08/MP-10: damage-driven FramePace semantics described in the Selkies
+// audit (pixelflux pace.rs). Independently implemented here; no upstream
+// code copied. Input wakes retain their immediate readback admission.
+const READBACK_MIN: Duration = Duration::from_millis(3);
+pub(super) fn readback_due(dirty: bool, wake: bool, elapsed: Duration) -> bool {
+    dirty && (wake || elapsed >= READBACK_MIN)
+}
+pub(super) fn readback_wait(dirty: bool, free_slot: bool, elapsed: Duration) -> i32 {
+    if dirty && free_slot {
+        READBACK_MIN.saturating_sub(elapsed).as_micros().div_ceil(1000) as i32
+    } else if free_slot {
+        // Upper bound only; XDamage/control readiness wakes poll sooner.
+        16
+    } else {
+        // No slot can be overwritten. Release/control/XDamage still wake us.
+        1000
+    }
+}
 pub(super) fn epoch() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -197,6 +235,11 @@ pub(super) fn run() -> Result<(), String> {
         .collect::<Result<Vec<_>, _>>()?;
     let mut control = Vec::new();
     let mut serial = 0u64;
+    let mut rejected = [0u64; 5];
+    for reason in [Rejection::StaleDocument, Rejection::Epoch, Rejection::RegionRevision,
+        Rejection::SerialSkipped, Rejection::ShiftHold] {
+        eprintln!("MD-DISPLAY: native rejected {} 0", reason.label());
+    }
     let mut admitted = 0u64;
     let exact = ExactWorker::new();
     let mut dirty = true;
@@ -251,7 +294,7 @@ pub(super) fn run() -> Result<(), String> {
             }
             dirty = true;
         }
-        let due = dirty && (wake.is_some() || last.elapsed() >= Duration::from_millis(16));
+        let due = readback_due(dirty, wake.is_some(), last.elapsed());
         if due {
             if let Some(slot) = slots.iter_mut().find(|s| s.available()) {
                 let at = epoch();
@@ -322,11 +365,7 @@ pub(super) fn run() -> Result<(), String> {
                 wake = None;
             }
         }
-        let timeout = if dirty && slots.iter().any(|s| s.available()) {
-            16u128.saturating_sub(last.elapsed().as_millis()).min(16) as i32
-        } else {
-            1000
-        };
+        let timeout = readback_wait(dirty, slots.iter().any(|s| s.available()), last.elapsed());
         let mut fds = [
             libc::pollfd {
                 fd: 0,
@@ -373,6 +412,11 @@ pub(super) fn run() -> Result<(), String> {
                 Ok(s)
             };
             match command {
+                Command::Reject { reject } => {
+                    let count = &mut rejected[reject.index()];
+                    *count = count.saturating_add(1);
+                    eprintln!("MD-DISPLAY: native rejected {} {}", reject.label(), count);
+                }
                 Command::Wake { wake: true } => wake = Some(epoch()),
                 Command::Refresh { refresh: true } => {
                     dirty = true;

@@ -49,6 +49,13 @@ export class NativeWorkerControl {
   try{this.child.stdin.write(bytes,error=>{if(error)this.close()});return true;}catch{this.close();return false;}
  }
  retire(encoder){this.notify({retire:encoder});}
+ // MP-08/MP-10/MP-11: diagnostic-only, ordered with native controls.
+ rejected(reason){
+  if(!['stale_document','epoch','region_revision','serial_skipped','shift_hold'].includes(reason))throw Error('MP-11: rejection reason');
+  // A document fence immediately closes this bridge: flush its diagnostic
+  // before cleanup discards the otherwise batched control notifications.
+  this.notify({reject:reason},true);
+ }
  delivered(encoder,revision){this.notify({delivered:encoder,revision});}
  commit(encoder,serial,admit=true){this.notify({commit:encoder,serial,...(admit?{}:{admit:false})});}
  close(){if(this.closed)return;this.closed=true;if(this.flushScheduled!==null)clearImmediate(this.flushScheduled);this.flushScheduled=null;this.notifications=[];for(const p of this.pending.values())p.reject(Error('MP-11: native worker closed'));this.pending.clear();}

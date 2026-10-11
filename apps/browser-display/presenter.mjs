@@ -1,6 +1,8 @@
 import {StripePresenter,independentStripeCover} from './stripe-presenter.mjs';
 import {ScrollPrediction} from './scroll-prediction.mjs';
 import {WorkerVideoDecoder} from './decoder-worker.mjs';
+import {VideoSink} from './video-sink.mjs';
+import {PresentationQueue} from './presentation-queue.mjs';
 // MD-DISPLAY-04: protocol 419 presentation only. Cloud supplies its existing
 // admitted/encrypted kernel request and event adapter; never a Cloud media proxy.
 export const minimumProtocolVersion = 466;
@@ -52,15 +54,45 @@ export class BrowserDisplayPresenter {
     this.canvas = canvas; this.binding = binding; this.sequence = 0; this.documentId = null;
     this.busy = false; this.closed = false;
     this.onTiming = onTiming;
+    this.videoSink=new VideoSink(canvas,onTiming);this.prepared=new WeakMap();this.outcomes=new WeakMap();
     // Start the single module fetch while source navigation/capture is pending.
     if(globalThis.Worker&&globalThis.VideoDecoder){try{this.workerDecoder=new WorkerVideoDecoder();}catch{/* Codec admission/presentation owns worker failures. */}}
   }
   getWorkerDecoder(){if(!this.workerDecoder||this.workerDecoder.closed)this.workerDecoder=new WorkerVideoDecoder();return this.workerDecoder;}
-  async present(frame) {
-    if (this.closed) return false;
-    if (this.busy) throw new Error('MD-DISPLAY: await presentation before granting next credit');
-    if (frame.subscription_id !== this.binding.subscription_id || frame.generation !== this.binding.generation || frame.tab_id !== this.binding.tab_id || frame.sequence <= this.sequence) return false;
+  validate(frame,sequence) {
+    if (frame.subscription_id !== this.binding.subscription_id || frame.generation !== this.binding.generation || frame.tab_id !== this.binding.tab_id || frame.sequence <= sequence) return false;
     if (!Number.isSafeInteger(frame.sequence) || ![1, 2].includes(frame.device_scale_factor) || frame.width !== frame.css_width * frame.device_scale_factor || frame.height !== frame.css_height * frame.device_scale_factor || !((frame.css_width===1280 && frame.css_height===800) || (frame.css_width===1920 && frame.css_height===1080 && frame.device_scale_factor===1)) || typeof frame.document_id !== 'string' || !frame.document_id || frame.document_id.length > 256) throw new Error('MD-DISPLAY: invalid geometry/binding');
+    return true;
+  }
+  prepareVideo(frame) {
+    if(this.prepared.has(frame))return;
+    const prepare=async()=>{
+      if(this.closed||!this.validate(frame,this.decodeSequence??this.sequence))throw Error('MD-DISPLAY: rejected video binding');
+      if(!validMoves(frame))throw Error('MD-DISPLAY: move geometry');
+      if(frame.kind!=='video'||!videoCodecs.includes(frame.codec)||typeof frame.key!=='boolean')throw Error('MD-DISPLAY: unsupported frame');
+      const sequence=this.decodeSequence??this.sequence,documentId=this.decodeDocumentId??this.documentId;
+      if(!frame.key&&(this.videoSequence===null||sequence!==frame.sequence-1||documentId!==frame.document_id))throw Error('MD-DISPLAY: video base lost; subscribe afresh');
+      this.decodeSequence=frame.sequence;this.decodeDocumentId=frame.document_id;
+      if(!globalThis.Worker)return null;
+      this.prediction?.restore();
+      const decoder=this.getWorkerDecoder();this.videoSink.setup(decoder);
+      const result=await decoder.decode(frame,bytes(frame.data),8,true);
+      if(this.closed){result.image.close();throw Error('MD-DISPLAY: presenter closed');}
+      try{
+        const outcome=await this.videoSink.commit(result,frame);this.outcomes.set(frame,outcome);
+        this.onTiming('client_decode',result.decodedAt,{sequence:frame.sequence,decodedAt:result.decodedAt,committedAt:outcome.committedAt});
+        if(outcome.drawn)this.onTiming('client_present',outcome.committedAt);
+        return result.image;
+      }catch(error){result.image.close();throw error;}
+    };
+    const output=prepare();output.catch(()=>{});this.prepared.set(frame,output);
+  }
+  discardPrepared(frame){this.prepared.get(frame)?.then(image=>image?.close(),()=>{});}
+  wasDrawn(frame){return this.outcomes.get(frame)?.drawn??this.didDraw;}
+  async present(frame) {
+    if (this.closed) {this.prepared.get(frame)?.then(image=>image?.close(),()=>{});return false;}
+    if (this.busy) throw new Error('MD-DISPLAY: await presentation before granting next credit');
+    if (!this.validate(frame,this.sequence)) return false;
     if (['tiles','stripes'].includes(frame.kind) && !independentStripeCover(frame) && (frame.base_sequence !== this.sequence || frame.document_id !== this.documentId)) throw new Error('MD-DISPLAY: repair base lost; subscribe afresh');
     if (!validMoves(frame)) throw new Error('MD-DISPLAY: move geometry');
     this.prediction?.restore();
@@ -92,8 +124,7 @@ export class BrowserDisplayPresenter {
         context.drawImage(bitmap, 0, 0);
       } else if (frame.kind === 'video' && videoCodecs.includes(frame.codec) && typeof frame.key === 'boolean') {
         if (globalThis.Worker) {
-          // A timed-out or crashed worker closes itself; a key starts afresh.
-          this.getWorkerDecoder();
+          this.prepareVideo(frame);
         } else if (!this.decoder || frame.key) {
           this.decoder?.close();
           this.decoder = new VideoDecoder({ output: value => (this.decoded ? this.decoded.resolve(value) : value.close()), error: error => this.decoded?.reject(error) });
@@ -103,7 +134,7 @@ export class BrowserDisplayPresenter {
         if (!frame.key && (this.videoSequence === null || this.sequence !== frame.sequence-1 || this.documentId !== frame.document_id)) throw Error('MD-DISPLAY: video base lost; subscribe afresh');
         let output, timer;
         try {
-          output = this.workerDecoder ? await this.workerDecoder.decode(frame,bytes(frame.data),8) : await new Promise((resolve,reject) => {
+          output = globalThis.Worker ? await this.prepared.get(frame) : await new Promise((resolve,reject) => {
             timer=setTimeout(()=>reject(Error('MD-DISPLAY: decode timeout')),5000);
             this.decoded={resolve,reject};
             this.decoder.decode(new EncodedVideoChunk({type:frame.key?'key':'delta',timestamp:frame.sequence*33333,data:bytes(frame.data)}));
@@ -113,13 +144,14 @@ export class BrowserDisplayPresenter {
         } finally { clearTimeout(timer); this.decoded=null; output?.close(); }
       } else throw new Error('MD-DISPLAY: unsupported frame');
       if (this.closed) return false;
-      this.onTiming('client_decode', at);
+      if(!globalThis.Worker||!videoFrame)this.onTiming('client_decode', at);
       // Every accepted sequence is a possible base for the next tile packet,
       // even if a newer video is queued or arrives after this decode finishes.
       // Keep actual canvas pixels aligned with the logical recovery cursor.
-      this.didDraw=true;
+      this.didDraw=this.outcomes.get(frame)?.drawn??true;
       this.prediction?.restore();
       const presented = performance.timeOrigin + performance.now();
+      if(patch)this.videoSink.overlay(frame);
       if (stripes){
         if(this.canvas.width!==frame.width)this.canvas.width=frame.width;
         if(this.canvas.height!==frame.height)this.canvas.height=frame.height;
@@ -131,7 +163,7 @@ export class BrowserDisplayPresenter {
           // Moves read one snapshot of the previous canvas, never a partial result.
           if (!this.scratch || this.scratch.width !== frame.width || this.scratch.height !== frame.height) this.scratch = new OffscreenCanvas(frame.width, frame.height);
           const scratch = this.scratch.getContext('2d');
-          scratch.globalCompositeOperation = 'copy'; scratch.drawImage(this.canvas, 0, 0);
+          scratch.globalCompositeOperation = 'copy';this.videoSink.snapshot(scratch);
           front.imageSmoothingEnabled = false;
           for (const [x, y, w, h, dy] of frame.moves) front.drawImage(this.scratch, x, y - dy, w, h, x, y, w, h);
         }
@@ -139,11 +171,14 @@ export class BrowserDisplayPresenter {
       } else {
         if(this.canvas.width !== frame.width)this.canvas.width=frame.width;
         if(this.canvas.height !== frame.height)this.canvas.height=frame.height;
-        if(videoFrame)this.canvas.getContext('2d').drawImage(videoFrame,0,0,frame.width,frame.height);
-        else this.canvas.getContext('2d').drawImage(back, 0, 0);
+        if(videoFrame&&!globalThis.Worker){
+          const outcome=await this.videoSink.commit(videoFrame,frame);this.outcomes.set(frame,outcome);this.didDraw=outcome.drawn;
+        }
+        else if(!videoFrame){this.videoSink.overlay(frame);this.canvas.getContext('2d').drawImage(back, 0, 0);}
       }
       this.sequence = frame.sequence; this.documentId = frame.document_id;
-      this.onTiming('client_present', presented);
+      if(!videoFrame){this.decodeSequence=frame.sequence;this.decodeDocumentId=frame.document_id;}
+      if(!globalThis.Worker||!videoFrame)this.onTiming('client_present', presented);
       return true;
     } finally { for(const row of stripes??[])row.output.close();videoFrame?.close();for(const bitmap of bitmaps)bitmap.close(); this.busy = false; }
   }
@@ -151,7 +186,7 @@ export class BrowserDisplayPresenter {
     if (this.closed || !this.documentId) throw new Error('MD-DISPLAY: no displayed document');
     return { op: 'display_input', tab_id: this.binding.tab_id, generation: this.binding.generation, document_id: this.documentId, input };
   }
-  close({preserveFrame=false}={}) { this.stripeDecoder?.close();this.prediction?.close();for(const key of ['back','scratch'])if(this[key]){this[key].width=1;this[key].height=1;this[key]=null;} this.workerDecoder?.close();this.workerDecoder=null;this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; if(!preserveFrame){this.canvas.width = 1; this.canvas.height = 1;} }
+  close({preserveFrame=false}={}) { this.videoSink.close({preserveFrame}); this.stripeDecoder?.close();this.prediction?.close();for(const key of ['back','scratch'])if(this[key]){this[key].width=1;this[key].height=1;this[key]=null;} this.workerDecoder?.close();this.workerDecoder=null;this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; if(!preserveFrame){this.canvas.width = 1; this.canvas.height = 1;} }
 }
 // Bounded credit window; events and responses can arrive in either order.
 export async function attachBrowserDisplay(canvas, transport, tab, options = {}) {
@@ -179,9 +214,10 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   const binding = { ...tab, ...await request({ op: 'display_subscribe', ...tab, codecs: options.stripes===false?codecs.filter(c=>c!=='chariox-stripes-v1'):codecs, bitrate: options.bitrate ?? 2_000_000, device_scale_factor: options.deviceScaleFactor ?? 1 }) };
   const onTiming = options.onTiming ?? (() => {});
   const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming);
-  if(options.scrollPredictionRegion)presenter.prediction=new ScrollPrediction(canvas,options.scrollPredictionRegion);
+  if(options.scrollPredictionRegion)presenter.prediction=new ScrollPrediction(canvas,options.scrollPredictionRegion,context=>presenter.videoSink.snapshot(context));
   let pending = null, stopped = false, creditOutstanding = false, predictionEpoch=0;
-  let running = false, failure = null, presentation = Promise.resolve(), active = new Set();
+  let running = false, failure = null, active = new Set();
+  const presentationQueue=new PresentationQueue(presenter);
   const frames = [], arrivals = [];
   let nextSequence=null,heldBytes=0;
   const held=new Map();
@@ -189,11 +225,13 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   const accept = frame => {
     const size = frameBytes(frame);
     if (frames.length >= 8 || queuedBytes + size > 1024 * 1024) throw Error('MD-DISPLAY: credited receive window exceeded');
-    const presented = presentation.then(async () => {
+    const presented = presentationQueue.submit(frame,async () => {
       if (!await presenter.present(frame)) throw Error('MD-DISPLAY: rejected window frame');
-      if(presenter.didDraw !== false) options.onPresented?.(frame);
+      // MP-08/MP-10: accepted hidden pixels still define input/capture geometry.
+      // Keep this separate from visible presentation metrics.
+      options.onAccepted?.(frame);
+      if(presenter.wasDrawn(frame) !== false) options.onPresented?.(frame,presenter.outcomes.get(frame));
     });
-    presentation=presented;
     presented.catch(error => { failure=error; running=false; });
     const item={frame,presented,size};
     if (arrivals.length) arrivals.shift()(item);
@@ -236,7 +274,8 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     const presented = event.then(async frame => {
       if (!frame) return null;
       if (!await presenter.present(frame)) throw new Error('MD-DISPLAY: rejected frame');
-      options.onPresented?.(frame);
+      options.onAccepted?.(frame);
+      if(presenter.wasDrawn(frame)!==false) options.onPresented?.(frame,presenter.outcomes.get(frame));
       return frame;
     });
     presented.catch(() => {});
@@ -311,7 +350,8 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
 function pushDisplay(presenter, transport, request, binding, tab, options) {
   const {onTiming = () => {}, idleMs = 400, heartbeatMs = 1000} = options;
   const held = new Map(), unread = [], waiters = new Set();
-  let nextSequence = presenter.sequence + 1, heldBytes = 0, chain = Promise.resolve(), failure = null, running = false, closed = false, ackedAt = 0, predictionEpoch = 0;
+  const presentationQueue=new PresentationQueue(presenter,frame=>!recovering||independent(frame));
+  let nextSequence = presenter.sequence + 1, heldBytes = 0, failure = null, running = false, closed = false, ackedAt = 0, predictionEpoch = 0;
   let recovering = false, keyRequestedAt = -Infinity, gapAt = null;
   const fail = error => { failure ??= error; for (const wake of waiters) wake(); };
   // MP-08/MP-10: heartbeat ownership is bounded even while hidden.
@@ -341,7 +381,7 @@ function pushDisplay(presenter, transport, request, binding, tab, options) {
     if (performance.now() - keyRequestedAt >= 1000) { keyRequestedAt = performance.now(); ack(presenter.sequence, true); }
   };
   const present = frame => {
-    chain = chain.then(async () => {
+    presentationQueue.submit(frame,async () => {
       if (failure || closed) return;
       if (recovering && !independent(frame)) { ack(frame.sequence); return recover(); }
       const at = performance.timeOrigin + performance.now();
@@ -352,7 +392,8 @@ function pushDisplay(presenter, transport, request, binding, tab, options) {
       }
       recovering = false;
       onTiming('client_present_total', at);
-      if (presenter.didDraw !== false) options.onPresented?.(frame);
+      options.onAccepted?.(frame);
+      if (presenter.wasDrawn(frame) !== false) options.onPresented?.(frame,presenter.outcomes.get(frame));
       ack(frame.sequence);
       unread.push(frame); if (unread.length > 64) unread.shift();
       for (const wake of waiters) wake();
@@ -392,7 +433,7 @@ function pushDisplay(presenter, transport, request, binding, tab, options) {
   };
   return { binding, presenter, next, push: true,
     start: () => { if (failure) throw failure; running = true; unread.length = 0; },
-    stop: async () => { running = false; await chain; if (failure) throw failure; },
+    stop: async () => { running = false; await presentationQueue.tail; if (failure) throw failure; },
     get running() { return running; },
     get error() { return failure; },
     requestKey: () => ack(presenter.sequence, true),
@@ -400,6 +441,6 @@ function pushDisplay(presenter, transport, request, binding, tab, options) {
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_takeover', tab_id: binding.tab_id, generation: binding.generation });},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_release', tab_id: binding.tab_id, generation: binding.generation });},
     actors: () => request({ op: 'display_actors' }),
-    async close(options) { closed = true; running = false; queuedAck=null;document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat); off(); await chain.catch(() => {}); presenter.close(options); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
+    async close(options) { closed = true; running = false; queuedAck=null;document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat);off();presentationQueue.cancel();presenter.close(options);await presentationQueue.tail; await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
   };
 }

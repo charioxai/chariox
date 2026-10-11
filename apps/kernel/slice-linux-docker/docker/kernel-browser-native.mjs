@@ -46,12 +46,14 @@ export function attestationMask(regions,width,height){
 }
 export class LinuxCapture {
  constructor({display,pid,connection,sessionId,tab,scale,hostScale=1,policy,browser,screenshot,allowed,frames,timing=()=>{}}){
-  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
+  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,timing});this.native=true;this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
- valid(){return !this.closed&&ownsDisplay(this.display)&&this.allowed(this.policy)}
+ valid(){return !this.closed&&this.connection?.isOpen?.()!==false&&ownsDisplay(this.display)&&this.allowed(this.policy)}
+ rejected(reason){this.nativeWorker?.rejected?.(reason);}
  onCdp(m){
-  if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId)this.fence();
+  if(m.method==='Chariox.browserDisconnected'||m.method==='Target.detachedFromTarget'&&m.params?.sessionId===this.sessionId||m.method==='Target.targetDestroyed'&&m.params?.targetId===this.tab?.target_id||m.sessionId===this.sessionId&&m.method==='Inspector.detached'){this.rejected('stale_document');this.fence();return;}
+  if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId){if(this.latest||this.pending||this.publishingRaw)this.rejected('stale_document');this.fence();}
   if(m.method==='Target.targetCreated'&&m.params?.targetInfo?.type==='page')this.fence();
   // MP-11: attribute-only protection changes produce no XDamage. Retire even
   // before attestation, so an empty snapshot cannot outlive marker insertion.
@@ -60,6 +62,7 @@ export class LinuxCapture {
    // also during attestation (pages that mutate continuously still attest).
    // Retire all pixels and queued consumers by revision, refresh only trusted
    // region metadata, and mask any readback older than that new fence in full.
+   if(this.latest||this.pending||this.publishingRaw)this.rejected('region_revision');
    this.regionRevision++;this.regions.retire();this.latest?.raw.release?.();this.pending?.release?.();
    this.latest=null;this.pending=null;this.changedAt=performance.now();this.wake(true);
   }
@@ -90,8 +93,11 @@ export class LinuxCapture {
    const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...this.display.environment},stdio:['pipe','pipe','pipe']});this.child=child;if(executable)this.nativeWorker=new NativeWorkerControl(child,this.timing);
    const fail=()=>this.fence();child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
    // MP-08/MP-10: fixed-label stage and owned-window sizes only.
-   child.stderr.on('data',b=>{for(const line of b.toString().split('\n')){
+   let stderr='';child.stderr.on('data',b=>{stderr+=b.toString();const lines=stderr.split('\n');stderr=lines.pop();if(stderr.length>8192)stderr='';for(const line of lines){
     if(/^MD-DISPLAY: native stage [a-z_]+$/.test(line))this.helperStage=line.split(' ').at(-1);
+    else if(/^MD-DISPLAY: native rejected (stale_document|epoch|region_revision|serial_skipped|shift_hold) \d+$/.test(line)){
+     const [,reason,count]=line.match(/rejected (\w+) (\d+)$/);this.timing.event?.('native_rejected',{reason:['stale_document','epoch','region_revision','serial_skipped','shift_hold'].indexOf(reason),count:Number(count),worker:child.pid});
+    }
     else if(/^MD-DISPLAY: native geometry requested \d+x\d+ owned (none|\d+x\d+(,\d+x\d+){0,7})$/.test(line))this.timing(line.replace('MD-DISPLAY: native geometry ','native_geometry '),performance.timeOrigin+performance.now());
    }});
    const raster=new NativeRaster();
@@ -118,7 +124,7 @@ export class LinuxCapture {
      raw.nativeDelivered=(encoder,revision)=>this.nativeWorker.delivered(encoder,revision);
      raw.nativeCommit=(encoder,admit)=>this.nativeWorker.commit(encoder,raw.serial,admit);
     }
-    if(this.valid()){raw.format='bgr0';this.pending?.release?.();this.pending=raw;void this.publish()}else raw.release?.()
+    if(this.valid()){raw.format='bgr0';if(this.pending)this.rejected('serial_skipped');this.pending?.release?.();this.pending=raw;void this.publish()}else raw.release?.()
    });
    child.stdout.on('data',b=>{try{pipe.push(b)}catch{this.fence()}});
    child.stdin.write(JSON.stringify({pid:this.pid,width:geometry.width*this.scale,height:geometry.height*this.scale,pool:this.poolRoot})+'\n');
@@ -173,7 +179,7 @@ export class LinuxCapture {
     if(revision===this.regionRevision)throw error;
    }
    this.timing('native_region_fence',at);
-   if(revision!==this.regionRevision){raw.release?.();this.publishingRaw=null;continue;}
+   if(revision!==this.regionRevision){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;continue;}
    // Attribute-only changes need a new readback even if XDamage/pixels did
    // not change. The first readback may precede the refreshed metadata.
    if(raw.captured_ms<this.regions.beforeAt){this.wake(true);raw.release?.();this.publishingRaw=null;continue;}
