@@ -36,6 +36,8 @@ pub(crate) fn capture(mut command: Command, timeout: Duration) -> Result<Output,
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     loop {
+        #[cfg(unix)]
+        process.observe_descendants()?;
         drain(
             process.child.stdout.as_mut().expect("captured stdout"),
             &mut stdout,
