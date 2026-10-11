@@ -492,7 +492,12 @@ export function installMirror2(sanitizeMirrorCss) {
         }
       }
       const ops = [], out = []; rebound = [];
-      for (const node of targets) { const before = secretElement(node); verify(node); if (secretElement(node) !== before) dirty.replace.add(node); }
+      for (const node of targets) {
+        verify(node);
+        const id = mirrored(node);
+        // Fill retirement is shared; each viewer still reconciles its own recorded mask.
+        if (id && (kindOf.get(id) === 'mask') !== secretElement(node)) dirty.replace.add(node);
+      }
       // Protection status and opaque-kind changes replace the node under a new id.
       for (const [node, names] of dirty.attrs) {
         const id = mirrored(node); if (!id) { const mask = insideMask(node); if (mask) dirty.masks.add(mask); continue; }

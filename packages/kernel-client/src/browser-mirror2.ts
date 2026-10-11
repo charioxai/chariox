@@ -186,8 +186,9 @@ export class BrowserMirror2Renderer {
       const input = event as InputEvent; event.preventDefault()
       if (input.isComposing || input.inputType.includes('Composition')) return
       if (input.inputType.startsWith('delete')) { this.syncRange(); for (const key of ranged() ? ['Delete'] : DELETIONS[input.inputType] ?? []) this.enqueue({ kind: 'key', key }); return }
-      if (input.data === composed || !input.data) return
-      this.syncRange(); this.enqueue({ kind: 'text', text: input.data })
+      const data = input.data ?? (input.inputType.startsWith('insertFromPaste') ? input.dataTransfer?.getData('text/plain') : null)
+      if (data === composed || !data) return
+      this.syncRange(); this.enqueue({ kind: 'text', text: data })
     })
     on('compositionend', event => { event.preventDefault(); const data = (event as CompositionEvent).data; if (data) { composed = data; setTimeout(() => { composed = null }, 0); this.enqueue({ kind: 'text', text: data }) } this.syncRange(false) })
     // The range a composition replaces is synced as it starts; its result is where the kernel's caret ends.

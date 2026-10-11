@@ -92,6 +92,7 @@ export class MirrorFrames {
   // Child snapshot with the frame's Vault fill targets protected by identity.
   async snapshot(child, loaderId, policy, tab, slot) {
     await this.mirror.protectTargets(child, tab, policy, `frame:${child.frame.id}:${loaderId}:`);
+    await this.mirror.markClosedHosts(child);
     const snap = await this.mirror.evaluate(child, `${child.ref}.snapshot()`);
     return { ...snap, sheetOps: await this.sheetOps(child, slot, snap.sheets) };
   }

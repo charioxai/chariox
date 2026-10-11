@@ -968,16 +968,17 @@ test("MP-11: a Vault-filled plain field is masked while it holds the fill: fill 
   await evaluate(`v.value=${JSON.stringify(secret)};v.dispatchEvent(new Event('input',{bubbles:true}));true`);
   const quiet = await next(1000);
   assert.deepEqual(kinds(quiet), [], "MP-11: the fill keeps the mask");
+  const other = await subscribe();
+  assert.deepEqual(kinds(await other.next(0, true)), ["mask"], "MP-11: both viewers are attached before the edit");
   await evaluate("v.select();v.value='user typed';v.dispatchEvent(new Event('input',{bubbles:true}));true");
   const edited = await until([["input", "user typed"]]);
   assert(![quiet, ...edited].some(text => JSON.stringify(text).includes(secret)), "MP-11: the fill never travels");
-  const other = await subscribe();
-  assert.deepEqual(kinds(await other.next(0, true)), [["input", "user typed"]], "MP-11: another viewer sees the edited field too");
+  const otherEdited = await until([["input", "user typed"]], other.next);
+  assert(!otherEdited.some(text => text.includes(secret)), "MP-11: the other viewer never receives the fill");
   await evaluate(`v.value=${JSON.stringify(secret)};v.dispatchEvent(new Event('input',{bubbles:true}));true`);
   await protect(2);
-  const refilled = await next(0, true);
-  assert.deepEqual(kinds(refilled), ["mask"], "MP-11: a refill masks it again");
-  assert(!JSON.stringify(refilled).includes(secret));
+  const refilled = [...await until(["mask"]), ...await until(["mask"], other.next)];
+  assert(!refilled.some(text => text.includes(secret)), "MP-11: a refill masks both existing viewers again");
 }));
 
 // Round 11 drop drill (b3 hosted, DPR2): a reply lost with a dropped socket and not replayed left a gap; the viewer

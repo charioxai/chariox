@@ -184,7 +184,12 @@ export class Mirror2 {
   async markClosedHosts(world) {
     if (!await this.evaluate(world, `${world.ref}.customHosts()`)) return 0;
     const snapshot = await world.connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [] }, world.sessionId);
-    const nodes = snapshot.documents?.[0]?.nodes, strings = snapshot.strings ?? [], types = nodes?.shadowRootType;
+    const strings = snapshot.strings ?? [];
+    const document = world.frame
+      ? snapshot.documents?.find(document => strings[document.frameId] === world.frame.id)
+      : snapshot.documents?.[0];
+    if (!document) throw new Error('MP-11: closed-root frame snapshot unavailable');
+    const nodes = document.nodes, types = nodes?.shadowRootType;
     let marked = 0;
     for (let i = 0; i < (types?.index?.length ?? 0) && marked < 256; i++) {
       if (strings[types.value[i]] !== 'closed') continue;
