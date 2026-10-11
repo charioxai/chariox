@@ -112,6 +112,7 @@ def run():
                     arguments = ['--click-at', str(point['x']), str(point['y']), '--click']
                     wanted = point
                 receipt = drill.launch_helper(evidence, label, scope + arguments)
+                drill.require_caret_receipt(receipt, lease)
                 lease.require()
                 actual = reference(evidence, label + '-actual', scope, document)
                 lease.require()
@@ -129,7 +130,7 @@ def run():
     finally:
         if lease and warped is not None:
             lease.restore()
-        if scope:
+        if scope and not (lease and lease.retired):
             try:
                 reference(evidence, 'close', scope, document, close=True)
                 deadline = time.monotonic() + 2

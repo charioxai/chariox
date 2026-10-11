@@ -91,6 +91,15 @@ def selection(evidence):
     return rows[-1] if rows else None
 
 
+def require_caret_receipt(receipt, lease=None):
+    # Helper observations also permanently retire ownership, even if focus returns
+    # before the runner can sample the desktop. Abort the enclosing probe loop.
+    if 'refused:' in receipt:
+        if lease:
+            lease.retired = True
+        raise RuntimeError('helper-caret-refused; no further mutation attempted')
+
+
 def verify_caret(evidence, label, scope, pid, x, y, expected, at_pointer):
     require_gui()
     before = desktop()
@@ -125,6 +134,7 @@ def verify_caret(evidence, label, scope, pid, x, y, expected, at_pointer):
         elif desktop()['frontmostPID'] != pid:
             raise RuntimeError('fixture-lost-frontmost; no helper mutation attempted')
         receipt = launch_helper(evidence, label, scope + ['--target', 'text', *arguments])
+        require_caret_receipt(receipt, lease)
         deadline = time.monotonic() + 1
         while time.monotonic() < deadline and selection(evidence) != (expected, '0'):
             time.sleep(0.05)
