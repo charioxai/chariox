@@ -466,52 +466,94 @@ fn a12_blocked_fifo_delivery_cannot_hide_a_goal_check_in() {
         let work = continued.pending_prompt_id.unwrap();
         f.begin(&work);
         f.settle(&work, true);
-        let waiting = check(&f, serde_json::json!({
-            "status":"waiting","reason":"delegate needed",
-            "registration_ids":["reg"],"deadline_ms":60_004
-        }));
+        let waiting = check(
+            &f,
+            serde_json::json!({
+                "status":"waiting","reason":"delegate needed",
+                "registration_ids":["reg"],"deadline_ms":60_004
+            }),
+        );
         assert_eq!(waiting.no_progress_wakes, 1);
         f.begin("independent");
-        let sweep = |now| f.apply(Operation::Sweep {
-            now, busy_recipients: vec![], held_work: vec![],
-        });
-        if !blocker_first { sweep(60_005); }
+        let sweep = |now| {
+            f.apply(Operation::Sweep {
+                now,
+                busy_recipients: vec![],
+                held_work: vec![],
+            })
+        };
+        if !blocker_first {
+            sweep(60_005);
+        }
         let mut message = occurrence(
-            "room", "parent", "peer", "uncertain-message", "message",
+            "room",
+            "parent",
+            "peer",
+            "uncertain-message",
+            "message",
             serde_json::json!({"message":"public evidence available"}),
         );
         // Only urgent steering can be admitted ahead of the older pending wake.
         // This exercises a later blocked attempt without bypassing FIFO admission.
         message.urgent = !blocker_first;
-        let Outcome::Event(event) = f.apply(Operation::Occur(message)) else { panic!() };
+        let Outcome::Event(event) = f.apply(Operation::Occur(message)) else {
+            panic!()
+        };
         f.apply(Operation::Attempt {
-            room:"room".into(), agent:"parent".into(), sequence:event.sequence,
-            prompt:"event".into(), target:Some("independent".into()),
-            run:Some("run".into()), now:60_006, work:None,
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: event.sequence,
+            prompt: "event".into(),
+            target: Some("independent".into()),
+            run: Some("run".into()),
+            now: 60_006,
+            work: None,
         });
         sweep(180_006);
         let task = f.task();
-        assert_eq!(task.state, if blocker_first {
-            ExecutionState::Blocked
-        } else { ExecutionState::Waiting },
-            "an older blocked delivery must surface the undeliverable Goal check-in");
+        assert_eq!(
+            task.state,
+            ExecutionState::Blocked,
+            "an unresolved recipient delivery must surface the undeliverable Goal check-in"
+        );
         assert_eq!(task.no_progress_wakes, 1);
-        assert_eq!(task.goal.as_ref().unwrap().id, waiting.goal.as_ref().unwrap().id);
+        assert_eq!(
+            task.goal.as_ref().unwrap().id,
+            waiting.goal.as_ref().unwrap().id
+        );
         assert_eq!(task.obligations, waiting.obligations);
-        assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().iter()
-            .filter(|e| e.kind == "deadline_reached").count(), 1);
-        if blocker_first {
-            assert!(task.reason.contains(&format!("delivery {}", event.sequence)));
-            assert!(task.goal.as_ref().unwrap().next_check_in_ms.is_none());
-            sweep(240_006);
-            assert_eq!(f.task(), task, "a repeat sweep cannot re-block or reset the guard");
-            f.apply(Operation::Receipt {
-                room:"room".into(), agent:"parent".into(), sequence:event.sequence,
-                state:"accepted".into(), now:240_007,
-            });
-            sweep(300_006);
-            assert_eq!(f.task(), task, "a late receipt cannot resume a blocked Goal");
-        }
+        assert_eq!(
+            f.store
+                .agent_inbox("room", "parent", 0)
+                .unwrap()
+                .iter()
+                .filter(|e| e.kind == "deadline_reached")
+                .count(),
+            1
+        );
+        assert!(task
+            .reason
+            .contains(&format!("delivery {}", event.sequence)));
+        assert!(task.goal.as_ref().unwrap().next_check_in_ms.is_none());
+        sweep(240_006);
+        assert_eq!(
+            f.task(),
+            task,
+            "a repeat sweep cannot re-block or reset the guard"
+        );
+        f.apply(Operation::Receipt {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: event.sequence,
+            state: "accepted".into(),
+            now: 240_007,
+        });
+        sweep(300_006);
+        assert_eq!(
+            f.task(),
+            task,
+            "a late receipt cannot resume a blocked Goal"
+        );
     }
 }
 
