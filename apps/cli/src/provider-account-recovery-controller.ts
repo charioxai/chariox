@@ -4,6 +4,8 @@ import { theme } from "./theme.js"
 
 export type ProviderAccountRecoveryTarget = {sessionId: string; agentId: string}
 
+const quotaRefusal = /has exhausted its allowance|cannot start new work because its usage (?:allowance and credits are|is) exhausted/i
+
 type RecoveryAction = { label: string; run(): void }
 
 export function createProviderAccountRecoveryController(options: {
@@ -46,7 +48,7 @@ export function createProviderAccountRecoveryController(options: {
       top: Math.max(0, Math.floor(size.height / 5)), width,
       border: true, padding: 1, flexDirection: "column", backgroundColor: theme.background,
     })
-    panel.add(new TextRenderable(options.renderer, { content: message.includes("sign-in not checked") ? "Check provider account sign-in" : message.includes("has exhausted") ? "Choose provider account with quota" : "Provider account needs sign-in", fg: theme.text }))
+    panel.add(new TextRenderable(options.renderer, { content: message.includes("sign-in not checked") ? "Check provider account sign-in" : quotaRefusal.test(message) ? "Choose provider account with quota" : "Provider account needs sign-in", fg: theme.text }))
     panel.add(new TextRenderable(options.renderer, { content: message, fg: theme.text, wrapMode: "word" }))
     options.actions(target).forEach((action, index) => {
       const button = new TextRenderable(options.renderer, {
@@ -63,7 +65,7 @@ export function createProviderAccountRecoveryController(options: {
     assignBox(value: BoxRenderable | undefined) { box = value; render() },
     ownsInput: () => message !== null || closing,
     show(messageText: string, rejectedTarget?: ProviderAccountRecoveryTarget) {
-      if (!/selected \S+ account .*not authenticated|needs sign-in\.|sign-in not checked\.|has exhausted its allowance/i.test(messageText)) return
+      if (!/selected \S+ account .*not authenticated|needs sign-in\.|sign-in not checked\./i.test(messageText) && !quotaRefusal.test(messageText)) return
       target = rejectedTarget
       message = messageText
       selected = 0

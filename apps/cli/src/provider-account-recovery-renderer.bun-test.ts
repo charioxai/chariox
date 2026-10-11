@@ -38,3 +38,26 @@ test("MP-08 / MP-11 account recovery shows the full reason and consumes duplicat
     assert.match(h.captureCharFrame(), /2026-10-10 12:00 UTC/)
   } finally { controller.close(); h.renderer.destroy() }
 })
+
+test("MP-08/MP-10/MP-11 kernel quota refusals expose account recovery and quota heading", async () => {
+  const h = await createTestRenderer({width:100,height:40,useThread:false})
+  const box = new BoxRenderable(h.renderer, {position:"absolute",left:0,top:0})
+  h.renderer.root.add(box)
+  const controller = createProviderAccountRecoveryController({renderer:h.renderer,dimensions:()=>({width:100,height:40}),actions:()=>[
+    {label:"Open Provider Accounts",run(){}},{label:"Switch account",run(){}},{label:"Retry",run(){}},
+  ]})
+  try {
+    controller.assignBox(box)
+    for (const usage of ["usage allowance and credits are exhausted", "usage is exhausted"]) {
+      const message = `selected codex account b cannot start new work because its ${usage}`
+      controller.show(message)
+      await h.renderOnce()
+      assert.equal(controller.ownsInput(), true)
+      const frame = h.captureCharFrame()
+      assert.match(frame, /Choose provider account with quota/)
+      assert.match(frame, /Open Provider Accounts/)
+      assert.match(frame, /Retry/)
+      controller.close()
+    }
+  } finally {controller.close();h.renderer.destroy()}
+})
