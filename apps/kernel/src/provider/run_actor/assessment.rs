@@ -102,17 +102,16 @@ mod tests {
     #[test]
     fn review971_assessment_never_inherits_native_build_yolo_authority() {
         for provider in ["codex", "claude", "opencode"] {
-            let request = LaunchProviderRequest::new(
-                "room", provider, provider, "default", "default",
-            )
-            .with_execution_mode(AgentExecutionMode::Build)
-            .with_permission_level(AgentPermissionLevel::Yolo)
-            .with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
-                "http://127.0.0.1:1/mcp",
-                "synthetic-unused",
-            ))
-            .with_provider_config_override("features.shell_tool", serde_json::json!(true))
-            .with_mcp_servers(vec![serde_json::from_value(serde_json::json!({
+            let request =
+                LaunchProviderRequest::new("room", provider, provider, "default", "default")
+                    .with_execution_mode(AgentExecutionMode::Build)
+                    .with_permission_level(AgentPermissionLevel::Yolo)
+                    .with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
+                        "http://127.0.0.1:1/mcp",
+                        "synthetic-unused",
+                    ))
+                    .with_provider_config_override("features.shell_tool", serde_json::json!(true))
+                    .with_mcp_servers(vec![serde_json::from_value(serde_json::json!({
                 "name":"ordinary-tools", "transport":{"type":"stdio","command":"ordinary-unused"}
             }))
             .unwrap()]);

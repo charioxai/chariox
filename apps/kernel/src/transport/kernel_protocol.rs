@@ -631,7 +631,37 @@ pub(crate) fn can_skip_session_snapshot(
     // a window opens, warns, extends or ends alongside another projection delta.
     emitted_projection_delta
         && previous_snapshot.is_some_and(|previous| {
-            previous.session.sudo_windows() == snapshot.session.sudo_windows()
+            if previous.session.sudo_windows() != snapshot.session.sudo_windows() {
+                return false;
+            }
+            if previous.session.agent_tasks() == snapshot.session.agent_tasks() {
+                return true;
+            }
+            // MP-08/MP-10: task events carry no prompt, agent, activity or
+            // provider state. Preserve a snapshot for accompanying changes.
+            if previous.provider_run != snapshot.provider_run
+                || previous.agent_activity != snapshot.agent_activity
+            {
+                return false;
+            }
+            // Task updates have no removal event.
+            let task_ids = snapshot
+                .session
+                .agent_tasks()
+                .iter()
+                .map(|task| task.task_id.as_str())
+                .collect::<BTreeSet<_>>();
+            if previous
+                .session
+                .agent_tasks()
+                .iter()
+                .any(|task| !task_ids.contains(task.task_id.as_str()))
+            {
+                return false;
+            }
+            let mut previous_session = previous.session.clone();
+            previous_session.set_agent_tasks(snapshot.session.agent_tasks().to_vec());
+            previous_session == snapshot.session
         })
 }
 

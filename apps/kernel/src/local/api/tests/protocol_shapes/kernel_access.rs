@@ -343,11 +343,10 @@ fn external_sudo_requester_and_host_terminal_attribution_are_versioned() {
 fn leased_sudo_fence_is_bound_to_relay_peer_protocol_83() {
     use crate::transport::relay_peer::*;
     assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 87);
-    assert_eq!(
-        crate::runtime::state::LEASED_SUDO_PEER_PROTOCOL_VERSION,
-        83
+    assert_eq!(crate::runtime::state::LEASED_SUDO_PEER_PROTOCOL_VERSION, 83);
+    assert!(
+        RELAY_PEER_PROTOCOL_VERSION >= crate::runtime::state::LEASED_SUDO_PEER_PROTOCOL_VERSION
     );
-    assert!(RELAY_PEER_PROTOCOL_VERSION >= crate::runtime::state::LEASED_SUDO_PEER_PROTOCOL_VERSION);
     let request = RelayPeerRequest::UpdateLeasedSudo {
         leased_agent_id: "leased-1".into(),
         home_prompt_id: "prompt-1".into(),

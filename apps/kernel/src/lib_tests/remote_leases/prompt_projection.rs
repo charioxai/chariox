@@ -508,17 +508,26 @@ fn review971b_leased_assessment_origin_survives_provider_startup_queue() {
     // An unstructured Build/Yolo worker must fail closed at the native boundary,
     // rather than delivering the promoted assessment through its ordinary PTY.
     let run = app.providers().mark_run_running(started.run.id()).unwrap();
-    assert_eq!(run.execution_mode(), crate::provider::AgentExecutionMode::Build);
-    assert_eq!(run.permission_level(), crate::provider::AgentPermissionLevel::Yolo);
+    assert_eq!(
+        run.execution_mode(),
+        crate::provider::AgentExecutionMode::Build
+    );
+    assert_eq!(
+        run.permission_level(),
+        crate::provider::AgentPermissionLevel::Yolo
+    );
     let promoted = RemoteLeaseRuntime::new(&mut app)
         .recover_idle_leased_prompt_queue(&leased_agent.id)
         .expect("unsupported native assessment must settle without PTY delivery");
     assert!(promoted.is_none());
     assert!(!app.prompt_activity.read().contains_key(started.run.id()));
-    assert!(app.prompt_owner_active_prompt_for_agent(
-        &leased_agent.backing_session_id, &leased_agent.backing_agent_id,
-    ).unwrap().is_none());
-
+    assert!(app
+        .prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .unwrap()
+        .is_none());
 }
 
 #[test]

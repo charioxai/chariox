@@ -294,12 +294,24 @@ fn decode_task(
         return Err(error("task identity corrupt; quarantine required"));
     }
     if let Some(c) = &t.completion_check {
-        if t.goal.is_some() || c.schema_version != 1 || c.original_prompt_id != t.task_id
-            || c.evaluation.as_ref().is_some_and(|e| e.origin != "completion_check"
-                || e.objective_revision != 1 || e.prompt_id.is_empty() || e.work_prompt_id.is_empty()
-                || e.ledger_revision == 0 || e.deadline_ms != e.started_at_ms.saturating_add(goals::CHECK_BOUND_MS))
-            || (t.state == ExecutionState::Done && (c.final_answer.as_ref().is_none_or(|s| s.trim().is_empty()) || c.evidence.is_empty())) {
-            return Err(error("plain completion binding/schema corrupt; quarantine required"));
+        if t.goal.is_some()
+            || c.schema_version != 1
+            || c.original_prompt_id != t.task_id
+            || c.evaluation.as_ref().is_some_and(|e| {
+                e.origin != "completion_check"
+                    || e.objective_revision != 1
+                    || e.prompt_id.is_empty()
+                    || e.work_prompt_id.is_empty()
+                    || e.ledger_revision == 0
+                    || e.deadline_ms != e.started_at_ms.saturating_add(goals::CHECK_BOUND_MS)
+            })
+            || (t.state == ExecutionState::Done
+                && (c.final_answer.as_ref().is_none_or(|s| s.trim().is_empty())
+                    || c.evidence.is_empty()))
+        {
+            return Err(error(
+                "plain completion binding/schema corrupt; quarantine required",
+            ));
         }
     }
     if let Some(g) = &t.goal {
@@ -417,8 +429,7 @@ fn registrations(tx: &Connection, task: &str) -> Result<Vec<Registration>, Daemo
 }
 fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
     if goals::is_check(task, prompt)
-        && completion::evaluation(task)
-            .is_some_and(|e| e.result.is_none())
+        && completion::evaluation(task).is_some_and(|e| e.result.is_none())
     {
         return Err(error("completion_check cannot mutate work or authority"));
     }

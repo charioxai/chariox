@@ -35,29 +35,55 @@ fn assessment(status: &str) -> serde_json::Value {
 fn a12_fresh_completion_intent_keeps_its_bound_after_long_work() {
     for is_goal in [false, true] {
         let f = Fixture::new();
-        if is_goal { goal(&f, 1); } else { plain(&f); }
+        if is_goal {
+            goal(&f, 1);
+        } else {
+            plain(&f);
+        }
         let started = DELIVERY_TIMEOUT_MS + 2;
         f.apply(Operation::Settle {
-            room: "room".into(), agent: "parent".into(), prompt: "p".into(),
-            run: "run".into(), has_answer: true, cancelled: false, now: started,
+            room: "room".into(),
+            agent: "parent".into(),
+            prompt: "p".into(),
+            run: "run".into(),
+            has_answer: true,
+            cancelled: false,
+            now: started,
         });
         let task = f.task();
         let check = completion::evaluation(&task).unwrap();
         assert_eq!(check.deadline_ms, started + goals::CHECK_BOUND_MS);
-        assert!(!lacks_live_executor(&task, started + 1, false, false),
-            "a durable pending check has its own bounded admission window");
-        assert!(!lacks_live_executor(&task, check.deadline_ms - 1, false, false));
+        assert!(
+            !lacks_live_executor(&task, started + 1, false, false),
+            "a durable pending check has its own bounded admission window"
+        );
+        assert!(!lacks_live_executor(
+            &task,
+            check.deadline_ms - 1,
+            false,
+            false
+        ));
         assert!(lacks_live_executor(&task, check.deadline_ms, false, false));
         let mut stale = task.clone();
         stale.pending_prompt_id = Some("other-turn".into());
-        assert!(lacks_live_executor(&stale, started + 1, false, false),
-            "an unrelated check receipt is not a live admission");
+        assert!(
+            lacks_live_executor(&stale, started + 1, false, false),
+            "an unrelated check receipt is not a live admission"
+        );
         f.apply(Operation::TimeoutGoal {
-            task: task.task_id.clone(), prompt: check.prompt_id.clone(), now: check.deadline_ms,
+            task: task.task_id.clone(),
+            prompt: check.prompt_id.clone(),
+            now: check.deadline_ms,
         });
         assert_eq!(f.task().state, ExecutionState::Blocked);
-        assert_eq!(if is_goal { f.task().goal.unwrap().check_count }
-            else { f.task().completion_check.unwrap().check_count }, 1);
+        assert_eq!(
+            if is_goal {
+                f.task().goal.unwrap().check_count
+            } else {
+                f.task().completion_check.unwrap().check_count
+            },
+            1
+        );
     }
 }
 

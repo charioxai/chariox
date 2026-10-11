@@ -326,30 +326,124 @@ mod tests {
         use crate::durable_state::agent_lifecycle::{Operation, Outcome};
         let room = TestRoom::new("amgoal-verified-delegate-receipt");
         let store = &room.runtime.owned.durable_state_store;
-        let begin = |agent:&str,prompt:&str,now| Operation::Begin {owner:"owner".into(),room:room.session_id.clone(),agent:agent.into(),prompt:prompt.into(),run:Some("run".into()),now};
-        store.agent_lifecycle(begin("parent","parent-prompt",1)).unwrap();
-        store.agent_lifecycle(Operation::RegisterObligation {owner:"owner".into(),room:room.session_id.clone(),agent:"parent".into(),prompt:"parent-prompt".into(),run:Some("run".into()),id:"delegate".into(),kind:"delegate".into(),resource:Some("child-prompt".into()),now:1}).unwrap();
-        store.agent_lifecycle(begin(&room.agent_id,"child-prompt",1)).unwrap();
-        store.agent_lifecycle(Operation::EnableCompletionCheck {task:"child-prompt".into()}).unwrap();
-        let Outcome::Settled {task,..}=store.agent_lifecycle(Operation::Settle {room:room.session_id.clone(),agent:room.agent_id.clone(),prompt:"child-prompt".into(),run:"run".into(),has_answer:true,cancelled:false,now:2}).unwrap() else {panic!()};
-        let check=task.pending_prompt_id.unwrap();
-        store.agent_lifecycle(begin(&room.agent_id,&check,3)).unwrap();
-        let evidence=(0..32).map(|i|format!("public:verified-artifact-{i:02}-{}","x".repeat(60))).collect::<Vec<_>>();
-        let answer="Verified the requested cancellation behavior and all delegated evidence.";
-        let raw=serde_json::json!({"status":"achieved","final_answer":answer,"evidence":evidence}).to_string();
-        assert!(raw.len()>1024&&raw.len()<8192);
-        let mut prompt=crate::history::SessionHistoryEntry::user_prompt(&room.session_id,"client",&room.agent_id,"check");prompt.merge_key=Some(format!("prompt:{check}"));
-        let output=crate::history::SessionHistoryEntry::provider_output(&room.session_id,"run",Some(&room.agent_id),crate::terminal::TerminalOutputKind::ProviderOutput,None,&raw);
-        for e in [prompt,output] {room.runtime.owned.operational_history_store.append_transcript(&e,Default::default()).unwrap();}
-        let Outcome::Settled {task,..}=store.agent_lifecycle(Operation::EvaluateGoal {task:"child-prompt".into(),prompt:check.clone(),result:raw,now:4}).unwrap() else {panic!()};
+        let begin = |agent: &str, prompt: &str, now| Operation::Begin {
+            owner: "owner".into(),
+            room: room.session_id.clone(),
+            agent: agent.into(),
+            prompt: prompt.into(),
+            run: Some("run".into()),
+            now,
+        };
+        store
+            .agent_lifecycle(begin("parent", "parent-prompt", 1))
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::RegisterObligation {
+                owner: "owner".into(),
+                room: room.session_id.clone(),
+                agent: "parent".into(),
+                prompt: "parent-prompt".into(),
+                run: Some("run".into()),
+                id: "delegate".into(),
+                kind: "delegate".into(),
+                resource: Some("child-prompt".into()),
+                now: 1,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(begin(&room.agent_id, "child-prompt", 1))
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::EnableCompletionCheck {
+                task: "child-prompt".into(),
+            })
+            .unwrap();
+        let Outcome::Settled { task, .. } = store
+            .agent_lifecycle(Operation::Settle {
+                room: room.session_id.clone(),
+                agent: room.agent_id.clone(),
+                prompt: "child-prompt".into(),
+                run: "run".into(),
+                has_answer: true,
+                cancelled: false,
+                now: 2,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        let check = task.pending_prompt_id.unwrap();
+        store
+            .agent_lifecycle(begin(&room.agent_id, &check, 3))
+            .unwrap();
+        let evidence = (0..32)
+            .map(|i| format!("public:verified-artifact-{i:02}-{}", "x".repeat(60)))
+            .collect::<Vec<_>>();
+        let answer = "Verified the requested cancellation behavior and all delegated evidence.";
+        let raw =
+            serde_json::json!({"status":"achieved","final_answer":answer,"evidence":evidence})
+                .to_string();
+        assert!(raw.len() > 1024 && raw.len() < 8192);
+        let mut prompt = crate::history::SessionHistoryEntry::user_prompt(
+            &room.session_id,
+            "client",
+            &room.agent_id,
+            "check",
+        );
+        prompt.merge_key = Some(format!("prompt:{check}"));
+        let output = crate::history::SessionHistoryEntry::provider_output(
+            &room.session_id,
+            "run",
+            Some(&room.agent_id),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            None,
+            &raw,
+        );
+        for e in [prompt, output] {
+            room.runtime
+                .owned
+                .operational_history_store
+                .append_transcript(&e, Default::default())
+                .unwrap();
+        }
+        let Outcome::Settled { task, .. } = store
+            .agent_lifecycle(Operation::EvaluateGoal {
+                task: "child-prompt".into(),
+                prompt: check.clone(),
+                result: raw,
+                now: 4,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
         assert!(task.goal.is_none());
-        let source=crate::session::PromptQueueItem::new(check,"client",&room.agent_id,"assessment",crate::session::PromptStatus::Running);
-        room.runtime.finish_agent_task_settlement(Some((task,false)),&source).await.unwrap();
-        let events=store.agent_work_inbox(&room.session_id,"parent",0,Some("parent-prompt")).unwrap();
-        let receipt=events.iter().find(|e|e.payload.get("public_answer").is_some()).expect("delegated source outcome receipt");
-        assert_eq!(receipt.payload["public_answer"]["excerpt"],answer);
-        assert_eq!(receipt.payload["public_answer"]["evidence"],serde_json::json!(evidence));
-        assert_eq!(receipt.payload["public_answer"]["prompt_id"],"child-prompt");
+        let source = crate::session::PromptQueueItem::new(
+            check,
+            "client",
+            &room.agent_id,
+            "assessment",
+            crate::session::PromptStatus::Running,
+        );
+        room.runtime
+            .finish_agent_task_settlement(Some((task, false)), &source)
+            .await
+            .unwrap();
+        let events = store
+            .agent_work_inbox(&room.session_id, "parent", 0, Some("parent-prompt"))
+            .unwrap();
+        let receipt = events
+            .iter()
+            .find(|e| e.payload.get("public_answer").is_some())
+            .expect("delegated source outcome receipt");
+        assert_eq!(receipt.payload["public_answer"]["excerpt"], answer);
+        assert_eq!(
+            receipt.payload["public_answer"]["evidence"],
+            serde_json::json!(evidence)
+        );
+        assert_eq!(
+            receipt.payload["public_answer"]["prompt_id"],
+            "child-prompt"
+        );
     }
-
 }

@@ -2,6 +2,85 @@
 use super::support::*;
 use crate::transport::relay_client::subscriptions::run_relay_subscription_loop;
 
+// MP-08 / MP-10 A12-S02: encrypted relay delivery uses the same snapshot rule.
+#[tokio::test]
+async fn review971c_relay_subscription_keeps_mixed_task_changes() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let session_id = create_test_session(&mut app, "workspace", "worktree");
+    let attachment_id = attach_test_client(
+        &mut app,
+        &session_id,
+        "task-subscriber",
+        ClientCapabilityLevel::MessageTransport,
+    );
+    let app = Arc::new(Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 4));
+    let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(64);
+    let private_key = relay_crypto::generate_private_key_base64();
+    let public_key = relay_crypto::public_key_from_private_key_base64(&private_key).unwrap();
+    let task = tokio::spawn(run_relay_subscription_loop(
+        router.clone(),
+        outgoing_tx,
+        "task-subscription".into(),
+        public_key,
+        session_id.clone(),
+        attachment_id.clone(),
+        None,
+        Arc::new(RelayEventRuntime::for_tests(64)),
+        false,
+        crate::transport::relay_client::subscriptions::RelaySubscriber {
+            user_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+            connection_class: crate::local::KernelConnectionClass::Terminal,
+        },
+    ));
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        async fn next_snapshot(
+            rx: &mut mpsc::Receiver<RelayEnvelope>,
+            key: &str,
+        ) -> serde_json::Value {
+            loop {
+                let (_, event) = decrypt_relay_event_from_channel(rx, key).await;
+                if event["event"] == "session_snapshot" {
+                    return event;
+                }
+            }
+        }
+        next_snapshot(&mut event_rx, &private_key).await;
+        for case in 0..4 {
+            let updated = crate::test_support::mixed_task_subscription_updates(
+                &mut *app.lock().await,
+                &session_id,
+                &attachment_id,
+                case,
+            );
+            let delivered = next_snapshot(&mut event_rx, &private_key).await;
+            let expected = serde_json::to_value(updated).unwrap();
+            for field in ["agent_tasks", "alias", "agents", "prompt_runtime"] {
+                assert_eq!(
+                    delivered["session"][field], expected[field],
+                    "MP-08 / MP-10 relay {field}"
+                );
+            }
+            assert_eq!(
+                delivered["provider_run"]["id"],
+                expected["active_provider_run_id"]
+            );
+            if case == 2 {
+                assert_eq!(
+                    delivered["agent_activity"][expected["agents"][0]["id"].as_str().unwrap()]
+                        ["queued_prompt_count"],
+                    1
+                );
+            }
+        }
+    })
+    .await;
+    task.abort();
+    let _ = task.await;
+    router.runtime_state().shutdown_cleanup().await.unwrap();
+    result.expect("MP-08 / MP-10 relay subscriber lost a mixed task update");
+}
+
 struct RelayEventStoreTestRoot(std::path::PathBuf);
 
 impl RelayEventStoreTestRoot {
