@@ -58,9 +58,10 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   last 16 packets, at most 8 MB). A failed credit asks for a reset: the
   kernel still holds the long poll of a credit lost with a dropped socket, and
   only the reset ends it (credits lost with one socket count as one failure for
-  the backoff). Replies arrive in credit order, so a gap with no older
-  credit outstanding (for example a credit replayed after a reconnect, which the
-  kernel runs again) resets at once; the reset credit does not wait for credits
+  the backoff). A credit the transport replays after a reconnect (same command
+  id) gets its original packet, and a still-waiting original stops its long poll.
+  Replies arrive in credit order, so a gap with no older
+  credit outstanding resets at once; the reset credit does not wait for credits
   in flight, and the kernel ends the long poll of every credit that arrived
   before it. A queued credit's wait starts when its predecessor is answered
   (one heartbeat per wait instead of one per credit), at most three waits from
