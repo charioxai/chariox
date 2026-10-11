@@ -79,12 +79,12 @@ impl KernelRuntimeState {
     ) -> Result<T, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         let config = self.owned.config_projection.snapshot();
-        let has_environment = crate::project_environment::ProjectEnvironmentStore::new(
+        let needs_vault = crate::project_environment::ProjectEnvironmentStore::new(
             &config.private_runtime_state_root(),
         )
         .load(session.project_id())?
-        .is_some();
-        let _vault = if has_environment {
+        .is_some_and(|state| crate::project_environment::project_environment_requires_vault(&state.manifest));
+        let _vault = if needs_vault {
             Some(
                 self.ensure_vault_unlocked_for_agent(
                     session_id,

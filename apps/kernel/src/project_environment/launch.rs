@@ -3,6 +3,15 @@ use super::*;
 use crate::{config::DaemonConfig, error::DaemonError};
 use std::{collections::BTreeMap, path::Path};
 
+// MP-08 / MP-10 / MP-11: unlock only when the existing resolver accesses
+// Vault. Public file/environment bindings require no protected authorization.
+pub(crate) fn project_environment_requires_vault(manifest: &ProjectEnvironmentManifest) -> bool {
+    manifest.entries.iter().any(|entry| {
+        !entry.excluded && (entry.classification == ProjectEnvironmentClassification::Secret
+            || matches!(entry.locator, ProjectEnvironmentLocator::Vault { .. } | ProjectEnvironmentLocator::Missing))
+    })
+}
+
 pub(crate) fn project_launch_environment(
     config: &DaemonConfig,
     project_id: &str,

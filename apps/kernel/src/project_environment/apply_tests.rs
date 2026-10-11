@@ -270,6 +270,19 @@ fn envp05a_reviewed_manual_binding_needs_no_invented_source_use() {
         manifest.validate().is_ok(),
         "reviewed manual locators have no detected use sites"
     );
+    // MP-11: the real public-only provider drill previously stalled on a Vault
+    // passphrase interaction. Preserve every resolver read/write authorization.
+    assert!(!project_environment_requires_vault(&manifest));
+    let mut protected = manifest.clone();
+    protected.entries[0].classification = ProjectEnvironmentClassification::Secret;
+    assert!(project_environment_requires_vault(&protected));
+    protected.entries[0].classification = ProjectEnvironmentClassification::NonSecret;
+    protected.entries[0].locator = ProjectEnvironmentLocator::Vault { service: "authorized-service".into(), key: "authorized-name".into() };
+    assert!(project_environment_requires_vault(&protected));
+    protected.entries[0].locator = ProjectEnvironmentLocator::Missing;
+    assert!(project_environment_requires_vault(&protected));
+    protected.entries[0].excluded = true;
+    assert!(!project_environment_requires_vault(&protected));
     let input = ProjectEnvironmentDiscoveryInput {
         project_id: manifest.project_id.clone(),
         evidence_digest: manifest.evidence_digest.clone(),
