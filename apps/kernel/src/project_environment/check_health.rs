@@ -52,9 +52,30 @@ pub(super) fn health(
                 Some(EnvironmentHealthExpectation::HttpStatus { status }) => *status,
                 _ => *expected_status,
             };
+            let timeout = Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64);
+            let began = Instant::now();
+            let addresses = match parsed.host().ok_or("invalid_probe_host")? {
+                url::Host::Domain(host) => resolve_host(host, timeout, roots)?,
+                url::Host::Ipv4(ip) => vec![ip.into()],
+                url::Host::Ipv6(ip) => vec![ip.into()],
+            };
+            let port = parsed.port_or_known_default().ok_or("invalid_probe")?;
+            let addresses: Vec<_> = addresses
+                .into_iter()
+                .map(|ip| std::net::SocketAddr::new(ip, port))
+                .collect();
+            let remaining = timeout.saturating_sub(began.elapsed());
+            if remaining.is_zero() || addresses.is_empty() {
+                return Ok(false);
+            }
+            // Resolve before ureq, preserving the URL's Host header and TLS
+            // server name. Redirects and environment proxies cannot escape to
+            // a second unbounded hostname lookup.
             let agent = ureq::AgentBuilder::new()
+                .try_proxy_from_env(false)
+                .resolver(move |_: &str| Ok(addresses.clone()))
                 .redirects(0)
-                .timeout(Duration::from_millis((*timeout_ms).clamp(1, 5000) as u64))
+                .timeout(remaining)
                 .build();
             match agent.get(url).call() {
                 Ok(r) => Ok(r.status() == expected),
