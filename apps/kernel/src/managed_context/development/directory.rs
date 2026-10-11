@@ -9,7 +9,6 @@ pub(super) fn export_directory(
     repository_ids: &mut BTreeSet<String>,
     target_directories: &mut BTreeSet<String>,
     budget: &mut ManifestMemoryBudget,
-    managed_publication_export: bool,
     vault: Option<&vault_artifacts::ExportVault<'_>>,
 ) -> Result<
     (
@@ -22,12 +21,8 @@ pub(super) fn export_directory(
     let source_basename = export::source_repository_basename(worktree)?;
     let repository_id =
         export::unique_repository_id(None, "directory", &logical_name, repository_ids);
-    let target_directory = export::target_directory_for_export(
-        &source_basename,
-        &repository_id,
-        target_directories,
-        managed_publication_export,
-    )?;
+    let target_directory =
+        export::target_directory_for_export(&source_basename, target_directories)?;
     budget.consume(logical_name.len() + target_directory.len() + 2048)?;
     let root = open_root(worktree)?;
     let (entries, directories, size) =

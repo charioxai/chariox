@@ -717,43 +717,53 @@ fn preserves_source_repository_basename_as_the_target_directory() {
 }
 
 #[test]
-fn ordinary_source_repository_basename_collision_keeps_compatible_disambiguation() {
-    let root = test_root("target-directory-collision");
-    let first = root.join("first").join("same-name");
-    let second = root.join("second").join("same-name");
-    init_repository(&first, "first.txt", "first\n");
-    init_repository(&second, "second.txt", "second\n");
-    let exported = export_development_context(DevelopmentContextExportRequest {
-        project_id: "collision-project".to_string(),
-        repositories: vec![
-            DevelopmentRepositorySelection {
-                workspace_id: "first".to_string(),
-                worktree_id: None,
-                worktree_path: first,
-                role: DevelopmentRepositoryRole::Primary,
-            },
-            DevelopmentRepositorySelection {
-                workspace_id: "second".to_string(),
-                worktree_id: None,
-                worktree_path: second,
-                role: DevelopmentRepositoryRole::Supporting,
-            },
-        ],
-        archive_path: root.join("collision.tar.gz"),
-    })
-    .expect("ordinary duplicate basenames remain exportable");
-    let targets = exported
-        .manifest
-        .repositories
-        .iter()
-        .map(|repository| repository.target_directory.as_str())
-        .collect::<BTreeSet<_>>();
-    assert!(targets.contains("same-name"));
-    assert_eq!(targets.len(), 2);
-    assert!(targets
-        .iter()
-        .any(|target| target.starts_with("same-name-")));
-    fs::remove_dir_all(root).expect("remove test root");
+fn ordinary_export_refuses_basename_collisions_without_renaming() {
+    for supporting_name in ["Same-Name", "same-name"] {
+        for supporting_git in [true, false] {
+            let root = test_root("ordinary-basename-collision");
+            let _cleanup = PlainWorkspaceCleanup(root.clone());
+            let first = root.join("first/Same-Name");
+            let second = root.join("second").join(supporting_name);
+            init_repository(&first, "first.txt", "first\n");
+            if supporting_git {
+                init_repository(&second, "second.txt", "second\n");
+            } else {
+                fs::create_dir_all(&second).unwrap();
+                fs::write(second.join("second.txt"), "second\n").unwrap();
+            }
+            let archive = root.join("collision.tar.gz");
+            let error = export_development_context(DevelopmentContextExportRequest {
+                project_id: "collision-project".to_string(),
+                repositories: vec![
+                    DevelopmentRepositorySelection {
+                        workspace_id: "first".to_string(),
+                        worktree_id: None,
+                        worktree_path: first.clone(),
+                        role: DevelopmentRepositoryRole::Primary,
+                    },
+                    DevelopmentRepositorySelection {
+                        workspace_id: "second".to_string(),
+                        worktree_id: None,
+                        worktree_path: second.clone(),
+                        role: DevelopmentRepositoryRole::Supporting,
+                    },
+                ],
+                archive_path: archive.clone(),
+            })
+            .expect_err("Copy must refuse colliding basenames rather than rename");
+            assert!(error.to_string().contains("collides with another selected"));
+            assert!(!archive.exists());
+            assert_no_export_temporaries(&root);
+            assert_eq!(
+                fs::read_to_string(first.join("first.txt")).unwrap(),
+                "first\n"
+            );
+            assert_eq!(
+                fs::read_to_string(second.join("second.txt")).unwrap(),
+                "second\n"
+            );
+        }
+    }
 }
 
 #[test]
@@ -781,8 +791,8 @@ fn managed_destination_names_use_common_component_safety() {
         assert!(export::validate_repository_basename(name).is_err());
     }
     let mut occupied = BTreeSet::new();
-    export::unique_managed_target_directory("same-name", &mut occupied).unwrap();
-    assert!(export::unique_managed_target_directory("SAME-NAME", &mut occupied).is_err());
+    export::target_directory_for_export("same-name", &mut occupied).unwrap();
+    assert!(export::target_directory_for_export("SAME-NAME", &mut occupied).is_err());
 }
 
 #[test]
