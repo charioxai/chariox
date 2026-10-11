@@ -117,7 +117,7 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   const rootlessDataVolumeDropIn = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-rootless-docker.path1-data-volume.conf")
   const allocatorDataVolumeDropIn = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf")
   await put(kernel, `#!/bin/sh\nif [ "\$1" = "--print-local-daemon-protocol-version" ]; then echo ${protocol}; exit 0; fi\nexit 1\n`, 0o755)
-  await put(supervisor, `#!/bin/sh\necho supervisor-${label}\n`, 0o755)
+  await put(supervisor, `#!/bin/sh\nif [ "\$1" = "--print-control-state-version" ]; then echo 1; exit 0; fi\necho supervisor-${label}\n`, 0o755)
   if (includeAppArtifacts) {
     await put(appPackage, `#!/bin/sh\necho app-package-${label}\n`, 0o755)
     await put(appStorage, `#!/bin/sh\necho app-storage-${label}\n`, 0o755)

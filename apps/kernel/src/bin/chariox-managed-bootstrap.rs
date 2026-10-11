@@ -17,6 +17,11 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             println!("usage: chariox-managed-bootstrap [--disposable-worker | --help | --version]\n\nRun the managed home supervisor with no arguments, or bootstrap a disposable\nworker with --disposable-worker. Configuration is supplied through the environment.\n  -h, --help  Print usage and exit\n  --version   Print the package version and exit");
             return Ok(());
         }
+        // MP-03: provisioning gates root-private receipts on this pinned binary.
+        (Some("--print-control-state-version"), 1) => {
+            println!("1");
+            return Ok(());
+        }
         (Some("--version"), 1) => {
             println!("chariox-managed-bootstrap {}", env!("CARGO_PKG_VERSION"));
             return Ok(());

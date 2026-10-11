@@ -722,6 +722,9 @@ rollback_transaction() {
     no) remove_release_override || return 1 ;;
     *) echo "managed kernel upgrade transaction has an invalid release override marker" >&2; return 1 ;;
   esac
+  if [ "$managed_provider_topology" = path1 ]; then
+    node "$script_root/managed-control-ownership.mjs" restore "$receipt_path" "$transaction_root" || return 1
+  fi
   prepare_managed_app_release_switch "$chariox_root/$previous_target" || return 1
   atomic_symlink "$previous_target" "$current_link" || return 1
   sync_path1_data_volume_unit_links || return 1
@@ -939,21 +942,6 @@ require_root_owned_directory "$releases_root"
 if path_exists "$update_result_path"; then
   require_root_owned_private_regular_file "$update_result_path" "managed release update result"
 fi
-# MP-03: retire old provider-owned deployment receipts before writing target/rollback state.
-if [ "$managed_provider_topology" = path1 ]; then
-  require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
-  control_parent=$(dirname "$receipt_path")
-  chown root:root "$control_parent"
-  chmod 0700 "$control_parent"
-  for control_file in "$receipt_path" "$control_parent/bootstrap-grant-binding.json" "$control_parent/release-override.json"; do
-    if [ -e "$control_file" ] || [ -L "$control_file" ]; then
-      [ -f "$control_file" ] && [ ! -L "$control_file" ] || { echo "managed control file is unsafe" >&2; exit 1; }
-      [ "$(stat -c '%h' "$control_file")" -eq 1 ] || { echo "managed control file has aliases" >&2; exit 1; }
-      chown root:root "$control_file"
-      chmod 0600 "$control_file"
-    fi
-  done
-fi
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
 select_supervisor_service
@@ -1102,6 +1090,19 @@ if [ -e "$pending_transaction" ] || [ -L "$pending_transaction" ]; then
 fi
 install -d -o root -g root -m 0700 "$pending_transaction"
 journal_builder_pins "$pending_transaction"
+if [ "$managed_provider_topology" = path1 ]; then
+  node "$script_root/managed-control-ownership.mjs" snapshot "$receipt_path" "$pending_transaction"
+  # The binary was already verified against the independent signed release pin.
+  # H/I reject this query with exit 2; helper-capable releases return version 1.
+  if control_version=$(timeout 10s "$image_root/usr/local/bin/chariox-managed-bootstrap" --print-control-state-version 2>/dev/null); then
+    [ "$control_version" = 1 ] || { echo "target control-state capability is invalid" >&2; exit 1; }
+    printf '%s\n' private > "$pending_transaction/target-control-access"
+  else
+    control_status=$?
+    [ "$control_status" -eq 2 ] || { echo "target control-state capability could not be checked" >&2; exit 1; }
+    printf '%s\n' legacy > "$pending_transaction/target-control-access"
+  fi
+fi
 cp -P "$receipt_path" "$pending_transaction/previous-receipt.json"
 chmod 0600 "$pending_transaction/previous-receipt.json"
 if [ -e "$release_override_path" ] || [ -L "$release_override_path" ]; then
@@ -1162,6 +1163,13 @@ if ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then
   exit 1
 fi
 write_phase stopped
+if [ "$managed_provider_topology" = path1 ]; then
+  case "$(read_single_line "$transaction_root/target-control-access")" in
+    private) node "$script_root/managed-control-ownership.mjs" apply "$receipt_path" "$transaction_root" ;;
+    legacy) node "$script_root/managed-control-ownership.mjs" apply-legacy "$receipt_path" "$transaction_root" "$(id -u chariox)" "$(id -g chariox)" ;;
+    *) echo "target control-state access journal is invalid" >&2; exit 1 ;;
+  esac
+fi
 record_diagnostic_phase activation_builder_pin_start
 if ! activate_builder_pin "$transaction_root" target; then
   if rollback_transaction; then
