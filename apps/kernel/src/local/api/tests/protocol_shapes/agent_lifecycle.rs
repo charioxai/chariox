@@ -155,3 +155,44 @@ fn plain_completion_projection_shape_is_bound_to_assigned_protocol493() {
         "341576d124cc87f6ab41d2ee32ebc7d1588133e35ea60b56d21753ab10cdc99c"
     );
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12: precise additions for coordinator union493/102.
+#[test]
+fn compact_task_wire_shapes_are_bound_to_assigned_protocol493() {
+    let raw = serde_json::json!({"task_id":"task","room_id":"room","owner_user_id":"owner","agent_id":"agent","prompt_id":"prompt","provider_run_id":null,"revision":2,"blocked_revision":0,"state":"working","reason":"work","obligations":[],"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":0,"correction_used":false,"pending_prompt_id":null});
+    let task = serde_json::from_value(raw.clone()).unwrap();
+    let response = serde_json::to_value(LocalDaemonResponse::AgentTaskUpdated {
+        session_id: "room".into(),
+        task: Box::new(task),
+    })
+    .unwrap();
+    let task = serde_json::from_value(raw.clone()).unwrap();
+    let event = serde_json::to_value(
+        crate::transport::kernel_protocol::KernelEvent::AgentTaskUpdated {
+            session_id: "room".into(),
+            task: Box::new(task),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        response,
+        serde_json::json!({"AgentTaskUpdated":{"session_id":"room","task":raw}})
+    );
+    assert_eq!(
+        event,
+        serde_json::json!({"event":"agent_task_updated","session_id":"room","task":raw})
+    );
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!("{:x}", Sha256::digest(response.to_string().as_bytes())),
+        "4c0a03a004a412d708a4d60c1475b4838001ee1a9437501f64605a4e9c939869"
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(event.to_string().as_bytes())),
+        "8a4f8a22a07cd18fe4ca79ce9277dc9dd44bb73330c2a3f85bf0b6102ba2d4e4"
+    );
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION, 493,
+        "amint must fold compact task frames into the assigned union"
+    );
+}

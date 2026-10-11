@@ -884,3 +884,31 @@ fn user_domain_refusals_protocol_443_snapshot() {
     assert_eq!(generic.code, "local_transport_error");
     assert!(generic.retryable);
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: compact task state must reach every terminal.
+#[test]
+fn a12_task_change_is_a_compact_projection_event() {
+    let previous = session_snapshot_with_agent();
+    let mut current = previous.clone();
+    let task = serde_json::from_value(serde_json::json!({
+        "task_id":"task", "room_id":current.session.id(), "owner_user_id":"owner",
+        "agent_id":"agent", "prompt_id":"prompt", "provider_run_id":null,
+        "revision":2, "blocked_revision":0, "state":"working", "reason":"work",
+        "obligations":[], "wait":null, "last_progress_at_ms":1, "progress_sequence":0,
+        "no_progress_wakes":0, "correction_used":false, "pending_prompt_id":null
+    }))
+    .unwrap();
+    current.session.set_agent_tasks(vec![task]);
+    let events = session_projection_changed_events(&current, Some(&previous));
+    let payloads: Vec<_> = events
+        .iter()
+        .map(|e| serde_json::to_value(e).unwrap())
+        .collect();
+    assert!(
+        payloads.iter().any(|e| e["event"] == "agent_task_updated"),
+        "a changed task cannot depend on a full room snapshot"
+    );
+    assert!(payloads.iter().all(|e| e.get("session").is_none()));
+    assert!(session_projection_changed_events(&current, Some(&current)).is_empty());
+    assert!(session_projection_changed_events(&current, None).is_empty());
+}

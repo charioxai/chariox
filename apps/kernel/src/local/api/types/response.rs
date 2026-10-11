@@ -104,6 +104,8 @@ pub enum LocalDaemonResponse {
     ProjectEnvironmentSetupRetried { status: ProjectEnvironmentSetupStatus, },
     SessionsListed { sessions: Vec<RuntimeSession>, },
     SessionResolved { session: RuntimeSession, },
+    /// MP-08 / MP-09 / MP-10 / MP-11 A12: compact, home-owned control confirmation.
+    AgentTaskUpdated { session_id: String, task: Box<crate::durable_state::agent_lifecycle::AgentTaskExecution> },
     SessionState {
         session: RuntimeSession,
         agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,

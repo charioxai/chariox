@@ -26,3 +26,16 @@ test("goal admission applies the home revision and repaints through the app rend
   assert.equal(state, admitted)
   assert.deepEqual(calls, ["apply", "panes", "transcript", "render"])
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: compact controls preserve unrelated room history.
+test("goal control applies its compact revision without rebuilding transcript", async () => {
+  let state={id:"room",agents:[{id:"agent",alias:"worker"}],agent_tasks:[{task_id:"prompt",agent_id:"agent",revision:7,state:"working",goal:{id:"goal:prompt"}}]} as RuntimeSession
+  const updated={...state.agent_tasks![0]!,room_id:"room",revision:8,state:"blocked",goal:{...state.agent_tasks![0]!.goal!,paused:true}}
+  const calls:string[]=[]
+  const client=new LocalIpcClient("/unused-goal-test.sock")
+  client.send=async <TResponse>():Promise<TResponse>=>({AgentTaskUpdated:{session_id:"room",task:updated}} as TResponse)
+  const handlers=createCliCommandActionComposition({client,options:{},preferencesState:()=>({}),isAttached:()=>true,sessionState:()=>state,attachmentState:()=>({id:"terminal"}),focusedAgentId:()=>"agent",applySessionState:(next:RuntimeSession)=>{state=next;calls.push("apply")},refreshAgentPanes:async()=>assert.fail("compact control must not rebuild unrelated panes"),rebuildTranscript:()=>assert.fail("compact control must not rebuild transcript"),requestRootRender:()=>calls.push("render"),flashFooter:(message:string)=>assert.fail(message)} as unknown as Parameters<typeof createCliCommandActionComposition>[0])
+  await handlers.handleGoalCommand({kind:"goal",raw:"/goal pause",prompt:"pause"})
+  assert.equal(state.agent_tasks![0]!.revision,8)
+  assert.deepEqual(calls,["apply","render"])
+})

@@ -1,3 +1,4 @@
+import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
 import { sessionHasActiveGoalClock } from "@chariox/kernel-client/session-runtime-status"
 import { createEffect, onCleanup, onMount } from "solid-js"
 
@@ -552,6 +553,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     applyProviderRunChanged,
     applySessionMetadataChanged,
     applyRuntimeInteractionsChanged,
+    applyAgentTaskUpdated: (sessionId, task) => { applyDeltaSessionState(sessionId, session => withAgentTaskUpdate(session, sessionId, task)) },
     applyWorkflowRunUpdated,
     applyWorkflowDesignOp,
     scheduleSharedPromptInputHistoryRefresh: deps.scheduleSharedPromptInputHistoryRefresh,
