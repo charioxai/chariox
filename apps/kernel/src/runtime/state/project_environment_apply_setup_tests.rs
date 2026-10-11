@@ -117,8 +117,14 @@ async fn envp05a_setup_failed_readiness_probe_remains_eligible_for_repair() {
 }
 
 #[cfg(target_os = "linux")]
+#[tokio::test]
+async fn envp05a_setup_protected_source_alias_admits_no_command() {
+    setup_retry_regression(SetupScenario::ProtectedAlias).await;
+}
+
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
-enum SetupScenario { Retry, LockedSecret, MissingPublic, ChangedPublic, ForeignDependency, PlatformGap, FolderGap, FailedReadiness }
+enum SetupScenario { Retry, LockedSecret, MissingPublic, ChangedPublic, ForeignDependency, PlatformGap, FolderGap, FailedReadiness, ProtectedAlias }
 
 #[cfg(target_os = "linux")]
 async fn setup_retry_regression(scenario: SetupScenario) {
@@ -360,6 +366,20 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         // Explicitly selecting the local prerequisite restores eligible Setup.
         requirement.depends_on = vec!["public".into()];
         env.folders[0].requirements[0] = requirement.clone();
+    }
+    if matches!(scenario, SetupScenario::ProtectedAlias) {
+        std::env::set_var("INHERITED_PASSWORD", "synthetic-opaque-input");
+        let locator = ProjectEnvironmentLocator::WorkspaceEnvironment { name: "INHERITED_PASSWORD".into() };
+        let RequirementSpec::Variables { locator: source, .. } = &mut env.project_requirements[1].spec else { panic!("public fixture") };
+        *source = locator.clone();
+        let mut legacy = store.load(project.id()).unwrap().unwrap();
+        legacy.manifest.entries.iter_mut().find(|e| e.name == "PUBLIC_BUILD_INPUT").unwrap().locator = locator;
+        store.save(&legacy).unwrap();
+        let error = apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false).unwrap_err();
+        assert!(!workspace.join("successful-count").exists(), "protected aliases must prevent every command");
+        assert_eq!(store.load_applies(project.id()).unwrap().attempts[0].setup_admitted_commands.get("setup"), Some(&0));
+        assert!(!error.to_string().contains("synthetic-opaque-input"));
+        return;
     }
     if changed_public {
         // Public at Check/Apply time, credential-shaped when Setup resolves it.

@@ -77,6 +77,15 @@ fn project_launch_environment_selected(
     manifest
         .entries
         .retain(|entry| entry.workspace_id == workspace_id && selected(entry));
+    // Reject before collecting ambient names; old manifests cannot bypass Apply.
+    if manifest.entries.iter().any(|entry| {
+        !entry.excluded
+            && entry.classification == ProjectEnvironmentClassification::NonSecret
+            && project_environment_public_source_protected(&entry.locator)
+    })
+    {
+        return Err(super::resolver::environment_error("Protected public source binding"));
+    }
     let roots = BTreeMap::from([(workspace_id.to_string(), directory.to_path_buf())]);
     let names = manifest
         .entries

@@ -83,3 +83,6 @@ mod check_tests;
 
 #[cfg(test)]
 mod apply_tests;
+
+#[cfg(test)]
+mod source_alias_tests;
