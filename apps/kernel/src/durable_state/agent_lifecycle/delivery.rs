@@ -262,12 +262,18 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     "inbox acknowledgement cannot repair uncertain delivery",
                 ));
             }
-            if matches!(e.state.as_str(), "handled" | "expired" | "failed") {
+            let already_handled = e.state == "handled";
+            if matches!(e.state.as_str(), "expired" | "failed") || (already_handled && !handled) {
                 return Ok(Outcome::Event(e));
             }
-            e.state = if handled { "handled" } else { "acknowledged" }.into();
-            save_event(tx, &e)?;
-            super::wakes::record_delivery(tx, &e)?;
+            if !already_handled {
+                e.state = if handled { "handled" } else { "acknowledged" }.into();
+                save_event(tx, &e)?;
+                super::wakes::record_delivery(tx, &e)?;
+            }
+            // A loss handled while Blocked keeps its failed obligation until
+            // owner Resume. A repeated ACK can then reconcile that disposition
+            // without replaying delivery or buying progress from the same receipt.
             // A recurring check-in ACK is bookkeeping, not useful progress.
             // The existing three-no-progress-wake guard requires owner action.
             if handled && matches!(e.kind.as_str(), "source_completed" | "source_lost") {
@@ -292,7 +298,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         || e.payload["task_ids"].as_array().is_some_and(|ids| {
                             ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
                         });
-                    if changed || belongs {
+                    if changed || (!already_handled && belongs) {
                         let timer_outcome = e.payload["public_answer"]["kind"].as_str() == Some("timer")
                             || tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_wakes WHERE id=?1 AND json_extract(payload,'$.kind')='timer')", [&e.source_id], |r| r.get::<_,bool>(0)).map_err(sql)?;
                         // Closing a timer obligation is required bookkeeping,
