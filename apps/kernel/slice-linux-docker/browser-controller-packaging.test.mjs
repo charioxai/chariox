@@ -19,11 +19,10 @@ test("slice packaging installs every browser controller runtime module", async (
   assert.ok(modules.size > 1, "fixture should discover browser controller dependencies")
   for (const modulePath of modules) {
     const name = path.basename(modulePath)
-    assert.match(
-      dockerfile,
-      new RegExp(`docker/${escapeRegExp(name)}\\s+/opt/chariox-slice/${escapeRegExp(name)}`),
-      `Dockerfile should install ${name}`,
-    )
+    const installed = [...dockerfile.matchAll(/^COPY(?: --(?:chown|chmod)=\S+)* (?!-)(.+?) (\/opt\/chariox-slice\/\S*)$/gm)]
+      .some(([, sources, destination]) => sources.split(/\s+/).some(source =>
+        path.basename(source) === name && (destination === `/opt/chariox-slice/${name}` || destination === "/opt/chariox-slice/")))
+    assert.ok(installed, `Dockerfile should install ${name}`)
     assert.match(
       provisioner,
       new RegExp(`docker/${escapeRegExp(name)}["']?\\s+[^\\n]*/opt/chariox-slice/${escapeRegExp(name)}`),
