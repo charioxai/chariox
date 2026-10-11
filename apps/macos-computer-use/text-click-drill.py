@@ -134,8 +134,15 @@ def verify_caret(evidence, label, scope, pid, x, y, expected, at_pointer):
             lease.require()
         elif desktop()['frontmostPID'] != pid:
             raise RuntimeError('fixture-lost-frontmost; no helper mutation attempted')
-        receipt = launch_helper(evidence, label, scope + ['--target', 'text', *arguments])
-        require_caret_receipt(receipt, lease)
+        try:
+            receipt = launch_helper(evidence, label, scope + ['--target', 'text', *arguments])
+            require_caret_receipt(receipt, lease)
+        except Exception:
+            # A failed or unverified launch cannot authorize pointer restoration,
+            # even when desktop facts have returned before cleanup.
+            if lease:
+                lease.retired = True
+            raise
         deadline = time.monotonic() + 1
         while time.monotonic() < deadline and selection(evidence) != (expected, '0'):
             time.sleep(0.05)
