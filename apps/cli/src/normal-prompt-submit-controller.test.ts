@@ -385,7 +385,7 @@ function createHarness(options: {
 
   const controller = createNormalPromptSubmitController({
     ...(options.promptBlockReason ? { promptBlockReason: options.promptBlockReason } : {}),
-    onPromptRejected: options.onPromptRejected,
+    ...(options.onPromptRejected ? {onPromptRejected: options.onPromptRejected} : {}),
     getPendingAttachments: () => options.pendingAttachments ?? [],
     waitForPendingAgentFocusTransition: async () => {},
     getFocusedAgentId: () => options.focusedAgentId === undefined ? "agent-1" : options.focusedAgentId,
