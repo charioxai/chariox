@@ -73,3 +73,31 @@ test('MP-11 stopped-load refresh cannot overwrite a newer navigation',async()=>{
  finish();await new Promise(r=>setImmediate(r));
  assert.equal((await f.cache.target(f.browser,f.stored)).document_id,'b');f.cache.clear();
 });
+
+for(const [method,params]of [
+ ['Target.targetDestroyed',{targetId:'t'}],['Target.detachedFromTarget',{sessionId:'s'}],
+ ['Inspector.detached',{}],['Chariox.browserDisconnected',{}]
+])test(`MP-10 ${method} evicts closed targets and unsubscribes immediately`,async()=>{
+ const f=fixture();
+ for(let n=0;n<32;n++){
+  const tab=await f.cache.target(f.browser,f.stored);
+  assert.equal(f.cache.entries.size,1);assert.equal(f.observers.size,1);
+  f.event(method,params);
+  assert.equal(f.cache.current(tab),false);
+  assert.equal(f.cache.entries.size,0);assert.equal(f.observers.size,0);
+ }
+ f.cache.clear();
+});
+test('MP-11 old target retirement cannot evict its replacement binding',async()=>{
+ const f=fixture(),old=await f.cache.target(f.browser,f.stored),observer=[...f.observers][0];
+ f.cache.clear();const fresh=await f.cache.target(f.browser,f.stored);
+ observer({method:'Target.targetDestroyed',params:{targetId:'t'}});
+ assert.equal(f.cache.current(old),false);assert.equal(f.cache.current(fresh),true);
+ assert.equal(f.cache.entries.size,1);assert.equal(f.observers.size,1);f.cache.clear();
+});
+test('MP-11 clearing during target resolution cannot leak a late subscription',async()=>{
+ const f=fixture();let finish;
+ const browser={resolvePageTarget:()=>new Promise(r=>finish=()=>r({connection:f.connection,sessionId:'s'}))};
+ const pending=f.cache.target(browser,f.stored);f.cache.clear();finish();
+ await assert.rejects(pending,/unavailable/);assert.equal(f.observers.size,0);assert.equal(f.cache.entries.size,0);
+});
