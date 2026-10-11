@@ -382,13 +382,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     }
                     continue;
                 }
+                let native_prompt_id = entry
+                    .merge_key
+                    .as_deref()
+                    .and_then(|key| key.strip_prefix("prompt:"))
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or(&prompt_history_key)
+                    .to_string();
                 if !leased_agent
                     .projected_prompt_ids
                     .iter()
-                    .any(|id| id == &prompt_history_key)
+                    .any(|id| id == &native_prompt_id)
                 {
                     prompts.push(RelayProjectedPrompt {
-                        prompt_id: prompt_history_key,
+                        prompt_id: native_prompt_id,
                         text: entry.text,
                     });
                 }
@@ -401,6 +408,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .projected_prompt_ids
                     .iter()
                     .any(|id| id == prompt.id())
+                && !prompts
+                    .iter()
+                    .any(|projected| projected.prompt_id == prompt.id())
             {
                 prompts.push(RelayProjectedPrompt {
                     prompt_id: prompt.id().to_string(),
@@ -1446,15 +1456,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
             return Ok(());
         };
         let prompt = PromptQueueItem::new(
-            self.app.sessions_mut().reserve_prompt_id(),
+            projected.prompt_id,
             &attachment_id,
             agent_id,
             &projected.text,
             PromptStatus::Queued,
         );
-        let outcome =
-            self.app
-                .prompt_owner_submit_prepared_prompt(session_id, prompt.clone(), false)?;
+        let outcome = self
+            .app
+            .prompt_owner_submit_projected_native_prompt(session_id, prompt.clone())?;
         self.app.spawn_user_prompt_history_append(
             session_id,
             &attachment_id,
@@ -2587,7 +2597,20 @@ mod explicit_completion_tests {
                 Vec::new(),
             )
             .expect("native prompt should be recorded");
-        assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+        let PromptSubmissionOutcome::Started {
+            prompt: native_prompt,
+        } = outcome
+        else {
+            panic!("native prompt should start");
+        };
+        let (_, context) = RemoteLeaseRuntime::new(&mut app)
+            .native_interaction_context_for_backing_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+                provider_run.id(),
+            )
+            .expect("native turn should retain its home interaction context");
+        assert_eq!(context.home_prompt_id.as_deref(), Some(native_prompt.id()));
 
         let projection = RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection(&leased_agent.id, provider_run.id(), false)
@@ -2596,6 +2619,34 @@ mod explicit_completion_tests {
         let RelayPeerEvent::LeasedRuntimeProjection { prompts, .. } = projection.1;
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].text, "native prompt from home TUI\n");
+        assert_eq!(prompts[0].prompt_id, native_prompt.id());
+
+        let worktree = crate::test_support::TestWorktree::new("native-worker-prompt-home");
+        let (home, home_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                home.id(),
+                "native-home",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        RemoteLeaseRuntime::new(&mut app)
+            .project_remote_native_prompt_started(
+                home.id(),
+                home_agent.id(),
+                provider_run.id(),
+                prompts[0].clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            app.prompt_owner_active_prompt_for_agent(home.id(), home_agent.id())
+                .unwrap()
+                .unwrap()
+                .id(),
+            prompts[0].prompt_id
+        );
     }
 
     #[test]

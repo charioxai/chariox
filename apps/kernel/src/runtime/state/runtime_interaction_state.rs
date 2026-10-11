@@ -136,12 +136,13 @@ impl KernelRuntimeState {
                 let timeout = Duration::from_secs(
                     interaction.timeout_sec().unwrap_or(900).saturating_add(15),
                 );
+                let runtime = self.clone();
                 tokio::spawn(async move {
                     let response = tokio::select! {
                         biased;
                         _ = tx.closed() => return,
-                        response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                            &config, ClientTarget {daemon_id: Some(home_kernel_id), daemon_alias: None},
+                        response = runtime.send_worker_home_runtime_request(
+                            &config, &home_kernel_id,
                             RelayPeerRequest::ForwardNativeTurnInteraction {context, interaction}, timeout,
                         ) => response,
                     };

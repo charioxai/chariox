@@ -71,6 +71,7 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
         })?;
         if let Some((config, target_daemon_id, context)) = remote_target {
             return self.handle.block_on(forward_native_interaction_to_home(
+                &state,
                 config,
                 target_daemon_id,
                 context,
@@ -90,6 +91,7 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
 }
 
 async fn forward_native_interaction_to_home(
+    state: &KernelRuntimeState,
     config: crate::config::DaemonConfig,
     target_daemon_id: String,
     context: RemoteNativeInteractionContext,
@@ -97,13 +99,10 @@ async fn forward_native_interaction_to_home(
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
     let response_timeout =
         remote_native_interaction_response_timeout(&interaction, config.relay_request_timeout_ms);
-    let response =
-        crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+    let response = state
+        .send_worker_home_runtime_request(
             &config,
-            chariox_relay::protocol::ClientTarget {
-                daemon_id: Some(target_daemon_id),
-                daemon_alias: None,
-            },
+            &target_daemon_id,
             crate::transport::relay_peer::RelayPeerRequest::ForwardNativeTurnInteraction {
                 context,
                 interaction,
@@ -150,8 +149,14 @@ pub(crate) async fn request_provider_native_interaction(
         .remote_native_interaction_context(session_id, &agent_id, &origin)
         .await?
     {
-        return forward_native_interaction_to_home(config, target_daemon_id, context, interaction)
-            .await;
+        return forward_native_interaction_to_home(
+            state,
+            config,
+            target_daemon_id,
+            context,
+            interaction,
+        )
+        .await;
     }
     request_runtime_interaction_with_timeout(state, session_id, interaction, operation, None).await
 }

@@ -103,6 +103,24 @@ impl DaemonApp {
         prompt: PromptQueueItem,
         force_queue: bool,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
+        self.submit_prepared_prompt_with_identity(session_id, prompt, force_queue, false)
+    }
+
+    pub(crate) fn prompt_owner_submit_projected_native_prompt(
+        &mut self,
+        session_id: &str,
+        prompt: PromptQueueItem,
+    ) -> Result<PromptSubmissionOutcome, DaemonError> {
+        self.submit_prepared_prompt_with_identity(session_id, prompt, false, true)
+    }
+
+    fn submit_prepared_prompt_with_identity(
+        &mut self,
+        session_id: &str,
+        prompt: PromptQueueItem,
+        force_queue: bool,
+        preserve_native_identity: bool,
+    ) -> Result<PromptSubmissionOutcome, DaemonError> {
         let source_attachment_id = prompt.source_attachment_id().to_string();
         let session = self.sessions.get_session(session_id)?;
         if let Some(outcome) = self
@@ -125,7 +143,7 @@ impl DaemonApp {
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, &agent_id)
                 .is_some();
-        let prompt = if will_queue {
+        let prompt = if will_queue || preserve_native_identity {
             prompt
         } else {
             prompt.with_id(self.sessions.reserve_prompt_id())

@@ -106,6 +106,7 @@ impl KernelRuntimeOwnedState {
             }
         }
 
+        crate::provider::prepare_vaulted_claude_native_onboarding(&request)?;
         let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
         let outcome = self.provider_store.start_run_provider_only(request)?;
         self.session_store
