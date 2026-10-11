@@ -13,7 +13,15 @@ rate-limited lost ACK/key recovery. Tiles and stripes remain on the transparent
 canvas overlay until the next key. Scroll moves snapshot video plus repairs.
 Closing or replacing a decoder freezes the composite for preserve-frame recovery,
 retires frame owners, stops the track, and removes the layer and observers.
-Hidden rAF jobs retire without blocking the existing lease heartbeat.
+Hidden rAF jobs settle without drawing. The presenter validates and retires
+their outputs, and the next visible delta retires repairs from a hidden key.
+The existing lease heartbeat continues while hidden.
+
+The repair canvas overrides its CSS background to transparent until teardown,
+then restores the original inline background. Trusted scroll prediction takes
+a video-plus-repair snapshot and shows it in a temporary sibling canvas;
+authoritative frames and new input remove that preview without changing the
+repair bitmap. Canvas-only restoration copies transparent pixels exactly.
 
 The second `onPresented` argument exposes `decodedAt` and `committedAt` epoch
 milliseconds. These are decode/track-write or canvas-commit times, **not native
@@ -39,6 +47,24 @@ node apps/browser-display/presenter-sink-browser.mjs \
 It exercises real WebCodecs and streams, an 8ms busy page, DPR1/2, both sinks,
 repair persistence through deltas and key retirement; all browsers and the local
 server close in `finally`. Its synthetic producer is never live acceptance.
+
+MP-08/MP-10/MP-11 review regressions with real transferred VideoFrames, both
+transport modes and screenshot pixel assertions at DPR1/2:
+
+```sh
+node apps/browser-display/presenter-sink-regression.mjs \
+  /absolute/path/to/playwright-core/index.mjs /absolute/evidence/directory
+# Add a Cloud checkout to exercise its pinned assets and actual surface CSS:
+node apps/browser-display/presenter-sink-regression.mjs \
+  /absolute/path/to/playwright-core/index.mjs /absolute/evidence/cloud-directory \
+  /absolute/path/to/chariox-cloud
+```
+
+The optional fourth argument `repair` isolates the partial-repair CSS check
+when an earlier visibility/prediction regression blocks the combined flow.
+These are supplementary checks with a synthetic producer/transport. They do
+not establish real public-site, hosted-relay, provider or soak acceptance.
+
 Step 1's live gate still requires exact-head real built Cloud/kernel/relay,
 public sites and the quiet per-hop harness: decode→native pixels median ≤18ms,
 P95 ≤25ms at DPR1/2. Host CPU P95 >40% invalidates latency attribution.

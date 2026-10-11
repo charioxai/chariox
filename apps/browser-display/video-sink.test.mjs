@@ -19,10 +19,30 @@ test('MP-08/MP-10 native repairs cover only their pixels and remain through delt
   sink.close({preserveFrame:true});assert.deepEqual(drawn,['clear',2,'overlay',3,'flattened']);assert.equal(canvas.style.opacity,'');
  }finally{globalThis.OffscreenCanvas=prior;}
 });
-test('MP-08/MP-10 hiding between decode and rAF retires pending outputs without stalling',async()=>{
+test('MP-08/MP-10 hiding between decode and rAF leaves output retirement to the presenter',async()=>{
  const document=new EventTarget();document.hidden=false;let cancelled=0;
  document.defaultView={requestAnimationFrame:()=>1,cancelAnimationFrame:()=>cancelled++};
  const sink=new VideoSink({ownerDocument:document},()=>{});let freed=0;
  const job=sink.commit({image:{close(){freed++}},decodedAt:0},{width:1280,height:800});document.hidden=true;document.dispatchEvent(new Event('visibilitychange'));
- assert.equal((await job).drawn,false);assert.equal(cancelled,1);assert.equal(freed,1);sink.close();
+ assert.equal((await job).drawn,false);assert.equal(cancelled,1);assert.equal(freed,0);sink.close();
+});
+
+test('MP-08/MP-10 repair overlay saves and restores the CSS background',()=>{
+ const canvas={width:1280,height:800,style:{opacity:'0',background:'var(--surface)'},getContext:()=>({clearRect(){}})};
+ const sink=new VideoSink(canvas,()=>{});sink.video={remove(){},style:{}};sink.canvasBackground=canvas.style.background;
+ sink.overlay({width:1280,height:800});assert.equal(canvas.style.background,'transparent');
+ sink.close();assert.equal(canvas.style.background,'var(--surface)');
+});
+
+test('MP-08/MP-10 hidden key retires previous repairs on visible delta resume',async()=>{
+ const document=new EventTarget();document.hidden=true;let raf;
+ document.defaultView={requestAnimationFrame:cb=>{raf=cb;return 1},cancelAnimationFrame(){}};
+ const canvas={width:1280,height:800,style:{opacity:''},ownerDocument:document};
+ const sink=new VideoSink(canvas,()=>{});sink.overlayActive=true;
+ sink.video={width:1280,height:800,getContext:()=>({drawImage(){}}),remove(){}};
+ const frame={width:1280,height:800},image={close(){},clone(){return {close(){}}}};
+ assert.equal((await sink.commit(image,{...frame,key:true})).drawn,false);
+ document.hidden=false;document.dispatchEvent(new Event('visibilitychange'));
+ const resumed=sink.commit(image,{...frame,key:false});raf();assert.equal((await resumed).drawn,true);
+ assert.equal(canvas.style.opacity,'0');assert.equal(sink.overlayActive,false);sink.close();
 });
