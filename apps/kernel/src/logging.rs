@@ -212,13 +212,21 @@ fn log(level: LogLevel, component: &str, message: String, fields: Value) {
         return;
     };
 
+    write_log_record(writer, record, level >= LogLevel::Warn, encode_log_record);
+}
+
+fn write_log_record(
+    writer: &Mutex<BoundedLogWriter>,
+    record: Map<String, Value>,
+    flush_immediately: bool,
+    encode: impl FnOnce(Map<String, Value>) -> String,
+) {
+    let line = encode(record);
     let mut writer = match writer.lock() {
         Ok(guard) => guard,
         Err(_) => return,
     };
 
-    let line = encode_log_record(record);
-    let flush_immediately = level >= LogLevel::Warn;
     let _ = writer.write_line(&line, flush_immediately);
 }
 
@@ -640,6 +648,56 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn slow_record_encoding_does_not_delay_another_log_write() {
+        use std::sync::{mpsc, Arc};
+
+        let dir = temp_log_dir("concurrent-encoding");
+        let path = dir.join("100-daemon-7.ndjson");
+        let writer = Arc::new(Mutex::new(
+            BoundedLogWriter::new(dir.clone(), 100, "daemon", 7, path.clone())
+                .expect("create bounded writer"),
+        ));
+        let (encoding_started, wait_for_encoding) = mpsc::channel();
+        let (release_encoding, encoding_released) = mpsc::channel();
+        let slow_writer = Arc::clone(&writer);
+        let slow = std::thread::spawn(move || {
+            write_log_record(&slow_writer, Map::new(), false, |record| {
+                encoding_started.send(()).expect("signal slow encoding");
+                encoding_released.recv().expect("release slow encoding");
+                encode_log_record(record)
+            });
+        });
+        wait_for_encoding.recv().expect("encoding has started");
+        let (write_finished, wait_for_write) = mpsc::channel();
+        let fast_writer = Arc::clone(&writer);
+        let fast = std::thread::spawn(move || {
+            let mut record = Map::new();
+            record.insert("message".into(), Value::from("concurrent warning"));
+            write_log_record(&fast_writer, record, true, encode_log_record);
+            write_finished.send(()).expect("signal completed warning");
+        });
+        let completed = wait_for_write.recv_timeout(Duration::from_secs(1)).is_ok();
+        release_encoding.send(()).expect("release slow encoder");
+        slow.join().expect("slow writer joined");
+        fast.join().expect("fast writer joined");
+        drop(writer);
+        let records = fs::read_to_string(&path).expect("read complete log records");
+        let records = records
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("valid whole JSON record"))
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        assert!(records
+            .iter()
+            .any(|record| record["message"] == "concurrent warning"));
+        fs::remove_dir_all(dir).expect("remove own log state");
+        assert!(
+            completed,
+            "another record waited for unrelated slow encoding"
+        );
     }
 
     #[test]
