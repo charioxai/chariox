@@ -2556,9 +2556,21 @@ mod tests {
         assert!(matches!(lease_resource(&request), Some(LeaseResource::LeasedAgent("leased"))));
         assert!(lease_worker_peer_request_allowed(&request));
     }
-    #[tokio::test]
-    async fn mp11_leased_computer_check_rejects_unrelated_verified_peer() {
-        mp11_unrelated_forwarded_peer("computer").await;
+    #[test]
+    fn mp11_leased_computer_check_rejects_unrelated_verified_peer() {
+        std::thread::Builder::new()
+            .name("mp11-leased-computer-peer".into())
+            .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(mp11_unrelated_forwarded_peer("computer"));
+            })
+            .unwrap()
+            .join()
+            .unwrap_or_else(|error| std::panic::resume_unwind(error));
     }
 
     #[tokio::test]
