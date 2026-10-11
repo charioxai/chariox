@@ -6,12 +6,12 @@ export class DisplayDocuments {
  constructor(){this.entries=new Map();}
  async target(browser,stored){
   let entry=this.entries.get(stored.target_id);
-  if(entry&&(entry.browser!==browser||entry.connection?.isOpen?.()===false||entry.retired)){entry.off?.();this.entries.delete(stored.target_id);entry=null;}
+  if(entry&&(entry.browser!==browser||entry.connection?.isOpen?.()===false||entry.retired)){this.retire(entry,stored.target_id);entry=null;}
   if(!entry){
    // Install one shared admission before yielding, so parallel viewers cannot
    // attach duplicate observers or overwrite newer navigation events.
    entry={browser,revision:0,document:null,retired:false};this.entries.set(stored.target_id,entry);
-   entry.ready=this.admit(entry,stored.target_id).catch(error=>{entry.retired=true;entry.off?.();throw error});
+   entry.ready=this.admit(entry,stored.target_id).catch(error=>{this.retire(entry,stored.target_id);throw error});
   }
   await entry.ready;
   if(entry.retired||entry.pending||!entry.document||entry.connection.isOpen?.()===false)throw Error('MP-11: display document unavailable');
@@ -19,10 +19,15 @@ export class DisplayDocuments {
   Object.defineProperty(tab,snapshot,{value:{entry,revision:entry.revision}});
   return tab;
  }
+ retire(entry,target){
+  entry.retired=true;entry.revision++;entry.off?.();entry.off=null;
+  if(this.entries.get(target)===entry)this.entries.delete(target);
+ }
  async admit(entry,target){
   const {connection,sessionId}=await entry.browser.resolvePageTarget(target);Object.assign(entry,{connection,sessionId});
+  if(entry.retired||this.entries.get(target)!==entry)throw Error('MP-11: display document unavailable');
   entry.off=connection.subscribe(message=>{
-   if(message.method==='Chariox.browserDisconnected'||message.method==='Target.targetDestroyed'&&message.params?.targetId===target||message.method==='Target.detachedFromTarget'&&message.params?.sessionId===sessionId){entry.retired=true;entry.revision++;return;}
+   if(message.method==='Chariox.browserDisconnected'||message.method==='Target.targetDestroyed'&&message.params?.targetId===target||message.method==='Target.detachedFromTarget'&&message.params?.sessionId===sessionId){this.retire(entry,target);return;}
    if(message.sessionId!==sessionId)return;
    if(message.method==='Page.frameNavigated'&&!message.params?.frame?.parentId){
     entry.revision++;entry.frame=message.params?.frame?.id;entry.document=message.params?.frame?.loaderId??null;entry.pending=!entry.document;
@@ -32,8 +37,8 @@ export class DisplayDocuments {
    }else if(message.method==='Page.loadEventFired'||message.method==='Page.frameStoppedLoading'&&message.params?.frameId===entry.frame){
     // Completion can retain the old loader (cancelled load/download).
     // Resolve it on the event path with the existing revision fence.
-    entry.revision++;entry.pending=true;void this.refresh(entry).catch(()=>{entry.retired=true;});
-   }else if(message.method==='Inspector.detached'){entry.retired=true;entry.revision++;}
+    entry.revision++;entry.pending=true;void this.refresh(entry).catch(()=>{this.retire(entry,target);});
+   }else if(message.method==='Inspector.detached'){this.retire(entry,target);}
   });
   await this.refresh(entry);
  }
@@ -57,5 +62,5 @@ export class DisplayDocuments {
   if(s&&!s.entry.retired&&s.entry.document!==tab.document_id)await assertCurrentDocument(s.entry.connection,s.entry.sessionId,tab.target_id,tab.document_id);
   return false;
  }
- clear(){for(const e of this.entries.values()){e.retired=true;e.off?.();}this.entries.clear();}
+ clear(){for(const [target,e] of this.entries)this.retire(e,target);}
 }
