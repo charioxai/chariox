@@ -365,7 +365,9 @@ impl KernelRuntimeOwnedState {
         provider_run_id: Option<&str>,
     ) {
         let settled_at_ms = crate::session::unix_epoch_ms();
-        if let Some(provider_run_id) = provider_run_id {
+        if let Some(provider_run_id) =
+            provider_run_id.filter(|run_id| !self.prompt_completion_recorded(run_id))
+        {
             // An acknowledged abort need not produce provider output. Publish
             // settlement through the same completion stream drained by home.
             self.record_assistant_message_completion(
@@ -376,6 +378,7 @@ impl KernelRuntimeOwnedState {
                 &format!("prompt-complete:{}", prompt.id()),
                 settled_at_ms,
             );
+            self.mark_prompt_completion_recorded(provider_run_id);
         }
         let archive_enabled = self
             .config_projection
