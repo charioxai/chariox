@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 
 const names = ['bootstrap-receipt.json', 'bootstrap-grant-binding.json', 'release-override.json']
 const [action, receipt, journal, legacyUid, legacyGid] = process.argv.slice(2)
-const parent = dirname(receipt ?? '')
+const parent = dirname(receipt ?? ''), stateRoot = dirname(parent)
 const snapshot = join(journal ?? '', 'previous-control-ownership.json')
 function fail() { throw new Error('managed control ownership journal is unsafe') }
 async function metadata(path, directory = false) {
@@ -23,7 +23,7 @@ try {
   if (!receipt || !journal || !names.includes(receipt.slice(parent.length + 1))) fail()
   await checkJournal()
   if (action === 'snapshot') {
-    const data = { version: 1, parent: await metadata(parent, true), files: {} }
+    const data = { version: 2, stateRoot: await metadata(stateRoot, true), parent: await metadata(parent, true), files: {} }
     for (const name of names) data.files[name] = await metadata(join(parent, name))
     const file = await open(snapshot, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
     try { await file.writeFile(JSON.stringify(data)); await file.sync() } finally { await file.close() }
@@ -36,12 +36,19 @@ try {
     const valid = value => value && Object.keys(value).sort().join(',') === 'gid,mode,uid'
       && [value.uid, value.gid, value.mode].every(Number.isSafeInteger)
       && value.uid >= 0 && value.gid >= 0 && value.mode >= 0 && value.mode <= 0o7777 && !(value.mode & 0o022)
-    if (data.version !== 1 || !valid(data.parent) || Object.keys(data.files ?? {}).sort().join(',') !== [...names].sort().join(',')) fail()
+    if (data.version !== 2 || !valid(data.stateRoot) || !valid(data.parent) || Object.keys(data.files ?? {}).sort().join(',') !== [...names].sort().join(',')) fail()
     for (const name of names) if (data.files[name] !== null && !valid(data.files[name])) fail()
     const legacy = { uid: Number(legacyUid), gid: Number(legacyGid), mode: 0o600 }
     if (action === 'apply-legacy' && (!valid(legacy) || legacyUid === undefined || legacyGid === undefined)) fail()
     // Validate every live entry before the first mutation; never follow links/aliases.
+    await metadata(stateRoot, true)
     await metadata(parent, true)
+    // A worker's v1 StateDirectory makes the whole state root service-owned;
+    // the root helper requires every receipt ancestor to be root-owned.
+    if (action === 'apply' && data.stateRoot.uid !== 0) {
+      await chown(stateRoot, 0, 0)
+      await chmod(stateRoot, 0o755)
+    }
     const live = new Map()
     for (const name of names) live.set(name, await metadata(join(parent, name)))
     for (const name of names) {
@@ -60,6 +67,10 @@ try {
     await chmod(parent, target.mode)
     const directory = await open(parent, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
     try { await directory.sync() } finally { await directory.close() }
+    if (action === 'restore') {
+      await chown(stateRoot, data.stateRoot.uid, data.stateRoot.gid)
+      await chmod(stateRoot, data.stateRoot.mode)
+    }
   } else fail()
 } catch {
   console.error('MP-03/MP-07 managed control ownership migration failed')

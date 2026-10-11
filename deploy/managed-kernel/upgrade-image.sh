@@ -1092,9 +1092,14 @@ install -d -o root -g root -m 0700 "$pending_transaction"
 journal_builder_pins "$pending_transaction"
 if [ "$managed_provider_topology" = path1 ]; then
   node "$script_root/managed-control-ownership.mjs" snapshot "$receipt_path" "$pending_transaction"
+  target_unit=$image_root/etc/systemd/system/$service_name
+  require_regular_file "$target_unit"
   # The binary was already verified against the independent signed release pin.
   # H/I reject this query with exit 2; helper-capable releases return version 1.
-  if control_version=$(timeout 10s "$image_root/usr/local/bin/chariox-managed-bootstrap" --print-control-state-version 2>/dev/null); then
+  if grep -q '^StateDirectory=' "$target_unit"; then
+    # systemd re-owns a declared StateDirectory for the service user on start.
+    printf '%s\n' legacy > "$pending_transaction/target-control-access"
+  elif control_version=$(timeout 10s "$image_root/usr/local/bin/chariox-managed-bootstrap" --print-control-state-version 2>/dev/null); then
     [ "$control_version" = 1 ] || { echo "target control-state capability is invalid" >&2; exit 1; }
     printf '%s\n' private > "$pending_transaction/target-control-access"
   else

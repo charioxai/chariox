@@ -52,3 +52,53 @@ test('MP-03 successful activation makes control state root-private', async conte
   assert.equal(result.status, 0, result.stderr)
   assert.deepEqual(await h.metadata(), [{uid:0,gid:0,mode:0o700}, {uid:0,gid:0,mode:0o600}, {uid:0,gid:0,mode:0o600}])
 })
+
+// A disposable worker's v1 unit declares StateDirectory=chariox, so its whole
+// state root is service-owned and systemd re-owns it on every v1 start.
+async function workerHarness(context, targetServicePolicy) {
+  const h = await makeHarness(context, { updaterPath: process.env.MP03_UPDATER, path1Release: true, currentProtocol: 370,
+    targetProtocol: transition.protocol, targetTransitionPolicy: transition, receiptKind: 'allocation_worker',
+    currentServicePolicy: 1, targetServicePolicy })
+  const parent = dirname(h.receiptPath), stateRoot = dirname(parent)
+  for (const path of [stateRoot, parent]) {
+    await chown(path, h.charioxIdentity.uid, h.charioxIdentity.gid)
+    await chmod(path, 0o700)
+  }
+  await chown(h.receiptPath, h.charioxIdentity.uid, h.charioxIdentity.gid)
+  await chmod(h.receiptPath, 0o600)
+  h.env = { CHARIOX_MANAGED_PROVIDER_TOPOLOGY: 'path1', CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: h.trustedBuilderKey,
+    CHARIOX_NEXT_TRUSTED_BUILDER_PUBLIC_KEY: h.nextTrustedBuilderKey }
+  h.metadata = async () => Promise.all([stateRoot, parent, h.receiptPath].map(async path => {
+    const s = await stat(path); return { uid: s.uid, gid: s.gid, mode: s.mode & 0o7777 }
+  }))
+  return h
+}
+test('MP-03 policy-2 worker activation makes the service-owned state root root-owned', async context => {
+  const h = await workerHarness(context, 2)
+  const result = h.run(h.env)
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(await h.metadata(), [{uid:0,gid:0,mode:0o755}, {uid:0,gid:0,mode:0o700}, {uid:0,gid:0,mode:0o600}])
+})
+for (const failure of ['rollback', 'interrupted']) {
+  test(`MP-03/MP-07 policy-2 worker ${failure} restores the service-owned state root`, async context => {
+    const h = await workerHarness(context, 2)
+    const before = await h.metadata()
+    if (failure === 'interrupted') {
+      // Workers recover on the next updater run; that run then fails health,
+      // so the final state is original only if recovery and rollback both restore it.
+      await put(join(h.state, 'crash-after-supervisor-start'), 'fail\n')
+      assert.notEqual(h.run(h.env).status, 0)
+      assert.equal((await h.metadata())[0].uid, 0)
+    }
+    await put(join(h.state, 'fail-health-once'), 'fail\n')
+    assert.notEqual(h.run(h.env).status, 0)
+    assert.deepEqual(await h.metadata(), before)
+  })
+}
+test('MP-03/MP-07 a StateDirectory target keeps service-principal worker access', async context => {
+  const h = await workerHarness(context, 1)
+  const before = await h.metadata()
+  const result = h.run(h.env)
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(await h.metadata(), before)
+})
