@@ -1,3 +1,4 @@
+import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import type { RuntimeSession, SliceRecord } from "./cli-types.js"
 import type {
   BackendProviderId,
@@ -43,6 +44,7 @@ export type WaitingRoomPreparedManagedLaunch = {
 }
 
 export type WaitingRoomActivationControllerDeps = {
+  onLaunchRefused?: (message: string, retry: () => void) => void
   isKernelConnected: () => boolean
   connectKernel: () => Promise<void>
   getWaitingRoomState: () => WaitingRoomState
@@ -377,6 +379,12 @@ export function createWaitingRoomActivationController(
         await prepared.rollback()
       } catch (rollbackError) {
         cleanupErrors.push(`failed to restore the source kernel connection: ${deps.formatError(rollbackError)}`)
+      }
+      if (!session && error instanceof LocalIpcError && error.code === "local_transport_error"
+        && cleanupErrors.length === 0) {
+        deps.onLaunchRefused?.(deps.formatError(error), () => {
+          void startSessionFromWaitingRoomDefaults().catch(() => {})
+        })
       }
       if (cleanupErrors.length > 0) {
         throw new Error(`${deps.formatError(error)}; ${cleanupErrors.join("; ")}`)

@@ -399,6 +399,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     refreshWaitingRoomDataNow, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults,
     waitingRoomTargets, editWaitingRoomWorkspace,
   } = createCliWaitingRoomComposition({
+    onLaunchRefused: (message, retry) => providerAccountRecovery.showLaunchRefusal(message, retry),
     client, options, appLogger, formatError,
     isAttached, kernelConnected, waitingRoomState, setWaitingRoomState, setWaitingRoomStateProjection,
     waitingRoomLaunchOwnershipRevision,
@@ -643,7 +644,11 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
           if (alternative) void Promise.resolve(applyAccountSelection(alternative.profile_id, target)).catch(error => flashFooter(formatError(error), "error"))
           else { setWaitingRoomState({ ...waitingRoomState(), focus: "account" }); reconcileWaitingRoom(waitingRoomState()) }
         } },
-        { label: "Retry", run: () => { setFatalError(null); void submitPrompt() } },
+        { label: "Retry", run: () => {
+          setFatalError(null)
+          if (!isAttached() && !promptTextController.currentText().trim()) void startSessionFromWaitingRoomDefaults().catch(() => {})
+          else void submitPrompt()
+        } },
       ]
     },
   })

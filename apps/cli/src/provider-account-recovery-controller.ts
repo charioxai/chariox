@@ -16,6 +16,8 @@ export function createProviderAccountRecoveryController(options: {
   let box: BoxRenderable | undefined
   let message: string | null = null
   let target: ProviderAccountRecoveryTarget | undefined
+  let launchRetry: (() => void) | null = null
+  const actions = () => launchRetry ? [{label: "Retry", run: launchRetry}] : options.actions(target)
   let selected = 0
   let closing = false
   const clear = () => {
@@ -27,6 +29,7 @@ export function createProviderAccountRecoveryController(options: {
   }
   const close = () => {
     message = null
+    launchRetry = null
     // The same key also reaches the raw stdin listener during this event turn.
     closing = true
     setTimeout(() => { closing = false }, 0)
@@ -34,7 +37,7 @@ export function createProviderAccountRecoveryController(options: {
     box?.requestRender()
   }
   const invoke = (index: number) => {
-    const action = options.actions(target)[index]
+    const action = actions()[index]
     close()
     action?.run()
   }
@@ -48,9 +51,9 @@ export function createProviderAccountRecoveryController(options: {
       top: Math.max(0, Math.floor(size.height / 5)), width,
       border: true, padding: 1, flexDirection: "column", backgroundColor: theme.background,
     })
-    panel.add(new TextRenderable(options.renderer, { content: message.includes("sign-in not checked") ? "Check provider account sign-in" : quotaRefusal.test(message) ? "Choose provider account with quota" : "Provider account needs sign-in", fg: theme.text }))
+    panel.add(new TextRenderable(options.renderer, { content: launchRetry ? "Session launch refused" : message.includes("sign-in not checked") ? "Check provider account sign-in" : quotaRefusal.test(message) ? "Choose provider account with quota" : "Provider account needs sign-in", fg: theme.text }))
     panel.add(new TextRenderable(options.renderer, { content: message, fg: theme.text, wrapMode: "word" }))
-    options.actions(target).forEach((action, index) => {
+    actions().forEach((action, index) => {
       const button = new TextRenderable(options.renderer, {
         content: `${selected === index ? ">" : " "} [${action.label}]`, fg: selected === index ? theme.primary : theme.text,
       })
@@ -64,8 +67,16 @@ export function createProviderAccountRecoveryController(options: {
   return {
     assignBox(value: BoxRenderable | undefined) { box = value; render() },
     ownsInput: () => message !== null || closing,
+    showLaunchRefusal(messageText: string, retry: () => void) {
+      message = messageText
+      target = undefined
+      launchRetry = retry
+      selected = 0
+      render()
+    },
     show(messageText: string, rejectedTarget?: ProviderAccountRecoveryTarget) {
       if (!/selected \S+ account .*not authenticated|needs sign-in\.|sign-in not checked\./i.test(messageText) && !quotaRefusal.test(messageText)) return
+      launchRetry = null
       target = rejectedTarget
       message = messageText
       selected = 0
@@ -77,9 +88,9 @@ export function createProviderAccountRecoveryController(options: {
       if (event.name === "escape") close()
       else if (event.name === "return" || event.name === "enter") invoke(selected)
       else if (event.name === "down" || event.name === "tab") {
-        selected = (selected + 1) % options.actions(target).length; render()
+        selected = (selected + 1) % actions().length; render()
       } else if (event.name === "up") {
-        selected = (selected + options.actions(target).length - 1) % options.actions(target).length; render()
+        selected = (selected + actions().length - 1) % actions().length; render()
       }
       return true
     },

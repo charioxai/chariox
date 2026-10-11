@@ -103,6 +103,7 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliWaitingRoomCompositionDeps = {
+  onLaunchRefused?: (message: string, retry: () => void) => void
   client: any
   options: any
   appLogger: any
@@ -640,6 +641,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   }
 
   const waitingRoomActivationController = createWaitingRoomActivationController({
+    onLaunchRefused: (message, retry) => deps.onLaunchRefused?.(message, () => { if (!deps.isAttached()) retry() }),
     isKernelConnected: deps.kernelConnected,
     connectKernel: () => connectDetachedKernelFromWaitingRoom(),
     getWaitingRoomState: deps.waitingRoomState,

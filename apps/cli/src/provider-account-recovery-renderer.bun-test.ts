@@ -61,3 +61,22 @@ test("MP-08/MP-10/MP-11 kernel quota refusals expose account recovery and quota 
     }
   } finally {controller.close();h.renderer.destroy()}
 })
+
+test("MP-08/MP-10/MP-11 no-draft launch refusal exposes and invokes Retry", async () => {
+  const h = await createTestRenderer({width:100,height:40,useThread:false})
+  const box = new BoxRenderable(h.renderer, {position:"absolute",left:0,top:0})
+  h.renderer.root.add(box)
+  let retries = 0
+  const controller = createProviderAccountRecoveryController({renderer:h.renderer,dimensions:()=>({width:100,height:40}),actions:()=>[]})
+  try {
+    controller.assignBox(box)
+    controller.showLaunchRefusal("working directory does not exist", () => { retries++ })
+    await h.renderOnce()
+    assert.match(h.captureCharFrame(), /working directory does not exist/)
+    assert.match(h.captureCharFrame(), /Retry/)
+    assert.doesNotMatch(h.captureCharFrame(), /sign-in/)
+    controller.handleKey({name:"return"})
+    controller.handleKey({name:"return"})
+    assert.equal(retries, 1)
+  } finally {controller.close();h.renderer.destroy()}
+})
