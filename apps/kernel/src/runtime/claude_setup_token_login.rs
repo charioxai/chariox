@@ -244,11 +244,7 @@ pub(super) async fn verify_account_token(
             token.to_string(),
         );
         let executable = crate::provider::resolve_claude_executable()?;
-        let verified = crate::provider::probe_claude_account_usage(
-            &executable,
-            &account_profile,
-            &environment,
-        );
+        let verified = crate::provider::verify_claude_setup_token(&executable, &environment);
         if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
             zeroize::Zeroize::zeroize(value);
         }

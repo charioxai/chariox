@@ -11,6 +11,7 @@ use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchRe
 
 use super::executable_resolution::ExecutableResolutionState;
 
+mod auth_probe;
 mod catalog;
 mod launch_args;
 mod mcp_config;
@@ -30,6 +31,7 @@ pub(crate) use native_tui::{
     ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
     CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
 };
+pub(crate) use auth_probe::verify_claude_setup_token;
 pub(crate) use usage_probe::probe_claude_account_usage;
 
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";
