@@ -4,10 +4,11 @@ import ScreenCaptureKit
 @MainActor final class PairedCapture {
     private var policy: Data?
     private var allowed = false
-    private var wholeWindowMask = true
+    private var privacy: NativePrivacyPolicy?
     private var protection: UInt64 = 0
     let attachment = CaptureAttachment()
     private var stream: NativeCaptureStream?
+    private let targets = NativeTargets()
 
     func protect(_ value: [String: Any]) {
         // Retain only a policy comparison token in memory, never in evidence.
@@ -15,12 +16,82 @@ import ScreenCaptureKit
         if next == policy { return }
         stream?.stop(); stream = nil
         attachment.invalidate(); protection &+= 1; policy = next
-        allowed = value["unknown"] as? Bool == false
-        // Existing Linux behavior masks all native pixels when registry targets
-        // or values exist. Unknown policy withholds capture before the OS call.
-        wholeWindowMask = !(value["values"] as? [Any] ?? []).isEmpty || !(value["targets"] as? [Any] ?? []).isEmpty
+        targets.stop()
+        privacy = try? NativePrivacyPolicy(value)
+        allowed = privacy?.pixelsAllowed == true
     }
-    func clear() { stream?.stop(); stream = nil; attachment.close(); policy = nil; allowed = false; wholeWindowMask = true }
+    func clear() { stream?.stop(); stream = nil; attachment.close(); targets.stop(); policy = nil; privacy = nil; allowed = false }
+
+    func admitInput() throws -> UInt64 {
+        guard privacy?.observationsAllowed == true else { throw tagged(.secure, "native-vault-provenance-unknown") }
+        return protection
+    }
+    func checkInputRevision(_ revision: UInt64) throws {
+        guard try admitInput() == revision else { throw tagged(.secure, "native-input-protection-changed") }
+    }
+
+    // Private OS adapter API, projected through the existing shared snapshot,
+    // OCR and target-action contracts without changing public request shapes.
+    func observe(_ scope: Request, surface: NativeSurface, generation: String,
+                 observer: String = "private", forceOCR: Bool = false,
+                 authority: @escaping () throws -> Void) async throws -> NativeObservation {
+        targets.stop()
+        guard let privacy, privacy.observationsAllowed, !scope.ownerWindow else { throw tagged(.secure, "native-vault-provenance-unknown") }
+        let frame = try await raster(scope, surface: surface, generation: generation, authority: authority)
+        let source = MacSource(authority: authority)
+        if forceOCR {
+            let result = try VisionOCR().observe(frame, expected: frame.stamp, scrub: privacy.scrub, authority: authority)
+            try validateObservation(frame.stamp, scope: scope, authority: authority)
+            return .ocr(result, frame.stamp)
+        }
+        let observations: [ObservedTarget]
+        do {
+            observations = try targets.observe(scope, stamp: frame.stamp, observer: observer, source: source, scrub: privacy.scrub)
+        } catch {
+            targets.stop()
+            // Failed classification or authority never becomes an OCR exemption.
+            guard refusalKind(error) == .target else { throw error }
+            try authority()
+            let result = try VisionOCR().observe(frame, expected: frame.stamp, scrub: privacy.scrub, authority: authority)
+            try validateObservation(frame.stamp, scope: scope, authority: authority)
+            return .ocr(result, frame.stamp)
+        }
+        do {
+            try validateObservation(frame.stamp, scope: scope, authority: authority)
+            return .ax(observations, frame.stamp)
+        } catch { targets.stop(); throw error }
+    }
+
+    func structured(_ op: String, params: [String: Any], scope: Request, surface: NativeSurface,
+                    generation: String, source: MacSource) async throws -> [String: Any] {
+        guard privacy?.observationsAllowed == true, !scope.ownerWindow else { throw tagged(.secure, "native-vault-provenance-unknown") }
+        let observer = params["observed_by"] as? String ?? "terminal"
+        guard !observer.isEmpty, observer.utf8.count <= 256 else { throw Refusal.arguments }
+        if op == "target_action" {
+            guard params["action"] as? String == "click", let ref = params["target_id"] as? String,
+                  let revision = params["tree_revision"] as? UInt64 else { throw Refusal.arguments }
+            let stamp = CaptureStamp(generation: generation, surface: surface, protection: protection)
+            try await targets.press(ref, revision: revision, observer: observer, scope: scope, stamp: stamp, source: source)
+            try validateObservation(stamp, scope: scope, authority: source.authority)
+            return ["applied": true]
+        }
+        guard op != "ocr" || params["query"] == nil || params["query"] is NSNull else { throw tagged(.target, "ocr-query-unavailable") }
+        let observation = try await observe(scope, surface: surface, generation: generation,
+            observer: observer, forceOCR: op == "ocr", authority: source.authority)
+        if case let .ax(nodes, _) = observation, nodes.contains(where: { $0.revision != targets.revision }) { throw tagged(.target, "target-observation-changed") }
+        return try projectNativeObservation(observation, op: op, revision: targets.revision)
+    }
+
+    private func validateObservation(_ stamp: CaptureStamp, scope: Request, authority: @escaping () throws -> Void) throws {
+        try authority()
+        let source = MacSource(authority: authority)
+        try source.checkPermission(.capture("in-memory"))
+        let target = try source.target(scope)
+        try source.fence(scope, element: target, typing: false)
+        guard allowed, protection == stamp.protection, try nativeSurface(scope) == stamp.surface else {
+            throw tagged(.secure, "native-observation-changed")
+        }
+    }
 
     func checkHealth(authority: @escaping () throws -> Void) throws {
         if !attachment.active { stream?.stop(); stream = nil }
@@ -100,12 +171,12 @@ import ScreenCaptureKit
             attachment.invalidate(); throw tagged(.secure, "capture-protection-changed")
         }
         let (_, pixels) = try protectedRaster(image, surface: surface,
-                                                         masks: masks, wholeWindowMask: wholeWindowMask)
+                                                         masks: masks, wholeWindowMask: false)
         try authority()
         guard revision == protection, allowed else { throw tagged(.secure, "capture-protection-changed") }
         completed = true
         return ProtectedFrame(pixels: pixels, stamp: CaptureStamp(generation: generation, surface: surface, protection: revision),
-                              masked: wholeWindowMask || !masks.isEmpty, capturedAt: capturedAt)
+                              masked: !masks.isEmpty, capturedAt: capturedAt)
     }
 
     private func secureRegions(_ source: MacSource, scope: Request) throws -> [CGRect] {

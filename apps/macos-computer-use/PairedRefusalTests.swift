@@ -24,6 +24,7 @@ import Darwin
             "params":["op":"input","input":["kind":"key","key":"Right"]]], epoch:"first").reply
         precondition(identityRefusal["input_released"] as? Bool == true, "identity-only rejection poisoned input")
         _ = await call(nil)
+        _ = await session.reply(["id": 1, "epoch": "first", "method": "host.protect", "params": ["unknown": false, "values": [], "targets": []]])
         for input in [["kind":"text","text":String(repeating:"x",count:21)], ["kind":"key","key":"cmd+r"]] {
             let refusal = await call(input)
             precondition(refusal["ok"] as? Bool == false && refusal["input_released"] as? Bool == true,

@@ -29,6 +29,7 @@ import Darwin
             return await session.reply(request).reply
         }
         let started = await call(["op":"start"]); precondition(started["ok"] as? Bool == true)
+        _ = await call(["unknown": false, "values": [], "targets": []], method: "host.protect")
         let input: [String: Any] = ["op":"input","surface_id":"macos-seat","generation":"first",
             "input":["kind":"move","x":20,"y":20]]
         let admitted = await call(input); precondition(admitted["ok"] as? Bool == true)
