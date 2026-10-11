@@ -1,5 +1,13 @@
 [
   {
+    "reason": "not_requested",
+    "error": {
+      "code": "user_domain_not_requested",
+      "message": "User-domain request refused",
+      "retryable": false
+    }
+  },
+  {
     "reason": "not_focused_agent",
     "error": {
       "code": "user_domain_not_focused_agent",

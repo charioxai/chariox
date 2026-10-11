@@ -857,6 +857,7 @@ fn user_domain_refusals_protocol_493_snapshot() {
         102
     );
     let values = [
+        Reason::NotRequested,
         Reason::NotFocusedAgent,
         Reason::ForeignOwner,
         Reason::StaleEpoch,
@@ -871,7 +872,7 @@ fn user_domain_refusals_protocol_493_snapshot() {
             "{:x}",
             Sha256::digest(include_bytes!("user-domain-refusals-443.json"))
         ),
-        "a0404cb11a870cd5a843adb8060aa7a0892e9a7365c2f823f1455b02bc789102"
+        "a97facd41c511caaf1fbbecfc7f33eacb76dd49800b09187968e88ee28a7eb52"
     );
     let expected: serde_json::Value =
         serde_json::from_str(include_str!("user-domain-refusals-443.json")).unwrap();
