@@ -313,3 +313,6 @@ fn envp04_new_check_replaces_obsolete_generation_but_preserves_other_targets() {
         target
     );
 }
+
+#[path = "review0212_check_tests.rs"]
+mod review0212;

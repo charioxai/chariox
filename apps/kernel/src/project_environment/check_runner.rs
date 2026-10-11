@@ -17,6 +17,7 @@ impl ProjectEnvironmentStore {
             return Err(environment_error("revision changed before Check"));
         }
         let mut checks = self.load_checks(project.id())?;
+        checks.invalidate_observations(&env, &target, crate::session::unix_epoch_ms());
         operation.phase = EnvironmentOperationPhase::Running;
         operation.updated_at_ms = crate::session::unix_epoch_ms();
         if let Some(op) = checks
@@ -94,6 +95,7 @@ impl ProjectEnvironmentStore {
             return Err(environment_error("Project changed during Check"));
         }
         // A dependent cannot become Ready while its prerequisite is missing, stale or excluded.
+        checks.invalidate_observations(&env, &target, crate::session::unix_epoch_ms());
         invalidate_check_dependencies(
             &env,
             &mut checks.observations,
