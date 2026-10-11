@@ -185,6 +185,7 @@ impl KernelRuntimeState {
             folder_binding_digest: folder_bindings_digest(&env),
             active_requirement: None,
             uncertain_requirements: vec![],
+            setup_admitted_commands: Default::default(),
         });
         store.save_applies(project.id(), &journal)?;
         drop(lock);

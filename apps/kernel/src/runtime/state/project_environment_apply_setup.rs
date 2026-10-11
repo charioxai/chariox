@@ -10,6 +10,8 @@ fn command_identity(
     format!(
         "environment-apply-{}",
         metadata_digest(&(
+            operation.local_project_id.as_str(),
+            operation.revision_digest.as_str(),
             operation.operation_id.as_str(),
             &requirement.requirement_id,
             index
@@ -30,23 +32,75 @@ pub(in crate::runtime::state) fn setup_retry_is_settled(
     let Some(owner) = &env.reviewed_by else {
         return false;
     };
-    commands.iter().enumerate().all(|(index, _)| {
-        match state
-            .owned
-            .project_environment_setups
-            .get(&command_identity(operation, requirement, index), owner)
-        {
-            Ok(status) => {
+    let config = state.owned.config_projection.snapshot();
+    let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
+    let admitted = store
+        .load_applies(&env.local_project_id)
+        .ok()
+        .and_then(|mut journal| {
+            latest_apply_attempt(&mut journal, operation).and_then(|a| {
+                a.setup_admitted_commands
+                    .get(&requirement.requirement_id)
+                    .copied()
+            })
+        });
+    let statuses = commands
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            state
+                .owned
+                .project_environment_setups
+                .get(&command_identity(operation, requirement, index), owner)
+                .ok()
+        })
+        .collect::<Vec<_>>();
+    setup_retry_progress_is_settled(admitted, &statuses)
+}
+
+// MP-11: missing state is safe only beyond a known durable admission frontier.
+fn setup_retry_progress_is_settled(
+    admitted: Option<usize>,
+    statuses: &[Option<ProjectEnvironmentSetupStatus>],
+) -> bool {
+    let Some(admitted) = admitted.filter(|n| *n <= statuses.len()) else {
+        return false;
+    };
+    !statuses.is_empty()
+        && statuses.iter().enumerate().all(|(index, status)| {
+            if index >= admitted {
+                return status.is_none();
+            }
+            status.as_ref().is_some_and(|status| {
                 status.phase == ProjectEnvironmentSetupPhase::Ready
                     || (status.phase == ProjectEnvironmentSetupPhase::Failed
                         && status.failure_code.as_deref() == Some("apply_command_unconfirmed")
                         && status.retryable)
-            }
-            // Missing/corrupt restored command state cannot prove that no
-            // effect occurred. Explicit retry rechecks facts; it never guesses.
-            Err(_) => false,
-        }
-    })
+            })
+        })
+}
+
+fn record_setup_admission(
+    config: &DaemonConfig,
+    env: &ProjectEnvironment,
+    requirement: &Requirement,
+    operation: &EnvironmentOperation,
+    count: usize,
+) -> Result<bool, DaemonError> {
+    let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
+    let _lock = store.lock(&env.local_project_id)?;
+    let mut journal = store.load_applies(&env.local_project_id)?;
+    let a = latest_apply_attempt(&mut journal, operation)
+        .filter(|a| apply_active(&a.operation) && a.operation.cancellation.is_none())
+        .ok_or_else(|| environment_error("Setup admission attempt changed or cancelled"))?;
+    let admitted = a
+        .setup_admitted_commands
+        .entry(requirement.requirement_id.clone())
+        .or_default();
+    let previously_admitted = count > 0 && *admitted >= count;
+    *admitted = (*admitted).max(count);
+    store.save_applies(&env.local_project_id, &journal)?;
+    Ok(previously_admitted)
 }
 
 pub(in crate::runtime::state) fn setup_commands_completed(
@@ -58,12 +112,17 @@ pub(in crate::runtime::state) fn setup_commands_completed(
     let RequirementSpec::SetupChecks { commands, .. } = &requirement.spec else {
         return false;
     };
-    let Some(owner) = &env.reviewed_by else { return false; };
-    !commands.is_empty() && commands.iter().enumerate().all(|(index, _)| {
-        state.owned.project_environment_setups
-            .get(&command_identity(operation, requirement, index), owner)
-            .is_ok_and(|status| status.phase == ProjectEnvironmentSetupPhase::Ready)
-    })
+    let Some(owner) = &env.reviewed_by else {
+        return false;
+    };
+    !commands.is_empty()
+        && commands.iter().enumerate().all(|(index, _)| {
+            state
+                .owned
+                .project_environment_setups
+                .get(&command_identity(operation, requirement, index), owner)
+                .is_ok_and(|status| status.phase == ProjectEnvironmentSetupPhase::Ready)
+        })
 }
 
 // Cancellation cannot claim settlement while the existing runner reports
@@ -167,6 +226,7 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
             environment.insert(name.into(), value.into());
         }
     }
+    record_setup_admission(config, env, requirement, operation, 0)?;
     let deadline = Instant::now() + VALIDATION_TOTAL_TIMEOUT;
     for (index, command) in commands.iter().enumerate() {
         state.authorize_current_external_command()?;
@@ -229,6 +289,10 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
             persist_project_definition: false,
             remote_leased_agent_id: None,
         };
+        // Publish intent before runner admission/spawn, including a new suffix
+        // command. A crash after this write remains uncertain, never replayable.
+        let previously_admitted =
+            record_setup_admission(config, env, requirement, operation, index + 1)?;
         let store = &state.owned.project_environment_setups;
         let command_attempt = match store.get(&command_id, &execution.owner_user_id) {
             Ok(status) if status.phase == ProjectEnvironmentSetupPhase::Ready => continue,
@@ -244,6 +308,11 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
                 return Err(environment_error(
                     "Prior Setup command requires target reconciliation, not replay",
                 ))
+            }
+            Err(_) if previously_admitted => {
+                return Err(environment_error(
+                    "Prior Setup command state is missing; no replay",
+                ));
             }
             Err(_) => {
                 let (_, begin) = store.begin_at_attempt(execution, operation.attempt)?;
@@ -305,3 +374,7 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "project_environment_apply_setup_tests.rs"]
+mod tests;

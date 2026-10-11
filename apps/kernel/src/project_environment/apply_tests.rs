@@ -175,6 +175,7 @@ fn envp05a_restart_retains_receipt_and_uncertain_item_without_replay() {
         folder_binding_digest: folder_bindings_digest(&env),
         active_requirement: Some("build".into()),
         uncertain_requirements: vec![],
+        setup_admitted_commands: Default::default(),
     };
     let _lock = store.lock(&env.local_project_id).unwrap();
     store
@@ -451,7 +452,6 @@ fn envp05a_retirement_preserves_legacy_unselected_and_independently_edited_entri
 // MP-08 / MP-10 / MP-11: a new reviewed locator replaces only its own prior Apply.
 #[test]
 fn envp05a_reviewed_apply_locator_updates_public_and_named_vault_sources() {
-    use crate::secret::CredentialVaultStore;
     let root = crate::test_support::TestWorktree::new("envp05-locator");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.credential_vault.backend =

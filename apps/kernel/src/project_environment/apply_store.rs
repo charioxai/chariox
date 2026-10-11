@@ -25,6 +25,9 @@ pub(crate) struct ApplyAttempt {
     pub binding_scopes: Vec<RequirementScope>,
     pub active_requirement: Option<String>,
     pub uncertain_requirements: Vec<String>,
+    /// Per-requirement high-water mark, durable before admitting a command.
+    #[serde(default)]
+    pub setup_admitted_commands: std::collections::BTreeMap<String, usize>,
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
