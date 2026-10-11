@@ -231,7 +231,11 @@ fn inspect_words(text: &str, depth: usize) -> bool {
 }
 
 pub(super) fn credential_text(text: &str) -> bool {
-    // MP-11: retain spaced/dotted/JSON/PowerShell assignment detection.
+    credential_assignment(text) || inspect_words(text, 0)
+}
+
+// MP-11: retain spaced/dotted/JSON/PowerShell assignment detection.
+pub(super) fn credential_assignment(text: &str) -> bool {
     text.lines().any(|line| {
         let line = line.trim();
         let line = line
@@ -250,7 +254,7 @@ pub(super) fn credential_text(text: &str) -> bool {
                 .strip_prefix("--")
                 .is_some_and(|flag| safe_flag(&flag.to_ascii_lowercase().replace('-', "_")))
             && sensitive(key)
-    }) || inspect_words(text, 0)
+    })
 }
 
 pub(super) fn unsupported_shell(path: &str, text: &str) -> bool {

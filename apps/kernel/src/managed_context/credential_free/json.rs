@@ -145,9 +145,10 @@ pub(super) fn validate(value: &Value, role: Role) -> Result<(), DaemonError> {
     Ok(())
 }
 
-/// MP-08/MP-11: inspect the JSON string tokens of a run that is not complete
+/// MP-08/MP-11: inspect the JSON string tokens of text that is not complete
 /// JSON, with escapes decoded. Each unescaped quote is paired with the next, so
-/// a run that starts inside a string cannot shift key/value alignment.
+/// text that starts inside a string cannot shift key/value alignment. The
+/// lexical policy already sees raw tokens, so only escaped tokens are checked.
 pub(super) fn validate_tokens(run: &str) -> Result<(), DaemonError> {
     let mut quotes = Vec::new();
     let mut slashes = 0;
@@ -157,21 +158,25 @@ pub(super) fn validate_tokens(run: &str) -> Result<(), DaemonError> {
         }
         slashes = if ch == '\\' { slashes + 1 } else { 0 };
     }
-    let token = |k: usize| {
-        let end = *quotes.get(k + 1)?;
-        serde_json::from_str::<String>(&run[quotes[k]..=end]).ok()
-    };
+    let raw = |k: usize| Some(&run[*quotes.get(k)?..=*quotes.get(k + 1)?]);
+    let token = |k: usize| serde_json::from_str::<String>(raw(k)?).ok();
+    let escaped = |k: usize| raw(k).is_some_and(|raw| raw.contains('\\'));
     let mut keys = Map::new();
     for k in 0..quotes.len().saturating_sub(1) {
         let Some(text) = token(k) else {
             continue;
         };
         let Some(rest) = run[quotes[k + 1] + 1..].trim_start().strip_prefix(':') else {
-            validate(&Value::String(text), Role::Fields)?;
+            if escaped(k) {
+                validate(&Value::String(text), Role::Fields)?;
+            }
             continue;
         };
         // A truncated, nested or unknown value counts as present.
         let rest = rest.trim_start();
+        if !escaped(k) && !(rest.starts_with('"') && escaped(k + 2)) {
+            continue;
+        }
         let value = if rest.starts_with('"') {
             token(k + 2).map(Value::String)
         } else {
@@ -186,6 +191,55 @@ pub(super) fn validate_tokens(run: &str) -> Result<(), DaemonError> {
     }
     // Object markers such as an encrypted Vault document span several keys.
     validate(&Value::Object(keys), Role::Fields)
+}
+
+/// Paths whose structural policy is JSON: they must parse to be classified.
+pub(super) fn named(path: &str) -> bool {
+    matches!(path.rsplit_once('.'), Some((_, "json" | "jsonc")))
+}
+
+/// JSON with comments and trailing commas, as tsconfig, VS Code and devcontainer
+/// files use: returns the JSON with both blanked, and the comment text. An
+/// unterminated block comment is `None`.
+pub(super) fn strip_comments(text: &str) -> Option<(String, String)> {
+    let mut json = String::with_capacity(text.len());
+    let mut comments = String::new();
+    let mut chars = text.chars().peekable();
+    let (mut string, mut escaped, mut comma) = (false, false, None);
+    while let Some(ch) = chars.next() {
+        if string {
+            string = escaped || ch != '"';
+            escaped = !escaped && ch == '\\';
+        } else if ch == '/' && matches!(chars.peek(), Some('/' | '*')) {
+            let block = chars.next() == Some('*');
+            let mut previous = ' ';
+            loop {
+                match chars.next() {
+                    Some('\n') if !block => break,
+                    Some('/') if block && previous == '*' => break,
+                    Some(next) => {
+                        comments.push(next);
+                        previous = next;
+                    }
+                    None if block => return None,
+                    None => break,
+                }
+            }
+            comments.push('\n');
+            json.push('\n');
+            continue;
+        } else if !ch.is_whitespace() {
+            if let Some(index) = comma.take().filter(|_| matches!(ch, '}' | ']')) {
+                json.replace_range(index..=index, " ");
+            }
+            if ch == ',' {
+                comma = Some(json.len());
+            }
+            string = ch == '"';
+        }
+        json.push(ch);
+    }
+    Some((json, comments))
 }
 
 /// Decodes JSON like `serde_json::Value` but rejects a repeated object key at any

@@ -122,16 +122,22 @@ impl InlineShellFixture {
             MAX_FILE,
         )
         .unwrap();
+        // The other revision holds ordinary content valid for the path's policy.
+        let ordinary: &[u8] = if path.ends_with(".json") {
+            b"{}\n"
+        } else {
+            b"echo ready\n"
+        };
         fs::write(
             fixture.project.join(path),
-            if history { bytes } else { b"echo ready\n" },
+            if history { bytes } else { ordinary },
         )
         .unwrap();
         git(&fixture.project, &["add", path], MAX_FILE).unwrap();
         git(&fixture.project, &["commit", "-m", "fixture"], MAX_FILE).unwrap();
         fs::write(
             fixture.project.join(path),
-            if history { b"echo ready\n" } else { bytes },
+            if history { ordinary } else { bytes },
         )
         .unwrap();
         if history {
@@ -650,58 +656,172 @@ pub(crate) fn utf32(text: &str, little_endian: bool) -> Vec<u8> {
     bytes
 }
 
-// MP-08/MP-11: declared wide text followed by a NUL, an invalid unit or a
-// trailing partial unit; strict decoding fails for every case.
-pub(crate) fn malformed_wide(text: &str) -> Vec<Vec<u8>> {
-    let mut cases = Vec::new();
-    for little_endian in [true, false] {
-        let (nul16, surrogate, nul32, invalid32): (&[u8], &[u8], &[u8], &[u8]) = if little_endian {
-            (&[0, 0], &[0x00, 0xd8], &[0, 0, 0, 0], &[0, 0, 0x11, 0])
-        } else {
-            (&[0, 0], &[0xd8, 0x00], &[0, 0, 0, 0], &[0, 0x11, 0, 0])
-        };
-        for tail in [nul16, surrogate, &[0x41]] {
-            cases.push([utf16(text, little_endian).as_slice(), tail].concat());
-        }
-        for tail in [nul32, invalid32, &[0x41, 0]] {
-            cases.push([utf32(text, little_endian).as_slice(), tail].concat());
-        }
-    }
-    cases
+// MP-08/MP-11: one malformed variant per way a text file can fail strict
+// classification: NUL, invalid UTF-8, a trailing partial UTF-8 sequence, a
+// UTF-8 BOM with a NUL, BOM-less UTF-16, UTF-16/32 with a NUL, invalid or
+// partial unit, a byte-order mismatch, and UTF-8 bytes after a UTF-16 BOM.
+pub(crate) fn malformed(text: &str) -> Vec<Vec<u8>> {
+    let bytes = text.as_bytes();
+    vec![
+        [bytes, b"\0"].concat(),
+        [bytes, b"\xff"].concat(),
+        [bytes, b"\xe2\x82"].concat(),
+        [b"\xef\xbb\xbf", bytes, b"\0"].concat(),
+        text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+        [utf16(text, true).as_slice(), &[0, 0]].concat(),
+        [utf16(text, false).as_slice(), &[0xd8, 0x00]].concat(),
+        [utf16(text, true).as_slice(), &[0x41]].concat(),
+        [utf32(text, true).as_slice(), &[0, 0, 0x11, 0]].concat(),
+        [utf32(text, false).as_slice(), &[0x41, 0]].concat(),
+        [&[0xff, 0xfe], &utf16(text, false)[2..]].concat(),
+        [&[0xff, 0xfe], bytes].concat(),
+    ]
 }
 
-// MP-08/MP-11: escaped JSON credentials in files that also hold a NUL or a
-// malformed unit, so strict decoding fails and only the fallback inspects them.
-pub(crate) fn malformed_escaped_json() -> Vec<Vec<u8>> {
+// MP-08/MP-11: every classification bypass reported on #903, each clean and
+// in every malformed variant, plus the ordinary inputs that must stay data.
+// `true` = copies as ordinary data; `false` = Vault-routed (or refused).
+pub(crate) fn classification_cases() -> Vec<(&'static str, Vec<u8>, bool)> {
+    let escaped = r#"{"api\u005fkey":"synthetic-canary"}"#;
+    let credentials: &[(&str, &str)] = &[
+        // Wide text with a control character (#903 @39df80b71).
+        ("bootstrap.ps1", "$env:API_KEY = 'synthetic-canary'\n"),
+        // Escaped JSON keys in undecodable text (#903 @4e2992ec2).
+        ("settings.json", escaped),
+        (
+            "settings.json",
+            r#"{"vault\u005ffile_base64":"c3ludGhldGljLWNhbmFyeQ=="}"#,
+        ),
+        (
+            "settings.json",
+            r#"{"sealed\u005funlock_key":"c3ludGhldGljLWNhbmFyeQ=="}"#,
+        ),
+        ("settings.json", r#"{"ciphertext":"AAAA","kdf":"argon2id"}"#),
+        // Decodable JSON that fails to parse (#903 @07aca9bc7).
+        ("settings.json", r#"{"api\u005fkey":"synthetic-canary"}x"#),
+        ("settings.json", r#"{"api\u005fkey":"synthetic-canary""#),
+        ("settings.json", r#"{"api\u005fkey":"#),
+        (
+            "settings.json",
+            r#"{"note":"a"} {"api\u005fkey":"synthetic-canary"}"#,
+        ),
+        // The same escaped key outside a JSON path, in data and in source.
+        ("settings.txt", r#"{"api\u005fkey":"synthetic-canary"}x"#),
+        ("config", r#"{"api\u005fkey":"synthetic-canary"}x"#),
+        (
+            "app.js",
+            "const config = {\"api\\u005fkey\": \"synthetic-canary\"};\n",
+        ),
+        // Duplicate JSON keys (an earlier #903 review), plain and as JSONC.
+        (
+            "settings.json",
+            r#"{"api_key":"synthetic-canary","api_key":""}"#,
+        ),
+        (
+            "tsconfig.json",
+            "{\"api_key\":\"synthetic-canary\", // c\n\"api_key\":\"\",}",
+        ),
+        // JSONC comments are free text; unterminated or JSON5 syntax is unclassified.
+        (
+            "tsconfig.json",
+            "{\n  // API_KEY=synthetic-canary\n  \"strict\": true\n}\n",
+        ),
+        ("tsconfig.json", "{\"strict\": true} /* unterminated"),
+        ("settings.json", "{strict: true}"),
+    ];
+    let ordinary: &[(&str, &str)] = &[
+        ("tsconfig.json", "{\n  // Visit https://aka.ms/tsconfig\n  \"compilerOptions\": {\n    /* \"strict\": false, */\n    \"strict\": true,\n    \"paths\": {\"@/*\": [\"src/*\"]},\n  },\n}\n"),
+        ("settings.json", r#"{"name":"caf\u00e9","max_tokens":4096}"#),
+        ("settings.json", " \n"),
+        ("README.md", "[![ci](https://example.test/badge.svg)](https://example.test)\nSay \"hello\": it works.\n"),
+        ("bootstrap.ps1", "\u{feff}Write-Output 'ready'\n"),
+        ("bootstrap.sh", "echo 'ordinary Unicode: \u{1f980}'\n"),
+        ("main.c", "int main(void) { return 0; }\n\x0c\n/* page two */\n"),
+        ("app.js", "const config = {\"name\": \"caf\\u00e9\"};\n"),
+        ("app.js", "const status = ok ? \"PASS\" : \"FAIL\";\n"),
+    ];
     let mut cases = Vec::new();
-    for json in [
-        r#"{"api\u005fkey":"synthetic-canary"}"#,
-        r#"{"vault\u005ffile_base64":"c3ludGhldGljLWNhbmFyeQ=="}"#,
+    for (path, text) in credentials {
+        cases.push((*path, text.as_bytes().to_vec(), false));
+        cases.extend(
+            malformed(text)
+                .into_iter()
+                .map(|bytes| (*path, bytes, false)),
+        );
+    }
+    for (path, text) in ordinary.iter().copied().chain(
+        PACKAGE_METADATA
+            .iter()
+            .map(|(path, bytes)| (*path, std::str::from_utf8(bytes).unwrap())),
+    ) {
+        cases.push((path, text.as_bytes().to_vec(), true));
+        // Malformed text is unclassifiable even when its content is ordinary.
+        cases.extend(
+            malformed(text)
+                .into_iter()
+                .map(|bytes| (path, bytes, false)),
+        );
+    }
+    // Declared wide text is never classified, even when its content is ordinary.
+    for text in [
+        "$env:API_KEY = 'synthetic-canary'\n",
+        "Write-Output 'ready'\n",
     ] {
-        cases.push(format!("{json}\0").into_bytes());
-        cases.push([json.as_bytes(), b"\xff"].concat());
-        let wide = malformed_wide(json);
-        cases.extend([wide[0].clone(), wide[wide.len() - 1].clone()]);
+        for little_endian in [true, false] {
+            cases.push(("bootstrap.ps1", utf16(text, little_endian), false));
+            cases.push(("bootstrap.ps1", utf32(text, little_endian), false));
+        }
     }
-    // A NUL inside the object, or a run that starts inside a string.
-    cases.push(b"{\"api\\u005fkey\":\"synthetic-canary\"\0}".to_vec());
-    cases.push(b"{\"note\":\"a\0b\",\"api\\u005fkey\":\"synthetic-canary\"}".to_vec());
-    cases
-}
-
-// MP-08/MP-11: ordinary dependency metadata keeps its schema role when the file
-// also holds a NUL or a malformed unit.
-pub(crate) fn malformed_metadata() -> Vec<(&'static str, Vec<u8>)> {
-    let mut cases = Vec::new();
-    for (path, bytes) in PACKAGE_METADATA {
-        cases.push((*path, [*bytes, b"\0"].concat()));
-        cases.push((*path, [*bytes, b"\xff"].concat()));
-        let wide = malformed_wide(std::str::from_utf8(bytes).unwrap());
-        cases.extend([
-            (*path, wide[0].clone()),
-            (*path, wide[wide.len() - 1].clone()),
-        ]);
-    }
+    // Opaque assets: an allow-listed extension and signature, not text.
+    let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\xff\x00".to_vec();
+    cases.extend([
+        ("artwork.png", png.clone(), true),
+        (
+            "photo.JPG",
+            b"\xff\xd8\xff\xe0\0\x10JFIF\0\xff".to_vec(),
+            true,
+        ),
+        ("font.woff2", b"wOF2\0\x01\0\0\xff".to_vec(), true),
+        (
+            "artwork.png",
+            [png.as_slice(), b"tEXt\0caf\xc3\xa9 \"ok\"".as_slice()].concat(),
+            true,
+        ),
+        // Shell-lexer noise in compressed bytes is not text.
+        (
+            "artwork.png",
+            [png.as_slice(), b"\0x$'abcdefgh\0a$b=cdefgh\0"].concat(),
+            true,
+        ),
+        ("settings.json", png.clone(), false),
+        ("photo.jpg", png.clone(), false),
+        ("artwork.png", b"\x89PNG\0\xff".to_vec(), false),
+        ("artwork.bin", b"\xff\0\x89".to_vec(), false),
+        (
+            "artwork.png",
+            [b"\xef\xbb\xbf", png.as_slice()].concat(),
+            false,
+        ),
+        (
+            "artwork.png",
+            [
+                png.as_slice(),
+                b"\0ghp_000000000000000000000000000000000000\0",
+            ]
+            .concat(),
+            false,
+        ),
+        (
+            "artwork.png",
+            [png.as_slice(), escaped.as_bytes(), b"\xff"].concat(),
+            false,
+        ),
+        (
+            "artwork.png",
+            [png.as_slice(), b"\0API_KEY=synthetic-canary\0"].concat(),
+            false,
+        ),
+    ]);
     cases
 }
 
@@ -712,34 +832,13 @@ pub(crate) const PACKAGE_METADATA: &[(&str, &[u8])] = &[
 ];
 
 #[test]
-fn mp08_mp11_target_refuses_utf16_in_overlay_and_history() {
+fn mp08_mp11_target_classification_table_in_overlay_and_history() {
     crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     for history in [false, true] {
-        for little_endian in [true, false] {
-            InlineShellFixture::file(
-                "bootstrap.ps1",
-                &utf16("$env:API_KEY = 'synthetic-canary'\n", little_endian),
-                history,
-            )
-            .assert_target_result(false);
-        }
-        for bytes in malformed_wide("$env:API_KEY = 'synthetic-canary'\n") {
-            InlineShellFixture::file("bootstrap.ps1", &bytes, history).assert_target_result(false);
-        }
-    }
-}
-
-#[test]
-fn mp08_mp11_target_refuses_malformed_escaped_json_in_overlay_and_history() {
-    crate::test_support::isolated_env_test!();
-    let _lock = crate::env_lock::lock();
-    for history in [false, true] {
-        for bytes in malformed_escaped_json() {
-            InlineShellFixture::file("settings.json", &bytes, history).assert_target_result(false);
-        }
-        for (path, bytes) in malformed_metadata() {
-            InlineShellFixture::file(path, &bytes, history).assert_target_result(true);
+        for (path, bytes, data) in classification_cases() {
+            eprintln!("MP-08/MP-11 case {path} history={history} {bytes:?}");
+            InlineShellFixture::file(path, &bytes, history).assert_target_result(data);
         }
     }
 }
@@ -756,79 +855,18 @@ fn mp08_mp11_target_accepts_package_metadata_in_overlay_and_history() {
 }
 
 #[test]
-fn mp11_supported_encodings_are_inspected_and_binary_bytes_copy() {
-    let credential = "$env:API_KEY = 'synthetic-canary'\n";
-    let ordinary = "Write-Output 'ready 🦀'\n";
-    for text in [credential, ordinary] {
-        for little_endian in [true, false] {
-            for bytes in [
-                utf16(text, little_endian),
-                utf32(text, little_endian),
-                [b"\xef\xbb\xbf".as_slice(), text.as_bytes()].concat(),
-            ] {
-                assert_eq!(
-                    validate_bytes("bootstrap.ps1", &bytes).is_ok(),
-                    text == ordinary,
-                    "MP-11 supported encoding"
-                );
-            }
-        }
-    }
-    for bytes in [
-        b"\xff\xfe\x00".as_slice(),
-        b"\xff\xfe\x00\xd8",
-        b"\x00\x00\xfe\xff\x00\x11\x00\x00",
-        b"\xffAPI_KEY=synthetic-canary",
-        b"A\x00P\x00I\x00",
-        b"echo \x1bready",
-        b"\xff\xfe\x00\x00\x61",
-    ] {
-        assert!(
-            validate_bytes("bootstrap.ps1", bytes).is_err()
-                == bytes.windows(7).any(|w| w == b"API_KEY"),
-            "MP-11 binary bytes match only a secret detector"
-        );
-    }
-}
-
-#[test]
-fn mp08_mp11_malformed_wide_text_is_inspected_as_decoded_units() {
-    for bytes in malformed_wide("$env:API_KEY = 'synthetic-canary'\n") {
-        assert!(
-            validate_bytes("bootstrap.ps1", &bytes).is_err(),
-            "{bytes:?}"
-        );
-    }
-    for bytes in malformed_wide("Write-Output 'ready 🦀'\n") {
-        assert!(validate_bytes("bootstrap.ps1", &bytes).is_ok(), "{bytes:?}");
-    }
-}
-
-#[test]
-fn mp08_mp11_malformed_text_applies_structural_json_policy() {
-    let mut credentials = malformed_escaped_json();
-    for json in [
-        r#"{"api\u005fkey":"synthetic-canary"}"#,
-        r#"{"sealed\u005funlock_key":"c3ludGhldGljLWNhbmFyeQ=="}"#,
-        r#"{"ciphertext":"AAAA","kdf":"argon2id"}"#,
-    ] {
-        credentials.extend(malformed_wide(json));
-    }
-    credentials.push(b"x\" {\"api\\u005fkey\":\"synthetic-canary\"}\0".to_vec());
-    credentials.push(b"\xff{\"api\\u005fkey\":\0".to_vec());
-    for bytes in credentials {
-        assert!(
-            validate_bytes("settings.json", &bytes).is_err(),
-            "{bytes:?}"
-        );
-    }
-    for (path, bytes) in malformed_metadata() {
-        assert!(validate_bytes(path, &bytes).is_ok(), "{path} {bytes:?}");
-    }
-    for bytes in malformed_wide(r#"{"name":"caf\u00e9","max_tokens":4096}"#) {
-        assert!(validate_bytes("settings.json", &bytes).is_ok(), "{bytes:?}");
-    }
-    assert!(validate_bytes("artwork.png", b"\x89PNG\0\xff\"tEXt\":\"caf\\u00e9\"").is_ok());
+fn mp08_mp11_classification_table_fails_closed() {
+    let wrong = classification_cases()
+        .into_iter()
+        .filter(|(path, bytes, data)| validate_bytes(path, bytes).is_ok() != *data)
+        .map(|(path, bytes, data)| format!("{path} data={data} {bytes:?}"))
+        .collect::<Vec<_>>();
+    assert!(
+        wrong.is_empty(),
+        "MP-08/MP-11 {} misclassified:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
 }
 
 #[test]
@@ -1081,17 +1119,4 @@ fn mp08_mp11_public_requests_prose_retains_secret_detection() {
     assert!(validate_bytes("", &changed).is_err());
     assert!(validate_bytes("", b"`API_KEY=synthetic-canary`").is_err());
     assert!(validate_bytes("", b"env API_`printf KEY`=synthetic-canary worker").is_err());
-}
-
-// MP-08 / MP-11: Miguel's Copy policy admits binary artwork, while detectors
-// still identify secrets embedded in otherwise undecodable bytes.
-#[test]
-fn mp08_binary_artwork_copies_without_blanket_refusal() {
-    assert!(validate_bytes("artwork.png", &[0x89, b'P', b'N', b'G', 0, 0xff]).is_ok());
-}
-#[test]
-fn mp11_binary_secret_signature_requires_vault() {
-    let mut bytes = vec![0xff, 0, 0x89];
-    bytes.extend_from_slice(b"-----BEGIN PRIVATE KEY-----");
-    assert!(validate_bytes("artwork.bin", &bytes).is_err());
 }

@@ -589,8 +589,14 @@ the copy is refused with retry guidance. Cancellation or expiry stops export. En
 values are omitted and Vault value access is denied for Project review. Kernel payload
 checks reject credential dependencies, Vault snapshots and credential-bearing extension
 files; Project checks reject sealed Project environment values.
-Project files and Git history with recognized secrets travel only as Vault-routed
-artifacts. The review lists their paths and kinds, never contents. The source records
+Project files and Git history with recognized secrets, or that the guard cannot
+classify, travel only as Vault-routed artifacts. A file copies as ordinary data only
+when it is strict UTF-8 text (optional BOM, no NUL or binary control) passing the text
+policy for its path, or an allow-listed asset whose extension and signature agree
+(common images, fonts, PDF, zip/gzip, wasm, audio/video) and whose printable runs carry
+no recognized secret. Declared UTF-16/32 text, malformed text, `.json`/`.jsonc` files
+that do not parse (comments and trailing commas are allowed) and other binary files are
+Vault-routed. The review lists their paths and kinds, never contents. The source records
 each artifact in the owner's encrypted Chariox Vault, verifies the read-back and seals it
 to the target, bound to context, source, target, Project and object path. The target
 authenticates that binding, records the artifact in its own encrypted Vault, verifies the

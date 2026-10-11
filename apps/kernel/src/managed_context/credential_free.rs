@@ -10,7 +10,7 @@ mod shell;
 mod text;
 pub(crate) use config::exportable_mcp;
 pub(crate) use history::scan_repository;
-use shell::{credential_text, unsupported_shell};
+use shell::{credential_assignment, credential_text, unsupported_shell};
 
 use super::development::{
     extract_verified_development_archive, DevelopmentFileState, DevelopmentSourceRepositoryBinding,
@@ -53,28 +53,48 @@ fn credential_url(url: &url::Url) -> bool {
         })
 }
 
-fn credential_runs(role: json::Role, text: &str) -> bool {
-    text.split(|ch: char| {
-        ch == char::REPLACEMENT_CHARACTER || (ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
-    })
-    .filter(|run| !run.is_empty())
-    .any(|run| match json::parse(run) {
-        // MP-08/MP-11: a complete JSON run gets the decoded-text policy; any
-        // other run also has its JSON string tokens decoded and inspected.
-        Ok(Some(value)) => json::validate(&value, role).is_err(),
-        Ok(None) => {
-            json::validate_tokens(run).is_err()
-                || text::credential_format(run)
-                || credential_text(run)
-                || run.split_whitespace().any(|word| {
-                    url::Url::parse(word.trim_matches(['\'', '"', ',', ';']))
-                        .is_ok_and(|url| credential_url(&url))
-                })
-        }
-        Err(_) => true,
+fn credential_urls(text: &str) -> bool {
+    text.split_whitespace().any(|word| {
+        url::Url::parse(word.trim_matches(['\'', '"', ',', ';']))
+            .is_ok_and(|url| credential_url(&url))
     })
 }
 
+// MP-08/MP-11: printable runs of an allow-listed asset still get the high-signal
+// detectors, so asset bytes cannot hide a recognized secret. Like `strings`,
+// runs shorter than 8 characters are noise; the shell lexer is for text only.
+fn credential_runs(role: json::Role, bytes: &[u8]) -> bool {
+    String::from_utf8_lossy(bytes)
+        .split(|ch: char| {
+            ch == char::REPLACEMENT_CHARACTER
+                || (ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+        })
+        .filter(|run| run.chars().count() >= 8)
+        .any(|run| match json::parse(run) {
+            Ok(Some(value)) => json::validate(&value, role).is_err(),
+            Ok(None) => {
+                text::credential_format(run)
+                    || credential_assignment(run)
+                    || credential_urls(run)
+                    || json::validate_tokens(run).is_err()
+            }
+            Err(_) => true,
+        })
+}
+
+// MP-08/MP-11: the free-text policy. Escaped JSON string tokens are decoded
+// and checked too, so escaped names in non-JSON text are inspected as well.
+fn free_text(text: &str) -> Result<(), DaemonError> {
+    if text::credential_format(text) || credential_text(text) || credential_urls(text) {
+        return Err(refused());
+    }
+    json::validate_tokens(text)
+}
+
+/// MP-08/MP-11: the one guard for source export, target admission, Git history
+/// and packaged Extensions. `Err` means Vault-routed (or refused where no Vault
+/// route exists). Content is copied as data only when it is fully classified:
+/// strict text that passes the policy for its path, or an allow-listed asset.
 pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError> {
     let name = path.to_ascii_lowercase();
     if text::credential_format(path)
@@ -89,44 +109,31 @@ pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError
     {
         return Err(refused());
     }
-    // MP-08 / MP-11: undecodable artwork is ordinary data. Scan its printable
-    // runs as well, so invalid UTF-8 cannot hide a recognized secret signature.
-    // Declared wide text is scanned as decoded units: its zero bytes would
-    // otherwise split every assignment into single-character runs.
-    let text = match text::decode(bytes) {
-        Ok(text) => text,
-        Err(_) => {
-            let role = json::Role::for_path(&name);
-            let utf8 =
-                String::from_utf8_lossy(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes));
-            if credential_runs(role, &utf8)
-                || text::decode_wide_lossy(bytes)
-                    .is_some_and(|(text, _)| credential_runs(role, &text))
-            {
-                return Err(refused());
-            }
-            return Ok(());
-        }
+    let role = json::Role::for_path(&name);
+    let text = match text::classify(&name, bytes) {
+        text::Content::Text(text) => text,
+        text::Content::Asset if !credential_runs(role, bytes) => return Ok(()),
+        text::Content::Asset | text::Content::Unclassified => return Err(refused()),
     };
-    if text::credential_format(&text) {
+    if text::credential_format(text) {
         return Err(refused());
     }
     // Inspect valid JSON structurally: object keys may name dependencies or
     // numeric counters. Scanning JSON syntax as shell assignments loses that role.
-    if let Some(value) = json::parse(&text)? {
-        return json::validate(&value, json::Role::for_path(&name));
+    if let Some(value) = json::parse(text)? {
+        return json::validate(&value, role);
     }
-    if credential_text(&text) || unsupported_shell(&name, &text) {
+    // A JSON file is classified only when it parses (comments and trailing
+    // commas allowed); its comments get the free-text policy.
+    if json::named(&name) && !text.trim().is_empty() {
+        let (json, comments) = json::strip_comments(text).ok_or_else(refused)?;
+        json::validate(&json::parse(&json)?.ok_or_else(refused)?, role)?;
+        return free_text(&comments);
+    }
+    if unsupported_shell(&name, text) {
         return Err(refused());
     }
-    for word in text.split_whitespace() {
-        if let Ok(url) = url::Url::parse(word.trim_matches(['\'', '"', ',', ';'])) {
-            if credential_url(&url) {
-                return Err(refused());
-            }
-        }
-    }
-    Ok(())
+    free_text(text)
 }
 
 pub(crate) fn validate_kernel_payload(payload: &KernelContextPayload) -> Result<(), DaemonError> {

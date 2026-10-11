@@ -483,11 +483,7 @@ mod tests {
         fs::write(workspace.join(".env"), secret).unwrap();
         // A shared hash first seen through a benign alias must still be sealed.
         fs::write(workspace.join("alias.txt"), secret).unwrap();
-        fs::write(
-            workspace.join("artwork.png"),
-            [0x89, b'P', b'N', b'G', 0, 0xff],
-        )
-        .unwrap();
+        fs::write(workspace.join("artwork.png"), b"\x89PNG\r\n\x1a\n\0\xff").unwrap();
         let vault = ExportVault::new(
             &source,
             "context",
@@ -581,9 +577,7 @@ mod tests {
         let restored = &imported.repositories[0].destination_path;
         assert!(fs::read(restored.join(".env")).unwrap().as_slice() == secret);
         assert!(fs::read(restored.join("alias.txt")).unwrap().as_slice() == secret);
-        assert!(
-            fs::read(restored.join("artwork.png")).unwrap() == [0x89, b'P', b'N', b'G', 0, 0xff]
-        );
+        assert!(fs::read(restored.join("artwork.png")).unwrap() == b"\x89PNG\r\n\x1a\n\0\xff");
         assert!(!imported
             .destination_root
             .join(".vault-transfer-artifacts")

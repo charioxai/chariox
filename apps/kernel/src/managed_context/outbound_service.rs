@@ -2093,48 +2093,16 @@ mod tests {
     }
 
     #[test]
-    fn mp08_mp11_source_vault_seals_utf16_in_overlay_and_history() {
+    fn mp08_mp11_source_vault_classification_table_in_overlay_and_history() {
         crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
         use crate::managed_context::credential_free::tests::{
-            malformed_wide, utf16, InlineShellFixture,
+            classification_cases, InlineShellFixture,
         };
         for history in [false, true] {
-            for little_endian in [true, false] {
-                assert_source_fixture_result(
-                    InlineShellFixture::file(
-                        "bootstrap.ps1",
-                        &utf16("$env:API_KEY = 'synthetic-canary'\n", little_endian),
-                        history,
-                    ),
-                    false,
-                );
-            }
-            for bytes in malformed_wide("$env:API_KEY = 'synthetic-canary'\n") {
-                assert_source_fixture_result(
-                    InlineShellFixture::file("bootstrap.ps1", &bytes, history),
-                    false,
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn mp08_mp11_source_vault_seals_malformed_escaped_json_in_overlay_and_history() {
-        crate::test_support::isolated_env_test!();
-        let _lock = crate::env_lock::lock();
-        use crate::managed_context::credential_free::tests::{
-            malformed_escaped_json, malformed_metadata, InlineShellFixture,
-        };
-        for history in [false, true] {
-            for bytes in malformed_escaped_json() {
-                assert_source_fixture_result(
-                    InlineShellFixture::file("settings.json", &bytes, history),
-                    false,
-                );
-            }
-            for (path, bytes) in malformed_metadata() {
-                assert_source_fixture_result(InlineShellFixture::file(path, &bytes, history), true);
+            for (path, bytes, data) in classification_cases() {
+                eprintln!("MP-08/MP-11 case {path} history={history} {bytes:?}");
+                assert_source_fixture_result(InlineShellFixture::file(path, &bytes, history), data);
             }
         }
     }

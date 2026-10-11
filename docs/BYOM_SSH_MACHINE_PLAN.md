@@ -150,9 +150,11 @@ Every packaged Extension file is scanned under its actual path, including
 skill/MCP, portable environment and user adapter files. Standalone script
 source retains Python/TypeScript runtime context. Extension source snapshots
 and overlays use the same detector: high-signal private-key/provider-token formats,
-credential assignments/flags/URLs, and strict UTF-8 or BOM-marked UTF-16/32
-decoding. Unsupported bytes, malformed encodings and binary controls fail
-closed. Shell paths and shell shebangs also refuse undecodable shell quoting.
+credential assignments/flags/URLs, decoded JSON string tokens, and strict UTF-8
+decoding. Content that cannot be fully classified fails closed: declared
+UTF-16/32 text, malformed encodings, binary controls, `.json`/`.jsonc` files that
+do not parse, and binary files other than allow-listed assets (extension and
+signature agree). Shell paths and shell shebangs also refuse undecodable shell quoting.
 Dependency-name maps and lock integrity have explicit package metadata roles;
 their values remain inspected. Literal structured manifest copies occurring
 inside owner-selected files are free-form inputs, subject to the same file

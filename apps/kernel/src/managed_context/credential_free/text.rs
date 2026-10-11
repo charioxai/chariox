@@ -1,7 +1,4 @@
-//! MP-08/MP-11: decode supported text before inspection; unknown bytes are classified by the shared binary scanner.
-use super::refused;
-use crate::error::DaemonError;
-use std::borrow::Cow;
+//! MP-08/MP-11: classify bytes as text, an allow-listed asset or unclassifiable.
 
 // MP-11: high-signal formats are checked in every text role, even with no
 // assignment/header name. This finite set is a guard, not secret recognition.
@@ -43,69 +40,67 @@ pub(super) fn credential_format(text: &str) -> bool {
         })
 }
 
-// MP-08/MP-11: decode BOM-declared wide text, replacing invalid or trailing
-// units, so text that fails strict decoding can still be inspected.
-pub(super) fn decode_wide_lossy(bytes: &[u8]) -> Option<(String, bool)> {
-    let mut valid = true;
-    let mut unit = |ch: Option<char>| {
-        valid &= ch.is_some();
-        ch.unwrap_or(char::REPLACEMENT_CHARACTER)
-    };
-    // UTF-32LE shares the UTF-16LE prefix, so check four-byte BOMs first.
-    let (mut text, trailing) =
-        if bytes.starts_with(&[0xff, 0xfe, 0, 0]) || bytes.starts_with(&[0, 0, 0xfe, 0xff]) {
-            let little = bytes[0] == 0xff;
-            let units = bytes[4..].chunks_exact(4);
-            let trailing = !units.remainder().is_empty();
-            let text = units
-                .map(|chunk| {
-                    let bytes = [chunk[0], chunk[1], chunk[2], chunk[3]];
-                    unit(char::from_u32(if little {
-                        u32::from_le_bytes(bytes)
-                    } else {
-                        u32::from_be_bytes(bytes)
-                    }))
-                })
-                .collect::<String>();
-            (text, trailing)
-        } else if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
-            let little = bytes[0] == 0xff;
-            let units = bytes[2..].chunks_exact(2);
-            let trailing = !units.remainder().is_empty();
-            let text = char::decode_utf16(units.map(|chunk| {
-                if little {
-                    u16::from_le_bytes([chunk[0], chunk[1]])
-                } else {
-                    u16::from_be_bytes([chunk[0], chunk[1]])
-                }
-            }))
-            .map(|ch| unit(ch.ok()))
-            .collect::<String>();
-            (text, trailing)
-        } else {
-            return None;
-        };
-    if trailing {
-        text.push(unit(None));
-    }
-    Some((text, valid))
+/// MP-08/MP-11: the one byte classification every Copy boundary uses.
+pub(super) enum Content<'a> {
+    /// Strict UTF-8 (optional BOM) with no binary control; the text policy applies.
+    Text(&'a str),
+    /// An allow-listed asset: its extension and signature agree and it is not text.
+    Asset,
+    /// Anything else: Vault-routed at the source and refused by the target.
+    Unclassified,
 }
 
-pub(super) fn decode(bytes: &[u8]) -> Result<Cow<'_, str>, DaemonError> {
-    let text = match decode_wide_lossy(bytes) {
-        Some((text, true)) => Cow::Owned(text),
-        Some((_, false)) => return Err(refused()),
-        None => {
-            let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
-            Cow::Borrowed(std::str::from_utf8(bytes).map_err(|_| refused())?)
-        }
-    };
-    // NULs/BOM-less wide text and binary controls cannot be classified safely.
-    if text
-        .chars()
-        .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
-    {
-        return Err(refused());
+// MP-08/MP-11: opaque assets are explicit (extension, signature) pairs, never
+// "whatever failed to decode". Offsets are where the signature starts.
+const ASSETS: &[(&[&str], usize, &[u8])] = &[
+    (&["png"], 0, b"\x89PNG\r\n\x1a\n"),
+    (&["jpg", "jpeg"], 0, b"\xff\xd8\xff"),
+    (&["gif"], 0, b"GIF87a"),
+    (&["gif"], 0, b"GIF89a"),
+    (&["webp"], 8, b"WEBP"),
+    (&["ico"], 0, b"\0\0\x01\0"),
+    (&["avif", "mp4", "mov", "m4a"], 4, b"ftyp"),
+    (&["woff"], 0, b"wOFF"),
+    (&["woff2"], 0, b"wOF2"),
+    (&["ttf"], 0, b"\0\x01\0\0"),
+    (&["otf"], 0, b"OTTO"),
+    (&["pdf"], 0, b"%PDF-"),
+    (&["zip", "jar"], 0, b"PK\x03\x04"),
+    (&["gz", "tgz"], 0, b"\x1f\x8b"),
+    (&["wasm"], 0, b"\0asm"),
+    (&["webm"], 0, b"\x1a\x45\xdf\xa3"),
+    (&["ogg"], 0, b"OggS"),
+    (&["wav"], 8, b"WAVE"),
+    (&["mp3"], 0, b"ID3"),
+];
+
+pub(super) fn classify<'a>(path: &str, bytes: &'a [u8]) -> Content<'a> {
+    // A UTF-16/32 BOM does not prove the encoding of the bytes after it: a
+    // byte-order or encoding mismatch decodes to valid, unrelated characters.
+    let wide = [&[0xff, 0xfe][..], &[0xfe, 0xff], &[0, 0, 0xfe, 0xff]];
+    if wide.iter().any(|bom| bytes.starts_with(bom)) {
+        return Content::Unclassified;
     }
-    Ok(text)
+    let text = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
+    if let Ok(text) = std::str::from_utf8(text) {
+        // NULs, BOM-less wide text and binary controls cannot be classified.
+        if !text
+            .chars()
+            .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t' | '\x0c'))
+        {
+            return Content::Text(text);
+        }
+    }
+    let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
+    if !bytes.starts_with(&[0xef, 0xbb, 0xbf])
+        && ASSETS.iter().any(|(extensions, offset, signature)| {
+            extensions.contains(&extension)
+                && bytes
+                    .get(*offset..)
+                    .is_some_and(|rest| rest.starts_with(signature))
+        })
+    {
+        return Content::Asset;
+    }
+    Content::Unclassified
 }

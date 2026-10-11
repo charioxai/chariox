@@ -1349,18 +1349,10 @@ fn mp11_packaged_snapshot_normalizes_encoding_and_checks_shebang_and_token_forma
     for source in [true, false] {
         for mcp in [false, true] {
             mp11_packaged_snapshot_case(mcp, "bootstrap.sh", &wide, false, source);
-            for bytes in crate::managed_context::credential_free::tests::malformed_wide(
-                "$env:API_KEY = 'synthetic-canary'\n",
-            ) {
-                mp11_packaged_snapshot_case(mcp, "bootstrap.ps1", &bytes, false, source);
-            }
-            for bytes in crate::managed_context::credential_free::tests::malformed_escaped_json() {
-                mp11_packaged_snapshot_case(mcp, "settings.json", &bytes, false, source);
-            }
-            for (path, bytes) in
-                crate::managed_context::credential_free::tests::malformed_metadata()
+            for (path, bytes, data) in
+                crate::managed_context::credential_free::tests::classification_cases()
             {
-                mp11_packaged_snapshot_case(mcp, path, &bytes, true, source);
+                mp11_packaged_snapshot_case(mcp, path, &bytes, data, source);
             }
             mp11_packaged_snapshot_case(
                 mcp,
