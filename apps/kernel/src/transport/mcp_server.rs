@@ -475,6 +475,12 @@ fn tool_error_message(error: &crate::error::DaemonError) -> String {
     }
 }
 
+// MP-08 / MP-10 / MP-11: exercise both real MCP encodings without widening production visibility.
+#[cfg(test)]
+pub(crate) fn runtime_tool_content_for_test(payload: Value) -> (Vec<Value>, Value) {
+    runtime_tool_content(payload)
+}
+
 fn runtime_tool_content(mut payload: Value) -> (Vec<Value>, Value) {
     // MCP structuredContent is an object, while script results may be any JSON value.
     if !payload.is_object() {

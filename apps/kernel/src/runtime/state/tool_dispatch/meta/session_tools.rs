@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "room_overview.rs"]
+mod room_overview;
+
 impl KernelRuntimeState {
     pub(super) fn meta_session_overview(
         &self,
@@ -8,19 +11,7 @@ impl KernelRuntimeState {
         args: MetaSessionOverviewArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
         if self.room_agent_tools_enabled() {
-            let session = self.owned.session_store.get_session(session.id())?;
-            return Ok(RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({
-                    "session_id": session.id(),
-                    "agents": self.owned.agent_store.get_session_agents(session.id()),
-                    "workflows": if args.include_workflows.unwrap_or(true) { session.workflows().to_vec() } else { Vec::new() },
-                    "workflow_runs": if args.include_workflows.unwrap_or(true) { session.workflow_runs().to_vec() } else { Vec::new() },
-                    "activity": self.agent_activity_for_session(&session),
-                    "agent_tasks": self.owned.durable_state_store.agent_tasks(Some(session.id()), None)?,
-                "pending_interactions": session.active_interactions().iter().map(|interaction| serde_json::json!({ "id": interaction.id(), "agent_id": interaction.agent_id(), "kind": interaction.kind() })).collect::<Vec<_>>(),
-                }),
-            });
+            return self.room_session_overview(session, agent, args);
         }
         let include_workflows = args.include_workflows.unwrap_or(true);
         let include_events = args.include_events.unwrap_or(true);
@@ -673,3 +664,7 @@ mod tests {
         worker
     }
 }
+
+#[cfg(test)]
+#[path = "session_tools_overview_tests.rs"]
+mod overview_tests;
