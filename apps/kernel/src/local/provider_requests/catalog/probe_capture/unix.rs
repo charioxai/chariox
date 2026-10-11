@@ -130,9 +130,9 @@ impl Process {
                 }
             }
             let mut result = Ok(());
-            for _ in 0..3 {
+            for pass in 0..3 {
                 if let Err(error) =
-                    descendants::observe(Some(self.child.id()), &mut self.descendants, true)
+                    descendants::observe(Some(self.child.id()), &mut self.descendants, pass == 0)
                 {
                     result = Err(error);
                 }
