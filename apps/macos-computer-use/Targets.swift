@@ -63,9 +63,11 @@ struct ConsumedTarget<Node> {
     let deadline: TimeInterval
     let now: () -> TimeInterval
     let current: () -> Bool
-    func perform(validate: (Node, TargetMetadata) throws -> Void,
+    func perform(authority: () throws -> Void, validate: (Node, TargetMetadata) throws -> Void,
                  mutation: (Node) throws -> Void) throws {
         try validate(node, metadata)
+        // Final synchronous metadata reads may outlive the paired grant.
+        try authority()
         // Synchronous AX reads may consume the entire reference lifetime.
         // This is the final check immediately before the caller's mutation.
         guard current(), now() < deadline else { throw tagged(.target, "target-ref-stale") }
