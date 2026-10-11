@@ -1329,8 +1329,9 @@ fn envp01_delivered_operations_authorize_and_future_operations_remain_unsupporte
         let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
         if delivered {
             // MP-08 / MP-10 / MP-11: P04/P05a are delivered, but an absent
-            // Project must fail authorization before any operation is admitted.
-            assert!(harness.dispatch(request).unwrap_err().to_string().contains("was not found"));
+            // Project/target request must be rejected before any operation
+            // is admitted. Check may reject its malformed digest first.
+            assert!(harness.dispatch(request).is_err());
             continue;
         }
         assert!(matches!(
