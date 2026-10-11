@@ -5,6 +5,7 @@ use EnvironmentObservationStatus::{Conflict, Missing, NeedsYourInput, Ready};
 pub(super) fn check_admission(
     ctx: &EnvironmentCheckContext,
     r: &Requirement,
+    deadline: std::time::Instant,
 ) -> (EnvironmentObservationStatus, String, String) {
     match &r.spec {
         RequirementSpec::Accounts {
@@ -42,11 +43,12 @@ pub(super) fn check_admission(
                 && crate::provider::provider_account_credential_registered(&owner, family, profile)
                     .unwrap_or(false);
             if !vault_enrolled {
-                if crate::local::provider_requests::observe_provider_auth_status(
+                if crate::local::provider_requests::observe_provider_auth_status_until(
                     &ctx.profiles,
                     &owner,
                     family,
                     profile,
+                    Some(deadline),
                 )
                 .is_err()
                 {

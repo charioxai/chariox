@@ -144,7 +144,9 @@ pub(crate) fn check_requirement(
             RequirementSpec::MachineNeeds { .. } => {
                 super::check_platform::check_platform(ctx, env, r, &roots, &mut facts, deadline)
             }
-            RequirementSpec::Accounts { .. } => super::check_admission::check_admission(ctx, r),
+            RequirementSpec::Accounts { .. } => {
+                super::check_admission::check_admission(ctx, r, deadline)
+            }
             RequirementSpec::AgentTools {
                 tool_kind,
                 registry_ref,
@@ -163,7 +165,9 @@ pub(crate) fn check_requirement(
                 operation,
                 deadline,
             ),
-            RequirementSpec::CharioxApps { .. } => super::check_admission::check_admission(ctx, r),
+            RequirementSpec::CharioxApps { .. } => {
+                super::check_admission::check_admission(ctx, r, deadline)
+            }
             RequirementSpec::SetupChecks {
                 commands,
                 probes,
