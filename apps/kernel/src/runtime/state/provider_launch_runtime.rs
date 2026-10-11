@@ -45,12 +45,11 @@ impl KernelRuntimeState {
                 launch_request,
                 provider_launch_credential,
             )?;
-            let launch_request = self
-                .prepare_provider_launch_request_with_vault(
-                    launch_request,
-                    "launch remote lease provider run",
-                )
-                .await?;
+            // Remote Claude credentials were admitted above by the home lease.
+            // Worker replicas remain in that lease owner's namespace even when
+            // the worker's Cloud login belongs to the same person.
+            let launch_request = owned
+                .prepare_leased_provider_launch_request(launch_request, config.runtime_mcp_url())?;
             crate::logging::info_with_fields(
                 "daemon.app",
                 "launching remote lease provider run",

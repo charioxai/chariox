@@ -85,12 +85,38 @@ impl KernelRuntimeOwnedState {
         request: crate::provider::LaunchProviderRequest,
         runtime_mcp_url: String,
     ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        self.prepare_provider_launch_request_with_account_scope(
+            request,
+            runtime_mcp_url,
+            ProviderAccountLaunchScope::Home,
+        )
+    }
+
+    fn prepare_provider_launch_request_with_account_scope(
+        &self,
+        request: crate::provider::LaunchProviderRequest,
+        runtime_mcp_url: String,
+        scope: ProviderAccountLaunchScope,
+    ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
         let request = self.prepare_provider_launch_request_without_account_credentials(
             request,
             runtime_mcp_url,
+            scope,
         )?;
-        let request = self.attach_provider_account_credentials(request)?;
+        let request = self.attach_provider_account_credentials(request, scope)?;
         self.attach_project_environment(request)
+    }
+
+    pub(super) fn prepare_leased_provider_launch_request(
+        &self,
+        request: crate::provider::LaunchProviderRequest,
+        runtime_mcp_url: String,
+    ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        self.prepare_provider_launch_request_with_account_scope(
+            request,
+            runtime_mcp_url,
+            ProviderAccountLaunchScope::LeaseReplica,
+        )
     }
 
     pub(super) fn prepare_workflow_provider_launch_request(
@@ -101,11 +127,13 @@ impl KernelRuntimeOwnedState {
         let request = self.prepare_provider_launch_request_without_account_credentials(
             request,
             runtime_mcp_url,
+            ProviderAccountLaunchScope::Home,
         )?;
         if self.provider_launch_request_uses_vaulted_account_credential(&request)? {
             return self.attach_project_environment(request);
         }
-        let request = self.attach_provider_account_credentials(request)?;
+        let request =
+            self.attach_provider_account_credentials(request, ProviderAccountLaunchScope::Home)?;
         self.attach_project_environment(request)
     }
 
@@ -113,6 +141,7 @@ impl KernelRuntimeOwnedState {
         &self,
         mut request: crate::provider::LaunchProviderRequest,
         runtime_mcp_url: String,
+        scope: ProviderAccountLaunchScope,
     ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
         request.adapter_key =
             crate::provider::adapter_key_for_provider(&request.adapter_key).to_string();
@@ -157,11 +186,7 @@ impl KernelRuntimeOwnedState {
         if crate::provider::canonical_provider_family(&request.provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
-            let account_owner_user_id =
-                crate::account_profile::provider_account_authority_owner_user_id(
-                    &config,
-                    &request.owner_user_id,
-                );
+            let account_owner_user_id = scope.owner_user_id(&config, &request.owner_user_id);
             let profile = self.provider_account_profiles.get(
                 &account_owner_user_id,
                 &request.provider,
@@ -287,6 +312,7 @@ impl KernelRuntimeOwnedState {
     fn attach_provider_account_credentials(
         &self,
         mut request: crate::provider::LaunchProviderRequest,
+        scope: ProviderAccountLaunchScope,
     ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
         if !request.provider_credential_env.is_empty() {
             return Ok(request);
@@ -295,11 +321,7 @@ impl KernelRuntimeOwnedState {
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
             let config = self.config_projection.snapshot();
-            let account_owner_user_id =
-                crate::account_profile::provider_account_authority_owner_user_id(
-                    &config,
-                    &request.owner_user_id,
-                );
+            let account_owner_user_id = scope.owner_user_id(&config, &request.owner_user_id);
             let provider_credential_env =
                 crate::provider::resolve_provider_account_credentials_for_launch(
                     &config,
@@ -437,6 +459,105 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn leased_launch_preserves_account_namespace_on_cloud_worker() {
+        crate::test_support::isolated_env_test!();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-leased-cloud-owner-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var("CHARIOX_HOME", &root);
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "cloud-owner".to_string(),
+            ..Default::default()
+        });
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(
+                crate::session::CreateSessionRequest::new(
+                    root.to_string_lossy(),
+                    root.to_string_lossy(),
+                )
+                .with_owner_user_id("cloud-owner"),
+            )
+            .unwrap();
+        let registry = app.provider_account_profile_registry();
+        let profile = registry
+            .create_managed("cloud-owner", "codex", "Lease replica")
+            .unwrap();
+        crate::test_support::authenticate_provider_account(
+            &registry,
+            "cloud-owner",
+            "codex",
+            &profile.profile_id,
+        )
+        .unwrap();
+        let expected = registry
+            .resolve_environment("cloud-owner", "codex", &profile.profile_id)
+            .unwrap();
+        let local = registry
+            .create_managed("local", "codex", "Worker local account")
+            .unwrap();
+        crate::test_support::authenticate_provider_account(
+            &registry,
+            "local",
+            "codex",
+            &local.profile_id,
+        )
+        .unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "codex",
+            "codex",
+            &profile.profile_id,
+            "gpt-5.6-luna",
+        )
+        .with_agent_id(agent.id());
+        let prepared = runtime
+            .owned
+            .prepare_leased_provider_launch_request(
+                request.clone(),
+                "http://127.0.0.1:43120/mcp".to_string(),
+            )
+            .expect("a lease-owned replica must not be resolved as a local worker account");
+        assert_eq!(prepared.owner_user_id, "cloud-owner");
+        assert_eq!(prepared.provider_account_env, expected);
+        assert!(
+            runtime
+                .owned
+                .prepare_provider_launch_request(request, "http://127.0.0.1:43120/mcp".to_string(),)
+                .is_err(),
+            "ordinary clients cannot select a lease-owner replica"
+        );
+        let local_request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "codex",
+            "codex",
+            &local.profile_id,
+            "gpt-5.6-luna",
+        )
+        .with_agent_id(agent.id());
+        let local_prepared = runtime
+            .owned
+            .prepare_provider_launch_request(
+                local_request,
+                "http://127.0.0.1:43120/mcp".to_string(),
+            )
+            .expect("the Cloud owner must still find the worker's local account");
+        assert_eq!(
+            local_prepared.provider_account_env,
+            registry
+                .resolve_environment("local", "codex", &local.profile_id,)
+                .unwrap()
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

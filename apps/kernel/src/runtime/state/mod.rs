@@ -404,6 +404,8 @@ mod prompt_transcript_owned_state;
 mod provider;
 mod provider_focus_owned_state;
 mod provider_launch_failure_runtime;
+mod provider_account_launch_scope;
+use provider_account_launch_scope::ProviderAccountLaunchScope;
 mod provider_launch_owned_state;
 mod provider_launch_runtime;
 pub(crate) use provider_launch_runtime::ProviderLaunchStartOutcome;
