@@ -18,6 +18,32 @@ pub(crate) fn project_launch_environment(
     workspace_id: &str,
     directory: &Path,
 ) -> Result<crate::provider::ProviderCredentialEnvironment, DaemonError> {
+    project_launch_environment_selected(config, project_id, workspace_id, directory, |_| true)
+}
+
+// MP-08 / MP-10 / MP-11: filter authority before resolving any values or Vault refs.
+pub(crate) fn project_public_setup_environment(
+    config: &DaemonConfig,
+    project_id: &str,
+    workspace_id: &str,
+    directory: &Path,
+    permitted: &std::collections::BTreeSet<&str>,
+) -> Result<crate::provider::ProviderCredentialEnvironment, DaemonError> {
+    project_launch_environment_selected(config, project_id, workspace_id, directory, |entry| {
+        permitted.contains(entry.name.as_str())
+            && entry.classification == ProjectEnvironmentClassification::NonSecret
+            && !matches!(entry.locator, ProjectEnvironmentLocator::Vault { .. })
+            && !crate::secret::secret_like_env_name(&entry.name)
+    })
+}
+
+fn project_launch_environment_selected(
+    config: &DaemonConfig,
+    project_id: &str,
+    workspace_id: &str,
+    directory: &Path,
+    selected: impl Fn(&ProjectEnvironmentEntry) -> bool,
+) -> Result<crate::provider::ProviderCredentialEnvironment, DaemonError> {
     let mut environment = crate::provider::ProviderCredentialEnvironment::default();
     let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
     let Some(state) = store.load(project_id)? else {
@@ -26,7 +52,7 @@ pub(crate) fn project_launch_environment(
     let mut manifest = state.manifest;
     manifest
         .entries
-        .retain(|entry| entry.workspace_id == workspace_id);
+        .retain(|entry| entry.workspace_id == workspace_id && selected(entry));
     let roots = BTreeMap::from([(workspace_id.to_string(), directory.to_path_buf())]);
     let names = manifest
         .entries

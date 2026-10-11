@@ -71,6 +71,23 @@ fn envp05a_setup_progress_proves_only_the_unstarted_suffix() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn envp05a_setup_retry_completes_suffix_without_replaying_successful_predecessor() {
+    setup_retry_regression(false, false).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn envp05a_setup_public_dependencies_ignore_locked_unrelated_secret() {
+    setup_retry_regression(true, false).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn envp05a_setup_preparation_failure_has_proven_unstarted_progress() {
+    setup_retry_regression(true, true).await;
+}
+
+#[cfg(target_os = "linux")]
+async fn setup_retry_regression(locked_secret: bool, preparation_failure: bool) {
     crate::test_support::isolated_env_test!();
     let _environment = crate::env_lock::lock();
     let root = crate::test_support::TestWorktree::new("envp05-setup-retry");
@@ -83,6 +100,10 @@ async fn envp05a_setup_retry_completes_suffix_without_replaying_successful_prede
         DaemonConfig::for_tests().with_session_history_root(home.join("state/sessions"));
     config.user_config_path = home.join("config.toml");
     config.user_config.state.path = Some(home.join("state/state.db").to_string_lossy().into());
+    if locked_secret {
+        config.user_config.credential_vault.backend = crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = home.join("fixture-vault.json").to_string_lossy().into();
+    }
     config.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
     config.accept_remote_leases = true;
     config.remote_lease_capacity = Some(1);
@@ -124,7 +145,7 @@ async fn envp05a_setup_retry_completes_suffix_without_replaying_successful_prede
         timeout_ms: 5000,
         output_limit_bytes: 4096,
     };
-    let requirement = Requirement {
+    let mut requirement = Requirement {
         requirement_id: "setup".into(),
         title: "Bounded setup".into(),
         scope: RequirementScope::Project,
@@ -147,6 +168,30 @@ async fn envp05a_setup_retry_completes_suffix_without_replaying_successful_prede
         legacy_entry: None,
     };
     env.project_requirements = vec![requirement.clone()];
+    if locked_secret {
+        let mut public = requirement.clone();
+        public.requirement_id = "public".into();
+        public.spec = RequirementSpec::Variables {
+            name: "PUBLIC_BUILD_INPUT".into(),
+            locator: ProjectEnvironmentLocator::ConfigFile { path: "public-input".into() },
+        };
+        std::fs::write(workspace.join("public-input"), "public build input").unwrap();
+        env.project_requirements.push(public.clone());
+        crate::project_environment::apply_scoped_binding(&store, &config, &env, &public).unwrap();
+        let mut stored = store.load(project.id()).unwrap().unwrap();
+        stored.manifest.entries.push(ProjectEnvironmentEntry {
+            name: "UNRELATED_PRIVATE_INPUT".into(),
+            workspace_id: workspace.to_string_lossy().into(),
+            kind: ProjectEnvironmentEntryKind::Variable,
+            classification: ProjectEnvironmentClassification::Secret,
+            excluded: false, uses: vec![],
+            locator: ProjectEnvironmentLocator::Vault { service: "fixture-unrelated".into(), key: "private".into() },
+            status: ProjectEnvironmentEntryStatus::Found,
+        });
+        store.save(&stored).unwrap();
+        requirement.depends_on.push(public.requirement_id);
+        env.project_requirements[0] = requirement.clone();
+    }
     let mut operation = EnvironmentOperation {
         operation_id: "retry-operation".into(),
         attempt: 1,
@@ -190,9 +235,18 @@ async fn envp05a_setup_retry_completes_suffix_without_replaying_successful_prede
             },
         )
         .unwrap();
+    if preparation_failure {
+        std::fs::remove_file(workspace.join("public-input")).unwrap();
+        assert!(apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false).is_err());
+        assert!(!workspace.join("successful-count").exists());
+        assert_eq!(store.load_applies(project.id()).unwrap().attempts[0].setup_admitted_commands.get("setup"), Some(&0), "preparation failure must durably prove no command was admitted");
+        assert!(setup_retry_is_settled(&state, &env, &requirement, &operation));
+        std::fs::write(workspace.join("public-input"), "public build input").unwrap();
+    }
     assert!(
         apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false).is_err()
     );
+    assert!(workspace.join("successful-count").exists(), "public-only Setup must run despite a locked unrelated Secret");
     assert_eq!(
         std::fs::read_to_string(workspace.join("successful-count")).unwrap(),
         "first"

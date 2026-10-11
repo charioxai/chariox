@@ -189,6 +189,9 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
             "Review bounded Setup on the disposable worker",
         ));
     };
+    // MP-08 / MP-10 / MP-11: preparation errors precede every command.
+    // Persist the zero frontier before workspace/public-input preparation.
+    record_setup_admission(config, env, requirement, operation, 0)?;
     let root = match &requirement.scope {
         RequirementScope::Project => env.folders.first(),
         RequirementScope::Folder { folder_id } => {
@@ -215,18 +218,18 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
             _ => None,
         })
         .collect();
-    let bindings = project_launch_environment(
+    let bindings = project_public_setup_environment(
         config,
         &env.local_project_id,
         &root.local_workspace_binding,
         &workspace,
+        &permitted,
     )?;
     for (name, value) in bindings.iter() {
         if permitted.contains(name) && !crate::secret::secret_like_env_name(name) {
             environment.insert(name.into(), value.into());
         }
     }
-    record_setup_admission(config, env, requirement, operation, 0)?;
     let deadline = Instant::now() + VALIDATION_TOTAL_TIMEOUT;
     for (index, command) in commands.iter().enumerate() {
         state.authorize_current_external_command()?;
