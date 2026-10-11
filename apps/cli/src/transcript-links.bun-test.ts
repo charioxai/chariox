@@ -118,3 +118,17 @@ test("MP-08 already painted fallback URLs become linked while the syntax worker 
     assert.equal(native.lib.linkGetUrl(id),url)
   } finally { settle({highlights:[]});await pending;harness.renderer.destroy();syntax.destroy() }
 })
+
+test("MP-08/MP-10/MP-11 sentence-ending punctuation stays visible outside the native URL", () => {
+  for (const punctuation of [".", ",", ";", ":"]) {
+    const url = "https://github.com/charioxai/chariox"
+    const prose = `Read ${url}${punctuation}`
+    const linked = linkifyTranscriptChunks([{ __isChunk: true, text: prose }])
+    assert.equal(linked.map(chunk => chunk.text).join(""), prose)
+    assert.deepEqual(linked.filter(chunk => chunk.link).map(chunk => chunk.link!.url), [url])
+    assert.equal(linked.at(-1)!.text, punctuation)
+    assert.equal(linked.at(-1)!.link, undefined)
+    const bare = linkifyTranscriptChunks([{ __isChunk: true, text: `${url}${punctuation}` }])
+    assert.equal(bare[0]!.link!.url, `${url}${punctuation}`, "a standalone URL retains exact bytes")
+  }
+})

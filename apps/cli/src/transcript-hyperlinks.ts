@@ -8,7 +8,8 @@ export function linkifyTranscriptChunks(chunks: TextChunk[]): TextChunk[] {
   const ranges = [...value.matchAll(/https?:\/\/[^\s<>\u0000-\u001f\u007f]+/gu)].flatMap(match => {
     const start = match.index!
     const follows = value.slice(start + match[0].length).split("\n")[0]!.trim()
-    const url = follows ? match[0].replace(/[.,;:]+$/, "") : match[0]
+    const precedes = value.slice(value.lastIndexOf("\n", start - 1) + 1, start).trim()
+    const url = precedes || follows ? match[0].replace(/[.,;:]+$/, "") : match[0]
     return providerLoginUrl(url) ? [{ start, end: start + url.length, url }] : []
   })
   let offset = 0
