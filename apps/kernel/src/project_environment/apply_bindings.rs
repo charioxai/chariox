@@ -193,7 +193,7 @@ fn reconcile_owned_bindings(
                 }
         });
         if scope_selected && !declared {
-            entries.retain(|entry| entry != &owner.entry);
+            entries.retain(|entry| !same_binding_authority(entry, &owner.entry));
             false
         } else {
             true
@@ -221,6 +221,14 @@ fn binding_owned_by(
     stored.apply_owned_bindings.iter().any(|owner| {
         owner.requirement_id == requirement.requirement_id
             && owner.scope == requirement.scope
-            && owner.entry == *entry
+            && same_binding_authority(entry, &owner.entry)
     })
+}
+
+// MP-08 / MP-10 / MP-11: availability observations cannot change ownership.
+// Every other field still fences independent selection, scope and locator edits.
+fn same_binding_authority(entry: &ProjectEnvironmentEntry, owned: &ProjectEnvironmentEntry) -> bool {
+    let mut observed = entry.clone();
+    observed.status = owned.status;
+    observed == *owned
 }
