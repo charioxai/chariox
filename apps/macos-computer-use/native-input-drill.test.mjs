@@ -90,3 +90,34 @@ test('release already at the resume target cannot establish a resumed input effe
   await assert.rejects(runNativeInputDrill(h), error =>
     error.receipt.checks.at(-1).name === 'fresh-resume-selection-precondition');
 });
+
+
+test('fatal recovery rejects a Stop hook that incorrectly clears the press latch', async () => {
+  const h = hooks();
+  let unresolved = false, stops = 0;
+  const owner = h.ownerRequest;
+  const fatal = h.fatalPress;
+  h.fatalPress = async () => { unresolved = true; return fatal(); };
+  h.stop = async () => { stops++; unresolved = false; };
+  h.ownerRequest = async command => {
+    if (command.op === 'start') {
+      if (unresolved) throw new Error('owner-reset-required');
+      return;
+    }
+    return owner(command);
+  };
+  await assert.rejects(runNativeInputDrill(h), error =>
+    error.receipt.checks.at(-1).name === 'stop-start-cannot-clear-fatal-press' &&
+    !error.receipt.checks.at(-1).passed);
+  assert.equal(stops, 2, 'Stop safety check and final cleanup must both run');
+});
+
+test('fatal recovery calls owned Stop before Start and retains final cleanup', async () => {
+  const h = hooks();
+  const calls = [];
+  const owner = h.ownerRequest;
+  h.stop = async () => { calls.push('stop'); };
+  h.ownerRequest = async command => { calls.push(command.op); return owner(command); };
+  assert.equal((await runNativeInputDrill(h)).status, 'PASS');
+  assert.deepEqual(calls, ['release', 'stop', 'start', 'stop']);
+});

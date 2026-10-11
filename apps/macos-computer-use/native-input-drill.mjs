@@ -36,6 +36,9 @@ export async function runNativeInputDrill({ agentInput, ownerRequest, binding, c
     const fatal = await fatalPress(() => input({ kind: 'hold', key: 'Right', duration_ms: 100 }));
     check('fatal-owned-press-observed', fatal?.down_observed === true && fatal?.helper_identity_verified === true);
     check('fatal-input-requires-owner-reset', fatal?.error?.message?.includes('owner-reset-required'));
+    // Exercise the owned Stop route while the unresolved press is latched.
+    // Final cleanup still runs, including when Stop or the restart check fails.
+    await stop();
     check('stop-start-cannot-clear-fatal-press', await refused(() => ownerRequest({ op: 'start' }),
       error => error?.message?.includes('owner-reset-required')));
     receipt.status = 'PASS';
