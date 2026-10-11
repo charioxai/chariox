@@ -82,9 +82,9 @@ mod history_search_tests {
             .any(|spec| spec.name == "chariox.history.search"));
     }
     #[test]
-    fn public_history_protocol_453_schema_snapshot() {
+    fn public_history_protocol_493_schema_snapshot() {
         use sha2::{Digest, Sha256};
-        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 493);
         let specs = room_runtime_tool_specs();
         let search = specs
             .iter()
