@@ -252,7 +252,8 @@ try {
   }
   const utf16=text=>Buffer.concat([Buffer.from([0xff,0xfe]),Buffer.from(text,'utf16le')])
   const canary=utf16("$env:API_KEY = 'synthetic-canary'\n")
-  const safeScript=utf16("Write-Output 'MP-08 ordinary 🦀'\n")
+  // MP-08/MP-11: ordinary scenarios never unlock a Vault; keep their text UTF-8.
+  const safeScript=Buffer.from("Write-Output 'MP-08 ordinary 🦀'\n")
   const metadata={
     'package.json':JSON.stringify({dependencies:{'js-tokens':'^4.0.0','secret-tool':'^1.0.0'},devDependencies:{'@example/tokenizer':'^2.0.0'}}),
     'package-lock.json':JSON.stringify({lockfileVersion:3,packages:{'':{dependencies:{'js-tokens':'^4.0.0'}},'node_modules/js-tokens':{version:'4.0.0',resolved:'https://registry.npmjs.org/js-tokens/-/js-tokens-4.0.0.tgz',integrity:'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}}}),
@@ -495,7 +496,7 @@ try {
     assert(!JSON.stringify(stdio).includes('synthetic-slot-canary'))
     steps.push({name:'structured-mcp-env-values-omitted',mpItems:['MP-08','MP-10','MP-11']})
   }
-  steps.push({name:'package-lock-counter-and-encoded-overlay-bytes-unchanged',mpItems:['MP-05','MP-08','MP-10','MP-11']})
+  steps.push({name:'package-lock-counter-and-ordinary-overlay-bytes-unchanged',mpItems:['MP-05','MP-08','MP-10','MP-11']})
   }
   await sample()
 } catch(e) {failed=sanitize(e.stack??String(e))}
