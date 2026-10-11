@@ -506,7 +506,7 @@ mod tests {
         fs::write(
             &executable,
             format!(
-                "#!/bin/sh\necho \"$*\" >> '{}'\n[ \"$*\" = 'models --refresh' ] || exit 2\nmkdir -p \"$XDG_CACHE_HOME/opencode\" && echo '{{}}' > \"$XDG_CACHE_HOME/opencode/models.json\"\n",
+                "#!/bin/sh\necho \"$* $XDG_DATA_HOME\" >> '{}'\n[ \"$*\" = 'models --refresh --pure' ] || exit 2\nmkdir -p \"$XDG_CACHE_HOME/opencode\" && echo '{{}}' > \"$XDG_CACHE_HOME/opencode/models.json\"\n",
                 calls.display()
             ),
         )
@@ -525,10 +525,13 @@ mod tests {
                 "opencode/model",
             )
             .with_working_directory(PathBuf::from("/tmp"))
-            .with_provider_account_env(std::collections::BTreeMap::from([(
-                "XDG_CACHE_HOME".to_string(),
-                cache.display().to_string(),
-            )]))
+            .with_provider_account_env(std::collections::BTreeMap::from([
+                ("XDG_CACHE_HOME".to_string(), cache.display().to_string()),
+                (
+                    "XDG_DATA_HOME".to_string(),
+                    root.join("account-data").display().to_string(),
+                ),
+            ]))
         };
         let adapter = ProviderRegistry::new();
         let adapter = adapter
@@ -548,9 +551,11 @@ mod tests {
             warmed,
             "the account models cache should be filled before launch"
         );
+        // Only the cold launch refreshes, and never with the account's data.
+        let scratch = cache.join("chariox-models-refresh/data");
         assert_eq!(
-            recorded, "models --refresh\n",
-            "only the cold launch refreshes"
+            recorded,
+            format!("models --refresh --pure {}\n", scratch.display())
         );
     }
 

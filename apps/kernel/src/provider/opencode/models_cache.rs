@@ -4,7 +4,7 @@
 //! than that snapshot are missing from the run that selected them.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -16,13 +16,18 @@ const REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
 /// servers starts. Best effort: a failure leaves the snapshot catalog, whose
 /// unavailable-model error the run reports as before.
 pub(crate) fn warm_opencode_models_cache(environment: &BTreeMap<String, String>) {
-    let Some(cache) = models_cache_path(environment) else {
+    let Some(cache_root) = environment
+        .get("XDG_CACHE_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    else {
         return;
     };
+    let cache = cache_root.join("opencode").join("models.json");
     if cache.exists() {
         return;
     }
-    let outcome = refresh_models_cache(environment);
+    let outcome = refresh_models_cache(&cache_root);
     crate::logging::info_with_fields(
         "daemon.provider.opencode",
         "refreshed cold OpenCode models cache",
@@ -33,19 +38,39 @@ pub(crate) fn warm_opencode_models_cache(environment: &BTreeMap<String, String>)
     );
 }
 
-fn models_cache_path(environment: &BTreeMap<String, String>) -> Option<PathBuf> {
-    environment
-        .get("XDG_CACHE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(|cache| PathBuf::from(cache).join("opencode").join("models.json"))
+/// The models catalog is account-independent: refresh it without the account's
+/// credentials, configuration or plugins, which can stall inside the sandbox.
+fn refresh_models_cache(cache_root: &Path) -> Result<(), String> {
+    let scratch = cache_root.join("chariox-models-refresh");
+    let _ = std::fs::remove_dir_all(&scratch);
+    let mut environment = BTreeMap::from([(
+        "XDG_CACHE_HOME".to_string(),
+        cache_root.display().to_string(),
+    )]);
+    for (name, directory) in [
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_STATE_HOME", "state"),
+    ] {
+        let path = scratch.join(directory);
+        std::fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+        environment.insert(name.to_string(), path.display().to_string());
+    }
+    let outcome = run_refresh(environment);
+    let _ = std::fs::remove_dir_all(&scratch);
+    outcome
 }
 
-fn refresh_models_cache(environment: &BTreeMap<String, String>) -> Result<(), String> {
+fn run_refresh(environment: BTreeMap<String, String>) -> Result<(), String> {
     let executable = super::resolve_opencode_executable().map_err(|error| error.to_string())?;
     let mut command = crate::provider::managed_isolated_utility_command(
         executable.display().to_string(),
-        vec!["models".to_string(), "--refresh".to_string()],
-        environment.clone(),
+        vec![
+            "models".to_string(),
+            "--refresh".to_string(),
+            "--pure".to_string(),
+        ],
+        environment,
         None,
         "opencode:models-refresh",
     )
