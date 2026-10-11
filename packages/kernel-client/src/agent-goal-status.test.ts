@@ -38,13 +38,15 @@ test("goal waiting row shows a finite countdown without implying completion at z
   assert.match(sessionAgentTaskStatus(session,"a",62000)!.label,/next check 0s/)
 })
 
-// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: unrelated turns cannot hide a goal.
-test("goal row survives peer-message work and counts only its own obligations", () => {
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: active goals win; ordinary work supersedes history.
+test("active goal survives peer work while terminal history yields to ordinary work", () => {
   const goal={task_id:"p",agent_id:"a",prompt_id:"p",state:"waiting",revision:3,obligations:[],wait:{registration_ids:["peer"]},goal:{id:"goal:p",objective:"Review live sites",check_in_minutes:1,active_elapsed_ms:1000,waiting_elapsed_ms:0,state_since_ms:1000,next_check_in_ms:61000,check_count:1}}
   const other={task_id:"message",agent_id:"a",prompt_id:"message",state:"working",revision:1,obligations:[{status:"open"}],wait:null}
   const session={agent_tasks:[goal,other]} as unknown as RuntimeSession
   assert.match(sessionAgentTaskStatus(session,"a",2000)!.label,/GOAL WAITING: Review live sites/)
   assert.match(sessionAgentTaskStatus(session,"a",2000)!.label,/0 obligations/)
   const done={agent_tasks:[{...goal,state:"done",wait:null},other]} as unknown as RuntimeSession
-  assert.match(sessionAgentTaskStatus(done,"a",2000)!.label,/GOAL DONE: Review live sites/)
+  assert.equal(sessionAgentTaskStatus(done,"a",2000)!.label, "WORKING (1 obligations)")
+  const history={...done,agent_tasks:done.agent_tasks!.filter(task=>task.goal)}
+  assert.match(sessionAgentTaskStatus(history,"a",2000)!.label,/GOAL DONE: Review live sites/)
 })
