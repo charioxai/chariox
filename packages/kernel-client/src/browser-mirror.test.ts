@@ -95,3 +95,18 @@ test('MP-08/MP-11: keys following native focus progress use the guarded native i
  event('click',{});event('keydown',{key:'ArrowRight'});await renderer.inputChain;
  assert.deepEqual(actions.slice(-2),[{kind:'click',node_id:'n1'},{kind:'key',key:'ArrowRight'}],'explicit pointer progress clears native keyboard mode');
 });
+
+for (const kind of ['element','tile'] as const) test(`MP-08/MP-09/MP-10/MP-11: rich-editor paste forwards plaintext once through ${kind} text route`,async()=>{
+ const listeners=new Map<string,EventListener>(),node={} as Node,actions:unknown[]=[];
+ const doc={addEventListener(kind:string,fn:EventListener){listeners.set(kind,fn)},removeEventListener(){}};
+ const renderer=Object.create(BrowserMirrorRenderer.prototype) as any;
+ Object.assign(renderer,{documentBindings:new Map(),disposed:false,applying:false,sequence:1,documentId:'d',inputChain:Promise.resolve(),pendingInputs:0,localFocus:null,nativeFocus:null,doc:null,ids:new WeakMap([[node,'n1']]),records:new Map([['n1',{id:'n1',kind,...(kind==='tile'?{reason:'observer_bounds_or_unavailable'}:{})}]]),input:async(action:unknown)=>{actions.push(action)},failure:(error:unknown)=>{throw error}});
+ renderer.bindEvents(doc);
+ const formats:string[]=[];
+ const event=new Event('beforeinput',{cancelable:true});
+ Object.assign(event,{inputType:'insertFromPaste',data:null,isComposing:false,dataTransfer:{getData(format:string){formats.push(format);return format==='text/plain'?'actual pasted text':'<b>HTML must not be forwarded</b>'}}});
+ Object.defineProperty(event,'composedPath',{value:()=>[node]});listeners.get('beforeinput')!(event);await renderer.inputChain;
+ assert.equal(event.defaultPrevented,true);
+ assert.deepEqual(formats,['text/plain']);
+ assert.deepEqual(actions,[kind==='tile'?{kind:'coordinate',input:{kind:'text',text:'actual pasted text'}}:{kind:'text',node_id:'n1',text:'actual pasted text'}]);
+});
