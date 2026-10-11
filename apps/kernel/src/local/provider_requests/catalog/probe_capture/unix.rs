@@ -34,7 +34,17 @@ pub(super) struct Process {
 
 impl Process {
     pub(super) fn spawn(command: &mut Command) -> io::Result<Self> {
-        command.process_group(0);
+        // MP-08 / MP-10 / MP-11: a separate session prevents unrelated
+        // siblings joining the group used to discover reparented helpers.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
         let process = Self {
             child: command.spawn()?,
             stopped: false,
