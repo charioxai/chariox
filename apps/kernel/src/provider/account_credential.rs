@@ -23,7 +23,9 @@ pub(crate) fn provider_account_credential_id(
     let identity = format!(
         "{}\0{}\0{}",
         owner_user_id.trim(),
-        provider.trim().to_ascii_lowercase(),
+        crate::provider::canonical_provider_family(provider)
+            .map(str::to_string)
+            .unwrap_or_else(|| provider.trim().to_ascii_lowercase()),
         profile_id.trim()
     );
     let digest = Sha256::digest(identity.as_bytes());
@@ -250,6 +252,13 @@ mod tests {
         let second = provider_account_credential_id("local", "claude", "Work account");
 
         assert_eq!(first, second);
+        // MP-08/MP-10/MP-11: all Claude adapters use one account credential.
+        for mode in ["claude-p", "claude-headless"] {
+            assert_eq!(
+                first,
+                provider_account_credential_id("local", mode, "Work account")
+            );
+        }
         assert!(first.starts_with("provider-account-claude-"));
         assert!(first
             .bytes()
@@ -354,6 +363,19 @@ mod tests {
             "work",
         )
         .expect("provider credential should resolve");
+        for mode in ["claude-p", "claude-headless"] {
+            let resolved = resolve_provider_account_credentials(
+                &crate::config::DaemonConfig::for_tests(),
+                "local",
+                mode,
+                "work",
+            )
+            .expect("Claude modes must resolve the canonical account credential");
+            assert!(
+                !resolved.is_empty(),
+                "MP-08/MP-10 missing credential for {mode}"
+            );
+        }
         let values = environment.iter().collect::<Vec<_>>();
         assert_eq!(values, vec![(CLAUDE_OAUTH_TOKEN_ENV, "setup-token-secret")]);
         assert!(!format!("{environment:?}").contains("setup-token-secret"));
