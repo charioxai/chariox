@@ -1093,7 +1093,7 @@ fn same_agent_profile_update_keeps_active_provider_run() {
                 session.id(),
                 "dev-stub",
                 "codex",
-                profile.profile_id(),
+                &profile.profile_id,
                 &model,
             )
             .with_agent_id(agent.id()),
