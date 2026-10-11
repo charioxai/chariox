@@ -811,9 +811,7 @@ impl KernelRuntimeState {
         unexpected_response_message: &'static str,
     ) -> RemotePromptSubmissionAttempt {
         let agent_id = dispatch.agent_id.clone();
-        #[cfg(test)]
         let prompt_id = dispatch.prompt_id.clone();
-        #[cfg(test)]
         let closure_prompt_id = prompt_id.clone();
         let expected_leased_agent_id = dispatch.leased_agent_id.clone();
         let hidden_system_context = dispatch.hidden_system_context.clone();
@@ -883,6 +881,15 @@ impl KernelRuntimeState {
                     daemon_id: Some(remote_execution.worker_kernel_id.clone()),
                     daemon_alias: None,
                 };
+                let relay_state = callback_state.connected_relay_state_for_config(&config).await;
+                let hidden_system_context = callback_state.owned.remote_prompt_hidden_context(
+                    &agent,
+                    &remote_execution.leased_agent_id,
+                    &closure_prompt_id,
+                    &hidden_system_context,
+                    workflow_context.is_some(),
+                    native_provider_run,
+                )?;
                 let request = RelayPeerRequest::SubmitLeasedPrompt {
                     leased_agent_id: remote_execution.leased_agent_id,
                     expected_profile:
@@ -897,7 +904,6 @@ impl KernelRuntimeState {
                     remote_extension_manifest: manifest,
                     provider_launch_credential,
                 };
-                let relay_state = callback_state.connected_relay_state_for_config(&config).await;
                 match relay_state {
                     Some(relay_state) => {
                         #[cfg(test)]

@@ -50,11 +50,11 @@ pub(crate) use account_credential::{
     CLAUDE_OAUTH_TOKEN_ENV,
 };
 pub(crate) use claude::probe_claude_account_usage;
-pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
-    ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
-    CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+    claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits,
+    CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS, CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
 };
+pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
 pub(crate) use claude_runtime::ClaudeRuntimeState;

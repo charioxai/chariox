@@ -27,6 +27,15 @@ const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 = 360;
 const _: () =
     assert!(CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS > CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS);
 
+/// The bytes one more section can add to `hidden_context`, separator included,
+/// and still fit the chunked hook delivery. Every chunk but the last closes at
+/// least 5,997 bytes in, because a UTF-8 scalar is at most four bytes.
+pub(crate) fn claude_native_hidden_context_room(hidden_context: &str) -> usize {
+    let used = hidden_context.trim().len();
+    (CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS * (CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES - 3))
+        .saturating_sub(used + if used == 0 { 0 } else { 2 })
+}
+
 pub(crate) fn ensure_claude_native_hidden_context_fits(
     provider_run_id: &str,
     hidden_context: &str,

@@ -51,8 +51,63 @@ pub(super) fn build_agent_context_handoff(events: &[HistoryEvent]) -> Option<Str
     Some(truncate_chars(&lines.join("\n"), MAX_HANDOFF_CHARS))
 }
 
+// MP-08 / MP-10 / MP-11: additive bounded rendering for recreated leases.
+// Keep the main branch's local profile-switch builder contract unchanged.
+pub(super) fn build_recreated_lease_context(
+    events: &[HistoryEvent],
+    prompt_id: &str,
+    max_bytes: usize,
+) -> Option<String> {
+    let mut turns = collect_turns(events);
+    if turns
+        .last()
+        .is_some_and(|turn| turn.prompt_id.as_deref() == Some(prompt_id))
+    {
+        if turns.last().is_some_and(|turn| turn.has_provider_attempt) {
+            turns.last_mut()?.user_prompt.clear();
+        } else {
+            turns.pop();
+        }
+    }
+    let latest = turns.pop()?;
+    const OPEN: &str = "<chariox_context_handoff>\nChariox reconstructed this bounded background from home history after worker lease recreation. The active user request is supplied separately.\n\n";
+    const CLOSE: &str = "\n</chariox_context_handoff>";
+    const LATEST: &str = "Latest turn:\n";
+    const PRIOR: &str = "Prior turns:\n";
+    let mut room = max_bytes.checked_sub(OPEN.len() + CLOSE.len() + LATEST.len())?;
+    let latest_text = truncate_bytes(&format_latest_turn(&latest), room);
+    if latest_text.trim().is_empty() {
+        return None;
+    }
+    room -= latest_text.len();
+    let prior_text = truncate_bytes(
+        &format_prior_turns(&turns),
+        room.saturating_sub(PRIOR.len() + 2),
+    );
+    let mut packet = OPEN.to_string();
+    if !prior_text.is_empty() {
+        packet.push_str(PRIOR);
+        packet.push_str(&prior_text);
+        packet.push_str("\n\n");
+    }
+    packet.push_str(LATEST);
+    packet.push_str(&latest_text);
+    packet.push_str(CLOSE);
+    Some(packet)
+}
+
+fn truncate_bytes(text: &str, max_bytes: usize) -> String {
+    let mut end = max_bytes.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
 #[derive(Debug, Clone, Default)]
 struct HandoffTurn {
+    prompt_id: Option<String>,
+    has_provider_attempt: bool,
     user_prompt: String,
     assistant_outputs: Vec<String>,
     latest_details: Vec<String>,
@@ -67,6 +122,8 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
             HistoryEventKind::UserPrompt => {
                 if let Some(content) = non_empty_content(&event) {
                     turns.push(HandoffTurn {
+                        prompt_id: event.prompt_id.clone(),
+                        has_provider_attempt: false,
                         user_prompt: content,
                         assistant_outputs: Vec::new(),
                         latest_details: Vec::new(),
@@ -75,6 +132,7 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
             }
             HistoryEventKind::ProviderOutput => {
                 if let (Some(turn), Some(content)) = (turns.last_mut(), non_empty_content(&event)) {
+                    turn.has_provider_attempt = true;
                     turn.assistant_outputs.push(content);
                 }
             }
@@ -83,6 +141,7 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
             | HistoryEventKind::ProviderStatus
             | HistoryEventKind::Notice => {
                 if let (Some(turn), Some(content)) = (turns.last_mut(), non_empty_content(&event)) {
+                    turn.has_provider_attempt |= event.kind != HistoryEventKind::Notice;
                     turn.latest_details.push(format!(
                         "{}: {}",
                         event_kind_label(event.kind),
@@ -251,6 +310,58 @@ mod tests {
 
         assert!(handoff.len() <= MAX_HANDOFF_CHARS + "[truncated]".len() + 1);
         assert!(handoff.contains("important latest prompt"));
+    }
+
+    #[test]
+    fn recreated_lease_excludes_unsubmitted_current_prompt() {
+        let mut current = user_event(3, "session", "agent", "current request");
+        current.prompt_id = Some("current".into());
+        let events = vec![
+            user_event(1, "session", "agent", "accepted goal"),
+            output_event(2, "session", "agent", "old-run", "earlier answer"),
+            current,
+        ];
+        let packet = build_recreated_lease_context(&events, "current", 24_000).unwrap();
+        assert!(packet.contains("accepted goal"));
+        assert!(packet.contains("earlier answer"));
+        assert!(!packet.contains("current request"));
+    }
+
+    #[test]
+    fn recreated_lease_keeps_interrupted_attempt_details_without_duplicate_request() {
+        let mut current = user_event(1, "session", "agent", "retry request");
+        current.prompt_id = Some("current".into());
+        let events = vec![
+            current,
+            tool_event(2, "session", "agent", "old-run", "partial work"),
+        ];
+        let packet = build_recreated_lease_context(&events, "current", 24_000).unwrap();
+        assert!(packet.contains("partial work"));
+        assert!(!packet.contains("retry request"));
+    }
+
+    #[test]
+    fn recreated_lease_budget_preserves_utf8_and_frame_with_native_context() {
+        let events = vec![user_event(
+            1,
+            "session",
+            "agent",
+            &"🦀日本語".repeat(10_000),
+        )];
+        for room in [0, 100, 250, 500, 24_000] {
+            if let Some(packet) = build_recreated_lease_context(&events, "current", room) {
+                assert!(packet.len() <= room);
+                assert!(packet.ends_with("</chariox_context_handoff>"));
+            }
+        }
+        let hidden = "🦀".repeat(10_000);
+        let room = crate::provider::claude_native_hidden_context_room(&hidden);
+        let packet = build_recreated_lease_context(&events, "current", room).unwrap();
+        crate::provider::ensure_claude_native_hidden_context_fits(
+            "recreated-worker-run",
+            &format!("{hidden}\n\n{packet}"),
+        )
+        .unwrap();
     }
 
     fn user_event(sequence: u64, session_id: &str, agent_id: &str, prompt: &str) -> HistoryEvent {

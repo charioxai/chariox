@@ -17,6 +17,8 @@ The context packet is bounded and prioritized:
 3. Stable facts and status/error details are included only for the latest turn.
 4. Tool use is included only for the latest turn. Older tool output is excluded.
 
+MP-08 / MP-10 / MP-11: when a worker restart recreates its lease, the home reconstructs its protected conversation into the existing hidden prompt context before the first worker submission. An active worker run or output from the current lease keeps native continuity without replaying the home packet. The user prompt and home history remain unchanged; fresh workflow turns keep their separate context contract.
+
 ## Phases
 
 ### Phase 1: Deterministic Handoff Builder
