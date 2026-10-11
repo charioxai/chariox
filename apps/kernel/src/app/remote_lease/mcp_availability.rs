@@ -65,9 +65,30 @@ fn validate_worker_mcp_runtime(
     }
 }
 
+// MP-08 / MP-10: admission compares the same MCP inputs used at launch.
+pub(super) fn leased_provider_mcp_servers(
+    required_mcps: &[RequiredRemoteMcp],
+    manifest: &crate::extension::RemoteExtensionManifest,
+) -> Vec<crate::mcp::CharioxMcpServerConfig> {
+    let mut servers = required_mcps
+        .iter()
+        .map(|required| required.config.clone())
+        .collect::<Vec<_>>();
+    for name in manifest.home_proxy_mcp_server_names() {
+        if !servers.iter().any(|server| server.name == name) {
+            servers.push(crate::mcp::CharioxMcpServerConfig::streamable_http(
+                name,
+                "http://127.0.0.1/mcp",
+            ));
+        }
+    }
+    servers
+}
+
 pub(super) fn provider_run_mcp_set_matches(
     run: &RuntimeProviderRun,
     required_mcps: &[RequiredRemoteMcp],
+    manifest: &crate::extension::RemoteExtensionManifest,
 ) -> Result<bool, DaemonError> {
     if run.state() == ProviderRunState::Ended {
         return Ok(false);
@@ -77,15 +98,10 @@ pub(super) fn provider_run_mcp_set_matches(
         .iter()
         .map(|config| Ok((config.name.clone(), config.definition_hash()?)))
         .collect::<Result<Vec<_>, DaemonError>>()?;
-    let mut required = required_mcps
+    let mut required = leased_provider_mcp_servers(required_mcps, manifest)
         .iter()
-        .map(|required| {
-            (
-                required.config.name.clone(),
-                required.definition_hash.clone(),
-            )
-        })
-        .collect::<Vec<_>>();
+        .map(|config| Ok((config.name.clone(), config.definition_hash()?)))
+        .collect::<Result<Vec<_>, DaemonError>>()?;
     current.sort();
     required.sort();
     Ok(current == required)

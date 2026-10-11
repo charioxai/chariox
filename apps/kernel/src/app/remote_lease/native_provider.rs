@@ -9,6 +9,7 @@ use crate::provider::{
 };
 use crate::transport::relay_peer::RequiredRemoteMcp;
 
+use super::mcp_availability::leased_provider_mcp_servers;
 use super::RemoteLeaseRuntime;
 
 fn leased_native_source_attachment_id(leased_agent_id: &str, attachment_id: &str) -> String {
@@ -72,24 +73,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
         .with_owner_user_id(lease.owner_user_id)
         .with_working_directory(PathBuf::from(backing_session.worktree_id()))
         .with_client_interface(ProviderClientInterface::NativeTui)
-        .with_mcp_servers(
-            required_mcps
-                .iter()
-                .map(|required| required.config.clone())
-                .collect(),
-        )
+        .with_mcp_servers(leased_provider_mcp_servers(
+            &required_mcps,
+            &remote_extension_manifest,
+        ))
         .with_remote_extension_manifest(remote_extension_manifest.clone())
         .with_variant(variant);
-        let mut mcp_servers = request.mcp_servers.clone();
-        for name in remote_extension_manifest.home_proxy_mcp_server_names() {
-            if !mcp_servers.iter().any(|server| server.name == name) {
-                mcp_servers.push(crate::mcp::CharioxMcpServerConfig::streamable_http(
-                    name,
-                    "http://127.0.0.1/mcp",
-                ));
-            }
-        }
-        request = request.with_mcp_servers(mcp_servers);
         if let Some(execution_mode) = leased_agent.execution_mode {
             request = request.with_execution_mode(execution_mode);
         }

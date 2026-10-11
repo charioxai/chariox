@@ -246,3 +246,57 @@ fn native_catalog_waits_for_observed_refresh_and_keeps_the_attached_run_identity
         );
     }
 }
+
+// MP-08 / MP-10 / MP-11: home MCP proxies are launch inputs too.
+#[test]
+fn native_home_proxy_mcp_is_reused_across_idle_and_busy_admission() {
+    use crate::mcp::CharioxMcpServerConfig;
+    let (mut app, lease) = leased_agent_fixture(false);
+    let mut manifest = catalog("1:first");
+    manifest.tools[0].kind = ExtensionKind::Mcp;
+    manifest.tools[0].name = "home-fetch".into();
+    manifest.tools[0].tool_name = "home-fetch".into();
+    let native = app
+        .providers_mut()
+        .launch_run_detached(
+            LaunchProviderRequest::new(
+                &lease.backing_session_id,
+                "dev-stub",
+                &lease.provider,
+                &lease.account_profile,
+                lease.model.as_deref().unwrap_or("default"),
+            )
+            .with_agent_id(&lease.backing_agent_id)
+            .with_variant(lease.effort.clone())
+            .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
+            .with_mcp_servers(vec![CharioxMcpServerConfig::streamable_http(
+                "home-fetch",
+                "http://127.0.0.1/mcp",
+            )])
+            .with_remote_extension_manifest(manifest.clone()),
+        )
+        .unwrap();
+    for busy in [false, true] {
+        if busy {
+            sync_active_prompt(&mut app, &lease);
+        }
+        let prepared = RemoteLeaseRuntime::new(&mut app).prepare_leased_provider_run_matches_mcps(
+            &lease,
+            &[],
+            &manifest,
+        );
+        assert!(
+            matches!(&prepared, Ok(super::super::provider_run::LeasedProviderRunMatch::Ready(id)) if id == native.id()),
+            "unchanged home proxy must keep the attached native run, busy={busy}, result={}",
+            match &prepared {
+                Ok(super::super::provider_run::LeasedProviderRunMatch::Ready(id)) => id.clone(),
+                Ok(_) => "LaunchRequired".into(),
+                Err(e) => format!("{e:?}"),
+            }
+        );
+        assert_eq!(
+            app.providers().get_run(native.id()).unwrap().state(),
+            ProviderRunState::Running
+        );
+    }
+}
