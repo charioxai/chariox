@@ -186,3 +186,23 @@ The paired Web launcher loads this helper from `CHARIOX_OSS_REPO`; select matchi
 OSS and Cloud branches. The OSS wait remains interruptible during a long budget.
 Tests exercise eight-hour and 24-hour configurations without sleeping for those
 durations. They are configuration/cancellation evidence, not completed soak runs.
+
+### MP-08 / MP-10 / MP-11: native Claude cancellation receipt
+
+Run the actual remote-rendered native Claude client against the home kernel and
+its Docker slice, with a product-linked Claude account, hosted WSS, and a real
+public documentation/repository research turn. While that exact turn is active,
+press Escape in the native client. Within 20 seconds the same home prompt must
+be Cancelled and the agent Idle, with no active turn. Its terminal completion
+must reach the attached web and native clients. The official Claude display must
+show interruption and accept a subsequent prompt on the same leased run.
+
+Record the exact source/binary identities, native screen, home/web screenshots,
+input-to-settlement duration and cleanup. Repeat ordinary home-worker and managed
+slice cases over the shaped WAN at DPR 1 and 2, then retain the corrected-source
+two-hour reconnect/attach session. Source fixtures alone do not accept these cells.
+
+Claude user interruption does not emit Stop. The kernel sends native Escape and
+uses the timestamped interruption transcript record, through the existing
+deferred transcript drain, only for the current run's matching Cancelling prompt.
+Verify stale receipts, a superseded run and an uncancelled prompt cannot settle it.

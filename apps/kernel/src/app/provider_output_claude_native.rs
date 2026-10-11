@@ -18,6 +18,7 @@ use crate::session::{
 use crate::terminal::TerminalOutputKind;
 
 mod attachments;
+mod interruption;
 mod permission;
 #[cfg(test)]
 mod tests;
@@ -391,9 +392,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 else {
                     continue;
                 };
-                // Claude emits this synthetic UserPromptSubmit hook when its
-                // process is interrupted. It is provider control state, not a
-                // user prompt, and must never create a zero-duration turn.
+                // Provider control text must not create a user turn. Native
+                // interruption is observed from the timestamped transcript;
+                // this guard also excludes control text reported by a hook.
                 if claude_native_prompt_is_internal_control(prompt) {
                     continue;
                 }
@@ -653,13 +654,20 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         context_file: &str,
         mark_next_headless_prompt_ready: bool,
     ) -> Result<(), DaemonError> {
-        if self
+        if let Some(prompt) = self
             .app
             .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
-            .is_some()
         {
-            self.app
-                .complete_active_prompt(session_id, agent_id, Some(provider_run_id))?;
+            if prompt.status() == crate::session::PromptStatus::Cancelling {
+                self.app.finalize_active_prompt_cancellation(
+                    session_id,
+                    agent_id,
+                    Some(provider_run_id),
+                )?;
+            } else {
+                self.app
+                    .complete_active_prompt(session_id, agent_id, Some(provider_run_id))?;
+            }
         }
         let _ = fs::write(context_file, "");
         write_claude_native_marker(context_file, "");
@@ -756,6 +764,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             drain_claude_transcript_raw_since(&path, &raw, &mut cursor, minimum_timestamp_ms);
         save_claude_transcript_cursor(context_file, &cursor);
         let terminal_failure = drain.terminal_failure.clone();
+        if let Some(observed_at_ms) = drain.interrupted_at_ms {
+            interruption::mark_native_interruption_for_cancellation(
+                self.app,
+                session_id,
+                provider_run_id,
+                context_file,
+                observed_at_ms,
+            )?;
+        }
         let active_prompt_id = self
             .app
             .providers
@@ -1353,6 +1370,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         else {
             return Ok(());
         };
+        if prompt.status() == crate::session::PromptStatus::Cancelling {
+            return Ok(());
+        }
         if claude_native_marker(context_file)
             .as_deref()
             .and_then(claude_native_dispatch_prompt_id)

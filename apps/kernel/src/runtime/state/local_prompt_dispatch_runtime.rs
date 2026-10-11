@@ -4581,14 +4581,24 @@ impl KernelRuntimeState {
                     dispatch.prompt_id.clone(),
                 );
             }
+            let abort_input = crate::provider::provider_prompt_abort_input(&provider_run);
+            let requested_at_ms = crate::session::unix_epoch_ms();
             owned.terminal_stream.record_input(
                 &dispatch.session_id,
                 &dispatch.provider_run_id,
                 &dispatch.source_attachment_id,
-                b"\x03",
+                abort_input,
             );
             self.with_app_side_effect(|app| {
-                app.write_provider_pty_input_for_runtime(&dispatch.provider_run_id, b"\x03")
+                app.write_provider_pty_input_for_runtime(&dispatch.provider_run_id, abort_input)?;
+                if crate::provider::provider_run_is_claude_native_tui(&provider_run) {
+                    app.active_turns.mark_interruption_requested(
+                        &dispatch.provider_run_id,
+                        &dispatch.prompt_id,
+                        requested_at_ms,
+                    );
+                }
+                Ok(())
             })
             .await?;
             Ok(())
@@ -4747,6 +4757,11 @@ impl KernelRuntimeState {
                         .provider_store
                         .run_uses_structured_prompt_io(&run)
                 });
+            let native_claude = state
+                .owned
+                .provider_store
+                .get_run(&dispatch.provider_run_id)
+                .is_ok_and(|run| crate::provider::provider_run_is_claude_native_tui(&run));
             loop {
                 let completion_signal =
                     structured.then(|| state.owned.provider_store.run_actor_completion_signal());
@@ -4755,6 +4770,9 @@ impl KernelRuntimeState {
                     .map(|signal| signal.sequence())
                     .unwrap_or_default();
                 let outcome = match state.enqueue_prompt_abort(&dispatch).await {
+                    // Native Claude acknowledges Escape in its transcript, without Stop.
+                    // The native bridge owns settlement after that receipt is drained.
+                    Ok(()) if native_claude => PromptAbortDispatchOutcome::Done,
                     Ok(()) if !structured => {
                         if let Some((agent_id, prompt)) = state.owned.cancelling_prompt_for_abort(
                             &dispatch.session_id,

@@ -191,6 +191,20 @@ pub(crate) fn provider_run_is_claude_headless(run: &RuntimeProviderRun) -> bool 
     run.adapter_key() == "claude" && run.provider() == "claude-headless"
 }
 
+pub(crate) fn provider_run_is_claude_native_tui(run: &RuntimeProviderRun) -> bool {
+    run.adapter_key() == "claude"
+        && run.provider() == "claude"
+        && run.client_interface() == ProviderClientInterface::NativeTui
+}
+
+pub(crate) fn provider_prompt_abort_input(run: &RuntimeProviderRun) -> &'static [u8] {
+    if provider_run_is_claude_native_tui(run) {
+        b"\x1b"
+    } else {
+        b"\x03"
+    }
+}
+
 pub(crate) fn provider_run_uses_claude_native_bridge(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "claude"
         && (!run.client_interface().is_chariox() || provider_run_is_claude_headless(run))

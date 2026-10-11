@@ -127,6 +127,7 @@ pub(crate) struct ActiveTurnState {
     pub(crate) started_at_ms: u64,
     pub(crate) phase: ActiveTurnPhase,
     pub(crate) settlement_requested: bool,
+    pub(crate) interruption_requested_at_ms: Option<u64>,
     // A durable completion failed after authoritative completion was accepted.
     // Unlike assistant-message completion, this allows retry without another
     // provider end event. It belongs to this exact prompt and provider run.
@@ -154,6 +155,7 @@ impl ActiveTurnState {
             started_at_ms: crate::session::unix_epoch_ms(),
             phase: ActiveTurnPhase::Accepted,
             settlement_requested: false,
+            interruption_requested_at_ms: None,
             completion_retry_observed_at_ms: None,
             completion_retry_attempt: 0,
         }
@@ -247,6 +249,24 @@ impl ActiveTurnStore {
             }
             turn.settlement_requested = true;
             record_active_turn_event(turn, "active_turn_mark_settling", true);
+        }
+    }
+
+    pub(crate) fn mark_interruption_requested(
+        &self,
+        provider_run_id: &str,
+        prompt_id: &str,
+        requested_at_ms: u64,
+    ) {
+        if let Some(turn) = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(provider_run_id)
+        {
+            if turn.prompt_id == prompt_id {
+                turn.interruption_requested_at_ms = Some(requested_at_ms);
+            }
         }
     }
 
@@ -399,6 +419,9 @@ fn merge_active_turn_start(
             incoming.external_observed_id = existing.external_observed_id.clone();
         }
         incoming.settlement_requested |= existing.settlement_requested;
+        incoming.interruption_requested_at_ms = incoming
+            .interruption_requested_at_ms
+            .or(existing.interruption_requested_at_ms);
         if existing.completion_retry_observed_at_ms.is_some() {
             incoming.completion_retry_observed_at_ms = existing.completion_retry_observed_at_ms;
             incoming.completion_retry_attempt = existing.completion_retry_attempt;
