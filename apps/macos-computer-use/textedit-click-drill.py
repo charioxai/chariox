@@ -126,11 +126,15 @@ def run():
         code = 0 if len(checks) == 4 and all(checks) else 1
         verdict = 'PASS: all four real TextEdit caret comparisons agree with AX bounds and AppKit.' if code == 0 else verdict
     except Exception as error:
+        code = 1
         verdict = f'FAIL: {error}'
     finally:
         if lease and warped is not None:
             lease.restore()
-        if scope and not (lease and lease.retired):
+        if scope and lease and lease.retired:
+            code = 1
+            verdict = f'FAIL: cleanup incomplete: pointer lease retired; {verdict}'
+        elif scope:
             try:
                 reference(evidence, 'close', scope, document, close=True)
                 deadline = time.monotonic() + 2
