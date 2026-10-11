@@ -3,6 +3,22 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { sessionAgentTaskStatus } from "./session-runtime-status.js"
 import type { RuntimeSession } from "./kernel-types-session.js"
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: long objectives cannot consume the terminal.
+test("goal row keeps countdown and source count compact for long real requests", () => {
+  const objective = "Review the current public sites and independently verify artifacts. ".repeat(50)
+  const session = { agent_tasks: [{ task_id: "p", agent_id: "a", prompt_id: "p", state: "waiting",
+    revision: 3, obligations: [], wait: { registration_ids: ["completion-" + "source-".repeat(50)] },
+    goal: { id: "goal:p", objective, check_in_minutes: 1, active_elapsed_ms: 1000,
+      waiting_elapsed_ms: 0, state_since_ms: 1000, next_check_in_ms: 61000, check_count: 1 },
+  }] } as unknown as RuntimeSession
+  const row = sessionAgentTaskStatus(session, "a", 2000)!
+  assert(row.label.length < 600, "Goal footer must leave space for the transcript")
+  assert.match(row.label.split("\n")[1]!, /^next check 59s/)
+  assert.match(row.label, /sources 1/)
+  assert.equal(session.agent_tasks![0]!.goal!.objective, objective, "display shortening cannot change the objective")
+})
+
 test("goal row exposes objective, evaluation, elapsed, check-in and revision controls", () => {
   const session = { agent_tasks: [{ task_id: "p", agent_id: "a", prompt_id: "check", pending_prompt_id: null, state: "working", revision: 3, reason: "", obligations: [], wait: null,
     goal: { id: "goal:p", objective: "Implement delegated work", objective_revision: 1, check_in_minutes: 1,

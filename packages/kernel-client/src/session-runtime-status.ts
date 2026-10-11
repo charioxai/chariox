@@ -351,9 +351,11 @@ export function sessionAgentTaskStatus(session: RuntimeSession | null | undefine
     const active = goal.active_elapsed_ms + (task.state === "working" ? elapsed : 0)
     const waiting = goal.waiting_elapsed_ms + (task.state === "waiting" ? elapsed : 0)
     const seconds = (ms: number) => `${Math.floor(ms / 1000)}s`
-    const deadline = goal.next_check_in_ms ? ` · next check ${Math.max(0, Math.ceil((goal.next_check_in_ms - nowMs) / 1000))}s (${new Date(goal.next_check_in_ms).toISOString()})` : ""
-    const sources = task.wait?.registration_ids.join(", ") ?? "none"
-    return { label: `GOAL ${phase}: ${goal.objective}\nactive ${seconds(active)} · wait ${seconds(waiting)} · ${goal.check_in_minutes}m · check ${goal.check_count} · sources ${sources}${deadline} · progress ${task.progress_sequence ?? 0} at ${task.last_progress_at_ms ? new Date(task.last_progress_at_ms).toISOString() : "none"} · ${open} obligations${task.reason ? ` · ${task.reason}` : ""}\n${goal.id} revision ${task.revision} · /goal pause | resume | cancel | interval <minutes> | edit <objective>`, tone: task.state === "blocked" ? "error" : task.state === "working" ? "working" : "idle" }
+    const deadline = goal.next_check_in_ms ? `${Math.max(0, Math.ceil((goal.next_check_in_ms - nowMs) / 1000))}s (${new Date(goal.next_check_in_ms).toISOString()})` : "none"
+    const sources = task.wait?.registration_ids.length ?? 0
+    const objective = [...goal.objective.replace(/\s+/g, " ").trim()]
+    const title = objective.length > 160 ? objective.slice(0, 159).join("") + "…" : objective.join("")
+    return { label: `GOAL ${phase}: ${title}\nnext check ${deadline} · active ${seconds(active)} · wait ${seconds(waiting)} · ${goal.check_in_minutes}m · check ${goal.check_count}\nsources ${sources} · progress ${task.progress_sequence ?? 0} at ${task.last_progress_at_ms ? new Date(task.last_progress_at_ms).toISOString() : "none"} · ${open} obligations${task.reason ? ` · ${task.reason}` : ""}\n${goal.id} revision ${task.revision} · /goal pause | resume | cancel | interval <minutes> | edit <objective>`, tone: task.state === "blocked" ? "error" : task.state === "working" ? "working" : "idle" }
   }
   if (task.state === "waiting") {
     const deadline = task.wait?.deadline_ms
