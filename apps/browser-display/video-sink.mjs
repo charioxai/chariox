@@ -3,7 +3,7 @@
 export class VideoSink {
  constructor(canvas,onTiming){
   this.canvas=canvas;this.onTiming=onTiming;this.pending=[];this.closed=false;this.overlayActive=false;
-  this.visibility=()=>{if(canvas.ownerDocument?.hidden){if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.raf=undefined;commitHidden(this.pending);}};
+  this.visibility=()=>{if(canvas.ownerDocument?.hidden){if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.commitPending(false);}};
   canvas.ownerDocument?.addEventListener?.('visibilitychange',this.visibility);
  }
  setup(decoder){
@@ -59,27 +59,27 @@ export class VideoSink {
    this.pending.push({image,frame,decodedAt,resolve});
    if(this.raf!==undefined)return;
    const view=this.canvas.ownerDocument?.defaultView??globalThis;
-   const commit=()=>{
-    this.raf=undefined;const jobs=this.pending.splice(0),latest=jobs.at(-1);
-    if(!latest)return;
-    if(!this.closed){
-     const {image,frame}=latest;
-     const target=this.video??this.canvas;
-     if(target.width!==frame.width)target.width=frame.width;
-     if(target.height!==frame.height)target.height=frame.height;
-     target.getContext('2d').drawImage(image,0,0,frame.width,frame.height);
-     if(this.video&&this.keyPending){this.canvas.style.opacity='0';this.overlayActive=false;this.keyPending=false;}
-     this.remember(image);
-    }
-    const committedAt=performance.timeOrigin+performance.now();
-    for(const job of jobs){const drawn=!this.closed&&job===latest;job.resolve({drawn,decodedAt:job.decodedAt,committedAt});if(!drawn&&!this.closed)this.onTiming('client_present_drop',job.decodedAt);}
-   };
-   // Hidden documents cannot run rAF. Settle without drawing; the presenter
-   // validates the output and owns its retirement, including skipped frames.
-   if(this.canvas.ownerDocument?.hidden){commitHidden(this.pending);return;}
+   // Hidden documents cannot run rAF. Preserve their latest base immediately:
+   // the presenter advances/ACKs the cursor and retires the borrowed images.
+   if(this.canvas.ownerDocument?.hidden){this.commitPending(false);return;}
    this.cancelRaf=view.cancelAnimationFrame?.bind(view)??clearTimeout;
+   const commit=()=>this.commitPending(!this.canvas.ownerDocument?.hidden);
    this.raf=view.requestAnimationFrame?view.requestAnimationFrame(commit):setTimeout(commit,0);
   });
+ }
+ commitPending(visible){
+  this.raf=undefined;const jobs=this.pending.splice(0),latest=jobs.at(-1);
+  if(!latest)return;
+  if(!this.closed){
+   const {image,frame}=latest,target=this.video??this.canvas;
+   if(target.width!==frame.width)target.width=frame.width;
+   if(target.height!==frame.height)target.height=frame.height;
+   target.getContext('2d').drawImage(image,0,0,frame.width,frame.height);
+   if(this.video&&this.keyPending){this.canvas.style.opacity='0';this.overlayActive=false;this.keyPending=false;}
+   this.remember(image);
+  }
+  const committedAt=visible?performance.timeOrigin+performance.now():undefined;
+  for(const job of jobs){const drawn=!this.closed&&visible&&job===latest;job.resolve({drawn,decodedAt:job.decodedAt,committedAt});if(!drawn&&!this.closed)this.onTiming('client_present_drop',job.decodedAt);}
  }
  remember(image){this.last?.close();this.last=image.clone?.();}
  overlay(frame){
