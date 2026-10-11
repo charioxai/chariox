@@ -6,8 +6,11 @@
 use super::*;
 
 #[cfg(test)]
+type WorkflowQueueAdmissionHook = Box<dyn FnOnce(&str)>;
+
+#[cfg(test)]
 thread_local! {
-    pub(super) static AFTER_WORKFLOW_QUEUE_ADMISSION: std::cell::RefCell<Option<Box<dyn FnOnce(&str)>>> = std::cell::RefCell::new(None);
+    pub(super) static AFTER_WORKFLOW_QUEUE_ADMISSION: std::cell::RefCell<Option<WorkflowQueueAdmissionHook>> = std::cell::RefCell::new(None);
 }
 
 impl KernelRuntimeOwnedState {

@@ -1538,7 +1538,7 @@ fn run_worker_setup_steps_until(
             || should_cancel(),
             Some(overall_deadline),
         )
-        .map_err(|error| {
+        .inspect_err(|error| {
             crate::logging::warn_with_fields(
                 "project.environment_setup.command",
                 "project environment setup command could not complete",
@@ -1549,7 +1549,6 @@ fn run_worker_setup_steps_until(
                     "cleanup_incomplete": error.contains("cleanup"),
                 }),
             );
-            error
         })?;
         if exit_code != 0 {
             crate::logging::warn_with_fields(

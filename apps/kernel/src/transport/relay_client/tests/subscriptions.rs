@@ -1165,7 +1165,7 @@ async fn room_workflows_encrypted_relay_drill_inventory_updates_replay_and_last_
         serde_json::json!(0)
     );
     let workflow_id = {
-        let mut app = app.lock().await;
+        let app = app.lock().await;
         let workflow = app
             .sessions_mut()
             .create_workflow(&created_session_id, Some("other-client-workflow".into()))
@@ -1251,7 +1251,7 @@ async fn room_workflows_encrypted_relay_drill_inventory_updates_replay_and_last_
     );
 
     {
-        let mut app = app.lock().await;
+        let app = app.lock().await;
         let mut room = app.sessions().get_session(&created_session_id).unwrap();
         room.remove_workflow(&workflow_id);
         app.sessions_mut().restore_session(room.clone());

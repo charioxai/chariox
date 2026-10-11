@@ -418,6 +418,7 @@ impl KernelRuntimeOwnedState {
         );
     }
 
+    #[cfg(test)]
     pub(super) fn cancel_local_prompt(
         &self,
         session_id: &str,

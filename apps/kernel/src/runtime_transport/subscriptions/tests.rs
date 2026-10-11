@@ -374,7 +374,7 @@ async fn room_workflows_local_drill_initial_inventory_other_client_creation_and_
             }
         }
         let workflow_id = {
-            let mut app = app.lock().await;
+            let app = app.lock().await;
             let workflow = app
                 .sessions_mut()
                 .create_workflow(session.id(), Some("other-client".into()))
@@ -394,7 +394,7 @@ async fn room_workflows_local_drill_initial_inventory_other_client_creation_and_
                 }
             }
             if count == 1 {
-                let mut app = app.lock().await;
+                let app = app.lock().await;
                 let mut room = app.sessions().get_session(session.id()).unwrap();
                 room.remove_workflow(&workflow_id);
                 app.sessions_mut().restore_session(room.clone());
