@@ -555,11 +555,26 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                                 .get("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS")
                                 .is_some_and(|v| v == "1")
                             {
+                                let Some(active) = active_prompt.as_ref() else {
+                                    continue;
+                                };
+                                // A steering dispatch names its active target separately.
+                                // A late cancelled ordinary dispatch must not bind to a new turn.
+                                if dispatch_prompt_id != active.id()
+                                    && fs::read_to_string(format!("{context_file}.approval-origin"))
+                                        .ok()
+                                        .as_deref()
+                                        .map(str::trim)
+                                        != Some(active.id())
+                                {
+                                    continue;
+                                }
                                 context_delivery::stage(
                                     context_file,
                                     request_id,
                                     provider_run_id,
                                     dispatch_prompt_id,
+                                    active.id(),
                                     true,
                                 )?;
                                 write_claude_hook_context_response(
@@ -676,6 +691,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             context_file,
                             request_id,
                             provider_run_id,
+                            prompt_id,
                             prompt_id,
                             false,
                         )?;
@@ -1171,6 +1187,17 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         };
         if !visible && !claude_rendered_permission_visible(&recent) {
             clear_claude_yolo_rendered_permission_confirmation(context_file);
+            return Ok(());
+        }
+        // MP-08 / MP-10 / MP-11: the generated PermissionRequest hook owns
+        // this decision. Its PTY frame can arrive before the hook event; starting
+        // another interaction here steals the subject and denies the real tool.
+        if provider_run
+            .pty_env()
+            .get("CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES")
+            .is_some_and(|path| !path.is_empty())
+        {
+            clear_claude_permission_recent(context_file);
             return Ok(());
         }
         if take_matching_claude_hook_permission_tombstone(context_file, &recent) {

@@ -1,4 +1,5 @@
 mod account_usage;
+mod native_permission_race;
 mod prepared_context;
 
 use super::transcript::ClaudeTranscriptCursor;
@@ -2933,15 +2934,20 @@ fn claude_headless_bypass_selection_marker_is_distinct_from_prompt_state() {
 
 #[test]
 fn queued_claude_failed_request_note_reaches_hook_context_and_waits_for_acceptance() {
-    queued_claude_failed_request_note_impl(false);
+    queued_claude_failed_request_note_impl(false, false);
 }
 
 #[test]
 fn managed_hook_delivery_receipt_fences_headless_acknowledgement() {
-    queued_claude_failed_request_note_impl(true);
+    queued_claude_failed_request_note_impl(true, false);
 }
 
-fn queued_claude_failed_request_note_impl(receipts: bool) {
+#[test]
+fn managed_steering_delivery_receipt_follows_target_active_prompt() {
+    queued_claude_failed_request_note_impl(true, true);
+}
+
+fn queued_claude_failed_request_note_impl(receipts: bool, steering: bool) {
     let worktree = crate::test_support::TestWorktree::new("claude-queued-failed-note");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -3010,6 +3016,57 @@ fn queued_claude_failed_request_note_impl(receipts: bool) {
         )
         .unwrap();
     let context_path = context_file.display().to_string();
+    if steering {
+        // MP-08 / MP-10 / MP-11: dispatch identity differs from its still-active target.
+        let steering_id = "native-steering-request";
+        write_claude_native_marker(&context_path, &format!("injected:{steering_id}"));
+        fs::write(
+            format!("{context_path}.context-delivery"),
+            serde_json::json!({
+                "request_id":"steering-receipt", "run_id":run.id(), "prompt_id":steering_id,
+                "active_prompt_id":prompt.id(), "managed":true,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .accept_context_delivery(
+                session.id(),
+                agent.id(),
+                run.id(),
+                &context_path,
+                &serde_json::json!({"hook_context_request_id":"steering-receipt"}),
+            )
+            .unwrap();
+        let marker = claude_native_marker(&context_path);
+        let active = app
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .unwrap()
+            .unwrap();
+        let failed = app
+            .agents
+            .get_agent(agent.id())
+            .unwrap()
+            .failed_requests()
+            .len();
+        app.pty.remove_process(run.id()).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            marker.as_deref(),
+            Some("accepted:native-steering-request"),
+            "steering receipt could not acknowledge its current active target"
+        );
+        assert_eq!(
+            active.id(),
+            prompt.id(),
+            "steering must not replace the active turn"
+        );
+        assert_eq!(
+            failed, 1,
+            "steering delivery must retain active-turn failure context"
+        );
+        return;
+    }
     write_claude_native_marker(&context_path, &format!("post-stop-ready:{}", prompt.id()));
     ProviderOutputClaudeNativeBridge::new(&mut app)
         .process(session.id(), run.id(), &run, None)
