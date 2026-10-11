@@ -507,11 +507,26 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                                 .get("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS")
                                 .is_some_and(|v| v == "1")
                             {
+                                let Some(active) = active_prompt.as_ref() else {
+                                    continue;
+                                };
+                                // A steering dispatch names its active target separately.
+                                // A late cancelled ordinary dispatch must not bind to a new turn.
+                                if dispatch_prompt_id != active.id()
+                                    && fs::read_to_string(format!("{context_file}.approval-origin"))
+                                        .ok()
+                                        .as_deref()
+                                        .map(str::trim)
+                                        != Some(active.id())
+                                {
+                                    continue;
+                                }
                                 context_delivery::stage(
                                     context_file,
                                     request_id,
                                     provider_run_id,
                                     dispatch_prompt_id,
+                                    active.id(),
                                     true,
                                 )?;
                                 write_claude_hook_context_response(
@@ -623,6 +638,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             context_file,
                             request_id,
                             provider_run_id,
+                            prompt_id,
                             prompt_id,
                             false,
                         )?;

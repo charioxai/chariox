@@ -8,6 +8,8 @@ struct PendingDelivery {
     run_id: String,
     prompt_id: String,
     managed: bool,
+    #[serde(default)]
+    active_prompt_id: Option<String>,
 }
 
 pub(super) fn stage(
@@ -15,6 +17,7 @@ pub(super) fn stage(
     request_id: &str,
     run_id: &str,
     prompt_id: &str,
+    active_prompt_id: &str,
     managed: bool,
 ) -> Result<(), DaemonError> {
     permission::validate_context_request_id(request_id)?;
@@ -23,6 +26,7 @@ pub(super) fn stage(
         run_id: run_id.into(),
         prompt_id: prompt_id.into(),
         managed,
+        active_prompt_id: Some(active_prompt_id.into()),
     };
     fs::write(
         format!("{context_file}.context-delivery"),
@@ -56,7 +60,13 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         if event.get("hook_context_request_id").and_then(Value::as_str)
             != Some(pending.request_id.as_str())
             || pending.run_id != run_id
-            || active.as_ref().map(|prompt| prompt.id()) != Some(pending.prompt_id.as_str())
+            || active.as_ref().map(|prompt| prompt.id())
+                != Some(
+                    pending
+                        .active_prompt_id
+                        .as_deref()
+                        .unwrap_or(&pending.prompt_id),
+                )
         {
             return Ok(());
         }
