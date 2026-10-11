@@ -92,6 +92,7 @@ fn envp01_legacy_adapter_is_lossless_idempotent_and_never_promotes_status() {
         service_hints: vec!["postgres".into()],
     };
     let state = StoredProjectEnvironment {
+        apply_owned_bindings: Default::default(),
         source: None,
         manifest: manifest.clone(),
         evidence,

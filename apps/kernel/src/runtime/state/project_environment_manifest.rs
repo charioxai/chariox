@@ -371,6 +371,7 @@ mod tests {
             .unwrap();
         let evidence = ProjectEnvironmentEvidence::default();
         let state = StoredProjectEnvironment {
+            apply_owned_bindings: Default::default(),
             source: None,
             manifest: ProjectEnvironmentManifest {
                 schema_version: 1,

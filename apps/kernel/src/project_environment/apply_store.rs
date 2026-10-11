@@ -9,6 +9,8 @@ use std::io::Read;
 pub(crate) struct StoredApplyPlan {
     pub plan: EnvironmentApplyPlan,
     pub folder_binding_digest: String,
+    #[serde(default)]
+    pub binding_scopes: Vec<RequirementScope>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,6 +21,8 @@ pub(crate) struct ApplyAttempt {
     pub request_digest: Option<String>,
     pub operation: EnvironmentOperation,
     pub folder_binding_digest: String,
+    #[serde(default)]
+    pub binding_scopes: Vec<RequirementScope>,
     pub active_requirement: Option<String>,
     pub uncertain_requirements: Vec<String>,
 }

@@ -139,6 +139,9 @@ pub struct ProjectEnvironmentSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredProjectEnvironment {
+    /// Private Apply ownership; never part of the aggregate or transfer manifest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) apply_owned_bindings: Vec<ApplyOwnedBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<ProjectEnvironmentSource>,
     pub manifest: ProjectEnvironmentManifest,
@@ -149,6 +152,14 @@ pub struct StoredProjectEnvironment {
     pub reviewed_manifest: Option<ProjectEnvironmentManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_review: Option<ProjectEnvironmentReview>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ApplyOwnedBinding {
+    pub requirement_id: String,
+    pub scope: RequirementScope,
+    pub entry: ProjectEnvironmentEntry,
 }
 
 #[derive(Debug, Clone)]
@@ -269,7 +280,12 @@ impl ProjectEnvironmentStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err(environment_error("remove revision history failed")),
         }
-        for extension in ["detect.json", "detect-model.json", "checks.json", "apply.json"] {
+        for extension in [
+            "detect.json",
+            "detect-model.json",
+            "checks.json",
+            "apply.json",
+        ] {
             match fs::remove_file(self.path(project).with_extension(extension)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

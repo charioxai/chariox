@@ -81,6 +81,23 @@ fn run_apply(
     op: &EnvironmentOperation,
 ) -> Result<(), DaemonError> {
     let selected = apply_selection(env, &op.selected_items)?;
+    {
+        let _lock = store.lock(project.id())?;
+        validate_project(state, project, &ctx.owner, env, store)?;
+        if current_check_target(&state.owned.config_projection.snapshot()) != op.target
+            || cancelled(store, op)
+        {
+            return Err(environment_error(
+                "Apply target changed or operation cancelled",
+            ));
+        }
+        let mut journal = store.load_applies(project.id())?;
+        let scopes = current_attempt(&mut journal, op)
+            .ok_or_else(|| environment_error("Apply attempt displaced"))?
+            .binding_scopes
+            .clone();
+        retire_removed_apply_bindings(store, env, &scopes)?;
+    }
     let mut good = std::collections::BTreeSet::new();
     for id in selected {
         let r = environment_requirements(env)

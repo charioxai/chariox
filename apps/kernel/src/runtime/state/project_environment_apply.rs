@@ -51,6 +51,18 @@ impl KernelRuntimeState {
         let plan = tokio::task::spawn_blocking(move || {
             let _lock = _lock;
             let selected = apply_selection(&env, &request.selected_items)?;
+            let binding_scopes = if request.selected_items.is_empty() {
+                std::iter::once(RequirementScope::Project)
+                    .chain(env.folders.iter().map(|f| RequirementScope::Folder {
+                        folder_id: f.folder_id.clone(),
+                    }))
+                    .collect()
+            } else {
+                environment_requirements(&env)
+                    .filter(|r| selected.contains(&r.requirement_id))
+                    .map(|r| r.scope.clone())
+                    .collect()
+            };
             let mut checks = store.load_checks(project.id())?;
             let mut observations = vec![];
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -86,6 +98,7 @@ impl KernelRuntimeState {
                 journal.plans.remove(0);
             }
             journal.plans.push(StoredApplyPlan {
+                binding_scopes,
                 plan: plan.clone(),
                 folder_binding_digest: folder_bindings_digest(&env),
             });
@@ -131,6 +144,7 @@ impl KernelRuntimeState {
                 "Apply plan changed or expired; plan again",
             ));
         }
+        let binding_scopes = plan.binding_scopes.clone();
         let mut opted = std::collections::BTreeSet::new();
         if request.per_item_opt_ins.iter().any(|i| {
             !opted.insert(i.requirement_id.clone())
@@ -164,6 +178,7 @@ impl KernelRuntimeState {
         // The bounded durable journal must reject capacity before mutation,
         // never forget an accepted identity and admit a duplicate side effect.
         journal.attempts.push(ApplyAttempt {
+            binding_scopes,
             plan_id: request.plan_id,
             request_digest: Some(request_digest),
             operation: operation.clone(),

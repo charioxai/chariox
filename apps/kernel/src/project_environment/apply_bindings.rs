@@ -40,6 +40,7 @@ pub(crate) fn apply_scoped_binding(
         store
             .load(&env.local_project_id)?
             .unwrap_or_else(|| StoredProjectEnvironment {
+                apply_owned_bindings: Default::default(),
                 source: None,
                 manifest: ProjectEnvironmentManifest {
                     schema_version: 1,
@@ -70,6 +71,7 @@ pub(crate) fn apply_scoped_binding(
     if folders.is_empty() || folders.iter().any(|f| f.local_workspace_binding.is_empty()) {
         return Err(environment_error("Apply folder is unavailable"));
     }
+    reconcile_owned_bindings(&mut stored, env, &[r.scope.clone()]);
     // Resolve each selected folder independently. Project-wide declarations do
     // not borrow the first folder's value or leak a sibling Vault binding.
     for folder in folders {
@@ -129,6 +131,25 @@ pub(crate) fn apply_scoped_binding(
                 "Scoped public input requires Vault classification",
             ));
         }
+        // Never acquire ownership of an unrelated legacy binding just because
+        // its locator happens to match. Ownership and entry publish together.
+        let owned = stored.apply_owned_bindings.iter().any(|o| o.entry == entry);
+        let legacy =
+            stored.manifest.entries.iter().any(|e| {
+                e.workspace_id == entry.workspace_id && e.name == entry.name && !e.excluded
+            });
+        if owned || !legacy {
+            stored.apply_owned_bindings.retain(|o| {
+                o.entry.workspace_id != entry.workspace_id || o.entry.name != entry.name
+            });
+            stored
+                .apply_owned_bindings
+                .push(super::store::ApplyOwnedBinding {
+                    requirement_id: r.requirement_id.clone(),
+                    scope: r.scope.clone(),
+                    entry: entry.clone(),
+                });
+        }
         stored
             .manifest
             .entries
@@ -136,4 +157,52 @@ pub(crate) fn apply_scoped_binding(
         stored.manifest.entries.push(entry);
     }
     store.save(&stored)
+}
+
+// MP-08 / MP-10 / MP-11: reconcile only scopes included in this reviewed Apply.
+fn reconcile_owned_bindings(
+    stored: &mut StoredProjectEnvironment,
+    env: &ProjectEnvironment,
+    scopes: &[RequirementScope],
+) {
+    let entries = &mut stored.manifest.entries;
+    stored.apply_owned_bindings.retain(|owner| {
+        let scope_selected = scopes.contains(&owner.scope);
+        let declared = environment_requirements(env).any(|r| {
+            r.requirement_id == owner.requirement_id
+                && r.scope == owner.scope
+                && match &r.spec {
+                    RequirementSpec::Variables { name, .. }
+                    | RequirementSpec::Secrets { name, .. } => {
+                        name == &owner.entry.name
+                            && env.folders.iter().any(|f| {
+                                f.local_workspace_binding == owner.entry.workspace_id
+                                    && (r.scope == RequirementScope::Project
+                                        || r.scope
+                                            == RequirementScope::Folder {
+                                                folder_id: f.folder_id.clone(),
+                                            })
+                            })
+                    }
+                    _ => false,
+                }
+        });
+        if scope_selected && !declared {
+            entries.retain(|entry| entry != &owner.entry);
+            false
+        } else {
+            true
+        }
+    });
+}
+pub(crate) fn retire_removed_apply_bindings(
+    store: &ProjectEnvironmentStore,
+    env: &ProjectEnvironment,
+    scopes: &[RequirementScope],
+) -> Result<(), DaemonError> {
+    if let Some(mut stored) = store.load(&env.local_project_id)? {
+        reconcile_owned_bindings(&mut stored, env, scopes);
+        store.save(&stored)?;
+    }
+    Ok(())
 }

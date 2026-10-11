@@ -1083,6 +1083,7 @@ mod tests {
                     .private_runtime_state_root(),
             )
             .save(&crate::project_environment::StoredProjectEnvironment {
+                apply_owned_bindings: Default::default(),
                 source: None,
                 manifest: crate::project_environment::ProjectEnvironmentManifest {
                     schema_version: 1,
