@@ -1,7 +1,7 @@
 use std::io;
 use std::os::fd::{AsRawFd, RawFd};
-use std::os::unix::process::CommandExt;
-use std::process::{Child, Command};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::process::{Child, Command, ExitStatus};
 
 #[cfg(target_os = "linux")]
 #[path = "linux.rs"]
@@ -68,8 +68,48 @@ impl Process {
 
     pub(super) fn observe_descendants(&mut self) -> io::Result<()> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        descendants::observe(Some(self.child.id()), &mut self.descendants)?;
+        descendants::observe(Some(self.child.id()), &mut self.descendants, false)?;
         Ok(())
+    }
+
+    // MP-08 / MP-10 / MP-11: retain the leader PID until owned-group discovery
+    // completes. Reaping it first loses the boundary for reparented helpers.
+    pub(super) fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let pid = signal_pid(self.child.id().into())?;
+            let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+            if unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid as _,
+                    info.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            } < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let info = unsafe { info.assume_init() };
+            #[cfg(target_os = "linux")]
+            let (pid, status) = unsafe { (info.si_pid(), info.si_status()) };
+            #[cfg(target_os = "macos")]
+            let (pid, status) = (info.si_pid, info.si_status);
+            if pid == 0 {
+                return Ok(None);
+            }
+            return Ok(Some(ExitStatus::from_raw(
+                if info.si_code == libc::CLD_EXITED {
+                    status << 8
+                } else if info.si_code == libc::CLD_DUMPED {
+                    status | 0x80
+                } else {
+                    status
+                },
+            )));
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        self.child.try_wait()
     }
 
     pub(super) fn stop(&mut self) -> io::Result<()> {
@@ -77,7 +117,7 @@ impl Process {
             return Ok(());
         }
         signal_pid(self.child.id().into())?;
-        let running = self.child.try_wait()?.is_none();
+        let running = self.try_wait()?.is_none();
         // MP-08 / MP-10 / MP-11: retain descendants independently of their
         // streams. Freeze verified owners before the last ancestry scans so
         // cleanup cannot race new children from a running launcher.
@@ -92,7 +132,7 @@ impl Process {
             let mut result = Ok(());
             for _ in 0..3 {
                 if let Err(error) =
-                    descendants::observe(running.then_some(self.child.id()), &mut self.descendants)
+                    descendants::observe(Some(self.child.id()), &mut self.descendants, true)
                 {
                     result = Err(error);
                 }

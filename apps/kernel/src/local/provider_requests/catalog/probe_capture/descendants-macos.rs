@@ -36,7 +36,11 @@ impl Descendant {
         Ok(())
     }
 }
-pub(super) fn observe(root: Option<u32>, owned: &mut Vec<Descendant>) -> io::Result<()> {
+pub(super) fn observe(
+    root: Option<u32>,
+    owned: &mut Vec<Descendant>,
+    include_group: bool,
+) -> io::Result<()> {
     let mut parents = root
         .into_iter()
         .chain(owned.iter().filter(|p| p.alive()).map(|p| p.pid))
@@ -63,7 +67,38 @@ pub(super) fn observe(root: Option<u32>, owned: &mut Vec<Descendant>) -> io::Res
                 "probe descendant limit",
             ));
         }
-        for child in children.iter().take(count as usize).copied() {
+        let mut candidates = children
+            .iter()
+            .take(count as usize)
+            .copied()
+            .collect::<Vec<_>>();
+        if include_group && root == Some(pid) {
+            let mut members = [0i32; 1024];
+            let bytes = unsafe {
+                libc::proc_listpids(
+                    libc::PROC_PGRP_ONLY,
+                    pid,
+                    members.as_mut_ptr().cast(),
+                    (members.len() * size_of::<i32>()) as i32,
+                )
+            };
+            if bytes < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if bytes as usize >= members.len() * size_of::<i32>() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "probe descendant limit",
+                ));
+            }
+            candidates.extend(
+                members
+                    .iter()
+                    .take(bytes as usize / size_of::<i32>())
+                    .copied(),
+            );
+        }
+        for child in candidates {
             if super::signal_pid(child.into()).is_err() {
                 continue;
             }
@@ -75,7 +110,7 @@ pub(super) fn observe(root: Option<u32>, owned: &mut Vec<Descendant>) -> io::Res
                 continue;
             };
             let parent_owned = root == Some(pid) || owned.iter().any(|p| p.pid == pid && p.alive());
-            if i.pbi_ppid == pid && parent_owned {
+            if parent_owned && (i.pbi_ppid == pid || (root == Some(pid) && i.pbi_pgid == pid)) {
                 if owned.len() >= 1024 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,

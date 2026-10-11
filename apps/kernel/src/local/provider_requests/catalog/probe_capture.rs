@@ -48,7 +48,11 @@ pub(crate) fn capture(mut command: Command, timeout: Duration) -> Result<Output,
             &mut stderr,
             stdout.len(),
         )?;
-        if let Some(status) = process.child.try_wait()? {
+        #[cfg(unix)]
+        let status = process.try_wait()?;
+        #[cfg(windows)]
+        let status = process.child.try_wait()?;
+        if let Some(status) = status {
             // A successful launcher can leave pipe writers behind. End them
             // before collecting the bytes already buffered in our pipes.
             process.stop()?;

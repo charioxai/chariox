@@ -5,23 +5,56 @@ use crate::error::DaemonError;
 // MP-08 / MP-10 / MP-11: variants restrict a declaration; a Software
 // platform further restricts those variants, matching Check's applicability.
 fn platforms(r: &Requirement) -> Vec<EnvironmentPlatform> {
-    let any = EnvironmentPlatform { os: "any".into(), architecture: "any".into() };
+    let any = EnvironmentPlatform {
+        os: "any".into(),
+        architecture: "any".into(),
+    };
     let base = match &r.spec {
-        RequirementSpec::Software { platform: Some(p), .. } => p,
+        RequirementSpec::Software {
+            platform: Some(p), ..
+        } => p,
         _ => &any,
     };
-    if r.platform_variants.is_empty() { return vec![base.clone()]; }
-    r.platform_variants.iter().filter_map(|variant| {
-        if !overlap(base, variant) { return None; }
-        Some(EnvironmentPlatform {
-            os: if base.os == "any" { variant.os.clone() } else { base.os.clone() },
-            architecture: if base.architecture == "any" { variant.architecture.clone() } else { base.architecture.clone() },
+    if r.platform_variants.is_empty() {
+        return vec![base.clone()];
+    }
+    r.platform_variants
+        .iter()
+        .filter_map(|variant| {
+            if !overlap(base, variant) {
+                return None;
+            }
+            Some(EnvironmentPlatform {
+                os: if base.os == "any" {
+                    variant.os.clone()
+                } else {
+                    base.os.clone()
+                },
+                architecture: if base.architecture == "any" {
+                    variant.architecture.clone()
+                } else {
+                    base.architecture.clone()
+                },
+            })
         })
-    }).collect()
+        .collect()
 }
 fn overlap(a: &EnvironmentPlatform, b: &EnvironmentPlatform) -> bool {
     (a.os == "any" || b.os == "any" || a.os == b.os)
         && (a.architecture == "any" || b.architecture == "any" || a.architecture == b.architecture)
+}
+// MP-08 / MP-10 / MP-11: platform selectors restrict applicability above;
+// compatibility compares the requested software on that intersection.
+fn compatible(a: &RequirementSpec, b: &RequirementSpec) -> bool {
+    let mut a = a.clone();
+    let mut b = b.clone();
+    if let RequirementSpec::Software { platform, .. } = &mut a {
+        *platform = None;
+    }
+    if let RequirementSpec::Software { platform, .. } = &mut b {
+        *platform = None;
+    }
+    a == b
 }
 pub(super) fn validate_scopes(draft: &EnvironmentRevisionDraft) -> Result<(), DaemonError> {
     let all: Vec<_> = draft
@@ -47,8 +80,10 @@ pub(super) fn validate_scopes(draft: &EnvironmentRevisionDraft) -> Result<(), Da
                 && b.required
                 && key(a).is_some()
                 && key(a) == key(b)
-                && a.spec != b.spec
-                && platforms(a).iter().any(|pa| platforms(b).iter().any(|pb| overlap(pa, pb)))
+                && !compatible(&a.spec, &b.spec)
+                && platforms(a)
+                    .iter()
+                    .any(|pa| platforms(b).iter().any(|pb| overlap(pa, pb)))
             {
                 return Err(environment_error("Conflict · incompatible effective project/folder requirements; edit the scope or declaration before Save"));
             }
