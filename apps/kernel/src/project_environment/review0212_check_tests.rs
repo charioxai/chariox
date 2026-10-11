@@ -39,6 +39,17 @@ fn review0212_pnpm_contained_package_links_and_escaping_links() {
 #[cfg(unix)]
 #[test]
 fn review0212_files_check_does_not_launch_path_git_or_inherit_probe_environment() {
+    // MP-08 / MP-10 / MP-11: PATH is process-wide; other parallel tests
+    // must never execute this test's sentinel Git or lose their native tools.
+    if std::env::var_os("CHARIOX_REVIEW0212_FILES_CHILD").is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([name.as_str(), "--exact", "--test-threads=1"])
+            .env("CHARIOX_REVIEW0212_FILES_CHILD", "1")
+            .status().unwrap();
+        assert!(status.success(), "isolated Files Check sentinel failed");
+        return;
+    }
     use std::os::unix::fs::PermissionsExt;
     let root=crate::test_support::TestWorktree::new("review0212-git");let store=ProjectEnvironmentStore::new(root.path());let project=project(root.path(),"git");let mut env=store.snapshot(&project).unwrap();let mut draft=environment_draft(&env);let folder=draft.folders[0].folder_id.clone();
     std::fs::write(root.path().join("README.md"),"public project documentation").unwrap();draft.folders[0].requirements.push(serde_json::from_value(serde_json::json!({"requirement_id":"file","title":"Public document","scope":{"kind":"folder","folder_id":folder},"origins":[],"spec":{"kind":"files","folder_id":folder,"entries":[{"relative_path":"README.md","kind":"file","content_digest":null,"folder_id":folder,"user_selected":true,"git_ignored":null,"byte_count":null,"credential_filter_verdict":"not_checked","transfer_inclusion":"include","reason":null,"secret_looking":false}]},"depends_on":[],"platform_variants":[],"required":true,"legacy_entry":null})).unwrap());
