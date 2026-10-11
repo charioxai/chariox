@@ -268,6 +268,18 @@ Existing providers like OpenCode may continue to be adapted through their native
 
 ## 3.3.2 Native TUI Agents
 
+MP-08 / MP-10 / MP-11: local protocol 499 fences `CancelActivePrompt` with
+optional `expected_prompt_id`. Native Codex resolves both requested display
+thread and turn to the existing home-prompt binding. The kernel compares that
+identity atomically when admitting cancellation, including leased agents;
+stale and foreign controls leave the current prompt running. Legacy cancellation
+without this field keeps its existing behavior. The CLI requires protocol 499
+for the fenced request. Unix and relay attachments without a local advertisement
+must confirm `exact_prompt_cancellation_v499` in the attached kernel's existing
+`RelayStatus` capabilities; an unknown or older kernel is rejected before sending
+the cancellation. Peer 108 is the paired admission generation; worker aborts
+retain the existing lease, home-prompt and provider-run fences.
+
 MP-08 / MP-10: local protocol **422** adds `SteerActivePrompt` with session,
 attachment, agent, required `expected_active_prompt_id`, visible prompt and
 attachments. The home agent actor admits it only against that exact running

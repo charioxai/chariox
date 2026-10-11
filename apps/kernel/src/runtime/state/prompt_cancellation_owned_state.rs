@@ -432,6 +432,11 @@ impl KernelRuntimeOwnedState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
+        if expected.is_some_and(|expected| active_prompt.id() != expected) {
+            return Err(DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            });
+        }
         if active_prompt.status() == crate::session::PromptStatus::Cancelling {
             let session = self.session_snapshot(session_id)?;
             return Ok(Some(crate::app::KernelPromptCancellation {

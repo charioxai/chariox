@@ -267,4 +267,4 @@ pub use workspace::*;
 /// Version 495 restores workflow notifications, Room workflow inventory/controls,
 /// and opt-in Cloud device denial on the consolidated main contract (MP-08/MP-10/MP-11).
 /// Version 495 consolidates the main Environment and integration2 contracts (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 495;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 499;

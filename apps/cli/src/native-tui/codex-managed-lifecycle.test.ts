@@ -108,7 +108,7 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
         await managedRequest("turn/steer", { threadId: "managed-thread", expectedTurnId: "managed-turn", input: [{ type: "text", text: payload.prompt }] })
         return { ActivePromptSteered: { prompt: { id: "home-steer" } } }
       case "CancelActivePrompt":
-        assert.deepEqual(payload, { session_id: "session", attachment_id: "attachment", target_agent_id: "agent" })
+        assert.deepEqual(payload, { session_id: "session", attachment_id: "attachment", target_agent_id: "agent", expected_prompt_id: "home-prompt" })
         await managedRequest("turn/interrupt", { threadId: "managed-thread", turnId: "managed-turn" })
         return { PromptCancelled: {} }
       case "GetSessionState": return { SessionState: {

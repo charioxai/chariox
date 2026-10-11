@@ -817,14 +817,38 @@ impl KernelRuntimeState {
         attachment_id: &str,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
+        self.cancel_agent_prompt_if_matches_with_external_authority(
+            session_id,
+            target_agent_id,
+            attachment_id,
+            None,
+            authority,
+        )
+        .await
+    }
+
+    pub(crate) async fn cancel_agent_prompt_if_matches_with_external_authority(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        expected_prompt_id: Option<&str>,
+        authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
+    ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
         self.authorize_prompt_command(authority)?;
+        // An expected prompt narrows admission; it never bypasses attachment authority.
+        if !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id) {
+            self.owned
+                .ensure_attachment_in_session(session_id, attachment_id)?;
+        }
         {
             let owned = &self.owned;
             if let Some(cancellation) = self
-                .cancel_remote_agent_prompt_if_remote(
+                .cancel_remote_agent_prompt_if_matches(
                     session_id,
                     target_agent_id,
                     attachment_id,
+                    expected_prompt_id,
                     authority,
                 )
                 .await?
@@ -832,9 +856,12 @@ impl KernelRuntimeState {
                 return Ok(cancellation);
             }
             self.authorize_prompt_command(authority)?;
-            if let Some(cancellation) =
-                owned.cancel_local_prompt(session_id, target_agent_id, attachment_id)?
-            {
+            if let Some(cancellation) = owned.cancel_local_prompt_if_matches(
+                session_id,
+                target_agent_id,
+                attachment_id,
+                expected_prompt_id,
+            )? {
                 return Ok(cancellation);
             }
             Err(DaemonError::LocalTransport {

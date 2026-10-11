@@ -69,3 +69,14 @@ test("standalone and reserved Project Environment operations require protocol 48
     assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 487))
   }
 })
+
+// MP-08 / MP-10 / MP-11: old decoders may ignore an optional cancellation fence.
+test("MP-08 MP-10 exact prompt cancellation rejects old and unknown kernels", () => {
+  const request = { CancelActivePrompt: { expected_prompt_id: "home-prompt" } }
+  for (const version of [undefined, 0, NaN, -1, 498.5, 495, 498]) {
+    assert.throws(() => requireKernelFeatureProtocol(request, version), /Exact prompt cancellation needs protocol ≥499/)
+  }
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 499))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: {} }, undefined))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: {} }, 495))
+})

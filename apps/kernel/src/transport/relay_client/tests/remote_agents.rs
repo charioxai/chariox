@@ -2713,6 +2713,7 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session_async() {
             session_id: session_id.clone(),
             attachment_id: attachment_id.clone(),
             target_agent_id: None,
+            expected_prompt_id: None,
         })
     };
     let cancellation_request = cancel_request();

@@ -106,12 +106,14 @@ impl AgentPromptCommandService {
         session_id: &str,
         target_agent_id: &str,
         attachment_id: &str,
+        expected_prompt_id: Option<&str>,
     ) -> Result<KernelPromptCancellation, DaemonError> {
         self.state
-            .cancel_agent_prompt_with_external_authority(
+            .cancel_agent_prompt_if_matches_with_external_authority(
                 session_id,
                 target_agent_id,
                 attachment_id,
+                expected_prompt_id,
                 self.request_authority(),
             )
             .await

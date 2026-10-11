@@ -47,6 +47,8 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     feature = name === "KeepManagedEnvironmentRunning"
       ? { feature: "Managed environment keep running", minimum: requests.managedEnvironmentKeepRunningMinimumProtocolVersion }
       : { feature: "Disposable worker control", minimum: requests.disposableWorkerControlMinimumProtocolVersion }
+  } else if (name === "CancelActivePrompt" && payload?.expected_prompt_id != null) {
+    feature = { feature: "Exact prompt cancellation", minimum: requests.exactPromptCancellationMinimumProtocolVersion }
   } else if (name === "SubmitRoomEnvironmentBrowserAction") {
     const tab = record(payload?.action)?.kind === "tab"
     feature = { feature: tab ? "Room browser tab lifecycle" : "Room browser history", minimum: tab
@@ -67,8 +69,13 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
 
 /** Unknown versions retain existing transport compatibility diagnostics. */
 export function requireKernelFeatureProtocol(request: unknown, protocolVersion: number | undefined): void {
-  if (protocolVersion === undefined || !Number.isInteger(protocolVersion) || protocolVersion < 1) return
   const feature = kernelFeatureMinimum(request)
+  if (protocolVersion === undefined || !Number.isInteger(protocolVersion) || protocolVersion < 1) {
+    if (feature?.feature === "Exact prompt cancellation") {
+      throw new KernelProtocolMinimumError(`kernel support unknown: ${feature.feature} needs protocol ≥${feature.minimum}; reconnect to an updated kernel`)
+    }
+    return
+  }
   if (feature && protocolVersion < feature.minimum) {
     throw new KernelProtocolMinimumError(`kernel too old: ${feature.feature} needs protocol ≥${feature.minimum}; this kernel is ${protocolVersion}; update the kernel`)
   }

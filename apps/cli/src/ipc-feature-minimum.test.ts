@@ -153,3 +153,26 @@ test("session-scoped Unix requests never probe global RelayStatus for a protocol
   assert.deepEqual(await client.send(request), { ok: true })
   assert.deepEqual(requests, [request])
 })
+
+// MP-08 / MP-10 / MP-11: unknown transport versions must not lose the fence.
+test("MP-08 MP-10 exact cancellation checks attached kernel capability on Unix and relay", async context => {
+  const requests: unknown[] = []
+  let capabilities: string[] = []
+  context.mock.method(KernelClient.prototype, "send", async (request: unknown) => {
+    requests.push(request)
+    if (request && typeof request === "object" && "RelayStatus" in request) return { RelayStatus: { status: { capabilities } } }
+    return { PromptCancelled: {} }
+  })
+  const request = { CancelActivePrompt: { expected_prompt_id: "home-prompt" } }
+  for (const endpoint of ["ws+unix:///lane/kernel.sock", "wss://relay.example.test"]) {
+    const client = new LocalIpcClient(endpoint)
+    context.after(() => client.close())
+    capabilities = []
+    requests.length = 0
+    await assert.rejects(client.send(request), /Exact prompt cancellation needs protocol ≥499/)
+    assert.deepEqual(requests, [{ RelayStatus: null }])
+    capabilities = ["exact_prompt_cancellation_v499"]
+    await client.send(request)
+    assert.deepEqual(requests.slice(-2), [{ RelayStatus: null }, request])
+  }
+})

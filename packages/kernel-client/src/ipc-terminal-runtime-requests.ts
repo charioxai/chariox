@@ -222,12 +222,17 @@ export function completePromptRequest(sessionId: string) {
   }
 }
 
-export function cancelActivePromptRequest(sessionId: string, attachmentId: string, targetAgentId?: string | null) {
+// MP-08 / MP-10 / MP-11: old kernels can ignore the optional prompt fence.
+export const exactPromptCancellationMinimumProtocolVersion = 499
+export const exactPromptCancellationCapability = "exact_prompt_cancellation_v499"
+
+export function cancelActivePromptRequest(sessionId: string, attachmentId: string, targetAgentId?: string | null, expectedPromptId?: string | null) {
   return {
     CancelActivePrompt: {
       session_id: sessionId,
       attachment_id: attachmentId,
       ...(targetAgentId ? { target_agent_id: targetAgentId } : {}),
+      ...(expectedPromptId !== undefined ? { expected_prompt_id: expectedPromptId } : {}),
     },
   }
 }

@@ -79,16 +79,22 @@ export async function handleCodexNativeTurnStart(
 }
 
 // MP-08 / MP-10: Display thread/turn IDs are projections. Cancellation must
-// resolve the active prompt on the kernel, which owns the real provider turn.
+// resolve the display binding, then compare it atomically on the kernel.
 export async function handleCodexNativeTurnInterrupt(
   message: CodexJsonRpcMessage,
-  options: { client: LocalIpcClient, sessionId: string, attachmentId: string, agentId: string },
+  options: { client: LocalIpcClient, sessionId: string, attachmentId: string, agentId: string, bindState: CodexNativeBindingState },
   sendClient: (message: unknown) => void,
 ) {
   try {
-    await options.client.send<Record<string, unknown>>(
-      cancelActivePromptRequest(options.sessionId, options.attachmentId, options.agentId),
+    const turnId = message.params?.turnId
+    const bound = typeof turnId === "string" ? options.bindState.displayTurns?.get(turnId) : undefined
+    if (!bound || bound.threadId !== message.params?.threadId) {
+      throw new Error("Codex display turn is not bound to a Chariox prompt")
+    }
+    const response = await options.client.send<Record<string, unknown>>(
+      cancelActivePromptRequest(options.sessionId, options.attachmentId, options.agentId, bound.promptId),
     )
+    if (!("PromptCancelled" in response)) throw new Error("kernel did not admit exact-prompt cancellation")
     sendClient({ id: message.id, result: {} })
   } catch (error) {
     sendClient({ id: message.id, error: {
