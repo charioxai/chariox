@@ -4,6 +4,7 @@ import {LocalIpcClient} from './sdk/dist/ipc.js';
 const root=process.env.AB_STATE,op=process.argv[2];
 if(!/^\/root\/\.chariox\/dev\/vidlat\/owner-ab-[a-zA-Z0-9_-]+$/.test(root??''))throw Error('MP-11: own state required');
 const state=JSON.parse(await readFile(root+'/runtime.json','utf8'));
+const apiOrigin=state.apiOrigin??state.origin;
 process.env.CHARIOX_HOME=root+'/V/runtime';
 const c=new LocalIpcClient(`ws://127.0.0.1:${state.ports[0]}/kernel`);
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
@@ -30,7 +31,7 @@ async function run(){try{
   console.log('MP-08/MP-10/MP-11: matching real kernel healthy');
  }else if(op==='login'||op==='rehearse-login'){
   const status=(await c.send({RelayStatus:null})).RelayStatus.status;
-  const login=(await c.send({StartCloudRelayLogin:{api_url:state.origin,client_id:'vidlat-owner-ab',client_alias:'MP-08/MP-10 owner A/B',machine_id:status.machine_id,machine_alias:'vidlat-owner-ab CCX43'}})).CloudRelayLoginStarted.login;
+  const login=(await c.send({StartCloudRelayLogin:{api_url:apiOrigin,client_id:'vidlat-owner-ab',client_alias:'MP-08/MP-10 owner A/B',machine_id:status.machine_id,machine_alias:'vidlat-owner-ab CCX43'}})).CloudRelayLoginStarted.login;
   if(new URL(login.verification_url).origin!==state.origin)throw Error('MP-11: enrollment origin mismatch');
   // Device activation URL is retained locally for the product browser driver.
   // Never output a device code, token, credential or URL carrying one.
@@ -38,18 +39,21 @@ async function run(){try{
   console.log('MP-08/MP-10: device approval is pending in the private local enrollment record. Coordinator opens it through the normal product device page, signed into Miguel’s account.');
   for(let n=0;n<120;n++){
    await delay(Math.max(5000,(login.interval_seconds??5)*1000));
-   const result=(await c.send({PollCloudRelayLogin:{api_url:state.origin,device_code:login.device_code}})).CloudRelayLoginPolled.result;
+   const result=(await c.send({PollCloudRelayLogin:{api_url:apiOrigin,device_code:login.device_code}})).CloudRelayLoginPolled.result;
    if(result.status==='approved'){
     await c.send({ConnectCloudRelay:null});
     for(let retry=0;retry<180;retry++){
      const online=(await c.send({RelayStatus:null})).RelayStatus.status;
-     if(online.connected&&online.relay_url===state.relay){
+     const relayUrl=new URL(online.relay_url);
+     if(relayUrl.protocol!=='wss:'||relayUrl.username||relayUrl.password||relayUrl.search||relayUrl.hash)throw Error('MP-11: Cloud supplied an unsafe hosted relay URL');
+     if(state.relay&&online.relay_url!==state.relay)throw Error('MP-11: Cloud relay differs from the explicit expected URL');
+     if(online.connected){
       await writeFile(root+'/selection.json',JSON.stringify({machineId:online.machine_id,daemonId:online.daemon_id,origin:state.origin,relay:online.relay_url}),{mode:0o600});
       await prepareSession();console.log('MP-08/MP-10: hosted WSS connected; select vidlat-owner-ab and owner-ab in the waiting room.');return;
      }await delay(500);
     }throw Error('MP-10: matching hosted WSS did not connect');
    }
-   if(result.status==='denied'||result.status==='expired')throw Error('MP-10: product device approval denied/expired');
+   if(['denied','expired','expired_token'].includes(result.status))throw Error('MP-10: product device approval denied/expired');
   }throw Error('MP-10: device approval timed out');
  }else if(op==='session'){await prepareSession()}else throw Error('MP-11: supported operations are health/login/session');
 }finally{await c.close()}}

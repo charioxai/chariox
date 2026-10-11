@@ -3,8 +3,8 @@ import {spawn} from 'node:child_process';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {openSync,readFileSync,writeFileSync} from 'node:fs';import net from 'node:net';
 import {OwnedDisplay} from './owned-display.mjs';
-const {AB_KIT:kit,AB_STATE:root,AB_ORIGIN:origin,AB_RELAY_URL:relay,AB_SELKIES_ORIGIN:selkiesOrigin}=process.env;
-if(!kit||!root||!origin||!relay||!selkiesOrigin)throw Error('MP-11: A/B configuration required');
+const {AB_KIT:kit,AB_STATE:root,AB_ORIGIN:origin,AB_API_ORIGIN:apiOrigin,AB_RELAY_URL:relay,AB_SELKIES_ORIGIN:selkiesOrigin}=process.env;
+if(!kit||!root||!origin||!selkiesOrigin)throw Error('MP-11: A/B configuration required');
 const children=[],identities=[];let display,stopping=false;
 function remember(pid){
  if(!Number.isSafeInteger(pid)||pid<=1)throw Error('MP-11: unsafe owned child PID');
@@ -36,7 +36,7 @@ try{
   if(await new Promise(r=>firewall.once('exit',r))!==0)throw Error('MP-11: baseline firewall admission failed');
  }
  start('/usr/bin/unshare',['--user','--map-user=1000','--map-group=1000','--',root+'/python/bin/python','-m','selkies','--addr='+(process.env.AB_REHEARSAL==='1'?'127.0.0.1':'0.0.0.0'),'--port='+streamPort,'--mode=websockets','--enable-https=false','--encoder=h264enc','--use-cpu=true|locked','--framerate=60-60','--rate-control-mode=cbr','--video-bitrate=8000-8000','--manual-resolution=true|locked','--manual-width=2560','--manual-height=1600','--enable-resize=false|locked','--audio-enabled=false|locked','--microphone-enabled=false|locked','--gamepad-enabled=false|locked','--webcam-enabled=false|locked','--enable-clipboard=false','--enable-basic-auth=false','--allowed-origins='+selkiesOrigin],{...common,...xenv,HOME:root+'/S/home',TMPDIR:root+'/S/tmp'},'selkies');
- await writeFile(root+'/runtime.json',JSON.stringify({items:['MP-08','MP-10','MP-11'],ports,streamPort,cdpPort,origin,relay,selkiesOrigin,kernelPid:kernel.pid}),{mode:0o600});
+ await writeFile(root+'/runtime.json',JSON.stringify({items:['MP-08','MP-10','MP-11'],ports,streamPort,cdpPort,origin,apiOrigin,relay,selkiesOrigin,kernelPid:kernel.pid}),{mode:0o600});
  for(let n=0;n<240&&!stopping;n++){
   if(children.some(c=>c.exitCode!==null||c.signalCode!==null))throw Error('MP-10: runtime child exited');
   try{const response=await fetch(`http://127.0.0.1:${streamPort}/`);if(response.ok){await writeFile(root+'/READY','MP-08/MP-10/MP-11 runtime ready');break}}catch{}

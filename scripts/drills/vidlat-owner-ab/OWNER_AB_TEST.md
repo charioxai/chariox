@@ -1,36 +1,47 @@
 # MP-08 / MP-10 — owner hands-on A/B
 
-Chariox: [Open the waiting room](https://pr972-vidlatr8ab.val.51-255-87-178.sslip.io/waiting-room).
-Selkies: [Open the gated baseline](https://pr972-vidlatr8ab-selkies.val.51-255-87-178.sslip.io/).
+Chariox: [Open the waiting room](https://staging.chariox.com/waiting-room).
+Selkies: [Open the gated baseline](https://pr972-vidlatr9stage-selkies.val.51-255-87-178.sslip.io/).
 
-The coordinator activates these links only when the quiet CCX43 is rented.
-Both remote Chromiums run on that one Ubuntu 26.04 host. Use your Mac browser,
-Retina display and normal home network; leave browser zoom at 100%. Only one
-side should be actively scrolling at a time. Your sign-in uses your own email
-through the normal product login. There is no shared password or secret URL.
+**MP-08/MP-10 status: BLOCKED; do not rent or issue this guide yet.** The
+named staging Cloud `7af6207c7` has no native browser-video viewer. Its OSS
+`f57ac8f7c` uses protocol 490 / peer 100; the frozen A/B runtime uses 498 / 107.
+The coordinator must supply a reviewed, compatible staging viewer/runtime and
+its supported machine API access before these steps can work. Rebuilding
+staging main alone does not supply the requested video path.
 
-1. Sign in to Chariox, then approve the coordinator's normal device enrollment
-   for **vidlat-owner-ab CCX43** in the same account. Select that Machine and
-   Kernel in the waiting room, then click **owner-ab** under **Open Existing Sessions**.
-   Open the **Browser** panel and **New tab** so this browser context owns
-   its tab. Choose **Video** if a mode selector appears.
-2. Open the Selkies link in a second tab. It starts with the same Wikipedia
-   article. Both sources use DPR 2 and a 2560×1600 display. Keep viewer zoom at 100%.
-   Selkies includes Chrome’s toolbar and window borders, leaving a smaller
-   page viewport (1272×709 in rehearsal); Chariox’s page is 1280×800. Compare
-   the same text and actions rather than matching line wraps.
-3. In Chariox's **Browser address**, open one site below. In Selkies, focus the
-   remote surface, press **Control+L** for the remote Linux Chrome,
-   or click its visible address bar, type the exact same URL and press Enter. Dismiss each site's banner identically. Alternate
-   which side you try first on each site.
-4. On each side, click a visible link/menu, type into search (do not submit
-   personal information), and scroll slowly, then quickly, for 20 seconds.
-   Compare click response, typing echo, scroll smoothness and small-text
-   sharpness. Repeat on the next site; try browser text selection as well.
-5. Fill the table, including freezes, missing pixels or accidental clicks.
-   Leave one side open for a longer normal browsing session if useful. Tell
-   the coordinator when finished so both runtimes and the rented host can be
-   removed. Your ratings decide whether further improvement is worthwhile.
+This is the intended **20-minute** guide once compatibility passes. Chariox
+uses your existing staging account; no validation-origin sign-up or identity
+provider change is required. The coordinator activates the Selkies link only
+when the quiet CCX43 is rented. Both remote Chromiums run on that one Ubuntu
+26.04 host. Use your Mac browser, Retina display and normal home network,
+with browser zoom at 100%. Device approval is the only enrollment step you
+perform; the coordinator handles setup and cleanup.
+
+1. **Minutes 0–3:** open Chariox in your usual signed-in staging browser.
+   Approve the coordinator's one product device request for
+   **vidlat-owner-ab CCX43**. The coordinator supplies the activation link
+   privately; do not paste its device code into ratings or screenshots.
+   Select **vidlat-owner-ab CCX43**, kernel **vidlat-owner-ab**, then
+   **owner-ab** under **Open Existing Sessions**. Open **Browser**, choose
+   **New tab**, and select **Video** if offered.
+2. **Minutes 3–4:** open Selkies in a second browser tab. It starts with the
+   same Wikipedia article. Both sources use DPR 2 and a 2560×1600 display.
+   Keep viewer zoom at 100%. Selkies includes Chrome's toolbar and window
+   borders, so its page viewport is slightly smaller; compare the same text
+   and actions rather than line wraps. Scroll only one side at a time.
+3. **Minutes 4–16:** spend about two minutes per site below, alternating which
+   side goes first. Use Chariox's **Browser address**. In Selkies click the
+   remote address bar (or focus the surface and press **Control+L**), enter
+   the identical URL and press Enter. Dismiss each site's banner identically.
+   Click a visible link/menu, type into search, and scroll slowly then quickly
+   for 20 seconds on each side. Try selecting small text.
+4. **Minutes 16–19:** rate click response, typing echo, scroll smoothness and
+   text sharpness from **1 to 5** in the table. Note freezes, missing pixels,
+   accidental clicks or a site's CAPTCHA. No personal information is needed.
+5. **Minute 20:** tell the coordinator you are finished. The coordinator runs
+   **ab-down** and deletes the quiet host and its separate kernel state.
+   Your Omarchy kernel and existing staging login are unaffected.
 
 Try these exact pages on both sides:
 

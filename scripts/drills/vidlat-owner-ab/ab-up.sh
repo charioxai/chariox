@@ -4,8 +4,10 @@ set -euo pipefail
 umask 077
 KIT=$(cd -- "$(dirname -- "$0")" && pwd)
 : "${AB_STATE:?absolute disposable lane-owned state directory required}"
-: "${AB_ORIGIN:?normal-auth hosted Cloud origin required}"
-: "${AB_RELAY_URL:?matching hosted wss relay required}"
+: "${AB_ORIGIN:=https://staging.chariox.com}"
+# The enrolled Cloud profile supplies the relay. An explicit URL is only an assertion.
+export AB_ORIGIN AB_RELAY_URL="${AB_RELAY_URL:-}"
+export AB_API_ORIGIN="${AB_API_ORIGIN:-$AB_ORIGIN}"
 : "${AB_SELKIES_ORIGIN:?valenv-gated Selkies origin required}"
 : "${AB_GATEWAY_IP:?valenv gateway IPv4 required}"
 export AB_KIT="$KIT" TMPDIR="$AB_STATE/tmp" NODE_OPTIONS=--max-old-space-size=4096
