@@ -271,7 +271,8 @@ export function installMirror2(sanitizeMirrorCss) {
     // Rule count ('x' when cross-origin rules are unreadable) and, independently, the disabled state.
     const ruleCount = sheet => { try { return String(sheet.cssRules.length); } catch { return 'x'; } };
     const sheetSignature = sheet => `${ruleCount(sheet)}:${sheet.disabled}`;
-    const imports = sheet => { try { return sheet?.cssRules[0]?.type === 3; } catch { return false; } };
+    // @import rules lead, after any @layer statements (`@layer a; @import ...`).
+    const imports = sheet => { try { for (const rule of sheet?.cssRules ?? []) { if (rule.type === 3) return true; if (!(rule instanceof CSSLayerStatementRule)) return false; } } catch {} return false; };
     const styleRecord = (node, record) => {
       record.tag = 'style'; record.attrs = {};
       const media = node.getAttribute('media'); if (media && media.length <= 4096) record.attrs.media = media;

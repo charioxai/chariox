@@ -882,3 +882,20 @@ test("MP-10: a credit replayed after a reconnect ends the original credit's long
   assert.ok(replayMs < 800, `MP-10: the replay answered in ${replayMs} ms`);
   assert.equal((await original).sequence, replay.sequence, "MP-10: the same packet as the original credit");
 }));
+
+// Review #941 @36a395b05 finding 3: `@layer theme; @import ...` starts with a layer statement, so the import flag
+// (which routes imported-sheet CSS events to their importer) must look past leading layer statements.
+test("MP-10: review #941@36a395b05-3 a same-count declaration edit inside a sheet imported after a leading @layer statement reaches the viewer (also nested)", () => mirrored(
+  '<link rel="stylesheet" href="/l.css"><p id="q">q</p><p id="r">r</p>', async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal((await next()).reset, true);
+    const css = async needle => { for (let i = 0; i < 5; i++) for (const op of (await next(1000)).ops) if (op.op === "css" && op.css.includes(needle)) return true; return false; };
+    await evaluate("document.styleSheets[0].cssRules[1].styleSheet.cssRules[2].style.color='rgb(1, 2, 3)';true");
+    assert(await css("rgb(1, 2, 3)"), "MP-10: the imported declaration edit reaches the viewer");
+    await evaluate("document.styleSheets[0].cssRules[1].styleSheet.cssRules[1].styleSheet.cssRules[0].style.color='rgb(4, 5, 6)';true");
+    assert(await css("rgb(4, 5, 6)"), "MP-10: a nested imported declaration edit reaches the viewer");
+  }, {
+    "/l.css": { type: "text/css", body: '@layer theme, base;\n@import url("t.css") layer(theme);' },
+    "/t.css": { type: "text/css", body: '@layer inner;\n@import url("n.css") layer(inner);\n#q{color:rgb(9, 9, 9)}' },
+    "/n.css": { type: "text/css", body: "#r{color:rgb(8, 8, 8)}" },
+  }));
