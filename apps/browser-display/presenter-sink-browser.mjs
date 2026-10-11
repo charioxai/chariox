@@ -56,7 +56,7 @@ try{
     await new Promise(resolve=>setTimeout(resolve,50));result.afterDelta=sample();
     await presenter.present({...common,...encoded[61],sequence:63,kind:'video',codec:'vp8'});
     await new Promise(resolve=>setTimeout(resolve,50));result.afterKey=sample();
-    if(result.afterRepair.repair[0]<200||result.afterRepair.outside[1]<200||result.afterDelta.repair[0]<200||result.afterKey.repair[1]<200)throw Error('MP-10: exact overlay/key retirement failed');
+    if(result.afterRepair.repair[0]<200||result.afterRepair.outside[1]<200||result.afterDelta.repair[1]<200||result.afterKey.repair[1]<200)throw Error('MP-10: exact overlay/key retirement failed');
     globalThis.sinkPresenter=presenter;return result;
    },{native,dpr});
    await page.screenshot({path:output+`/dpr${dpr}-${native?'track':'canvas'}.png`});

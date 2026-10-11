@@ -1,5 +1,6 @@
 // MP-08/MP-10/MP-11: whole video goes to the compositor; repairs keep an
-// canvas overlay until a key. No producer or protection-policy changes.
+// canvas overlay until the next complete decoded video image (key or delta).
+// No producer or protection-policy changes.
 export class VideoSink {
  constructor(canvas,onTiming){
   this.canvas=canvas;this.onTiming=onTiming;this.pending=[];this.closed=false;this.overlayActive=false;
@@ -48,11 +49,10 @@ export class VideoSink {
  async commit(result,frame){
   const image=result.image??result;
   if(this.closed)return {drawn:false};
-  if(frame.key)this.keyPending=true;
   const decodedAt=result.decodedAt??performance.timeOrigin+performance.now();
   if(result.committedAt!==undefined){
    this.remember(image);
-   if(this.keyPending){this.canvas.style.opacity='0';this.overlayActive=false;this.keyPending=false;}
+   this.retireOverlay();
    return {...result,drawn:true};
   }
   return new Promise(resolve=>{
@@ -75,13 +75,21 @@ export class VideoSink {
    if(target.width!==frame.width)target.width=frame.width;
    if(target.height!==frame.height)target.height=frame.height;
    target.getContext('2d').drawImage(image,0,0,frame.width,frame.height);
-   if(this.video&&this.keyPending){this.canvas.style.opacity='0';this.overlayActive=false;this.keyPending=false;}
+   this.retireOverlay();
    this.remember(image);
   }
   const committedAt=visible?performance.timeOrigin+performance.now():undefined;
   for(const job of jobs){const drawn=!this.closed&&visible&&job===latest;job.resolve({drawn,decodedAt:job.decodedAt,committedAt});if(!drawn&&!this.closed)this.onTiming('client_present_drop',job.decodedAt);}
  }
  remember(image){this.last?.close();this.last=image.clone?.();}
+ retireOverlay(){
+  if(!this.video&&!this.track)return;
+  // A codec delta reconstructs a complete image. Earlier exact repairs and
+  // scroll moves belong to the old image, even when no new key is needed.
+  // Clear the bitmap too: snapshots and later patches must not revive it.
+  this.canvas.getContext('2d').clearRect(0,0,this.canvas.width,this.canvas.height);
+  this.canvas.style.background='transparent';this.canvas.style.opacity='0';this.overlayActive=false;
+ }
  overlay(frame){
   if(!this.video&&!this.track)return;
   if(this.canvas.width!==frame.width)this.canvas.width=frame.width;

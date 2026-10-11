@@ -9,7 +9,7 @@ test('MP-08/MP-10 60 synthetic frames commit within 6ms despite an 8ms busy main
  const prior={Worker:globalThis.Worker,VideoDecoder:globalThis.VideoDecoder,MediaStreamTrackGenerator:globalThis.MediaStreamTrackGenerator,MediaStream:globalThis.MediaStream};
  const latencies=[];let now=0;
  const image=(timestamp,decodedAt=now)=>({timestamp,decodedAt,displayWidth:1280,displayHeight:800,close(){},clone(){return image(timestamp,decodedAt)}});
- const context={drawImage(frame){latencies.push(now-frame.decodedAt)}};
+ const context={clearRect(){},drawImage(frame){latencies.push(now-frame.decodedAt)}};
  class Scope{static[Symbol.hasInstance](){return true}}
  class W{
   constructor(){
