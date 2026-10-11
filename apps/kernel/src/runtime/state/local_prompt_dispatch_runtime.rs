@@ -2377,7 +2377,7 @@ pub(in crate::runtime::state) mod tests {
     }
 
     #[tokio::test]
-    async fn completed_and_cancelled_turns_add_no_failed_request_note() {
+    async fn mp08_mp10_owned_cancellation_emits_completion_without_provider_output() {
         let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
             runtime_with_admitted_prompt().await;
         let source_id = dispatch.source_attachment_id.clone();
@@ -2411,6 +2411,31 @@ pub(in crate::runtime::state) mod tests {
                 Some(&provider_run_id),
             )
             .expect("cancellation should finalize");
+        let completion_id = format!("prompt-complete:{}", cancelled.cancellation.prompt.id());
+        let records = runtime
+            .owned
+            .terminal_stream
+            .drain_completion_records(&session_id, &observer_id);
+        assert_eq!(records.iter().filter(|record| record.message_id == completion_id
+            && record.provider_run_id == provider_run_id).count(), 1,
+            "MP-08/MP-10: the actual owned-state worker path must project the cancelled prompt even when its provider emits no assistant completion");
+        assert!(
+            runtime
+                .owned
+                .finalize_local_prompt_cancellation_with_queued_advance(
+                    &session_id,
+                    &agent_id,
+                    cancelled.cancellation.prompt.id(),
+                    Some(&provider_run_id)
+                )
+                .is_err(),
+            "retired cancellation cannot publish twice"
+        );
+        assert!(runtime
+            .owned
+            .terminal_stream
+            .drain_completion_records(&session_id, &observer_id)
+            .is_empty());
         submit_and_dispatch(&runtime, &session_id, &agent_id, &source_id, "after cancel").await;
 
         assert!(failed_requests(&runtime, &agent_id).is_empty());

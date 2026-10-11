@@ -231,7 +231,9 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
     let expected_kernel_id = if let Some(id) = target.daemon_id.as_deref() {
         canonical_peer_daemon_id(id).unwrap_or(id).to_string()
     } else if let Some(alias) = target.daemon_alias.as_deref() {
-        let peer = relay_discovery::get_live_kernel(config, alias).await?;
+        let discovery_config = super::remote_inventory::metadata_discovery_config(config).await?;
+        let peer = relay_discovery::get_live_kernel(&discovery_config, alias).await?;
+        authorize()?;
         if peer.public_key != target_public_key {
             return Err(DaemonError::LocalTransport {
                 operation: "resolve relay peer alias",
@@ -513,7 +515,9 @@ pub(crate) async fn enqueue_peer_request_via_connected_relay_authorized(
             if stale_public_key.is_some() {
                 state.write().await.forget_peer_public_key(&target_ref);
             }
-            let kernel = relay_discovery::get_live_kernel(config, &target_ref).await?;
+            let discovery_config =
+                super::remote_inventory::metadata_discovery_config(config).await?;
+            let kernel = relay_discovery::get_live_kernel(&discovery_config, &target_ref).await?;
             authorize()?;
             let public_key = kernel.public_key;
             relay_crypto::decode_public_key(&public_key)?;

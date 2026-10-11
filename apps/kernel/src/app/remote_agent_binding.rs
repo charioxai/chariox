@@ -578,6 +578,11 @@ impl DaemonApp {
         &self,
         agent: &AgentInstance,
     ) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteMcp>, DaemonError> {
+        // Home grants execute through the same home proxy in every client mode.
+        // Worker-local definitions are admitted separately by RequiredRemoteMcp.
+        if agent.remote_execution().is_some() {
+            return Ok(Vec::new());
+        }
         let mcp_grants = agent.mcp_grants();
         if mcp_grants.is_empty() {
             return Ok(Vec::new());
@@ -653,7 +658,7 @@ impl DaemonApp {
             return Ok((
                 self.required_remote_mcps_for_native_provider_launch(agent)?,
                 Some(self.required_remote_skills_for_native_provider_launch(agent)?),
-                manifest.without_mcp_tools(),
+                manifest,
             ));
         }
         Ok((Vec::new(), None, manifest))
@@ -2387,7 +2392,7 @@ mod tests {
     }
 
     #[test]
-    fn native_remote_prompt_routes_granted_mcp_as_worker_requirement_only() {
+    fn native_remote_prompt_keeps_granted_mcp_on_home() {
         let workspace = std::env::temp_dir().join(format!(
             "chariox-native-remote-prompt-capabilities-{}-{}",
             std::process::id(),
@@ -2479,10 +2484,12 @@ mod tests {
         let (required_mcps, required_skills, manifest) = app
             .remote_prompt_capabilities_for_agent(&agent)
             .expect("native prompt capabilities should resolve");
-        assert_eq!(required_mcps.len(), 1);
-        assert_eq!(required_mcps[0].config.name, mcp_name);
+        assert!(required_mcps.is_empty());
         assert!(required_skills.is_some_and(|skills| skills.is_empty()));
-        assert!(manifest.home_proxy_mcp_server_names().next().is_none());
+        assert_eq!(
+            manifest.home_proxy_mcp_server_names().collect::<Vec<_>>(),
+            vec![mcp_name.as_str()]
+        );
 
         std::fs::remove_dir_all(workspace).expect("workspace should clean up");
     }

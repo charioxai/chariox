@@ -5,6 +5,15 @@ use tokio::net::TcpListener;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mp08_mp10_temporary_peer_uses_metadata_only_cloud_authority() {
+    metadata_authority(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp08_mp10_connected_peer_cache_miss_uses_metadata_only_cloud_authority() {
+    metadata_authority(true).await;
+}
+
+async fn metadata_authority(connected: bool) {
     let api = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api_url = format!("http://{}", api.local_addr().unwrap());
     let api_task = tokio::spawn(async move {
@@ -98,28 +107,46 @@ async fn mp08_mp10_temporary_peer_uses_metadata_only_cloud_authority() {
         ..Default::default()
     });
     let calls = std::sync::atomic::AtomicUsize::new(0);
-    let result = send_peer_request_via_temporary_connection_authorized(
-        &config,
-        chariox_relay::protocol::ClientTarget {
-            daemon_id: Some("worker".into()),
-            daemon_alias: None,
-        },
-        RelayPeerRequest::Ping {
-            value: "scope-check".into(),
-        },
-        Duration::from_secs(3),
-        || {
-            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                Ok(())
-            } else {
-                Err(DaemonError::LocalTransport {
-                    operation: "fixture admission recheck",
-                    message: "revoked after metadata".into(),
-                })
-            }
-        },
-    )
-    .await;
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let target = chariox_relay::protocol::ClientTarget {
+        daemon_id: Some("worker".into()),
+        daemon_alias: None,
+    };
+    let request = RelayPeerRequest::Ping {
+        value: "scope-check".into(),
+    };
+    let authorize = || {
+        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Ok(())
+        } else {
+            Err(DaemonError::LocalTransport {
+                operation: "fixture admission recheck",
+                message: "revoked after metadata".into(),
+            })
+        }
+    };
+    let result = if connected {
+        enqueue_peer_request_via_connected_relay_authorized(
+            &config,
+            &state,
+            target,
+            request,
+            Duration::from_secs(3),
+            authorize,
+        )
+        .await
+        .map(|_| ())
+    } else {
+        send_peer_request_via_temporary_connection_authorized(
+            &config,
+            target,
+            request,
+            Duration::from_secs(3),
+            authorize,
+        )
+        .await
+        .map(|_| ())
+    };
     assert!(
         matches!(
             result,

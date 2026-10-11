@@ -1119,7 +1119,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
             if !saw_completion && !workflow_output_ready {
                 return Ok(outcome);
             }
-            if active_prompt.workflow_run_id().is_some() && !workflow_output_ready {
+            let intentionally_cancelled = active_prompt.status() == PromptStatus::Cancelling;
+            if !intentionally_cancelled
+                && active_prompt.workflow_run_id().is_some()
+                && !workflow_output_ready
+            {
                 if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
                     active_prompt.workflow_run_id(),
                     active_prompt.workflow_node_run_id(),
@@ -1209,17 +1213,28 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 }
                 return Ok(outcome);
             }
+            // Completion is the worker's stop acknowledgement. Preserve the
+            // home cancellation intent instead of turning that receipt into success.
+            let completed = if intentionally_cancelled {
+                crate::app::workflow_runtime::cancel_workflow_prompt_from_runtime(
+                    self.app,
+                    session_id,
+                    &active_prompt,
+                )?;
+                self.app
+                    .prompt_owner_finalize_active_prompt_cancellation(session_id, agent_id)?
+            } else {
+                self.app
+                    .prompt_owner_complete_active_prompt_only(session_id, agent_id)?
+            };
             self.record_projected_prompt_settlement(
                 session_id,
                 agent_id,
-                &active_prompt,
+                &completed,
                 provider_run_id,
                 projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                 projected_termination.clone(),
             );
-            let completed = self
-                .app
-                .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
             // A matching worker completion settles the same flow-control turn
             // started by native prompt projection. Clear it before publishing
             // the home snapshot, otherwise completed prompts remain WORKING.
@@ -1234,7 +1249,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
             let _ =
                 crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);
-            if let Some(termination) = projected_termination.as_ref() {
+            if let Some(termination) = projected_termination
+                .as_ref()
+                .filter(|_| !intentionally_cancelled)
+            {
                 let _ = self
                     .app
                     .agents()
@@ -1260,7 +1278,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         workflow_node_run_id,
                     )?;
                 }
-            } else {
+            } else if !intentionally_cancelled {
                 crate::app::workflow_runtime::complete_workflow_prompt_from_runtime(
                     self.app,
                     session_id,
@@ -1369,7 +1387,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
         settled_at_ms: u64,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
     ) {
-        let settlement_status = if provider_termination.is_some() {
+        let settlement_status = if matches!(
+            prompt.status(),
+            PromptStatus::Cancelling | PromptStatus::Cancelled
+        ) {
+            crate::git_observer::CompletedTurnSettlementStatus::Cancelled
+        } else if provider_termination.is_some() {
             crate::git_observer::CompletedTurnSettlementStatus::Failed
         } else {
             crate::git_observer::CompletedTurnSettlementStatus::Completed
@@ -2814,6 +2837,15 @@ mod explicit_completion_tests {
 
     #[test]
     fn detached_ordinary_queue_head_does_not_strand_following_workflow_prompt() {
+        assert_detached_ordinary_queue_advances(false);
+    }
+
+    #[test]
+    fn mp08_mp10_cancelled_turn_advances_detached_queue_without_stranding_workflow() {
+        assert_detached_ordinary_queue_advances(true);
+    }
+
+    fn assert_detached_ordinary_queue_advances(cancel: bool) {
         let mut config = DaemonConfig::for_tests();
         config.accept_remote_leases = true;
         let mut app =
@@ -2978,6 +3010,13 @@ mod explicit_completion_tests {
             detached_prompt.id(),
         );
 
+        if cancel {
+            app.prompt_owner_begin_cancelling_active_prompt(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .unwrap();
+        }
         let projected = RemoteLeaseRuntime::new(&mut app)
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
@@ -2999,6 +3038,14 @@ mod explicit_completion_tests {
             )
             .expect("completion should admit the detached ordinary head");
 
+        assert_eq!(
+            projected.completions[0].completed.status(),
+            if cancel {
+                PromptStatus::Cancelled
+            } else {
+                PromptStatus::Completed
+            }
+        );
         // Queued prompts outlive their source attachment, so the detached
         // ordinary head runs first and the workflow prompt waits behind it.
         let ordinary = projected.completions[0]
@@ -3126,6 +3173,94 @@ fn leased_tool_stream_key(leased: &LeasedAgent, run: &str, identity: &Option<Str
 #[cfg(test)]
 mod mp11_projection_admission_tests {
     use super::*;
+    #[test]
+    fn mp08_mp10_worker_completion_preserves_home_cancellation_settlement() {
+        let mut app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new("home", "home"))
+            .unwrap();
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-1".into(),
+                    worker_machine_id: "worker-machine".into(),
+                    execution_lease_id: "lease".into(),
+                    leased_agent_id: "leased".into(),
+                    active_worker_provider_run_id: Some("run".into()),
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "cancellation-test",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let prompt = PromptQueueItem::new(
+            "cancelled-home-turn",
+            attachment.id(),
+            agent.id(),
+            "research",
+            PromptStatus::Queued,
+        );
+        let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .unwrap()
+        else {
+            panic!("first prompt must start");
+        };
+        app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
+            .unwrap();
+        app.agents
+            .set_remote_execution_active_worker_provider_run_id(agent.id(), Some("run".into()))
+            .unwrap();
+        crate::transport::flow_control::note_prompt_started(&mut app, "run");
+        let projected = RemoteLeaseRuntime::new(&mut app)
+            .project_remote_runtime_projection(
+                crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
+                crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id: session.id().into(),
+                    home_agent_id: agent.id().into(),
+                    provider_run_id: "run".into(),
+                    provider_run: None,
+                    prompts: vec![],
+                    output_chunks: vec![],
+                    notices: vec![],
+                    completions: vec![RelayProjectedCompletion {
+                        message_id: "prompt-complete:worker-turn".into(),
+                        completed_at_ms: crate::session::unix_epoch_ms(),
+                        home_prompt_id: Some(prompt.id().into()),
+                        provider_termination: None,
+                    }],
+                },
+            )
+            .unwrap();
+        assert_eq!(projected.completions.len(), 1);
+        assert_eq!(
+            projected.completions[0].completed.status(),
+            PromptStatus::Cancelled
+        );
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            app.completed_git_turn_snapshot_store()
+                .latest_projection_for_agent(session.id(), agent.id())
+                .unwrap()
+                .settlement_status,
+            crate::git_observer::CompletedTurnSettlementStatus::Cancelled
+        );
+    }
+
     #[test]
     fn mp11_projection_requires_exact_source_session_and_retained_lease() {
         let mut app =

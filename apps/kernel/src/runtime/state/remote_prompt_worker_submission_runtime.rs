@@ -904,11 +904,6 @@ impl KernelRuntimeState {
                 } else {
                     None
                 };
-                let manifest = if native_provider_run {
-                    manifest.without_mcp_tools()
-                } else {
-                    manifest
-                };
                 let mut config = callback_state.config_snapshot().await;
                 if let (Some(relay_url), Some(relay_token)) = (
                     remote_execution.relay_url.clone(),
