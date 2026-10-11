@@ -1212,7 +1212,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     outcome.provider_failed = provider_failed;
                     crate::transport::flow_control::clear_prompt_activity(
                         self.app,
-                        provider_run_id,
+                        &projected_provider_run_id,
                     );
                     let _ = crate::app::KernelSessionReadService::new(self.app)
                         .session_snapshot(session_id);
@@ -1248,7 +1248,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             // A matching worker completion settles the same flow-control turn
             // started by native prompt projection. Clear it before publishing
             // the home snapshot, otherwise completed prompts remain WORKING.
-            crate::transport::flow_control::clear_prompt_activity(self.app, provider_run_id);
+            crate::transport::flow_control::clear_prompt_activity(
+                self.app,
+                &projected_provider_run_id,
+            );
             // MP-08 / MP-10 / MP-11: completing a native turn does not retire
             // its persistent provider process. Keep only the already admitted,
             // still-running run; unchanged subsequent projections omit its
@@ -3336,7 +3339,10 @@ mod mp11_projection_admission_tests {
         app.agents
             .set_remote_execution_active_worker_provider_run_id(agent.id(), Some("run".into()))
             .unwrap();
-        crate::transport::flow_control::note_prompt_started(&mut app, "run");
+        crate::transport::flow_control::note_prompt_started(
+            &mut app,
+            &crate::provider::projected_leased_provider_run_id("leased", "run"),
+        );
         let projected = RemoteLeaseRuntime::new(&mut app)
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),

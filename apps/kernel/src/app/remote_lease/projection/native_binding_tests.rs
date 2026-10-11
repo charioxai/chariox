@@ -183,3 +183,137 @@ fn mp08_mp10_native_completion_retains_only_a_running_worker_binding() {
         assert!(!project(&mut app, "run", None, vec![], vec![]).accepted);
     }
 }
+
+#[test]
+fn mp11_worker_completion_preserves_unrelated_local_turn_activity() {
+    let mut app = crate::app::DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (local, local_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new("local", "local"))
+        .unwrap();
+    let local_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            local.id(),
+            "local-tui",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let mut local_run = provider_run(
+        "run",
+        local.id(),
+        local_agent.id(),
+        "managed-dev-stub",
+        "managed-dev-stub",
+        ProviderClientInterface::Chariox,
+    );
+    local_run.mark_running();
+    app.providers_mut().insert_run_for_test(local_run);
+    app.prompt_owner_submit_prepared_prompt(
+        local.id(),
+        PromptQueueItem::new(
+            "local-active",
+            local_attachment.id(),
+            local_agent.id(),
+            "local research",
+            PromptStatus::Queued,
+        ),
+        false,
+    )
+    .unwrap();
+    crate::transport::flow_control::note_prompt_started(&mut app, "run");
+    let local_active_turn = app
+        .active_turns
+        .get("run")
+        .expect("real admitted local prompt must own its active turn");
+
+    let (home, home_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "remote", "remote",
+        ))
+        .unwrap();
+    app.agents
+        .bind_remote_execution(
+            home_agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel-1".into(),
+                worker_machine_id: "worker-machine".into(),
+                execution_lease_id: "lease".into(),
+                leased_agent_id: "leased".into(),
+                active_worker_provider_run_id: Some("run".into()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            home.id(),
+            "native-tui",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let mut run = provider_run(
+        "run",
+        "worker-session",
+        "worker-agent",
+        "claude",
+        "claude",
+        ProviderClientInterface::NativeTui,
+    );
+    run.mark_running();
+    let project = |app: &mut crate::app::DaemonApp, snapshot, prompts, completions| {
+        RemoteLeaseRuntime::new(app)
+            .project_remote_runtime_projection(
+                crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
+                RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id: home.id().into(),
+                    home_agent_id: home_agent.id().into(),
+                    provider_run_id: "run".into(),
+                    provider_run: snapshot,
+                    prompts,
+                    output_chunks: vec![],
+                    notices: vec![],
+                    completions,
+                },
+            )
+            .unwrap()
+    };
+    assert!(
+        project(
+            &mut app,
+            Some(run),
+            vec![RelayProjectedPrompt {
+                prompt_id: "native-A".into(),
+                text: "remote research".into()
+            }],
+            vec![]
+        )
+        .accepted
+    );
+    let projected_id = crate::provider::projected_leased_provider_run_id("leased", "run");
+    assert!(app.prompt_activity.read().contains_key(&projected_id));
+    let completion = project(
+        &mut app,
+        None,
+        vec![],
+        vec![RelayProjectedCompletion {
+            message_id: "complete-A".into(),
+            completed_at_ms: crate::session::unix_epoch_ms(),
+            home_prompt_id: Some("native-A".into()),
+            provider_termination: None,
+        }],
+    );
+    assert_eq!(completion.completions.len(), 1);
+    assert_eq!(
+        app.active_turns.get("run"),
+        Some(local_active_turn),
+        "a worker's raw run ID cannot retire a local turn"
+    );
+    assert!(app.prompt_activity.read().contains_key("run"));
+    assert!(
+        !app.prompt_activity.read().contains_key(&projected_id),
+        "the completed native projection must clear its own home activity"
+    );
+}

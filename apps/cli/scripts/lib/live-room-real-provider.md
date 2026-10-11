@@ -240,3 +240,8 @@ Keep stale request, stale timestamp, wrong run and non-cancelling controls.
 The original Esc must settle the exact home prompt and leave the native composer
 writable for a real public-site continuation. Supplemental terminal/RPC input
 after a failure is diagnostic evidence and cannot count as a passing cell.
+
+MP-11: while a real local provider turn remains active, complete a leased native
+turn whose worker run number matches the local run number. The local turn must
+retain its activity and controls; only the projected leased turn settles. Record
+both actual run identities and client views. Repeat with native cancellation.
