@@ -99,12 +99,30 @@ async fn envp05a_setup_foreign_dependency_cannot_borrow_same_name_local_binding(
 }
 
 #[cfg(target_os = "linux")]
+#[tokio::test]
+async fn envp05a_setup_platform_gap_prevents_runner_command_admission() {
+    setup_retry_regression(SetupScenario::PlatformGap).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn envp05a_setup_folder_gap_prevents_runner_command_admission() {
+    setup_retry_regression(SetupScenario::FolderGap).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn envp05a_setup_failed_readiness_probe_remains_eligible_for_repair() {
+    setup_retry_regression(SetupScenario::FailedReadiness).await;
+}
+
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
-enum SetupScenario { Retry, LockedSecret, MissingPublic, ChangedPublic, ForeignDependency }
+enum SetupScenario { Retry, LockedSecret, MissingPublic, ChangedPublic, ForeignDependency, PlatformGap, FolderGap, FailedReadiness }
 
 #[cfg(target_os = "linux")]
 async fn setup_retry_regression(scenario: SetupScenario) {
-    let locked_secret = !matches!(scenario, SetupScenario::Retry);
+    let locked_secret = !matches!(scenario, SetupScenario::Retry | SetupScenario::PlatformGap | SetupScenario::FolderGap | SetupScenario::FailedReadiness);
     let preparation_failure = matches!(scenario, SetupScenario::MissingPublic);
     let changed_public = matches!(scenario, SetupScenario::ChangedPublic);
 
@@ -237,6 +255,59 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         crate::project_environment::apply_scoped_binding(&store, &config, &env, &foreign).unwrap();
         requirement.depends_on = vec![foreign.requirement_id.clone()];
         env.folders[0].requirements[0] = requirement.clone();
+    }
+    if matches!(scenario, SetupScenario::PlatformGap | SetupScenario::FolderGap | SetupScenario::FailedReadiness) {
+        state.owned.session_store.restore_projects(vec![project.clone()]);
+        if matches!(scenario, SetupScenario::PlatformGap) {
+            requirement.platform_variants = vec![EnvironmentPlatform { os: "macos".into(), architecture: "any".into() }];
+        } else if matches!(scenario, SetupScenario::FolderGap) {
+            requirement.scope = RequirementScope::Folder { folder_id: env.folders[0].folder_id.clone() };
+            env.folders[0].requirements = vec![requirement.clone()];
+            env.project_requirements.clear();
+        }
+        let RequirementSpec::SetupChecks { commands, probes, .. } = &mut requirement.spec else { panic!("Setup fixture") };
+        *commands = vec![command("printf forbidden > platform-command-marker")];
+        *probes = vec![EnvironmentProbe::Tcp { host: "127.0.0.1".into(), port: 9, timeout_ms: 20 }];
+        if matches!(scenario, SetupScenario::FolderGap) {
+            env.folders[0].requirements = vec![requirement.clone()];
+        } else {
+            env.project_requirements = vec![requirement.clone()];
+        }
+        let current = store.snapshot(&project).unwrap();
+        let (saved, _) = store.save_revision_locked(&current, &crate::local::SaveProjectEnvironmentRevisionRequest {
+            project_id: project.id().into(), expected_revision: current.revision,
+            expected_content_digest: current.content_digest.clone(), draft: environment_draft(&env), accepted_proposal_ids: vec![], excluded_proposal_ids: vec![],
+        }, "owner").unwrap();
+        if matches!(scenario, SetupScenario::FolderGap) {
+            std::fs::remove_dir(&workspace).unwrap();
+        }
+        let LocalDaemonResponse::ProjectEnvironmentPlan { plan } = state.plan_project_environment(crate::local::PlanProjectEnvironmentRequest {
+            project_id: project.id().into(), expected_revision: saved.revision, revision_digest: saved.content_digest.clone(), target: current_check_target(&config), selected_items: vec!["setup".into()],
+        }, "owner").await.unwrap() else { panic!("Plan response") };
+        state.apply_project_environment(crate::local::ApplyProjectEnvironmentRequest {
+            project_id: project.id().into(), operation_id: "platform-apply".into(), plan_id: plan.plan_id.clone(),
+            expected_revision: saved.revision, revision_digest: saved.content_digest.clone(), target: plan.target.clone(), selected_items: plan.selected_items.clone(),
+            per_item_opt_ins: plan.required_opt_ins.iter().map(|id| EnvironmentItemOptIn {
+                requirement_id: id.clone(), decision: EnvironmentOptInDecision::Accepted, recorded_at_ms: crate::session::unix_epoch_ms(), user_id: "owner".into(),
+            }).collect(),
+        }, "owner").await.unwrap();
+        let end = Instant::now() + Duration::from_secs(15);
+        let attempt = loop {
+            let journal = store.load_applies(project.id()).unwrap();
+            if let Some(a) = journal.attempts.first().filter(|a| !apply_active(&a.operation)) { break a.clone(); }
+            assert!(Instant::now() < end, "Apply runner must settle");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        if matches!(scenario, SetupScenario::FailedReadiness) {
+            assert!(workspace.join("platform-command-marker").exists(), "an ordinary failed readiness probe permits opted-in repair");
+            assert_eq!(attempt.setup_admitted_commands.get("setup"), Some(&1));
+            assert_eq!(attempt.operation.per_item_results[0].reason_code, "setup_unconfirmed", "unchanged failed target facts cannot become Ready");
+            return;
+        }
+        assert!(!workspace.join("platform-command-marker").exists(), "inapplicable Setup must not run declared commands");
+        assert!(attempt.setup_admitted_commands.get("setup").is_none(), "applicability failure must precede Setup admission");
+        assert_eq!(attempt.operation.per_item_results[0].reason_code, if matches!(scenario, SetupScenario::PlatformGap) { "platform_gap" } else { "folder_unavailable" });
+        return;
     }
     let mut operation = EnvironmentOperation {
         operation_id: "retry-operation".into(),

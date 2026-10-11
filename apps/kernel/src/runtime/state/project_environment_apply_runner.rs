@@ -186,7 +186,12 @@ fn run_apply(
                         &mut checks.public_bindings,
                         std::time::Instant::now() + std::time::Duration::from_secs(60),
                     );
-                    if setup_reconciliation_allowed(
+                    // Applicability and probe-admission failures cannot authorize side effects.
+                    // Only a measured readiness failure can be repaired by opted-in Setup.
+                    if !matches!(checked.reason_code.as_str(), "checks_passed" | "check_failed") {
+                        observation = checked;
+                        result = apply_item_result(r, observation.status.clone(), &observation.reason_code, &observation.safe_summary);
+                    } else if setup_reconciliation_allowed(
                         previous_receipt.is_some(), uncertain,
                         crate::runtime::state::project_environment_setup::setup_commands_completed(state, env, r, op),
                         !probes.is_empty() && checked.status == EnvironmentObservationStatus::Ready,
