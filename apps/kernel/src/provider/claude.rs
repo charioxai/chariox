@@ -243,6 +243,10 @@ fn plan_claude_launch_unlocked(
     let mut pty_env = claude_process_env();
     pty_env.extend(request.provider_account_env.clone());
     pty_env.insert(
+        "CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE".into(),
+        "dispatched".into(),
+    );
+    pty_env.insert(
         "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
         native.events_file.display().to_string(),
     );
@@ -852,6 +856,13 @@ mod tests {
         assert_eq!(
             launch
                 .pty_env
+                .get("CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE")
+                .map(String::as_str),
+            Some("dispatched")
+        );
+        assert_eq!(
+            launch
+                .pty_env
                 .get("DISABLE_AUTOUPDATER")
                 .map(String::as_str),
             Some("1")
@@ -897,6 +908,9 @@ mod tests {
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
         assert_eq!(launch.process_label, "claude:headless");
         assert_eq!(launch.structured_endpoint, None);
+        assert!(!launch
+            .pty_env
+            .contains_key("CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE"));
         assert!(!launch.pty_args.iter().any(|arg| arg == "-p"));
         assert!(!launch.pty_args.iter().any(|arg| arg == "stream-json"));
         assert!(launch

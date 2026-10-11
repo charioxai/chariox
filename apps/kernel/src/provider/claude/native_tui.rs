@@ -717,6 +717,63 @@ mod tests {
     }
 
     #[test]
+    fn print_prompt_hooks_use_the_current_dispatched_context() {
+        let request = LaunchProviderRequest::new(
+            "session-print-context",
+            "claude",
+            "claude-p",
+            "default",
+            "sonnet",
+        );
+        let native = prepare_claude_native_tui_files(&request).unwrap();
+        let hook = native
+            .events_file
+            .parent()
+            .unwrap()
+            .join("hook-handler.mjs");
+        // MP-08 / MP-10 / MP-11: print turns have already entered the kernel;
+        // their dispatched envelope must not wait for a native prompt request.
+        for context in [
+            format!("{}🦀END", "current-envelope\n".repeat(2000)),
+            String::new(),
+            "next envelope".into(),
+        ] {
+            fs::write(&native.context_file, &context).unwrap();
+            let children = (0..CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS).map(|index| {
+                let mut child = Command::new("node").arg(&hook)
+                    .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+                    .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+                    .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES", &native.context_response_dir)
+                    .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK", index.to_string())
+                    .env("CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE", "dispatched")
+                    .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+                    .spawn().unwrap();
+                child.stdin.take().unwrap().write_all(
+                    br#"{"hook_event_name":"UserPromptSubmit","session_id":"print","prompt":"same prompt"}"#,
+                ).unwrap();
+                child
+            }).collect::<Vec<_>>();
+            let mut chunks = Vec::new();
+            for child in children {
+                let output = child.wait_with_output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "dispatched print context must not require a native response: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                chunks.push(
+                    value["hookSpecificOutput"]["additionalContext"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
+                );
+            }
+            assert_eq!(chunks.concat(), context);
+        }
+    }
+
+    #[test]
     fn user_prompt_hooks_deliver_only_the_current_response_to_every_chunk() {
         let request = LaunchProviderRequest::new(
             "session-fresh-context",
