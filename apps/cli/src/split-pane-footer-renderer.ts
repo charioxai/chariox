@@ -255,7 +255,7 @@ function renderFooter(
     state.goalText.content = goalStatus?.label ?? ""
     state.goalText.fg = goalStatus?.tone === "error" ? theme.error : theme.textMuted
   }
-  renderStatusBadgeTexts(state.badgeTexts, goalStatus ? goalStatus.label.split(":")[0]! : badge.label, badge.tone, options)
+  renderStatusBadgeTexts(state.badgeTexts, badge.label.startsWith("GOAL ") ? badge.label.split(":")[0]! : badge.label, badge.tone, options)
   const activeRun = options.providerRun && options.providerRun.agent_instance_id === agent?.id
     ? {
         agentInstanceId: options.providerRun.agent_instance_id,
