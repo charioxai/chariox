@@ -3,7 +3,7 @@ import test from 'node:test';import assert from 'node:assert/strict';
 import {StripePresenter} from './stripe-presenter.mjs';
 import {BrowserDisplayPresenter} from './presenter.mjs';
 class Worker {
- postMessage(data){queueMicrotask(()=>this.onmessage({data:{id:data.id,frame:{displayWidth:data.width,displayHeight:data.height,close(){}}}}))}
+ postMessage(data){if(data.op==='reset')return;queueMicrotask(()=>this.onmessage({data:{id:data.id,frame:{displayWidth:data.width,displayHeight:data.height,close(){}}}}))}
  terminate(){}
 }
 const row=(id,key=true,sequence=1)=>({row:id,y:id*100,height:100,codec:'avc1.420033',key,sequence,reference_sequence:key?null:sequence-1,data:new Uint8Array([0])});
@@ -50,8 +50,8 @@ test('MP-08/MP-10 independent rows decode together; failure closes all outputs b
  const previous=globalThis.Worker,workers=[],closed=[];
  class HeldWorker {
   constructor(){workers.push(this)}
-  postMessage(data){this.data=data}
-  finish(error=false){this.onmessage({data:{id:this.data.id,...(error?{error:'decode failed'}:{frame:{displayWidth:this.data.width,displayHeight:this.data.height,close:()=>closed.push(this)}})}})}
+  postMessage(data){if(data.op!=='reset')(this.messages??=[]).push(data)}
+  finish(error=false){const data=this.messages.shift();this.onmessage({data:{id:data.id,...(error?{error:'decode failed'}:{frame:{displayWidth:data.width,displayHeight:data.height,close:()=>closed.push(this)}})}})}
   terminate(){}
  }
  globalThis.Worker=HeldWorker;
@@ -60,14 +60,31 @@ test('MP-08/MP-10 independent rows decode together; failure closes all outputs b
  try {
   const pending=p.present(frame());pending.catch(()=>{});
   await new Promise(r=>setImmediate(r));
-  const queued=workers.length;
+  const queued=workers[0].messages.length;
   // Release the sequential base too so a RED assertion leaves no decode timers.
   for(let i=0;i<8;i++){
-   while(!workers[i])await new Promise(r=>setImmediate(r));
-   workers[i].finish(i===7);await new Promise(r=>setImmediate(r));
+   workers[0].finish(i===7);await new Promise(r=>setImmediate(r));
   }
   await assert.rejects(pending,/decode failed/);
-  assert.equal(queued,8,'independent row chains should not serialize worker round trips');
+  assert.equal(workers.length,1);assert.equal(queued,8,'independent row chains should not serialize worker round trips');
   assert.equal(draws.length,0);assert.equal(closed.length,7);assert.equal(p.sequence,0);
  } finally {p.close();globalThis.Worker=previous}
+});
+
+test('MP-08/MP-10/MP-11 independent rows share one bounded module worker', async () => {
+ const previous=globalThis.Worker;let created=0,terminated=0,closedFrames=0;
+ globalThis.Worker=class {
+  constructor(){created++}
+  postMessage(data){if(data.op==='reset')return;queueMicrotask(()=>this.onmessage({data:{id:data.id,frame:{displayWidth:data.width,displayHeight:data.height,close(){closedFrames++}}}}))}
+  terminate(){terminated++}
+ };
+ const presenter=new StripePresenter();
+ try {
+  const frame={kind:'stripes',width:2560,height:1600,stripes:Array.from({length:8},(_,row)=>({row,y:row*200,height:200,sequence:1,codec:'avc1.420033',key:true,reference_sequence:null,data:new Uint8Array([1])}))};
+  const decoded=await presenter.decode(frame,x=>x.slice());
+  assert.equal(created,1,'one network module startup must cover all independent rows');
+  assert.equal(decoded.length,8);
+  for(const {output}of decoded)output.close();
+ }finally{presenter.close();globalThis.Worker=previous}
+ assert.equal(terminated,1);assert.equal(closedFrames,8);
 });
