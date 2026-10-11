@@ -510,6 +510,17 @@ mod tests {
             &local.profile_id,
         )
         .unwrap();
+        let agent = app
+            .agents
+            .set_agent_runtime_profile_with_account_profile(
+                agent.id(),
+                "codex",
+                Some("gpt-5.6-luna".into()),
+                None,
+                Some(profile.profile_id.clone()),
+                Default::default(),
+            )
+            .unwrap();
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
         let request = crate::provider::LaunchProviderRequest::new(
@@ -529,6 +540,35 @@ mod tests {
             .expect("a lease-owned replica must not be resolved as a local worker account");
         assert_eq!(prepared.owner_user_id, "cloud-owner");
         assert_eq!(prepared.provider_account_env, expected);
+        let started = runtime
+            .owned
+            .start_provider_launch(prepared.clone())
+            .unwrap();
+        let target = runtime.owned.agent_store.get_agent(agent.id()).unwrap();
+        assert!(
+            !runtime.owned.provider_account_allows_queued_prompt_advance(
+                session.id(),
+                &target,
+                "ordinary queue regression"
+            ),
+            "an unmarked run cannot select a lease replica"
+        );
+        runtime
+            .owned
+            .provider_run_projection
+            .mark_leased_provider_run(started.run.id());
+        app.lock()
+            .await
+            .ensure_prompt_provider_run_for_agent(session.id(), agent.id())
+            .expect("lease prompt admission must reuse the selected replica run");
+        assert!(
+            runtime.owned.provider_account_allows_queued_prompt_advance(
+                session.id(),
+                &target,
+                "lease queue regression"
+            ),
+            "the same lease account scope must survive queued prompt promotion"
+        );
         assert!(
             runtime
                 .owned

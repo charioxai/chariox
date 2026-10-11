@@ -1,20 +1,26 @@
-//! MP-08/MP-10/MP-11: keep lease replicas separate from host-owner accounts.
-#[derive(Clone, Copy)]
-pub(super) enum ProviderAccountLaunchScope {
-    Home,
-    // Only the authenticated leased-provider launch entry uses this scope.
-    // A Cloud login on the worker must not alias the home lease owner's replica
-    // into the worker's local account namespace.
-    LeaseReplica,
-}
+//! MP-08 / MP-10 / MP-11: preserve the admitted lease account through local queueing.
+use super::*;
+pub(super) use crate::account_profile::ProviderAccountLaunchScope;
 
-impl ProviderAccountLaunchScope {
-    pub(super) fn owner_user_id(self, config: &crate::config::DaemonConfig, owner: &str) -> String {
-        match self {
-            Self::Home => {
-                crate::account_profile::provider_account_authority_owner_user_id(config, owner)
-            }
-            Self::LeaseReplica => owner.to_string(),
-        }
+impl KernelRuntimeOwnedState {
+    pub(super) fn require_agent_account_authenticated(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        let run = self
+            .provider_store
+            .get_run_for_agent(agent.session_id(), agent.id());
+        let leased = run.as_ref().is_some_and(|run| {
+            self.provider_run_projection
+                .is_leased_provider_run(run.id())
+        });
+        self.provider_account_profiles
+            .require_agent_authenticated_with_scope(
+                &self.config_projection.snapshot(),
+                agent,
+                operation,
+                ProviderAccountLaunchScope::for_agent_run(agent, run.as_ref(), leased),
+            )
     }
 }

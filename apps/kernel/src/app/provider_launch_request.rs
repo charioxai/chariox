@@ -104,11 +104,11 @@ impl DaemonApp {
         if crate::provider::canonical_provider_family(&request.provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
-            let account_owner_user_id =
-                crate::account_profile::provider_account_authority_owner_user_id(
-                    &self.config,
-                    &request.owner_user_id,
-                );
+            let scope = agent.as_ref().map_or(
+                crate::account_profile::ProviderAccountLaunchScope::Home,
+                |agent| self.provider_account_scope_for_agent(agent),
+            );
+            let account_owner_user_id = scope.owner_user_id(&self.config, &request.owner_user_id);
             let profile = if request.client_interface.is_chariox() {
                 refresh_provider_usage_before_launch(
                     &self.provider_account_profiles,

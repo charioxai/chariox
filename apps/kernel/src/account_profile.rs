@@ -18,6 +18,9 @@ use crate::error::DaemonError;
 
 #[path = "account_copy_notice.rs"]
 mod copy_notice;
+#[path = "account_profile_launch_scope.rs"]
+mod launch_scope;
+pub(crate) use launch_scope::ProviderAccountLaunchScope;
 
 const REGISTRY_VERSION: u32 = 1;
 const SUPPORTED_PROVIDERS: [&str; 3] = ["codex", "claude", "opencode"];
@@ -1266,10 +1269,25 @@ impl ProviderAccountProfileRegistry {
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
+        self.require_agent_authenticated_with_scope(
+            config,
+            agent,
+            operation,
+            ProviderAccountLaunchScope::Home,
+        )
+    }
+
+    pub(crate) fn require_agent_authenticated_with_scope(
+        &self,
+        config: &crate::config::DaemonConfig,
+        agent: &crate::agent::AgentInstance,
+        operation: &'static str,
+        scope: ProviderAccountLaunchScope,
+    ) -> Result<(), DaemonError> {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(());
         };
-        let owner_user_id = provider_account_authority_owner_user_id(config, agent.owner_user_id());
+        let owner_user_id = scope.owner_user_id(config, agent.owner_user_id());
         self.require_authenticated(
             &owner_user_id,
             provider,
