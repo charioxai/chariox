@@ -28,18 +28,13 @@ impl ProjectEnvironmentStore {
         }
         self.save_checks(project.id(), &checks)?;
         drop(lock);
+        let selected = check_selection(&env, &operation.selected_items)?;
         let began = std::time::Instant::now();
         for r in env
             .project_requirements
             .iter()
             .chain(env.folders.iter().flat_map(|f| &f.requirements))
-            .filter(|r| {
-                if operation.selected_items.is_empty() {
-                    r.required
-                } else {
-                    operation.selected_items.contains(&r.requirement_id)
-                }
-            })
+            .filter(|r| selected.contains(&r.requirement_id))
         {
             let observation = if began.elapsed() > std::time::Duration::from_secs(60) {
                 MachineObservation {
