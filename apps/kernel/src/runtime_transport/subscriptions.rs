@@ -16,9 +16,9 @@ use crate::terminal::{
 };
 use crate::transport::kernel_protocol::{
     can_skip_session_snapshot, event_is_relevant_to_attachment, event_session_id,
-    event_stream_id_for_event, kernel_event_trace_payload, session_metadata_changed_event,
-    subscription_event_stream_id, workflow_run_only_changed, workflow_run_updated_events,
-    KernelEvent, KernelOutgoingFrame, KernelSubscriptionScope, WaitingRoomInventoryEventProjection,
+    event_stream_id_for_event, kernel_event_trace_payload, subscription_event_stream_id,
+    workflow_run_only_changed, workflow_run_updated_events, KernelEvent, KernelOutgoingFrame,
+    KernelSubscriptionScope, WaitingRoomInventoryEventProjection,
     WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 

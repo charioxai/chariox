@@ -169,6 +169,11 @@ pub struct RuntimeSession {
 }
 
 impl RuntimeSession {
+    pub(crate) fn agent_tasks(
+        &self,
+    ) -> &[crate::durable_state::agent_lifecycle::AgentTaskExecution] {
+        &self.agent_tasks
+    }
     pub(crate) fn set_agent_tasks(
         &mut self,
         tasks: Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
