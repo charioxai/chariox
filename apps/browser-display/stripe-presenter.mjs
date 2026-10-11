@@ -10,7 +10,7 @@ export function independentStripeCover(frame){
  return bottom===frame.height;
 }
 export class StripePresenter {
- constructor(){this.rows=new Map();}
+ constructor(decoder=null){this.rows=new Map();this.decoderProvider=decoder;this.decoder=null;}
  async decode(frame,decodeBytes){
   if(!Array.isArray(frame.stripes)||frame.stripes.length<1||frame.stripes.length>8)throw Error('MP-11: stripe count');
   const seen=new Set(),ordered=[...frame.stripes].sort((a,b)=>a.y-b.y);let bottom=0,total=0;
@@ -30,8 +30,9 @@ export class StripePresenter {
    // even on failure so no transferred output survives an atomic abort.
    const jobs=await Promise.allSettled(ordered.map(async row=>{
     let state=this.rows.get(row.row);
-    if(!state){state={decoder:new WorkerVideoDecoder()};this.rows.set(row.row,state)}
-    const output=await state.decoder.decode({...row,width:frame.width,height:row.height},decodeBytes(row.data));
+    if(!state){state={};this.rows.set(row.row,state)}
+    this.decoder=this.decoderProvider?.()??this.decoder??new WorkerVideoDecoder();
+    const output=await this.decoder.decode({...row,width:frame.width,height:row.height},decodeBytes(row.data),row.row);
     decoded.push({row,output});
     if(output.displayWidth!==frame.width||output.displayHeight!==row.height)throw Error('MP-11: stripe decoded geometry');
    }));
@@ -41,5 +42,5 @@ export class StripePresenter {
   }catch(error){for(const {output} of decoded)output.close();this.close();throw error}
  }
  commit(decoded,context){for(const {row,output} of decoded){context.drawImage(output,0,row.y);Object.assign(this.rows.get(row.row),{sequence:row.sequence,y:row.y,height:row.height})}}
- close(){for(const row of this.rows.values())row.decoder.close();this.rows.clear();}
+ close(){for(const row of this.rows.keys())this.decoder?.reset(row);if(!this.decoderProvider)this.decoder?.close();this.decoder=null;this.rows.clear();}
 }
