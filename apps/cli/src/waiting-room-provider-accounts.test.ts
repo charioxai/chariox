@@ -7,6 +7,7 @@ import type {
 } from "@chariox/kernel-client"
 import {
   defaultProviderAccountProfileId,
+  normalizeProviderAccountProfileId,
   providerAccountFamily,
   providerAccountDisplayLabel,
   providerAccountSignInCommand,
@@ -21,6 +22,14 @@ const profiles: ProviderAccountProfile[] = [
   account("claude", "claude-secondary"),
   account("codex", "codex-primary", true),
 ]
+
+test("MP-08/MP-10/MP-11 destination normalization preserves explicit choices and its own default", () => {
+  assert.equal(normalizeProviderAccountProfileId(profiles, "claude", "claude-secondary"), "claude-secondary")
+  assert.equal(normalizeProviderAccountProfileId(profiles, "claude", "home-only"), "claude-primary")
+  const signedOutDefault = profiles.map(profile => ({ ...profile, auth_state: "not_configured" as const }))
+  assert.equal(normalizeProviderAccountProfileId(signedOutDefault, "claude", "home-only"), "claude-primary")
+  assert.equal(normalizeProviderAccountProfileId([], "codex", "home-only"), "default")
+})
 
 test("Claude adapters share the Claude provider-account family", () => {
   assert.equal(providerAccountFamily("claude-headless"), "claude")

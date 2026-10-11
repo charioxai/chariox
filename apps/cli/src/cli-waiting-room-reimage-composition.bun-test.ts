@@ -63,7 +63,7 @@ for (const authState of ["not_configured", "authenticated"] as const) {
 for (const entry of ["keyboard", "direct"] as const) {
   reimageTest(`MP-08/MP-10/MP-11 managed ${entry} Start resolves an absent home profile to the destination default`, async router => {
     const harness = createHarness(router, { interactivePlacement: true, homeAccountState: "not_configured",
-      homeAccountProfile: "home-profile", targetAccountProfile: "destination-profile" })
+      homeAccountProfile: "home-profile", targetAccountProfile: "destination-profile", targetOwnKernelAbsent: true })
     try {
       await harness.initialize()
       assert.equal(harness.state().accountProfileId, "home-profile")
@@ -76,6 +76,7 @@ for (const entry of ["keyboard", "direct"] as const) {
       const request = harness.old.requests.find(request => requestKind(request) === "CreateSession")!
       const defaults = requestPayload(request, "CreateSession").agent_defaults as { account_profile: string }
       assert.equal(defaults.account_profile, "destination-profile")
+      assert.equal(harness.state().selectedKernelRef, "kernel-old")
       assert.equal(requestCount(harness.local, "CreateSession"), 0)
     } finally { harness.cleanup() }
   })
@@ -569,6 +570,7 @@ function createHarness(router: TestRouter, options: {
   homeAccountState?: "not_configured" | "authenticated"
   homeAccountProfile?: string
   targetAccountProfile?: string
+  targetOwnKernelAbsent?: boolean
   interactivePlacement?: boolean
   managedWorktrees?: Promise<unknown>
   managedInventory?: Promise<unknown>
@@ -669,7 +671,7 @@ function createHarness(router: TestRouter, options: {
     switch (requestKind(request)) {
       case "GetWaitingRoomPublicSnapshot":
         if (options.managedInventory) return options.managedInventory
-        return options.interactivePlacement ? placementSnapshot("kernel-old", "machine-old", "/home/managed", options.targetAccountState ?? (options.homeAccountState ? "ready" : undefined), options.targetAccountProfile)
+        return options.interactivePlacement ? placementSnapshot("kernel-old", "machine-old", "/home/managed", options.targetAccountState ?? (options.homeAccountState ? "ready" : undefined), options.targetAccountProfile, options.targetOwnKernelAbsent)
           : snapshotResponse("kernel-old", "machine-old", contextPlan)
       case "ListWorkspaceWorktrees":
         return options.managedWorktrees ?? { WorkspaceWorktreesListed: { worktrees: options.managedRepositoryState && options.managedRepositoryState() !== "ready"
@@ -687,7 +689,7 @@ function createHarness(router: TestRouter, options: {
       case "ListSlices":
         return { SlicesListed: { slices: [] } }
       case "ListManagedEnvironmentCatalog":
-        return { ManagedEnvironmentCatalog: { catalog: { ...catalog, environments: [oldEnvironment] } } }
+        return { ManagedEnvironmentCatalog: { catalog: { ...catalog, environments: options.targetOwnKernelAbsent ? [] : [oldEnvironment] } } }
       case "CreateSession":
         return { SessionCreated: { session: { ...runtimeSession(contextPlan), id: "session-ready" } } }
       case "StartProjectEnvironmentSetup": {
@@ -966,7 +968,7 @@ function snapshotResponse(kernelId: string, machineId: string, plan: ManagedEnvi
   }
 }
 
-function placementSnapshot(kernelId: string, machineId: string, workspace: string, accountState?: "not_configured" | "authenticated" | "ready", profileId = "shared-profile") {
+function placementSnapshot(kernelId: string, machineId: string, workspace: string, accountState?: "not_configured" | "authenticated" | "ready", profileId = "shared-profile", ownKernelAbsent = false) {
   const response = snapshotResponse(kernelId, machineId, emptyPlan())
   return { WaitingRoomPublicSnapshot: { snapshot: {
     ...response.WaitingRoomPublicSnapshot.snapshot,
@@ -982,8 +984,8 @@ function placementSnapshot(kernelId: string, machineId: string, workspace: strin
     sessions: [{ id: `${kernelId}-session`, workspace_id: workspace, worktree_id: workspace, created_at_ms: 1 }],
     projects: [{ id: `${kernelId}-project`, owner_user_id: "user-1", workspace_id: workspace, name: "Workspace Project", kind: "named", status: "active", created_at_ms: 1, updated_at_ms: 1,
       session_count: 1, joined_collaborator_count: 0, pending_collaboration_invite_count: 0 }],
-    remote_machines: [{ machine_id: "machine-old", machine_alias: "Managed old" }],
-    remote_kernels: [{ kernel_id: "kernel-old", machine_id: "machine-old", kernel_alias: "Managed old" }],
+    remote_machines: ownKernelAbsent ? [] : [{ machine_id: "machine-old", machine_alias: "Managed old" }],
+    remote_kernels: ownKernelAbsent ? [] : [{ kernel_id: "kernel-old", machine_id: "machine-old", kernel_alias: "Managed old" }],
   } } }
 }
 

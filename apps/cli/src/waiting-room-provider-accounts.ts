@@ -19,6 +19,19 @@ export function providerAccountsForProvider(
   return (profiles ?? []).filter((profile) => profile.provider === family)
 }
 
+export function normalizeProviderAccountProfileId(
+  profiles: readonly ProviderAccountProfile[] | undefined,
+  provider: string,
+  profileId: string | null | undefined,
+): string {
+  const accounts = providerAccountsForProvider(profiles, provider)
+  return accounts.some((profile) => profile.profile_id === profileId)
+    ? profileId!
+    : accounts.find((profile) => profile.is_default)?.profile_id
+      ?? accounts[0]?.profile_id
+      ?? "default"
+}
+
 export function selectedProviderAccount(
   profiles: readonly ProviderAccountProfile[] | undefined,
   provider: string,

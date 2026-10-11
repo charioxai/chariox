@@ -1,3 +1,4 @@
+import { normalizeProviderAccountProfileId } from "./waiting-room-provider-accounts.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import { createWaitingRoomWorkspaceController, createWaitingRoomWorkspacePlacementController, waitingRoomWorkspaceSelection } from "./waiting-room-workspace-controller.js"
 import { randomUUID } from "node:crypto"
@@ -724,10 +725,10 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       deps.setProviderAccountsState(inventory.providerAccounts ?? [])
       // Profile IDs are kernel-scoped. Preserve a matching destination choice;
       // otherwise use its normal Waiting Room default before admission.
-      const destinationSelection = reconcileWaitingRoomProjection({
-        ...deps.waitingRoomState(), accountProfileId: launch.accountProfile,
-      })
-      launch.accountProfile = destinationSelection.accountProfileId ?? "default"
+      launch.accountProfile = normalizeProviderAccountProfileId(
+        inventory.providerAccounts, launch.provider, launch.accountProfile,
+      )
+      deps.setWaitingRoomStateProjection({ ...deps.waitingRoomState(), accountProfileId: launch.accountProfile })
     },
     prepareManagedSessionLaunch,
     prepareExistingSessionClient: async (session) => {
