@@ -60,47 +60,7 @@ impl KernelRuntimeState {
         session: &crate::session::RuntimeSession,
         user_id: &str,
     ) -> Result<Vec<crate::session::WorkflowRun>, DaemonError> {
-        if session
-            .collaboration_level_for_user(user_id)
-            .is_some_and(|level| level.can_view_agent_trace())
-        {
-            return Ok(session.workflow_runs().to_vec());
-        }
-        let mut ownership = session
-            .agents()
-            .iter()
-            .map(|agent| (agent.id().to_string(), agent.owner_user_id() == user_id))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let mut visible = Vec::new();
-        for run in session.workflow_runs() {
-            let Some(creator) = run.created_by_agent_id() else {
-                continue;
-            };
-            let participants = std::iter::once(creator)
-                .chain(run.node_runs().iter().map(|node| node.agent_id()))
-                .chain(run.runtime_agent_ids_by_node().values().map(String::as_str));
-            let mut authorized = true;
-            for id in participants {
-                if !ownership.contains_key(id) {
-                    // Deletion retains a kernel-owned provenance record. Read only
-                    // its ownership fields; never return the deleted AgentInstance.
-                    let owned = self.owned.durable_state_store.deleted_agent_is_owned(
-                        session.id(),
-                        id,
-                        user_id,
-                    )?;
-                    ownership.insert(id.to_string(), owned);
-                }
-                if !ownership[id] {
-                    authorized = false;
-                    break;
-                }
-            }
-            if authorized {
-                visible.push(run.clone());
-            }
-        }
-        Ok(visible)
+        session.visible_workflow_runs_for_user(user_id, Some(&self.owned.durable_state_store))
     }
 }
 

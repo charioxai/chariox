@@ -50,6 +50,7 @@ impl CommandRouter {
                 caller_user_id,
                 &self.provider_run_projection,
                 None,
+                Some(self.runtime_state.durable_state_store()),
             )
         })
     }
@@ -73,6 +74,7 @@ impl CommandRouter {
                 caller_user_id,
                 &self.provider_run_projection,
                 workflow_run_context.as_deref(),
+                Some(self.runtime_state.durable_state_store()),
             )
         })
     }

@@ -4,6 +4,10 @@ use super::{RuntimeSession, SessionCollaborationAgentCounts};
 use crate::session::CollaborationLevel;
 
 pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> RuntimeSession {
+    // MP-08 / MP-10 / MP-11: private runs need participant ownership, too.
+    session.workflow_runs = session
+        .visible_workflow_runs_for_user(user_id, None)
+        .unwrap_or_default();
     let collaboration_level = session
         .collaboration_level_for_user(user_id)
         .unwrap_or(CollaborationLevel::Private);

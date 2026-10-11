@@ -472,7 +472,10 @@ fn build_session_snapshot(
         0,
         Some(attachment_owner_user_id),
     )?;
-    snapshot.session = snapshot.session.redacted_for_user(attachment_owner_user_id);
+    snapshot.session = snapshot.session.redacted_for_user_with_workflow_history(
+        attachment_owner_user_id,
+        &app.durable_state_store(),
+    )?;
     snapshot.agent_activity.retain(|agent_id, _| {
         snapshot
             .session

@@ -339,6 +339,39 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
             .session_store
             .write()
             .restore_session(serde_json::from_value(retained).unwrap());
+        // MP-08 / MP-10 / MP-11: public protocol and subscription projection share Room's policy.
+        let retained_session = state.owned.session_snapshot(session.id()).unwrap();
+        let projected = retained_session
+            .clone()
+            .redacted_for_user_with_workflow_history(
+                actor.owner_user_id(),
+                &state.owned.durable_state_store,
+            )
+            .unwrap();
+        let response = crate::runtime::response_redaction::redact_response_for_user(
+            crate::local::LocalDaemonResponse::SessionState {
+                session: retained_session,
+                agent_activity: Default::default(),
+                agent_activity_revision: 0,
+            },
+            actor.owner_user_id(),
+            &crate::runtime::projection::ProviderRunProjectionStore::default(),
+            None,
+            Some(&state.owned.durable_state_store),
+        )
+        .unwrap();
+        for value in [
+            serde_json::to_value(projected).unwrap(),
+            serde_json::to_value(response).unwrap(),
+        ] {
+            let text = value.to_string();
+            assert!(text.contains("synthetic-authorized-retired-history"));
+            assert!(text.contains("synthetic-authorized-runtime-history"));
+            assert_eq!(
+                text.contains("synthetic-foreign-history-"),
+                level.can_view_agent_trace()
+            );
+        }
         let result = state
             .meta_session_overview(&session, &actor, Default::default())
             .unwrap();

@@ -42,6 +42,7 @@ use super::workflow_turns::{WorkflowNodeRunStatus, WorkflowRunStatus};
 use super::workspace_links::WorkspaceLinkDefinition;
 
 mod projection;
+mod workflow_visibility;
 mod workflows;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
