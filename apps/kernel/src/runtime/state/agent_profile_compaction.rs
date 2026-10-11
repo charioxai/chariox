@@ -21,7 +21,8 @@ const COMPACT_COMMAND: &str = "/compact Keep the latest explicit user goal, cons
 impl KernelRuntimeState {
     /// Compacts the agent's live Claude session with its current model when
     /// the new profile keeps the session on a window it would not fit. A
-    /// failure leaves the session to Claude's own compaction.
+    /// failure starts the smaller model with the protected kernel handoff instead
+    /// of resuming a transcript the smaller model cannot accept.
     pub(super) async fn compact_before_window_downshift(
         &self,
         session_id: &str,
@@ -82,11 +83,50 @@ impl KernelRuntimeState {
                     fields,
                 );
             }
-            Err(error) => crate::logging::warn_with_fields(
-                "daemon.provider_context_handoff",
-                "failed to compact the session before a smaller context window",
-                serde_json::json!({ "error": error.to_string(), "details": fields }),
-            ),
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.provider_context_handoff",
+                    "failed to compact the session before a smaller context window",
+                    serde_json::json!({ "error": error.to_string(), "details": fields }),
+                );
+                // MP-08 / MP-10 / MP-11: native auto-compaction on the destination
+                // is unreliable when the source transcript exceeds that window.
+                // The durable pre-command boundary already protects the history.
+                // Clear only this source identity before either caller commits;
+                // both callers reload the agent's resume state during commit.
+                if let Some(native_session) = run.provider_session_id().or_else(|| {
+                    agent
+                        .provider_resume_state()
+                        .provider_session_id(run.adapter_key())
+                }) {
+                    let outcome = self
+                        .owned
+                        .agent_store
+                        .clear_provider_resume_state_durably_if_matches(
+                            &self.owned.durable_state_store,
+                            agent.id(),
+                            run.adapter_key(),
+                            native_session,
+                            run.id(),
+                            "failed_window_downshift_compaction",
+                        )?;
+                    if matches!(
+                        outcome,
+                        crate::agent::ProviderResumeClearOutcome::Superseded { .. }
+                    ) {
+                        return Err(crate::error::DaemonError::LocalTransport {
+                            operation: "compact before window downshift",
+                            message: "the native session changed during compaction; select the model again".into(),
+                        });
+                    }
+                }
+                self.owned.record_notice(
+                    session_id,
+                    Some(run.id()),
+                    self.owned.attachment_store.list_session_attachment_ids(session_id),
+                    "Claude compaction failed. The next turn will start a new native session with the protected conversation handoff.",
+                );
+            }
         }
         Ok(())
     }

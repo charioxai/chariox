@@ -113,7 +113,7 @@ async fn compact_fixture_with_lease(
     let release = root.path().join("release");
     let mut run = RuntimeProviderRun::new("compact-run", &request, ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::Managed, process_label: "fixture".into(), pty_target: None, pty_program: Some("/bin/sh".into()),
-        pty_args: vec!["-c".into(), format!("while IFS= read -r line; do case \"$line\" in *'surviving queued request'*) touch '{}';; *'/compact'*) printf '%s' \"$line\" > '{}';; esac; n=0; while [ ! -f '{}' ] && [ $n -lt 30 ]; do sleep .1; n=$((n+1)); done; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done", root.path().join("surviving-submitted").display(), marker.display(), release.display())],
+        pty_args: vec!["-c".into(), format!("while IFS= read -r line; do case \"$line\" in *'surviving queued request'*) touch '{}';; *'/compact'*) printf '%s' \"$line\" > '{}';; esac; n=0; while [ ! -f '{}' ] && [ $n -lt 30 ]; do sleep .1; n=$((n+1)); done; if [ -f '{}' ]; then printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"errors\":[\"native compaction failed\"]}}'; else printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; fi; done", root.path().join("surviving-submitted").display(), marker.display(), release.display(), root.path().join("fail-compact").display())],
         pty_env: Default::default(), pty_env_remove: vec![], working_directory: None, structured_endpoint: None,
     });
     run.set_execution_config(AgentExecutionMode::Plan, AgentPermissionLevel::Required);
@@ -1168,3 +1168,86 @@ async fn profile_compaction_preserves_history_for_the_next_native_session_turn()
 
 #[path = "profile_compaction/remote_profile_notice.rs"]
 mod remote_profile_notice;
+
+// MP-08 / MP-10 / MP-11: failed source compaction must not give the smaller
+// model the same oversized native transcript, on local or ordinary worker paths.
+#[tokio::test]
+async fn failed_source_compaction_clears_only_matching_native_resume_before_local_commit() {
+    assert_failed_source_compaction_starts_fresh(false).await;
+}
+
+#[tokio::test]
+async fn failed_source_compaction_clears_only_matching_native_resume_before_worker_commit() {
+    assert_failed_source_compaction_starts_fresh(true).await;
+}
+
+async fn assert_failed_source_compaction_starts_fresh(leased: bool) {
+    let (root, _app, runtime, session, agent, mut run, lease) =
+        compact_fixture_with_lease(leased).await;
+    let snapshot = runtime.owned.agent_store.get_agent(&agent).unwrap();
+    crate::test_support::authenticate_provider_account(
+        &runtime.owned.provider_account_profiles,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        "claude",
+        snapshot.provider_account_profile(),
+    )
+    .unwrap();
+    runtime
+        .owned
+        .agent_store
+        .write()
+        .set_agent_provider_resume_state(
+            &agent,
+            ProviderResumeState::from_external_provider_session(
+                "claude",
+                "oversized-native-session",
+            ),
+        )
+        .unwrap();
+    run.set_provider_session_id(Some("oversized-native-session".into()));
+    runtime
+        .owned
+        .provider_store
+        .write()
+        .insert_run_for_test(run.clone());
+    std::fs::write(root.path().join("fail-compact"), "").unwrap();
+    std::fs::write(root.path().join("release"), "").unwrap();
+    if let Some(lease) = lease {
+        runtime
+            .apply_leased_profile_transition(
+                &lease.id,
+                crate::transport::relay_peer::RelayAgentExecutionProfile {
+                    provider: "claude".into(),
+                    account_profile: "default".into(),
+                    model: Some("haiku".into()),
+                    effort: None,
+                },
+            )
+            .await
+            .unwrap();
+    } else {
+        runtime
+            .update_agent_profile(
+                &session,
+                &agent,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                None,
+                None,
+                Some("haiku".into()),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let target = runtime.owned.agent_store.get_agent(&agent).unwrap();
+    assert_eq!(target.model(), Some("haiku"));
+    assert_eq!(
+        target.provider_resume_state().provider_session_id("claude"),
+        None,
+        "a failed source compact must not resume the oversized transcript on Haiku"
+    );
+    assert!(
+        root.path().join("started").exists(),
+        "exercise the actual native utility failure"
+    );
+}
