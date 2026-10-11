@@ -1,5 +1,6 @@
 //! MP-08 / MP-11: one bounded Git stream inspects all objects, including
-//! unreachable history and every tree name. Limits are bytes/time, never counts.
+//! unreachable history and every tree name. Trees stream first, so each blob is
+//! classified under every name it has. Limits are bytes/time, never counts.
 use super::super::development::vault_artifacts::VaultItem;
 use super::*;
 use std::io::{BufRead, BufReader};
@@ -15,8 +16,27 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
         .filter_map(|line| line.split_once(' '))
         .map(|(oid, path)| (oid.to_owned(), path.to_owned()))
         .collect::<BTreeMap<_, _>>();
+    let listing = git(
+        root,
+        &[
+            "cat-file",
+            "--batch-all-objects",
+            "--batch-check=%(objecttype) %(objectname)",
+        ],
+        MAX_FILE,
+    )?;
+    let listing = String::from_utf8(listing).map_err(|_| refused())?;
+    let mut order = String::with_capacity(listing.len());
+    for trees in [true, false] {
+        for (kind, oid) in listing.lines().filter_map(|line| line.split_once(' ')) {
+            if (kind == "tree") == trees {
+                order.push_str(oid);
+                order.push('\n');
+            }
+        }
+    }
     let mut child = Command::new("git")
-        .args(["cat-file", "--batch-all-objects", "--batch"])
+        .args(["cat-file", "--batch"])
         .current_dir(root)
         .env_clear()
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
@@ -24,12 +44,16 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_NO_REPLACE_OBJECTS", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| refused())?;
     let stdout = child.stdout.take().ok_or_else(refused)?;
+    let mut stdin = child.stdin.take().ok_or_else(refused)?;
+    let writer = std::thread::spawn(move || {
+        let _ = std::io::Write::write_all(&mut stdin, order.as_bytes());
+    });
     let child = Arc::new(Mutex::new(child));
     let (done, deadline) = mpsc::channel::<()>();
     let watched = child.clone();
@@ -45,6 +69,7 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
     let result = (|| {
         let mut input = BufReader::new(stdout);
         let mut items = BTreeSet::new();
+        let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut scanned = 0u64;
         loop {
             let mut header = String::new();
@@ -91,16 +116,24 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
                 let mut remaining = bytes.as_slice();
                 while !remaining.is_empty() {
                     let nul = remaining.iter().position(|b| *b == 0).ok_or_else(refused)?;
-                    let name = std::str::from_utf8(&remaining[..nul])
+                    let (mode, name) = std::str::from_utf8(&remaining[..nul])
                         .map_err(|_| refused())?
                         .split_once(' ')
-                        .ok_or_else(refused)?
-                        .1;
+                        .ok_or_else(refused)?;
                     if validate_bytes(name, b"").is_err() {
                         items.insert(VaultItem {
                             path: format!("git-history/{}/{name}", fields[0]),
                             kind: "history path".into(),
                         });
+                    }
+                    let entry = remaining
+                        .get(nul + 1..nul + 1 + oid_width)
+                        .ok_or_else(refused)?;
+                    if mode != "40000" {
+                        names
+                            .entry(entry.iter().map(|byte| format!("{byte:02x}")).collect())
+                            .or_default()
+                            .insert(name.to_owned());
                     }
                     remaining = remaining.get(nul + 1 + oid_width..).ok_or_else(refused)?;
                 }
@@ -109,11 +142,20 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
                     .get(fields[0])
                     .cloned()
                     .unwrap_or_else(|| format!("git-history/{}", fields[0]));
-                if validate_bytes(&path, &bytes).is_err() {
-                    items.insert(VaultItem {
-                        path,
-                        kind: format!("history {}", fields[1]),
-                    });
+                // The same blob is classified under the policy of every name.
+                let aliases = names.remove(fields[0]).unwrap_or_default();
+                let aliases = aliases
+                    .into_iter()
+                    .filter(|name| Some(name.as_str()) != path.rsplit('/').next())
+                    .map(|name| format!("git-history/{}/{name}", fields[0]))
+                    .collect::<Vec<_>>();
+                for path in std::iter::once(path).chain(aliases) {
+                    if validate_bytes(&path, &bytes).is_err() {
+                        items.insert(VaultItem {
+                            path,
+                            kind: format!("history {}", fields[1]),
+                        });
+                    }
                 }
             } else {
                 return Err(refused());
@@ -137,6 +179,7 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
     };
     let _ = done.send(());
     let _ = watchdog.join();
+    let _ = writer.join();
     if !status?.success() {
         return Err(admission_error(
             "Copy history scan failed or exceeded its 120 second time limit",

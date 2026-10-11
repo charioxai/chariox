@@ -843,6 +843,30 @@ fn mp08_mp11_target_classification_table_in_overlay_and_history() {
     }
 }
 
+// MP-08/MP-11: one blob under two names is classified under both policies.
+// `package.json` allows a dependency named `token`; `settings.json` does not.
+#[test]
+fn mp08_mp11_history_blob_is_classified_under_every_name() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    let bytes = br#"{"dependencies":{"token":"synthetic-canary"}}"#;
+    assert!(validate_bytes("package.json", bytes).is_ok());
+    assert!(validate_bytes("settings.json", bytes).is_err());
+    let fixture = InlineShellFixture::file("settings.json", bytes, true);
+    // HEAD names the same blob `package.json`, the name `rev-list` reports.
+    fs::write(fixture.project.join("package.json"), bytes).unwrap();
+    git(&fixture.project, &["add", "package.json"], MAX_FILE).unwrap();
+    git(&fixture.project, &["commit", "-m", "alias"], MAX_FILE).unwrap();
+    let items = scan_repository(&fixture.project).unwrap();
+    assert!(
+        items
+            .iter()
+            .any(|item| item.path.ends_with("/settings.json")),
+        "{items:?}"
+    );
+    fixture.assert_target_refuses();
+}
+
 #[test]
 fn mp08_mp11_target_accepts_package_metadata_in_overlay_and_history() {
     crate::test_support::isolated_env_test!();
