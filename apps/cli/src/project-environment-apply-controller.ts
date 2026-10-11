@@ -8,6 +8,7 @@ export function createEnvironmentApplyController(deps: {
 }) {
   let plan: EnvironmentApplyPlan | null = null, operation: EnvironmentOperation | null = null
   let optIndex = 0, accepted: string[] = [], sending = false, error: string | null = null, generation = 0
+  const watches = new Map<string, Promise<void>>()
   function currentOperation() {
     const env = deps.current()
     if (operation?.local_project_id !== env?.local_project_id) operation = null
@@ -29,6 +30,14 @@ export function createEnvironmentApplyController(deps: {
       }
       await new Promise(resolve=>setTimeout(resolve,250))
     }
+  }
+  function watch(op: EnvironmentOperation, g: number) {
+    const key=`${g}:${op.operation_id}`
+    const pending=watches.get(key)
+    if(pending)return pending
+    const task=poll(op,g).finally(()=>{if(watches.get(key)===task)watches.delete(key)})
+    watches.set(key,task)
+    return task
   }
   async function send(kind: "plan" | "apply" | "cancel" | "retry") {
     const env=deps.current(); if(!env || sending)return
@@ -59,18 +68,21 @@ export function createEnvironmentApplyController(deps: {
         operation=next
         // Cancel remains usable while the acknowledged operation is running.
         sending=false;deps.render()
-        await poll(next,g)
+        await watch(next,g)
       }
     } catch(cause){if(g===generation)error=cause instanceof Error?cause.message:"Apply unavailable"}
     finally{if(g===generation){sending=false;deps.render()}}
   }
   return {
-    reset(){generation++;plan=null;operation=null;accepted=[];sending=false;error=null},
+    reset(){generation++;watches.clear();plan=null;operation=null;accepted=[];sending=false;error=null},
     busy:()=>sending || active(currentOperation()),
     lines(){
       const env=deps.current();if(!env?.delivered_capabilities.enabled_environment_operations.includes("apply"))return []
       if(plan?.revision_digest!==env.content_digest)plan=null
       const op=currentOperation()
+      // Opening/reconnecting to another client's acknowledged attempt resumes
+      // observation, without creating an operation or a second cancel watch.
+      if(op && active(op) && !sending && !error){const g=generation;void watch(op,g).catch(cause=>{if(g===generation){error=cause instanceof Error?cause.message:"Apply status unavailable";deps.render()}})}
       return ["s · Set up this machine / preview; k · Cancel Apply; u · Recheck and retry",...(plan?[`Plan · ${plan.target.machine_id} · generation ${plan.target.target_instance_generation}`,"Enter · Apply reviewed plan; n/p · Setup item; Space · Opt in",...plan.conflicts.map(r=>`${r.requirement_id} · Conflict · ${r.safe_summary}`),...plan.required_opt_ins.map((id,i)=>`${i===optIndex?">":" "} [${accepted.includes(id)?"x":" "}] Allow bounded Setup · ${id}`)]:[]),...(op?[`Apply · ${op.phase} · attempt ${op.attempt} · ${op.operation_id}`,...op.per_item_results.map(r=>`${r.requirement_id} · ${r.status} · ${r.safe_summary} · receipts ${r.receipt_ids.length}`)]:[]),...(error?[error]:[])]
     },
     handleKey(name:string){

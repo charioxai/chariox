@@ -41,3 +41,16 @@ test("MP-08 MP-10 MP-11 changing Project discards a late plan acknowledgement",a
   assert.equal(controller.handleKey("return"),false)
   assert.ok(!controller.lines().some(line=>line.startsWith("Plan ·")))
 })
+test("MP-08 MP-10 MP-11 reopening an active Apply resumes one status watch",async()=>{
+  const running={operation_id:"other-client",local_project_id:"project",phase:"running",kind:"apply",attempt:1,updated_at_ms:1,per_item_results:[],receipts:[]} as unknown as EnvironmentOperation
+  let snapshot={...env,operations:[running]}, reads=0
+  const controller=createEnvironmentApplyController({current:()=>snapshot,snapshot:value=>{snapshot=value},render:()=>{},send:async request=>{
+    if("GetEnvironmentOperation" in (request as object)){reads++;return {EnvironmentOperation:{operation:{...running,phase:"ready",updated_at_ms:2}}}}
+    return {ProjectEnvironment:{environment:{...env,operations:[{...running,phase:"ready",updated_at_ms:2}]}}}
+  }})
+  controller.lines(); controller.lines()
+  await new Promise(r=>setTimeout(r,0))
+  assert.equal(reads,1,"an acknowledged active snapshot resumes a single watch")
+  assert.equal(controller.busy(),false)
+  controller.reset()
+})
