@@ -213,6 +213,7 @@ Grant a real home MCP before starting each official native provider against a
 leased worker and a managed slice. The provider must initialize that granted MCP
 on its first launch, read public MDN and GitHub sources through it, and write a
 cited report. Record its native screen, MCP status and exact home/worker run IDs.
+Completing a turn must retain the same running native worker binding while idle.
 Then submit another prompt through the native composer after reconnect and relay
 authorization renewal; it must remain writable and finish on the same leased run.
 Repeat over hosted WSS with the shaped WAN, DPR 1 and 2, and the two-hour session.

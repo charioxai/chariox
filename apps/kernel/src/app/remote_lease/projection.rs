@@ -1249,8 +1249,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
             // started by native prompt projection. Clear it before publishing
             // the home snapshot, otherwise completed prompts remain WORKING.
             crate::transport::flow_control::clear_prompt_activity(self.app, provider_run_id);
+            // MP-08 / MP-10 / MP-11: completing a native turn does not retire
+            // its persistent provider process. Keep only the already admitted,
+            // still-running run; unchanged subsequent projections omit its
+            // snapshot and must retain the same home authorization fence.
+            let retain_native_binding = projected_termination.is_none()
+                && self
+                    .app
+                    .provider_run_projection
+                    .get(&projected_provider_run_id)
+                    .is_some_and(|run| {
+                        !run.client_interface().is_chariox()
+                            && run.state() == crate::provider::ProviderRunState::Running
+                    });
             if let Ok(agent) = self.app.agents.get_agent(agent_id) {
-                if agent.remote_execution().is_some() {
+                if agent.remote_execution().is_some() && !retain_native_binding {
                     let _ = self
                         .app
                         .agents
@@ -1728,7 +1741,7 @@ mod explicit_completion_tests {
         assert!(!unscoped_completion_matches_prompt(&recovering));
     }
 
-    fn provider_run(
+    pub(super) fn provider_run(
         id: &str,
         session_id: &str,
         agent_id: &str,
@@ -3462,3 +3475,7 @@ mod mp11_projection_admission_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "projection/native_binding_tests.rs"]
+mod native_binding_tests;
