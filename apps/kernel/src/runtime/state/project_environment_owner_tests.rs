@@ -65,6 +65,12 @@ async fn review_fixture() -> (
 
 async fn owner_context_review_rejection_inner() {
     let (_cleanup, worktree, runtime, session, _router) = review_fixture().await;
+    // MP-08 / MP-11: Copy review still names files that travel through Vault.
+    std::fs::write(
+        worktree.path().join("notes.txt"),
+        "-----BEGIN PRIVATE KEY-----\nsynthetic-private-material\n-----END PRIVATE KEY-----",
+    )
+    .unwrap();
     let project = session.project_id().to_string();
     let repository = crate::managed_context::development::DevelopmentRepositorySelection {
         workspace_id: worktree.path().display().to_string(),
@@ -104,6 +110,9 @@ async fn owner_context_review_rejection_inner() {
     .unwrap();
     assert!(interaction.title().unwrap().starts_with("Ready to move "));
     assert!(interaction.title().unwrap().ends_with(" to Owner machine"));
+    assert!(serde_json::to_string(&interaction)
+        .unwrap()
+        .contains("/notes.txt · workspace file"));
     assert!(interaction
         .choices()
         .iter()

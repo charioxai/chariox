@@ -252,6 +252,7 @@ impl KernelRuntimeState {
                         "Saved Project setup".into(),
                         vault.as_ref(),
                         None,
+                        false,
                     )
                     .await?;
                 {
@@ -314,6 +315,14 @@ mod tests {
         let workspace = root.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::write(workspace.join("app.ts"), "process.env.OPTIONAL_INPUT\n").unwrap();
+        // MP-08 / MP-11: an uncommitted repository cannot pass Copy history admission;
+        // ordinary adjustment never copies history, so it must not run that scan.
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&workspace)
+            .status()
+            .unwrap()
+            .success());
         let mut config =
             crate::DaemonConfig::for_tests().with_session_history_root(root.join("history"));
         config.user_config_path = root.join("runtime/config.toml");
@@ -549,10 +558,12 @@ mod tests {
             assert!(Instant::now() < deadline);
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        assert!(serde_json::to_value(&interaction)
+        let review = serde_json::to_value(&interaction)
             .unwrap()
             .get("project_environment_review")
-            .is_some());
+            .cloned()
+            .expect("adjustment review, not a stopped notice");
+        assert!(!review.to_string().contains("\"Vault\""));
         assert!(store.try_lock(session.project_id()).is_err());
         runtime
             .resolve_runtime_interaction(session.id(), interaction.id(), "skip", None)

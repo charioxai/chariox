@@ -19,12 +19,15 @@ impl KernelRuntimeState {
         interactive: bool,
     ) -> Result<crate::managed_context::development::DevelopmentProjectEnvironment, DaemonError>
     {
+        // MP-08 / MP-11: this layer travels with a context transfer that exports Vault artifacts.
         let prepared = self
-            .refresh_project_environment_state(
+            .refresh_project_environment_state_mode(
                 project_id,
                 repositories,
                 interactive,
                 target_kernel_id,
+                None,
+                true,
             )
             .await?;
         let config = self.owned.config_projection.snapshot();
@@ -60,6 +63,7 @@ impl KernelRuntimeState {
             true,
             target,
             Some(context_id),
+            true,
         )
         .await
         .map(|_| ())
@@ -96,6 +100,7 @@ impl KernelRuntimeState {
             interactive,
             target_name,
             None,
+            false,
         )
         .await
     }
@@ -107,6 +112,7 @@ impl KernelRuntimeState {
         interactive: bool,
         target_name: &str,
         owner_context_id: Option<&str>,
+        vault_transfer: bool,
     ) -> Result<PreparedProjectEnvironmentExport, DaemonError> {
         let without_credentials = owner_context_id.is_some();
         let project = self.owned.session_store.get_project(project_id)?;
@@ -315,6 +321,7 @@ impl KernelRuntimeState {
                         code,
                         vault.as_ref(),
                         owner_context_id,
+                        vault_transfer,
                     )
                     .await?;
             } else {

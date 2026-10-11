@@ -23,18 +23,24 @@ impl KernelRuntimeState {
         code: String,
         vault: &dyn crate::secret::CredentialVaultStore,
         owner_context_id: Option<&str>,
+        vault_transfer: bool,
     ) -> Result<ProjectPrivateFileAdditions, DaemonError> {
         // MP-11: credential-free owner copies use the same human-only guard as kernel-only copies.
         let id = owner_context_id.map_or_else(
             || format!("project-environment:{}", rand::random::<u64>()),
             |context| format!("owner-context:{context}"),
         );
-        let scan_roots = roots.clone();
-        let vault_items = tokio::task::spawn_blocking(move || {
-            crate::managed_context::development::vault_artifacts::review_items(&scan_roots)
-        })
-        .await
-        .map_err(|_| environment_failure("Vault review task failed"))??;
+        // MP-08 / MP-11: only context transfers move history through Vault and admit it.
+        let vault_items = if vault_transfer {
+            let scan_roots = roots.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::managed_context::development::vault_artifacts::review_items(&scan_roots)
+            })
+            .await
+            .map_err(|_| environment_failure("Vault review task failed"))??
+        } else {
+            Vec::new()
+        };
         let mut expanded = false;
         let mut revise = false;
         let mut supply: Option<String> = None;
