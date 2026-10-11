@@ -594,7 +594,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   const request = async (command: unknown): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } }) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
-  let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0
+  let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0, failGeneration = 0
   const buffered = new Map<number, Mirror2WirePacket>()
   // In sequence order: inflate in the context, then restore what a compact delta implies.
   let inflater: Mirror2Inflater | null = null, base: Mirror2Packet | null = null
@@ -648,7 +648,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   const terminal = (error: unknown): boolean => error instanceof Error && /stale or foreign mirror/.test(error.message)
   const fatal = (error: unknown): boolean => error instanceof Error && /MP-11: (invalid|unsafe|foreign|executable|active|protected|mirror resource digest|mirror packet bounds)/.test(error.message)
   const credit = (): void => {
-    const reset = wantReset && !resetOutstanding
+    const reset = wantReset && !resetOutstanding, generation = failGeneration
     if (reset) resetOutstanding = true
     inflight++
     request({ op: 'mirror_next', subscription_id, generation: binding.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms: waitMs })
@@ -662,7 +662,10 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       .catch(error => {
         // One failed credit (its reply lost with a dropped socket) re-credits from the applied base: the
         // kernel resends what it lost. A failed reset, or a second failure in a row, asks for a snapshot.
-        if (reset) resetOutstanding = false; failures++; if (reset || failures > 1) wantReset = true; failingSince ||= performance.now()
+        // Credits sent before a failure that fail too (the same dropped socket) count as that one failure.
+        if (reset) resetOutstanding = false
+        if (generation === failGeneration) { failures++; failGeneration++ }
+        if (reset || failures > 1) wantReset = true; failingSince ||= performance.now()
         if (!closed && (fatal(error) || terminal(error) || performance.now() - failingSince > failingMs)) { closed = true; inflater?.close(); renderer.close(); handlers.failure(error); void closeRemote() }
       })
       .finally(() => { inflight--; if (!closed) setTimeout(fill, failures ? Math.min(4000, 250 * 2 ** (failures - 1)) : 0) })

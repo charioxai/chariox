@@ -349,3 +349,29 @@ test('MP-10: review #320-2 a removed frame releases its nested records and a ret
   for (let i = 0; i < 3 && retired.deref(); i++) { await new Promise(resolve => setTimeout(resolve, 0)); gc() }
   assert.equal(retired.deref(), undefined, 'MP-10: a bound document no longer in use can be collected')
 })
+
+// Round 10 hosted drop drill: a dropped socket fails every credit in flight at once. That is one failure: the viewer
+// re-credits after the first backoff step from its applied base (no 2 s backoff, no reset snapshot).
+test('MP-10: credits that fail together (a dropped socket) count as one failure: quick re-credit, no reset', async () => {
+  let sequence = 0, dropped = false, released: Array<() => void> = []
+  const applied: number[] = [], requests: Array<Record<string, unknown>> = []
+  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
+  const transport = { protocolVersion: 492, request: async (request: unknown) => {
+    const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() })
+    if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
+    if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
+    if (command.after_sequence === 0) return { KernelBrowser: { result: packet(++sequence, true) } }
+    // Before the drop, credits wait (long poll); the drop fails all of them together.
+    if (!dropped) { await new Promise<void>(resolve => released.push(resolve)); throw Error('local_transport_error: connection closed') }
+    return { KernelBrowser: { result: packet(++sequence, false) } }
+  } }
+  const view = await attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: () => {} }, { credits: 4, waitMs: 0, renderer })
+  await until(() => applied.length >= 1)
+  await until(() => released.length >= 1, 1000)
+  const droppedAt = Date.now(); dropped = true; for (const release of released.splice(0)) release()
+  await until(() => applied.length >= 2, 3000)
+  await view.close()
+  const after = requests.filter(c => c.op === 'mirror_next' && (c.at as number) > droppedAt)
+  assert.ok(after.length > 0 && (after[0]!.at as number) - droppedAt < 600, `MP-10: re-credit within one backoff step (${after.length ? (after[0]!.at as number) - droppedAt : 'none'} ms)`)
+  assert.equal(after.filter(c => c.after_sequence === 0).length, 0, 'MP-10: no reset snapshot after a dropped socket')
+})
