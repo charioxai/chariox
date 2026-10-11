@@ -1,4 +1,4 @@
-// MP-08/MP-10/MP-11: normal product health and device enrollment, no fixtures.
+// MP-08/MP-10/MP-11: normal product enrollment to the private fixture account.
 import {readFile,writeFile,access} from 'node:fs/promises';import path from 'node:path';
 import {LocalIpcClient} from './sdk/dist/ipc.js';
 const root=process.env.AB_STATE,op=process.argv[2];
@@ -36,7 +36,7 @@ async function run(){try{
   // Device activation URL is retained locally for the product browser driver.
   // Never output a device code, token, credential or URL carrying one.
   await writeFile(root+'/device-login.private.json',JSON.stringify(login),{mode:0o600});
-  console.log('MP-08/MP-10: device approval is pending in the private local enrollment record. Coordinator opens it through the normal product device page, signed into Miguel’s account.');
+  console.log('MP-08/MP-10: device approval is pending in the private local enrollment record. Coordinator approves through the normal product device page using this stack’s disposable fixture identity.');
   for(let n=0;n<120;n++){
    await delay(Math.max(5000,(login.interval_seconds??5)*1000));
    const result=(await c.send({PollCloudRelayLogin:{api_url:apiOrigin,device_code:login.device_code}})).CloudRelayLoginPolled.result;
