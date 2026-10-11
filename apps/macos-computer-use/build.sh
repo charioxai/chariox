@@ -8,9 +8,15 @@ case "${1:-}" in
   "") ;;
   *) printf 'Unknown build option\n' >&2; exit 1 ;;
 esac
+# Owner signing starts from unsigned binaries at a fresh path. Never rewrite a
+# granted/signed bundle to change its sealed kernel pin.
+if [[ ${CUMAC_UNSIGNED:-0} == 1 && -e "$build" ]]; then
+  printf 'Unsigned owner build requires a fresh destination\n' >&2; exit 1
+fi
 mkdir -p "$build/modules"
 arch=$(uname -m)
 flags=(-j2 -parse-as-library -target "$arch-apple-macosx14.0" -module-cache-path "$build/modules")
+if [[ ${CUMAC_UNSIGNED:-0} == 1 ]]; then flags+=(-Xlinker -no_adhoc_codesign); fi
 swiftc "${flags[@]}" Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift PointerInputTests.swift Pairing.swift Tests.swift -o "$build/policy-tests"
 "$build/policy-tests"
 for kind in Helper Fixture Cover; do
@@ -36,12 +42,14 @@ EOF
     /usr/libexec/PlistBuddy -c "Add :CharioxDrillKernelCDHash string $CHARIOX_DRILL_KERNEL_CDHASH" "$bundle/Contents/Info.plist"
   fi
   if [[ $kind == Helper ]]; then
-    swiftc "${flags[@]}" Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift Native.swift NativeSurface.swift TextClick.swift TextDrillReference.swift Pairing.swift PhysicalHuman.swift NativeInput.swift PairedNativeInput.swift PairedSession.swift CaptureDamage.swift CaptureAttachment.swift ProtectedPixels.swift NativeCaptureStream.swift CaptureProtection.swift NativePrivacyPolicy.swift Targets.swift NativeTargets.swift VisionOCR.swift PairedCapture.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
+    swiftc "${flags[@]}" Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift Native.swift NativeSurface.swift TextClick.swift TextDrillReference.swift Pairing.swift PhysicalHuman.swift NativeInput.swift PairedNativeInput.swift PairedSession.swift CaptureDamage.swift CaptureAttachment.swift MacVideoEncoder.swift ProtectedPixels.swift NativeCaptureStream.swift CaptureProtection.swift NativePrivacyPolicy.swift Targets.swift NativeTargets.swift VisionOCR.swift PairedCapture.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
   elif [[ $kind == Fixture ]]; then
     swiftc "${flags[@]}" Policy.swift Coordinates.swift Fixture.swift -o "$bundle/Contents/MacOS/fixture"
   else
     swiftc "${flags[@]}" Cover.swift -o "$bundle/Contents/MacOS/cover"
   fi
-  codesign --force --sign - --identifier "ai.chariox.computer-$name" "$bundle"
-  codesign --verify --strict "$bundle"
+  if [[ ${CUMAC_UNSIGNED:-0} != 1 ]]; then
+    codesign --force --sign - --identifier "ai.chariox.computer-$name" "$bundle"
+    codesign --verify --strict "$bundle"
+  fi
 done

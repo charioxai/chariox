@@ -14,6 +14,9 @@ struct ProtectedFrame {
         let owner: String, generation: String
         let damage = CaptureDamage()
         var busy = false
+        var bitrate: Int?
+        var encoder: (any ProtectedVideoEncoding)?
+        var lastVideo: TimeInterval?
         var expires: TimeInterval
         init(owner: String, generation: String, now: TimeInterval) {
             self.owner = owner; self.generation = generation; expires = now + 60
@@ -22,18 +25,25 @@ struct ProtectedFrame {
     private var viewers: [String: Viewer] = [:]
     private var revision: UInt64 = 0
     private let now: () -> TimeInterval
-    init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) { self.now = now }
+    private let encoderFactory: (Int, Int, Int) -> (any ProtectedVideoEncoding)?
+    init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         encoderFactory: @escaping (Int, Int, Int) -> (any ProtectedVideoEncoding)? = { MacVideoEncoder(width: $0, height: $1, bitrate: $2) }) {
+        self.now = now; self.encoderFactory = encoderFactory
+    }
 
     var active: Bool {
         viewers = viewers.filter { $0.value.expires > now() }
         return !viewers.isEmpty
     }
-    func subscribe(owner: String, generation: String) throws -> String {
+
+    func subscribe(owner: String, generation: String, codecs: [String] = ["png"], bitrate: Int = 2_000_000) throws -> String {
         viewers = viewers.filter { $0.value.expires > now() }
         guard !owner.isEmpty, owner.utf8.count <= 256, !generation.isEmpty,
+              codecs.count <= 8, codecs.contains("png"), (128_000...32_000_000).contains(bitrate),
               viewers.count < 2 else { throw tagged(.arguments, "capture-subscription-budget") }
         let id = UUID().uuidString
         viewers[id] = Viewer(owner: owner, generation: generation, now: now())
+        if codecs.contains("avc1.420033") { viewers[id]?.bitrate = bitrate }
         return id
     }
     func attach(id: String, owner: String, generation: String) throws {
@@ -43,7 +53,7 @@ struct ProtectedFrame {
     }
     func invalidate() {
         revision &+= 1
-        for viewer in viewers.values { viewer.damage.invalidate() }
+        for viewer in viewers.values { viewer.damage.invalidate(); viewer.encoder = nil; viewer.lastVideo = nil }
     }
     func close(id: String, owner: String) {
         if viewers[id]?.owner == owner { viewers.removeValue(forKey: id) }
@@ -69,9 +79,13 @@ struct ProtectedFrame {
                   viewer.generation == frame.stamp.generation else {
                 throw tagged(.secure, "capture-subscription-changed")
             }
-            let publication = try viewer.damage.next(frame.pixels, stamp: frame.stamp, after: after, repair: repair)
+            let settledRepair = viewer.lastVideo.map { now() - $0 >= 0.2 } ?? false
+            let publication = try viewer.damage.next(frame.pixels, stamp: frame.stamp, after: after, repair: repair || settledRepair)
             viewer.expires = now() + 60
             if publication.rects.isEmpty { return nil }
+            let encoded = publication.exact ? nil : viewer.bitrate.flatMap {
+                video(viewer, frame: frame, bitrate: $0, sequence: publication.sequence)
+            }
             var packet: [String: Any] = ["subscription_id": id, "surface_id": "macos-seat",
                 "generation": frame.stamp.generation, "sequence": publication.sequence,
                 "display_kind": "native", "document_id": "\(frame.stamp.generation):\(frame.stamp.protection)",
@@ -83,10 +97,18 @@ struct ProtectedFrame {
                 "point_width": frame.stamp.surface.bounds.width, "point_height": frame.stamp.surface.bounds.height,
                 "capture_timestamp_ms": frame.capturedAt * 1000,
                 "protection_revision": frame.stamp.protection, "protected": frame.masked]
-            if publication.exact {
+            if publication.exact || (viewer.lastVideo != nil && encoded == nil) {
+                viewer.encoder = nil; viewer.lastVideo = nil
                 packet["kind"] = "png"
-                packet["data_base64"] = try encodeProtectedPNG(frame, rect: publication.rects[0]).base64EncodedString()
+                packet["data_base64"] = try encodeProtectedPNG(frame, rect: DamageRect(x: 0, y: 0, width: frame.stamp.surface.width, height: frame.stamp.surface.height)).base64EncodedString()
+            } else if let encoded {
+                packet["kind"] = "video"; packet["codec"] = "avc1.420033"; packet["key"] = true
+                packet["data_base64"] = encoded.base64EncodedString()
+                // A timer from the first lossy packet forces a protected exact base,
+                // even on static credits. Continuous motion cannot postpone repair.
+                if viewer.lastVideo == nil { viewer.lastVideo = now() }
             } else {
+                viewer.encoder = nil
                 // Bound tiny-tile overhead as well as encoded pixels. Large damage
                 // falls back to a full exact base, retaining the same sequence.
                 var tiles: [[String: Any]] = []
@@ -120,9 +142,13 @@ struct ProtectedFrame {
             return packet
         } catch {
             // Encoding/authority failure did not deliver a base. Next credit repairs.
-            viewer.damage.invalidate()
+            viewer.damage.invalidate(); viewer.encoder = nil; viewer.lastVideo = nil
             throw error
         }
+    }
+    private func video(_ viewer: Viewer, frame: ProtectedFrame, bitrate: Int, sequence: UInt64) -> Data? {
+        if viewer.encoder == nil { viewer.encoder = encoderFactory(frame.stamp.surface.width, frame.stamp.surface.height, bitrate) }
+        return try? viewer.encoder?.encode(frame, sequence: sequence)
     }
 }
 

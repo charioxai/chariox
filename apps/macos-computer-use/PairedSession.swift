@@ -107,7 +107,8 @@ import Darwin
                       let owner = params["_attachment_owner"] as? String else { throw tagged(.arguments, "invalid-capture-binding") }
                 switch params["op"] as? String {
                 case "subscribe":
-                    let id = try capture.attachment.subscribe(owner: owner, generation: epoch)
+                    let id = try capture.attachment.subscribe(owner: owner, generation: epoch,
+                        codecs: params["codecs"] as? [String] ?? ["png"], bitrate: params["bitrate"] as? Int ?? 2_000_000)
                     reply["result"] = ["subscription_id": id, "surface_id": "macos-seat", "generation": epoch,
                         "display_kind": "native", "width": surface.width, "height": surface.height, "device_scale_factor": surface.scale, "codec": "png"]
                 case "attach":

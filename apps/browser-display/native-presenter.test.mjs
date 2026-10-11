@@ -50,3 +50,19 @@ test('M2 native attachment uses the encrypted shared event route and never submi
   await assert.rejects(attachNativeDisplay({}, {...transport,kernelProtocolVersion:491,request(){attempts++;}},target),/497/);
   assert.equal(attempts,0);
 });
+
+test('M5 negotiates existing AVC and PNG repair offers with a bounded bitrate', async () => {
+  const {attachNativeDisplay}=await import('./native-presenter.mjs');
+  let offer;
+  const target={surface_id:'macos-seat',generation:'e'};
+  const transport={kernelProtocolVersion:497,relayProtocolVersion:106,displayEventEncoding:'CXD1',
+    onEvent(){return()=>{}},async subscribeDisplay(){},async unsubscribeDisplay(){},
+    async request({KernelBrowser:{command:{command}}}){
+      if(command.op==='display_subscribe')offer=command;
+      return {KernelBrowser:{result:command.op==='display_subscribe'?{...target,display_kind:'native',subscription_id:'s',width:128,height:128,codec:'avc1.420033'}:{closed:true}}};
+    }};
+  const stream=await attachNativeDisplay({width:1,height:1},transport,target,{codec:'avc1.420033',bitrate:2_000_000});
+  assert.ok(offer.codecs.includes('avc1.420033'));assert.ok(offer.codecs.includes('png'));
+  assert.ok(!offer.codecs.includes('chariox-stripes-v1'));assert.equal(offer.bitrate,2_000_000);
+  await stream.close();
+});
