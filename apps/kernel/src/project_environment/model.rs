@@ -151,11 +151,13 @@ impl ProjectEnvironmentManifest {
             if entry.workspace_id.is_empty()
                 || entry.workspace_id.len() > 4096
                 || !identities.insert((&entry.workspace_id, &entry.name))
-                || entry.uses.is_empty()
                 || entry.uses.len() > 128
             {
                 return Err("invalid Project environment entry binding or evidence");
             }
+            // MP-08 / MP-10 / MP-11: manually reviewed P01 locators need no
+            // invented detected use site. Discovery separately requires exact
+            // kernel-indexed references; this metadata is not grant authority.
             match entry.kind {
                 ProjectEnvironmentEntryKind::Variable
                     if !environment_variable_name(&entry.name) =>

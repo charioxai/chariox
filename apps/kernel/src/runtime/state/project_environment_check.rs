@@ -232,14 +232,23 @@ impl KernelRuntimeState {
             None => {
                 let config = self.owned.config_projection.snapshot();
                 let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
-                let applied = store.load_applies(&environment.local_project_id)?.attempts.into_iter().rev().find(|a| a.operation.operation_id == request.operation_id).map(|a| a.operation);
-                applied.or(store
-                    .check_operation(
-                        &environment.local_project_id,
-                        &request.operation_id,
-                        &current_check_target(&config),
-                    )?)
-                    .ok_or_else(|| environment_error("Environment operation not found"))?
+                let applied = store
+                    .load_applies(&environment.local_project_id)?
+                    .attempts
+                    .into_iter()
+                    .rev()
+                    .find(|a| a.operation.operation_id == request.operation_id)
+                    .map(|a| a.operation);
+                match applied {
+                    Some(operation) => operation,
+                    None => store
+                        .check_operation(
+                            &environment.local_project_id,
+                            &request.operation_id,
+                            &current_check_target(&config),
+                        )?
+                        .ok_or_else(|| environment_error("Environment operation not found"))?,
+                }
             }
         };
         Ok(LocalDaemonResponse::EnvironmentOperation { operation })

@@ -157,8 +157,19 @@ fn envp05a_restart_retains_receipt_and_uncertain_item_without_replay() {
         receipts: vec![receipt.clone()],
         recovery_state: EnvironmentRecoveryState::Pending,
     };
+    let request = crate::local::ApplyProjectEnvironmentRequest {
+        project_id: env.local_project_id.clone(),
+        operation_id: operation.operation_id.clone(),
+        plan_id: "plan".into(),
+        expected_revision: env.revision,
+        revision_digest: env.content_digest.clone(),
+        target: target("one"),
+        selected_items: operation.selected_items.clone(),
+        per_item_opt_ins: vec![],
+    };
     let a = ApplyAttempt {
         plan_id: "plan".into(),
+        request_digest: Some(metadata_digest(&request)),
         operation,
         folder_binding_digest: folder_bindings_digest(&env),
         active_requirement: Some("build".into()),
@@ -202,10 +213,78 @@ fn envp05a_restart_retains_receipt_and_uncertain_item_without_replay() {
         "late old completion cannot select a historical attempt"
     );
     assert!(latest_apply_attempt(&mut journal, &current).is_some());
+    assert_eq!(
+        replayed_apply_operation(&journal, &request).unwrap(),
+        Some(current.clone()),
+        "original lost ACK returns the latest retry despite a new target generation"
+    );
+    let mut changed_request = request.clone();
+    changed_request.target = target("two");
+    assert!(replayed_apply_operation(&journal, &changed_request).is_err());
+    for i in 0..64 {
+        let mut other = journal.attempts[0].clone();
+        other.operation.operation_id = format!("other-{i}");
+        journal.attempts.push(other);
+    }
+    store.save_applies(&env.local_project_id, &journal).unwrap();
+    let durable = store.load_applies(&env.local_project_id).unwrap();
+    assert_eq!(
+        replayed_apply_operation(&durable, &request).unwrap(),
+        Some(current),
+        "later operations never retire the identity required by an old ACK"
+    );
     store.remove(&env.local_project_id).unwrap();
     assert!(store
         .load_applies(&env.local_project_id)
         .unwrap()
         .attempts
         .is_empty());
+}
+
+#[test]
+fn envp05a_reviewed_manual_binding_needs_no_invented_source_use() {
+    let (_root, _store, env) = fixture();
+    let evidence = ProjectEnvironmentEvidence::default();
+    let manifest = ProjectEnvironmentManifest {
+        schema_version: 1,
+        project_id: env.local_project_id,
+        evidence_digest: evidence.digest(),
+        entries: vec![ProjectEnvironmentEntry {
+            name: "PROJECT_LICENSE_TEXT".into(),
+            workspace_id: "reviewed-folder".into(),
+            kind: ProjectEnvironmentEntryKind::Variable,
+            classification: ProjectEnvironmentClassification::NonSecret,
+            excluded: false,
+            uses: vec![],
+            locator: ProjectEnvironmentLocator::ConfigFile {
+                path: "LICENSE".into(),
+            },
+            status: ProjectEnvironmentEntryStatus::Found,
+        }],
+        private_files: vec![],
+        toolchain_hints: vec![],
+        package_hints: vec![],
+        service_hints: vec![],
+    };
+    assert!(
+        manifest.validate().is_ok(),
+        "reviewed manual locators have no detected use sites"
+    );
+    let input = ProjectEnvironmentDiscoveryInput {
+        project_id: manifest.project_id.clone(),
+        evidence_digest: manifest.evidence_digest.clone(),
+        changed_paths: Default::default(),
+        previous_manifest: None,
+        references: vec![],
+        private_files: vec![],
+        revision: None,
+    };
+    assert!(
+        parse_project_environment_discovery_output(
+            &serde_json::to_string(&manifest).unwrap(),
+            &input
+        )
+        .is_err(),
+        "no-use metadata cannot bypass discovery reference admission"
+    );
 }

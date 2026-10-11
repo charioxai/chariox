@@ -14,6 +14,9 @@ pub(crate) struct StoredApplyPlan {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ApplyAttempt {
     pub plan_id: String,
+    /// Original admission identity survives retry target-generation changes.
+    #[serde(default)]
+    pub request_digest: Option<String>,
     pub operation: EnvironmentOperation,
     pub folder_binding_digest: String,
     pub active_requirement: Option<String>,
@@ -24,6 +27,40 @@ pub(crate) struct ApplyAttempt {
 pub(crate) struct EnvironmentApplies {
     pub plans: Vec<StoredApplyPlan>,
     pub attempts: Vec<ApplyAttempt>,
+}
+pub(crate) fn replayed_apply_operation(
+    journal: &EnvironmentApplies,
+    request: &crate::local::ApplyProjectEnvironmentRequest,
+) -> Result<Option<EnvironmentOperation>, DaemonError> {
+    let Some(original) = journal
+        .attempts
+        .iter()
+        .find(|a| a.operation.operation_id == request.operation_id)
+    else {
+        return Ok(None);
+    };
+    let matches = original.request_digest.as_ref().map_or_else(
+        || {
+            let op = &original.operation;
+            original.plan_id == request.plan_id
+                && op.revision_digest == request.revision_digest
+                && op.target == request.target
+                && op.selected_items == request.selected_items
+                && op.per_item_opt_ins == request.per_item_opt_ins
+        },
+        |digest| *digest == metadata_digest(request),
+    );
+    if !matches {
+        return Err(environment_error(
+            "Apply operation identity names another request",
+        ));
+    }
+    Ok(journal
+        .attempts
+        .iter()
+        .rev()
+        .find(|a| a.operation.operation_id == request.operation_id)
+        .map(|a| a.operation.clone()))
 }
 pub(crate) fn latest_apply_attempt<'a>(
     journal: &'a mut EnvironmentApplies,

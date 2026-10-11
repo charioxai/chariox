@@ -110,27 +110,10 @@ impl KernelRuntimeState {
         let env = store.snapshot_locked(&project)?;
         let mut journal = store.recover_applies(project.id(), &current_target)?;
         // Lost ACK replay remains idempotent even after plan expiry or a later edit.
-        if let Some(a) = journal
-            .attempts
-            .iter()
-            .rev()
-            .find(|a| a.operation.operation_id == request.operation_id)
-        {
-            let op = &a.operation;
-            if a.plan_id != request.plan_id
-                || op.revision_digest != request.revision_digest
-                || op.target != request.target
-                || op.selected_items != request.selected_items
-                || op.per_item_opt_ins != request.per_item_opt_ins
-            {
-                return Err(environment_error(
-                    "Apply operation identity names another request",
-                ));
-            }
-            return Ok(LocalDaemonResponse::EnvironmentOperation {
-                operation: op.clone(),
-            });
+        if let Some(operation) = replayed_apply_operation(&journal, &request)? {
+            return Ok(LocalDaemonResponse::EnvironmentOperation { operation });
         }
+        let request_digest = metadata_digest(&request);
         let target = apply_target(&ctx.config, &request.target)?;
         validate_revision(&env, request.expected_revision, &request.revision_digest)?;
         let plan = journal
@@ -178,11 +161,11 @@ impl KernelRuntimeState {
             receipts: vec![],
             recovery_state: EnvironmentRecoveryState::Pending,
         };
-        if journal.attempts.len() >= 32 {
-            journal.attempts.remove(0);
-        }
+        // The bounded durable journal must reject capacity before mutation,
+        // never forget an accepted identity and admit a duplicate side effect.
         journal.attempts.push(ApplyAttempt {
             plan_id: request.plan_id,
+            request_digest: Some(request_digest),
             operation: operation.clone(),
             folder_binding_digest: folder_bindings_digest(&env),
             active_requirement: None,
@@ -280,9 +263,6 @@ impl KernelRuntimeState {
         a.operation.updated_at_ms = crate::session::unix_epoch_ms();
         a.operation.recovery_state = EnvironmentRecoveryState::Pending;
         let operation = a.operation.clone();
-        if journal.attempts.len() >= 32 {
-            journal.attempts.remove(0);
-        }
         journal.attempts.push(a);
         store.save_applies(project.id(), &journal)?;
         drop(lock);
