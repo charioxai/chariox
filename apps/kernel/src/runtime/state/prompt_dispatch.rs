@@ -780,6 +780,7 @@ impl KernelRuntimeState {
         session_id: &str,
         target_agent_id: &str,
         attachment_id: &str,
+        expected_prompt_id: Option<&str>,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
         self.authorize_prompt_command(authority)?;
@@ -790,6 +791,7 @@ impl KernelRuntimeState {
                     session_id,
                     target_agent_id,
                     attachment_id,
+                    expected_prompt_id,
                     authority,
                 )
                 .await?
@@ -797,9 +799,12 @@ impl KernelRuntimeState {
                 return Ok(cancellation);
             }
             self.authorize_prompt_command(authority)?;
-            if let Some(cancellation) =
-                owned.cancel_local_prompt(session_id, target_agent_id, attachment_id)?
-            {
+            if let Some(cancellation) = owned.cancel_local_prompt_if_matches(
+                session_id,
+                target_agent_id,
+                attachment_id,
+                expected_prompt_id,
+            )? {
                 return Ok(cancellation);
             }
             Err(DaemonError::LocalTransport {

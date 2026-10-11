@@ -249,6 +249,7 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
                     session_id: session.id().to_string(),
                     attachment_id: attachment.id().to_string(),
                     target_agent_id: Some(agent.id().to_string()),
+                    expected_prompt_id: None,
                 },
             ))
             .unwrap();

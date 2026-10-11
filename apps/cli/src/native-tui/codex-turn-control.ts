@@ -28,7 +28,7 @@ export async function handleCodexNativeTurnInterrupt(
     })
     // A delayed Escape for a completed turn must not cancel its successor.
     if (sessionHasActivePrompt(session, options.agentId, promptId)) {
-      await options.client.send(cancelActivePromptRequest(options.sessionId, options.attachmentId, options.agentId))
+      await options.client.send(cancelActivePromptRequest(options.sessionId, options.attachmentId, options.agentId, promptId))
     }
     sendClient({ id: message.id, result: {} })
   } catch (error) {

@@ -55,3 +55,15 @@ test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated proto
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "ordinary" } }, 435))
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "kernel-access", choice_id: "refuse" } }, 451))
 })
+
+// MP-08 / MP-10 / MP-11: the atomic identity fence must never be ignored.
+test("conditional cancellation requires protocol 502 while legacy cancellation stays compatible", () => {
+  for (const expected_prompt_id of ["prompt-A", ""]) {
+    const request = { CancelActivePrompt: { session_id: "s", attachment_id: "a", expected_prompt_id } }
+    assert.throws(() => requireKernelFeatureProtocol(request, 473), /Conditional prompt cancellation needs protocol ≥502; this kernel is 473/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 502))
+  }
+  for (const expected_prompt_id of [undefined, null]) {
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: { expected_prompt_id } }, 473))
+  }
+})

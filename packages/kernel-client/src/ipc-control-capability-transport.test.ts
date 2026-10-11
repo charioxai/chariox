@@ -40,3 +40,37 @@ test("bare Unix controls use websocket frames and fresh capabilities", async t =
   await assert.rejects(client.send(request), /does not support/)
   assert.deepEqual(seen, [{ RelayStatus: null }, { RelayStatus: null }, request, { RelayStatus: null }])
 })
+
+// MP-08 / MP-10 / MP-11: verify the real shared transport refuses silent downgrade.
+test("conditional cancellation is sent only to a supporting connected kernel", async t => {
+  const websocket = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+  await new Promise<void>(resolve => websocket.once("listening", resolve))
+  const address = websocket.address()
+  assert.ok(address && typeof address === "object")
+  let capabilities: string[] = []
+  const seen: unknown[] = []
+  websocket.on("connection", socket => socket.on("message", bytes => {
+    const frame = JSON.parse(String(bytes))
+    seen.push(frame.request)
+    socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, error: null,
+      response: "RelayStatus" in frame.request
+        ? { RelayStatus: { status: { daemon_id: "home-1", machine_id: "machine-1", capabilities } } }
+        : { ok: true } }))
+  }))
+  const client = new LocalIpcClient(`ws://127.0.0.1:${address.port}/kernel`)
+  t.after(async () => {
+    client.destroy()
+    for (const socket of websocket.clients) socket.terminate()
+    await new Promise<void>(resolve => websocket.close(() => resolve()))
+  })
+  const request = { CancelActivePrompt: { session_id: "s", attachment_id: "a", expected_prompt_id: "A" } }
+  await assert.rejects(client.send(request), /conditional_prompt_cancellation_v1/)
+  assert.deepEqual(seen, [{ RelayStatus: null }])
+  capabilities = ["conditional_prompt_cancellation_v1"]
+  assert.deepEqual(await client.send(request), { ok: true })
+  capabilities = []
+  await assert.rejects(client.send(request), /conditional_prompt_cancellation_v1/)
+  const legacy = { CancelActivePrompt: { session_id: "s", attachment_id: "a" } }
+  assert.deepEqual(await client.send(legacy), { ok: true })
+  assert.deepEqual(seen, [{ RelayStatus: null }, { RelayStatus: null }, request, { RelayStatus: null }, legacy])
+})

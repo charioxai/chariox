@@ -222,12 +222,17 @@ export function completePromptRequest(sessionId: string) {
   }
 }
 
-export function cancelActivePromptRequest(sessionId: string, attachmentId: string, targetAgentId?: string | null) {
+export const conditionalPromptCancellationMinimumProtocolVersion = 502
+
+export function cancelActivePromptRequest(
+  sessionId: string, attachmentId: string, targetAgentId?: string | null, expectedPromptId?: string | null,
+) {
   return {
     CancelActivePrompt: {
       session_id: sessionId,
       attachment_id: attachmentId,
       ...(targetAgentId ? { target_agent_id: targetAgentId } : {}),
+      ...(expectedPromptId != null ? { expected_prompt_id: expectedPromptId } : {}),
     },
   }
 }

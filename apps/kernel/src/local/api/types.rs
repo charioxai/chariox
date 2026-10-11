@@ -263,4 +263,5 @@ pub use workspace::*;
 /// Version 472 advertises identity-preserving terminal relay renewal with
 /// explicit capability negotiation and recoverable target-offline handshakes.
 /// Version 473 adds explicit short bound-client terminal direct leases with paired Origin.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 473;
+/// Version 502 adds atomic expected-prompt cancellation and its control capability.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 502;

@@ -701,7 +701,8 @@ impl PromptStateOwner {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         let active = state.active_prompt.as_mut()?;
-        if expected.is_some_and(|id| active.id() != id) {
+        // MP-08/MP-10: compare under the same lock that marks cancellation.
+        if expected.is_some_and(|id| active.id() != id && active.pending_prompt_id() != Some(id)) {
             return None;
         }
         state.sudo_entry_id = None;

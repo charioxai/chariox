@@ -141,6 +141,7 @@ async fn assert_revoked_remote_control(operation: RemoteControl) {
             session_id: session.id().into(),
             attachment_id: attachment.id().into(),
             target_agent_id: Some(agent.id().into()),
+            expected_prompt_id: None,
         })
     };
     let mut command =

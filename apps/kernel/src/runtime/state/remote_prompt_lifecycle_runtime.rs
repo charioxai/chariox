@@ -11,6 +11,7 @@ impl KernelRuntimeState {
         session_id: &str,
         target_agent_id: &str,
         attachment_id: &str,
+        expected_prompt_id: Option<&str>,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
         self.authorize_prompt_command(authority)?;
@@ -27,6 +28,10 @@ impl KernelRuntimeState {
         let mut active_prompt = owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, target_agent_id)
+            .filter(|prompt| {
+                expected_prompt_id
+                    .is_none_or(|id| prompt.id() == id || prompt.pending_prompt_id() == Some(id))
+            })
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
@@ -37,10 +42,11 @@ impl KernelRuntimeState {
         ) {
             // Persist the user's intent immediately. The dispatch remains held as this same
             // prompt until its normal ACK or a restart receipt proves the worker run.
-            let intent = owned.begin_remote_prompt_cancellation(
+            let intent = owned.begin_remote_prompt_cancellation_if_matches(
                 session_id,
                 target_agent_id,
                 attachment_id,
+                Some(active_prompt.id()),
             )?;
             let current_session = owned.session_store.get_session(session_id)?;
             let current_prompt = owned
@@ -88,8 +94,12 @@ impl KernelRuntimeState {
                     .to_string(),
             });
         }
-        let cancellation_intent =
-            owned.begin_remote_prompt_cancellation(session_id, target_agent_id, attachment_id)?;
+        let cancellation_intent = owned.begin_remote_prompt_cancellation_if_matches(
+            session_id,
+            target_agent_id,
+            attachment_id,
+            Some(active_prompt.id()),
+        )?;
         let Some(mut cancellation_claim) =
             self.try_claim_remote_prompt_cancellation_send(session_id, target_agent_id)
         else {
@@ -169,10 +179,11 @@ impl KernelRuntimeState {
             }
             Some(crate::session::DurablePromptDeliveryPhase::Delivered) => {
                 let attachment_id = active_prompt.source_attachment_id().to_string();
-                let cancellation_intent = self.owned.begin_remote_prompt_cancellation(
+                let cancellation_intent = self.owned.begin_remote_prompt_cancellation_if_matches(
                     session_id,
                     target_agent_id,
                     &attachment_id,
+                    Some(active_prompt.id()),
                 )?;
                 if let Err(error) = self
                     .send_remote_agent_prompt_cancellation_with_claim(

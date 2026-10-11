@@ -2,10 +2,10 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
-import { respondToInteractionRequest } from "./ipc-terminal-runtime-requests.js"
+import { cancelActivePromptRequest, respondToInteractionRequest } from "./ipc-terminal-runtime-requests.js"
 
 test("protocol 392: a critical approval carries the passkey and an optional remember window", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 473)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 502)
   assert.deepEqual(respondToInteractionRequest("s", "i", "deny"), {
     RespondToInteraction: { session_id: "s", interaction_id: "i", choice_id: "deny", custom_reply: null },
   })
@@ -16,4 +16,13 @@ test("protocol 392: a critical approval carries the passkey and an optional reme
     },
   })
   assert.equal("passkey_remember_minutes" in respondToInteractionRequest("s", "i", "approve", null, { passkey: "pk" }).RespondToInteraction, false)
+})
+
+test("MP-08/MP-10 native cancellation carries its prompt fence and preserves legacy callers", () => {
+  assert.deepEqual(cancelActivePromptRequest("s", "a", "agent"), {
+    CancelActivePrompt: { session_id: "s", attachment_id: "a", target_agent_id: "agent" },
+  })
+  for (const expected of ["prompt-A", ""]) {
+    assert.equal(cancelActivePromptRequest("s", "a", "agent", expected).CancelActivePrompt.expected_prompt_id, expected)
+  }
 })

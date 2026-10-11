@@ -65,7 +65,7 @@ test("native proxy forwards ephemeral utility turns without binding a Room run",
   assert.equal(bindState.promise, null)
 })
 
-for (const origin of ["native", "chariox", "stale", "provider", "pending", "user", "unscoped", "unscoped-stale", "unscoped-blob", "unscoped-summary"] as const) {
+for (const origin of ["native", "chariox", "stale", "provider", "pending", "user", "unscoped", "unscoped-stale", "unscoped-blob", "unscoped-summary", "transition"] as const) {
   test(`MP-08/MP-11 native interrupt correlates the ${origin} display turn to its kernel prompt`, { timeout: 10_000 }, async (t) => {
     const upstream = new WebSocketServer({ port: 0, host: "127.0.0.1" })
     await once(upstream, "listening")
@@ -88,7 +88,7 @@ for (const origin of ["native", "chariox", "stale", "provider", "pending", "user
       client: { send: async (request: Record<string, unknown>) => {
         requests.push(Object.keys(request)[0]!)
         if ("SubmitPrompt" in request) return { PromptSubmitted: { outcome: { Started: { prompt: { id: "kernel-prompt" } } }, session } }
-        if ("GetSessionState" in request) return { SessionState: { session } }
+        if ("GetSessionState" in request) return { SessionState: { session: structuredClone(session) } }
         if ("GetSessionHistoryOutline" in request) return { SessionHistoryOutline: { agents: [{ agent_id: "agent", turns: [{
           prompt_id: "kernel-prompt", started_at_ms: 900, completed_at_ms: origin === "unscoped-stale" ? 1100 : null,
           entries: ["unscoped-blob", "unscoped-summary"].includes(origin) ? [] : [{ entry: { merge_key: "provider-item", kind: "provider_output", source_attachment_id: "attachment" } }],
@@ -99,7 +99,14 @@ for (const origin of ["native", "chariox", "stale", "provider", "pending", "user
           merge_key: "provider-item", kind: "provider_output", source_attachment_id: "attachment",
         } }] } }
         if ("CancelActivePrompt" in request) {
-          assert.deepEqual(request.CancelActivePrompt, { session_id: "room", attachment_id: "attachment", target_agent_id: "agent" })
+          if (origin === "transition") {
+            // MP-08/MP-10: A settled and B started after the snapshot, before dispatch.
+            session.prompt_states.agent.active_prompt = { id: "successor-prompt" }
+            const expected = (request.CancelActivePrompt as { expected_prompt_id?: string }).expected_prompt_id
+            cancelled = expected === undefined || expected === "successor-prompt"
+            return { Error: { error: "no active prompt matches the expected identity" } }
+          }
+          assert.deepEqual(request.CancelActivePrompt, { session_id: "room", attachment_id: "attachment", target_agent_id: "agent", expected_prompt_id: "kernel-prompt" })
           cancelled = true
           return { ActivePromptCancelled: { session } }
         }
@@ -145,7 +152,7 @@ for (const origin of ["native", "chariox", "stale", "provider", "pending", "user
     }
     const interrupted = await response({ id: 3, method: "turn/interrupt", params: { threadId: "display-thread", turnId } })
     assert.deepEqual(interrupted.result, {})
-    assert.equal(cancelled, origin !== "stale" && origin !== "unscoped-stale" && origin !== "provider")
+    assert.equal(cancelled, origin !== "stale" && origin !== "unscoped-stale" && origin !== "provider" && origin !== "transition")
     assert.equal(upstreamRequests.includes("turn/interrupt"), origin === "provider")
     assert.equal(requests.includes("GetSessionState"), origin !== "provider")
   })

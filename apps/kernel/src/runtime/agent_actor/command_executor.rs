@@ -266,6 +266,7 @@ impl AgentRuntimeCommandExecutor {
                 &request.session_id,
                 &target_agent_id,
                 &request.attachment_id,
+                request.expected_prompt_id.as_deref(),
             )
             .await?;
         publish_session_runtime_projection(

@@ -288,6 +288,16 @@ projection requires v376. Older peer kernels reject the changed bridge version.
 
 Native TUI agents let a user run a familiar provider CLI UI while the Chariox kernel remains the session authority.
 
+MP-08 / MP-10 / MP-11: from local protocol 502, native interruption identifies the displayed Chariox
+prompt with `CancelActivePrompt.expected_prompt_id`. The kernel compares that
+identity with the active prompt (or its pending submission alias) under the same
+lock that marks cancellation, for both local and leased agents. A stale request
+returns `NoActivePrompt` and leaves a successor running. The existing remote
+cancellation transport remains scoped to the selected prompt and worker run.
+Clients require the connected kernel's fresh `conditional_prompt_cancellation_v1`
+control capability and CLI minimum 502 before sending the optional identity; older kernels must not
+silently ignore the fence. Requests that omit it retain active-prompt cancellation.
+
 Current commands:
 
 - `chariox codex [session-ref] [--kernel-port PORT|--kernel-url URL]`

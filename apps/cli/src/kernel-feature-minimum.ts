@@ -42,6 +42,8 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     feature = name === "KeepManagedEnvironmentRunning"
       ? { feature: "Managed environment keep running", minimum: requests.managedEnvironmentKeepRunningMinimumProtocolVersion }
       : { feature: "Disposable worker control", minimum: requests.disposableWorkerControlMinimumProtocolVersion }
+  } else if (name === "CancelActivePrompt" && payload?.expected_prompt_id != null) {
+    feature = { feature: "Conditional prompt cancellation", minimum: requests.conditionalPromptCancellationMinimumProtocolVersion }
   } else if (name === "SubmitRoomEnvironmentBrowserAction") {
     const tab = record(payload?.action)?.kind === "tab"
     feature = { feature: tab ? "Room browser tab lifecycle" : "Room browser history", minimum: tab

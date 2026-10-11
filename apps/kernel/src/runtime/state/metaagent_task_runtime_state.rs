@@ -794,6 +794,7 @@ impl KernelRuntimeState {
                     session_id,
                     agent.id(),
                     &attachment_id,
+                    None,
                     self.external_command_authority.as_ref().map(
                         super::external_command_authority::ExternalCommandAuthority::as_request,
                     ),
@@ -849,6 +850,7 @@ impl KernelRuntimeState {
                 session_id,
                 metaagent.id(),
                 &attachment_id,
+                None,
                 self.external_command_authority
                     .as_ref()
                     .map(super::external_command_authority::ExternalCommandAuthority::as_request),

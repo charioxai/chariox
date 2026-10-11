@@ -74,6 +74,9 @@ pub struct CancelActivePromptRequest {
     pub session_id: String,
     pub attachment_id: String,
     pub target_agent_id: Option<String>,
+    /// Cancel only this active prompt (including its pending submission alias).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_prompt_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
