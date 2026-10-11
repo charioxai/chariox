@@ -99,25 +99,40 @@ impl KernelRuntimeState {
                 .owned
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, &task.agent_id)
-                .filter(|p| p.id() == task.prompt_id);
+                .filter(|p| {
+                    p.id() == task.prompt_id || task.pending_prompt_id.as_deref() == Some(p.id())
+                });
             let mut physical_pending = false;
             if let Some(prompt) = active {
                 physical_pending = true;
-                if let Some(cancellation) = self.owned.cancel_local_prompt_if_matches(
+                let cancellation = Box::pin(self.cancel_remote_agent_prompt_if_matches(
                     &task.room_id,
                     &task.agent_id,
                     prompt.source_attachment_id(),
                     Some(prompt.id()),
-                )? {
-                    if let Some(dispatch) = cancellation.dispatch {
-                        self.spawn_prompt_abort(dispatch, self.provider_runtime_lanes.clone());
+                    None,
+                ))
+                .await;
+                match cancellation {
+                    Err(error) => {
+                        first_error.get_or_insert(error);
                     }
-                } else {
-                    first_error.get_or_insert_with(|| {
-                        crate::durable_state::agent_lifecycle::error(
-                            "leased cancellation requires PR10 exact task/lease settlement",
-                        )
-                    });
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        if let Some(cancellation) = self.owned.cancel_local_prompt_if_matches(
+                            &task.room_id,
+                            &task.agent_id,
+                            prompt.source_attachment_id(),
+                            Some(prompt.id()),
+                        )? {
+                            if let Some(dispatch) = cancellation.dispatch {
+                                self.spawn_prompt_abort(
+                                    dispatch,
+                                    self.provider_runtime_lanes.clone(),
+                                );
+                            }
+                        }
+                    }
                 }
             }
             if let Some(queued) = session.queued_prompts_for_agent(&task.agent_id) {

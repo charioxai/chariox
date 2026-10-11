@@ -13,8 +13,31 @@ impl KernelRuntimeState {
         attachment_id: &str,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
+        self.cancel_remote_agent_prompt_if_matches(
+            session_id,
+            target_agent_id,
+            attachment_id,
+            None,
+            authority,
+        )
+        .await
+    }
+
+    pub(super) async fn cancel_remote_agent_prompt_if_matches(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        expected_prompt_id: Option<&str>,
+        authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
+    ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
         self.authorize_prompt_command(authority)?;
         let owned = &self.owned;
+        if expected_prompt_id.is_none()
+            && !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id)
+        {
+            let _ = owned.ensure_attachment_in_session(session_id, attachment_id)?;
+        }
         if owned
             .agent_store
             .get_agent(target_agent_id)?
@@ -30,6 +53,9 @@ impl KernelRuntimeState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
+        if expected_prompt_id.is_some_and(|id| active_prompt.id() != id) {
+            return Ok(None);
+        }
         if matches!(
             active_prompt.durable_delivery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Accepted)
@@ -37,11 +63,15 @@ impl KernelRuntimeState {
         ) {
             // Persist the user's intent immediately. The dispatch remains held as this same
             // prompt until its normal ACK or a restart receipt proves the worker run.
-            let intent = owned.begin_remote_prompt_cancellation(
+            let Some(intent) = owned.begin_remote_prompt_cancellation_if_matches(
                 session_id,
                 target_agent_id,
                 attachment_id,
-            )?;
+                Some(active_prompt.id()),
+            )?
+            else {
+                return Ok(None);
+            };
             let current_session = owned.session_store.get_session(session_id)?;
             let current_prompt = owned
                 .prompt_state_owner
@@ -88,8 +118,15 @@ impl KernelRuntimeState {
                     .to_string(),
             });
         }
-        let cancellation_intent =
-            owned.begin_remote_prompt_cancellation(session_id, target_agent_id, attachment_id)?;
+        let Some(cancellation_intent) = owned.begin_remote_prompt_cancellation_if_matches(
+            session_id,
+            target_agent_id,
+            attachment_id,
+            Some(active_prompt.id()),
+        )?
+        else {
+            return Ok(None);
+        };
         let Some(mut cancellation_claim) =
             self.try_claim_remote_prompt_cancellation_send(session_id, target_agent_id)
         else {
