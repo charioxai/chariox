@@ -693,28 +693,6 @@ mod tests {
                 "MP-08 / MP-10 / MP-11 registered Claude first use",
             )
             .unwrap();
-        crate::credential::CharioxCredentialRegistry::user()
-            .unwrap()
-            .remove(&crate::provider::provider_account_credential_id(
-                "local",
-                "claude",
-                &profile.profile_id,
-            ))
-            .unwrap();
-        assert!(
-            runtime
-                .owned
-                .submit_local_prepared_prompt_for_provider_run(&prompt, Some(completed.id()))
-                .is_err(),
-            "authenticated replica must never rescue an expired home run"
-        );
-        assert!(
-            !runtime.owned.provider_account_allows_queued_prompt_advance(
-                session.id(),
-                &completed_agent,
-                "MP-08 / MP-10 / MP-11 expired home queue"
-            )
-        );
         let reload = super::super::provider_reload::policy_reload_launch_request(
             &run,
             agent.id(),
@@ -780,6 +758,30 @@ mod tests {
             )
             .is_err(),
             "resolution provenance cannot authorize another runtime owner"
+        );
+        // MP-08 / MP-10 / MP-11: remove the disposable credential only
+        // after verifying reload authority with the credential still present.
+        crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .remove(&crate::provider::provider_account_credential_id(
+                "local",
+                "claude",
+                &profile.profile_id,
+            ))
+            .unwrap();
+        assert!(
+            runtime
+                .owned
+                .submit_local_prepared_prompt_for_provider_run(&prompt, Some(completed.id()))
+                .is_err(),
+            "authenticated replica must never rescue an expired home run"
+        );
+        assert!(
+            !runtime.owned.provider_account_allows_queued_prompt_advance(
+                session.id(),
+                &completed_agent,
+                "MP-08 / MP-10 / MP-11 expired home queue"
+            )
         );
         crate::secret::lock_chariox_encrypted_vault(&vault_path).unwrap();
         crate::secret::clear_vault_secret_process_cache().unwrap();
