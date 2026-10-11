@@ -11,6 +11,7 @@ import {
   applyProviderPreferenceDefaults,
   defaultKernelEndpoint,
   parseArgs,
+  parseTerminalPairingLink,
   terminalPairingLinkFromArgs,
 } from "./cli-options.js"
 import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
@@ -186,12 +187,15 @@ export async function bootstrapCliRuntime(
   const relayIdentity = cliOptions.relayUrl
     ? deps.getRelayIdentity(Boolean(pairingLink))
     : null
-  const receivingClientAuthority = Boolean(pairingLink && cliOptions.relayToken === "cloud-client-token-required")
+  const receivingClientAuthority = Boolean(pairingLink && parseTerminalPairingLink(pairingLink).relayToken === "cloud-client-token-required")
   if (receivingClientAuthority) {
-    if (!relayIdentity || !cliOptions.relayUrl || !cliOptions.targetDaemonId || !deps.resolvePairingBootstrapToken) throw new Error("Cloud pairing requires the receiving terminal's client credentials and key")
+    if (!relayIdentity || !cliOptions.relayUrl || !cliOptions.targetDaemonId) throw new Error("Cloud pairing requires the receiving terminal's client credentials and key")
     // MP-08 / MP-10 / MP-11: the link labels an invitation, not receiving authority.
     cliOptions.clientId = `cli:${relayIdentity.publicKeyThumbprint}`
-    cliOptions.relayToken = await deps.resolvePairingBootstrapToken(cliOptions.relayUrl, cliOptions.targetDaemonId, relayIdentity)
+    if (cliOptions.relayToken === "cloud-client-token-required") {
+      if (!deps.resolvePairingBootstrapToken) throw new Error("Cloud pairing requires the receiving terminal's client credentials and key")
+      cliOptions.relayToken = await deps.resolvePairingBootstrapToken(cliOptions.relayUrl, cliOptions.targetDaemonId, relayIdentity)
+    }
   }
   let client = deps.createClient(kernelEndpoint, relayClientOptions(cliOptions, relayIdentity))
   if (pairingLink && relayIdentity) {

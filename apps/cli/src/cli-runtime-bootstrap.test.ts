@@ -6,6 +6,7 @@ import test from "node:test"
 import WebSocket, { WebSocketServer } from "ws"
 
 import { LocalIpcClient } from "./ipc.js"
+import { parseArgs } from "./cli-options.js"
 import { CloudClientAuthError } from "./cloud-client-http.js"
 import type { BootstrapState, CliOptions } from "./cli-types.js"
 import type { CharioxPreferences } from "./preferences.js"
@@ -168,7 +169,7 @@ test("terminal pairing bootstrap replaces the legacy token with one bound to the
   })
 
   const result = await bootstrapCliRuntime({
-    argv: ["chariox-terminal-pair-v1.fixture"],
+    argv: [terminalLink("bootstrap-token")],
     cwd: "/repo",
   }, deps)
 
@@ -241,7 +242,7 @@ test("enrolled Cloud pairing obtains receiver bootstrap authority before the key
     return "bootstrap-token"
   } })
   const result = await bootstrapCliRuntime({
-    argv: ["chariox-terminal-pair-v1.fixture"],
+    argv: [terminalLink("cloud-client-token-required")],
     cwd: "/repo",
   }, deps)
 
@@ -256,6 +257,92 @@ test("enrolled Cloud pairing obtains receiver bootstrap authority before the key
   // MP-08 / MP-10 / MP-11: link labels cannot replace the receiving CLIENT.
   assert.equal(join.JoinTerminalPairingLink.terminal_id, `cli:${identity.publicKeyThumbprint}`)
 })
+
+// MP-08 / MP-10 / MP-11: explicit transport credentials cannot change the
+// invitation's receiving authority. Cover both sources and both flag orders.
+for (const source of ["argv", "environment"] as const) {
+  for (const tokenFirst of [false, true]) {
+    test(`explicit Cloud CLIENT ${source} token ${tokenFirst ? "before" : "after"} the link retains receiving identity`, async t => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "chariox-explicit-client-"))
+      t.after(() => rmSync(root, { recursive: true, force: true }))
+      const identity = createCliRelayIdentityStore(`${root}/relay/cli-identity-v1.json`).getOrCreate()
+      const receivingId = `cli:${identity.publicKeyThumbprint}`
+      const token = `header.${Buffer.from(JSON.stringify({ sub: receivingId, public_key_thumbprint: identity.publicKeyThumbprint })).toString("base64url")}.synthetic`
+      const envName = "CHARIOX_TEST_EXPLICIT_PAIRING_CLIENT"
+      const previous = process.env[envName]
+      process.env[envName] = token
+      t.after(() => { if (previous === undefined) delete process.env[envName]; else process.env[envName] = previous })
+      const link = terminalLink("cloud-client-token-required")
+      const tokenArgs = source === "argv" ? ["--relay-token", token] : ["--relay-token-env", envName]
+      const linkArgs = ["--terminal-pairing-link", link]
+      const argv = tokenFirst ? [...tokenArgs, ...linkArgs] : [...linkArgs, ...tokenArgs]
+      const initial = fakeClient(), attached = fakeClient()
+      let joins = 0, creations = 0
+      initial.send = async <T>(request: unknown) => {
+        const join = (request as { JoinTerminalPairingLink: { terminal_id: string; public_key_thumbprint: string } }).JoinTerminalPairingLink
+        // The enrolled-kernel join binds this request to the authenticated CLIENT.
+        assert.equal(join.terminal_id, receivingId, "join identity must match the authenticated receiving CLIENT")
+        assert.equal(join.public_key_thumbprint, identity.publicKeyThumbprint)
+        joins++
+        return { TerminalPairingLinkJoined: {
+          terminal: { terminal_id: receivingId, terminal_type: "cli", paired_at_ms: 1, revoked: false },
+          pairing: { intent: "client", subject_id: receivingId, relay_url: "wss://relay.example", target_daemon_id: "home-1", public_key_thumbprint: identity.publicKeyThumbprint, paired_at_ms: 1 },
+          kernel_pairing: true,
+        } } as T
+      }
+      const result = await bootstrapCliRuntime({ argv, cwd: "/repo" }, createDeps({
+        parseArgs,
+        getRelayIdentity: () => identity,
+        resolvePairingBootstrapToken: async () => { throw new Error("explicit bootstrap token must be used without another login") },
+        createClient: (_endpoint, options) => {
+          assert.equal(options?.relayAuthToken, token)
+          assert.equal(options?.relayIdentity, identity)
+          return ++creations === 1 ? initial : attached
+        },
+      }))
+      assert.equal(result.kind, "ready")
+      assert.equal(joins, 1)
+      assert.equal(creations, 2)
+      if (result.kind === "ready") assert.equal(result.bootstrap.options.clientId, receivingId)
+    })
+  }
+}
+
+// MP-08 / MP-10 / MP-11: the same overrides on an operator invitation retain
+// its own terminal label rather than adopting Cloud receiving authority.
+for (const tokenFirst of [false, true]) {
+  test(`explicit self-hosted token ${tokenFirst ? "before" : "after"} the link preserves invitation identity`, async t => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "chariox-explicit-selfhost-"))
+    t.after(() => rmSync(root, { recursive: true, force: true }))
+    const identity = createCliRelayIdentityStore(`${root}/relay/cli-identity-v1.json`).getOrCreate()
+    const linkArgs = ["--terminal-pairing-link", terminalLink("operator-client-token-required")]
+    const tokenArgs = ["--relay-token", "synthetic-operator-token"]
+    const initial = fakeClient(), attached = fakeClient()
+    let creations = 0
+    initial.send = async <T>(request: unknown) => {
+      assert.equal((request as { JoinTerminalPairingLink: { terminal_id: string } }).JoinTerminalPairingLink.terminal_id, "invitation-label")
+      return { TerminalPairingLinkJoined: {
+        terminal: { terminal_id: "invitation-label", terminal_type: "cli", paired_at_ms: 1, revoked: false },
+        pairing: { intent: "client", subject_id: "invitation-label", relay_url: "wss://relay.example", target_daemon_id: "home-1", public_key_thumbprint: identity.publicKeyThumbprint, paired_at_ms: 1 },
+        kernel_pairing: true,
+      } } as T
+    }
+    const result = await bootstrapCliRuntime({ argv: tokenFirst ? [...tokenArgs, ...linkArgs] : [...linkArgs, ...tokenArgs], cwd: "/repo" }, createDeps({
+      parseArgs, getRelayIdentity: () => identity,
+      resolvePairingBootstrapToken: async () => { throw new Error("self-hosted pairing cannot request Cloud authority") },
+      createClient: (_endpoint, options) => {
+        assert.equal(options?.relayAuthToken, "synthetic-operator-token")
+        return ++creations === 1 ? initial : attached
+      },
+    }))
+    assert.equal(result.kind, "ready")
+    assert.equal(creations, 2)
+  })
+}
+
+function terminalLink(relayToken: string, relayUrl = "wss://relay.example", targetDaemonId = "home-1") {
+  return `chariox-terminal-pair-v1.${Buffer.from(JSON.stringify({ relay_url: relayUrl, relay_token: relayToken, target_daemon_id: targetDaemonId, terminal_id: "invitation-label" })).toString("base64url")}`
+}
 
 test("terminal pairing closes bootstrap transport and rejects a legacy unbound token", async (t) => {
   const root = mkdtempSync(path.join(os.tmpdir(), "chariox-cli-bootstrap-legacy-"))
@@ -295,7 +382,7 @@ test("terminal pairing closes bootstrap transport and rejects a legacy unbound t
   })
 
   await assert.rejects(
-    bootstrapCliRuntime({ argv: ["chariox-terminal-pair-v1.fixture"], cwd: "/repo" }, deps),
+    bootstrapCliRuntime({ argv: [terminalLink("bootstrap-token")], cwd: "/repo" }, deps),
     /requires a kernel-issued admission or a fresh bound relay token/,
   )
   assert.equal(createCount, 1)
@@ -421,7 +508,7 @@ test("Cloud-free pairing keeps operator transport while the kernel admits the pe
     createClient:(_endpoint,relayOptions)=>{captured.push(relayOptions ?? {});return captured.length===1?initial:attached},
     bootstrapAttachedSession:async(client,opts,_workspace,_worktree,prefs)=>attachedBootstrap(client,opts,prefs),
   })
-  const result = await bootstrapCliRuntime({argv:["chariox-terminal-pair-v1.fixture"],cwd:"/repo"},deps)
+  const result = await bootstrapCliRuntime({argv:[terminalLink("synthetic-operator-token", "ws://relay.local", "home")],cwd:"/repo"},deps)
   assert.equal(result.kind,"ready")
   assert.equal(captured.length,2)
   assert.equal(captured[1]?.relayAuthToken,"synthetic-operator-token")
@@ -484,7 +571,7 @@ test("Cloud pairing bootstrap keeps commands and events across repeated grant ex
   })
   let finalClient: LocalIpcClient | undefined
   try {
-    const result=await bootstrapCliRuntime({argv:["chariox-terminal-pair-v1.fixture"],cwd:"/repo"},createDeps({parseArgs:()=>cliOptions({clientId:"terminal-1",relayUrl,relayToken:"cloud-client-token-required",targetDaemonId:"home"}),getRelayIdentity:()=>identity,resolvePairingBootstrapToken:async()=>{receivingChecks++;if(receivingRevoked)throw new CloudClientAuthError("client_revoked");return "bootstrap"},createClient:(endpoint,opts)=>new LocalIpcClient(endpoint,opts)}))
+    const result=await bootstrapCliRuntime({argv:[terminalLink("cloud-client-token-required", relayUrl, "home")],cwd:"/repo"},createDeps({parseArgs:()=>cliOptions({clientId:"terminal-1",relayUrl,relayToken:"cloud-client-token-required",targetDaemonId:"home"}),getRelayIdentity:()=>identity,resolvePairingBootstrapToken:async()=>{receivingChecks++;if(receivingRevoked)throw new CloudClientAuthError("client_revoked");return "bootstrap"},createClient:(endpoint,opts)=>new LocalIpcClient(endpoint,opts)}))
     assert.equal(result.kind,"ready")
     if(result.kind!=="ready")throw new Error("expected ready")
     finalClient=result.bootstrap.client
