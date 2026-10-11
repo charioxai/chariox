@@ -458,7 +458,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             && leased_agent
                 .replayable_completion
                 .as_ref()
-                .is_some_and(|replay| replay.provider_run_id == provider_run_id)
+                .is_some_and(|replay| {
+                    replay.provider_run_id == provider_run_id
+                        && replay.home_prompt_id == home_prompt_id
+                })
         {
             // Prompt-state settlement also emits a generic prompt completion
             // record. Prefer the provider message identity retained while the
@@ -518,7 +521,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 || leased_agent
                     .replayable_completion
                     .as_ref()
-                    .is_some_and(|replay| replay.provider_run_id == provider_run_id));
+                    .is_some_and(|replay| {
+                        replay.provider_run_id == provider_run_id
+                            && replay.home_prompt_id == home_prompt_id
+                    }));
         let explicit_completion_waiting_for_prompt_settlement =
             completion_waits_for_native_prompt_settlement
                 && backing_prompt_active
@@ -526,13 +532,22 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 && leased_agent
                     .replayable_completion
                     .as_ref()
-                    .is_some_and(|replay| replay.provider_run_id == provider_run_id);
+                    .is_some_and(|replay| {
+                        replay.provider_run_id == provider_run_id
+                            && replay.home_prompt_id == home_prompt_id
+                    });
         let explicit_completion_waiting = explicit_completion_waiting_for_output
             || explicit_completion_waiting_for_prompt_settlement;
         let completion_already_projected = leased_agent
             .replayable_completion
             .as_ref()
-            .filter(|replay| replay.provider_run_id == provider_run_id)
+            .filter(|replay| {
+                replay.provider_run_id == provider_run_id
+                    && (replay.home_prompt_id == home_prompt_id
+                        // After the scoped turn is retired, its replay still
+                        // suppresses synthetic completions from old history.
+                        || (home_prompt_id.is_none() && !backing_prompt_active))
+            })
             .is_some_and(|replay| {
                 let completion_key = leased_provider_run_completion_key(
                     &leased_agent,
@@ -556,7 +571,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             if let Some(replay) = leased_agent
                 .replayable_completion
                 .as_ref()
-                .filter(|replay| replay.provider_run_id == provider_run_id)
+                .filter(|replay| {
+                    replay.provider_run_id == provider_run_id
+                        && replay.home_prompt_id == home_prompt_id
+                })
             {
                 let completion_key = leased_provider_run_completion_key(
                     &leased_agent,
@@ -687,7 +705,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             if let Some(replay) = leased_agent
                 .replayable_completion
                 .as_ref()
-                .filter(|replay| replay.provider_run_id == provider_run_id)
+                .filter(|replay| {
+                    replay.provider_run_id == provider_run_id
+                        && replay.home_prompt_id == home_prompt_id
+                })
             {
                 completions.push(RelayProjectedCompletion {
                     message_id: replay.message_id.clone(),
@@ -2215,8 +2236,11 @@ mod explicit_completion_tests {
             .is_none());
     }
 
-    #[test]
-    fn reused_provider_run_waits_for_output_from_each_home_prompt() {
+    fn reused_explicit_completion_run() -> (
+        crate::app::DaemonApp,
+        crate::execution_lease::LeasedAgent,
+        String,
+    ) {
         let mut config = DaemonConfig::for_tests();
         config.accept_remote_leases = true;
         let mut app =
@@ -2255,6 +2279,10 @@ mod explicit_completion_tests {
             .get_mut(&leased_agent.id)
             .expect("leased agent should remain registered")
             .provider = "codex".to_string();
+        app.leased_agents
+            .get_mut(&leased_agent.id)
+            .unwrap()
+            .active_home_prompt_id = Some("home-prompt-a".to_string());
         let first_completed_at_ms = RemoteLeaseRuntime::new(&mut app)
             .leased_agent_snapshot_for_test(&leased_agent.id)
             .and_then(|agent| agent.active_home_prompt_started_at_ms)
@@ -2324,6 +2352,16 @@ mod explicit_completion_tests {
             .get_mut(&leased_agent.id)
             .unwrap()
             .provider = "codex".to_string();
+        app.leased_agents
+            .get_mut(&leased_agent.id)
+            .unwrap()
+            .active_home_prompt_id = Some("home-prompt-b".to_string());
+        (app, leased_agent, provider_run_id)
+    }
+
+    #[test]
+    fn reused_provider_run_waits_for_output_from_each_home_prompt() {
+        let (mut app, leased_agent, provider_run_id) = reused_explicit_completion_run();
         let second_completed_at_ms = RemoteLeaseRuntime::new(&mut app)
             .leased_agent_snapshot_for_test(&leased_agent.id)
             .and_then(|agent| agent.active_home_prompt_started_at_ms)
@@ -2353,6 +2391,63 @@ mod explicit_completion_tests {
             )
             .expect("second active prompt should load")
             .is_some());
+    }
+
+    #[test]
+    fn mp08_mp10_reused_run_projects_cancelled_prompt_without_provider_output() {
+        let (mut app, leased_agent, provider_run_id) = reused_explicit_completion_run();
+        let before_second_output = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+            .expect("second completion-only projection should succeed");
+        if let Some((_, RelayPeerEvent::LeasedRuntimeProjection { completions, .. })) =
+            before_second_output
+        {
+            assert!(completions.is_empty());
+        }
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .expect("second active prompt should load")
+            .is_some());
+
+        app.prompt_owner_begin_cancelling_active_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("second prompt should begin cancellation");
+        let cancelled = app
+            .finalize_active_prompt_cancellation(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+                Some(&provider_run_id),
+            )
+            .expect("official provider abort settlement should finalize the prompt");
+        let projected = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection_with_recovery(
+                &leased_agent.id,
+                &provider_run_id,
+                false,
+                true,
+            )
+            .expect("cancelled prompt projection should succeed")
+            .expect("cancelled prompt should release a completion without provider output");
+        let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = projected.1;
+        assert_eq!(completions.len(), 1);
+        assert_eq!(
+            completions[0].message_id,
+            format!("prompt-complete:{}", cancelled.prompt.id())
+        );
+        let repeated = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+            .expect("repeat cancellation projection should succeed");
+        if let Some((_, RelayPeerEvent::LeasedRuntimeProjection { completions, .. })) = repeated {
+            assert!(
+                completions.is_empty(),
+                "cancellation completion should project exactly once"
+            );
+        }
     }
 
     #[test]

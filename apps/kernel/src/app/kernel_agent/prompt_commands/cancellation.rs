@@ -162,6 +162,16 @@ impl<'a> KernelAgentService<'a> {
                 .map(|run| run.id().to_string())
         });
         if let Some(provider_run_id) = cancellation_provider_run_id.as_deref() {
+            // An acknowledged abort can produce no assistant item/output. Still
+            // release this prompt through the ordinary remote completion path.
+            let recipients = self.app.attachments.list_session_attachment_ids(session_id);
+            self.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                recipients,
+                &format!("prompt-complete:{}", prompt.id()),
+                crate::session::unix_epoch_ms(),
+            );
             flow_control::clear_prompt_activity(self.app, provider_run_id);
         }
         // The prompt owner is already finalized. A failed workflow callback must
