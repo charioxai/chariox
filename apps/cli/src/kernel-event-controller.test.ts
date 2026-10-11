@@ -73,6 +73,7 @@ function createDeps(overrides: Record<string, unknown> = {}) {
     },
     connectedStatusLine: "Connected to the Chariox kernel.",
     isAttached: () => true,
+    restartWaitingRoomEventStream: () => calls.push("replace-event-binding"),
     onWaitingRoomTransportClosed: () => calls.push("waiting-room-disconnected"),
     markAssistantMessageCompleted: (agentId: string | null | undefined) => calls.push(`completed:${agentId ?? "null"}`),
     ...overrides,
@@ -538,4 +539,15 @@ test("waiting-room transport notices preserve the inventory display", () => {
   assert(calls.includes("daemon-disconnected:true"))
   assert(calls.includes("daemon-disconnected:false"))
   assert(calls.includes("waiting-room-disconnected"))
+})
+
+test("MP-08/MP-10/MP-11 waiting-room control loss replaces the event binding before resetting rows", () => {
+  const order: string[] = []
+  const {deps} = createDeps({isAttached:()=>false,
+    restartWaitingRoomEventStream:()=>order.push("replace-event-binding"),
+    onWaitingRoomTransportClosed:()=>order.push("reset-row-baseline"),
+  })
+  const controller = createKernelEventController(deps as never)
+  controller.applyTransportClosed("control websocket closed")
+  assert.deepEqual(order, ["replace-event-binding", "reset-row-baseline"])
 })

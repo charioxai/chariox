@@ -267,6 +267,11 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
 
   const kernelEventController = createKernelEventController({
     isAttached: deps.isAttached,
+    restartWaitingRoomEventStream: () => {
+      void deps.client.restartKernelEventStream().catch((error: unknown) => {
+        deps.appLogger?.warn("waiting-room event rebind failed", {error: deps.formatError(error)})
+      })
+    },
     onWaitingRoomTransportClosed: deps.applyWaitingRoomTransportClosed,
     recordDaemonActivity,
     recordTurnActivity: deps.recordTurnActivity,

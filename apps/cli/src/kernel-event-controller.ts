@@ -57,6 +57,7 @@ type KernelEventControllerDeps = {
   setStatusLine: (value: string) => void
   updateSessionChrome: () => void
   isAttached: () => boolean
+  restartWaitingRoomEventStream: () => void
   onWaitingRoomTransportClosed: () => void
   appendNotice: (message: string, tone?: "default" | "warning") => void
   connectedStatusLine: string
@@ -283,6 +284,9 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     deps.setStatusLine("Lost connection to the Chariox kernel.")
     deps.updateSessionChrome()
     if (!deps.isAttached()) {
+      // Control and event closes share this signal. Replace the event binding
+      // first so the next rows report is guaranteed to be a complete baseline.
+      deps.restartWaitingRoomEventStream()
       deps.onWaitingRoomTransportClosed()
       return
     }
