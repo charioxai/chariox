@@ -11,6 +11,7 @@ mod check_executable;
 mod check_gui_identity;
 mod check_health;
 mod check_inventory;
+mod check_journal;
 mod check_package_inventory;
 mod check_platform;
 mod check_runner;
@@ -83,3 +84,6 @@ mod review1118_metadata_tests;
 mod review1301_inventory_tests;
 #[cfg(test)]
 mod review1301_metadata_tests;
+
+#[cfg(test)]
+mod check_journal_tests;
