@@ -222,3 +222,8 @@ bootstrap waits, for at most eight seconds of binding rejection, through the
 existing forwarding request. Every attempt retains home authorization and the
 current worker-run fence. Tool calls, ordinary clients and other admission errors
 are never replayed. Source fixtures establish those bounds, not live acceptance.
+
+Exercise concurrent native and kernel MCP clients, including reconnects that
+restart JSON-RPC request numbering at zero. Each distinct request must retain
+its own forwarding invocation identity; replaying that identity must still be
+rejected. Connection-local MCP request IDs cannot identify provider tool calls.

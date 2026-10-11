@@ -2,6 +2,17 @@ use std::time::Duration;
 
 use super::*;
 
+pub(super) fn mcp_invocation_metadata(
+    provider_run_id: &str,
+    name: &str,
+    _payload: &serde_json::Value,
+) -> crate::extension::RemoteExtensionInvocationMetadata {
+    // MP-08 / MP-10 / MP-11: MCP IDs are connection-local response correlation,
+    // not provider tool-call identity. The kernel's unique invocation ID fences
+    // forwarding replay, including the metadata retained during bootstrap waits.
+    crate::extension::RemoteExtensionInvocationMetadata::new(provider_run_id, name, None)
+}
+
 impl KernelRuntimeState {
     pub(super) async fn try_dispatch_remote_home_extension_runtime_tool_call(
         &self,
@@ -149,16 +160,7 @@ impl KernelRuntimeState {
                 message: "provider run is not attached to a remote execution lease".to_string(),
             })?;
         let home_kernel_id = context.home_kernel_id.clone();
-        let provider_tool_call_id = payload.get("id").and_then(|value| match value {
-            serde_json::Value::String(value) => Some(value.clone()),
-            serde_json::Value::Number(value) => Some(value.to_string()),
-            _ => None,
-        });
-        let metadata = crate::extension::RemoteExtensionInvocationMetadata::new(
-            provider_run.id(),
-            name,
-            provider_tool_call_id,
-        );
+        let metadata = mcp_invocation_metadata(provider_run.id(), name, &payload);
         let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
         self.register_remote_home_extension_invocation(&context, &metadata)
             .await;
