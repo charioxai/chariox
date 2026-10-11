@@ -5,6 +5,9 @@ use tokio::sync::Mutex;
 #[path = "tests/profile_selection.rs"]
 mod profile_selection;
 
+#[path = "tests/remote_profile_active_run.rs"]
+mod remote_profile_active_run;
+
 #[path = "tests/automatic_substitutes.rs"]
 mod automatic_substitutes;
 
