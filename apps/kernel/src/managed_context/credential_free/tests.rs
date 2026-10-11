@@ -1,89 +1,155 @@
 use super::*;
 
+// MP-08/MP-11: every shell text fixture also exercises printable asset runs.
+fn shell_text_cases() -> Vec<(&'static str, bool)> {
+    let mut cases = Vec::new();
+    cases.extend(
+        [
+            "FOO=bar API_KEY=synthetic-canary curl https://example.test",
+            "echo ready;API_KEY=synthetic-canary curl https://example.test",
+            "env FOO=bar API_KEY=synthetic-canary curl https://example.test",
+            "FOO=bar API_KEY+=synthetic-canary curl https://example.test",
+            "FOO=bar API_\"KEY\"=synthetic-canary curl https://example.test",
+            "FOO=bar API_\\KEY=synthetic-canary curl https://example.test",
+            "FOO=bar \\\nAPI_KEY=synthetic-canary curl https://example.test",
+            "sh -c 'FOO=bar API_KEY=synthetic-canary curl https://example.test'",
+            "curl --data 'username=owner&password=synthetic-canary' https://example.test",
+        ]
+        .into_iter()
+        .map(|text| (text, false)),
+    );
+    cases.extend(
+        [
+            "curl --user owner:synthetic-canary https://example.test",
+            "curl --user=owner:synthetic-canary https://example.test",
+            "curl -u owner:synthetic-canary https://example.test",
+            "curl -uowner:synthetic-canary https://example.test",
+            "curl --proxy-user owner:synthetic-canary https://example.test",
+            "curl -Uowner:synthetic-canary https://example.test",
+            "curl --us\"er\" owner:synthetic-canary https://example.test",
+            "curl --us\\er owner:synthetic-canary https://example.test",
+            "curl --oauth2-bearer synthetic-canary https://example.test",
+            "curl --cookie session=synthetic-canary https://example.test",
+            "curl --header 'Authorization: Basic synthetic-canary' https://example.test",
+            "curl --user \"$(read-value)\" https://example.test",
+            "curl --user", // MP-11: unsupported/missing credential arguments fail closed.
+            "curl --client-secret-file ./public-looking-file https://example.test",
+            "curl -fsSu owner:synthetic-canary https://example.test",
+            "/usr/bin/curl -fsSUowner:synthetic-canary https://example.test",
+            "# curl -u owner:synthetic-canary https://example.test",
+            "wget --user owner:synthetic-canary https://example.test",
+            "curl --${AUTH_OPTION} owner:synthetic-canary https://example.test",
+            "curl $'--us\\x65r' owner:synthetic-canary https://example.test",
+            "curl --us\"er owner:synthetic-canary https://example.test",
+            "curl --url=https://owner:synthetic-canary@example.test",
+        ]
+        .into_iter()
+        .map(|text| (text, false)),
+    );
+    cases.extend(
+        [
+            "FOO=bar BAR=baz curl --retry 3 https://example.test",
+            "curl --user-agent chariox https://example.test",
+            "chromium --user-data-dir /tmp/profile --profile-directory Default",
+            "agent --max-tokens 4096 --token-limit=4096",
+            "--max-tokens=4096",
+            r#"{"args":["--max-tokens=4096"]}"#,
+            "printf '%s\\n' 'ordinary project instructions'",
+            "set -euo pipefail",
+            "python -u worker.py",
+            "git add -u",
+            "curl -ooutput.txt https://example.test",
+            "curl -XPUT https://example.test",
+            "pip install --user package",
+            "wget -U chariox https://example.test",
+            "curl https://example.test\npython -u worker.py",
+            "curl -- -u",
+        ]
+        .into_iter()
+        .map(|text| (text, true)),
+    );
+    cases
+}
+
 #[test]
-fn mp08_mp11_inline_shell_assignments_are_all_inspected() {
-    for (index, text) in [
-        "FOO=bar API_KEY=synthetic-canary curl https://example.test",
-        "echo ready;API_KEY=synthetic-canary curl https://example.test",
-        "env FOO=bar API_KEY=synthetic-canary curl https://example.test",
-        "FOO=bar API_KEY+=synthetic-canary curl https://example.test",
-        "FOO=bar API_\"KEY\"=synthetic-canary curl https://example.test",
-        "FOO=bar API_\\KEY=synthetic-canary curl https://example.test",
-        "FOO=bar \\\nAPI_KEY=synthetic-canary curl https://example.test",
-        "sh -c 'FOO=bar API_KEY=synthetic-canary curl https://example.test'",
-        "curl --data 'username=owner&password=synthetic-canary' https://example.test",
-    ]
-    .iter()
-    .enumerate()
-    {
-        assert!(
-            validate_bytes("bootstrap.sh", text.as_bytes()).is_err(),
-            "MP-11 fixture {index}"
+fn mp08_mp11_inline_shell_credentials_are_all_inspected() {
+    for (index, (text, data)) in shell_text_cases().into_iter().enumerate() {
+        assert_eq!(
+            validate_bytes("bootstrap.sh", text.as_bytes()).is_ok(),
+            data,
+            "MP-08/MP-11 shell text fixture {index}"
         );
     }
 }
 
+// MP-08/MP-11 #903 r21: every text-path table fixture, including the complete
+// shell command/assignment table, is inspected identically in a PNG and font.
 #[test]
-fn mp08_mp11_inline_shell_credential_arguments_are_all_inspected() {
-    for (index, text) in [
-        "curl --user owner:synthetic-canary https://example.test",
-        "curl --user=owner:synthetic-canary https://example.test",
-        "curl -u owner:synthetic-canary https://example.test",
-        "curl -uowner:synthetic-canary https://example.test",
-        "curl --proxy-user owner:synthetic-canary https://example.test",
-        "curl -Uowner:synthetic-canary https://example.test",
-        "curl --us\"er\" owner:synthetic-canary https://example.test",
-        "curl --us\\er owner:synthetic-canary https://example.test",
-        "curl --oauth2-bearer synthetic-canary https://example.test",
-        "curl --cookie session=synthetic-canary https://example.test",
-        "curl --header 'Authorization: Basic synthetic-canary' https://example.test",
-        "curl --user \"$(read-value)\" https://example.test",
-        "curl --user", // MP-11: unsupported/missing credential arguments fail closed.
-        "curl --client-secret-file ./public-looking-file https://example.test",
-        "curl -fsSu owner:synthetic-canary https://example.test",
-        "/usr/bin/curl -fsSUowner:synthetic-canary https://example.test",
-        "# curl -u owner:synthetic-canary https://example.test",
-        "wget --user owner:synthetic-canary https://example.test",
-        "curl --${AUTH_OPTION} owner:synthetic-canary https://example.test",
-        "curl $'--us\\x65r' owner:synthetic-canary https://example.test",
-        "curl --us\"er owner:synthetic-canary https://example.test",
-        "curl --url=https://owner:synthetic-canary@example.test",
-    ]
-    .iter()
-    .enumerate()
-    {
-        assert!(
-            validate_bytes("bootstrap.sh", text.as_bytes()).is_err(),
-            "MP-11 fixture {index}"
-        );
+fn mp08_mp11_every_text_fixture_has_asset_parity() {
+    let mut fixtures = classification_cases()
+        .into_iter()
+        .filter(|(path, bytes, _)| matches!(text::classify(path, bytes), text::Content::Text(_)))
+        .map(|(path, bytes, _)| (path, bytes))
+        .collect::<Vec<_>>();
+    fixtures.extend(
+        shell_text_cases()
+            .into_iter()
+            .map(|(text, _)| ("bootstrap.sh", text.as_bytes().to_vec())),
+    );
+    fixtures.extend(
+        metadata_authentication_cases()
+            .into_iter()
+            .map(|(path, bytes)| (path, bytes.to_vec())),
+    );
+    fixtures.extend([
+        ("file", b"Authorization: Bearer synthetic-canary".to_vec()),
+        (
+            "file",
+            br#"{"args":["--api-key","synthetic-canary"]}"#.to_vec(),
+        ),
+        ("file", br#"{"x-api-key":"synthetic-canary"}"#.to_vec()),
+        ("file", b"-----BEGIN PRIVATE KEY-----".to_vec()),
+        (
+            "file",
+            b"https://user:synthetic-canary@example.test".to_vec(),
+        ),
+        (
+            "file",
+            b"https://example.test?token=synthetic-canary".to_vec(),
+        ),
+        ("origin-url", b"ssh://git@example.test/project.git".to_vec()),
+        ("file", br#"{"args":["--max-tokens","4096"]}"#.to_vec()),
+        (
+            "index.d.ts",
+            include_bytes!("fixtures/slugify-index.d.ts.txt").to_vec(),
+        ),
+        (
+            "commit-message.txt",
+            include_bytes!("fixtures/requests-commit-message.txt").to_vec(),
+        ),
+        ("file", b"a$b=c".to_vec()), // Short readable runs have the text policy too.
+    ]);
+    let mut failures = Vec::new();
+    for (index, (original_path, bytes)) in fixtures.into_iter().enumerate() {
+        for (path, signature) in ASSET_SIGNATURES {
+            // Role is the asset's path, just as if its contents were plain text.
+            let plain = validate_bytes(path, &bytes).is_ok();
+            let asset = [*signature, b"\0", bytes.as_slice(), b"\0"].concat();
+            if validate_bytes(path, &asset).is_ok() != plain {
+                failures.push((index, original_path, *path, plain));
+            }
+        }
     }
-    for (index, text) in [
-        "FOO=bar BAR=baz curl --retry 3 https://example.test",
-        "curl --user-agent chariox https://example.test",
-        "chromium --user-data-dir /tmp/profile --profile-directory Default",
-        "agent --max-tokens 4096 --token-limit=4096",
-        "--max-tokens=4096",
-        r#"{"args":["--max-tokens=4096"]}"#,
-        "printf '%s\\n' 'ordinary project instructions'",
-        "set -euo pipefail",
-        "python -u worker.py",
-        "git add -u",
-        "curl -ooutput.txt https://example.test",
-        "curl -XPUT https://example.test",
-        "pip install --user package",
-        "wget -U chariox https://example.test",
-        "curl https://example.test\npython -u worker.py",
-        "curl -- -u",
-    ]
-    .iter()
-    .enumerate()
-    {
-        assert!(
-            validate_bytes("bootstrap.sh", text.as_bytes()).is_ok(),
-            "MP-11 benign shell fixture {index}"
-        );
-    }
+    assert!(
+        failures.is_empty(),
+        "MP-08/MP-11 plain/asset verdict mismatches: {failures:?}"
+    );
 }
+
+const ASSET_SIGNATURES: &[(&str, &[u8])] = &[
+    ("artwork.png", b"\x89PNG\r\n\x1a\n\0\xff"),
+    ("font.woff2", b"wOF2\0\x01\0\0\xff"),
+];
 
 // MP-08/MP-11: real development export fixtures, shared by source and target boundaries.
 pub(crate) struct InlineShellFixture {
@@ -810,11 +876,11 @@ fn cases(full: bool) -> Vec<(&'static str, Vec<u8>, bool)> {
             [png.as_slice(), b"tEXt\0caf\xc3\xa9 \"ok\"".as_slice()].concat(),
             true,
         ),
-        // Shell-lexer noise in compressed bytes is not text.
+        // MP-08/MP-11: dynamic shell names follow the same text policy in assets.
         (
             "artwork.png",
             [png.as_slice(), b"\0x$'abcdefgh\0a$b=cdefgh\0"].concat(),
-            true,
+            false,
         ),
         ("settings.json", png.clone(), false),
         ("photo.jpg", png.clone(), false),
@@ -860,6 +926,22 @@ fn cases(full: bool) -> Vec<(&'static str, Vec<u8>, bool)> {
             cases.push((
                 path,
                 [signature, b"\0", run.as_bytes(), b"\0"].concat(),
+                false,
+            ));
+        }
+    }
+    // MP-08/MP-11 r21: source overlay/history, hostile target and packaged
+    // Extension admission all exercise command credentials in both asset types.
+    for (path, signature) in ASSET_SIGNATURES {
+        for run in [
+            "curl --user owner:synthetic-canary https://example.test",
+            "curl -u owner:synthetic-canary https://example.test",
+            "curl --proxy-user owner:synthetic-canary https://example.test",
+            "wget --http-user owner:synthetic-canary https://example.test",
+        ] {
+            cases.push((
+                *path,
+                [*signature, b"\0", run.as_bytes(), b"\0"].concat(),
                 false,
             ));
         }
@@ -935,9 +1017,8 @@ fn mp08_mp11_classification_table_fails_closed() {
     );
 }
 
-#[test]
-fn mp11_metadata_roles_do_not_hide_authentication_values() {
-    for (path, bytes) in [
+fn metadata_authentication_cases() -> Vec<(&'static str, &'static [u8])> {
+    [
         (
             "package.json",
             br#"{"dependencies":{"js-tokens":"https://owner:synthetic-canary@example.test"}}"#
@@ -1005,7 +1086,13 @@ fn mp11_metadata_roles_do_not_hide_authentication_values() {
             "package.json",
             br#"{"dependencies":{"js-tokens":"^4.0.0","js-tokens":"^5.0.0"}}"#,
         ),
-    ] {
+    ]
+    .to_vec()
+}
+
+#[test]
+fn mp11_metadata_roles_do_not_hide_authentication_values() {
+    for (path, bytes) in metadata_authentication_cases() {
         assert!(
             validate_bytes(path, bytes).is_err(),
             "MP-11 authentication fixture {path}"

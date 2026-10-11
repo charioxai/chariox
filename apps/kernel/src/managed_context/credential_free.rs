@@ -10,7 +10,7 @@ mod shell;
 mod text;
 pub(crate) use config::exportable_mcp;
 pub(crate) use history::scan_repository;
-use shell::{credential_settings, credential_text, unsupported_shell};
+use shell::{credential_text, unsupported_shell};
 
 use super::development::{
     extract_verified_development_archive, DevelopmentFileState, DevelopmentSourceRepositoryBinding,
@@ -60,26 +60,15 @@ fn credential_urls(text: &str) -> bool {
     })
 }
 
-// MP-08/MP-11: printable runs of an allow-listed asset still get the high-signal
-// detectors, so asset bytes cannot hide a recognized secret. Like `strings`,
-// runs shorter than 8 characters are noise; the shell lexer is for text only.
-fn credential_runs(role: json::Role, bytes: &[u8]) -> bool {
+// MP-08/MP-11: every readable asset run goes through the full text policy
+// for this exact path. No asset-only detector list or minimum run length.
+fn credential_runs(path: &str, bytes: &[u8]) -> bool {
     String::from_utf8_lossy(bytes)
         .split(|ch: char| {
             ch == char::REPLACEMENT_CHARACTER
-                || (ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+                || (ch.is_control() && !matches!(ch, '\n' | '\r' | '\t' | '\x0c'))
         })
-        .filter(|run| run.chars().count() >= 8)
-        .any(|run| match json::parse(run) {
-            Ok(Some(value)) => json::validate(&value, role).is_err(),
-            Ok(None) => {
-                text::credential_format(run)
-                    || credential_settings(run)
-                    || credential_urls(run)
-                    || json::validate_tokens(run).is_err()
-            }
-            Err(_) => true,
-        })
+        .any(|run| validate_text(path, run).is_err())
 }
 
 // MP-08/MP-11: the free-text policy. Escaped JSON string tokens are decoded
@@ -109,12 +98,17 @@ pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError
     {
         return Err(refused());
     }
-    let role = json::Role::for_path(&name);
-    let text = match text::classify(&name, bytes) {
-        text::Content::Text(text) => text,
-        text::Content::Asset if !credential_runs(role, bytes) => return Ok(()),
-        text::Content::Asset | text::Content::Unclassified => return Err(refused()),
-    };
+    match text::classify(&name, bytes) {
+        text::Content::Text(text) => validate_text(&name, text),
+        text::Content::Asset if !credential_runs(&name, bytes) => Ok(()),
+        text::Content::Asset | text::Content::Unclassified => Err(refused()),
+    }
+}
+
+// MP-08/MP-11: the one path-aware classifier for plain text and asset runs.
+fn validate_text(name: &str, text: &str) -> Result<(), DaemonError> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let role = json::Role::for_path(name);
     if text::credential_format(text) {
         return Err(refused());
     }
@@ -125,12 +119,12 @@ pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError
     }
     // A JSON file is classified only when it parses (comments and trailing
     // commas allowed); its comments get the free-text policy.
-    if json::named(&name) && !text.trim().is_empty() {
+    if json::named(name) && !text.trim().is_empty() {
         let (json, comments) = json::strip_comments(text).ok_or_else(refused)?;
         json::validate(&json::parse(&json)?.ok_or_else(refused)?, role)?;
         return free_text(&comments);
     }
-    if unsupported_shell(&name, text) {
+    if unsupported_shell(name, text) {
         return Err(refused());
     }
     free_text(text)
