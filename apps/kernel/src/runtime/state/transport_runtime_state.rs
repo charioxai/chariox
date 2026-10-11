@@ -576,36 +576,12 @@ impl KernelRuntimeState {
                 attachment_id: attachment_id.to_string(),
             });
         }
-        let mut projection = self.session_snapshot_projection_for_user(
+        let projection = self.session_snapshot_projection_for_user(
             session_id,
             last_event_id,
             Some(attachment.owner_user_id()),
         )?;
-        projection.session = projection
-            .session
-            .redacted_for_user(attachment.owner_user_id());
-        projection.agent_activity.retain(|agent_id, _| {
-            projection
-                .session
-                .agents()
-                .iter()
-                .any(|agent| agent.id() == agent_id)
-        });
-        if projection
-            .provider_run
-            .as_ref()
-            .and_then(|run| run.agent_instance_id())
-            .is_some_and(|agent_id| {
-                !projection
-                    .session
-                    .agents()
-                    .iter()
-                    .any(|agent| agent.id() == agent_id)
-            })
-        {
-            projection.provider_run = None;
-        }
-        Ok(projection)
+        projection.redacted_for_user(attachment.owner_user_id(), &self.owned.durable_state_store)
     }
 }
 

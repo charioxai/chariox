@@ -466,36 +466,13 @@ fn build_session_snapshot(
     session_id: &str,
     attachment_owner_user_id: &str,
 ) -> Result<SessionSnapshotProjection, DaemonError> {
-    let mut snapshot = SessionSnapshotProjection::from_daemon_app_for_user(
+    let snapshot = SessionSnapshotProjection::from_daemon_app_for_user(
         app,
         session_id,
         0,
         Some(attachment_owner_user_id),
     )?;
-    snapshot.session = snapshot.session.redacted_for_user_with_workflow_history(
-        attachment_owner_user_id,
-        &app.durable_state_store(),
-    )?;
-    snapshot.agent_activity =
-        crate::runtime::session_projection_refresh::redact_agent_activity_for_session(
-            snapshot.agent_activity,
-            &snapshot.session,
-        );
-    if snapshot
-        .provider_run
-        .as_ref()
-        .and_then(|run| run.agent_instance_id())
-        .is_some_and(|agent_id| {
-            !snapshot
-                .session
-                .agents()
-                .iter()
-                .any(|agent| agent.id() == agent_id && agent.visible_in_freeform())
-        })
-    {
-        snapshot.provider_run = None;
-    }
-    Ok(snapshot)
+    snapshot.redacted_for_user(attachment_owner_user_id, &app.durable_state_store())
 }
 
 pub(crate) enum WatchResult {

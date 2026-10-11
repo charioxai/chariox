@@ -348,6 +348,17 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
                 &state.owned.durable_state_store,
             )
             .unwrap();
+        let attachment_projection = crate::runtime::projection::SessionSnapshotProjection {
+            metadata: crate::runtime::projection::ProjectionMetadata::new(
+                crate::runtime::projection::SESSION_SNAPSHOT_PROJECTION_VERSION,
+                0,
+            ),
+            session: retained_session.clone(),
+            provider_run: None,
+            agent_activity: Default::default(),
+        }
+        .redacted_for_user(actor.owner_user_id(), &state.owned.durable_state_store)
+        .unwrap();
         let response = crate::runtime::response_redaction::redact_response_for_user(
             crate::local::LocalDaemonResponse::SessionState {
                 session: retained_session,
@@ -362,6 +373,7 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
         .unwrap();
         for value in [
             serde_json::to_value(projected).unwrap(),
+            serde_json::to_value(attachment_projection).unwrap(),
             serde_json::to_value(response).unwrap(),
         ] {
             let text = value.to_string();
