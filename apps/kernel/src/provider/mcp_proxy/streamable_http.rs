@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::error::DaemonError;
 
-pub(super) fn forward_streamable_http_mcp_request(
+fn forward_streamable_http_mcp_request(
     url: &str,
     bearer_token_env_var: Option<&str>,
     http_headers: &BTreeMap<String, String>,

@@ -116,10 +116,15 @@ fn review1118_mcp_notification_202_reaches_tools_list_in_check() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/mcp", listener.local_addr().unwrap());
     listener.set_nonblocking(true).unwrap();
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server_finished = finished.clone();
     let server = std::thread::spawn(move || {
         let mut methods = vec![];
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
-        while methods.len() < 3 && std::time::Instant::now() < deadline {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while methods.len() < 3
+            && !server_finished.load(std::sync::atomic::Ordering::SeqCst)
+            && std::time::Instant::now() < deadline
+        {
             let Ok((mut stream, _)) = listener.accept() else {
                 std::thread::sleep(std::time::Duration::from_millis(5));
                 continue;
@@ -172,6 +177,7 @@ fn review1118_mcp_notification_202_reaches_tools_list_in_check() {
     let ctx = context(root.path());
     let r = mcp_requirement(&url);
     let observation = check_requirement(root.path(), ctx, r, std::time::Duration::from_secs(10));
+    finished.store(true, std::sync::atomic::Ordering::SeqCst);
     let methods = server.join().unwrap();
     assert_eq!(
         methods,
@@ -190,10 +196,15 @@ fn review1301_mcp_notification_202_reaches_tools_list_in_check() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/mcp", listener.local_addr().unwrap());
     listener.set_nonblocking(true).unwrap();
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server_finished = finished.clone();
     let server = std::thread::spawn(move || {
         let mut methods = vec![];
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
-        while methods.len() < 3 && std::time::Instant::now() < deadline {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while methods.len() < 3
+            && !server_finished.load(std::sync::atomic::Ordering::SeqCst)
+            && std::time::Instant::now() < deadline
+        {
             let Ok((mut stream, _)) = listener.accept() else {
                 std::thread::sleep(std::time::Duration::from_millis(5));
                 continue;
@@ -253,6 +264,7 @@ fn review1301_mcp_notification_202_reaches_tools_list_in_check() {
     let ctx = context(root.path());
     let r = mcp_requirement(&url);
     let observation = check_requirement(root.path(), ctx, r, std::time::Duration::from_secs(10));
+    finished.store(true, std::sync::atomic::Ordering::SeqCst);
     let methods = server.join().unwrap();
     assert_eq!(
         methods,
