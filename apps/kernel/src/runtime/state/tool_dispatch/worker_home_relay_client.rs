@@ -16,6 +16,23 @@ impl KernelRuntimeState {
             daemon_id: Some(home_kernel_id.to_string()),
             daemon_alias: None,
         };
+        // MP-08/MP-10/MP-11: Computer uses the existing authenticated peer
+        // connection. Every call still requires the typed HOME reply; no Room
+        // binding or temporary socket creates desktop authority.
+        if matches!(
+            &request,
+            RelayPeerRequest::SetLeasedComputerGrant { .. }
+                | RelayPeerRequest::CheckLeasedComputerGrant { .. }
+        ) {
+            return crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                config,
+                &self.owned.relay_state,
+                target,
+                request,
+                response_timeout,
+            )
+            .await;
+        }
         if let Some(owner_public_key) = managed_slice_home_owner_public_key(config, home_kernel_id)?
         {
             return crate::transport::relay_client::send_peer_request_to_known_kernel_via_relay_with_timeout(
