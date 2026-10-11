@@ -238,7 +238,7 @@ pub(super) fn software_version(
             }
             let root = root.ok_or("folder_unavailable")?;
             let path = format!("node_modules/{name}/package.json");
-            let text = match super::resolver::read_environment_file(root, &path) {
+            let text = match super::check_package_inventory::installed_manifest(root, name) {
                 Ok(t) => t,
                 Err(_) => {
                     return if root.join(&path).exists() {

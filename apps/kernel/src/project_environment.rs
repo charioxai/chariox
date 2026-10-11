@@ -9,6 +9,7 @@ mod check_admission;
 mod check_assets;
 mod check_health;
 mod check_inventory;
+mod check_package_inventory;
 mod check_platform;
 mod check_gui_identity;
 mod check_runner;
