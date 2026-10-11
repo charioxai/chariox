@@ -1,6 +1,41 @@
 use super::*;
 
 #[test]
+fn mp08_mp10_discovery_indexed_decisions_preserve_kernel_evidence() {
+    let known = entry("NEEDED", ProjectEnvironmentLocator::Missing);
+    let input = ProjectEnvironmentDiscoveryInput {
+        project_id: "project".into(),
+        evidence_digest: "a".repeat(64),
+        references: vec![known.clone()],
+        previous_manifest: None,
+        changed_paths: BTreeMap::new(),
+        private_files: vec![],
+        revision: None,
+    };
+    let output = serde_json::json!({"schema_version":1,"project_id":"project",
+        "evidence_digest":"a".repeat(64), "entries":[{"reference_index":0,"classification":"non_secret"}],
+        "private_files":[],"toolchain_hints":[],"package_hints":[],"service_hints":[]});
+    let manifest =
+        parse_project_environment_discovery_decisions(&output.to_string(), &input).unwrap();
+    let mut expected = known;
+    expected.classification = ProjectEnvironmentClassification::NonSecret;
+    assert_eq!(manifest.entries, vec![expected]);
+    for invalid in [
+        serde_json::json!([{"reference_index":1,"classification":"non_secret"}]),
+        serde_json::json!([{"reference_index":0,"classification":"non_secret","locator":{"kind":"missing"}}]),
+        serde_json::json!([]),
+        serde_json::json!([{"reference_index":0,"classification":"non_secret"},{"reference_index":0,"classification":"secret"}]),
+    ] {
+        let mut invalid_output = output.clone();
+        invalid_output["entries"] = invalid;
+        assert!(
+            parse_project_environment_discovery_decisions(&invalid_output.to_string(), &input)
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn mp08_mp10_skipped_inputs_do_not_block_available_bindings_or_transfer() {
     let fixture = Fixture::new();
     let manifest = fixture_manifest(vec![entry("MISSING", ProjectEnvironmentLocator::Missing)]);
