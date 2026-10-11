@@ -50,6 +50,7 @@ impl ProjectEnvironmentStore {
         &self,
         project: &str,
     ) -> Result<EnvironmentChecks, crate::error::DaemonError> {
+        let _publication = self.check_journal_lock(project)?;
         let bytes =
             match super::check_journal::read(&self.path(project).with_extension("checks.wal"))? {
                 Some(bytes) => bytes,
@@ -102,6 +103,7 @@ impl ProjectEnvironmentStore {
         if bytes.len() > 8 * 1024 * 1024 {
             return Err(environment_error("Check journal exceeds bounds"));
         }
+        let _publication = self.check_journal_lock(project)?;
         super::check_journal::append(&self.path(project).with_extension("checks.wal"), &bytes)
     }
     pub(crate) fn attach_checks(
