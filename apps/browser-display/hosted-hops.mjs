@@ -90,13 +90,15 @@ export async function run(manifestFile,out){
   const report=await json(run.report),source=await lines(run.source),relay=await lines(run.relay),native=await lines(run.native),server=await lines(run.server),host=await lines(run.resources);
   for(const cell of report.cells){
    const joined=run.path==='V'?joinV(cell,source,relay):joinS(cell,native,server);
-   const times=[...(cell.clicks??[]).flatMap(c=>[c.input,c.visible]),...(cell.scroll??[]).flatMap(s=>[s.begin,s.end])].filter(Number.isFinite);
+   const times=[...(cell.clicks??[]).flatMap(c=>[c.input,c.visible]),...(cell.typing??[]).flatMap(c=>[c.physical?.input_at,c.physical?.presented_at]),...(cell.scroll??[]).flatMap(s=>[s.begin,s.end])].filter(Number.isFinite);
    const window=resourceWindow(host,Math.min(...times),Math.max(...times));resources.push({path:run.path,repeat:run.repeat,dpr:cell.dpr,...window});
    const endpoints={click:metric((cell.clicks??[]).map(c=>c.latency??c.physical?.latency_ms)),type:metric((cell.typing??[]).filter(c=>c.source_equals_public_c===true).map(c=>c.physical?.latency_ms))};
+   const reasonsFor=times=>times.length?rejections(source,Math.min(...times),Math.max(...times)):null;
+   const workload_rejections={click:reasonsFor((cell.clicks??[]).flatMap(c=>[c.input,c.visible]).filter(Number.isFinite)),type:reasonsFor((cell.typing??[]).flatMap(c=>[c.physical?.input_at,c.physical?.presented_at]).filter(Number.isFinite))};
    const keys=new Set(joined.samples.flatMap(s=>Object.keys(s.spans_ms)));
-   const record={identity:run.identity,site:run.site??'wikipedia',repeat:run.repeat,dpr:cell.dpr,status:window.valid?'MEASURED_NOT_ACCEPTED':'VOID_RESOURCE_EVIDENCE',endpoints,hops:Object.fromEntries([...keys].map(k=>[k,metric(joined.samples.map(s=>s.spans_ms[k]))])),...joined,scroll:(cell.scroll??[]).map(s=>({delta:s.delta,hz:s.hz,fps:s.fps,rejected:rejections(source,s.begin,s.end)})),resources:window};
+   const record={identity:run.identity,site:run.site??'wikipedia',repeat:run.repeat,dpr:cell.dpr,status:window.valid?'MEASURED_NOT_ACCEPTED':'VOID_RESOURCE_EVIDENCE',endpoints,workload_rejections,hops:Object.fromEntries([...keys].map(k=>[k,metric(joined.samples.map(s=>s.spans_ms[k]))])),...joined,scroll:(cell.scroll??[]).map(s=>({delta:s.delta,hz:s.hz,fps:s.fps,rejected:rejections(source,s.begin,s.end)})),resources:window};
    outputs[run.path].push(record);
-   console.log(JSON.stringify({items:['MP-08','MP-10','MP-11'],path:run.path,repeat:run.repeat,dpr:cell.dpr,status:record.status,endpoints,scroll:record.scroll}));
+   console.log(JSON.stringify({items:['MP-08','MP-10','MP-11'],path:run.path,repeat:run.repeat,dpr:cell.dpr,status:record.status,endpoints,workload_rejections,scroll:record.scroll}));
   }
  }
  const qualification=['Nearest-rank percentiles; never sum stage percentiles.','Replay reproduces joins only, not new live acceptance. Missing host telemetry or CPU P95 >40% voids a run.','Frame selection is the r5 requested-target X11 observer; negative overlapping capture spans are retained.','Worker job includes messaging; combined network/dispatch spans remain combined.','Full Decision G requires 3 repeats of >=20 click/type samples per site and density plus masking, cores, no PNG and stability gates.'];

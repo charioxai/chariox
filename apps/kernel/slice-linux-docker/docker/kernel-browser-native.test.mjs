@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { OwnedDisplay, ownsDisplay } from './kernel-browser-owned-display.mjs';
-import { selectNativeCapture, nativeRefusalReason } from './kernel-browser-native.mjs';
+import { LinuxCapture, selectNativeCapture, nativeRefusalReason } from './kernel-browser-native.mjs';
 for(const display of [null,{}, {display:':0',pid:200}, {display:':99',owned:true}])
  test('MD-DISPLAY refuses unowned display '+JSON.stringify(display),async()=>{
   let launched=false;
@@ -235,4 +235,10 @@ test('MP-10 attestation excludes the status bubble at the window density',async(
  assert.deepEqual(statusBand({width:1280,height:800},2),{x:0,y:748,width:1280,height:52});
  assert.deepEqual(statusBand({width:2560,height:1600},2),{x:0,y:1548,width:2560,height:52});
  assert.deepEqual(statusBand({width:1920,height:1080},1),{x:0,y:1054,width:1920,height:26});
+});
+
+test('MP-11 CDP disconnect event retires native capture before source reuse',()=>{
+ const source=new LinuxCapture({sessionId:'s',tab:{target_id:'t'}});let fenced=0;source.fence=()=>{source.closed=true;fenced++};
+ source.onCdp({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
+ assert.equal(fenced,1);assert.equal(source.closed,true);
 });

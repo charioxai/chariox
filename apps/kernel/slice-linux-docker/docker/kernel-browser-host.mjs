@@ -24,6 +24,7 @@ import { captureProtectedPage } from "./kernel-browser-pixels.mjs";
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
 import { WindowForeground } from './kernel-browser-foreground.mjs';
 import { SampleLane } from './kernel-browser-sample-lane.mjs';
+import { DisplayDocuments } from './kernel-browser-display-document.mjs';
 
 // Private display operations may overlap input; lifecycle still settles all
 // owned work before closing. Public admission/Vault barriers stay in Rust.
@@ -86,6 +87,7 @@ export class KernelBrowserHost {
     this.restoring = false;
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
+    this.displayDocuments = new DisplayDocuments();
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
   }
@@ -137,6 +139,7 @@ export class KernelBrowserHost {
     this.popupEvidence.clear();
     this.observed = ++this.observations;
     this.observedDocuments.clear();
+    this.displayDocuments.clear();
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     let saved = { generation: 0, tabs: [] };
     try { saved = JSON.parse(await readFile(path.join(this.root, "tabs.json"), "utf8")); }
@@ -278,6 +281,7 @@ export class KernelBrowserHost {
   }
   async stop() {
     this.lockdownOff?.(); this.lockdownOff = null;
+    this.displayDocuments.clear();
     await this.closeCompositors();
     this.sampleLanes.clear();
     this.popupEvidence.clear();
@@ -358,10 +362,11 @@ export class KernelBrowserHost {
     if (!tab) throw new UserDomainRefusal("not_granted");
     return tab;
   }
-  async displayTarget(command) {
+  async displayTarget(command, native = false) {
     if (command.generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
     const stored = this.tabs.get(command.tab_id);
     if (!stored) throw new UserDomainRefusal("not_granted");
+    if(native)return this.displayDocuments.target(this.browser,stored);
     const { connection, sessionId } = await this.browser.resolvePageTarget(stored.target_id);
     const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
     const document_id = frameTree?.frame?.loaderId;

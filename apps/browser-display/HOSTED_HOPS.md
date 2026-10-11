@@ -43,8 +43,12 @@ the runner differences each worker/reason counter within each workload. Region
 retirement may invalidate multiple stages; counts are reasons at seams, not a
 partition of all captured frames. No new client/relay protocol fields are added.
 
+Owner amendment (2026-10-11 05:42 UTC, MP-08/MP-10/MP-11): strict Selkies parity
+replaces the audit tolerances. There is no producer substitution fallback.
+Per-hop gates are stepping stones only.
+
 Decision G: >=20 click/type samples x3 repeats, DPR1/2, five public sites;
-click/type P95 <=1.10x S, presented fps >=0.9x S for 120px@20/60Hz and16px@60Hz,
+click/type P95 <= S, presented fps >= S for 120px@20/60Hz and16px@60Hz,
 pipeline cores <=1 and <=S, no PNG fallback, MP-11 masking zero violations.
 A run above40% host CPU P95 is VOID. No CPU samples is also VOID. Keep each stage's
 percentiles separate and retain ambiguous join counts. The r5 probes cover
