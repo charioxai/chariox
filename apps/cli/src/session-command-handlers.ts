@@ -1,3 +1,4 @@
+import { resolve } from "node:path"
 import type {
   RuntimeAttachment,
   RuntimeSession,
@@ -8,8 +9,6 @@ import type { ParsedSlashCommand } from "./commands.js"
 import {
   gitWorktreePlacementFromParse,
   parsePlacementOptions,
-  resolveExistingLocalDirectory,
-  resolveLocalPlacement,
   type RemoteGitWorktreePlacement,
 } from "./command-worktree-placement.js"
 import type { SessionListEntry } from "./sessions.js"
@@ -115,19 +114,12 @@ async function createSession(
       deps.flashFooter("usage: /session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>]", "error")
       return true
     }
-    let sessionWorktree = deps.currentWorktreeTarget()
-    const positionalDirectory = parsed.positional[0]
-    if (positionalDirectory && !parsed.directory && !parsed.gitWorktree && !parsed.branch && !parsed.fromRef) {
-      sessionWorktree = await resolveExistingLocalDirectory(positionalDirectory, deps.currentWorktreeTarget(), "session working directory")
-    } else {
-      const resolvedPlacement = await resolveLocalPlacement({
-        directory: parsed.directory,
-        label: "session working directory",
-      }, {
-        baseDirectory: deps.currentWorktreeTarget(),
-      })
-      sessionWorktree = resolvedPlacement ?? deps.currentWorktreeTarget()
-    }
+    // The attached kernel owns this filesystem, including remote TUI paths.
+    // Resolve relative input here; let the destination validate existence and access.
+    const directory = parsed.directory ?? parsed.positional[0]
+    const sessionWorktree = directory
+      ? resolve(deps.currentWorktreeTarget(), directory)
+      : deps.currentWorktreeTarget()
     const worktreePlacement = gitWorktreePlacementFromParse(parsed)
     const session = await deps.createSession(deps.currentWorkspaceTarget(), sessionWorktree, undefined, {
       provider: deps.currentProviderId(),
