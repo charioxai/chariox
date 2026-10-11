@@ -9,6 +9,15 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: &str,
     ) -> Result<crate::session::PromptQueueItem, DaemonError> {
+        self.cancel_active_prompt_only_for_provider_run(session_id, agent_id, None)
+    }
+
+    pub(super) fn cancel_active_prompt_only_for_provider_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<crate::session::PromptQueueItem, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -23,10 +32,11 @@ impl KernelRuntimeOwnedState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
-        let provider_run_id = self
-            .provider_store
-            .get_run_for_agent(session_id, agent_id)
-            .map(|run| run.id().to_string());
+        let provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
+            self.provider_store
+                .get_run_for_agent(session_id, agent_id)
+                .map(|run| run.id().to_string())
+        });
         self.record_cancelled_prompt_settlement(
             session_id,
             agent_id,

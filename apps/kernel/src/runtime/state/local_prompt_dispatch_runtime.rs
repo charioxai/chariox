@@ -1942,6 +1942,56 @@ pub(in crate::runtime::state) mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn failed_local_settlement_ended_provider_emits_one_completion() {
+        let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+        runtime
+            .owned
+            .provider_store
+            .mark_run_ended_provider_only(&session_id, &provider_run_id)
+            .expect("failed provider should retire");
+        assert!(runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .is_none());
+        assert!(runtime
+            .owned
+            .settle_failed_local_prompt_without_advance(
+                &session_id,
+                &agent_id,
+                &dispatch.prompt_id,
+                &provider_run_id,
+                "provider retired before settlement",
+            )
+            .expect("failed prompt should settle")
+            .is_some());
+        let completions = runtime
+            .owned
+            .terminal_stream
+            .drain_completion_records(&session_id, &observer_id);
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].provider_run_id, provider_run_id);
+        assert_eq!(completions[0].agent_id.as_deref(), Some(agent_id.as_str()));
+        assert!(runtime
+            .owned
+            .settle_failed_local_prompt_without_advance(
+                &session_id,
+                &agent_id,
+                &dispatch.prompt_id,
+                &provider_run_id,
+                "duplicate failed settlement",
+            )
+            .expect("duplicate settlement should be harmless")
+            .is_none());
+        assert!(runtime
+            .owned
+            .terminal_stream
+            .drain_completion_records(&session_id, &observer_id)
+            .is_empty());
+    }
+
     const FAILED_REQUEST_NOTE: &str = "Your previous request (\"active prompt\") failed";
 
     async fn submit_and_dispatch(
