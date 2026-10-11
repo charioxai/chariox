@@ -28,7 +28,6 @@ import { captureRoomKernelDiagnostics } from "./lib/room-kernel-diagnostics.mjs"
 import { startRoomSliceWithForwarding } from "./lib/room-colima-forwarding.mjs"
 import {
   importRoomNativeProviderAccount,
-  roomProviderSandboxConfigLines,
   prepareRoomRealProviderAgent,
   roomProviderAgentReadyMetadata,
   roomRealProviderOptions,
@@ -2361,7 +2360,6 @@ async function seedConfig(tempRoot) {
     "[slices.linux]",
     // A real provider requires the full nested Bubblewrap boundary, not just
     // an unconfined seccomp profile. The provisioner probes it before use.
-    ...roomProviderSandboxConfigLines(realProviderOptions),
     ...(prebuiltSliceImageId
       ? [`docker_image = ${JSON.stringify(prebuiltSliceImageId)}`, "build_image = \"never\""]
       : ["build_image = \"auto\""]),

@@ -114,7 +114,51 @@ fn user_config_defaults_to_versioned_slice_image() {
 }
 
 #[test]
-fn provider_sandbox_compatibility_is_an_explicit_settable_security_grant() {
+fn mp01_mp08_fresh_local_slice_defaults_to_provider_sandbox_compatibility() {
+    // MP-01 / MP-08 / MP-10 / MP-11: fresh and legacy omitted settings must
+    // launch official provider namespaces; an explicit false remains an opt-out.
+    assert_eq!(
+        CharioxUserConfig::default()
+            .slices
+            .linux
+            .allow_provider_sandbox_compatibility,
+        Some(true)
+    );
+    let mut config = DaemonConfig::for_tests();
+    assert!(
+        crate::slice::LocalDockerSliceOptions::from_config(&config)
+            .allow_provider_sandbox_compatibility
+    );
+    config
+        .user_config
+        .slices
+        .linux
+        .allow_provider_sandbox_compatibility = None;
+    assert!(
+        crate::slice::LocalDockerSliceOptions::from_config(&config)
+            .allow_provider_sandbox_compatibility
+    );
+    config
+        .user_config
+        .slices
+        .linux
+        .allow_provider_sandbox_compatibility = Some(false);
+    assert!(
+        !crate::slice::LocalDockerSliceOptions::from_config(&config)
+            .allow_provider_sandbox_compatibility
+    );
+    let entry = DaemonConfig::user_config_schema()
+        .into_iter()
+        .find(|entry| entry.path == "slices.linux.allow_provider_sandbox_compatibility")
+        .unwrap();
+    assert!(entry.description.contains("Enabled by default"));
+    assert!(entry
+        .description
+        .contains("SYS_ADMIN, NET_ADMIN and SYS_PTRACE"));
+}
+
+#[test]
+fn provider_sandbox_compatibility_preserves_the_explicit_opt_out() {
     // Persistence must not use another fixture's ambient CHARIOX_HOME.
     let mut config = DaemonConfig::for_tests();
 
@@ -145,6 +189,17 @@ fn provider_sandbox_compatibility_is_an_explicit_settable_security_grant() {
     assert!(entry.unsettable);
     assert!(entry.description.contains("seccomp, AppArmor"));
     assert!(entry.description.contains("masked system paths"));
+
+    config
+        .set_user_config_value("slices.linux.allow_provider_sandbox_compatibility", "false")
+        .expect("provider sandbox compatibility should allow an explicit opt-out");
+    assert_eq!(
+        load_user_config_from_path(&config.user_config_path)
+            .slices
+            .linux
+            .allow_provider_sandbox_compatibility,
+        Some(false)
+    );
 
     config
         .unset_user_config_value("slices.linux.allow_provider_sandbox_compatibility")
