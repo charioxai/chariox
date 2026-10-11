@@ -53,18 +53,25 @@ fn credential_url(url: &url::Url) -> bool {
         })
 }
 
-fn credential_runs(text: &str) -> bool {
+fn credential_runs(role: json::Role, text: &str) -> bool {
     text.split(|ch: char| {
         ch == char::REPLACEMENT_CHARACTER || (ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
     })
     .filter(|run| !run.is_empty())
-    .any(|run| {
-        text::credential_format(run)
-            || credential_text(run)
-            || run.split_whitespace().any(|word| {
-                url::Url::parse(word.trim_matches(['\'', '"', ',', ';']))
-                    .is_ok_and(|url| credential_url(&url))
-            })
+    .any(|run| match json::parse(run) {
+        // MP-08/MP-11: a complete JSON run gets the decoded-text policy; any
+        // other run also has its JSON string tokens decoded and inspected.
+        Ok(Some(value)) => json::validate(&value, role).is_err(),
+        Ok(None) => {
+            json::validate_tokens(run).is_err()
+                || text::credential_format(run)
+                || credential_text(run)
+                || run.split_whitespace().any(|word| {
+                    url::Url::parse(word.trim_matches(['\'', '"', ',', ';']))
+                        .is_ok_and(|url| credential_url(&url))
+                })
+        }
+        Err(_) => true,
     })
 }
 
@@ -89,18 +96,12 @@ pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError
     let text = match text::decode(bytes) {
         Ok(text) => text,
         Err(_) => {
-            let ascii = bytes
-                .iter()
-                .map(|&byte| {
-                    if byte.is_ascii() {
-                        byte as char
-                    } else {
-                        char::REPLACEMENT_CHARACTER
-                    }
-                })
-                .collect::<String>();
-            if credential_runs(&ascii)
-                || text::decode_wide_lossy(bytes).is_some_and(|(text, _)| credential_runs(&text))
+            let role = json::Role::for_path(&name);
+            let utf8 =
+                String::from_utf8_lossy(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes));
+            if credential_runs(role, &utf8)
+                || text::decode_wide_lossy(bytes)
+                    .is_some_and(|(text, _)| credential_runs(role, &text))
             {
                 return Err(refused());
             }

@@ -670,6 +670,41 @@ pub(crate) fn malformed_wide(text: &str) -> Vec<Vec<u8>> {
     cases
 }
 
+// MP-08/MP-11: escaped JSON credentials in files that also hold a NUL or a
+// malformed unit, so strict decoding fails and only the fallback inspects them.
+pub(crate) fn malformed_escaped_json() -> Vec<Vec<u8>> {
+    let mut cases = Vec::new();
+    for json in [
+        r#"{"api\u005fkey":"synthetic-canary"}"#,
+        r#"{"vault\u005ffile_base64":"c3ludGhldGljLWNhbmFyeQ=="}"#,
+    ] {
+        cases.push(format!("{json}\0").into_bytes());
+        cases.push([json.as_bytes(), b"\xff"].concat());
+        let wide = malformed_wide(json);
+        cases.extend([wide[0].clone(), wide[wide.len() - 1].clone()]);
+    }
+    // A NUL inside the object, or a run that starts inside a string.
+    cases.push(b"{\"api\\u005fkey\":\"synthetic-canary\"\0}".to_vec());
+    cases.push(b"{\"note\":\"a\0b\",\"api\\u005fkey\":\"synthetic-canary\"}".to_vec());
+    cases
+}
+
+// MP-08/MP-11: ordinary dependency metadata keeps its schema role when the file
+// also holds a NUL or a malformed unit.
+pub(crate) fn malformed_metadata() -> Vec<(&'static str, Vec<u8>)> {
+    let mut cases = Vec::new();
+    for (path, bytes) in PACKAGE_METADATA {
+        cases.push((*path, [*bytes, b"\0"].concat()));
+        cases.push((*path, [*bytes, b"\xff"].concat()));
+        let wide = malformed_wide(std::str::from_utf8(bytes).unwrap());
+        cases.extend([
+            (*path, wide[0].clone()),
+            (*path, wide[wide.len() - 1].clone()),
+        ]);
+    }
+    cases
+}
+
 pub(crate) const PACKAGE_METADATA: &[(&str, &[u8])] = &[
     ("package.json", br#"{"dependencies":{"js-tokens":"^4.0.0","secret-tool":"^1.0.0"},"devDependencies":{"@example/tokenizer":"^2.0.0"},"scripts":{"build":"node build.js"}}"#),
     ("package-lock.json", br#"{"lockfileVersion":3,"packages":{"":{"dependencies":{"js-tokens":"^4.0.0"}},"node_modules/js-tokens":{"version":"4.0.0","resolved":"https://registry.npmjs.org/js-tokens/-/js-tokens-4.0.0.tgz","integrity":"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}},"dependencies":{"js-tokens":{"version":"4.0.0"}}}"#),
@@ -691,6 +726,20 @@ fn mp08_mp11_target_refuses_utf16_in_overlay_and_history() {
         }
         for bytes in malformed_wide("$env:API_KEY = 'synthetic-canary'\n") {
             InlineShellFixture::file("bootstrap.ps1", &bytes, history).assert_target_result(false);
+        }
+    }
+}
+
+#[test]
+fn mp08_mp11_target_refuses_malformed_escaped_json_in_overlay_and_history() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    for history in [false, true] {
+        for bytes in malformed_escaped_json() {
+            InlineShellFixture::file("settings.json", &bytes, history).assert_target_result(false);
+        }
+        for (path, bytes) in malformed_metadata() {
+            InlineShellFixture::file(path, &bytes, history).assert_target_result(true);
         }
     }
 }
@@ -753,6 +802,33 @@ fn mp08_mp11_malformed_wide_text_is_inspected_as_decoded_units() {
     for bytes in malformed_wide("Write-Output 'ready 🦀'\n") {
         assert!(validate_bytes("bootstrap.ps1", &bytes).is_ok(), "{bytes:?}");
     }
+}
+
+#[test]
+fn mp08_mp11_malformed_text_applies_structural_json_policy() {
+    let mut credentials = malformed_escaped_json();
+    for json in [
+        r#"{"api\u005fkey":"synthetic-canary"}"#,
+        r#"{"sealed\u005funlock_key":"c3ludGhldGljLWNhbmFyeQ=="}"#,
+        r#"{"ciphertext":"AAAA","kdf":"argon2id"}"#,
+    ] {
+        credentials.extend(malformed_wide(json));
+    }
+    credentials.push(b"x\" {\"api\\u005fkey\":\"synthetic-canary\"}\0".to_vec());
+    credentials.push(b"\xff{\"api\\u005fkey\":\0".to_vec());
+    for bytes in credentials {
+        assert!(
+            validate_bytes("settings.json", &bytes).is_err(),
+            "{bytes:?}"
+        );
+    }
+    for (path, bytes) in malformed_metadata() {
+        assert!(validate_bytes(path, &bytes).is_ok(), "{path} {bytes:?}");
+    }
+    for bytes in malformed_wide(r#"{"name":"caf\u00e9","max_tokens":4096}"#) {
+        assert!(validate_bytes("settings.json", &bytes).is_ok(), "{bytes:?}");
+    }
+    assert!(validate_bytes("artwork.png", b"\x89PNG\0\xff\"tEXt\":\"caf\\u00e9\"").is_ok());
 }
 
 #[test]

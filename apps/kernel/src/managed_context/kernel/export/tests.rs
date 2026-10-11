@@ -1354,6 +1354,14 @@ fn mp11_packaged_snapshot_normalizes_encoding_and_checks_shebang_and_token_forma
             ) {
                 mp11_packaged_snapshot_case(mcp, "bootstrap.ps1", &bytes, false, source);
             }
+            for bytes in crate::managed_context::credential_free::tests::malformed_escaped_json() {
+                mp11_packaged_snapshot_case(mcp, "settings.json", &bytes, false, source);
+            }
+            for (path, bytes) in
+                crate::managed_context::credential_free::tests::malformed_metadata()
+            {
+                mp11_packaged_snapshot_case(mcp, path, &bytes, true, source);
+            }
             mp11_packaged_snapshot_case(
                 mcp,
                 "bootstrap",

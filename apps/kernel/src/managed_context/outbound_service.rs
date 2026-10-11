@@ -2120,6 +2120,26 @@ mod tests {
     }
 
     #[test]
+    fn mp08_mp11_source_vault_seals_malformed_escaped_json_in_overlay_and_history() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        use crate::managed_context::credential_free::tests::{
+            malformed_escaped_json, malformed_metadata, InlineShellFixture,
+        };
+        for history in [false, true] {
+            for bytes in malformed_escaped_json() {
+                assert_source_fixture_result(
+                    InlineShellFixture::file("settings.json", &bytes, history),
+                    false,
+                );
+            }
+            for (path, bytes) in malformed_metadata() {
+                assert_source_fixture_result(InlineShellFixture::file(path, &bytes, history), true);
+            }
+        }
+    }
+
+    #[test]
     fn mp08_mp11_source_accepts_package_metadata_in_overlay_and_history() {
         crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();

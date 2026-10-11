@@ -145,6 +145,49 @@ pub(super) fn validate(value: &Value, role: Role) -> Result<(), DaemonError> {
     Ok(())
 }
 
+/// MP-08/MP-11: inspect the JSON string tokens of a run that is not complete
+/// JSON, with escapes decoded. Each unescaped quote is paired with the next, so
+/// a run that starts inside a string cannot shift key/value alignment.
+pub(super) fn validate_tokens(run: &str) -> Result<(), DaemonError> {
+    let mut quotes = Vec::new();
+    let mut slashes = 0;
+    for (index, ch) in run.char_indices() {
+        if ch == '"' && slashes % 2 == 0 {
+            quotes.push(index);
+        }
+        slashes = if ch == '\\' { slashes + 1 } else { 0 };
+    }
+    let token = |k: usize| {
+        let end = *quotes.get(k + 1)?;
+        serde_json::from_str::<String>(&run[quotes[k]..=end]).ok()
+    };
+    let mut keys = Map::new();
+    for k in 0..quotes.len().saturating_sub(1) {
+        let Some(text) = token(k) else {
+            continue;
+        };
+        let Some(rest) = run[quotes[k + 1] + 1..].trim_start().strip_prefix(':') else {
+            validate(&Value::String(text), Role::Fields)?;
+            continue;
+        };
+        // A truncated, nested or unknown value counts as present.
+        let rest = rest.trim_start();
+        let value = if rest.starts_with('"') {
+            token(k + 2).map(Value::String)
+        } else {
+            let end = rest
+                .find(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.')))
+                .unwrap_or(rest.len());
+            serde_json::from_str(&rest[..end]).ok()
+        };
+        let pair = Map::from_iter([(text.clone(), value.unwrap_or(Value::Bool(true)))]);
+        validate(&Value::Object(pair), Role::Fields)?;
+        keys.insert(text, Value::Null);
+    }
+    // Object markers such as an encrypted Vault document span several keys.
+    validate(&Value::Object(keys), Role::Fields)
+}
+
 /// Decodes JSON like `serde_json::Value` but rejects a repeated object key at any
 /// depth: `Value` keeps only the last occurrence, hiding an earlier credential.
 struct Strict(Value);
