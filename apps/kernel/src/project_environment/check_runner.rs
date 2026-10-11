@@ -81,10 +81,7 @@ impl ProjectEnvironmentStore {
                 safe_summary: observation.safe_summary.clone(),
                 receipt_ids: vec![],
             });
-            checks
-                .observations
-                .retain(|o| o.requirement_id != r.requirement_id || o.target != target);
-            checks.observations.push(observation);
+            checks.record_observation(observation);
             operation.updated_at_ms = crate::session::unix_epoch_ms();
             if let Some(op) = checks
                 .operations

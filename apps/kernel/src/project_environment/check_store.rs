@@ -14,6 +14,19 @@ pub(crate) struct EnvironmentChecks {
     pub public_bindings: BTreeMap<String, String>,
     pub folder_binding_digest: String,
 }
+// MP-08 / MP-10 / MP-11: current observations are separate from operation history.
+impl EnvironmentChecks {
+    pub(crate) fn record_observation(&mut self, observation: MachineObservation) {
+        self.observations.retain(|prior| {
+            // A new probe supersedes this machine/slice's previous process generation.
+            // Other targets and unselected requirements keep their own stale evidence.
+            prior.requirement_id != observation.requirement_id
+                || prior.target.machine_id != observation.target.machine_id
+                || prior.target.slice_ref != observation.target.slice_ref
+        });
+        self.observations.push(observation);
+    }
+}
 impl ProjectEnvironmentStore {
     pub(crate) fn load_checks(
         &self,

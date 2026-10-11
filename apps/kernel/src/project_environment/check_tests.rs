@@ -203,3 +203,68 @@ fn envp04_current_projection_omits_removed_items_and_historical_result_bodies() 
         .unwrap()
         .is_none());
 }
+
+// MP-08 / MP-10 / MP-11: rebooted processes must not grow current-view payloads forever.
+#[test]
+fn envp04_new_check_replaces_obsolete_generation_but_preserves_other_targets() {
+    let (_root, store, mut env) = environment();
+    env.project_requirements.push(requirement("file"));
+    env.project_requirements.push(requirement("unselected"));
+    let target = EnvironmentTargetBinding {
+        machine_id: "machine".into(),
+        target_instance_generation: "boot-two".into(),
+        slice_ref: None,
+    };
+    let old = EnvironmentTargetBinding {
+        target_instance_generation: "boot-one".into(),
+        ..target.clone()
+    };
+    let other_machine = EnvironmentTargetBinding {
+        machine_id: "other-machine".into(),
+        ..old.clone()
+    };
+    let other_slice = EnvironmentTargetBinding {
+        slice_ref: Some("other-slice".into()),
+        ..old.clone()
+    };
+    let mut checks = super::check_store::EnvironmentChecks::default();
+    checks.folder_binding_digest = folder_bindings_digest(&env);
+    for (id, binding) in [
+        ("file", &old),
+        ("file", &other_machine),
+        ("file", &other_slice),
+        ("unselected", &old),
+    ] {
+        checks.record_observation(observation(&env, id, binding, 1000));
+    }
+    store.save_checks(&env.local_project_id, &checks).unwrap();
+    store.attach_checks(&mut env, &target, 1001).unwrap();
+    assert_eq!(env.observations.len(), 4);
+    assert!(env.observations.iter().all(|o| o.stale));
+    checks.record_observation(observation(&env, "file", &target, 1001));
+    assert_eq!(
+        checks.observations.len(),
+        4,
+        "new probe replaces this machine/slice's old process observation"
+    );
+    assert!(!checks
+        .observations
+        .iter()
+        .any(|o| o.requirement_id == "file" && o.target == old));
+    assert!(checks
+        .observations
+        .iter()
+        .any(|o| o.target == other_machine));
+    assert!(checks.observations.iter().any(|o| o.target == other_slice));
+    assert!(checks
+        .observations
+        .iter()
+        .any(|o| o.requirement_id == "unselected" && o.target == old));
+    store.save_checks(&env.local_project_id, &checks).unwrap();
+    store.attach_checks(&mut env, &target, 1002).unwrap();
+    assert_eq!(env.observations.iter().filter(|o| !o.stale).count(), 1);
+    assert_eq!(
+        env.observations.iter().find(|o| !o.stale).unwrap().target,
+        target
+    );
+}
