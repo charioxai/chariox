@@ -174,7 +174,9 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
 - **Scroll** is shared (owner decision): the kernel tab has one position. A
   viewer scrolls its own copy locally for frame rate (spaced pixel wheel
   steps ease over the frames until the next step, like a browser's animated
-  wheel tick; frame-rate steps, zoom and snap scrollers stay native) and sends
+  wheel tick; mouse-wheel notches ease continuously over about the browser's
+  own tick duration, so reversals and sub-pixel tails do not stall the
+  content; frame-rate steps, zoom and snap scrollers stay native) and sends
   coalesced `scroll_to`; the kernel applies it and every other viewer follows the
   kernel's position (last writer wins). A viewer ignores kernel echoes only
   while it is scrolling itself, and the kernel does not send a viewer its own

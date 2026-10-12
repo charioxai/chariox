@@ -2,11 +2,14 @@
 // trackpad or CDP pixel delta) scrolls natively in one jump; spaced steps (one
 // per 50 ms) would then present one change per step. Here a step eases over
 // the frames until the next is due, the way a browser animates a wheel tick;
-// steps at frame rate or faster stay immediate. The scroller is the one native
-// chaining picks; zoom, page/line steps, a mouse wheel's notches (the browser
-// animates those itself) and snap or contained scrollers keep the native wheel.
-// Positions end exactly where the native steps would.
+// steps at frame rate or faster stay immediate. A mouse wheel's notches ease
+// over about the browser's own tick animation (95% in ~180 ms) but continuously:
+// a reversal or a sub-pixel tail does not stall the content for frames (the
+// browser's per-tick curve presented ~55 of 60 frames at DPR1). The scroller is
+// the one native chaining picks; zoom, page/line steps and snap or contained
+// scrollers keep the native wheel. Positions end exactly where the native steps would.
 const MAX_EASE_MS = 40
+const NOTCH_EASE_MS = 60
 // A notch: 120 per tick (X11, Chrome), 100 (Windows) or another line-sized step; the kernel's input classifies alike.
 const notch = (delta: number): boolean => delta !== 0 && (delta % 120 === 0 || Math.abs(delta) >= 50)
 
@@ -28,13 +31,13 @@ export class Mirror2Wheel {
   take(event: WheelEvent, target: Element | null, now = performance.now()): boolean {
     if (!target || event.ctrlKey || event.deltaMode !== 0 || event.shiftKey && !event.deltaX) return false
     const dx = event.deltaX, dy = event.deltaY
-    if (!dx && !dy || notch(dx) || notch(dy)) return false
+    if (!dx && !dy) return false
     const el = this.scroller(target, dx, dy)
     if (!el) return false
     let glide = this.glides.get(el)
     if (!glide) { const [x, y] = position(el); glide = { el, x, y, rx: 0, ry: 0, tau: 0, last: now - 16 }; this.glides.set(el, glide) }
     // The ease spans the interval since the previous step: none at frame rate (a trackpad), at most MAX_EASE_MS.
-    glide.tau = Math.min(MAX_EASE_MS, Math.max(0, now - (this.steps.get(el) ?? -Infinity) - 16)); this.steps.set(el, now)
+    glide.tau = notch(dx) || notch(dy) ? NOTCH_EASE_MS : Math.min(MAX_EASE_MS, Math.max(0, now - (this.steps.get(el) ?? -Infinity) - 16)); this.steps.set(el, now)
     const [mx, my] = limit(el)
     glide.rx = Math.min(mx, Math.max(0, glide.x + glide.rx + dx)) - glide.x
     glide.ry = Math.min(my, Math.max(0, glide.y + glide.ry + dy)) - glide.y
