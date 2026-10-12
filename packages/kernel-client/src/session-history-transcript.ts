@@ -271,8 +271,12 @@ export function hydrateSessionHistoryTranscriptEntries(
 }
 
 export function hydrateSessionHistoryOutlineAgentEntries(
-  agent: SessionHistoryOutlineAgent,
+  agent: SessionHistoryOutlineAgent & {
+    /** Blob contents loaded with the outline: their rows replace the placeholders. */
+    readonly loadedBlobs?: readonly SessionHistoryBlobContent[]
+  },
 ): SessionHistoryTranscriptEntry[] {
+  const loadedBlobs = new Map((agent.loadedBlobs ?? []).map((content) => [content.blob_id, content.entries]))
   const entries: SessionHistoryTranscriptEntry[] = []
   let nextId = 0
   let activeTurnId: number | null = null
@@ -304,6 +308,11 @@ export function hydrateSessionHistoryOutlineAgentEntries(
     appendPageEntries([turn.user_prompt])
     let adjacentPageEntries: SessionHistoryPageEntry[] = []
     for (const item of orderedSessionHistoryOutlineItems(turn)) {
+      const loaded = item.kind === "blob" ? loadedBlobs.get(item.blob.blob_id) : undefined
+      if (loaded) {
+        adjacentPageEntries.push(...loaded)
+        continue
+      }
       if (item.kind === "blob") {
         appendPageEntries(adjacentPageEntries)
         adjacentPageEntries = []

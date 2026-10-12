@@ -17,6 +17,7 @@ import {
   type SessionHistoryTranscriptEntry,
   adoptLoadedLiveToolRows,
 } from "./session-history-transcript.js"
+import { sessionHistoryOutlinePrefetchBlobIds } from "./session-history-outline.js"
 import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
 } from "./external-provider-observation.js"
@@ -1083,4 +1084,50 @@ test("turn-end history rebuild adopts loaded live tool rows by tool id", () => {
   assert.equal(adopted[0]?.sourceText, snapshot)
   assert.equal(adopted[0]?.blobCollapsed, false)
   assert.equal(adopted[1]?.historyBlobId, "history:6:7")
+})
+
+// MP-08 / MP-10 (panes Phase-1 drill, PANE-01/PANE-06): blobs loaded with the
+// outline render as real rows (assistant text, one row per tool call in
+// output order), not "assistant output · N entries" placeholders.
+test("session history outline hydration renders blobs loaded with the outline in place", () => {
+  const call = (status: string) => JSON.stringify({ id: "call-1", tool: "read", status, input: { filePath: "README.md" } })
+  const entries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      started_at_ms: 1,
+      lifecycle: "completed",
+      completed_at_ms: 2,
+      user_prompt: pageEntry(10, "user_prompt", "read it"),
+      entries: [pageEntry(12, "provider_output", "Reading the file.", { merge_key: "text-12" })],
+      summary: null,
+      blobs: [
+        { ...blob("history:11:13", "provider_tool", 11, "1 tool called", ""), sequence_end: 13, entry_count: 2 },
+        blob("history:14:14", "provider_output", 14, "assistant output", "1 entries, 5 chars"),
+      ],
+    }],
+    next_cursor: null,
+    loadedBlobs: [
+      { blob_id: "history:11:13", entries: [pageEntry(11, "provider_tool", call("running")), pageEntry(13, "provider_tool", call("completed"))] },
+      { blob_id: "history:14:14", entries: [pageEntry(14, "provider_output", "Done.", { merge_key: "text-14" })] },
+    ],
+  })
+
+  const rows = entries.filter((entry) => entry.role !== "turn_toggle")
+  assert.deepEqual(rows.map((entry) => entry.role), ["user", "tool", "assistant", "assistant"])
+  assert.equal(rows.some((entry) => entry.historyBlobId), false)
+  assert.match(rows[1]!.sourceText ?? "", /completed/)
+  assert.deepEqual(rows.slice(2).map((entry) => entry.text), ["Reading the file.", "Done."])
+})
+
+test("session history outline prefetch loads assistant blobs and the latest turn's rows", () => {
+  const turn = (index: number, blobs: ReturnType<typeof blob>[]) => ({ ...outlineTurn(index, `prompt-${index}`, "go", "ok"), blobs })
+  const ids = sessionHistoryOutlinePrefetchBlobIds({
+    turns: [
+      turn(10, [blob("old-tool", "provider_tool", 11, "", ""), blob("old-text", "provider_output", 12, "", "")]),
+      turn(20, [blob("new-tool", "provider_tool", 21, "", ""), blob("new-thought", "provider_reasoning", 22, "", ""), blob("new-text", "provider_output", 23, "", "")]),
+    ],
+  })
+  assert.deepEqual(ids, ["new-tool", "new-thought", "new-text", "old-text"])
 })

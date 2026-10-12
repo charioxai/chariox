@@ -6,13 +6,19 @@ import type {
   SessionHistoryOutline,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
+import { sessionHistoryOutlinePrefetchBlobIds } from "@chariox/kernel-client/session-history-outline"
 import {
   getSessionHistoryBlobContentRequest,
+  getSessionHistoryBlobContentsRequest,
   getSessionHistoryOutlineRequest,
   getPromptInputHistoryRequest,
   recordPromptInputHistoryRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
+
+export type SessionHistoryOutlineWithBlobs = SessionHistoryOutline & {
+  agents: (SessionHistoryOutline["agents"][number] & { loadedBlobs: SessionHistoryBlobContent[] })[]
+}
 
 export async function getSessionHistoryOutline(
   client: LocalIpcClient,
@@ -20,11 +26,38 @@ export async function getSessionHistoryOutline(
   agentIds: readonly string[],
   latestPromptCount = 4,
   cursor: SessionHistoryOutlineCursor | null = null,
-): Promise<SessionHistoryOutline> {
+): Promise<SessionHistoryOutlineWithBlobs> {
   const response = await client.send<Record<string, unknown>>(
     getSessionHistoryOutlineRequest(sessionId, agentIds, latestPromptCount, cursor),
   )
-  return expectVariant<SessionHistoryOutline>(response, "SessionHistoryOutline")
+  const outline = expectVariant<SessionHistoryOutline>(response, "SessionHistoryOutline")
+  return {
+    ...outline,
+    agents: await Promise.all(outline.agents.map(async (agent) => ({
+      ...agent,
+      loadedBlobs: await getSessionHistoryBlobContents(client, sessionId, agent.agent_id, sessionHistoryOutlinePrefetchBlobIds(agent)),
+    }))),
+  }
+}
+
+// Protocol ≥508 batch; an older kernel leaves the rows as placeholders that load on click.
+async function getSessionHistoryBlobContents(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId: string,
+  blobIds: readonly string[],
+): Promise<SessionHistoryBlobContent[]> {
+  if (blobIds.length === 0) {
+    return []
+  }
+  try {
+    const response = await client.send<Record<string, unknown>>(
+      getSessionHistoryBlobContentsRequest(sessionId, agentId, blobIds),
+    )
+    return expectVariant<{ blobs: SessionHistoryBlobContent[] }>(response, "SessionHistoryBlobContents").blobs
+  } catch {
+    return []
+  }
 }
 
 export async function getSessionHistoryBlobContent(

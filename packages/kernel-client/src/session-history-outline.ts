@@ -301,3 +301,24 @@ export function sessionHistoryOutlineBlobToolId(
     return null
   }
 }
+
+export const SESSION_HISTORY_PREFETCH_BLOB_LIMIT = 64
+
+// The blobs a client loads together with an outline, in one batch per agent
+// (protocol ≥508): the latest turn's rows, so tool calls and thoughts open
+// without another round trip, and every assistant-output blob, so answers read
+// as text instead of placeholders.
+export function sessionHistoryOutlinePrefetchBlobIds(
+  agent: { readonly turns: readonly (SessionHistoryOutlineTurnLike & { readonly blobs: readonly Pick<SessionHistoryOutlineBlob, "blob_id" | "kind">[] })[] },
+): string[] {
+  const turns = orderedSessionHistoryOutlineTurns(agent.turns).reverse()
+  const ids = new Set((turns[0]?.blobs ?? []).map((blob) => blob.blob_id))
+  for (const turn of turns) {
+    for (const blob of turn.blobs) {
+      if (blob.kind === "provider_output") {
+        ids.add(blob.blob_id)
+      }
+    }
+  }
+  return [...ids].slice(0, SESSION_HISTORY_PREFETCH_BLOB_LIMIT)
+}
