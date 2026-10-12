@@ -11,14 +11,21 @@ never substitute for a terminal grant. Transient target loss reconnects and
 retries within the admitted grant lifetime. The existing relay peer protocol
 and `client_connect` frames remain unchanged.
 
-Client grants retain the existing 30-minute lifetime, including keyed issuance
-and renewal. Initial `/relay cloud client-token` commands issued by a local
+Account-session CLIENT grants are capped at Cloud’s 15-minute ceiling, including
+keyed issuance and renewal. Machine-capability grants retain their existing
+30-minute lifetime; clients use the returned expiry. Initial `/relay cloud client-token` commands issued by a local
 account-linked kernel carry `--relay-token-issuer LOCAL_ENDPOINT ISSUER_DAEMON_ID`.
 The shared client authenticates that local endpoint from the same private CLI
 profile, checks the issuing kernel ID and renewal capability, and renews the
 admitted subject, key, session and target through that kernel. Runtime requests
 and events still travel directly to the target over the encrypted relay lanes.
 A machine-only managed target must never replace the account issuer.
+
+MP-08/MP-10/MP-11: a kernel-owned legacy machine profile issues a grant for one
+canonical kernel target. A local Room ID stays in the kernel attachment path;
+it is not sent as a Cloud shared-session identity. Client-only credentials keep
+their actual Cloud shared-session scope. Pairing aliases label the invitation
+and never appear in the grant’s allowed targets.
 
 If the original issuer is unavailable, the client displays a notice and retries
 within the existing grant lifetime without changing authority or dropping the

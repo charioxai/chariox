@@ -192,7 +192,19 @@ pub(crate) async fn execute_resolve_kernel_client_connection_request(
                 // connections to the exact kernel id.
                 target_daemon_alias: kernel.kernel_id.clone(),
                 client_id,
-                session_id: request.session_id.clone(),
+                // A kernel-owned legacy machine profile bootstraps a terminal
+                // against the kernel. Its local Room ID is not a Cloud shared-session
+                // identity; the kernel admits the requested Room on attachment.
+                // Client-only profiles retain their actual shared-session scope.
+                session_id: if profile
+                    .machine_credential
+                    .as_deref()
+                    .is_some_and(|credential| !credential.trim().is_empty())
+                {
+                    None
+                } else {
+                    request.session_id.clone()
+                },
                 public_key_thumbprint: None,
             },
         )
@@ -296,7 +308,19 @@ fn terminal_client_issuance<'a>(
         CloudTerminalClientOptions {
             pair_account_client: !keyed && profile.client_id.is_none(),
             ttl_ms: Some(CLOUD_RELAY_CLIENT_TOKEN_TTL_MS),
-            session_id: request.session_id.clone(),
+            // A kernel-owned legacy machine profile bootstraps a terminal
+            // against the kernel. Its local Room ID is not a Cloud shared-session
+            // identity; the kernel admits the requested Room on attachment.
+            // Client-only profiles retain their actual shared-session scope.
+            session_id: if profile
+                .machine_credential
+                .as_deref()
+                .is_some_and(|credential| !credential.trim().is_empty())
+            {
+                None
+            } else {
+                request.session_id.clone()
+            },
             public_key_thumbprint: request.public_key_thumbprint.clone(),
             ..CloudTerminalClientOptions::default()
         },
@@ -450,6 +474,29 @@ mod tests {
                 .1
                 .pair_account_client
         );
+    }
+
+    #[test]
+    fn legacy_kernel_terminal_bootstrap_keeps_local_room_identity_out_of_cloud_scope() {
+        let profile = crate::config::PersistedCloudRelayProfile {
+            machine_credential: Some("synthetic-machine-credential".into()),
+            cloud_session_token: Some("synthetic-account-session".into()),
+            ..Default::default()
+        };
+        let request = IssueCloudRelayClientTokenRequest {
+            target_daemon_alias: "kernel-target".into(),
+            client_id: "paired-terminal".into(),
+            session_id: Some("local-room-not-shared-in-cloud".into()),
+            public_key_thumbprint: Some("a".repeat(64)),
+        };
+        let (subject, options) = terminal_client_issuance(&profile, &request);
+        assert_eq!(subject, "paired-terminal");
+        assert_eq!(
+            options.public_key_thumbprint.as_deref(),
+            Some("a".repeat(64).as_str())
+        );
+        assert!(!options.pair_account_client);
+        assert_eq!(options.session_id, None);
     }
 
     fn relay_token_with_thumbprint(thumbprint: Option<&str>) -> String {
