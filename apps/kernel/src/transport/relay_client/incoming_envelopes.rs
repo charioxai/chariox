@@ -472,9 +472,10 @@ fn enqueue_dynamic_relay_reconnect_if_changed(
     config: &crate::config::DaemonConfig,
 ) -> Result<RelayReconnectDecision, DaemonError> {
     match relay_config_continuity(active_relay_url, active_relay_token, config) {
-        RelayConfigContinuity::Continue => Ok(RelayReconnectDecision::Unchanged),
-        RelayConfigContinuity::Reauthenticate => {
-            defer_or_enqueue_relay_close(outgoing_tx, reconnect_gate, "relay token changed")
+        // MP-08/MP-10/MP-11: the connector renews a rotated token in-band with
+        // DaemonHeartbeat. Closing here dropped every client subscription.
+        RelayConfigContinuity::Continue | RelayConfigContinuity::Reauthenticate => {
+            Ok(RelayReconnectDecision::Unchanged)
         }
         RelayConfigContinuity::Reconnect(reason) => {
             defer_or_enqueue_relay_close(outgoing_tx, reconnect_gate, reason)
@@ -537,6 +538,30 @@ fn test_peer_response_kind(
 mod tests {
     use super::*;
 
+    // MP-08/MP-10/MP-11: hosted soaks lost every browser subscription when a
+    // response finished after a Cloud token renewal. Rotation is renewed in-band.
+    #[test]
+    fn token_rotation_after_response_keeps_the_socket_for_in_band_renewal() {
+        let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let reconnect_gate = RelayReconnectGate::default();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_token = Some("renewed-token".to_string());
+
+        let decision = enqueue_dynamic_relay_reconnect_if_changed(
+            &outgoing_tx,
+            &reconnect_gate,
+            "wss://relay.example.test",
+            "previous-token",
+            &config,
+        )
+        .expect("renewal decision should succeed");
+
+        assert_eq!(decision, RelayReconnectDecision::Unchanged);
+        assert!(priority_rx.try_recv().is_err());
+        assert!(reconnect_gate.begin_daemon_request());
+    }
+
     #[test]
     fn dynamic_relay_reconnect_waits_for_in_flight_daemon_response() {
         let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(2);
@@ -552,8 +577,8 @@ mod tests {
         )
         .expect("peer response should enqueue");
         let mut config = crate::config::DaemonConfig::for_tests();
-        config.relay_url = Some("wss://relay.example.test".to_string());
-        config.relay_token = Some("new-token".to_string());
+        config.relay_url = Some("wss://moved-relay.example.test".to_string());
+        config.relay_token = Some("bootstrap-token".to_string());
 
         let reason = enqueue_dynamic_relay_reconnect_if_changed(
             &outgoing_tx,
@@ -566,7 +591,7 @@ mod tests {
 
         assert_eq!(
             reason,
-            RelayReconnectDecision::Deferred("relay token changed")
+            RelayReconnectDecision::Deferred("relay url or token missing changed")
         );
         assert!(matches!(
             priority_rx.try_recv(),
@@ -588,7 +613,7 @@ mod tests {
             .expect("deferred reconnect should enqueue")
             .expect("last daemon response should release deferred reconnect");
 
-        assert_eq!(deferred_reason, "relay token changed");
+        assert_eq!(deferred_reason, "relay url or token missing changed");
         assert!(matches!(
             priority_rx.try_recv(),
             Ok(RelayEnvelope::DaemonResponse { .. })
@@ -604,8 +629,8 @@ mod tests {
         let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let reconnect_gate = RelayReconnectGate::default();
         let mut config = crate::config::DaemonConfig::for_tests();
-        config.relay_url = Some("wss://relay.example.test".to_string());
-        config.relay_token = Some("new-token".to_string());
+        config.relay_url = Some("wss://moved-relay.example.test".to_string());
+        config.relay_token = Some("bootstrap-token".to_string());
 
         let decision = enqueue_dynamic_relay_reconnect_if_changed(
             &outgoing_tx,
@@ -618,7 +643,7 @@ mod tests {
 
         assert_eq!(
             decision,
-            RelayReconnectDecision::Queued("relay token changed")
+            RelayReconnectDecision::Queued("relay url or token missing changed")
         );
         assert!(matches!(
             priority_rx.try_recv(),
@@ -635,9 +660,9 @@ mod tests {
 
         assert_eq!(
             reconnect_gate
-                .request_reconnect(&outgoing_tx, "relay token changed")
+                .request_reconnect(&outgoing_tx, "relay url changed")
                 .expect("reconnect should defer"),
-            RelayReconnectDecision::Deferred("relay token changed"),
+            RelayReconnectDecision::Deferred("relay url changed"),
         );
         assert_eq!(
             reconnect_gate
@@ -649,7 +674,7 @@ mod tests {
             reconnect_gate
                 .finish_daemon_request(&outgoing_tx)
                 .expect("last request should queue reconnect"),
-            Some("relay token changed")
+            Some("relay url changed")
         );
         assert!(matches!(
             priority_rx.try_recv(),
@@ -664,9 +689,9 @@ mod tests {
         assert!(reconnect_gate.begin_daemon_request());
         assert_eq!(
             reconnect_gate
-                .request_reconnect(&outgoing_tx, "relay token changed")
+                .request_reconnect(&outgoing_tx, "relay url changed")
                 .expect("reconnect should defer"),
-            RelayReconnectDecision::Deferred("relay token changed"),
+            RelayReconnectDecision::Deferred("relay url changed"),
         );
 
         send_outgoing_envelope(
@@ -682,7 +707,7 @@ mod tests {
             reconnect_gate
                 .finish_daemon_request(&outgoing_tx)
                 .expect("deferred reconnect should enqueue"),
-            Some("relay token changed")
+            Some("relay url changed")
         );
         assert!(!reconnect_gate.begin_daemon_request());
         assert!(matches!(
