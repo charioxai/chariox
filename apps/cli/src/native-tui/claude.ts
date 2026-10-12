@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs"
+import { appendFileSync, renameSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import process from "node:process"
 
@@ -263,7 +263,7 @@ async function runClaudeRemoteRendered(
     const sliceInventory = agent.remote_execution
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
-    process.stderr.write(formatNativeTuiRuntimeBanner({
+    const banner = formatNativeTuiRuntimeBanner({
       surface: "claude native-tui",
       session,
       agent,
@@ -274,7 +274,13 @@ async function runClaudeRemoteRendered(
       grantedMcps: options.grantMcps,
       grantedSkills: options.grantSkills,
       providerLines: ["  tui:            target-kernel-pty"],
-    }))
+    })
+    process.stderr.write(banner)
+    if (process.env.CHARIOX_CLAUDE_NATIVE_BANNER_FILE) {
+      const destination = process.env.CHARIOX_CLAUDE_NATIVE_BANNER_FILE
+      writeFileSync(`${destination}.tmp`, banner, { mode: 0o600 })
+      renameSync(`${destination}.tmp`, destination)
+    }
 
     disposeEvents = client.onKernelEvent((event) => {
       if (event.event !== "terminal_output") return

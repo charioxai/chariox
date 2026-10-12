@@ -6,6 +6,12 @@ import { createConnection, createServer } from "node:net"
 import { setTimeout as setCallbackTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
+// MP-08 / MP-10 / MP-11: the kernel must settle a prompt rejected by its hook.
+let contextFailureEvent = null
+function reportContextFailure() {
+  if (!contextFailureEvent) return
+  try { appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify(contextFailureEvent) + "\n") } catch {}
+}
 const hookWatchdog = setCallbackTimeout(() => {
   try {
     appendFileSync(`${process.env.CHARIOX_CLAUDE_NATIVE_EVENTS}.watchdog`, JSON.stringify({
@@ -13,6 +19,7 @@ const hookWatchdog = setCallbackTimeout(() => {
       reason: "hook_event_not_resolved"
     }) + "\n")
   } catch {}
+  reportContextFailure()
   process.exit(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK !== undefined ? 2 : 0)
 }, 7000)
 
@@ -58,12 +65,21 @@ if (!contextOnlyHook && eventName === "SessionStart") {
 const hookContextRequestId = eventName === "UserPromptSubmit" || eventName === "PreToolUse" || eventName === "PermissionRequest"
   ? `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`
   : null
+const hookContextDeadlineMs = Date.now() + 5000
+if (!contextOnlyHook && eventName === "UserPromptSubmit") {
+  contextFailureEvent = {
+    hook_event_name: "CharioxContextFailed",
+    hook_context_request_id: hookContextRequestId,
+    session_id: input.session_id ?? null,
+  }
+}
 if (!contextOnlyHook) {
   appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
     at: new Date().toISOString(),
     hook_event_name: eventName,
     session_id: input.session_id ?? null,
     hook_context_request_id: hookContextRequestId,
+    ...(eventName === "UserPromptSubmit" ? { hook_context_deadline_ms: hookContextDeadlineMs } : {}),
     native_prompt_id: nativePromptId,
     prompt: input.prompt ?? null,
     transcript_path: input.transcript_path ?? null,
@@ -104,7 +120,7 @@ async function freshContext() {
   const responseDir = process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES
   if (!hookContextRequestId || !responseDir) throw new Error("missing context response route")
   const responseFile = join(responseDir, `${hookContextRequestId}.txt`)
-  const deadline = Date.now() + 5000
+  const deadline = hookContextDeadlineMs
   while (Date.now() < deadline) {
     if (existsSync(responseFile)) {
       const context = readFileSync(responseFile, "utf8")
@@ -228,6 +244,7 @@ if (eventName === "UserPromptSubmit") {
     }
     process.exit(0)
   } catch {
+    reportContextFailure()
     process.stderr.write("Chariox could not prepare current prompt context. Retry after the kernel is ready.\n")
     process.exit(2)
   }
