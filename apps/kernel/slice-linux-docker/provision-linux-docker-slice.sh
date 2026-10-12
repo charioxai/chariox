@@ -499,14 +499,17 @@ refresh_slice_support_files() {
   run_with_timeout 180 docker exec -u root "$SLICE_NAME" bash -lc '
     set -euo pipefail
     if ! command -v tint2 >/dev/null 2>&1 || ! command -v dbus-run-session >/dev/null 2>&1 \
+      || ! command -v xfce4-terminal >/dev/null 2>&1 || ! command -v mousepad >/dev/null 2>&1 \
       || [[ ! -r /usr/share/dbus-1/services/org.a11y.Bus.service ]] \
       || ! /usr/bin/python3 -c '"'"'import Xlib, gi, pyatspi; from PIL import Image'"'"' >/dev/null 2>&1; then
       export DEBIAN_FRONTEND=noninteractive
       apt-get -qq update
-      apt-get -y -qq --no-install-recommends install dbus tint2 at-spi2-core python3-xlib python3-gi python3-pyatspi python3-pil
+      apt-get -y -qq --no-install-recommends install dbus tint2 at-spi2-core python3-xlib python3-gi python3-pyatspi python3-pil xfce4-terminal mousepad
       apt-get clean
       find /var/lib/apt/lists -mindepth 1 -delete
     fi
+    # MP-08/MP-10/MP-11: refresh the alternative even if packages were present.
+    update-alternatives --set x-terminal-emulator /usr/bin/xfce4-terminal.wrapper
     /usr/bin/python3 -c '"'"'import Xlib, gi, pyatspi; from PIL import Image'"'"'
     # The existing helper interpreter must see the same distro AT-SPI bindings.
     if [[ -x /opt/chariox-selkies/bin/python ]]; then

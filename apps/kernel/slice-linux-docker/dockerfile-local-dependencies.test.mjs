@@ -61,3 +61,13 @@ test("slice image renders CJK text and emoji in the Room browser", async () => {
   assert.match(dockerfile, /\n    fonts-noto-cjk \\\n/)
   assert.match(dockerfile, /\n    fonts-noto-color-emoji \\\n/)
 })
+
+// MP-08/MP-10/MP-11: saved images need the same proved keyboard focus.
+test("restored images upgrade to the accessible terminal and editor", async () => {
+  const provisioner = await readFile(provisionerPath, "utf8")
+  const refresh = provisioner.slice(provisioner.indexOf("refresh_slice_support_files()"), provisioner.indexOf("copy_required_slice_overlay", provisioner.indexOf("refresh_slice_support_files()")))
+  assert.match(refresh, /command -v xfce4-terminal/)
+  assert.match(refresh, /command -v mousepad/)
+  assert.match(refresh, /install[^\n]*xfce4-terminal[^\n]*mousepad/)
+  assert.match(refresh, /update-alternatives --set x-terminal-emulator \/usr\/bin\/xfce4-terminal\.wrapper/)
+})

@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
+import { fileURLToPath } from "node:url"
 
 const root = new URL("../", import.meta.url)
 const runtime = await readFile(new URL("apps/kernel/slice-linux-docker/docker/start-runtime.sh", root), "utf8")
@@ -57,13 +58,24 @@ test("provider isolation probe uses the same canonical slice identity as the per
   ])
 })
 
-test("MP-08/MP-11 canonical signed relay admission is coordinated at local protocol 491 and peer protocol 96", async () => {
-  const [rust, client, peer] = await Promise.all([
+test("MP-08/MP-11 canonical signed relay admission follows shared protocol constants", async () => {
+  const [rust, client, peer, provisioner] = await Promise.all([
     readFile(new URL("apps/kernel/src/local/api/types.rs", root), "utf8"),
     readFile(new URL("packages/kernel-client/src/kernel-types.ts", root), "utf8"),
     readFile(new URL("apps/kernel/src/transport/relay_peer.rs", root), "utf8"),
+    readFile(new URL("apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh", root), "utf8"),
   ])
-  assert.equal(Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 491)
-  assert.equal(Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1]), 491)
-  assert.equal(Number(peer.match(/RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 101)
+  const localVersion = Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1])
+  const peerVersion = Number(peer.match(/RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+)/)?.[1])
+  assert.ok(Number.isSafeInteger(localVersion) && localVersion > 0)
+  assert.ok(Number.isSafeInteger(peerVersion) && peerVersion > 0)
+  assert.equal(Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1]), localVersion)
+  const assignment = provisioner.split("\n").find(line => line.startsWith("SLICE_RELAY_PEER_PROTOCOL_VERSION="))
+  assert.ok(assignment, "slice runtime derives peer admission from the shared constant")
+  const derived = spawnSync("bash", ["-c", `${assignment}\nprintf '%s' "$SLICE_RELAY_PEER_PROTOCOL_VERSION"`], {
+    encoding: "utf8", timeout: 5_000,
+    env: { PATH: process.env.PATH, REPO_ROOT: fileURLToPath(root) },
+  })
+  assert.equal(derived.status, 0, derived.stderr)
+  assert.equal(Number(derived.stdout), peerVersion)
 })
