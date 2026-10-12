@@ -66,8 +66,6 @@ impl KernelRuntimeState {
         let forbidden = matches!(
             request,
             LocalDaemonRequest::RequestKernelAccess(_)
-                // Approvals belong to the user, including routine ones.
-                | LocalDaemonRequest::RespondToInteraction(_)
                 | LocalDaemonRequest::ManageCredentialVault(_)
                 // Raw credential configs can contain literal injection headers.
                 | LocalDaemonRequest::GetCredential(_)
@@ -97,7 +95,9 @@ impl KernelRuntimeState {
                 | LocalDaemonRequest::ConnectCloudRelay(_)
                 | LocalDaemonRequest::IssueCloudRelayClientToken(_)
                 | LocalDaemonRequest::ResolveKernelClientConnection(_)
-        ) || matches!(request, LocalDaemonRequest::SetUserConfigValue(config)
+        ) || matches!(request, LocalDaemonRequest::RespondToInteraction(answer)
+            if self.external_interaction_requires_terminal(answer))
+            || matches!(request, LocalDaemonRequest::SetUserConfigValue(config)
             if protected_config(&config.path))
             || matches!(request, LocalDaemonRequest::UnsetUserConfigValue(config)
                 if protected_config(&config.path));
@@ -124,6 +124,42 @@ impl KernelRuntimeState {
             ));
         }
         Ok(())
+    }
+
+    // MP-08/MP-11: ordinary grant holders may answer routine Room questions.
+    // Critical and credential decisions retain the terminal boundary for every
+    // choice, including refusal, without exposing interaction metadata.
+    fn external_interaction_requires_terminal(&self, answer: &RespondToInteractionRequest) -> bool {
+        let pending = self
+            .owned
+            .pending_interactions
+            .write()
+            .get(&answer.interaction_id)
+            .cloned();
+        let Some(pending) = pending else { return false };
+        if pending.passkey_prompt.is_some() || pending.terminal_credential_owner.is_some() {
+            return true;
+        }
+        let interaction = pending
+            .kernel_wide_interaction
+            .or(pending.user_domain_interaction)
+            .or_else(|| {
+                self.owned
+                    .session_store
+                    .get_session(&answer.session_id)
+                    .ok()?
+                    .active_interactions()
+                    .iter()
+                    .find(|interaction| interaction.id() == answer.interaction_id)
+                    .cloned()
+            });
+        interaction.is_some_and(|interaction| {
+            interaction.level() == crate::session::RuntimeInteractionLevel::Critical
+                || interaction
+                    .choices()
+                    .iter()
+                    .any(|choice| choice.requires_passkey())
+        })
     }
 }
 

@@ -109,6 +109,16 @@ async fn kernel_access_external_holder_cannot_manage_vault_or_choose_new_passkey
             .is_object(),
         "the first routine answer closes the shared interaction"
     );
+    // MP-08/MP-11: removing the blanket routine-answer ban must never admit
+    // a critical interaction, even when its choice carries no passkey field.
+    kernel.control("agent-critical-question").await;
+    assert!(
+        holder.request(answer("critical-access-question", "continue", None))["error"].is_object()
+    );
+    assert!(kernel
+        .request(answer("critical-access-question", "continue", None))
+        .await["error"]
+        .is_null());
 }
 
 #[tokio::test]
