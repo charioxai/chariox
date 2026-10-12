@@ -341,6 +341,43 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
             .restore_session(serde_json::from_value(retained).unwrap());
         // MP-08 / MP-10 / MP-11: public protocol and subscription projection share Room's policy.
         let retained_session = state.owned.session_snapshot(session.id()).unwrap();
+        // MP-11: production pre-lane reads bypass the general response redactor.
+        // Cover cold and warmed lists, exact/prefix resolution, and settled GetSessionState.
+        let read_projection = crate::runtime::projection::SessionStateProjectionStore::default();
+        let pending =
+            crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker::default();
+        let mut pre_lane_responses = Vec::new();
+        for request in [
+            crate::local::LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest),
+            crate::local::LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest),
+            crate::local::LocalDaemonRequest::ResolveSession(crate::local::ResolveSessionRequest {
+                session_ref: session.id().into(),
+                workspace_id: None,
+            }),
+            crate::local::LocalDaemonRequest::ResolveSession(crate::local::ResolveSessionRequest {
+                session_ref: session.id()[..8].into(),
+                workspace_id: Some(session.workspace_id().into()),
+            }),
+            crate::local::LocalDaemonRequest::GetSessionState(
+                crate::local::GetSessionStateRequest {
+                    session_id: session.id().into(),
+                },
+            ),
+        ] {
+            pre_lane_responses.push(
+                crate::runtime::session_read_control::projected_session_read_response(
+                    &state,
+                    &read_projection,
+                    &state.owned.provider_run_projection,
+                    &pending,
+                    &request,
+                    actor.owner_user_id(),
+                )
+                .await
+                .expect("production pre-lane read must handle the request")
+                .unwrap(),
+            );
+        }
         let projected = retained_session
             .clone()
             .redacted_for_user_with_workflow_history(
@@ -375,7 +412,13 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
             serde_json::to_value(projected).unwrap(),
             serde_json::to_value(attachment_projection).unwrap(),
             serde_json::to_value(response).unwrap(),
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            pre_lane_responses
+                .into_iter()
+                .map(|response| serde_json::to_value(response).unwrap()),
+        ) {
             let text = value.to_string();
             assert!(text.contains("synthetic-authorized-retired-history"));
             assert!(text.contains("synthetic-authorized-runtime-history"));
