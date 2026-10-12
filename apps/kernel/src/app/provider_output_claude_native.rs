@@ -63,6 +63,24 @@ const CLAUDE_TRANSCRIPT_STOP_DRAIN_MS: u64 = 300;
 const CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX: &str = "stop-draining:";
 const CLAUDE_WORKSPACE_TRUST_DENIED: &str =
     "Claude Code workspace trust was denied before the queued task was dispatched.";
+const CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED: &str =
+    "Claude Code could not select the approved workspace trust option; no task text was dispatched. Retry after the trust dialog is fully displayed.";
+const CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED_PREFIX: &str =
+    "startup-workspace-trust-selection-failed:";
+
+fn claude_workspace_trust_failure(context_file: &str) -> Option<&'static str> {
+    if claude_headless_workspace_trust_denied(context_file) {
+        Some(CLAUDE_WORKSPACE_TRUST_DENIED)
+    } else if claude_native_marker(context_file)
+        .as_deref()
+        .is_some_and(|marker| marker.starts_with(CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED_PREFIX))
+    {
+        Some(CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED)
+    } else {
+        None
+    }
+}
+
 const CLAUDE_HEADLESS_EARLY_EXIT: &str =
     "Claude Code exited before acknowledging the queued task; no task text was dispatched.";
 
@@ -91,6 +109,7 @@ pub(crate) enum ClaudeNativeDispatchAttempt {
 enum ClaudeWorkspaceTrustResolution {
     Approved,
     Denied,
+    SelectionFailed,
 }
 
 const CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT: u8 = 10;
@@ -271,15 +290,16 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(outcome);
         };
 
-        if claude_headless_workspace_trust_denied(context_file) {
-            outcome.terminal_failure = Some(CLAUDE_WORKSPACE_TRUST_DENIED.to_string());
+        if let Some(message) = claude_workspace_trust_failure(context_file) {
+            outcome.terminal_failure = Some(message.to_string());
             return Ok(outcome);
         }
         if let Some(resolution) =
             self.process_pending_claude_workspace_trust(provider_run_id, context_file)?
         {
-            if resolution == ClaudeWorkspaceTrustResolution::Denied {
-                outcome.terminal_failure = Some(CLAUDE_WORKSPACE_TRUST_DENIED.to_string());
+            if resolution != ClaudeWorkspaceTrustResolution::Approved {
+                outcome.terminal_failure =
+                    claude_workspace_trust_failure(context_file).map(str::to_string);
                 return Ok(outcome);
             }
         }
@@ -1188,11 +1208,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
             return Ok(ClaudeNativeDispatchAttempt::Completed);
         };
-        if claude_headless_workspace_trust_denied(context_file) {
+        if let Some(message) = claude_workspace_trust_failure(context_file) {
             return Err(DaemonError::ProviderProtocol {
                 provider_run_id: provider_run_id.to_string(),
                 operation: "submit Claude headless prompt",
-                message: CLAUDE_WORKSPACE_TRUST_DENIED.to_string(),
+                message: message.to_string(),
             });
         }
         if provider_run.provider() == "claude-headless"
@@ -1210,11 +1230,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         if let Some(resolution) =
             self.process_pending_claude_workspace_trust(provider_run_id, context_file)?
         {
-            if resolution == ClaudeWorkspaceTrustResolution::Denied {
+            if resolution != ClaudeWorkspaceTrustResolution::Approved {
                 return Err(DaemonError::ProviderProtocol {
                     provider_run_id: provider_run_id.to_string(),
                     operation: "submit Claude headless prompt",
-                    message: CLAUDE_WORKSPACE_TRUST_DENIED.to_string(),
+                    message: claude_workspace_trust_failure(context_file)
+                        .unwrap_or(CLAUDE_WORKSPACE_TRUST_DENIED)
+                        .to_string(),
                 });
             }
         }
@@ -1725,6 +1747,18 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         else {
             return Ok(None);
         };
+        // An empty startup mailbox reply means the human approved but the
+        // latest provider frame had no safely selectable affirmative row.
+        if input.is_empty() {
+            self.app
+                .write_provider_pty_input_for_runtime(provider_run_id, &[0x03])?;
+            write_claude_native_marker(
+                context_file,
+                &format!("{CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED_PREFIX}{interaction_id}"),
+            );
+            clear_claude_permission_recent(context_file);
+            return Ok(Some(ClaudeWorkspaceTrustResolution::SelectionFailed));
+        }
         self.app
             .write_provider_pty_input_for_runtime(provider_run_id, &input)?;
         if input == b"\x1b[B" || input == b"\x1b[A" {
@@ -1766,7 +1800,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             timestamp_millis()
         );
         write_claude_headless_workspace_trust_interaction_marker(context_file, &interaction_id);
-        clear_claude_permission_recent(context_file);
+        // Keep accumulating the displayed frame while the interaction is open.
+        // Its selected row may arrive in a later PTY drain.
         let interaction = RuntimeInteraction::new(
             interaction_id.clone(),
             agent_id,
@@ -1805,7 +1840,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     if resolution.reply.as_deref() == Some("allow")
                         || resolution.choice_id.as_deref() == Some("allow_once") =>
                 {
-                    approval_input.to_vec()
+                    claude_permission_recent_file(&context_file)
+                        .and_then(|path| fs::read_to_string(path).ok())
+                        .and_then(|text| claude_workspace_trust_approval_input(&text).map(|input| input.to_vec()))
+                        .unwrap_or_default()
                 }
                 Ok(_) => vec![0x03],
                 Err(error) => {
