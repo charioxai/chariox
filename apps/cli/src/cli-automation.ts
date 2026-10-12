@@ -1,5 +1,8 @@
 import { createServer, type Server as NetServer, type Socket as NetSocket } from "node:net"
-import { unlink } from "node:fs/promises"
+import { lstatSync, mkdtempSync, readlinkSync, rmdirSync, unlinkSync, type Stats } from "node:fs"
+import { symlink, unlink } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 export type CliAutomationRequest = {
   id?: unknown
@@ -70,6 +73,8 @@ export type CliAutomationSnapshot = {
 
 export type CliAutomationServer = NetServer
 
+const automationCleanup = new WeakMap<CliAutomationServer, () => void>()
+
 type StartCliAutomationServerOptions = {
   socketPath: string
   handleRequest: (request: CliAutomationRequest) => Promise<unknown> | unknown
@@ -111,11 +116,15 @@ export async function startCliAutomationServer({
   formatError,
   onListening,
 }: StartCliAutomationServerOptions): Promise<CliAutomationServer> {
+  // Node/Bun also unlink their bind path in server.close(). Bind a unique
+  // instance path so even native cleanup cannot unlink a replacement server.
   await unlink(socketPath).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== "ENOENT") {
       throw error
     }
   })
+  const ownedDirectory = mkdtempSync(join(tmpdir(), "chariox-cli-"))
+  const ownedPath = join(ownedDirectory, "automation.sock")
   const server = createServer((socket) => {
     socket.setEncoding("utf8")
     let buffer = ""
@@ -132,20 +141,49 @@ export async function startCliAutomationServer({
       }
     })
   })
+  let linkIdentity: Stats | undefined
+  const cleanup = () => {
+    if (linkIdentity) {
+      try {
+        const current = lstatSync(socketPath)
+        if (current.dev === linkIdentity.dev && current.ino === linkIdentity.ino
+          && readlinkSync(socketPath) === ownedPath) {
+          unlinkSync(socketPath)
+        }
+      } catch {}
+    }
+    try { unlinkSync(ownedPath) } catch {}
+    try { rmdirSync(ownedDirectory) } catch {}
+    process.off("exit", cleanup)
+  }
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject)
-    server.listen(socketPath, () => {
+    server.listen(ownedPath, () => {
       server.off("error", reject)
       resolve()
     })
+  }).catch((error) => {
+    cleanup()
+    throw error
   })
+  try {
+    await symlink(ownedPath, socketPath)
+    linkIdentity = lstatSync(socketPath)
+  } catch (error) {
+    server.close()
+    cleanup()
+    throw error
+  }
+  automationCleanup.set(server, cleanup)
+  process.once("exit", cleanup)
   onListening?.(socketPath)
   return server
 }
 
-export function stopCliAutomationServer(server: CliAutomationServer, socketPath: string): void {
+export function stopCliAutomationServer(server: CliAutomationServer, _socketPath: string): void {
+  automationCleanup.get(server)?.()
+  automationCleanup.delete(server)
   server.close()
-  void unlink(socketPath).catch(() => {})
 }
 
 function dispatchAutomationLine(

@@ -5,6 +5,10 @@
 import { readFile } from "node:fs/promises"
 
 import { parseArgs } from "./cli-options.js"
+import { watchCliLauncherParent } from "./cli-launcher-parent.js"
+
+watchCliLauncherParent(process.env.CHARIOX_CLI_LAUNCHER_PID)
+delete process.env.CHARIOX_CLI_LAUNCHER_PID
 
 // Admit ordinary TUI arguments before loading rendering, logging or runtime
 // modules. Subcommands own their parsers and validate before runtime actions.

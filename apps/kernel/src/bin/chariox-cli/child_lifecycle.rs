@@ -1,0 +1,107 @@
+//! MP-08/MP-11: the launcher owns its TUI until the child has been reaped.
+use std::process::{Command, ExitStatus};
+
+#[cfg(unix)]
+pub(super) fn run(command: Command) -> std::io::Result<ExitStatus> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(run_unix(command))
+}
+
+#[cfg(unix)]
+async fn run_unix(mut command: Command) -> std::io::Result<ExitStatus> {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    // Install before spawning so a signal cannot orphan a just-started child.
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut hangup = signal(SignalKind::hangup())?;
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let parent_pid = std::process::id();
+    command.env("CHARIOX_CLI_LAUNCHER_PID", parent_pid.to_string());
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // Only async-signal-safe libc calls between fork and exec. Check the
+        // parent again after prctl to close the parent-death registration race.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getppid() as u32 != parent_pid {
+                    return Err(std::io::Error::other(
+                        "CLI launcher exited before child exec",
+                    ));
+                }
+                Ok(())
+            });
+        }
+    }
+    let mut child = tokio::process::Command::from(command)
+        .kill_on_drop(true)
+        .spawn()?;
+    loop {
+        let received = tokio::select! {
+            status = child.wait() => return status,
+            _ = terminate.recv() => libc::SIGTERM,
+            _ = hangup.recv() => libc::SIGHUP,
+            _ = interrupt.recv() => libc::SIGINT,
+        };
+        // Signal only this retained, unreaped child, never a process group.
+        // wait() cannot reap concurrently with this synchronous section.
+        if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) {
+            if pid > 1 && unsafe { libc::kill(pid, received) } != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    kill_and_reap(&mut child).await?;
+                    return Err(error);
+                }
+            }
+        }
+        // SIGINT also means stop the active turn in the TUI; keep it alive
+        // when its normal interrupt handler chooses to continue.
+        if received != libc::SIGINT {
+            match tokio::time::timeout(std::time::Duration::from_millis(1500), child.wait()).await {
+                Ok(status) => return status,
+                Err(_) => return kill_and_reap(&mut child).await,
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn kill_and_reap(child: &mut tokio::process::Child) -> std::io::Result<ExitStatus> {
+    if let Some(pid) = child.id() {
+        if i32::try_from(pid).ok().is_none_or(|pid| pid <= 1) {
+            return Err(std::io::Error::other("invalid CLI child PID"));
+        }
+        child.kill().await?;
+    }
+    child.wait().await
+}
+
+#[cfg(not(unix))]
+pub(super) fn run(mut command: Command) -> std::io::Result<ExitStatus> {
+    command.status()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::run;
+    use std::process::Command;
+
+    #[test]
+    fn reaps_child_and_preserves_its_exit_status() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 7"]);
+        assert_eq!(run(command).unwrap().code(), Some(7));
+    }
+
+    #[test]
+    fn child_receives_exact_launcher_parent_identity() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "test \"$CHARIOX_CLI_LAUNCHER_PID\" = \"$PPID\""]);
+        assert!(run(command).unwrap().success());
+    }
+}

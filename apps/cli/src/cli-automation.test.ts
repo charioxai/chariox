@@ -111,3 +111,34 @@ function readAutomationLine(socket: Socket): Promise<Record<string, unknown>> {
     socket.once("error", onError)
   })
 }
+
+test("an old automation server cannot unlink its replacement's socket", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chariox-cli-replacement-"))
+  const socketPath = join(dir, "automation.sock")
+  const options = { socketPath, formatError: String, handleRequest: () => "replacement" }
+  const oldServer = await startCliAutomationServer(options)
+  const newServer = await startCliAutomationServer(options)
+  try {
+    stopCliAutomationServer(oldServer, socketPath)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const socket = await connect(socketPath)
+    try {
+      const response = readAutomationLine(socket)
+      socket.write('{"id":1,"action":"snapshot"}\n')
+      assert.deepEqual(await response, { id: 1, ok: true, data: "replacement" })
+    } finally {
+      socket.destroy()
+    }
+  } finally {
+    stopCliAutomationServer(newServer, socketPath)
+  }
+})
+
+test("automation cleanup synchronously removes its own public socket", async () => {
+  const { lstat } = await import("node:fs/promises")
+  const dir = await mkdtemp(join(tmpdir(), "chariox-cli-stop-"))
+  const socketPath = join(dir, "automation.sock")
+  const server = await startCliAutomationServer({ socketPath, formatError: String, handleRequest: () => true })
+  stopCliAutomationServer(server, socketPath)
+  await assert.rejects(lstat(socketPath), { code: "ENOENT" })
+})

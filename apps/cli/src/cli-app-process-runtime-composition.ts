@@ -19,6 +19,13 @@ export type CliAppProcessRuntimeCompositionDeps = Record<string, any> & {
 export function createCliAppProcessRuntimeComposition(
   deps: CliAppProcessRuntimeCompositionDeps,
 ) {
+  const handleTermination = () => { void deps.requestExit() }
+  process.on("SIGTERM", handleTermination)
+  process.on("SIGHUP", handleTermination)
+  onCleanup(() => {
+    process.off("SIGTERM", handleTermination)
+    process.off("SIGHUP", handleTermination)
+  })
   const automationProcessComposition = createCliAutomationProcessComposition({
     client: deps.client,
     options: deps.options,
