@@ -144,7 +144,7 @@ const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
     "CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY",
 ];
 
-#[cfg(target_os = "linux")]
+// MP-08 / MP-11: also read on every platform by provider_account_environment_on_kernel.
 const PROVIDER_ACCOUNT_PATH_ENVIRONMENT: &[&str] = &[
     "CODEX_HOME",
     "CLAUDE_CONFIG_DIR",
