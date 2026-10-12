@@ -80,7 +80,7 @@ if [ "$1" = -p ]; then
   if [ '{mode}' = observation-failure ]; then
     mv '{registry_path}' '{registry_path}.backup'; mkdir '{registry_path}'
   fi
-  printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"duration_api_ms":0,"num_turns":0,"total_cost_usd":0,"usage":{{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}},"result":"Current session: 17% used\nCurrent week (all models): 41% used"}}'
+  printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"duration_api_ms":1,"num_turns":1,"total_cost_usd":0.00001,"usage":{{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":7}},"result":"CHARIOX_AUTH_OK"}}'
   exit 0
 fi
 [ "$1" = setup-token ] || exit 90
@@ -354,7 +354,7 @@ fi
 if [ "$1" = -p ]; then
   echo turn >> "$(dirname "$0")/model-turns"
   if [ "$CLAUDE_CODE_OAUTH_TOKEN" = '{good}' ]; then
-    echo '{{"type":"result","subtype":"success","is_error":false,"result":"OK"}}'; exit 0
+    echo '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"usage":{{"output_tokens":7}},"result":"CHARIOX_AUTH_OK"}}'; exit 0
   fi
   if [ "$CLAUDE_CODE_OAUTH_TOKEN" = '{unavailable}' ]; then exit 3; fi
   if [ "$CLAUDE_CODE_OAUTH_TOKEN" = '{expired}' ]; then
@@ -413,7 +413,7 @@ exit 90
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("rejected the setup token") && error.contains("authorization link"),
+        error.contains("rejected the setup token") && error.contains("Choose Log in"),
         "an invalid token needs an actionable error: {error}"
     );
     assert!(!crate::provider::provider_account_credential_registered(
