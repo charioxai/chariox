@@ -1005,3 +1005,7 @@ mod hosted_worker_tests;
 #[cfg(test)]
 #[path = "tool_dispatch/history_search_tests.rs"]
 mod history_search_tests;
+
+#[cfg(test)]
+#[path = "tool_dispatch/recall_scope_tests.rs"]
+mod recall_scope_tests;

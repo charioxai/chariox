@@ -194,7 +194,13 @@ fn scoped_session_id(
             }
             Ok(Some(provider_run.session_id().to_string()))
         }
-        "all" => Ok(requested_session_id),
+        // MP-08/MP-11 G08: legacy MCP encodings cannot expand a provider's
+        // Room authority, even when a lookup would return no records.
+        "all" => Err(DaemonError::LocalTransport {
+            operation: "runtime_tool_recall_scope",
+            message: "agent recall is limited to the caller room; global scope is unavailable"
+                .into(),
+        }),
         other => Err(DaemonError::LocalTransport {
             operation: "runtime_tool_recall_scope",
             message: format!("scope must be one of: current_session, all; got `{other}`"),
