@@ -62,10 +62,13 @@ fn managed_slice_home_owner_public_key_for_identity(
     // Standalone managed slices carry the same provisioner-owned identity and
     // owner pin as Room slices, without a Room session binding. When both exist
     // they must agree before any peer request enters transport.
-    if (!slice_matches && !room_matches)
-        || (identity.is_some() && !slice_matches)
-        || (room_binding.is_some() && !room_matches)
-    {
+    let binding_matches = match (identity, room_binding) {
+        (Some(_), Some(_)) => slice_matches && room_matches,
+        (Some(_), None) => slice_matches,
+        (None, Some(_)) => room_matches,
+        (None, None) => false,
+    };
+    if !binding_matches {
         return Err(DaemonError::LocalTransport {
             operation: "forward managed slice runtime tool",
             message: "managed slice owner identity does not match its provisioned binding"

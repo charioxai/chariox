@@ -578,7 +578,7 @@ process.stdout.write(JSON.stringify({
         ] {
             fs::write(
                 &executable,
-                format!("#!/bin/sh\nprintf '%s\\n' '{}'\nexit {exit}\n", result),
+                format!("#!/bin/sh\nprintf '%s\\n' '{result}'\nexit {exit}\n"),
             )
             .unwrap();
             fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
