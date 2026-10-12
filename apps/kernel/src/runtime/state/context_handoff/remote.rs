@@ -16,7 +16,7 @@ impl super::super::KernelRuntimeOwnedState {
     ) -> Result<String, crate::error::DaemonError> {
         let hidden_context = self
             .room_secret_observations
-            .scrub_cached_result(agent.session_id(), hidden_context.to_string())?;
+            .scrub_runtime_result(agent.session_id(), hidden_context.to_string())?;
         let existing = || Ok(hidden_context.clone());
         if fresh_workflow
             || agent

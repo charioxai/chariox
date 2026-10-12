@@ -2,6 +2,16 @@
 use super::*;
 
 async fn assert_home_handoff_envelope(active_run: bool, current_lease_output: bool, protect: bool) {
+    assert_home_handoff_envelope_with_recovery(active_run, current_lease_output, protect, false)
+        .await;
+}
+
+async fn assert_home_handoff_envelope_with_recovery(
+    active_run: bool,
+    current_lease_output: bool,
+    protect: bool,
+    recovered: bool,
+) {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.relay_url = Some(CANCELLATION_GUARD_RELAY_URL.to_string());
     config.relay_token = Some("recreated-handoff-test-token".to_string());
@@ -89,6 +99,13 @@ async fn assert_home_handoff_envelope(active_run: bool, current_lease_output: bo
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
+    if recovered {
+        runtime
+            .owned
+            .room_secret_observations
+            .reset_environment(session.id())
+            .unwrap();
+    }
     if protect {
         runtime
             .owned
@@ -184,13 +201,13 @@ async fn assert_home_handoff_envelope(active_run: bool, current_lease_output: bo
         );
         assert_eq!(
             hidden_system_context.contains("assistant proposal: preserve named decisions"),
-            !protect,
+            !protect && !recovered,
             "current Room policy withholds old provider observations when protection begins",
         );
         assert!(hidden_system_context.len() <= 24_000);
         assert_eq!(
             hidden_system_context.contains("private-room-fixture"),
-            !protect,
+            !protect && !recovered,
             "current Room policy must protect the actual outgoing envelope"
         );
     }
@@ -251,4 +268,9 @@ async fn active_lease_scrubs_cached_context_without_replaying_history() {
 #[tokio::test]
 async fn current_lease_scrubs_cached_context_without_replaying_history() {
     assert_home_handoff_envelope(false, true, true).await;
+}
+
+#[tokio::test]
+async fn recovered_room_scrubs_cached_context_before_remote_transport() {
+    assert_home_handoff_envelope_with_recovery(true, false, true, true).await;
 }
