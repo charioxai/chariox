@@ -91,6 +91,10 @@ fn context_failure_case(expired: bool) {
         .process(session.id(), run.id(), &run, None)
         .unwrap();
     assert!(stale.terminal_failure.is_none());
+    assert!(
+        context.with_extension("txt.context-delivery").exists(),
+        "stale receipt discarded the active delivery"
+    );
     fs::write(
         &events,
         serde_json::json!({"hook_event_name":"CharioxContextFailed",
@@ -102,7 +106,8 @@ fn context_failure_case(expired: bool) {
         .process(session.id(), run.id(), &run, None)
         .unwrap();
     assert!(
-        !failure.rejected_prompt_ids.is_empty() && failure.terminal_failure.is_none(),
-        "hook rejection was ignored; native turn remains WORKING"
+        !context.with_extension("txt.context-delivery").exists()
+            && failure.terminal_failure.is_none(),
+        "matched hook rejection must remove its pending delivery without failing the provider"
     );
 }
