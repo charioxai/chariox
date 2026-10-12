@@ -108,7 +108,7 @@ pub(crate) async fn execute_set_provider_account_credential_request(
             "provider_account_credential_set",
         )
         .await?;
-    let verified_usage = claude_setup_token_login::verify_token(
+    claude_setup_token_login::verify_manual_token(
         runtime_state.provider_account_profile_registry(),
         &owner_user_id,
         &profile.profile_id,
@@ -134,7 +134,7 @@ pub(crate) async fn execute_set_provider_account_credential_request(
             None,
             None,
             None,
-            Some(verified_usage),
+            None,
         )?;
     runtime_state.record_waiting_room_change();
     Ok(LocalDaemonResponse::ProviderAccountCredentialStored {

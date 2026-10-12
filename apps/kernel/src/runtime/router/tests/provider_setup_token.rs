@@ -320,8 +320,8 @@ async fn manual_setup_token_verifies_before_storage_and_authenticates_alias() {
         .unwrap();
     for (accepted, replace) in [(true, false), (false, true)] {
         std::fs::write(&binary, if accepted {
-            "#!/bin/sh\n[ \"$1\" = -p ] || exit 90\nprintf '%s\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_api_ms\":0,\"num_turns\":0,\"total_cost_usd\":0,\"usage\":{\"input_tokens\":0,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":0},\"result\":\"Current session: 17% used\\nCurrent week (all models): 41% used\"}'\n"
-        } else { "#!/bin/sh\nexit 3\n" }).unwrap();
+            "#!/bin/sh\n[ \"$1\" = --version ] && { echo 2.2.0; exit 0; }\n[ \"$1\" = auth ] || exit 90\nprintf '%s\n' '{\"loggedIn\":true,\"authMethod\":\"oauth_token\"}'\n"
+        } else { "#!/bin/sh\nprintf '%s\n' '{\"loggedIn\":false}'\nexit 1\n" }).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let request = LocalDaemonRequest::SetProviderAccountCredential(
             crate::local::SetProviderAccountCredentialRequest {
