@@ -652,7 +652,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
   let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, wantResend = false, resendOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0, failGeneration = 0
   const buffered = new Map<number, Mirror2WirePacket>()
-  const outstanding: Array<{ reset: boolean }> = [] // credits in flight, oldest first
+  const outstanding: Array<{ reset: boolean, oldestAt: number }> = [] // credits in flight, oldest first
   // In sequence order: inflate in the context, then restore what a compact delta implies.
   let inflater: Mirror2Inflater | null = null, base: Mirror2Packet | null = null
   const expand = async (wire: Mirror2WirePacket): Promise<Mirror2Packet> => {
@@ -716,8 +716,9 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     let answered = false
     // A credit whose request the transport neither answers nor fails (a socket replaced without failing it) would
     // hold its packet until the request timeout: once it is the oldest and overdue, a resend fetches that packet.
-    const entry = { reset }; outstanding.push(entry)
-    const overdue = (): void => { if (closed || !outstanding.includes(entry)) return; if (outstanding[0] !== entry || entry.reset) { setTimeout(overdue, LOST_MS); return } if (!resendOutstanding && applied) { wantResend = true; fill() } }
+    // The kernel starts a queued credit's wait when its predecessor is answered: the oldest is overdue a wait after that.
+    const entry = { reset, oldestAt: outstanding.length ? 0 : performance.now() }; outstanding.push(entry)
+    const overdue = (): void => { if (closed || !outstanding.includes(entry)) return; if (outstanding[0] !== entry || entry.reset) { setTimeout(overdue, LOST_MS); return } const left = entry.oldestAt + waitMs + LOST_MS - performance.now(); if (left > 0) { setTimeout(overdue, left); return } if (!resendOutstanding && applied) { wantResend = true; fill() } }
     setTimeout(overdue, waitMs + LOST_MS)
     request({ op: 'mirror_next', subscription_id, generation: binding.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms: waitMs, ...(resend ? { resend: true } : {}) })
       .then(async (packet: Mirror2WirePacket) => {
@@ -739,7 +740,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
         failingSince ||= performance.now()
         if (!closed && (fatal(error) || terminal(error) || performance.now() - failingSince > failingMs)) { closed = true; inflater?.close(); renderer.close(); handlers.failure(error); void closeRemote() }
       })
-      .finally(() => { outstanding.splice(outstanding.indexOf(entry), 1); if (resend) resendOutstanding = false; inflight--; if (!closed) setTimeout(fill, failures ? Math.min(4000, 250 * 2 ** (failures - 1)) : 0) })
+      .finally(() => { outstanding.splice(outstanding.indexOf(entry), 1); if (outstanding[0] && !outstanding[0].oldestAt) outstanding[0].oldestAt = performance.now(); if (resend) resendOutstanding = false; inflight--; if (!closed) setTimeout(fill, failures ? Math.min(4000, 250 * 2 ** (failures - 1)) : 0) })
   }
   // Pipelined credits start once a snapshot is applied; a reset or a resend is a single credit and never waits
   // behind credits in flight (the kernel ends their wait).

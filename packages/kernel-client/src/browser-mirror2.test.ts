@@ -418,6 +418,30 @@ test('MP-10: protocol 501 a gap (a reply lost with its socket) asks for the miss
   assert.equal(requests.filter(command => command.after_sequence === 0).length, 1, 'MP-10: no second snapshot')
 })
 
+// r15 quiet-host drill (DPR1, typing every 1.2-1.7 s): the kernel starts a queued credit's wait when its predecessor is
+// answered (bounded by arrival + 3 waits), but the viewer called the oldest credit lost waitMs + LOST_MS after it was SENT.
+// Each spurious resend ended every waiting credit at once, so the next key's echo waited a round trip for a new credit.
+test('MP-08: a queued credit answered within the kernel bound is not lost: no resend before its own wait has run', async () => {
+  let sequence = 0, chain: Promise<unknown> = Promise.resolve()
+  const requests: Array<Record<string, unknown>> = [], started = Date.now(), wait = 2000
+  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async () => {} })
+  const transport = { protocolVersion: 503, request: async (request: unknown) => {
+    const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() - started })
+    if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
+    if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
+    if (command.after_sequence === 0) return { KernelBrowser: { result: packet(++sequence, true) } }
+    // An idle page: each credit's wait starts when its predecessor is answered, never past arrival + 3 waits.
+    const arrival = Date.now()
+    const run = chain.then(() => new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(arrival + 3 * wait, Date.now() + wait) - Date.now())))).then(() => ({ KernelBrowser: { result: packet(++sequence, false) } }))
+    chain = run; return run
+  } }
+  const view = await attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: () => {} }, { waitMs: wait, renderer })
+  await new Promise(resolve => setTimeout(resolve, 6500))
+  await view.close()
+  const resends = requests.filter(command => command.resend)
+  assert.deepEqual(resends.map(command => command.at), [], `MP-08: no resend for credits the kernel still holds: ${JSON.stringify(requests.map(c => [c.op, c.after_sequence, c.resend, c.at]))}`)
+})
+
 // Round 11 final drop drill (b3, DPR2, 3.06 s): the transport replaced the dropped control socket without failing or
 // replaying the credit in flight, so that credit (and the packet the kernel gave it) was orphaned until the 8 s request
 // timeout; the gap only showed when the next heartbeat arrived 2.9 s later. The oldest outstanding credit is answered
