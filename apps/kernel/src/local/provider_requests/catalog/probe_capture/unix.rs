@@ -157,6 +157,10 @@ impl Process {
                     result = Err(error);
                 }
             }
+            #[cfg(target_os = "linux")]
+            if let Err(error) = descendants::wait_for_exit(&self.descendants) {
+                result = Err(error);
+            }
             result
         })();
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
