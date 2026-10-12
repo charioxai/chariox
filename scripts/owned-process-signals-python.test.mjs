@@ -52,6 +52,17 @@ class GuardTests(unittest.TestCase):
         rows.append(dict(pid=52,ppid=9,pgid=51,start='foreign'))
         with self.assertRaises(ValueError):g.group(g.fixture_launch,signal.SIGKILL,pgid=51)
         self.assertEqual(len(sent),1)
+    def test_bsd_zero_session(self):
+        from unittest.mock import patch
+        for session in ['0','0x0']:
+            rows=[dict(pid=50,ppid=9,pgid=50,start='root',session=session),dict(pid=51,ppid=50,pgid=51,start='child',session=session),dict(pid=90,ppid=1,pgid=90,start='foreign',session=session)]
+            sent=[]
+            g=OwnedProcesses(snapshot=lambda:rows,send_group=lambda *args:sent.append(args))
+            with patch('os.getsid',return_value=50):launch=g.record(50)
+            self.assertEqual(sorted(g.owned),[50,51])
+            self.assertTrue(g.group(launch,signal.SIGTERM,pgid=51))
+            with self.assertRaises(ValueError):g.group(launch,signal.SIGTERM,pgid=90)
+            self.assertEqual(sent,[(51,signal.SIGTERM)])
     def test_live(self):
         child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(10)'],start_new_session=True)
         g=OwnedProcesses();launch=g.record(child.pid)

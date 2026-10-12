@@ -16,7 +16,6 @@ from dataclasses import dataclass
 class _Launch:
     pid: int
     start: str
-    session: str = None
 
 
 def valid_id(pid):
@@ -89,8 +88,7 @@ class OwnedProcesses:
                             leader = live.get(root.pid)
                             if not self.matches(leader) or leader["start"] != root.start:
                                 continue
-                            if (leader.get("sid") == root.pid and row.get("sid") == root.pid
-                                    or root.session and row.get("session") == root.session):
+                            if leader.get("sid") == root.pid and row.get("sid") == root.pid:
                                 launch = root
                                 break
                     if launch is not None:
@@ -112,8 +110,7 @@ class OwnedProcesses:
                 raise ValueError("unowned reused process identity")
             self.refresh(rows)
             launch = previous if previous is not None and previous.start == row["start"] else _Launch(
-                pid, row["start"], row.get("session") if row.get("session")
-                and row["pgid"] == pid and os.getsid(pid) == pid else None)
+                pid, row["start"])
             self.handles.add(launch)
             self.roots[pid] = launch
             self.owned[pid] = (row["start"], launch)

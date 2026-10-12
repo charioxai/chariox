@@ -3,13 +3,13 @@
   "guards": [
     {
       "path": "apps/kernel/slice-linux-docker/owned-process-signals.mjs",
-      "sha256": "99358198ec0581f92e52e7278373e6b2f8c7c7268bd2037b17350391cf5cc351",
-      "reason": "MP-11 canonical Node guard; opaque generation handles required for PID/group signals, subgroups retain launch generation, all members verified immediately before signalling; no numeric fallback. Darwin census excludes only the exact reaped inspection PID. Snapshot-indexed refresh (7309cd7ce) keeps the root-before-parent generation rules; collected PID/group handles are re-verified (PID/start, every group member) immediately before each send."
+      "sha256": "1b49048ba6565d24b08ab2aa96fc662bdf322ac88033f594cbabf051f78ae7f1",
+      "reason": "MP-11 canonical Node guard; opaque generation handles required for PID/group signals, subgroups retain launch generation, all members verified immediately before signalling; no numeric fallback. Darwin census excludes only the exact reaped inspection PID. Snapshot-indexed refresh (7309cd7ce) keeps the root-before-parent generation rules; collected PID/group handles are re-verified (PID/start, every group member) immediately before each send. MP-11: Darwin ownership uses observed PID/PPID descent only; BSD sess is never authority."
     },
     {
       "path": "apps/kernel/slice-linux-docker/owned_process_signals.py",
-      "sha256": "b20d7dd25d90cab449580a3256ebfde3cf96be8dab8f459ddee67d1ad0f71af4",
-      "reason": "MP-11 canonical Python guard; generation handles required, explicit subgroup IDs bound to the launch generation, PID/start/all member identities verified before os.killpg/os.kill."
+      "sha256": "7c95020a3c040d1e69eddd911cc2ac3d271a284f50c1535a720a33583257cca1",
+      "reason": "MP-11 canonical Python guard; generation handles required, explicit subgroup IDs bound to the launch generation, PID/start/all member identities verified before os.killpg/os.kill. MP-11: Darwin ownership uses observed PID/PPID descent only; BSD sess is never authority."
     },
     {
       "path": "scripts/lint-process-signals.mjs",

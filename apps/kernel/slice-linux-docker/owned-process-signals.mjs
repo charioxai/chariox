@@ -59,21 +59,17 @@ export function createOwnedSignalGuard({ snapshot = processSnapshot, send = (id,
     }
     // MP-11: index this snapshot once; polling must not scan the entire host
     // process table again for every unrelated process or descendant.
-    const bySid = new Map(), bySession = new Map(), rank = new Map()
+    const bySid = new Map()
     for (const root of roots.values()) {
       if (root.retired) continue
       const leader = byPid.get(root.pid)
-      rank.set(root, rank.size)
       if (leader.sid === leader.pid && !bySid.has(leader.sid)) bySid.set(leader.sid, root)
-      if (root.session && !bySession.has(root.session)) bySession.set(root.session, root)
     }
     const descendants = new Map()
     const queue = [...owned.keys()]
     for (const row of rows) {
       if (owned.has(row.pid) || row.pid <= 1 || !row.start) continue
-      const sidRoot = bySid.get(row.sid), sessionRoot = bySession.get(row.session)
-      const root = !sidRoot ? sessionRoot : !sessionRoot ? sidRoot
-        : rank.get(sidRoot) < rank.get(sessionRoot) ? sidRoot : sessionRoot
+      const root = bySid.get(row.sid)
       if (root) {
         owned.set(row.pid, { start: row.start, generation: root })
         queue.push(row.pid)
@@ -104,7 +100,8 @@ export function createOwnedSignalGuard({ snapshot = processSnapshot, send = (id,
     if (previous && previous.start !== row.start && !freshLaunch) throw new Error('unowned reused process identity')
     refresh(rows)
     const root = previous?.start === row.start ? previous : { pid: id, start: row.start, retired: false }
-    if (sessionLeader && row.pgid === id && row.session && row.session !== '-') root.session = row.session
+    // MP-11: BSD sess is not ownership evidence (macOS reports 0 globally).
+    // Darwin descendants must be observed through PID/PPID and start identity.
     handles.set(root, { id, root, start: root.start })
     roots.set(id, root)
     owned.set(id, { start: row.start, generation: root })

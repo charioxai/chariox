@@ -103,12 +103,14 @@ test('MP-11 exclusive live session proves reparented members without granting re
   assert.throws(() => g.group(handle, 'SIGKILL'), /unowned/)
   assert.equal(sent.length, 1)
 })
-test('MP-11 BSD session tokens require an explicitly recorded live detached leader', () => {
+test('MP-11 BSD ownership retains observed descendants after reparenting', () => {
   let rows = [{...row(50), session: '0xabc'}]
   const sent = []
   const g = createOwnedSignalGuard({ snapshot: () => rows, send: (...args) => sent.push(args) })
   const handle = g.record(50, { sessionLeader: true })
-  rows.push({...row(51, 1), session: '0xabc'})
+  rows.push({...row(51, 50), session: '0xabc'})
+  g.refresh()
+  rows[1].ppid = 1
   g.group(handle, 'SIGTERM')
   rows = [{...row(50, 9, 50, 'new-root'), session: '0xabc'}, {...row(52, 1), session: '0xabc'}]
   assert.throws(() => g.group(handle, 'SIGKILL'), /unowned/)
@@ -187,4 +189,21 @@ test('MP-11 subgroup and descendant PID handles retain their launch generation a
   assert.throws(() => f.guard.pid(descendant, 'SIGKILL'), /unowned/)
   assert.equal(f.sent.length, 2)
   assert.equal(f.guard.group(replacement, 'SIGTERM'), true)
+})
+
+// MP-08 / MP-10 / MP-11: macOS 26.5 ps reports sess=0 for every process.
+// Cleanup callers enumerate all handles, so unrelated rows must never enter it.
+for (const session of ['0', '0x0']) test(`MP-11 BSD sess=${session} owns only observed PID/PPID descendants`, () => {
+  let rows = [row(50, 9, 50), row(51, 50, 51), row(90, 1, 90), row(91, 9, 50)].map(r => ({...r, session}))
+  const sent = []
+  const g = createOwnedSignalGuard({ snapshot: () => rows, send: (...args) => sent.push(args) })
+  const root = g.record(50, {sessionLeader: true})
+  assert.deepEqual(g.processes(root).map(h => h.pid), [50, 51])
+  assert.deepEqual(g.groups(root).map(h => h.pid), [50, 51])
+  assert.throws(() => g.group(root, 'SIGTERM'), /unowned/)
+  const child = g.groups(root).find(h => h.pid === 51)
+  g.group(child, 'SIGTERM')
+  assert.deepEqual(sent, [[-51, 'SIGTERM']])
+  rows = [rows[1], rows[2], rows[3]].map(r => r.pid === 51 ? {...r, ppid: 1} : r)
+  assert.deepEqual(g.processes(root).map(h => h.pid), [51])
 })
