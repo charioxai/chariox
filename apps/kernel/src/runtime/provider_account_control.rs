@@ -17,6 +17,7 @@ pub(crate) async fn execute_provider_account_request(
             | LocalDaemonRequest::GetProviderAccountProfile(_)
     );
     let registry = runtime_state.provider_account_profile_registry().clone();
+    let config = runtime_state.config_snapshot().await;
     let runtime_for_checks = runtime_state.clone();
     let response = tokio::task::spawn_blocking(move || match request {
         LocalDaemonRequest::ListProviderAccountProfiles(request) => {
@@ -101,11 +102,12 @@ pub(crate) async fn execute_provider_account_request(
         LocalDaemonRequest::RefreshProviderAccountProfile(request) => {
             Ok(LocalDaemonResponse::ProviderAccountProfile {
                 profile:
-                    crate::local::provider_requests::refresh_provider_account_profile_response(
+                    crate::local::provider_requests::refresh_provider_account_profile_with_config(
                         &registry,
                         &owner_user_id,
                         &request.provider,
                         &request.account_profile,
+                        &config,
                     )?,
             })
         }

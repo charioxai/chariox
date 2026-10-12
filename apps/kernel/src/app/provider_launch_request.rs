@@ -118,11 +118,12 @@ impl DaemonApp {
                     &request.account_profile,
                     crate::session::unix_epoch_ms(),
                     || {
-                        crate::local::provider_requests::refresh_provider_account_profile_response(
+                        crate::local::provider_requests::refresh_provider_account_profile_with_config(
                             &self.provider_account_profiles,
                             &account_owner_user_id,
                             &request.provider,
                             &request.account_profile,
+                            &self.config,
                         )
                     },
                 )?;

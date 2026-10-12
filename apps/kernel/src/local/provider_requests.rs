@@ -23,7 +23,7 @@ use blocking::block_on_relay_query;
 pub(crate) use catalog::{
     claude_auth_status, load_provider_catalog, logout_provider_response,
     observe_provider_auth_status, observe_provider_auth_status_until, provider_auth_status_response,
-    provider_command_catalogs_response, refresh_provider_account_profile_response,
+    provider_command_catalogs_response, refresh_provider_account_profile_response, refresh_provider_account_profile_with_config,
     start_provider_login_response, PROVIDER_CATALOG_CACHE_TTL,
 };
 pub(crate) use remote_machines::{
