@@ -51,6 +51,8 @@ pub(crate) fn projected_session_state_response(
     }
     let agent_activity =
         runtime_state.agent_activity_for_session_with_unread(&session, Some(caller_user_id));
+    let room_workflows =
+        crate::runtime::projection::RoomWorkflowInventory::project(&session, caller_user_id);
     let redacted_session = session.redacted_for_user(caller_user_id);
     let visible_agent_ids = redacted_session
         .agents()
@@ -58,6 +60,7 @@ pub(crate) fn projected_session_state_response(
         .map(|agent| agent.id().to_string())
         .collect::<std::collections::BTreeSet<_>>();
     Some(Ok(LocalDaemonResponse::SessionState {
+        room_workflows,
         agent_activity: agent_activity
             .into_iter()
             .filter(|(agent_id, _)| visible_agent_ids.contains(agent_id))

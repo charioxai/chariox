@@ -1,3 +1,4 @@
+import { TUI_MOUSE_ENABLED } from "./terminal-mouse-policy.js"
 import {
   BoxRenderable,
   MarkdownRenderable,
@@ -39,6 +40,7 @@ import {
   type TranscriptSurfaceTone,
 } from "./transcript-render-theme.js"
 import { applyTranscriptTextContent } from "./transcript-text-render.js"
+import { createTranscriptMarkdownNodeRenderer } from "./transcript-hyperlinks.js"
 
 export {
   transcriptRenderMode,
@@ -94,8 +96,8 @@ export function buildTranscriptEntryRenderable(
     const padding = transcriptEntryPadding(nextEntry)
     body = new BoxRenderable(renderer, {
       width: "100%",
-      paddingLeft: padding.horizontal,
-      paddingRight: padding.horizontal,
+      paddingLeft: TUI_MOUSE_ENABLED ? padding.horizontal : 0,
+      paddingRight: TUI_MOUSE_ENABLED ? padding.horizontal : 0,
       paddingTop: padding.vertical,
       paddingBottom: padding.vertical,
       flexDirection: "column",
@@ -212,6 +214,7 @@ function buildExpandedTranscriptContent(
       conceal: true,
       concealCode: false,
       streaming: true,
+      renderNode: createTranscriptMarkdownNodeRenderer(renderer),
     })
     body.add(markdown)
     markdown.requestRender()

@@ -6,6 +6,7 @@ import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import { LocalIpcClient } from "../ipc.js"
+import { createCliRelayIdentityStore } from "../cli-relay-identity-store.js"
 import { promptAttachmentTransferIsForced } from "../prompt-attachment-transfer.js"
 import { grantNativeCapabilities } from "./capability-grants.js"
 import {
@@ -44,6 +45,7 @@ import {
   defaultKernelEndpoint,
   inferWorkspaceTargetsFromLaunchDirectory,
   parseKernelPort,
+  relayTokenFromEnvironment,
   parseNativeMode as parseMode,
   parseNativePermissions as parsePermissions,
 } from "./launch-environment.js"
@@ -92,6 +94,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
   const client = new LocalIpcClient(kernelEndpoint, options.relayUrl
     ? {
       relayAuthToken: options.relayToken,
+      relayIdentity: createCliRelayIdentityStore().load() ?? undefined,
       relayAuthorizationIssuer: options.relayTokenIssuer,
       targetDaemonId: options.targetDaemonId,
       targetDaemonAlias: options.targetDaemonAlias,
@@ -239,6 +242,7 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
     grantMcps: [],
     grantSkills: [],
   }
+  let relayTokenSource = false
   const positional: string[] = []
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? ""
@@ -266,7 +270,14 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
         options.relayTokenIssuer = { endpoint: next(), daemonId: next() }
         break
       case "--relay-token":
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
+        relayTokenSource = true
         options.relayToken = next()
+        break
+      case "--relay-token-env":
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
+        relayTokenSource = true
+        options.relayToken = relayTokenFromEnvironment(next())
         break
       case "--target-daemon-id":
         options.targetDaemonId = next()
@@ -356,6 +367,8 @@ function printNativeClaudeUsage() {
     "Options:",
     "  --kernel-port, --port <port>     Kernel websocket port (default 43119)",
     "  --kernel-url <url>               Kernel websocket URL",
+    "  --relay-url <url>                Hosted relay websocket URL",
+    "  --relay-token-env <name>         Read relay authorization from the named environment variable",
     "  --workspace <path>               Workspace root",
     "  --worktree <path>                Worktree root",
     "  --machine, --kernel-ref <ref>    Run the Chariox agent/provider on a remote worker kernel",

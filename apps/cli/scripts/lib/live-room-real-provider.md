@@ -30,23 +30,22 @@ Use `CARGO_TARGET_DIR` for the existing matching binaries and
 automatic image builds. The fixture enforces one 2-GiB, one-CPU headed slice and
 always cleans up its container, volume, temporary state, and listeners.
 
-The real-provider mode explicitly enables the existing
-`slices.linux.allow_provider_sandbox_compatibility` option for this disposable
-local slice. The provider still runs inside the inner Bubblewrap filesystem
-isolation with dropped capabilities. Ordinary fixture modes and user settings
-are unchanged. Do not use this local drill setting as managed-host acceptance;
-managed hosts additionally require the dedicated rootless Docker boundary.
+MP-01 / MP-08 / MP-10 / MP-11: local Docker slices enable
+`slices.linux.allow_provider_sandbox_compatibility` by default. This drill uses
+that default, with no extra opt-in. The complete container grant adds SYS_ADMIN,
+NET_ADMIN and SYS_PTRACE, disables seccomp, unmasks system paths and selects the
+configured AppArmor profile (default unconfined). The provider still runs inside
+the inner Bubblewrap filesystem isolation with dropped capabilities. Managed
+hosts retain their dedicated rootless Docker boundary; this local drill does not
+establish managed-host acceptance.
 
-For MP-08/MP-10 worker startup, configure this option before creating the
-execution slice, including a fresh unbound slice created later in a provider-free
-fixture. A provider-free slice using the ordinary default security settings
-cannot create the inner provider namespaces. Codex account catalog startup can
-then exit early, and OpenCode auth status can fail, before any provider turn.
-The kernel reports only fixed diagnostic classes and stderr byte counts; the
-combination `namespace,permission_denied` identifies this boundary failure.
-Recreate the execution slice with the option enabled and use normal SpawnAgent
-account materialization. Do not import account files first or change provider
-credentials to repair a namespace failure.
+Users may set the option to `false`. After any change, recreate the execution
+slice so its container receives the selected security settings. A namespace
+startup failure does not require changing provider credentials: if compatibility
+was disabled, re-enable it; otherwise verify the host's namespace/AppArmor policy,
+including the shipped `chariox-slice-provider` profile on restricted Ubuntu.
+The kernel exposes fixed `namespace,permission_denied` diagnostic classes and
+stderr byte counts without provider output or credentials.
 
 The empty provider workspace is under a private `mkdtemp` directory in
 `~/.chariox/dev/browser-computer-use/`, not macOS `/var/folders`, which Colima

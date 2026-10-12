@@ -44,6 +44,7 @@ mod terminal_command_catalog;
 mod terminal_interaction;
 mod waiting_room;
 mod workflow;
+mod workflow_notification;
 mod workspace;
 
 pub use agent_lifecycle::*;
@@ -80,6 +81,7 @@ pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use waiting_room::*;
 pub use workflow::*;
+pub use workflow_notification::*;
 pub use workspace::*;
 
 /// Version 319 adds Git credential enrollment for an existing managed environment.
@@ -263,4 +265,11 @@ pub use workspace::*;
 /// complete Environment operation contract on top of 472 (developed as 471;
 /// MP-02/MP-03/MP-08/MP-10/MP-11).
 /// Version 490 requires bounded relay response framing and socket-local receipts.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 490;
+/// Version 491 adds credential-free Cloud kernel ownership projections, receiving
+/// CLIENT key-bound pivots, Cloud-free terminal pairing and provider account
+/// portability preflight, and requires a distinct relay subscription identity for
+/// every fresh encrypted binding while retaining the logical session replay
+/// cursor. It also restores workflow notifications, Room workflow inventory and
+/// controls, opt-in Cloud device denial and exact home-prompt cancellation
+/// admission (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 491;

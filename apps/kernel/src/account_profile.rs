@@ -19,9 +19,21 @@ use crate::error::DaemonError;
 #[path = "account_copy_notice.rs"]
 mod copy_notice;
 
+#[path = "account_profile_authority.rs"]
+mod authority;
+pub(crate) use authority::{
+    bind_provider_account_authority, copy_provider_account_selection,
+    provider_account_authority_for_launch, provider_account_authority_for_run,
+    provider_account_authority_owner_for_profile, provider_account_selection_for_run,
+    ResolvedProviderAccount,
+};
+
 const REGISTRY_VERSION: u32 = 1;
 const SUPPORTED_PROVIDERS: [&str; 3] = ["codex", "claude", "opencode"];
 const MAX_MATERIALIZATION_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(test)]
+#[path = "account_profile_authority_tests.rs"]
+mod authority_tests;
 #[cfg(unix)]
 #[path = "account_profile_managed_fs.rs"]
 mod managed_fs;
@@ -1219,7 +1231,17 @@ impl ProviderAccountProfileRegistry {
         operation: &'static str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let profile = self.get(owner_user_id, provider, profile_id)?;
-        if profile.auth_state == ProviderAccountAuthState::Authenticated {
+        // MP-08/MP-10/MP-11: a registered Claude token is admitted to the
+        // kernel's first-use check. Unknown/expired observations must not ask
+        // the user to replace a potentially valid token before that check.
+        let deferred_claude_check = profile.auth_state != ProviderAccountAuthState::Authenticated
+            && profile.provider == "claude"
+            && crate::provider::provider_account_credential_registered(
+                owner_user_id,
+                "claude",
+                &profile.profile_id,
+            )?;
+        if profile.auth_state == ProviderAccountAuthState::Authenticated || deferred_claude_check {
             if let Some(block) = provider_account_usage_block(
                 &profile.provider,
                 model,
@@ -1269,7 +1291,13 @@ impl ProviderAccountProfileRegistry {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(());
         };
-        let owner_user_id = provider_account_authority_owner_user_id(config, agent.owner_user_id());
+        let owner_user_id = provider_account_authority_owner_for_profile(
+            config,
+            self,
+            agent.owner_user_id(),
+            provider,
+            agent.provider_account_profile(),
+        )?;
         self.require_authenticated(
             &owner_user_id,
             provider,
@@ -4964,6 +4992,9 @@ mod tests {
     fn cloud_owner_aliases_local_accounts_without_aliasing_collaborators() {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             user_id: "cloud-owner".to_string(),
             ..Default::default()
         });

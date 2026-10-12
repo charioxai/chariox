@@ -51,12 +51,15 @@ pub(crate) use account_credential::{
 };
 #[cfg(test)]
 pub(crate) use claude::ensure_claude_native_hidden_context_fits;
-pub(crate) use claude::probe_claude_account_usage;
+pub(crate) use claude::prepare_vaulted_claude_native_onboarding;
+pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
     claude_native_hidden_context_room, fit_claude_native_hidden_context,
     CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS, CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
 };
-pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
+pub(crate) use claude::{
+    probe_claude_account_usage, verify_claude_account_credential, ClaudeCredentialCheckError,
+};
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
 pub(crate) use claude_runtime::ClaudeRuntimeState;
@@ -102,8 +105,8 @@ pub(crate) use managed_isolation::{
     managed_isolated_utility_command, managed_isolated_utility_launch,
     managed_provider_control_env_remove, managed_provider_isolation_env_remove,
     managed_provider_isolation_required, managed_provider_parent_credential_env_remove,
-    provider_reported_transcript_on_kernel, MANAGED_SLICE_PUBLICATION_ROOT_ENV,
-    MANAGED_SLICE_SERVICE_ROOT_ENV,
+    provider_account_environment_on_kernel, provider_reported_transcript_on_kernel,
+    MANAGED_SLICE_PUBLICATION_ROOT_ENV, MANAGED_SLICE_SERVICE_ROOT_ENV,
 };
 #[cfg(test)]
 pub(crate) use managed_isolation::{

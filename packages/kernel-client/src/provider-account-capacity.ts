@@ -34,17 +34,7 @@ export function providerAccountCapacity(
     ? "claude"
     : profile.provider
   const selectedOpenCodeService = provider === "opencode" ? openCodeServiceFromModel(model) : null
-  const codexModel = model?.trim().replace(/^codex\//, "")
-  const relevantMeters = provider === "opencode" && selectedOpenCodeService
-    ? meters.filter((meter) => openCodeMeterService(meter) === selectedOpenCodeService)
-    : provider === "opencode"
-      ? meters.filter((meter) => openCodeMeterService(meter) == null)
-      : provider === "codex" ? meters.filter((meter) => {
-        if (!codexModel || codexModel === "default" || !meter.meter_id.startsWith("rolling/")) return true
-        const bucket = meter.meter_id.split("/").at(-1)
-        if (bucket !== "codex" && bucket !== "codex_bengalfox") return true
-        return bucket === (codexModel === "gpt-5.3-codex-spark" ? "codex_bengalfox" : "codex")
-      }) : meters
+  const relevantMeters = providerAccountModelMeters(profile, model)
   const freshRelevantMeters = relevantMeters.filter(isFresh)
   const exhausted = freshRelevantMeters.filter(currentlyExhausted)
   if (provider === "codex" || provider === "claude") {
@@ -120,4 +110,32 @@ function openCodeServiceLabel(profile: ProviderAccountProfile, serviceId: string
   if (serviceId === "opencode-go") return "OpenCode Go"
   if (serviceId === "opencode") return "OpenCode Zen"
   return serviceId
+}
+
+export function providerAccountCapacityResetLabel(profile: ProviderAccountProfile, nowMs = Date.now(), model?: string | null): string | null {
+  if (providerAccountCapacity(profile, nowMs, model).state !== "exhausted") return null
+  const resets = providerAccountModelMeters(profile, model)
+    .filter(meter => meter.state === "exhausted" && meter.resets_at_ms != null && meter.resets_at_ms > nowMs
+      && (meter.observed_at_ms == null || nowMs - meter.observed_at_ms <= 24 * 60 * 60 * 1000))
+    .map(meter => meter.resets_at_ms!)
+  const times = [...new Set(resets)].sort((a, b) => a - b)
+    .map(reset => new Date(reset).toISOString().slice(0, 16).replace("T", " ") + " UTC")
+  return times.length ? `resets ${times.join(", ")}` : null
+}
+
+function providerAccountModelMeters(profile: ProviderAccountProfile, model?: string | null) {
+  const meters = profile.usage?.meters ?? []
+  const family = profile.provider.startsWith("claude") ? "claude" : profile.provider
+  const selectedOpenCodeService = family === "opencode" ? openCodeServiceFromModel(model) : null
+  const codexModel = model?.trim().replace(/^codex\//, "")
+  return family === "opencode" && selectedOpenCodeService
+    ? meters.filter((meter) => openCodeMeterService(meter) === selectedOpenCodeService)
+    : family === "opencode"
+      ? meters.filter((meter) => openCodeMeterService(meter) == null)
+      : family === "codex" ? meters.filter((meter) => {
+        if (!codexModel || codexModel === "default" || !meter.meter_id.startsWith("rolling/")) return true
+        const bucket = meter.meter_id.split("/").at(-1)
+        if (bucket !== "codex" && bucket !== "codex_bengalfox") return true
+        return bucket === (codexModel === "gpt-5.3-codex-spark" ? "codex_bengalfox" : "codex")
+      }) : meters
 }

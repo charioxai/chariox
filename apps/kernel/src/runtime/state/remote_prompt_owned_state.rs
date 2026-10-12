@@ -156,19 +156,14 @@ impl KernelRuntimeOwnedState {
         };
         let activity_mutation = self.begin_managed_activity_mutation();
         let started = if let Some(claim) = profile_transition {
-            claim.finish_and_activate_next(
-                &session,
-                agent_id,
-                self.session_store.reserve_prompt_id(),
-            )?
+            claim.finish_and_activate_next(&session, agent_id)?
         } else {
             let next_prompt = next_prompt.expect("ordinary queue advance checked its queue front");
             self.prompt_state_owner
-                .activate_next_queued_prompt_with_prompt_id(
+                .activate_next_queued_prompt_for_dispatch(
                     &session,
                     agent_id,
                     Some(next_prompt.id()),
-                    self.session_store.reserve_prompt_id(),
                 )?
         };
         let Some(started) = started else {
@@ -510,11 +505,10 @@ impl KernelRuntimeOwnedState {
                     let activity_mutation = self.begin_managed_activity_mutation();
                     let active = self
                         .prompt_state_owner
-                        .activate_next_queued_prompt_with_prompt_id(
+                        .activate_next_queued_prompt_for_dispatch(
                             &session,
                             agent_id,
                             Some(expected_next.id()),
-                            self.session_store.reserve_prompt_id(),
                         )?;
                     if active.is_some() {
                         let (active_prompt, queued_prompts) =
@@ -556,6 +550,21 @@ impl KernelRuntimeOwnedState {
         target_agent_id: &str,
         attachment_id: &str,
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
+        self.begin_remote_prompt_cancellation_if_matches(
+            session_id,
+            target_agent_id,
+            attachment_id,
+            None,
+        )
+    }
+
+    pub(super) fn begin_remote_prompt_cancellation_if_matches(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        expected_prompt_id: Option<&str>,
+    ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
         if !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id) {
             let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
         }
@@ -573,6 +582,11 @@ impl KernelRuntimeOwnedState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
+        if expected_prompt_id.is_some_and(|expected| active_prompt.id() != expected) {
+            return Err(DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            });
+        }
         if active_prompt.status() == crate::session::PromptStatus::Cancelling {
             let session = self.session_snapshot(session_id)?;
             return Ok(crate::app::KernelPromptCancellation {
@@ -586,7 +600,7 @@ impl KernelRuntimeOwnedState {
         }
         let prompt = self
             .prompt_state_owner
-            .begin_cancelling_active_prompt(&session, target_agent_id)
+            .begin_cancelling_prompt_if_matches(&session, target_agent_id, expected_prompt_id)
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
@@ -630,16 +644,15 @@ impl KernelRuntimeOwnedState {
         target_agent_id: &str,
         attachment_id: &str,
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
-        let _ =
+        let started =
             self.begin_remote_prompt_cancellation(session_id, target_agent_id, attachment_id)?;
+        self.workflow_cancel_prompt(session_id, &started.cancellation.prompt)?;
         let cancellation = self.finalize_local_prompt_cancellation_with_queued_advance(
             session_id,
             target_agent_id,
+            started.cancellation.prompt.id(),
             None,
         )?;
-        if cancellation.cancellation.prompt.workflow_run_id().is_some() {
-            self.workflow_cancel_prompt(session_id, &cancellation.cancellation.prompt)?;
-        }
         let session = self.session_snapshot(session_id)?;
         Ok(crate::app::KernelPromptCancellation {
             cancellation: cancellation.cancellation,
@@ -1701,7 +1714,8 @@ mod tests {
         let started_next = completion
             .started_next
             .expect("queued remote prompt should start");
-        assert_ne!(started_next.id(), queued_prompt.id());
+        assert_eq!(started_next.id(), queued_prompt.id());
+        assert_eq!(started_next.pending_prompt_id(), None);
         assert_eq!(started_next.prompt(), queued_prompt.prompt());
         assert!(
             projection_store.session_change_sequence(&session_id) > before_completion_sequence,

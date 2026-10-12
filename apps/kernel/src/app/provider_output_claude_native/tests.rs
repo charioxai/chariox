@@ -4,6 +4,7 @@ use super::*;
 #[derive(Clone, Default)]
 struct RecordingPermissionBridge {
     interaction_ids: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    messages: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl ProviderNativeInteractionBridge for RecordingPermissionBridge {
@@ -12,6 +13,10 @@ impl ProviderNativeInteractionBridge for RecordingPermissionBridge {
         _session_id: &str,
         interaction: RuntimeInteraction,
     ) -> Result<crate::provider::ProviderNativeInteractionResolution, DaemonError> {
+        self.messages
+            .lock()
+            .unwrap()
+            .push(interaction.message().to_string());
         self.interaction_ids
             .lock()
             .expect("permission interaction recorder should not be poisoned")
@@ -507,6 +512,95 @@ fn hook_permission_without_an_interaction_bridge_releases_the_waiting_hook() {
 }
 
 #[test]
+fn rendered_permission_preserves_reviewable_tool_arguments() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-permission-dedupe-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("context.json");
+    fs::write(&context_file, "").expect("context file should be created");
+    let context_file = context_file.display().to_string();
+
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-1",
+        "claude",
+        "claude",
+        "default",
+        "claude-sonnet",
+    )
+    .with_agent_id("agent-1")
+    .with_permission_level(crate::provider::AgentPermissionLevel::Required);
+    let run = RuntimeProviderRun::new(
+        "provider-run-1",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-native".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                context_file.clone(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    let bridge = RecordingPermissionBridge::default();
+    let bridge_ref: std::sync::Arc<dyn ProviderNativeInteractionBridge> =
+        std::sync::Arc::new(bridge.clone());
+    let action = "Tool use integ2-official-fetch - fetch(url: https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API) (MCP)";
+    let mut output = ProviderOutputClaudeNativeBridge::new(&mut app);
+    output
+        .process_terminal_output(
+            "session-1",
+            run.id(),
+            &run,
+            Some(bridge_ref.clone()),
+            action,
+        )
+        .expect("partial tool frame should wait for choices");
+    output
+        .process_terminal_output(
+            "session-1",
+            run.id(),
+            &run,
+            Some(bridge_ref),
+            "Do you want to proceed?\n1. Yes\n3. No",
+        )
+        .expect("rendered permission should be bridged");
+    for _ in 0..100 {
+        if !bridge.messages.lock().unwrap().is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let messages = bridge.messages.lock().unwrap().clone();
+    assert_eq!(messages.len(), 1);
+    assert!(
+        messages[0].contains(action),
+        "MP-08/MP-10/MP-11 permission must show the actual tool and arguments"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn rendered_permission_details_redact_hidden_instructions_and_terminal_controls() {
+    let start = crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_START;
+    let end = crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_END;
+    let message = claude_rendered_permission_details(&format!("\x1b[31mTool use fetch(url: https://github.com/charioxai/chariox)\x1b[0m {start}private-first{end} {start}private-second{end} Do you want to proceed?"));
+    assert!(message.contains("fetch(url: https://github.com/charioxai/chariox)"));
+    assert!(!message.contains("private-") && !message.contains('\x1b'));
+    assert!(claude_rendered_permission_details(&"a".repeat(8000)).len() < 4100);
+}
+
+#[test]
 fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
@@ -946,13 +1040,11 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
     let next_active_prompt_id = if let Some(queued_prompt) = queued_prompt {
         app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
             .expect("stopped prompt should complete");
-        let next_prompt_id = app.sessions_mut().reserve_prompt_id();
         let next = app
-            .prompt_owner_activate_next_queued_prompt_with_prompt_id(
+            .prompt_owner_activate_next_queued_prompt_for_dispatch(
                 session.id(),
                 agent.id(),
                 Some(queued_prompt.id()),
-                next_prompt_id,
             )
             .expect("next prompt activation should succeed")
             .expect("next prompt should activate");
@@ -1463,6 +1555,41 @@ fn claude_headless_user_prompt_submit_acknowledges_matching_managed_dispatches()
 
 #[test]
 fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
+    workspace_trust_approval_fixture("1. No, exit\n2. Yes, I trust this folder", "\x1b[B\n");
+}
+
+#[test]
+fn claude_workspace_trust_accepts_yes_first_without_selecting_no() {
+    workspace_trust_approval_fixture("❯ 1. Yes, I trust this folder\n2. No, exit", "\n");
+}
+
+#[test]
+fn claude_workspace_trust_keeps_highlighted_yes_second() {
+    workspace_trust_approval_fixture("1. No, exit\n❯ 2. Yes, I trust this folder", "\n");
+}
+
+// MP-08/MP-10/MP-11: captured official Claude 2.1.292 uses unnumbered choices.
+#[test]
+fn claude_workspace_trust_accepts_unnumbered_no_first() {
+    workspace_trust_approval_fixture("❯ No, exit\nYes, I trust this folder", "\x1b[B\n");
+}
+
+#[test]
+fn claude_workspace_trust_accepts_unnumbered_yes_first() {
+    workspace_trust_approval_fixture("❯ Yes, I trust this folder\nNo, exit", "\n");
+}
+
+#[test]
+fn claude_workspace_trust_keeps_unnumbered_highlighted_yes() {
+    workspace_trust_approval_fixture("No, exit\n❯ Yes, I trust this folder", "\n");
+}
+
+#[test]
+fn claude_workspace_trust_selects_yes_above_highlighted_no() {
+    workspace_trust_approval_fixture("1. Yes, I trust this folder\n❯ 2. No, exit", "\x1b[A\n");
+}
+
+fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
     let worktree = crate::test_support::TestWorktree::new("claude-native-trust-approval");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
@@ -1536,15 +1663,14 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
         steering: false,
     };
     let bridge = StartupTrustBridge::default();
-    let trust_frame =
-        "Quick safety check\nDo you trust this folder?\n1. No, exit\n2. Yes, I trust this folder";
+    let trust_frame = format!("Quick safety check\nDo you trust this folder?\n{choices}");
     ProviderOutputClaudeNativeBridge::new(&mut app)
         .process_terminal_output(
             session.id(),
             run.id(),
             &run,
             Some(std::sync::Arc::new(bridge.clone())),
-            trust_frame,
+            &trust_frame,
         )
         .expect("startup trust should enter the native interaction path");
 
@@ -1596,6 +1722,29 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(approved, "explicit approval should reach startup wait");
+    for _ in 0..100 {
+        if fs::read_to_string(&capture_file)
+            .unwrap_or_default()
+            .contains(expected_input)
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        fs::read_to_string(&capture_file)
+            .expect("PTY should capture workspace approval")
+            .contains(expected_input),
+        "approval must select Yes for the rendered choices"
+    );
+    if expected_input == "\n" {
+        assert!(
+            !fs::read_to_string(&capture_file)
+                .unwrap()
+                .contains("\x1b[B"),
+            "an already selected Yes must not move to No"
+        );
+    }
 
     std::thread::sleep(std::time::Duration::from_millis(4_100));
     fs::write(
@@ -1738,7 +1887,7 @@ fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
 #[test]
 fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
     let worktree = crate::test_support::TestWorktree::new("claude-native-trust-rejection");
-    let root = std::env::temp_dir().join(format!(
+    let root = crate::test_support::test_workspace_root().join(format!(
         "chariox-claude-startup-trust-rejection-{}-{}",
         std::process::id(),
         timestamp_millis()
@@ -2924,6 +3073,7 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
                     &run,
                     &context,
                     std::sync::Arc::new(RefusedPermissionBridge),
+                    "Quick safety check\nDo you trust this folder?\n1. No, exit\n2. Yes, I trust this folder",
                 )
                 .unwrap();
         } else {

@@ -10,6 +10,7 @@ import { formatTranscriptPreview } from "@chariox/kernel-client/session-history-
 import { reindexTranscriptEntries } from "@chariox/kernel-client/transcript-entry-state"
 
 export type DeferredBootstrapControllerDeps = {
+  applyWaitingRoomDefaults?: (defaults: { provider?: string; model?: string; effort?: string }) => void
   getDeferred: () => BootstrapDeferredState | undefined
   currentAttachmentSessionId: () => string | null
   currentTranscriptEntryCount: () => number
@@ -86,6 +87,10 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
       deps.updateSessionChrome()
     }).catch((error) => {
       warn("failed to hydrate provider catalog after bootstrap", error)
+    })
+
+    void deferred.waitingRoomDefaults?.then(defaults => deps.applyWaitingRoomDefaults?.(defaults)).catch(error => {
+      warn("failed to hydrate waiting-room defaults", error)
     })
 
     void deferred.providerCommandCatalogs?.then((catalogs) => {

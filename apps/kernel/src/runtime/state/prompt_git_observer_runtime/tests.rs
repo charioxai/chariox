@@ -597,6 +597,17 @@ async fn forwarded_workspace_live_sync_apply_notifies_target_session() {
 
 #[tokio::test]
 async fn pending_git_snapshot_finalizes_completed_turn_projection_after_provider_completion() {
+    assert_pending_git_snapshot_finalizes_canonical_turn(false).await;
+}
+
+// MP-08/MP-10/MP-11: steering is input to the existing turn. A separate
+// observation must not replace that turn's exact completion identity.
+#[tokio::test]
+async fn steering_git_observation_preserves_canonical_completed_prompt() {
+    assert_pending_git_snapshot_finalizes_canonical_turn(true).await;
+}
+
+async fn assert_pending_git_snapshot_finalizes_canonical_turn(steering: bool) {
     let root = std::env::temp_dir().join(format!(
         "chariox-git-turn-finalizer-{}-{}",
         std::process::id(),
@@ -654,7 +665,48 @@ async fn pending_git_snapshot_finalizes_completed_turn_projection_after_provider
     .expect("pre-turn snapshot should be captured");
     runtime.owned.git_turn_snapshots.insert(before);
 
+    if steering {
+        runtime
+            .observe_git_before_prompt_dispatch(
+                &crate::app::KernelPromptDispatch {
+                    session_id: session.id().to_string(),
+                    provider_run_id: provider_run.id().to_string(),
+                    agent_id: agent.id().to_string(),
+                    prompt_id: "steering-input".to_string(),
+                    target_active_prompt_id: Some("prompt-1".to_string()),
+                    source_attachment_id: "attachment-1".to_string(),
+                    prompt: "refine the existing change".to_string(),
+                    hidden_system_context: String::new(),
+                    attachments: Vec::new(),
+                    prompt_origin: crate::session::PromptOrigin::Chariox,
+                    external_provider: None,
+                    external_provider_session_id: None,
+                    external_provider_turn_id: None,
+                    steering: true,
+                },
+                &provider_run,
+            )
+            .await;
+    }
+
     std::fs::write(root.join("src/lib.rs"), "seed\nagent change\n").expect("source should change");
+
+    if steering {
+        let completed = crate::session::PromptQueueItem::new(
+            "prompt-1",
+            "attachment-1",
+            agent.id(),
+            "edit src/lib.rs",
+            crate::session::PromptStatus::Running,
+        );
+        runtime
+            .observe_git_after_completed_prompt(
+                Some(session.id()),
+                Some(provider_run.id()),
+                &completed,
+            )
+            .await;
+    }
 
     runtime
         .observe_git_after_provider_activity_if_pending(provider_run.id())
