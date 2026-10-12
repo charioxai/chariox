@@ -190,11 +190,14 @@ async fn check() {
             })
             .await
             .unwrap();
-            if advertised == 99 {
-                let error =
-                    result.expect_err("v99 must be rejected before spawn or artifact dispatch");
+            if advertised < minimum {
+                let error = result.expect_err(
+                    "MP-08/MP-11: obsolete worker rejected before spawn or artifact dispatch",
+                );
                 assert!(
-                    error.to_string().contains("protocol 99"),
+                    error
+                        .to_string()
+                        .contains(&format!("protocol {advertised}")),
                     "{error}; request kinds: {:?}",
                     *requests.lock().await
                 );
