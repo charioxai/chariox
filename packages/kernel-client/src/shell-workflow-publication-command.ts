@@ -12,6 +12,7 @@ import {
   exportWorkflowPublicationPackageRequest,
   getWorkflowPublicationRequest,
   listWorkflowPublicationsRequest,
+  resolveWorkflowRequest,
 } from "./ipc-requests.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 import { sessionContextAgentId } from "./shell-session-context.js"
@@ -131,7 +132,10 @@ export async function executeWorkflowPublicationCommand(
   }
 
   if (action === "create" || action === "new") {
-    const parsed = parseWorkflowPublicationCreateOptions(rest, context.workflowId)
+    const parsed = await parseWorkflowPublicationCreateOptions(rest, context.workflowId, async (ref) => {
+      const response = await deps.client.send(resolveWorkflowRequest(sessionId, ref))
+      return Boolean(response.WorkflowResolved)
+    })
     if (!parsed.ok) {
       return { ok: false, message: parsed.message }
     }
@@ -200,12 +204,13 @@ async function executeWorkflowPublicationConfigCommand(args: string[], context: 
   return { ok: false, message: "usage: workflow trigger config show|set|clear" }
 }
 
-function parseWorkflowPublicationCreateOptions(
+async function parseWorkflowPublicationCreateOptions(
   args: string[],
-  currentWorkflowId?: string,
-):
+  currentWorkflowId: string | undefined,
+  resolvesWorkflow: (ref: string) => Promise<boolean>,
+): Promise<
   | { ok: true; workflowRef: string; endpointRef: string; options: CreateWorkflowPublicationOptions }
-  | { ok: false; message: string } {
+  | { ok: false; message: string }> {
   const positional: string[] = []
   const options: CreateWorkflowPublicationOptions = {}
   const methods: string[] = []
@@ -258,9 +263,11 @@ function parseWorkflowPublicationCreateOptions(
     options.methods = methods
   }
   // MP-08 / MP-10: generated guidance supplies workflow + endpoint with no alias.
-  // Preserve the contextual endpoint + alias form when its first ref is not the selected workflow.
+  // Resolve aliases/prefixes and different workflows through the ordinary kernel resolver.
+  // A first ref that is not a workflow retains the contextual endpoint + alias form.
   const explicitWorkflow = positional.length >= 3
-    || (positional.length >= 2 && (!currentWorkflowId || positional[0] === currentWorkflowId))
+    || (positional.length >= 2 && (!currentWorkflowId || positional[0] === currentWorkflowId
+      || await resolvesWorkflow(positional[0]!)))
   const workflowRef = explicitWorkflow ? positional[0] : currentWorkflowId
   const endpointRef = explicitWorkflow ? positional[1] : positional[0]
   const alias = explicitWorkflow ? positional[2] : positional[1]

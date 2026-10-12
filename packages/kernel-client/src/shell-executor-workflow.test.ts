@@ -643,6 +643,7 @@ test("executeShellCommand manages workflow triggers", async () => {
   assert.equal(disableResult.ok, true)
   assert.match(disableResult.message ?? "", /disabled workflow trigger publication-1/)
   assert.deepEqual(fake.requests, [
+    { ResolveWorkflow: { session_id: "session-1", workflow_ref: "endpoint-1" } },
     {
       CreateWorkflowPublication: {
         session_id: "session-1",
@@ -960,4 +961,25 @@ for (const workflowId of [undefined, "workflow-1"]) {
       if (kind === "event_based") assert.equal(request.CreateWorkflowPublication.kind, kind)
     })
   }
+}
+
+for (const workflowRef of ["workflow-1", "review", "workflow-"]) {
+  test(`MP-08 / MP-10 trigger create resolves ${workflowRef} with a different selected workflow`, async () => {
+    const requests: Record<string, unknown>[] = []
+    const workflow = makeWorkflow({ alias: "review" })
+    const publication = makeWorkflowPublication({ kind: "event_based", alias: null })
+    const session = makeSession({ workflows: [workflow], workflow_publications: [publication] })
+    const fake = fakeClient((request) => {
+      requests.push(request)
+      if ("ResolveWorkflow" in request) return { WorkflowResolved: { workflow } }
+      return { WorkflowPublicationCreated: { publication, session } }
+    })
+    const context = createDefaultShellContext({ sessionId: "session-1", workflowId: "workflow-other" })
+    const result = await executeShellCommand(parseShellCommand(`workflow trigger create ${workflowRef} endpoint-1 --kind event_based`), context, { client: fake.client })
+    assert.equal(result.ok, true)
+    const create = requests.find((request) => "CreateWorkflowPublication" in request) as { CreateWorkflowPublication: { workflow_ref: string; endpoint_ref: string; alias: string | null } }
+    assert.equal(create.CreateWorkflowPublication.workflow_ref, workflowRef)
+    assert.equal(create.CreateWorkflowPublication.endpoint_ref, "endpoint-1")
+    assert.equal(create.CreateWorkflowPublication.alias, null)
+  })
 }
