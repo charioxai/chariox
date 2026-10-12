@@ -328,7 +328,6 @@ async function runProvider(provider, options) {
     client = new LocalIpcClient(kernelUrl)
     const nativeClaude = claudeScreen ? await claudeNativeRunPaths(client, logs.native) : null
     if (nativeClaude) {
-      logs.claudeEvents = nativeClaude.events
       logs.claudeScreen = path.join(root, "claude-hardcopy.txt")
     }
     const attachment = unwrap(
@@ -353,9 +352,9 @@ async function runProvider(provider, options) {
       await waitForProxyHiddenForward(logs.proxy)
     }
     if (provider === "claude") {
-      const prompts = await waitForClaudeNativePrompts(nativeClaude, [outputMarker])
-      const prompt = prompts.find(text => text.includes(outputMarker))
-      if (prompt.includes(hiddenMarker) || prompt.includes("list_extensions") || prompt.includes("native approval request")) {
+      const prompts = await waitForClaudeNativePrompts(nativeClaude, [outputMarker], 120_000, { providerTranscript: true })
+      if (prompts.filter(text => text.includes(outputMarker)).some(prompt =>
+        prompt.includes(hiddenMarker) || prompt.includes("list_extensions") || prompt.includes("native approval request"))) {
         throw new Error("Claude visible transcript prompt contains hidden instructions")
       }
     }

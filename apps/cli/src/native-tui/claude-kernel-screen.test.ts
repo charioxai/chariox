@@ -16,13 +16,15 @@ test("detached Claude screen uses stock options and forwards its kernel banner",
 case "$1" in
   -dmS)
     for arg in "$@"; do [ "$arg" != "-Logfile" ] || exit 64; done
-    printf '%s' "$3" > "${root}/name"
+    printf '%s' "$2" > "${root}/name"
     printf '%s' "$CHARIOX_CLAUDE_NATIVE_BANNER_FILE" > "${root}/banner"
     touch "${root}/alive" ;;
   -ls)
     if [ -e "${root}/alive" ]; then
-      rm "${root}/alive"
-      printf '  chariox session: session-test\\n  provider run: run-test\\n' > "$(cat "${root}/banner")"
+      if [ -e "${root}/listed" ]; then
+        rm "${root}/alive"
+        printf '  chariox session: session-test\\n  provider run: run-test\\n' > "$(cat "${root}/banner")"
+      else touch "${root}/listed"; fi
       printf '1.%s\\n' "$(cat "${root}/name")"
       exit 1
     else exit 1; fi ;;

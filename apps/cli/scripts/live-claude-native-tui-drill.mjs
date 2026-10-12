@@ -323,8 +323,6 @@ async function main() {
     client = new LocalIpcClient(kernelUrl)
     const nativeA = await claudeNativeRunPaths(client, logs.a)
     const nativeB = await claudeNativeRunPaths(client, logs.b)
-    logs.aEvents = nativeA.events
-    logs.bEvents = nativeB.events
     const attachment = unwrap(
       await client.send(attachToSessionRequest(sessionId, `claude-native-drill-${process.pid}`)),
       "SessionAttached",

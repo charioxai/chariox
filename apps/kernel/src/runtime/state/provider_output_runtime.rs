@@ -83,8 +83,17 @@ impl KernelRuntimeState {
                 })
                 .await?;
             drop(room_guard);
-            if !outcome.rejected_prompt_ids.is_empty() {
+            if !outcome.rejected_prompts.is_empty() {
                 if let Some(agent_id) = provider_run.agent_instance_id() {
+                    for prompt in &outcome.rejected_prompts {
+                        self.inject_metaagent_turn_failure_event(
+                            session_id,
+                            agent_id,
+                            prompt,
+                            Some(provider_run_id),
+                            crate::app::CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
+                        )?;
+                    }
                     Box::pin(
                         self.advance_project_queued_prompt_after_settlement(session_id, agent_id),
                     )
@@ -428,7 +437,8 @@ pub(super) fn provider_run_ids_for_owned_output_pump(
             .into_iter()
             .filter(|run| run.session_id() == session.id())
             .filter(|run| {
-                !run.client_interface().is_chariox()
+                (!run.client_interface().is_chariox()
+                    || crate::provider::provider_run_uses_claude_native_bridge(run))
                     && matches!(
                         run.state(),
                         crate::provider::ProviderRunState::Starting
@@ -453,7 +463,8 @@ fn provider_run_requires_owned_output_pump(
     if run.state() == crate::provider::ProviderRunState::Starting {
         return true;
     }
-    if !run.client_interface().is_chariox()
+    if (!run.client_interface().is_chariox()
+        || crate::provider::provider_run_uses_claude_native_bridge(run))
         && matches!(
             run.state(),
             crate::provider::ProviderRunState::Starting
