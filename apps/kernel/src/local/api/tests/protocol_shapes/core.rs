@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn mp08_mp10_active_prompt_steering_protocol_483_shape_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
     let request = LocalDaemonRequest::SteerActivePrompt(crate::local::SteerActivePromptRequest {
         session_id: "session".into(),
         attachment_id: "attachment".into(),
@@ -1028,10 +1028,10 @@ fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
 fn relay_chunk_transport_490_100_schema_and_wire_hashes() {
     use chariox_relay::frame_transport::TransportFrame;
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        101
+        113
     );
     let source = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -1073,7 +1073,7 @@ fn relay_chunk_transport_490_100_schema_and_wire_hashes() {
 #[test]
 fn mp08_exact_prompt_cancellation_shape_requires_a_new_protocol() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
     let request = LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
         session_id: "session".into(),
         attachment_id: "attachment".into(),

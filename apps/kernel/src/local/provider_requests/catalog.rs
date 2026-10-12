@@ -300,6 +300,7 @@ pub(crate) fn observe_provider_auth_status_until(
                 login_hint: None,
                 detected_version: command_version_until(&executable, deadline).ok(),
             };
+            ensure_status_budget(deadline)?;
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             Ok(status)
         }
@@ -316,6 +317,12 @@ pub(crate) fn observe_provider_auth_status_until(
         }
         Some("claude") => {
             let status = claude_auth_status_until(provider, &profile.profile_id, &environment, deadline)?;
+            ensure_status_budget(deadline)?;
+            registry.record_claude_native_login(
+                owner_user_id,
+                &profile.profile_id,
+                status.auth_state == "authenticated",
+            )?;
             if let Some(kept) = claude_vault_token_status(owner_user_id, &profile, &status)? {
                 return Ok(kept);
             }
@@ -324,6 +331,7 @@ pub(crate) fn observe_provider_auth_status_until(
         }
         Some("opencode") => {
             let status = opencode_auth_status_until(&profile.profile_id, &environment, deadline)?;
+            ensure_status_budget(deadline)?;
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             registry.update_services(
                 owner_user_id,
@@ -366,6 +374,11 @@ pub(crate) fn refresh_provider_account_profile_response(
         }
         Some("claude") => {
             let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
+            registry.record_claude_native_login(
+                owner_user_id,
+                &profile.profile_id,
+                status.auth_state == "authenticated",
+            )?;
             if let Some(kept) = claude_vault_token_status(owner_user_id, &profile, &status)? {
                 if auth_state_from_status(&kept.auth_state) != profile.auth_state {
                     update_profile_auth_observation(registry, owner_user_id, &kept)?;
@@ -538,6 +551,19 @@ fn claude_auth_status_until(
 /// must not hold its caller, such as the post-import refresh, forever: past the
 /// deadline the owned process and inherited pipe writers are stopped.
 const PROVIDER_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+
+// MP-08 / MP-10 / MP-11: an optional version probe may consume the remaining
+// Check budget. Do not follow an expired probe with durable profile mutations.
+fn ensure_status_budget(deadline: Option<std::time::Instant>) -> Result<(), DaemonError> {
+    if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+        return Err(DaemonError::LocalTransport {
+            operation: "get_provider_auth_status",
+            message: "Provider status operation deadline exceeded; authentication is inconclusive"
+                .into(),
+        });
+    }
+    Ok(())
+}
 
 fn bounded_status_output(
     command: Command,

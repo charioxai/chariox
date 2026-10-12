@@ -64,6 +64,6 @@ if [ "$1" = '--version' ]; then sleep .4; echo 0.120.0; elif [ "$1" = 'login' ] 
     r.spec = serde_json::from_value(serde_json::json!({"kind":"accounts","provider":"codex","linked_profile_ref":profile.profile_id,"required_capabilities":[]})).unwrap();
     let began = Instant::now();
     let observation = check_requirement(root.path(), ctx, r, Duration::from_millis(160));
-    assert!(began.elapsed() < Duration::from_millis(400));
+    assert!(began.elapsed() < Duration::from_millis(400), "account/version consumed more than remaining budget: {:?}", began.elapsed());
     assert_eq!(observation.reason_code, "check_budget_exceeded");
 }
