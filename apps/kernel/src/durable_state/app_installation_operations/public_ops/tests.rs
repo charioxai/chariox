@@ -1,5 +1,3 @@
-// MP-08 / MP-10 / MP-11: disambiguate the inherited main test helper.
-use super::super::store::initialize;
 use super::*;
 // MP-08 / MP-10 / MP-11: bind migration fixtures to the operation schema.
 use crate::durable_state::app_installation_operations::initialize;
