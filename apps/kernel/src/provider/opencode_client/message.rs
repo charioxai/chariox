@@ -39,6 +39,7 @@ pub struct OpenCodeMessageInfo {
 impl OpenCodeMessageInfo {
     pub fn terminal_error_message(&self) -> Option<String> {
         let error = self.error.as_ref()?;
+        super::error_diagnostics::record(error);
         error
             .get("data")
             .and_then(|value| value.get("message"))

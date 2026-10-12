@@ -38,6 +38,7 @@ pub(super) fn append(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
     if bytes.len() as u64 > LIMIT {
         return Err(environment_error("Check journal exceeds bounds"));
     }
+    let began = std::time::Instant::now();
     let mut file = match open(path, true) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return publish(path, bytes, 1),
@@ -56,22 +57,54 @@ pub(super) fn append(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
         return publish(path, bytes, sequence);
     }
     let offset = PAGE + (1 - prior.slot) * (PAGE + capacity);
+    let read_us = began.elapsed().as_micros();
     let record = record(bytes, sequence);
+    let write_began = std::time::Instant::now();
     // MP-08 / MP-10 / MP-11: synchronized direct I/O avoids buffered journal
     // writeback stalls without moving the durable acknowledgment fence.
     #[cfg(target_os = "linux")]
     if direct_io::write(&file, &record, offset)
         .map_err(|_| environment_error("Check journal write failed"))?
     {
+        journal_write_timing(
+            "direct_dsync",
+            bytes.len(),
+            capacity,
+            read_us,
+            write_began.elapsed().as_micros(),
+        );
         return Ok(());
     }
     file.seek(SeekFrom::Start(offset))
         .and_then(|_| file.write_all(&record))
         .and_then(|_| file.sync_data())
-        .map_err(|_| environment_error("Check journal write failed"))
+        .map_err(|_| environment_error("Check journal write failed"))?;
+    journal_write_timing(
+        "buffered_dsync",
+        bytes.len(),
+        capacity,
+        read_us,
+        write_began.elapsed().as_micros(),
+    );
+    Ok(())
+}
+
+fn journal_write_timing(
+    backend: &str,
+    payload_bytes: usize,
+    capacity_bytes: u64,
+    read_us: u128,
+    synchronized_write_us: u128,
+) {
+    crate::logging::info_with_fields(
+        "daemon.environment_journal_latency",
+        "Journal write synchronized",
+        serde_json::json!({"backend":backend,"payload_bytes":payload_bytes,"capacity_bytes":capacity_bytes,"read_us":read_us,"synchronized_write_us":synchronized_write_us}),
+    );
 }
 
 fn publish(path: &Path, bytes: &[u8], sequence: u64) -> Result<(), DaemonError> {
+    let began = std::time::Instant::now();
     let capacity = bytes.len().max(64 * 1024).next_power_of_two() as u64;
     let mut image = vec![0; (PAGE + 2 * (PAGE + capacity)) as usize];
     image[..8].copy_from_slice(MAGIC);
@@ -80,7 +113,15 @@ fn publish(path: &Path, bytes: &[u8], sequence: u64) -> Result<(), DaemonError> 
     image[PAGE as usize..PAGE as usize + record.len()].copy_from_slice(&record);
     // Existing private writer syncs the fully allocated file and its directory.
     crate::config::write_private_file(path, &image)
-        .map_err(|_| environment_error("Check journal write failed"))
+        .map_err(|_| environment_error("Check journal write failed"))?;
+    journal_write_timing(
+        "publish",
+        bytes.len(),
+        capacity,
+        0,
+        began.elapsed().as_micros(),
+    );
+    Ok(())
 }
 
 fn record(bytes: &[u8], sequence: u64) -> Vec<u8> {
