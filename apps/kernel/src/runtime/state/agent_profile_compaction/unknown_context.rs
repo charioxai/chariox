@@ -22,13 +22,18 @@ impl KernelRuntimeState {
         let claude =
             |provider: &str| crate::provider::canonical_provider_family(provider) == Some("claude");
         let unknown = run.is_none_or(|run| {
-            run.usage().context_tokens.is_none()
+            (crate::provider::provider_run_uses_structured_prompt_io(run)
+                && run.usage().context_tokens.is_none())
                 || !matches!(
                     run.state(),
                     ProviderRunState::Running | ProviderRunState::Parked
                 )
         });
-        let disabled = run.is_some_and(crate::provider::claude_1m_context_disabled);
+        // A cold launch inherits this setting, just like the official adapter.
+        let disabled = run.map_or_else(
+            || std::env::var("CLAUDE_CODE_DISABLE_1M_CONTEXT").as_deref() == Ok("1"),
+            crate::provider::claude_1m_context_disabled,
+        );
         let window = |provider: &str, model: &str| {
             crate::provider::effective_model_context_window_tokens(provider, model, disabled)
         };
@@ -45,11 +50,7 @@ impl KernelRuntimeState {
                 run.provider_session_id()
                     .or_else(|| run.resume_state().provider_session_id(run.adapter_key()))
             })
-            .or_else(|| {
-                agent
-                    .provider_resume_state()
-                    .provider_session_id(source_provider)
-            })
+            .or_else(|| agent.provider_resume_state().provider_session_id("claude"))
         else {
             return Ok(false);
         };
@@ -72,7 +73,7 @@ impl KernelRuntimeState {
             .clear_provider_resume_state_durably_if_matches(
                 &self.owned.durable_state_store,
                 agent.id(),
-                source_provider,
+                "claude",
                 native_session,
                 run.map_or("cold-claude-downshift", RuntimeProviderRun::id),
                 "unknown_window_downshift_context",
@@ -86,6 +87,12 @@ impl KernelRuntimeState {
                 message: "the native session changed during downshift; select the model again"
                     .into(),
             });
+        }
+        if matches!(
+            outcome,
+            crate::agent::ProviderResumeClearOutcome::AlreadyAbsent
+        ) {
+            return Ok(false);
         }
         self.owned.record_notice(session_id, run.map(RuntimeProviderRun::id),
             self.owned.attachment_store.list_session_attachment_ids(session_id),

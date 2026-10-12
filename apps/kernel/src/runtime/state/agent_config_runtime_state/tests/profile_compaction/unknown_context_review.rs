@@ -3,15 +3,57 @@ use super::*;
 
 #[tokio::test]
 async fn downshift_after_native_relaunch_with_unknown_context_starts_fresh() {
-    check_unknown_native_downshift(false).await;
+    check_unknown_native_downshift(false, "claude", false).await;
 }
 
 #[tokio::test]
 async fn downshift_without_a_live_run_starts_fresh_from_protected_history() {
-    check_unknown_native_downshift(true).await;
+    check_unknown_native_downshift(true, "claude", false).await;
 }
 
-async fn check_unknown_native_downshift(ended: bool) {
+#[tokio::test]
+async fn cold_claude_p_downshift_clears_the_canonical_resume() {
+    check_unknown_native_downshift(true, "claude-p", false).await;
+}
+
+#[tokio::test]
+async fn relaunched_claude_p_downshift_clears_the_canonical_resume() {
+    check_unknown_native_downshift(false, "claude-p", false).await;
+}
+
+#[tokio::test]
+async fn cold_claude_headless_downshift_clears_the_canonical_resume() {
+    check_unknown_native_downshift(true, "claude-headless", false).await;
+}
+
+#[tokio::test]
+async fn starting_claude_headless_downshift_clears_the_canonical_resume() {
+    check_unknown_native_downshift(false, "claude-headless", false).await;
+}
+
+#[tokio::test]
+async fn live_native_tui_downshift_preserves_the_session_without_structured_usage() {
+    check_unknown_native_downshift(false, "claude", true).await;
+}
+
+#[tokio::test]
+async fn live_headless_downshift_preserves_the_session_without_structured_usage() {
+    check_unknown_native_downshift(false, "claude-headless", true).await;
+}
+
+#[tokio::test]
+async fn cold_account_context_cap_preserves_an_effectively_equal_window() {
+    crate::test_support::isolated_env_test!();
+    let previous = std::env::var_os("CLAUDE_CODE_DISABLE_1M_CONTEXT");
+    std::env::set_var("CLAUDE_CODE_DISABLE_1M_CONTEXT", "1");
+    check_unknown_native_downshift(true, "claude-p", true).await;
+    match previous {
+        Some(value) => std::env::set_var("CLAUDE_CODE_DISABLE_1M_CONTEXT", value),
+        None => std::env::remove_var("CLAUDE_CODE_DISABLE_1M_CONTEXT"),
+    }
+}
+
+async fn check_unknown_native_downshift(ended: bool, provider: &str, native_live: bool) {
     let (root, _app, runtime, session, agent, mut old) = compact_fixture().await;
     runtime
         .owned
@@ -19,6 +61,18 @@ async fn check_unknown_native_downshift(ended: bool) {
         .write()
         .set_agent_provider_resume_state(
             &agent,
+            ProviderResumeState::from_claude_session_id("large-native-session"),
+        )
+        .unwrap();
+    runtime
+        .owned
+        .agent_store
+        .set_agent_runtime_profile_with_account_profile(
+            &agent,
+            provider,
+            Some(old.model().into()),
+            None,
+            Some(old.account_profile().into()),
             ProviderResumeState::from_claude_session_id("large-native-session"),
         )
         .unwrap();
@@ -38,7 +92,7 @@ async fn check_unknown_native_downshift(ended: bool) {
         let request = LaunchProviderRequest::new(
             &session,
             "claude",
-            "claude",
+            provider,
             old.account_profile(),
             old.model(),
         )
@@ -46,6 +100,11 @@ async fn check_unknown_native_downshift(ended: bool) {
         .with_resume_state(ProviderResumeState::from_claude_session_id(
             "large-native-session",
         ));
+        let request = if native_live {
+            request.with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
+        } else {
+            request
+        };
         let mut cold = RuntimeProviderRun::new(
             "cold-claude-run",
             &request,
@@ -61,7 +120,9 @@ async fn check_unknown_native_downshift(ended: bool) {
                 structured_endpoint: None,
             },
         );
-        cold.mark_running();
+        if provider != "claude-headless" || native_live {
+            cold.mark_running();
+        }
         assert!(cold.usage().context_tokens.is_none());
         runtime
             .owned
@@ -75,11 +136,12 @@ async fn check_unknown_native_downshift(ended: bool) {
         .await
         .unwrap();
     let target = runtime.owned.agent_store.get_agent(&agent).unwrap();
-    assert!(
+    assert_eq!(
         target
             .provider_resume_state()
             .provider_session_id("claude")
             .is_none(),
+        !native_live,
         "unknown source context retained the oversized native session"
     );
     assert!(

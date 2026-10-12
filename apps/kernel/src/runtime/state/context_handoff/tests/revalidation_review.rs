@@ -260,6 +260,7 @@ async fn substitute_policy_rebuild_excludes_the_dispatched_request() {
             .runtime
             .owned
             .context_handoff_for_dispatch(&fixture.session_id, &agent, &target, "prompt-3", false)
+            .unwrap()
             .unwrap();
         assert!(!snapshot
             .render(MAX_HANDOFF_BYTES)
