@@ -28,7 +28,6 @@ import {
 } from "./codex-turn-submission.js"
 import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
 import {
-  getNativeProviderRun,
   requestNativeProviderRunLaunch,
   waitForNativeProviderRunReady,
 } from "./provider-run-control.js"

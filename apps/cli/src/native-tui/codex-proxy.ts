@@ -83,7 +83,6 @@ export function createCodexProjectionThreadTracker(options: {
       tuiThreadId = threadId
       setProjectedThreadId(threadId)
     },
-    isTuiThread: (threadId: string) => tuiThreadId === threadId,
     isEphemeralThread: (threadId: string) => ephemeralThreadIds.has(threadId),
     isDisplayThread: (threadId: unknown) => typeof threadId === "string" && threadId === tuiThreadId,
     isManagedThread: (threadId: string) => tuiThreadId !== null && threadId !== tuiThreadId && !ephemeralThreadIds.has(threadId),
@@ -120,7 +119,6 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     method: string | undefined
     ephemeral: boolean
   }>()
-  let submittedTurn: { turnId: string; promptId: string; threadId: string } | null = null
   let nextUpstreamRequestId = 1
   const internalRequests = new Map<unknown, (message: CodexJsonRpcMessage) => void>()
   let upstreamSocket: WebSocket | null = null
