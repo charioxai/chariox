@@ -90,6 +90,22 @@ async fn focus_check() {
     loader.await.unwrap();
     assert!(names(first_token).contains(&"chariox.kernel_browser".into()));
     assert!(names(first_token).contains(&"chariox.kernel_browser_paste_secret".into()));
+    // MP-08/MP-11: ordinary provider tools advertise the same bounded chord
+    // contract as human display input, rather than silently hiding letters.
+    let tools = router.runtime_tool_specs_for_auth_token(first_token);
+    let browser = tools
+        .iter()
+        .find(|tool| tool.name == "chariox.kernel_browser")
+        .unwrap();
+    let input = &browser.input_schema["properties"]["command"]["properties"]["input"]["properties"];
+    assert_eq!(input["modifiers"]["type"], "integer");
+    assert_eq!(input["modifiers"]["minimum"], 0);
+    assert_eq!(input["modifiers"]["maximum"], 15);
+    assert_eq!(input["key"]["type"], "string");
+    assert!(
+        input["key"].get("enum").is_none(),
+        "MP-08: Ctrl+A must be representable"
+    );
     focus(&router, session.id(), second.id()).await;
     assert!(names(first_token).contains(&"chariox.load_kernel_browser".into()));
     assert!(router

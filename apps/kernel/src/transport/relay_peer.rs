@@ -110,7 +110,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated101 combines opaque display transport with
 /// the owner-private workflow notification peer union.
 /// MP-08/MP-10/MP-11: allocated115 merges leased desktop grants (109) with
-/// native display and agent tabs (101).
+/// native display and agent tabs (101) and bounded browser key modifiers (107).
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 115;
 /// MP-08/MP-11: only typed leased desktop grants require peer109.
 pub(crate) const MINIMUM_LEASED_COMPUTER_PEER_VERSION: u32 = 109;

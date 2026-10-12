@@ -493,9 +493,16 @@ fn runtime_tool_content(mut payload: Value) -> (Vec<Value>, Value) {
             "mimeType": mime_type,
         }))
     });
+    // MP-08/MP-10: native providers may save large results, then read them
+    // with a per-line limit. Keep later snapshot nodes readable in that path.
+    let text_payload = if payload.get("snapshot").is_some_and(Value::is_object) {
+        serde_json::to_string_pretty(&payload).expect("JSON value serialization")
+    } else {
+        payload.to_string()
+    };
     let text = serde_json::json!({
         "type": "text",
-        "text": payload.to_string(),
+        "text": text_payload,
     });
     let content = match image {
         Some(image) => vec![image, text],

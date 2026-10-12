@@ -59,7 +59,10 @@ export class BrowserDisplayPresenter {
     this.canvas = canvas; this.binding = binding; this.sequence = 0; this.documentId = null;
     this.busy = false; this.closed = false;
     this.onTiming = onTiming;
+    // Start the single module fetch while source navigation/capture is pending.
+    if(globalThis.Worker&&globalThis.VideoDecoder){try{this.workerDecoder=new WorkerVideoDecoder();}catch{/* Codec admission/presentation owns worker failures. */}}
   }
+  getWorkerDecoder(){if(!this.workerDecoder||this.workerDecoder.closed)this.workerDecoder=new WorkerVideoDecoder();return this.workerDecoder;}
   async present(frame) {
     if (this.closed) return false;
     if (this.busy) throw new Error('MD-DISPLAY: await presentation before granting next credit');
@@ -80,7 +83,7 @@ export class BrowserDisplayPresenter {
     try {
       if(frame.kind==='stripes'){
         if(this.documentId!==frame.document_id)this.stripeDecoder?.close();
-        this.stripeDecoder??=new StripePresenter();
+        this.stripeDecoder??=new StripePresenter(()=>this.getWorkerDecoder());
         stripes=await this.stripeDecoder.decode(frame,bytes);
       }else if (frame.kind === 'tiles') {
         if (!Array.isArray(frame.tiles) || frame.tiles.length > 260) throw new Error('MD-DISPLAY: tile count');
@@ -97,7 +100,7 @@ export class BrowserDisplayPresenter {
       } else if (frame.kind === 'video' && videoCodecs.includes(frame.codec) && typeof frame.key === 'boolean') {
         if (globalThis.Worker) {
           // A timed-out or crashed worker closes itself; a key starts afresh.
-          if(!this.workerDecoder||this.workerDecoder.closed)this.workerDecoder=new WorkerVideoDecoder();
+          this.getWorkerDecoder();
         } else if (!this.decoder || frame.key) {
           if (this.decoder?.state !== 'closed') this.decoder?.close();
           this.decoder = new VideoDecoder({ output: value => (this.decoded ? this.decoded.resolve(value) : value.close()), error: error => this.decoded?.reject(error) });
@@ -107,7 +110,7 @@ export class BrowserDisplayPresenter {
         if (!frame.key && (this.videoSequence === null || this.sequence !== frame.sequence-1 || this.documentId !== frame.document_id)) throw Error('MD-DISPLAY: video base lost; subscribe afresh');
         let output, timer;
         try {
-          output = this.workerDecoder ? await this.workerDecoder.decode(frame,bytes(frame.data)) : await new Promise((resolve,reject) => {
+          output = this.workerDecoder ? await this.workerDecoder.decode(frame,bytes(frame.data),8) : await new Promise((resolve,reject) => {
             timer=setTimeout(()=>reject(Error('MD-DISPLAY: decode timeout')),5000);
             this.decoded={resolve,reject};
             this.decoder.decode(new EncodedVideoChunk({type:frame.key?'key':'delta',timestamp:frame.sequence*33333,data:bytes(frame.data)}));

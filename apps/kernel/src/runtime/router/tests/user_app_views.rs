@@ -755,12 +755,16 @@ async fn check_browser_keyboard(
 ) {
     let browser = view.browser.as_ref().unwrap();
     for input in [
-        KernelBrowserInput::Key { key: "Tab".into() },
+        KernelBrowserInput::Key {
+            key: "Tab".into(),
+            modifiers: 0,
+        },
         KernelBrowserInput::Text {
             text: "TUI keyboard fixture".into(),
         },
         KernelBrowserInput::Key {
             key: "Enter".into(),
+            modifiers: 0,
         },
     ] {
         browser_request(

@@ -29,11 +29,12 @@ test("MP-07/MP-10/MP-11 protocol 507 retains admitted predecessor contracts and 
     assert.ok(list.includes(416), "released Apps predecessor remains reciprocal")
     assert.ok(list.includes(443), "multidomain union predecessor remains reciprocal")
     assert.ok(list.includes(491), "display integration predecessor remains reciprocal")
+    assert.ok(list.includes(498), "browser key modifier predecessor remains reciprocal")
     assert.ok(list.includes(500), "Computer Use predecessor remains reciprocal")
     assert.ok(list.includes(507), "new protocol must include itself")
   }
-  assert.deepEqual(policy.upgradeFrom, [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 443, 472, 475, 487, 491, 494, 500, 507])
-  assert.deepEqual(policy.rollbackTo, [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 443, 472, 475, 487, 491, 494, 500, 507])
+  assert.deepEqual(policy.upgradeFrom, [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 443, 472, 475, 487, 491, 494, 498, 500, 507])
+  assert.deepEqual(policy.rollbackTo, [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 443, 472, 475, 487, 491, 494, 498, 500, 507])
 
   const scratch = await mkdtemp(join(tmpdir(), "chariox-protocol-507-policy-"))
   try {
@@ -51,13 +52,13 @@ test("MP-07/MP-10/MP-11 protocol 507 retains admitted predecessor contracts and 
     ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
 
     // Policy fixtures do not prove real-binary persisted-state migration.
-    for (const version of [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 443, 472, 475, 487, 491, 494, 500]) {
+    for (const version of [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 443, 472, 475, 487, 491, 494, 498, 500]) {
       const oldRoot = join(scratch, `protocol-${version}`)
       assert.equal(transition(oldRoot, version, newRoot, 507), "")
       assert.equal(transition(newRoot, 507, oldRoot, version), "")
     }
     // Released G2 and Apps predecessors are reciprocal; other branch numbers stay refused.
-    for (const version of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index), 412, 413, 414, ...Array.from({ length: 18 }, (_, index) => 417 + index), ...Array.from({ length: 7 }, (_, index) => 436 + index), ...Array.from({ length: 28 }, (_, index) => 444 + index), 473, 474, ...Array.from({ length: 11 }, (_, index) => 476 + index), ...Array.from({ length: 3 }, (_, index) => 488 + index), 492, 493, ...Array.from({ length: 5 }, (_, index) => 495 + index), ...Array.from({ length: 6 }, (_, index) => 501 + index)]) {
+    for (const version of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index), 412, 413, 414, ...Array.from({ length: 18 }, (_, index) => 417 + index), ...Array.from({ length: 7 }, (_, index) => 436 + index), ...Array.from({ length: 28 }, (_, index) => 444 + index), 473, 474, ...Array.from({ length: 11 }, (_, index) => 476 + index), ...Array.from({ length: 3 }, (_, index) => 488 + index), 492, 493, 495, 496, 497, 499, ...Array.from({ length: 6 }, (_, index) => 501 + index)]) {
       const oldRoot = join(scratch, `protocol-${version}`)
       assert.throws(() => transition(oldRoot, version, newRoot, 507), /not reciprocally authorized/)
       assert.throws(() => transition(newRoot, 507, oldRoot, version), /not reciprocally authorized/)

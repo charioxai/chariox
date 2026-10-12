@@ -1,5 +1,6 @@
-use super::super::store::initialize;
 use super::*;
+// MP-08/MP-11: test the full installation schema despite the private store glob.
+use crate::durable_state::app_installation_operations::initialize;
 use crate::durable_state::app_state::{fixture_event_catalog, fixture_event_package};
 use chariox_app_package::{verify, VerificationPolicy};
 

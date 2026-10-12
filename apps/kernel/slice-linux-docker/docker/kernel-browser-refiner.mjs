@@ -3,7 +3,11 @@ import {PixelWorker} from './kernel-browser-pixel-worker.mjs';
 import {timestamp} from './kernel-browser-timing.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 export class NativeRefiner {
- constructor(capture,{pixels=new PixelWorker(),now=()=>performance.now(),quietMs=300,quietNativeMs=50,verifyMs=250,prepareTiles=false,timing=()=>{}}={}){Object.assign(this,{capture,pixels,now,quietMs,quietNativeMs,verifyMs,prepareTiles,timing});this.latest=null;this.active=null;this.closed=false;this.verifiedAt=-Infinity;this.revision=0;this.prepared=null;}
+ // MP-08/MP-10: a 50ms quiet period starts full-raster repair between ordinary
+ // 20Hz wheel events. Its native preparation delays input/readback, then the
+ // next input invalidates that work. Wait through wheel and typing gaps;
+ // protected live frames keep their existing fences and continue immediately.
+ constructor(capture,{pixels=new PixelWorker(),now=()=>performance.now(),quietMs=300,quietNativeMs=150,verifyMs=250,prepareTiles=false,timing=()=>{}}={}){Object.assign(this,{capture,pixels,now,quietMs,quietNativeMs,verifyMs,prepareTiles,timing});this.latest=null;this.active=null;this.closed=false;this.verifiedAt=-Infinity;this.revision=0;this.prepared=null;}
  same(a,b){return a&&b&&a.source===b.source&&a.document===b.document&&a.policy===b.policy&&a.epoch===b.epoch&&a.serial===b.serial&&a.native===b.native&&a.nativeDelivered===b.nativeDelivered;}
  request(binding,changedAt,valid){
   if(this.closed)throw Error('MD-DISPLAY: refiner closed');

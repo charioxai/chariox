@@ -365,6 +365,9 @@ impl KernelRuntimeState {
         request: KernelBrowserDisplayRequest,
     ) -> Result<serde_json::Value, DaemonError> {
         use crate::session::{EnvironmentActor, EnvironmentActorKind};
+        // MP-08/MP-10/MP-11: ingress-to-admission timing contains no binding.
+        let input_at = matches!(&request, KernelBrowserDisplayRequest::Input { .. })
+            .then(std::time::Instant::now);
         let (user, actor) = self.kernel_browser_terminal_context(caller)?;
         let host = &self.owned.kernel_browser_host;
         let admission =
@@ -438,6 +441,9 @@ impl KernelRuntimeState {
             }
         };
         params["observed_by"] = serde_json::json!(actor);
+        if let Some(at) = input_at {
+            crate::transport::kernel_browser_display::timing("input_admission", at);
+        }
         self.kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
             .await
     }
@@ -494,7 +500,7 @@ impl KernelRuntimeState {
             }
             tools.push(RuntimeToolSpec { name: BROWSER.into(),
                 description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll. Vault input is separate.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","enum":["Tab","Enter","Escape","Backspace","Delete","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End"]},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
+                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
         }
         tools.extend(self.notes_tool_specs(run, &agent));
         tools

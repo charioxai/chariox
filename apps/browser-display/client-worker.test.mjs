@@ -19,4 +19,17 @@ test('MP-11 the decoder worker replaces an errored decoder on the next key frame
   fail=false;send(2);await new Promise(resolve=>setTimeout(resolve,0));
   assert.deepEqual(posted.map(m=>[m.id,Boolean(m.error)]),[[1,true],[2,false]]);
  }finally{for(const [key,value] of Object.entries(prior))if(value===undefined)delete globalThis[key];else globalThis[key]=value}
+})
+
+// MP-08/MP-10/MP-11: multiplexing retains ownership and per-chain bounds.
+test('MP-08/MP-10/MP-11 shared decoder channels reset independently and close late output',async()=>{
+ let worker;class W{constructor(){worker=this;this.messages=[]}postMessage(data){this.messages.push(data)}terminate(){this.stopped=true}}
+ const d=new WorkerVideoDecoder(W),f={codec:'vp8',key:true,sequence:1,width:1280,height:100};
+ const row=d.decode(f,new Uint8Array([1]),0),video=d.decode(f,new Uint8Array([2]),8);row.catch(()=>{});
+ await assert.rejects(d.decode(f,new Uint8Array([3]),0),/busy/);
+ await assert.rejects(d.decode(f,new Uint8Array([3]),9),/busy/);
+ d.reset(0);await assert.rejects(row,/reset/);assert.equal(d.closed,false);
+ let closed=0;worker.onmessage({data:{id:worker.messages[0].id,frame:{close(){closed++}}}});assert.equal(closed,1);
+ const frame={close(){closed++}};worker.onmessage({data:{id:worker.messages[1].id,frame}});assert.equal(await video,frame);
+ const restarted=d.decode(f,new Uint8Array([4]),0);d.close();await assert.rejects(restarted,/closed/);assert(worker.stopped);
 });

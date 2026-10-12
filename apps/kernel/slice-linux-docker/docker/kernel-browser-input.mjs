@@ -25,6 +25,8 @@ async function nativeOnce(dispatch) {
 
 export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null } = {}) {
     assertNotCancelled(signal);
+    // MP-08/MP-11 protocol498: CDP bits Alt=1, Control=2, Meta=4, Shift=8.
+    if (input.kind === 'key' && input.modifiers !== undefined && (!Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)) throw new Error('MP-11: invalid key modifiers');
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
     let observedFrameInput = false;
     const check = async () => {
@@ -70,7 +72,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
     let mirrorGuard;
     const sendInput = async (method, params) => {
       await check();
-      if (method === "Input.insertText" || method === "Input.imeSetComposition" || (method === "Input.dispatchKeyEvent" && params.text)) {
+      if (method === "Input.insertText" || method === "Input.imeSetComposition" || (method === "Input.dispatchKeyEvent" && (params.text || (params.modifiers & 7)))) {
         await checkTextTarget();
         await check();
       }
@@ -104,24 +106,26 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       } else if (input.kind === "key") {
         const printable = typeof input.key === "string" && /^[^\p{C}]$/u.test(input.key);
         if (!printable && !["Tab", "Shift+Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
+        const modifiers = (input.modifiers ?? 0) | (input.key === 'Shift+Tab' ? 8 : 0);
+        const chord = (modifiers & 7) !== 0;
         const name = input.key === "Shift+Tab" ? "Tab" : input.key;
-        const key = { key: name === "Space" ? " " : name, code: name,
-          ...(input.key === "Shift+Tab" ? { modifiers: 8 } : {}),
-          windowsVirtualKeyCode: { Tab:9, Enter:13, Space:32, Escape:27, Backspace:8, Delete:46, ArrowLeft:37, ArrowUp:38, ArrowRight:39, ArrowDown:40, Home:36, End:35 }[name] };
+        const key = { key: name === "Space" ? " " : name, code: /^[a-z]$/i.test(name) ? `Key${name.toUpperCase()}` : name,
+          ...(modifiers ? { modifiers } : {}),
+          windowsVirtualKeyCode: { Tab:9, Enter:13, Space:32, Escape:27, Backspace:8, Delete:46, ArrowLeft:37, ArrowUp:38, ArrowRight:39, ArrowDown:40, Home:36, End:35 }[name] ?? (/^[a-z0-9]$/i.test(name) ? name.toUpperCase().charCodeAt(0) : undefined) };
         // MP-08/MP-10: a viewer key on the owned display goes through XTest
         // after the same document, text-target and mirror fences, and only
         // while the page itself has focus (never browser UI); otherwise CDP.
         const keysym = printable ? (/^[\x20-\x7e]$/.test(input.key) ? input.key.charCodeAt(0) : null) : keysyms[name];
-        if (nativeKey && !resolved && keysym != null) {
+        if (nativeKey && !resolved && !chord && keysym != null) {
           await check();
           const text = printable || ["Enter", "Space"].includes(input.key);
           const focused = await evaluateText(text ? `${sensitive()} ? 'sensitive' : document.hasFocus()` : "document.hasFocus()");
           if (focused === "sensitive") throw new UserDomainRefusal("sensitive_requires_focus");
           await check(); await mirrorGuard?.();
-          if (focused === true && nativeKey(keysym, input.key === "Shift+Tab")) { onDispatch?.(); return; }
+          if (focused === true && nativeKey(keysym, Boolean(modifiers & 8))) { onDispatch?.(); return; }
         }
         await sendInput("Input.dispatchKeyEvent", { type: "keyDown", ...key,
-          ...(["Enter", "Space"].includes(input.key) || printable ? { text: printable ? input.key : input.key === "Enter" ? "\r" : " ", unmodifiedText: printable ? input.key : input.key === "Enter" ? "\r" : " " } : {}) });
+          ...(!chord && (["Enter", "Space"].includes(input.key) || printable) ? { text: printable ? input.key : input.key === "Enter" ? "\r" : " ", unmodifiedText: printable ? input.key : input.key === "Enter" ? "\r" : " " } : {}) });
         // MP-08: paired releases keep document and live cancellation checks.
         await sendInput("Input.dispatchKeyEvent", { type: "keyUp", ...key });
       } else {

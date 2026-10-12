@@ -295,6 +295,7 @@ pub use workspace::*;
 /// MP-08/MP-11: allocated494 adds bounded installed desktop discovery/launch.
 /// MP-08/MP-10/MP-11: allocated491 combines native display and agent-tab
 /// provenance/activity with the shared agent-model protocol union.
+/// MP-08/MP-10/MP-11: version498 adds bounded browser keyboard modifiers.
 /// MP-08/MP-10/MP-11: allocated507 merges the Computer Use line (500, peer109)
-/// with native display and agent tabs (491, peer101).
+/// with native display and agent tabs (491, peer101) and key modifiers (498, peer107).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 507;
