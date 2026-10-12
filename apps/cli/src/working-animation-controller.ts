@@ -5,6 +5,7 @@ export type WorkingAnimationControllerDeps<TimerHandle> = {
   incrementFrame: () => void
   sessionStatusMode: () => string
   hasWaitingDeadline?: () => boolean
+  hasGoalClock?: () => boolean
   splitAgentResponseMode: () => boolean
   updateSessionChrome: () => void
   renderSplitPaneFooters: () => void
