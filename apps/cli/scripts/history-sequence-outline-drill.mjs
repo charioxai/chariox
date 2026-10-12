@@ -14,6 +14,7 @@ const kernelTests = [
   "runtime::history_requests::session_outline::projection::tests::tool_blobs_are_one_per_call_and_never_span_inline_text",
   "runtime::history_requests::session_outline::projection::tests::reasoning_blobs_are_one_per_thought_with_its_first_line",
   "runtime::history_requests::session_outline::tests::batch_blob_contents::blob_contents_batch_returns_each_requested_blob_in_order",
+  "runtime::history_requests::session_outline::tests::split_tool_calls::tool_call_split_by_a_sentence_stays_one_blob",
   "local::api::tests::protocol_shapes::recall_terminal_metaagent::local_daemon_protocol_terminal_output_shape_is_versioned",
   "local::api::tests::protocol_shapes::workspace_history_external::local_daemon_protocol_session_history_outline_shape_is_versioned",
   "lib_tests::client_protocol_conformance::local_daemon_protocol_version_matches_typescript_kernel_client",
