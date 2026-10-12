@@ -348,7 +348,10 @@ async fn explicit_handoff_rebuilds_after_room_policy_changed_after_capture() {
         .await;
     result.unwrap();
     fixture.wait_for("final-provider-envelope").await;
-    assert!(!fixture.envelope().contains(SECRET), "explicit handoff failed to rebuild protected history");
+    assert!(
+        !fixture.envelope().contains(SECRET),
+        "explicit handoff failed to rebuild protected history"
+    );
 }
 
 #[tokio::test]
@@ -416,7 +419,10 @@ async fn native_policy_rebuilds_explicit_snapshot_after_room_change() {
         String::new(),
     );
     let context = result.unwrap();
-    assert!(!context.contains(SECRET), "native replay ignored changed Room protection");
+    assert!(
+        !context.contains(SECRET),
+        "native replay ignored changed Room protection"
+    );
 }
 
 // MP-08 / MP-10 / MP-11: hook-time rebuild must exclude the managed request already sent visibly.
