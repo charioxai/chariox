@@ -3,22 +3,22 @@
   "guards": [
     {
       "path": "apps/kernel/slice-linux-docker/owned-process-signals.mjs",
-      "sha256": "1b49048ba6565d24b08ab2aa96fc662bdf322ac88033f594cbabf051f78ae7f1",
+      "sha256": "b303533fca8cc6f057ac94d924b238402fd021ec673228eb75f5b5445ef3b048",
       "reason": "MP-11 canonical Node guard; opaque generation handles required for PID/group signals, subgroups retain launch generation, all members verified immediately before signalling; no numeric fallback. Darwin census excludes only the exact reaped inspection PID. Snapshot-indexed refresh (7309cd7ce) keeps the root-before-parent generation rules; collected PID/group handles are re-verified (PID/start, every group member) immediately before each send. MP-11: Darwin ownership uses observed PID/PPID descent only; BSD sess is never authority."
     },
     {
       "path": "apps/kernel/slice-linux-docker/owned_process_signals.py",
-      "sha256": "05e6f706dafbd8dcbd12956c1a8742f6d8a65672b71a919ce08c14e7e55b6eff",
+      "sha256": "c72d48da6289108739f1e6758170f8995d45890064260cc620b11ef81252ab62",
       "reason": "MP-11 canonical Python guard; generation handles required, explicit subgroup IDs bound to the launch generation, PID/start/all member identities verified before os.killpg/os.kill. MP-11: Darwin ownership uses observed PID/PPID descent only; BSD sess is never authority."
     },
     {
       "path": "scripts/lint-process-signals.mjs",
-      "sha256": "2aba7e00d52d6deec9b00c51a90f07db72f6a2e1ab05451a29bb860cceb6b469",
+      "sha256": "05b3ce862a208aee26c5e9d4c5b04c4bcd0faee00a1e9009a3c76aa9400ee436",
       "reason": "MP-11 lint rule definitions mention forbidden constructs as inert regular expressions; no signal is executed."
     },
     {
       "path": "scripts/lint-process-signals.test.mjs",
-      "sha256": "c667fc903a2c1ce6ba186f8fc650ed7d0e051055e1cb9812798dbd86bc7488bf",
+      "sha256": "cb15c739199870ae586c80d06f16b373060b1dc38b90415c79145a331d7532be",
       "reason": "MP-11 inert fail-first lint fixtures deliberately contain forbidden signal source text; strings are never executed."
     },
     {

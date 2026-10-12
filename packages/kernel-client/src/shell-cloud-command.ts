@@ -29,6 +29,7 @@ type ShellKernelClient = {
 
 export type ShellCloudCommandDeps = {
   client: ShellKernelClient
+  cloudAccountClient?: ShellKernelClient | undefined
   clientId?: string | undefined
 }
 
@@ -38,6 +39,8 @@ export async function executeCloudCommand(
   deps: ShellCloudCommandDeps,
 ): Promise<ShellCommandResult> {
   const [area, action, ...args] = parsed.args
+  const cloudClient = deps.cloudAccountClient
+  if (!cloudClient) return {ok:false, message:"Sign in the client Cloud account before using cloud commands; kernel enrollment does not grant human account authority"}
   if (area === "invite" && action === "create") {
     if (!context.sessionId) {
       return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
@@ -56,7 +59,7 @@ export async function executeCloudCommand(
       localResponse,
       "SessionInviteCreated",
     )
-    const cloudResponse = await deps.client.send(createCloudSessionInviteRequest(context.sessionId, {
+    const cloudResponse = await cloudClient.send(createCloudSessionInviteRequest(context.sessionId, {
       displayName: local.session.alias ?? local.session.id,
       maxUses,
       collaborationLevel,
@@ -83,7 +86,7 @@ export async function executeCloudCommand(
     if (!inviteToken) {
       return { ok: false, message: "usage: cloud invite accept <cloud-invite-token> [local-invite-token]" }
     }
-    const cloudResponse = await deps.client.send(acceptCloudSessionInviteRequest(inviteToken))
+    const cloudResponse = await cloudClient.send(acceptCloudSessionInviteRequest(inviteToken))
     const cloud = expectVariant<{ acceptance: { user_id: string } }>(cloudResponse, "CloudSessionInviteAccepted")
     if (!localInviteToken) {
       return {
@@ -113,17 +116,17 @@ export async function executeCloudCommand(
     if (!sessionId) {
       return { ok: false, message: "usage: cloud members [list]" }
     }
-    const response = await deps.client.send(listCloudSessionMembersRequest(sessionId))
+    const response = await cloudClient.send(listCloudSessionMembersRequest(sessionId))
     const payload = expectVariant<{ members: CloudSessionMember[] }>(response, "CloudSessionMembersListed")
     return { ok: true, message: formatCloudMembers(payload.members), data: payload }
   }
   if ((area === "collaborators" && !action) || (area === "collaborators" && action === "list")) {
-    const response = await deps.client.send(listCloudCollaboratorsRequest())
+    const response = await cloudClient.send(listCloudCollaboratorsRequest())
     const payload = expectVariant<{ collaborators: CloudCollaborator[] }>(response, "CloudCollaboratorsListed")
     return { ok: true, message: formatCloudCollaborators(payload.collaborators), data: payload }
   }
   if (!area || area === "status") {
-    const response = await deps.client.send(cloudRelayStatusRequest())
+    const response = await cloudClient.send(cloudRelayStatusRequest())
     const payload = expectVariant<{ profile: { account_slug?: string; email?: string } | null }>(response, "CloudRelayStatus")
     return {
       ok: true,

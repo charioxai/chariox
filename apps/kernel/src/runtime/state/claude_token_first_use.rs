@@ -25,7 +25,11 @@ impl KernelRuntimeState {
         else {
             return Ok(credentials);
         };
-        let owner = self.provider_account_authority_owner_user_id(&request.owner_user_id);
+        let owner = crate::account_profile::provider_account_authority_for_launch(
+            &self.owned.config_projection.snapshot(),
+            &self.owned.provider_account_profiles,
+            request,
+        )?;
         let profile =
             self.owned
                 .provider_account_profiles

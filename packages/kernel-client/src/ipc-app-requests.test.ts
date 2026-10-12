@@ -188,3 +188,13 @@ test("snapshot restore binds installation, generation and saved identity without
     RestoreAppDataSnapshot: { installation_id: "todo", expected_generation: "3", snapshot_id: "snapshot-1" },
   })
 })
+
+// MP-08 / MP-11: queue retains the pre-491 strict request shape.
+test("MP-08 / MP-11 automation queue omits delivery_mode, inject sends it", async () => {
+  const { configureAppAutomationRequest } = await import("./ipc-app-requests.js")
+  const options = {installationId:"app", automationId:"a", expectedRevision:0, eventName:"event", sessionId:"s", publicationRef:"p"}
+  for (const deliveryMode of [undefined, "queue"] as const) {
+    assert.equal(Object.hasOwn(configureAppAutomationRequest({...options, ...(deliveryMode ? {deliveryMode} : {})}).ConfigureAppAutomation, "delivery_mode"), false)
+  }
+  assert.equal(configureAppAutomationRequest({...options, deliveryMode:"inject"}).ConfigureAppAutomation.delivery_mode, "inject")
+})

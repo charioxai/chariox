@@ -88,3 +88,9 @@ test("MP-08 MP-10 exact prompt cancellation rejects old and unknown kernels", ()
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: {} }, undefined))
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: {} }, 490))
 })
+
+test("MP-08 / MP-11 automation inject refuses 490 before transport", () => {
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{}}, 490))
+  assert.throws(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, 490), /needs protocol ≥491/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, 491))
+})

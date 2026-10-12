@@ -40,6 +40,8 @@ type ShellKernelClient = {
 
 export type ShellExecutorDeps = ShellPlacementDeps & {
   client: ShellKernelClient
+  /** Human Cloud authority is supplied by the embedding client, never the kernel. */
+  cloudAccountClient?: ShellKernelClient | undefined
   clientId?: string | undefined
   readSecret?: ((prompt: string) => Promise<string>) | undefined
 } & Pick<ShellSliceCommandDeps, "openRoomViewer">

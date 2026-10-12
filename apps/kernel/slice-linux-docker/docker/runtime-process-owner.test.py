@@ -7,6 +7,8 @@ import sys
 import tempfile
 import time
 import unittest
+import runpy
+from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT.parent))
@@ -14,10 +16,40 @@ from owned_process_signals import OwnedProcesses
 
 
 class RuntimeSignalTests(unittest.TestCase):
+    def test_disappearing_record_is_already_removed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / 'owner.json'
+            path.write_text(json.dumps({'pid': 2147483647, 'start': '1'}))
+            module = runpy.run_path(str(ROOT / 'runtime-process-owner.py'))
+            def disappear(_path):
+                path.unlink()
+                raise FileNotFoundError()
+            module['remove_stale_record'].__globals__['load_record'] = disappear
+            self.assertIsNone(module['remove_stale_record'](path))
+
+    def test_runtime_publishes_only_complete_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / 'owner.json'
+            module = runpy.run_path(str(ROOT / 'runtime-process-owner.py'))
+            original = subprocess.Popen
+            observed = []
+            def spawn(*args, **kwargs):
+                observed.append(path.exists())
+                return original(*args, **kwargs)
+            with patch.object(subprocess, 'Popen', side_effect=spawn):
+                self.assertEqual(module['run'](path, [sys.executable, '-c', 'import time;time.sleep(.2)']), 0)
+            self.assertEqual(observed, [False])
+            self.assertFalse(path.exists())
+
+    def test_normal_start_settles_old_kernel(self):
+        script = (ROOT / 'start-runtime.sh').read_text()
+        before = script[:script.index('start_slice_kernel()')]
+        self.assertIn('stop --record "$PRIVATE_RUNTIME_ROOT/kernel-owner.json"', before)
+
     def test_runtime_never_signals_by_process_name(self):
         self.assertNotIn('pkill ', (ROOT / 'start-runtime.sh').read_text())
 
-    def test_reserved_and_reused_launches_fail_closed(self):
+    def test_reserved_launches_fail_closed_and_reused_records_recover(self):
         with tempfile.TemporaryDirectory() as directory:
             record = pathlib.Path(directory) / 'owner.json'
             for pid in (0, 1, -1):

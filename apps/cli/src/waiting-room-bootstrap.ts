@@ -18,7 +18,7 @@ export function bootstrapWaitingRoom(client: LocalIpcClient, options: CliOptions
       ...(useConfiguredEffort && configured.effort ? { effort: configured.effort } : {}),
     }
   })
-  const providerCatalog = defaults.then(() => deps.getProviderCatalog(client, deps.logger))
+  const providerCatalog = Promise.resolve().then(() => deps.getProviderCatalog(client, deps.logger))
   const providerCommandCatalogs = Promise.resolve().then(() => deps.getProviderCommandCatalogs(client, deps.logger))
   const terminalCommandCatalog = Promise.resolve().then(() => deps.getTerminalCommandCatalog(client, deps.logger))
   const waitingRoomDefaults = defaults

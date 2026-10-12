@@ -95,6 +95,7 @@ screen -S chariox-slice-provider-bridge -X quit >/dev/null 2>&1 || true
 # socket has already become stale. Kill only that orphan before rebinding the
 # published provider ranges so the first restart is as reliable as a retry.
 python3 "$ROOT/runtime-process-owner.py" stop --record "$PRIVATE_RUNTIME_ROOT/bridge-owner.json"
+python3 "$ROOT/runtime-process-owner.py" stop --record "$PRIVATE_RUNTIME_ROOT/kernel-owner.json"
 
 if [[ -z "$CLOUD_RELAY_CONFIG_JSON" && -n "$CLOUD_RELAY_CONFIG_PATH" && -f "$CLOUD_RELAY_CONFIG_PATH" ]]; then
   CLOUD_RELAY_CONFIG_JSON="$(cat "$CLOUD_RELAY_CONFIG_PATH")"

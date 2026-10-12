@@ -1,3 +1,4 @@
+import { cloudShellClient } from "./cloud-shell-client.js"
 import { StdinParser } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
@@ -33,6 +34,8 @@ import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-c
 type AnyFn = (...args: any[]) => any
 
 export type CliInputRoutingCompositionDeps = {
+  cloudClient?: import("./cloud-client.js").CloudClient
+
   roomWorkflowsOwnsInput?: () => boolean
   handleRoomWorkflowsKey?: (event: import("./global-keyboard-shortcut-controller.js").GlobalKeyboardShortcutEvent) => boolean
   handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
@@ -296,6 +299,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const workspaceShellSubmitController = createWorkspaceShellSubmitController({
     client: deps.client,
     clientId: deps.options.clientId,
+    cloudAccountClient: cloudShellClient(deps.cloudClient),
     ...(deps.openRoomViewer ? { openRoomViewer: deps.openRoomViewer } : {}),
     ...(deps.readSecret ? { readSecret: deps.readSecret } : {}),
     workspaceShellContext: deps.workspaceShellContext,

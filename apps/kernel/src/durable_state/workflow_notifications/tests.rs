@@ -1561,3 +1561,43 @@ fn security_f8_legacy_candidates_redact_before_local_or_peer_delivery() {
         cleanup(f);
     }
 }
+
+#[test]
+fn mp08_mp11_notification_occurrences_are_bounded_without_replaying_completions() {
+    let mut f = Fixture::new();
+    let (w, _, _) = f.workflow("bounded");
+    f.source(&w);
+    // An upgraded old database has accumulated successful and diagnostic rows.
+    {
+        let db = Connection::open(f.root.join("kernel.sqlite")).unwrap();
+        for n in 0..5000 {
+            db.execute(
+                "INSERT INTO workflow_notification_occurrences VALUES (?1,?2,?3)",
+                params![
+                    format!("source-{w}"),
+                    format!("old-{n}"),
+                    if n % 2 == 0 {
+                        Some("old_diagnostic")
+                    } else {
+                        None
+                    }
+                ],
+            )
+            .unwrap();
+        }
+    }
+    f.complete(&w, "latest", None, WorkflowRunStatus::Completed, "done");
+    let count = || {
+        let db = f.store.lock_connection("test").unwrap();
+        db.query_row(
+            "SELECT COUNT(*) FROM workflow_notification_occurrences",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    assert!(count() <= 4096);
+    let before = count();
+    f.persist();
+    assert_eq!(count(), before);
+}

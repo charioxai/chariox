@@ -10,7 +10,7 @@ export function createCloudClientCommands(options: {
 }) {
   return async (args: string[]): Promise<boolean> => {
     const area = args[0]
-    if (area !== "login" && area !== "logout" && (options.isKernelConnected() || ![undefined, "open", "status", "kernels"].includes(area))) return false
+    if (area !== "login" && area !== "logout" && area !== "status" && (options.isKernelConnected() || ![undefined, "open", "status", "kernels"].includes(area))) return false
     if (area === "logout") {
       await options.client.logout()
       await options.saveProfile(null)

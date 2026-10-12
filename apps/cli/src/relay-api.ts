@@ -43,23 +43,7 @@ export type TerminalPairingLinkView = {
   expires_at_ms: number
 }
 
-type KernelCloudRelayProfile = {
-  api_url: string
-  email: string
-  account_id: string
-  user_id: string
-  account_slug: string
-  realm_id: string
-  relay_url: string
-  issuer_id: string
-  client_id?: string | null
-  client_alias?: string | null
-  machine_id?: string | null
-  machine_alias?: string | null
-  kernel_id?: string | null
-  kernel_enrolled?: boolean
-  token_expires_at_ms?: number | null
-}
+type KernelCloudRelayProfile = import("@chariox/kernel-client").CloudRelayProfile
 
 type KernelCloudRelayLoginStart = {
   api_url: string

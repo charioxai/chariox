@@ -42,6 +42,9 @@ pub(crate) fn encode_notification_envelope(
     }
     Ok(bytes)
 }
+// Terminal completion deduplication lives in durable_workflow_runs. Occurrences
+// retain a bounded diagnostic window, independently of pending delivery receipts.
+const MAX_OCCURRENCES: i64 = 4096;
 const MAX_SUBSCRIPTIONS: usize = 32;
 pub(crate) const MAX_PENDING: i64 = 1024;
 pub(crate) use super::app_event_delivery::PreparedNotification;
@@ -96,12 +99,20 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE TABLE IF NOT EXISTS workflow_notification_occurrences (
       source_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, diagnostic TEXT,
       PRIMARY KEY(source_id,occurrence_id));
+    CREATE INDEX IF NOT EXISTS workflow_notification_diagnostics
+      ON workflow_notification_occurrences((diagnostic IS NOT NULL)) WHERE diagnostic IS NOT NULL;
     CREATE TABLE IF NOT EXISTS workflow_notification_source_cache (
       owner_id TEXT NOT NULL,kernel_id TEXT NOT NULL,payload_json TEXT NOT NULL,
       PRIMARY KEY(owner_id,kernel_id));",
     )
     .map_err(sql)?;
     migration::migrate(db)?;
+    prune_occurrences(db).map_err(sql)?;
+    Ok(())
+}
+
+fn prune_occurrences(db: &Connection) -> rusqlite::Result<()> {
+    db.execute("DELETE FROM workflow_notification_occurrences WHERE rowid < (SELECT rowid FROM workflow_notification_occurrences ORDER BY rowid DESC LIMIT 1 OFFSET ?1)", [MAX_OCCURRENCES - 1])?;
     Ok(())
 }
 
@@ -445,6 +456,7 @@ fn apply(
             Ok(NotificationOutcome::Swept)
         }
         NotificationOperation::Sweep { now } => {
+            prune_occurrences(tx).map_err(sql)?;
             tx.execute("UPDATE app_outbox SET state=CASE WHEN state IN ('accepted','retryable') THEN 'expired' ELSE state END,payload_json=NULL WHERE source_kind='workflow_completion' AND expires_at_ms<=?1",[now as i64]).map_err(sql)?;
             tx.execute("DELETE FROM app_outbox WHERE sequence IN (SELECT sequence FROM app_outbox WHERE source_kind='workflow_completion' AND expires_at_ms<=?1 AND state NOT IN ('accepted','retryable') AND NOT EXISTS(SELECT 1 FROM durable_workflow_runs r WHERE r.status NOT IN ('Completed','Failed','Stopped') AND (json_extract(r.payload_json,'$.queue_item_id')=app_outbox.queued_prompt_id OR (r.session_id=app_outbox.queued_session_id AND r.run_id=json_extract(app_outbox.invocation_json,'$.injected_run_id')))) ORDER BY sequence LIMIT 256)",[now.saturating_sub(30*86_400_000) as i64]).map_err(sql)?;
             Ok(NotificationOutcome::Swept)

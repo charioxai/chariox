@@ -132,3 +132,14 @@ test("MP-08/MP-10/MP-11 sentence-ending punctuation stays visible outside the na
     assert.equal(bare[0]!.link!.url, `${url}${punctuation}`, "a standalone URL retains exact bytes")
   }
 })
+
+test("MP-08 / MP-11 Markdown targets obey URL admission and cannot spoof visible URLs", () => {
+  for (const url of ["file:///etc/passwd", "javascript:alert(1)", "https://user:pass@example.org", "https://example.org/\u001b[31m"]) {
+    const chunks = linkifyTranscriptChunks([{__isChunk:true, text:"docs", link:{url}}])
+    assert.equal(chunks[0]!.link, undefined)
+  }
+  const spoof = linkifyTranscriptChunks([{__isChunk:true, text:"https://github.com/charioxai/chariox", link:{url:"https://attacker.example"}}])
+  assert.equal(spoof[0]!.link?.url, "https://github.com/charioxai/chariox")
+  const safe = linkifyTranscriptChunks([{__isChunk:true, text:"docs", link:{url:"https://developer.mozilla.org"}}])
+  assert.equal(safe[0]!.link?.url, "https://developer.mozilla.org")
+})

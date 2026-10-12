@@ -71,15 +71,20 @@ export function createCodexKernelPermissionProjection(options: {
     options.debug?.("native_kernel_permission_reply", { known: !!bound, choice })
     if (!bound || bound.answered || !choice) return true
     bound.answered = true
-    const state = await options.client.send<{ SessionState: { session: { active_interactions?: RuntimeInteraction[] } } }>(getSessionStateRequest(options.sessionId))
-    const current = state.SessionState?.session.active_interactions?.find(i => i.id === bound.interactionId)
-    const origin = current?.native_origin
-    if (current?.agent_id !== options.agentId || current.kind !== "permission"
-      || origin?.scope !== "prompt" || origin.provider_run_id !== bound.runId
-      || options.bindState.run?.id !== bound.runId || origin.prompt_id !== bound.promptId
-      || !current.choices.some(c => c.id === choice)) { finish(message.id, bound, true); return true }
-    await options.client.send(respondToInteractionRequest(options.sessionId, current.id, choice))
-    finish(message.id, bound, choice === "deny")
+    try {
+      const state = await options.client.send<{ SessionState: { session: { active_interactions?: RuntimeInteraction[] } } }>(getSessionStateRequest(options.sessionId))
+      const current = state.SessionState?.session.active_interactions?.find(i => i.id === bound.interactionId)
+      const origin = current?.native_origin
+      if (current?.agent_id !== options.agentId || current.kind !== "permission"
+        || origin?.scope !== "prompt" || origin.provider_run_id !== bound.runId
+        || options.bindState.run?.id !== bound.runId || origin.prompt_id !== bound.promptId
+        || !current.choices.some(c => c.id === choice)) { finish(message.id, bound, true); return true }
+      await options.client.send(respondToInteractionRequest(options.sessionId, current.id, choice))
+      finish(message.id, bound, choice === "deny")
+    } finally {
+      // Keep concurrent replies fenced; a failed RPC leaves the reply retryable.
+      bound.answered = bound.resolved
+    }
     return true
   }
   return { project, respond }

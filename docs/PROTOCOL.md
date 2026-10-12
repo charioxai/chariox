@@ -280,13 +280,13 @@ must confirm `exact_prompt_cancellation_v499` in the attached kernel's existing
 the cancellation. Peer 101 is the paired admission generation; worker aborts
 retain the existing lease, home-prompt and provider-run fences.
 
-MP-08 / MP-10: local protocol **422** adds `SteerActivePrompt` with session,
+MP-08 / MP-10: local protocol **491** adds `SteerActivePrompt` with session,
 attachment, agent, required `expected_active_prompt_id`, visible prompt and
 attachments. The home agent actor admits it only against that exact running
 Chariox prompt; stale, cancelled, external or settled targets fail without
 creating a turn or a backlog item. `ActivePromptSteered { prompt }` reports
 admission through shared prompt assembly/history and local or leased provider
-dispatch. Relay peer 70 already carries the exact home target and is unchanged.
+dispatch. Relay peer 101 carries the exact home target.
 Codex native `turn/steer` maps both reply and projected display turn IDs to
 home prompt IDs; its response retains the display turn ID. Utility threads
 keep their provider-native controls. `thread/compact/start` resolves the live
@@ -2287,7 +2287,7 @@ Workflow trigger and deployment direction:
   persisted bindings and publication `event-bindings` documents that still
   carry the removed fields are read with them ignored.
 - protocol 365: direct workflow event bindings are retired. Initially events reached
-  workflows only through Apps (protocol 437 adds private workflow sources): an App inbox route (protocol 358) receives the
+  workflows only through Apps (protocol 491 adds private workflow sources): an App inbox route (protocol 358) receives the
   generator's events, and an App automation sends the App's outgoing event to
   an `event_based` publication. `CreateWorkflowEventBinding`,
   `ListWorkflowEventBindings`, `SetWorkflowEventBindingStatus`,
@@ -3334,3 +3334,23 @@ App automation and workflow binding has `delivery_mode:queue|inject` (default qu
 Injection retains the original durable admission until steering acceptance, joins
 ancestry to the selected run, and falls back to ordinary queue on idle/ended turns
 or multiple active workflow runs. Subscribers always belong to workflows.
+
+### Retired kernel human Cloud controls, protocol 491 (MP-08 / MP-11)
+
+Kernel enrollment stores a kernel credential and cannot authorize human account
+operations. The old pairing, session invite/member/collaborator, managed-machine
+control and disposable-worker Cloud control requests are retired at the allocated
+490-to-491 ownership boundary. Their wire variants remain recognizable for an
+existing `Error` response with `code=client_cloud_authority_required`, rather than
+a raw deserialization failure. No request/response shape or protocol number is
+added by this correction. Context transfer execution, portability preflight,
+enrollment, terminal key grants and runtime operations remain kernel-owned.
+
+Web uses its authenticated browser account for these Cloud controls. The shared
+shell accepts `ShellExecutorDeps.cloudAccountClient`; embedding clients supply
+their private authenticated Cloud adapter. The real TUI wires its terminal's
+`CloudClient` into that seam. With no client login, shared `cloud` commands report
+that login is required before creating any local invite. `/relay cloud pair` and
+`pair-machine` are retired; use `/client invite` for a terminal and independent
+`/cloud link` enrollment on the receiving kernel. Neither caller credentials nor
+human session tokens are sent to or persisted by the kernel.

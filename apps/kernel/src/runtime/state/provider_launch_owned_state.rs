@@ -372,6 +372,106 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
+    #[tokio::test]
+    async fn mp08_mp11_refused_delegated_grant_preserves_kernel_enrollment() {
+        crate::test_support::isolated_env_test!();
+        use std::io::{Read, Write};
+        let root = crate::test_support::TestWorktree::new("delegated-refusal");
+        std::env::set_var("CHARIOX_HOME", root.path().join("home"));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = [0; 8192];
+            let _ = stream.read(&mut bytes).unwrap();
+            let body =
+                r#"{"error":{"code":"session_invalid","message":"receiving terminal revoked"}}"#;
+            write!(stream, "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let mut config = crate::config::DaemonConfig::for_tests();
+        let original = crate::config::PersistedCloudRelayProfile {
+            api_url,
+            kernel_id: Some(config.daemon_id.clone()),
+            kernel_credential: Some("synthetic-kernel-grant".into()),
+            user_id: "cloud-owner".into(),
+            account_id: "account".into(),
+            realm_id: "realm".into(),
+            ..Default::default()
+        };
+        config.cloud_relay = Some(original.clone());
+        let app = Arc::new(Mutex::new(
+            crate::app::DaemonApp::bootstrap(config).unwrap(),
+        ));
+        let runtime = owned_runtime_state(&app).await;
+        let result = crate::runtime::cloud_relay_connection_executor::execute_issue_cloud_relay_client_token_request(&runtime, &runtime.owned.config_projection, crate::local::IssueCloudRelayClientTokenRequest { target_daemon_alias:"kernel-other".into(), client_id:"revoked-terminal".into(), session_id:None, public_key_thumbprint:Some("a".repeat(64)) }).await;
+        server.join().unwrap();
+        assert!(result.is_err());
+        let retained = runtime
+            .owned
+            .config_projection
+            .snapshot()
+            .cloud_relay
+            .expect("delegated refusal must not clear enrollment");
+        assert_eq!(retained.kernel_id, original.kernel_id);
+        assert_eq!(retained.kernel_credential, original.kernel_credential);
+    }
+
+    #[tokio::test]
+    async fn mp08_mp11_claude_first_use_uses_launch_bound_replica() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("claude-first-use-replica");
+        std::env::set_var("CHARIOX_HOME", root.path().join("home"));
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "cloud-owner".into(),
+            ..Default::default()
+        });
+        let app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let registry = app.provider_account_profile_registry();
+        let profile = registry
+            .create_managed("cloud-owner", "claude", "Replica")
+            .unwrap();
+        registry
+            .update_observation(
+                "cloud-owner",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let mut request = crate::provider::LaunchProviderRequest::new(
+            "s",
+            "claude",
+            "claude",
+            &profile.profile_id,
+            "haiku",
+        );
+        request.owner_user_id = "cloud-owner".into();
+        crate::account_profile::bind_provider_account_authority(
+            &mut request,
+            "cloud-owner".into(),
+            profile.profile_id.clone(),
+        );
+        let mut credentials = crate::provider::ProviderCredentialEnvironment::default();
+        credentials.insert(
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            zeroize::Zeroizing::new("synthetic-setup-token".into()),
+        );
+        assert!(runtime
+            .checked_claude_credentials(&request, credentials)
+            .await
+            .is_ok());
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn mp08_mp10_owned_native_claude_initializes_before_credentials_are_separated() {

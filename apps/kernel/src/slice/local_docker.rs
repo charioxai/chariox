@@ -161,7 +161,7 @@ impl LocalDockerSliceOptions {
             allow_unconfined_seccomp: linux.allow_unconfined_seccomp.unwrap_or(false),
             allow_provider_sandbox_compatibility: linux
                 .allow_provider_sandbox_compatibility
-                .unwrap_or(true),
+                .unwrap_or(false),
             memory_mb: Some(
                 linux
                     .memory_mb

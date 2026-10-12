@@ -33,6 +33,7 @@ impl CommandRouter {
         request: &LocalDaemonRequest,
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        super::retired_cloud_controls::require_kernel_authority(request)?;
         if let Some(response) = self
             .runtime_state
             .app_control()

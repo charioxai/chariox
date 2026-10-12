@@ -13,7 +13,11 @@ export function linkifyTranscriptChunks(chunks: TextChunk[]): TextChunk[] {
     return providerLoginUrl(url) ? [{ start, end: start + url.length, url }] : []
   })
   let offset = 0
-  return chunks.flatMap(chunk => {
+  return chunks.flatMap(original => {
+    // MP-08 / MP-11: syntax detection is not URL admission. Preserve allowed
+    // descriptive links, and make visible URL text link to its own target.
+    const { link, ...plain } = original
+    const chunk = link && providerLoginUrl(link.url) ? original : plain
     const end = offset + chunk.text.length
     const pieces: TextChunk[] = []
     let start = offset
@@ -22,7 +26,7 @@ export function linkifyTranscriptChunks(chunks: TextChunk[]): TextChunk[] {
       const from = Math.max(start, range.start)
       const to = Math.min(end, range.end)
       if (from > start) pieces.push({ ...chunk, text: chunk.text.slice(start - offset, from - offset) })
-      pieces.push({ ...chunk, text: chunk.text.slice(from - offset, to - offset), link: chunk.link ?? { url: range.url } })
+      pieces.push({ ...chunk, text: chunk.text.slice(from - offset, to - offset), link: { url: range.url } })
       start = to
     }
     if (start < end) pieces.push({ ...chunk, text: chunk.text.slice(start - offset) })

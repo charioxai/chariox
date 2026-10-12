@@ -204,8 +204,26 @@ for (const state of ["signed-out", "foreign-account", "foreign-cloud"] as const)
     const base = {...makeCommandDeps(), client, cloudClient: {humanProfile: async () => human}, options: {}, preferencesState: () => ({}), kernelConnected: () => true, flashFooter: (value: string) => notices.push(value)}
     const deps = new Proxy(base, {get: (target, key) => key in target ? target[key as keyof typeof target] : () => {}})
     const handlers = createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps)
-    const command = {kind: "cloud" as const, raw: "/cloud deployments list", args: ["deployments", "list"]}
+    const command = {kind: "cloud" as const, raw: "/cloud deployments create", args: ["deployments", "create", "project"]}
     if (human) await assert.rejects(handlers.handleCloudCommand(command), /Cloud account conflict/)
     else {await handlers.handleCloudCommand(command); assert.deepEqual(notices, ["sign in with /cloud login first"])}
   })
 }
+
+// MP-08 / MP-11: listing the caller's account does not require owner kernel access.
+test("MP-08 / MP-11 collaborator deployment list uses its private account without kernel status", async t => {
+  const notices: string[] = []
+  const human = {apiUrl:"https://my-cloud.example.test", accountId:"my-account", cloudSessionToken:"synthetic-human-access"}
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    const url = new URL(String(input))
+    assert.equal(url.origin, human.apiUrl)
+    assert.equal(url.searchParams.get("accountId"), human.accountId)
+    return Response.json({portfolio:[]})
+  })
+  const client = {send:async () => {throw new Error("collaborator must not read owner Cloud status")}}
+  const base = {...makeCommandDeps(), client, cloudClient:{humanProfile:async () => human}, options:{}, preferencesState:() => ({}), kernelConnected:() => true, appendCloudNotice:(value:string) => notices.push(value), flashFooter:(value:string) => notices.push(value)}
+  const deps = new Proxy(base, {get:(target,key) => key in target ? target[key as keyof typeof target] : () => {}})
+  const handlers = createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps)
+  await handlers.handleCloudCommand({kind:"cloud", raw:"/cloud deployments list", args:["deployments","list"]})
+  assert.ok(notices.some(value => /No deployed workflows/.test(value)))
+})

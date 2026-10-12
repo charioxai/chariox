@@ -95,6 +95,29 @@ impl DaemonConfig {
 mod tests {
     use super::*;
     #[test]
+    fn mp08_mp11_relay_override_persistence_preserves_kernel_enrollment() {
+        let root = crate::test_support::TestWorktree::new("relay-override-enrollment");
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.state.path =
+            Some(root.path().join("kernel/state.db").display().to_string());
+        let profile = PersistedCloudRelayProfile {
+            kernel_id: Some(config.daemon_id.clone()),
+            kernel_credential: Some("synthetic-kernel-grant".into()),
+            ..Default::default()
+        };
+        config.cloud_relay = Some(profile.clone());
+        config.persist_kernel_cloud_state().unwrap();
+        config.cloud_relay = None; // The same state as an explicit environment relay override.
+        config.relay_url = Some("ws://127.0.0.1:47000".into());
+        config.relay_token = Some("synthetic-private-relay".into());
+        config.persist_relay_config().unwrap();
+        let mut restarted = config.clone();
+        restarted.load_kernel_cloud_state();
+        assert_eq!(restarted.cloud_relay, Some(profile));
+        assert_eq!(restarted.relay_url, config.relay_url);
+    }
+
+    #[test]
     fn kernel_cloud_state_is_private_independent_and_unlink_is_durable() {
         let root = std::env::temp_dir().join(format!(
             "chariox-kernel-cloud-store-{}",

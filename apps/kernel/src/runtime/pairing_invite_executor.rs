@@ -487,7 +487,7 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
                 issued
             }
             Err(error) => {
-                clear_cloud_profile_if_stale(runtime_state, &error).await?;
+                // A refused receiving terminal grant does not revoke the issuer.
                 return Err(error);
             }
         };

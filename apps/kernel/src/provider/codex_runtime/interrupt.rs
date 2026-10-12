@@ -22,12 +22,13 @@ pub fn abort_codex_turn(
     let thread_id = state.thread_id().to_string();
     let client = CodexClient::new(provider_run_id, state.endpoint())?;
     let Some(submitted_turn_id) = state.active_turn_id.clone() else {
-        return client.thread_background_terminals_clean(
+        let _ = client.thread_background_terminals_clean(
             &mut state.socket,
             &mut state.next_request_id,
             &thread_id,
             &mut state.buffered_notifications,
         );
+        return Ok(());
     };
     let deadline = Instant::now() + INTERRUPT_RETRY_TIMEOUT;
     let mut reconciliation = InterruptReconciliation::new(submitted_turn_id);

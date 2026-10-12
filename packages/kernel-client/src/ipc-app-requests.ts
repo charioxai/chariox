@@ -102,7 +102,8 @@ export function configureAppAutomationRequest(options: {
     installation_id: options.installationId, automation_id: options.automationId,
     expected_revision: options.expectedRevision, event_name: options.eventName,
     session_id: options.sessionId, publication_ref: options.publicationRef,
-    queue_ref: options.queueRef ?? null, scheduled: options.scheduled ?? false, delivery_mode: options.deliveryMode ?? "queue",
+    queue_ref: options.queueRef ?? null, scheduled: options.scheduled ?? false,
+    ...(options.deliveryMode === "inject" ? { delivery_mode: "inject" as const } : {}),
   } }
 }
 

@@ -114,47 +114,32 @@ fn user_config_defaults_to_versioned_slice_image() {
 }
 
 #[test]
-fn mp01_mp08_fresh_local_slice_defaults_to_provider_sandbox_compatibility() {
-    // MP-01 / MP-08 / MP-10 / MP-11: fresh and legacy omitted settings must
-    // launch official provider namespaces; an explicit false remains an opt-out.
+fn mp01_mp08_local_slice_security_relaxation_requires_opt_in() {
     assert_eq!(
         CharioxUserConfig::default()
             .slices
             .linux
             .allow_provider_sandbox_compatibility,
-        Some(true)
+        Some(false)
     );
     let mut config = DaemonConfig::for_tests();
-    assert!(
-        crate::slice::LocalDockerSliceOptions::from_config(&config)
-            .allow_provider_sandbox_compatibility
-    );
-    config
-        .user_config
-        .slices
-        .linux
-        .allow_provider_sandbox_compatibility = None;
-    assert!(
-        crate::slice::LocalDockerSliceOptions::from_config(&config)
-            .allow_provider_sandbox_compatibility
-    );
-    config
-        .user_config
-        .slices
-        .linux
-        .allow_provider_sandbox_compatibility = Some(false);
-    assert!(
-        !crate::slice::LocalDockerSliceOptions::from_config(&config)
-            .allow_provider_sandbox_compatibility
-    );
+    for selected in [None, Some(false), Some(true)] {
+        config
+            .user_config
+            .slices
+            .linux
+            .allow_provider_sandbox_compatibility = selected;
+        assert_eq!(
+            crate::slice::LocalDockerSliceOptions::from_config(&config)
+                .allow_provider_sandbox_compatibility,
+            selected == Some(true)
+        );
+    }
     let entry = DaemonConfig::user_config_schema()
         .into_iter()
         .find(|entry| entry.path == "slices.linux.allow_provider_sandbox_compatibility")
         .unwrap();
-    assert!(entry.description.contains("Enabled by default"));
-    assert!(entry
-        .description
-        .contains("SYS_ADMIN, NET_ADMIN and SYS_PTRACE"));
+    assert!(entry.description.contains("Explicit opt-in"));
 }
 
 #[test]

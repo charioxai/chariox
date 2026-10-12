@@ -35,3 +35,11 @@ test("detached Login uses client enrollment without waiting for a kernel; kernel
   assert.equal(logins, 1); assert.equal(stored, 1); assert.equal(opened, 1); assert.equal(refreshed, 1)
   assert.equal(await handle(["link"]), false); assert.equal(logins, 1)
 })
+
+test("MP-08 / MP-11 attached collaborators can read their own terminal Cloud status", async () => {
+  const notices: string[] = []
+  const client = {profile:async () => ({accountSlug:"my-account", clientId:"my-terminal"})} as unknown as CloudClient
+  const handle = createCloudClientCommands({client, isKernelConnected:() => true, apiUrl:() => "https://cloud.example.test", notice:value => notices.push(value), saveProfile:async () => {}, refresh:async () => {}})
+  assert.equal(await handle(["status"]), true)
+  assert.match(notices.join("\n"), /my-account/)
+})

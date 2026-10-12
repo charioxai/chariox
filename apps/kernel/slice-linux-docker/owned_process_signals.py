@@ -40,12 +40,12 @@ def process_snapshot():
         return rows
     if sys.platform != "darwin":
         raise ValueError("owned group inspection is unsupported on this platform")
-    text = subprocess.check_output(["/bin/ps", "-axo", "pid=,ppid=,pgid=,sess=,lstart="],
+    text = subprocess.check_output(["/bin/ps", "-axo", "pid=,ppid=,pgid=,lstart="],
                                    text=True, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"})
     rows = []
     for line in text.splitlines():
-        pid, ppid, pgid, session, start = line.split(maxsplit=4)
-        rows.append(dict(pid=int(pid), ppid=int(ppid), pgid=int(pgid), session=session, start=start))
+        pid, ppid, pgid, start = line.split(maxsplit=3)
+        rows.append(dict(pid=int(pid), ppid=int(ppid), pgid=int(pgid), start=start))
     return rows
 
 

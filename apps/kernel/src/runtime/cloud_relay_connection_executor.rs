@@ -252,7 +252,7 @@ async fn issue_cloud_relay_client_token(
         {
             Ok(issued) => issued,
             Err(error) => {
-                clear_cloud_profile_if_stale(runtime_state, &error).await?;
+                // A refused receiving terminal grant does not revoke the issuer.
                 return Err(DaemonError::RelayTransport {
                     operation: "issue Cloud terminal client token",
                     code: "cloud_request_failed".into(),
