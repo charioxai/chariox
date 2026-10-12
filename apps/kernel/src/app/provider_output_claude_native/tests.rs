@@ -1463,6 +1463,20 @@ fn claude_headless_user_prompt_submit_acknowledges_matching_managed_dispatches()
 
 #[test]
 fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
+    workspace_trust_approval(0);
+}
+
+#[test]
+fn claude_workspace_trust_approval_reads_the_completed_frame() {
+    workspace_trust_approval(1);
+}
+
+#[test]
+fn claude_workspace_trust_unparseable_approval_is_not_denial() {
+    workspace_trust_approval(2);
+}
+
+fn workspace_trust_approval(frame_mode: u8) {
     let worktree = crate::test_support::TestWorktree::new("claude-native-trust-approval");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
@@ -1536,8 +1550,11 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
         steering: false,
     };
     let bridge = StartupTrustBridge::default();
-    let trust_frame =
-        "Quick safety check\nDo you trust this folder?\n❯ No, exit\n  Yes, I trust this folder";
+    let trust_frame = if frame_mode == 0 {
+        "Quick safety check\nDo you trust this folder?\n❯ No, exit\n  Yes, I trust this folder"
+    } else {
+        "Quick safety check\nDo you trust this folder?\n  Yes, I trust this folder"
+    };
     ProviderOutputClaudeNativeBridge::new(&mut app)
         .process_terminal_output(
             session.id(),
@@ -1580,7 +1597,39 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
         "no PTY bytes may be sent before trust approval"
     );
 
+    if frame_mode == 1 {
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .process_terminal_output(
+                session.id(),
+                run.id(),
+                &run,
+                Some(std::sync::Arc::new(bridge.clone())),
+                "\n❯ No, exit",
+            )
+            .unwrap();
+    }
     bridge.resolve("allow_once", "allow");
+    if frame_mode == 2 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let result = ProviderOutputClaudeNativeBridge::new(&mut app)
+                .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch);
+            if let Err(error) = result {
+                let message = error.to_string();
+                assert!(
+                    message.contains("could not select"),
+                    "MP-08/MP-11: explicit approval is not denial: {message}"
+                );
+                assert!(!message.contains("trust was denied"));
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        app.pty.remove_process(run.id()).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        return;
+    }
     let mut approved = false;
     for _ in 0..500 {
         let _ = ProviderOutputClaudeNativeBridge::new(&mut app)
@@ -1655,8 +1704,12 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
     }
     let captured = fs::read_to_string(&capture_file).expect("PTY should capture dispatched task");
     assert!(
-        captured.contains("\u{1b}[B"),
-        "MP-08/MP-10/MP-11: user approval must select Yes; Enter on default No exits Claude"
+        captured.contains(if frame_mode == 0 {
+            "\u{1b}[B"
+        } else {
+            "\u{1b}[A"
+        }),
+        "MP-08/MP-10/MP-11: user approval must select Yes from the latest frame"
     );
     assert_eq!(
         captured.matches("startup-gated-task-unique").count(),
