@@ -19,7 +19,7 @@ import { transcriptEntryPadding } from "./transcript-entry-style.js"
 import { theme, TranscriptSeparatorBorder } from "./theme.js"
 import { shouldRenderTranscriptAsMarkdown } from "./transcript.js"
 import { prepareTranscriptMarkdown } from "./transcript-rich-markdown.js"
-import { buildApplyPatchTranscriptContent } from "./transcript-apply-patch-render.js"
+import { buildApplyPatchDiffContent } from "./transcript-diff-render.js"
 import {
   buildBlobToggleLabel,
   buildCollapsedTranscriptBlob,
@@ -201,7 +201,7 @@ function buildExpandedTranscriptContent(
 
   const patch = readTranscriptApplyPatch(entry)
   if (patch) {
-    buildApplyPatchTranscriptContent(renderer, body, patch, surfaceTone)
+    buildApplyPatchDiffContent(renderer, body, patch)
     return { textRenderable: null, markdownRenderable: null }
   }
 

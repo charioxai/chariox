@@ -41,6 +41,14 @@ export {
   readApplyPatchFiles,
 } from "./patch-display.js"
 export {
+  diffStat,
+  diffView,
+  parseUnifiedDiff,
+  type DiffFileView,
+  type DiffRow,
+  type DiffView,
+} from "./diff-view.js"
+export {
   ACTIVE_STATUS_FALLBACK,
   getProviderActivityLabel,
   isProviderIdleStatus,
