@@ -50,6 +50,18 @@ fn check_requirement(
     requirement: Requirement,
     budget: std::time::Duration,
 ) -> MachineObservation {
+    check_requirement_timed(root, ctx, requirement, budget).0
+}
+
+// MP-08 / MP-10 / MP-11: fixture admission is separate from the runner's
+// absolute probe budget. Include runner persistence, observation and cleanup.
+fn check_requirement_timed(
+    root: &std::path::Path,
+    ctx: EnvironmentCheckContext,
+    requirement: Requirement,
+    budget: std::time::Duration,
+) -> (MachineObservation, std::time::Duration, std::time::Duration) {
+    let setup_began = std::time::Instant::now();
     let store = ProjectEnvironmentStore::new(root);
     let project = project(root, "review1118");
     let mut env = store.snapshot(&project).unwrap();
@@ -79,21 +91,21 @@ fn check_requirement(
     let mut checks = store.load_checks(project.id()).unwrap();
     checks.operations.push(op.clone());
     store.save_checks(project.id(), &checks).unwrap();
+    let setup_elapsed = setup_began.elapsed();
+    let began = std::time::Instant::now();
     store
-        .run_check_until(
-            ctx,
-            env,
-            op,
-            || Ok(project.clone()),
-            std::time::Instant::now() + budget,
-        )
+        .run_check_until(ctx, env, op, || Ok(project.clone()), began + budget)
         .unwrap();
     let checks = store.load_checks(project.id()).unwrap();
     assert_eq!(
         checks.operations.last().unwrap().phase,
         EnvironmentOperationPhase::Ready
     );
-    checks.observations[0].clone()
+    (
+        checks.observations[0].clone(),
+        began.elapsed(),
+        setup_elapsed,
+    )
 }
 fn mcp_requirement(url: &str) -> Requirement {
     let config:crate::mcp::CharioxMcpServerConfig=serde_json::from_value(serde_json::json!({"name":"review1118","transport":{"type":"streamable_http","url":url},"enabled":true,"required":false})).unwrap();
