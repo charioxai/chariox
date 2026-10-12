@@ -8,7 +8,10 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn mp08_mp10_mp11_computer_hold_wire_is_bound_to_protocol435() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 493);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let cases = [
         (
             serde_json::json!({"kind":"keyboard_hold","key":"shift+Left","duration_ms":750}),

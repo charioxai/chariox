@@ -1,7 +1,10 @@
 use super::*;
 #[test]
 fn protocol_443_visible_region_capture_shapes() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 493);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let value = serde_json::json!({"CaptureVisibleRegion":{"capture_id":"capture-1","surface":{"kind":"kernel_browser","tab_id":"host-tab-1","generation":2},"region":{"x":1,"y":2,"width":3,"height":4,"viewport_width":640,"viewport_height":400,"frame_width":1280,"frame_height":800}}});
     let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), value);

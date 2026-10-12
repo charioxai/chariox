@@ -12,7 +12,7 @@ const handoff: RuntimeHandoff = {
 }
 
 test("MP-08/MP-11 A07: protocol 477 hand-off answers use the dedicated protected request", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 493)
+
   assert.deepEqual(respondToHandoffRequest("room", "handoff-obligation", { kind: "enter_value", value: "fixture", save_to_vault_key: "login" }), {
     RespondToHandoff: { session_id: "room", interaction_id: "handoff-obligation", action: { kind: "enter_value", value: "fixture", save_to_vault_key: "login" } },
   })

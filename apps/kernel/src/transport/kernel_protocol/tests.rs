@@ -851,10 +851,13 @@ fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
 #[test]
 fn user_domain_refusals_protocol_493_snapshot() {
     use crate::error::UserDomainRefusalReason as Reason;
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 493);
+    assert_eq!(
+        crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        102
+        crate::test_support::expected_relay_peer_protocol_version()
     );
     let values = [
         Reason::NotRequested,

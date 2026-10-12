@@ -5,7 +5,10 @@ use crate::durable_state::agent_lifecycle::{
 };
 #[test]
 fn agent_task_projection_shape_is_bound_to_protocol452() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 493);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let task = AgentTaskExecution {
         goal: None,
         completion_check: None,
@@ -65,7 +68,10 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
 
 #[test]
 fn agent_wake_projection_shape_is_bound_to_protocol459() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 493);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let wake = crate::durable_state::agent_lifecycle::AgentWake {
         id: "wake".into(),
         task_id: "task".into(),
@@ -118,7 +124,8 @@ fn agent_wake_projection_shape_is_bound_to_protocol459() {
 #[test]
 fn goal_projection_shape_is_bound_to_assigned_protocol493() {
     assert_eq!(
-        LOCAL_DAEMON_PROTOCOL_VERSION, 493,
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version(),
         "amint must fold the goal projection into the assigned union"
     );
     let expected = serde_json::json!({"schema_version":1,"id":"goal:p","owner_user_id":"owner","room_id":"room","agent_id":"agent","objective":"Verify artifacts","original_prompt_id":"p","objective_revision":1,"created_at_ms":1,"active_elapsed_ms":2,"waiting_elapsed_ms":3,"state_since_ms":4,"check_in_minutes":10,"next_check_in_ms":null,"paused":false,"continuation_sequence":1,"check_count":1,"evaluation":{"origin":"completion_check","prompt_id":"check","work_prompt_id":"p","work_provider_run_id":"run","objective_revision":1,"ledger_revision":3,"started_at_ms":4,"deadline_ms":60004,"result":{"status":"continue","reason":"independent work"}},"final_answer":null,"evidence":[]});
@@ -141,7 +148,8 @@ fn goal_projection_shape_is_bound_to_assigned_protocol493() {
 #[test]
 fn plain_completion_projection_shape_is_bound_to_assigned_protocol493() {
     assert_eq!(
-        LOCAL_DAEMON_PROTOCOL_VERSION, 493,
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version(),
         "amint must fold plain confirmation into the assigned union"
     );
     let expected = serde_json::json!({"check_count":1,"evaluation":{"deadline_ms":60004,"ledger_revision":3,"objective_revision":1,"origin":"completion_check","prompt_id":"check","result":{"evidence":["public:artifact"],"final_answer":"Verified request","status":"achieved"},"started_at_ms":4,"work_prompt_id":"p","work_provider_run_id":"run"},"evidence":["public:artifact"],"final_answer":"Verified request","original_prompt_id":"p","schema_version":1});
@@ -192,7 +200,8 @@ fn compact_task_wire_shapes_are_bound_to_assigned_protocol493() {
         "8a4f8a22a07cd18fe4ca79ce9277dc9dd44bb73330c2a3f85bf0b6102ba2d4e4"
     );
     assert_eq!(
-        LOCAL_DAEMON_PROTOCOL_VERSION, 493,
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version(),
         "amint must fold compact task frames into the assigned union"
     );
 }

@@ -1,3 +1,4 @@
+import { localProtocolVersion } from "../../scripts/lib/protocol-versions.mjs"
 // MP-08 / MP-10 / MP-11: pin adapter packet metadata with integrated protocol 493.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,7 +18,7 @@ export async function contract() {
 }
 test('MD-DISPLAY actual video/PNG/tile packet contract at protocol 469', async()=>{
  const version=await readFile(new URL('../../packages/kernel-client/src/kernel-types.ts',import.meta.url),'utf8');
- assert.match(version,/LOCAL_DAEMON_PROTOCOL_VERSION = 493\b/);
+ assert.equal(Number(version.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)[1]),localProtocolVersion);
  const frames=await contract();
  assert.equal(createHash('sha256').update(JSON.stringify(frames)).digest('hex'),'2ee8a6385402e07acc6ea78752e7f6832ea269faa9646362475c6f5705c672a6');
 });

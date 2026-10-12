@@ -121,9 +121,10 @@ impl KernelRuntimeState {
             .remote_execution()
             .ok_or_else(|| ledger::error("leased watcher target missing"))?;
         if !remote.relay_peer_protocol_compatible() {
-            return Err(ledger::error(
-                "leased watched processes require relay peer protocol 102; upgrade the worker",
-            ));
+            return Err(ledger::error(format!(
+                "leased watched processes require relay peer protocol {}; upgrade the worker",
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+            )));
         }
         let binding = LeasedProcessBinding {
             worker_kernel_id: remote.worker_kernel_id.clone(),

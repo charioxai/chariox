@@ -6,10 +6,13 @@ use crate::local::{
 };
 #[test]
 fn browser_mirror_protocol_443_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 493);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        102
+        crate::test_support::expected_relay_peer_protocol_version()
     );
     let binding = |action| C::MirrorInput {
         tab_id: "t".into(),

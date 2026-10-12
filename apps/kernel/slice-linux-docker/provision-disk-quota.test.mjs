@@ -1,3 +1,4 @@
+import { localProtocolVersion } from "../../../scripts/lib/protocol-versions.mjs"
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import test from "node:test"
@@ -136,7 +137,7 @@ test("shared allocator coordination helper is packaged and writable to the broke
   assert.match(installer, /slice-disk-quota-coordinator\.mjs/)
 })
 
-test("MP-03/MP-10/MP-11 paired disk-cap fields remain covered by union protocol 493", async () => {
+test("MP-03/MP-10/MP-11 paired disk-cap fields remain covered by the current union protocol", async () => {
   const [rust, client, snapshot] = await Promise.all([
     read("../src/local/api/types.rs"),
     read("../../../packages/kernel-client/src/kernel-types.ts"),
@@ -144,10 +145,9 @@ test("MP-03/MP-10/MP-11 paired disk-cap fields remain covered by union protocol 
   ])
   const runtimeVersion = Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1])
   const clientVersion = Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1])
-  const snapshotVersion = Number(snapshot.match(/assert_eq!\(LOCAL_DAEMON_PROTOCOL_VERSION, (\d+)\)/)?.[1])
-  assert.equal(runtimeVersion, 493)
+  assert.match(snapshot, /assert_eq!\(LOCAL_DAEMON_PROTOCOL_VERSION, crate::test_support::expected_local_protocol_version\(\)\)/)
+  assert.equal(runtimeVersion, localProtocolVersion)
   assert.equal(clientVersion, runtimeVersion)
-  assert.equal(snapshotVersion, runtimeVersion)
   assert.match(snapshot, /disk_layer_mb/)
   assert.match(snapshot, /disk_home_mb/)
 })

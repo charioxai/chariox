@@ -1456,53 +1456,102 @@ fn a10_owner_resume_reconciles_already_handled_source_loss_once() {
     let f = Fixture::new();
     f.create("lost-process", "process", None, None);
     f.apply(Operation::ProcessStarted {
-        id: "lost-process".into(), pid: 4242, now: 15,
+        id: "lost-process".into(),
+        pid: 4242,
+        now: 15,
     });
     f.wait_on(&["lost-process"]);
     f.apply(Operation::ProcessExited {
-        id: "lost-process".into(), exit_code: None, tail: String::new(), now: 50,
+        id: "lost-process".into(),
+        exit_code: None,
+        tail: String::new(),
+        now: 50,
     });
     let sequence = f.inbox().last().unwrap().sequence;
     f.apply(Operation::Attempt {
-        room: "room".into(), agent: "agent".into(), sequence,
-        prompt: "loss-turn".into(), target: None, run: None, now: 50, work: None,
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence,
+        prompt: "loss-turn".into(),
+        target: None,
+        run: None,
+        now: 50,
+        work: None,
     });
     f.apply(Operation::Receipt {
-        room: "room".into(), agent: "agent".into(), sequence,
-        state: "accepted".into(), now: 50,
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence,
+        state: "accepted".into(),
+        now: 50,
     });
     f.apply(Operation::Begin {
-        owner: "owner".into(), room: "room".into(), agent: "agent".into(),
-        prompt: "loss-turn".into(), run: Some("run".into()), now: 50,
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "loss-turn".into(),
+        run: Some("run".into()),
+        now: 50,
     });
-    assert_eq!(f.task().task_id, "p", "loss delivery continues the original task");
+    assert_eq!(
+        f.task().task_id,
+        "p",
+        "loss delivery continues the original task"
+    );
     f.apply(Operation::Block {
-        task: "p".into(), prompt: "loss-turn".into(),
+        task: "p".into(),
+        prompt: "loss-turn".into(),
         reason: "Original process is gone; owner must resume".into(),
     });
-    let ack = |now| f.apply(Operation::Ack {
-        room: "room".into(), agent: "agent".into(), sequence, handled: true, now,
-    });
+    let ack = |now| {
+        f.apply(Operation::Ack {
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence,
+            handled: true,
+            now,
+        })
+    };
     ack(51);
     let blocked = f.task();
     assert_eq!(blocked.state, ExecutionState::Blocked);
     assert_eq!(blocked.obligations[0].status, "failed");
     assert_eq!(f.inbox().last().unwrap().state, "handled");
     ack(52);
-    assert_eq!(f.task(), blocked, "ACK cannot bypass the owner's blocked decision");
+    assert_eq!(
+        f.task(),
+        blocked,
+        "ACK cannot bypass the owner's blocked decision"
+    );
     f.apply(Operation::OwnerResponse {
-        task: "p".into(), revision: blocked.blocked_revision, resume: true, now: 60,
+        task: "p".into(),
+        revision: blocked.blocked_revision,
+        resume: true,
+        now: 60,
     });
     let resumed = f.task();
     assert_eq!(resumed.state, ExecutionState::Working);
     ack(61);
     let reconciled = f.task();
-    assert_eq!(reconciled.obligations[0].status, "satisfied",
-        "the already-handled loss must remain reconcilable after owner Resume");
+    assert_eq!(
+        reconciled.obligations[0].status, "satisfied",
+        "the already-handled loss must remain reconcilable after owner Resume"
+    );
     assert_eq!(reconciled.progress_sequence, resumed.progress_sequence + 1);
     ack(62);
-    assert_eq!(f.task(), reconciled, "duplicate ACK cannot manufacture progress");
-    assert_eq!(f.wake("lost-process").state, "lost", "never relaunch the lost source");
+    assert_eq!(
+        f.task(),
+        reconciled,
+        "duplicate ACK cannot manufacture progress"
+    );
+    assert_eq!(
+        f.wake("lost-process").state,
+        "lost",
+        "never relaunch the lost source"
+    );
     let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
-    assert_eq!(reopened.agent_tasks(Some("room"), Some("agent")).unwrap()[0], reconciled);
+    assert_eq!(
+        reopened.agent_tasks(Some("room"), Some("agent")).unwrap()[0],
+        reconciled
+    );
 }

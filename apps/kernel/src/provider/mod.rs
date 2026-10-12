@@ -48,12 +48,12 @@ pub(crate) use account_credential::{
     resolve_provider_account_credentials_for_launch, store_provider_account_credential,
     validate_provider_account_credential_input, CLAUDE_OAUTH_TOKEN_ENV,
 };
-pub(crate) use claude::{probe_claude_account_usage, verify_claude_setup_token};
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
     ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
     CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
 };
+pub(crate) use claude::{probe_claude_account_usage, verify_claude_setup_token};
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
 pub(crate) use claude_runtime::ClaudeRuntimeState;

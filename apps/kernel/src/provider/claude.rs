@@ -19,6 +19,7 @@ mod native_tui;
 mod usage_capture;
 mod usage_probe;
 
+pub(crate) use auth_probe::verify_claude_setup_token;
 pub use catalog::claude_provider_catalog;
 use catalog::CLAUDE_HEADLESS_PROVIDER_ID;
 pub(crate) use launch_args::claude_args_with_execution_config;
@@ -31,7 +32,6 @@ pub(crate) use native_tui::{
     ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
     CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
 };
-pub(crate) use auth_probe::verify_claude_setup_token;
 pub(crate) use usage_probe::probe_claude_account_usage;
 
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";

@@ -32,32 +32,63 @@ fn lifecycle_projection_obeys_private_and_transparent_collaboration() {
     use serde_json::json;
     let mut session = RuntimeSession::new("room", None, "workspace", "tree", "machine", "kernel");
     for (id, owner) in [("own", "member"), ("peer", "other")] {
-        let mut agent = AgentInstance::new(id, id, "room", None, "codex", None, None, None,
-            GridPosition::new(0, 0, 1, 1));
+        let mut agent = AgentInstance::new(
+            id,
+            id,
+            "room",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
         agent.set_owner_user_id(owner);
         session.agents.push(agent);
     }
     for agent in ["own", "peer", "deleted-peer"] {
-        session.agent_tasks.push(serde_json::from_value(json!({
-            "task_id": agent, "room_id": "room", "agent_id": agent, "prompt_id": agent,
-            "revision": 1, "state": "waiting", "reason": "private source review",
-            "obligations": [], "last_progress_at_ms": 0, "progress_sequence": 0,
-            "no_progress_wakes": 0, "correction_used": false
-        })).unwrap());
-        session.agent_wakes.push(serde_json::from_value(json!({
-            "id": agent, "task_id": agent, "room_id": "room", "agent_id": agent,
-            "registration_id": agent, "kind": "process", "label": "private source",
-            "state": "running", "created_at_ms": 0, "command": ["private-path"],
-            "fire_count": 0, "missed_fires": 0
-        })).unwrap());
+        session.agent_tasks.push(
+            serde_json::from_value(json!({
+                "task_id": agent, "room_id": "room", "agent_id": agent, "prompt_id": agent,
+                "revision": 1, "state": "waiting", "reason": "private source review",
+                "obligations": [], "last_progress_at_ms": 0, "progress_sequence": 0,
+                "no_progress_wakes": 0, "correction_used": false
+            }))
+            .unwrap(),
+        );
+        session.agent_wakes.push(
+            serde_json::from_value(json!({
+                "id": agent, "task_id": agent, "room_id": "room", "agent_id": agent,
+                "registration_id": agent, "kind": "process", "label": "private source",
+                "state": "running", "created_at_ms": 0, "command": ["private-path"],
+                "fire_count": 0, "missed_fires": 0
+            }))
+            .unwrap(),
+        );
     }
-    for (level, expected) in [(CollaborationLevel::Private, vec!["own"]),
+    for (level, expected) in [
+        (CollaborationLevel::Private, vec!["own"]),
         (CollaborationLevel::Transparent, vec!["own", "peer"]),
-        (CollaborationLevel::Full, vec!["own", "peer"])] {
+        (CollaborationLevel::Full, vec!["own", "peer"]),
+    ] {
         let mut current = session.clone();
         current.add_member("member", None, level);
         let projected = current.redacted_for_user("member");
-        assert_eq!(projected.agent_tasks.iter().map(|t| t.agent_id.as_str()).collect::<Vec<_>>(), expected);
-        assert_eq!(projected.agent_wakes.iter().map(|w| w.agent_id.as_str()).collect::<Vec<_>>(), expected);
+        assert_eq!(
+            projected
+                .agent_tasks
+                .iter()
+                .map(|t| t.agent_id.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            projected
+                .agent_wakes
+                .iter()
+                .map(|w| w.agent_id.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
     }
 }
