@@ -14,6 +14,9 @@ test("tool titles use a verb and an object for each provider's tool shapes", () 
     [{ id: "4", tool: "bash", status: "completed", input: { command: "/bin/bash -lc 'ls -la'" } }, "Listed files"],
     [{ id: "5", tool: "bash", status: "completed", input: { command: "/bin/bash -lc 'rg -n toolDisplay packages'" } }, "Searched for toolDisplay in packages"],
     [{ id: "6", tool: "bash", status: "completed", input: { command: "/bin/bash -lc 'echo hi > /tmp/a.txt && cat /tmp/a.txt'" } }, "Ran echo hi > /tmp/a.txt && cat /tmp/a.txt"],
+    // MP-08 / MP-10 (panes R2 follow-up): option values are not the pattern; double-quoted scripts unescape.
+    [{ id: "6b", tool: "bash", status: "completed", input: { command: "/bin/bash -lc \"rg --hidden -n -w --max-count 3 --glob '!.git/**' 'pane' .\"" } }, "Searched for pane in ."],
+    [{ id: "6c", tool: "bash", status: "completed", input: { command: "/bin/bash -lc \"printf 'hello\\\\n' > /tmp/x\"" } }, "Ran printf 'hello\\n' > /tmp/x"],
     [{ id: "7", tool: "search_docs", title: "context7", status: "completed", input: { q: "x" } }, "Called context7.search docs"],
     // Claude Code
     [{ id: "c1", tool: "Bash", status: "running", input: { command: "npm test", description: "Run tests" } }, "Running npm test"],
@@ -52,3 +55,4 @@ test("patch tool titles name the file and the line counts", () => {
   })
   assert.equal(display.title, "Edited src/app.ts (+2 −1)")
 })
+

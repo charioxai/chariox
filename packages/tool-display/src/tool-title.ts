@@ -133,8 +133,11 @@ function toolTitleUnwrapShell(command: string) {
     return command
   }
   const script = match[1]!.trim()
-  if (script.length >= 2 && (script[0] === "'" || script[0] === "\"") && script.endsWith(script[0]!)) {
+  if (script.length >= 2 && script[0] === "'" && script.endsWith("'")) {
     return script.slice(1, -1).replace(/'\\''/g, "'").trim()
+  }
+  if (script.length >= 2 && script[0] === "\"" && script.endsWith("\"")) {
+    return script.slice(1, -1).replace(/\\(["\\$`])/g, "$1").trim()
   }
   return script
 }
@@ -144,7 +147,9 @@ function toolTitleShellCommand(command: string, verb: (done: string, running: st
   const firstLine = script.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? script
   const simple = /^[^|;&<>`$()]+$/.test(firstLine) && !script.includes("\n")
   const words = firstLine.split(/\s+/)
-  const operands = words.slice(1).filter((word) => !word.startsWith("-"))
+  const operands = words.slice(1).filter((word, index, rest) => (
+    !word.startsWith("-") && !TOOL_TITLE_VALUE_OPTIONS.has(rest[index - 1] ?? "")
+  ))
   if (simple) {
     const program = words[0]!.split("/").pop()
     if ((program === "cat" || program === "bat" || program === "less") && operands.length > 0) {
@@ -160,6 +165,13 @@ function toolTitleShellCommand(command: string, verb: (done: string, running: st
   }
   return `${verb("Ran", "Running")} ${toolTitleShort(firstLine)}${firstLine !== script.trim() ? " …" : ""}`
 }
+
+// Search options whose value is the next word, so it is not the pattern.
+const TOOL_TITLE_VALUE_OPTIONS = new Set([
+  "-e", "-f", "-g", "-m", "-A", "-B", "-C", "-t", "-T", "-j", "--glob", "--iglob", "--max-count", "--type",
+  "--type-not", "--context", "--after-context", "--before-context", "--regexp", "--file", "--max-depth",
+  "--max-filesize", "--threads", "--include", "--exclude", "--exclude-dir",
+])
 
 function toolTitleUnquote(value: string) {
   return value.replace(/^(['"])(.*)\1$/, "$2")
