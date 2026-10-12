@@ -187,7 +187,7 @@ test("GET /health collapses provider runtime aliases before readiness probing", 
   }
 })
 
-test("GET /health checks each selected provider account instead of the provider default", async () => {
+test("MP-08/MP-11 GET /health reads saved accounts without paid verification", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-account-health-"))
   await writeFile(join(root, "publication.json"), JSON.stringify({ schema_version: 1 }))
   await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
@@ -213,12 +213,12 @@ test("GET /health checks each selected provider account instead of the provider 
     createProviderReadinessClient: () => ({
       send: async (request) => {
         requests.push(request)
-        const accountProfile = (request.GetProviderAuthStatus as { account_profile?: string })?.account_profile
+        const accountProfile = (request.GetProviderAccountProfile as { account_profile?: string })?.account_profile
         return {
-          ProviderAuthStatus: {
-            status: {
+          ProviderAccountProfile: {
+            profile: {
               auth_state: accountProfile === "default" ? "expired" : "authenticated",
-              account_profile: accountProfile,
+              profile_id: accountProfile,
             },
           },
         }
@@ -232,8 +232,8 @@ test("GET /health checks each selected provider account instead of the provider 
 
     assert.equal(response.statusCode, 200)
     assert.deepEqual(requests, [
-      { GetProviderAuthStatus: { provider: "claude", account_profile: "claude-personal" } },
-      { GetProviderAuthStatus: { provider: "claude", account_profile: "claude-team" } },
+      { GetProviderAccountProfile: { provider: "claude", account_profile: "claude-personal" } },
+      { GetProviderAccountProfile: { provider: "claude", account_profile: "claude-team" } },
     ])
     assert.deepEqual(response.json().provider_readiness.map((readiness: Record<string, unknown>) => ({
       provider: readiness.provider,
