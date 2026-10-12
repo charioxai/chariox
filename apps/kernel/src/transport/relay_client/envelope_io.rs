@@ -60,9 +60,94 @@ pub(super) async fn send_outgoing_event_envelope(
         })
 }
 
+/// MP-08/MP-10/MP-11: an async daemon or peer reply applies backpressure
+/// instead of being dropped when its lane is full.
+pub(super) async fn send_outgoing_reply(
+    outgoing_tx: &RelayOutgoingSender,
+    envelope: RelayEnvelope,
+) -> Result<(), DaemonError> {
+    outgoing_tx
+        .send(envelope)
+        .await
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "send relay envelope",
+            message: "relay connection writer is closed".to_string(),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn bulk_payload() -> chariox_relay::protocol::EncryptedRelayPayload {
+        let mut payload = encrypted_payload_for_test();
+        payload.ciphertext = "x".repeat(64 * 1024 + 1);
+        payload
+    }
+
+    // #958 review @a81084519 P2: a saturated event lane must delay a bulk
+    // reply (catalogue, history, capture), never reject and lose it.
+    #[tokio::test]
+    async fn saturated_event_lane_delays_bulk_reply_instead_of_dropping_it() {
+        let (sender, _priority, mut events) = RelayOutgoingSender::channel(1);
+        send_outgoing_envelope(
+            &sender,
+            RelayEnvelope::DaemonEvent {
+                subscription_id: "subscription".into(),
+                event_id: 1,
+                encrypted_event: encrypted_payload_for_test(),
+            },
+        )
+        .unwrap();
+        let reply = tokio::spawn({
+            let sender = sender.clone();
+            async move {
+                send_outgoing_reply(
+                    &sender,
+                    RelayEnvelope::DaemonResponse {
+                        relay_request_id: "catalogue".into(),
+                        encrypted_response: Some(bulk_payload()),
+                        error: None,
+                    },
+                )
+                .await
+            }
+        });
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            events.recv().await,
+            Some(RelayEnvelope::DaemonEvent { .. })
+        ));
+        reply
+            .await
+            .unwrap()
+            .expect("bulk reply must wait for capacity");
+        assert!(matches!(
+            events.recv().await,
+            Some(RelayEnvelope::DaemonResponse { relay_request_id, .. }) if relay_request_id == "catalogue"
+        ));
+    }
+
+    // #958 review @a81084519 P3: kernels answer peer requests with
+    // DaemonIncomingPeerResponse; a large one is bulk too.
+    #[test]
+    fn large_kernel_peer_reply_uses_the_bulk_lane() {
+        let (sender, mut priority, mut events) = RelayOutgoingSender::channel(2);
+        send_outgoing_envelope(
+            &sender,
+            RelayEnvelope::DaemonIncomingPeerResponse {
+                relay_request_id: "capture".into(),
+                encrypted_response: Some(bulk_payload()),
+                error: None,
+            },
+        )
+        .unwrap();
+        assert!(priority.try_recv().is_err());
+        assert!(matches!(
+            events.try_recv(),
+            Ok(RelayEnvelope::DaemonIncomingPeerResponse { .. })
+        ));
+    }
+
     #[tokio::test]
     async fn md_display_small_events_bypass_batching_but_large_frames_keep_event_credit() {
         let (sender, mut priority, mut events) = RelayOutgoingSender::channel(1);

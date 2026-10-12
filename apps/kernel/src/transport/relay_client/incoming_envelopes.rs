@@ -208,14 +208,16 @@ pub(super) async fn handle_incoming_envelope(
                         relay_response.error = Some(super::request_errors::relay_error("display_subscription_required", "MD-DISPLAY: register a fresh display subscription with the same sender identity", false));
                     }
                 }
-                if let Err(error) = send_outgoing_envelope(
+                if let Err(error) = super::envelope_io::send_outgoing_reply(
                     &outgoing_tx,
                     RelayEnvelope::DaemonResponse {
                         relay_request_id,
                         encrypted_response: relay_response.encrypted_response,
                         error: relay_response.error,
                     },
-                ) {
+                )
+                .await
+                {
                     crate::logging::warn_with_fields(
                         "daemon.relay_client",
                         "failed to send async daemon response",
@@ -286,14 +288,16 @@ pub(super) async fn handle_incoming_envelope(
                     }
                     relay_response
                 };
-                if let Err(error) = send_outgoing_envelope(
+                if let Err(error) = super::envelope_io::send_outgoing_reply(
                     &outgoing_tx,
                     RelayEnvelope::DaemonIncomingPeerResponse {
                         relay_request_id,
                         encrypted_response: relay_response.encrypted_response,
                         error: relay_response.error,
                     },
-                ) {
+                )
+                .await
+                {
                     crate::logging::warn_with_fields(
                         "daemon.relay_client",
                         "failed to send async daemon peer response",
@@ -506,12 +510,14 @@ fn defer_or_enqueue_relay_close(
 }
 
 fn enqueue_relay_close(outgoing_tx: &RelayOutgoingSender) -> Result<(), DaemonError> {
-    send_outgoing_envelope(
-        outgoing_tx,
-        RelayEnvelope::Close {
+    outgoing_tx
+        .send_after_queued_events(RelayEnvelope::Close {
             reason: "relay configuration changed after peer response".to_string(),
-        },
-    )
+        })
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "send relay envelope",
+            message: "relay connection writer is closed".to_string(),
+        })
 }
 
 #[cfg(test)]
@@ -551,6 +557,50 @@ fn test_peer_response_kind(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // #958 review @a81084519 P2: the writer drains priority before events, so
+    // a deferred reconnect Close must follow a queued bulk reply.
+    #[test]
+    fn deferred_reconnect_close_follows_a_queued_bulk_reply() {
+        let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(4);
+        let gate = RelayReconnectGate::default();
+        assert!(gate.begin_daemon_request());
+        assert_eq!(
+            gate.request_reconnect(&outgoing_tx, "relay token changed")
+                .unwrap(),
+            RelayReconnectDecision::Deferred("relay token changed")
+        );
+        let payload = chariox_relay::protocol::EncryptedRelayPayload {
+            sender_public_key: "sender".into(),
+            nonce: "nonce".into(),
+            ciphertext: "x".repeat(64 * 1024 + 1),
+        };
+        send_outgoing_envelope(
+            &outgoing_tx,
+            RelayEnvelope::DaemonResponse {
+                relay_request_id: "history".into(),
+                encrypted_response: Some(payload),
+                error: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            gate.finish_daemon_request(&outgoing_tx).unwrap(),
+            Some("relay token changed")
+        );
+        // Biased writer order: every queued priority envelope, then events.
+        let mut written = Vec::new();
+        while let Ok(envelope) = priority_rx.try_recv() {
+            written.push(envelope);
+        }
+        while let Ok(envelope) = event_rx.try_recv() {
+            written.push(envelope);
+        }
+        assert!(
+            matches!(written.first(), Some(RelayEnvelope::DaemonResponse { .. })),
+            "the bulk reply must be written before Close: {written:?}"
+        );
+        assert!(matches!(written.get(1), Some(RelayEnvelope::Close { .. })));
+    }
 
     #[test]
     fn token_rotation_does_not_close_after_peer_or_daemon_response() {
@@ -588,7 +638,7 @@ mod tests {
 
     #[test]
     fn dynamic_relay_reconnect_waits_for_in_flight_daemon_response() {
-        let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(2);
+        let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(2);
         let reconnect_gate = RelayReconnectGate::default();
         assert!(reconnect_gate.begin_daemon_request());
         send_outgoing_envelope(
@@ -643,14 +693,14 @@ mod tests {
             Ok(RelayEnvelope::DaemonResponse { .. })
         ));
         assert!(matches!(
-            priority_rx.try_recv(),
+            event_rx.try_recv(),
             Ok(RelayEnvelope::Close { .. })
         ));
     }
 
     #[test]
     fn dynamic_relay_reconnect_is_immediate_without_active_daemon_requests() {
-        let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(1);
         let reconnect_gate = RelayReconnectGate::default();
         let mut config = crate::config::DaemonConfig::for_tests();
         config.relay_url = Some("wss://other-relay.example.test".to_string());
@@ -670,7 +720,7 @@ mod tests {
             RelayReconnectDecision::Queued("relay url or token missing changed")
         );
         assert!(matches!(
-            priority_rx.try_recv(),
+            event_rx.try_recv(),
             Ok(RelayEnvelope::Close { .. })
         ));
     }
@@ -678,7 +728,7 @@ mod tests {
     #[test]
     fn dynamic_relay_reconnect_waits_for_every_active_daemon_request() {
         let reconnect_gate = RelayReconnectGate::default();
-        let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(1);
         assert!(reconnect_gate.begin_daemon_request());
         assert!(reconnect_gate.begin_daemon_request());
 
@@ -701,14 +751,14 @@ mod tests {
             Some("relay token changed")
         );
         assert!(matches!(
-            priority_rx.try_recv(),
+            event_rx.try_recv(),
             Ok(RelayEnvelope::Close { .. })
         ));
     }
 
     #[test]
     fn daemon_request_cannot_enter_after_deferred_reconnect_is_released() {
-        let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(2);
+        let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(2);
         let reconnect_gate = RelayReconnectGate::default();
         assert!(reconnect_gate.begin_daemon_request());
         assert_eq!(
@@ -739,7 +789,7 @@ mod tests {
             Ok(RelayEnvelope::DaemonResponse { .. })
         ));
         assert!(matches!(
-            priority_rx.try_recv(),
+            event_rx.try_recv(),
             Ok(RelayEnvelope::Close { .. })
         ));
     }

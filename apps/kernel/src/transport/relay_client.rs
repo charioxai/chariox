@@ -222,6 +222,37 @@ impl RelayOutgoingSender {
         debug_assert!(relay_envelope_uses_event_lane(&envelope));
         self.event_tx.send(envelope).await
     }
+
+    /// MP-08/MP-10/MP-11: replies wait for lane capacity; they are never dropped.
+    async fn send(
+        &self,
+        envelope: RelayEnvelope,
+    ) -> Result<(), mpsc::error::SendError<RelayEnvelope>> {
+        if relay_envelope_uses_event_lane(&envelope) {
+            self.event_tx.send(envelope).await
+        } else {
+            self.priority_tx.send(envelope).await
+        }
+    }
+
+    /// MP-08/MP-10/MP-11: a deferred reconnect Close follows every queued bulk
+    /// reply through the FIFO event lane instead of overtaking it.
+    fn send_after_queued_events(
+        &self,
+        envelope: RelayEnvelope,
+    ) -> Result<(), mpsc::error::SendError<RelayEnvelope>> {
+        match self.event_tx.try_send(envelope) {
+            Err(mpsc::error::TrySendError::Full(envelope)) => {
+                let event_tx = self.event_tx.clone();
+                tokio::spawn(async move { event_tx.send(envelope).await });
+                Ok(())
+            }
+            Err(mpsc::error::TrySendError::Closed(envelope)) => {
+                Err(mpsc::error::SendError(envelope))
+            }
+            Ok(()) => Ok(()),
+        }
+    }
 }
 
 fn relay_envelope_uses_event_lane(envelope: &RelayEnvelope) -> bool {
@@ -229,7 +260,7 @@ fn relay_envelope_uses_event_lane(envelope: &RelayEnvelope) -> bool {
     // captures) must not fill the priority queue ahead of Computer control.
     // The relay remains opaque; classify size without inspecting the payload.
     if matches!(envelope, RelayEnvelope::DaemonResponse { encrypted_response: Some(payload), .. }
-        | RelayEnvelope::DaemonPeerResponse { encrypted_response: Some(payload), .. }
+        | RelayEnvelope::DaemonIncomingPeerResponse { encrypted_response: Some(payload), .. }
         if payload.ciphertext.len() > 64 * 1024)
     {
         return true;
