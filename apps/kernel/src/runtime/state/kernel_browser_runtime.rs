@@ -636,10 +636,12 @@ impl KernelRuntimeState {
     ) -> Result<RuntimeToolResult, DaemonError> {
         let arguments: LoaderArguments = serde_json::from_value(arguments)
             .map_err(|_| host_error("MD-3: loader accepts only lifetime_hours".into()))?;
-        self.authorize_current_external_command()?;
-        self.refuse_leased_user_domain_run(run).await?;
         self.refresh_user_domain_grants();
         let agent = self.user_domain_agent_placement(run)?;
+        // MP-08/MP-11: an authenticated remote run cannot acquire user-domain
+        // access, even when its projected Room epoch is already stale.
+        self.authorize_current_external_command()?;
+        self.refuse_leased_user_domain_run(run).await?;
         let host = &self.owned.kernel_browser_host;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         if !host.is_focused(&user, agent.id()) && !host.is_loaded(&user, agent.id()) {
