@@ -51,22 +51,22 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
         agent_id: &str,
         run_id: &str,
         prompt_id: &str,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
         let run = self.ensure_provider_run_in_session(session_id, run_id)?;
         let session = self.session_store.get_session(session_id)?;
         let Some(prompt) = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id)
         else {
-            return Ok(());
+            return Ok(None);
         };
         if run.agent_instance_id() != Some(agent_id)
             || prompt.id() != prompt_id
             || prompt.is_external()
         {
-            return Ok(());
+            return Ok(None);
         }
-        let message = "Claude blocked the prompt because Chariox context delivery failed. Retry after the kernel is ready.";
+        let message = crate::app::CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE;
         if prompt.workflow_run_id().is_some() {
             self.workflow_fail_provider_prompt_without_queue_advance(
                 session_id,
@@ -75,16 +75,13 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
                 message,
             )?;
         }
-        if self
-            .fail_local_prompt_without_advance_with_termination_if_matches(
-                session_id,
-                agent_id,
-                Some(run_id),
-                Some(prompt_id),
-                None,
-            )?
-            .is_some()
-        {
+        if let Some(failed) = self.fail_local_prompt_without_advance_with_termination_if_matches(
+            session_id,
+            agent_id,
+            Some(run_id),
+            Some(prompt_id),
+            None,
+        )? {
             self.record_provider_failure_output(session_id, run_id, agent_id, message);
             self.record_failed_request(
                 session_id,
@@ -98,8 +95,9 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
             self.agent_store
                 .set_agent_state(agent_id, crate::agent::AgentState::Idle)?;
             let _ = self.session_snapshot(session_id)?;
+            return Ok(Some(failed.completion.completed));
         }
-        Ok(())
+        Ok(None)
     }
 
     fn accepted(&self, session_id: &str, agent_id: &str, run_id: &str) -> Result<(), DaemonError> {

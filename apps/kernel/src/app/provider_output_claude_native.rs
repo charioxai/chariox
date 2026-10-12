@@ -22,7 +22,7 @@ mod context_delivery;
 mod permission;
 mod session_start;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod transcript;
 
 pub(crate) use permission::format_claude_permission_message;
@@ -96,6 +96,8 @@ enum ClaudeWorkspaceTrustResolution {
     Denied,
 }
 
+pub(crate) const CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE: &str = "Claude blocked the prompt because Chariox context delivery failed. Retry after the kernel is ready.";
+
 const CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT: u8 = 10;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -107,7 +109,7 @@ pub(crate) struct ClaudeNativeProcessOutcome {
     /// Provider-native failure, settled by the caller's normal failure/substitution path.
     pub(crate) terminal_failure: Option<String>,
     /// Matched hook rejections, settled without retiring a healthy provider.
-    pub(crate) rejected_prompt_ids: Vec<String>,
+    pub(crate) rejected_prompts: Vec<crate::session::PromptQueueItem>,
 }
 
 /// Kernel-owned conversation policy for native-origin turns. The bridge only
@@ -126,7 +128,7 @@ pub(crate) trait NativePromptHandoffPolicy: Send + Sync {
         agent_id: &str,
         run_id: &str,
         prompt_id: &str,
-    ) -> Result<(), DaemonError>;
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError>;
 
     fn accepted(&self, session_id: &str, agent_id: &str, run_id: &str) -> Result<(), DaemonError>;
 }
@@ -456,9 +458,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     &event,
                 )? {
                     if let Some(policy) = self.prompt_handoff {
-                        policy.rejected(session_id, &agent_id, provider_run_id, &prompt_id)?;
+                        if let Some(prompt) =
+                            policy.rejected(session_id, &agent_id, provider_run_id, &prompt_id)?
+                        {
+                            outcome.rejected_prompts.push(prompt);
+                        }
                     }
-                    outcome.rejected_prompt_ids.push(prompt_id);
                 }
                 continue;
             }

@@ -30,7 +30,7 @@ impl ProviderNativeInteractionBridge for RecordingPermissionBridge {
 }
 
 #[derive(Clone)]
-struct StartupTrustBridge {
+pub(crate) struct StartupTrustBridge {
     interactions: std::sync::Arc<std::sync::Mutex<Vec<RuntimeInteraction>>>,
     resolution: std::sync::Arc<(
         std::sync::Mutex<Option<crate::provider::ProviderNativeInteractionResolution>>,
@@ -55,7 +55,10 @@ impl StartupTrustBridge {
         self.wait_for_interaction_with_pump(|| {})
     }
 
-    fn wait_for_interaction_with_pump(&self, mut pump: impl FnMut()) -> RuntimeInteraction {
+    pub(crate) fn wait_for_interaction_with_pump(
+        &self,
+        mut pump: impl FnMut(),
+    ) -> RuntimeInteraction {
         for _ in 0..500 {
             pump();
             if let Some(interaction) = self
@@ -85,7 +88,7 @@ impl StartupTrustBridge {
         wake.notify_all();
     }
 
-    fn resolve_default_no(&self) {
+    pub(crate) fn resolve_default_no(&self) {
         let (lock, wake) = &*self.resolution;
         *lock
             .lock()
@@ -124,7 +127,7 @@ impl ProviderNativeInteractionBridge for StartupTrustBridge {
     }
 }
 
-fn startup_readiness_run(
+pub(crate) fn startup_readiness_run(
     session_id: &str,
     agent_id: &str,
     provider_run_id: &str,
@@ -1936,160 +1939,6 @@ fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
     assert!(fs::read_to_string(&context_file)
         .expect("context file should remain readable")
         .is_empty());
-    let _ = app.pty.remove_process(run.id());
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
-    let worktree = crate::test_support::TestWorktree::new("claude-native-trust-rejection");
-    let root = std::env::temp_dir().join(format!(
-        "chariox-claude-startup-trust-rejection-{}-{}",
-        std::process::id(),
-        timestamp_millis()
-    ));
-    fs::create_dir_all(&root).expect("test root should be created");
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon should bootstrap");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
-        .expect("session should be created");
-    let attachment = crate::app::KernelSessionService::new(&mut app)
-        .attach(crate::attachment::AttachRequest::new(
-            session.id(),
-            "client-startup-trust-rejection",
-            crate::attachment::ClientCapabilityLevel::FullTerminal,
-        ))
-        .expect("attachment should attach");
-    let (other_session, _other_default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-unrelated-agent",
-            root.display().to_string(),
-        ))
-        .expect("unrelated session should be created");
-    let other_agent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            crate::agent::CreateAgentRequest::new(other_session.id(), "dev-stub")
-                .with_alias("unrelated-test-agent")
-                .with_model("test-model"),
-        )
-        .expect("self-contained unrelated test agent should be created");
-    let other_attachment = crate::app::KernelSessionService::new(&mut app)
-        .attach(crate::attachment::AttachRequest::new(
-            other_session.id(),
-            "client-unrelated-agent",
-            crate::attachment::ClientCapabilityLevel::FullTerminal,
-        ))
-        .expect("unrelated attachment should attach");
-    app.record_native_prompt_started_with_attachments(
-        other_session.id(),
-        other_attachment.id(),
-        other_attachment.id(),
-        other_agent.id(),
-        "unrelated-agent-task",
-        Vec::new(),
-    )
-    .expect("unrelated agent prompt should remain active");
-    let context_file = root.join("hidden-context.txt");
-    let events_file = root.join("events.jsonl");
-    fs::write(&context_file, "").expect("context file should be created");
-    fs::write(&events_file, "").expect("events file should be created");
-    let capture_file = root.join("pty-input.log");
-    let trust_frame =
-        "Quick safety check\nDo you trust this folder?\n1. No, exit\n2. Yes, I trust this folder";
-    let mut run = startup_readiness_run(
-        session.id(),
-        agent.id(),
-        "provider-run-startup-trust-rejection",
-        &context_file,
-        &events_file,
-        format!(
-            "printf '%s' '{}'; tee {} >/dev/null",
-            trust_frame,
-            capture_file.display()
-        ),
-    );
-    run.mark_running();
-    app.pty
-        .spawn_for_run(&run)
-        .expect("test provider PTY should start");
-    app.providers_mut().insert_run_for_test(run.clone());
-    app.sessions
-        .set_active_provider_run(session.id(), Some(run.id().to_string()))
-        .expect("active provider run should be set");
-    let _prompt = match app
-        .record_native_prompt_started_with_attachments(
-            session.id(),
-            attachment.id(),
-            attachment.id(),
-            agent.id(),
-            "rejected-startup-trust-task",
-            Vec::new(),
-        )
-        .expect("rejected task should become active")
-    {
-        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
-        other => panic!("unexpected prompt outcome: {other:?}"),
-    };
-    let bridge = StartupTrustBridge::default();
-    let bridge_ref: std::sync::Arc<dyn ProviderNativeInteractionBridge> =
-        std::sync::Arc::new(bridge.clone());
-    app.providers()
-        .set_native_interaction_bridge(bridge_ref.clone());
-    let interaction = bridge.wait_for_interaction_with_pump(|| {
-        crate::app::provider_output::ProviderOutputPump::new(&mut app)
-            .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
-                session_id: session.id(),
-                provider_run_id: run.id(),
-                recipient_attachment_ids: vec![attachment.id().to_string()],
-                initial_liveness_already_checked: false,
-            })
-            .expect("trust prompt should be projected by the normal output pump");
-    });
-    assert_eq!(interaction.default_on_timeout(), Some("deny"));
-    bridge.resolve_default_no();
-    let mut settled = false;
-    for _ in 0..500 {
-        crate::app::provider_output::ProviderOutputPump::new(&mut app)
-            .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
-                session_id: session.id(),
-                provider_run_id: run.id(),
-                recipient_attachment_ids: vec![attachment.id().to_string()],
-                initial_liveness_already_checked: false,
-            })
-            .expect("trust rejection should use the normal failure path");
-        let primary_active = app
-            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
-            .expect("primary prompt should remain queryable");
-        if primary_active.is_none() {
-            settled = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert!(
-        settled,
-        "rejected startup trust should settle its own prompt"
-    );
-    assert!(app
-        .prompt_owner_active_prompt_for_agent(other_session.id(), other_agent.id())
-        .expect("unrelated agent should remain queryable")
-        .is_some());
-    let rejected_run = app
-        .providers()
-        .get_run(run.id())
-        .expect("rejected provider run should remain inspectable");
-    let diagnostic = rejected_run
-        .terminal_diagnostic()
-        .expect("rejection should preserve a terminal diagnostic");
-    assert!(
-        diagnostic.contains("workspace trust was denied"),
-        "{diagnostic}"
-    );
-    assert!(!diagnostic.contains(root.to_string_lossy().as_ref()));
-    assert!(!fs::read_to_string(&capture_file)
-        .unwrap_or_default()
-        .contains("rejected-startup-trust-task"));
     let _ = app.pty.remove_process(run.id());
     let _ = fs::remove_dir_all(root);
 }
