@@ -1051,7 +1051,7 @@ fn computer_secret_target_protocol_374_peer_67_is_hashed() {
     );
 }
 
-// MP-08/MP-10/MP-11: authenticated retirement/reset/deletion on consolidated 416/70.
+// MP-08/MP-10/MP-11: authenticated retirement/reset/deletion on consolidated 438/70.
 #[test]
 fn secret_observation_revocation_wire_protocol_411_peer_70_is_hashed() {
     use crate::transport::room_browser_controller::{

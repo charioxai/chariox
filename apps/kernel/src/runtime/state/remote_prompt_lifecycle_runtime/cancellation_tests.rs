@@ -879,10 +879,10 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
         .active_prompt_for_agent(&session, &agent_id)
         .expect("settling the exact cancellation must promote the queued successor");
     assert_eq!(active_successor.prompt(), "queued successor");
-    assert_ne!(
+    assert_eq!(
         active_successor.id(),
         queued_successor_prompt_id,
-        "promotion must use the new active home prompt identity"
+        "promotion must retain the admitted home prompt identity"
     );
     let successor_prompt_id = active_successor.id().to_string();
 

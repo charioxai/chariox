@@ -72,12 +72,19 @@ impl KernelRuntimeOwnedState {
             .map(str::to_string);
 
         if let Some(current_active_run_id) = current_active_run_id.as_deref() {
-            if let Some(active_run) = self.provider_run_for_focus(current_active_run_id)? {
+            let active_run =
+                match self.provider_run_for_activation(session_id, current_active_run_id) {
+                    Ok(found) => Some(found),
+                    Err(DaemonError::ProviderRunNotFound { .. }) => None,
+                    Err(error) => return Err(error),
+                };
+            if let Some((active_run, locally_owned)) = active_run {
                 let worker_owned = active_run
                     .agent_instance_id()
                     .and_then(|id| self.agent_store.get_agent(id).ok())
                     .is_some_and(|agent| agent.remote_execution().is_some());
-                if !worker_owned
+                if locally_owned
+                    && !worker_owned
                     && active_run.agent_instance_id() != Some(agent_id)
                     && active_run.state() == crate::provider::ProviderRunState::Running
                     && active_run.client_interface().is_chariox()

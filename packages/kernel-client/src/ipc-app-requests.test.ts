@@ -207,3 +207,13 @@ test("protocol 418 kernel browser fallback is explicit; the native default stays
   assert.deepEqual(openUserAppViewRequest("todo"), { OpenUserAppView: { installation_id: "todo" } })
   assert.deepEqual(openUserAppViewRequest("todo", "kernel_browser"), { OpenUserAppView: { installation_id: "todo", host: "kernel_browser" } })
 })
+
+// MP-08 / MP-11: queue retains the pre-491 strict request shape.
+test("MP-08 / MP-11 automation queue omits delivery_mode, inject sends it", async () => {
+  const { configureAppAutomationRequest } = await import("./ipc-app-requests.js")
+  const options = {installationId:"app", automationId:"a", expectedRevision:0, eventName:"event", sessionId:"s", publicationRef:"p"}
+  for (const deliveryMode of [undefined, "queue"] as const) {
+    assert.equal(Object.hasOwn(configureAppAutomationRequest({...options, ...(deliveryMode ? {deliveryMode} : {})}).ConfigureAppAutomation, "delivery_mode"), false)
+  }
+  assert.equal(configureAppAutomationRequest({...options, deliveryMode:"inject"}).ConfigureAppAutomation.delivery_mode, "inject")
+})

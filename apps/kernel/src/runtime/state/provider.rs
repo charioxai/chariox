@@ -106,6 +106,7 @@ impl KernelRuntimeOwnedState {
             }
         }
 
+        crate::provider::prepare_vaulted_claude_native_onboarding(&request)?;
         let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
         let outcome = self.provider_store.start_run_provider_only(request)?;
         self.session_store
@@ -197,7 +198,7 @@ impl KernelRuntimeOwnedState {
         Ok(run)
     }
 
-    fn provider_run_for_activation(
+    pub(super) fn provider_run_for_activation(
         &self,
         session_id: &str,
         provider_run_id: &str,
@@ -272,7 +273,7 @@ impl KernelRuntimeOwnedState {
                 run.provider(),
                 Some(run.model().to_string()),
                 run.variant().map(str::to_string),
-                Some(run.account_profile().to_string()),
+                Some(crate::account_profile::provider_account_selection_for_run(&run).to_string()),
                 run.resume_state().clone(),
                 Some(run.id()),
                 None,

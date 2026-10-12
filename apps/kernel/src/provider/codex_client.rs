@@ -11,12 +11,14 @@ mod approval_bodies;
 mod auth;
 mod catalog;
 mod health;
+mod interrupt_cleanup;
 mod json_rpc;
 mod json_rpc_transport;
 mod mcp_reload;
 mod notifications;
 mod permission;
 mod runtime_mcp;
+mod runtime_trace;
 mod server_requests;
 mod socket_io;
 mod thread_runtime;
@@ -1322,6 +1324,32 @@ mod metadata_discovery_tests {
                 .unwrap());
         }
         server.join().unwrap();
+    }
+
+    #[test]
+    fn mp08_mp11_source_discovery_does_not_require_a_durable_rollout() {
+        let client = CodexClient::new("discovery", "ws://127.0.0.1:1")
+            .unwrap()
+            .with_provider_config_overrides(&BTreeMap::from([(
+                "features.shell_tool".into(),
+                serde_json::json!(true),
+            )]))
+            .with_read_only_discovery_permissions();
+        let params = client
+            .thread_start_params(
+                Some("/workspace"),
+                None,
+                crate::provider::ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+                crate::provider::AgentExecutionMode::Plan,
+                crate::provider::AgentPermissionLevel::Required,
+                None,
+            )
+            .unwrap();
+        assert_eq!(params["ephemeral"], true);
+        assert_eq!(params["persistExtendedHistory"], false);
+        assert_eq!(params["sandbox"], "read-only");
+        assert_eq!(params["config"]["mcp_servers"], serde_json::json!({}));
+        assert_eq!(params["config"]["features.shell_tool"], true);
     }
 
     #[test]

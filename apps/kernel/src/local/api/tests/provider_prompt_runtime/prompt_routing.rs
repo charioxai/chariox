@@ -973,6 +973,7 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
                 target_agent_id: None,
+                expected_prompt_id: None,
             },
         ))
         .expect("cancel should resolve the single active agent")
@@ -1064,6 +1065,7 @@ fn direct_prompt_cancel_uses_explicit_target_agent_when_multiple_agents_are_acti
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
                 target_agent_id: Some(prompt_agent.id().to_string()),
+                expected_prompt_id: None,
             },
         ))
         .expect("cancel should use the explicit target agent")

@@ -291,6 +291,14 @@ pub use workspace::*;
 /// WebP tiles and scroll rectangles; 475 added relay display push/ACKs.
 /// Version 490 added bounded relay response framing and socket-local receipts.
 /// Version 491 combined native display and agent-tab provenance/activity.
-/// Version 506 integrates those contracts with the 493 agent-model union;
-/// generated consumers follow this coordinator-allocated acceptance version.
+/// Main's version 491 (#974) adds credential-free Cloud kernel ownership
+/// projections, receiving CLIENT key-bound pivots, Cloud-free terminal pairing
+/// and provider account portability preflight, and requires a distinct relay
+/// subscription identity for every fresh encrypted binding while retaining the
+/// logical session replay cursor. It also restores workflow notifications, Room
+/// workflow inventory and controls, opt-in Cloud device denial and exact
+/// home-prompt cancellation admission (MP-08/MP-10/MP-11).
+/// Version 506 integrates those contracts, including main's 491, with the 493
+/// agent-model union; generated consumers follow this coordinator-allocated
+/// acceptance version.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 506;

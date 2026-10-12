@@ -59,6 +59,7 @@ test("MP-08 / MP-10 / MP-11 source identity follows the provisioner's runtime ro
     await mkdir(runtime, { recursive: true })
     await mkdir(path.join(fixture, "packages/app-sdk"), { recursive: true })
     await copyFile(path.join(repoRoot, "apps/kernel/slice-linux-docker/slice-command-guard.py"), path.join(runtime, "slice-command-guard.py"))
+    await copyFile(path.join(repoRoot, "apps/kernel/slice-linux-docker/owned_process_signals.py"), path.join(runtime, "owned_process_signals.py"))
     await copyFile(path.join(repoRoot, "apps/kernel/slice-linux-docker/home-archive-policy.json"), path.join(runtime, "home-archive-policy.json"))
     await writeFile(path.join(runtime, "runtime-source-roots.txt"), "apps/kernel\npackages/app-sdk\n")
     await writeFile(path.join(fixture, "packages/app-sdk/index.ts"), "export const revision = 1\n")
@@ -712,15 +713,14 @@ test("pre-signal PID reuse prevents every process-group signal and cannot claim 
 
   const identities = [expected, { ...expected, startedAtTicks: "101" }]
   const lateSignals = []
-  const late = await terminateOwnedProcessGroup("chromium", {
-    pid: 42, exitCode: null, signalCode: null, ownedIdentity: expected,
-  }, {
+  const lateChild = { pid: 42, exitCode: null, signalCode: null, ownedIdentity: expected }
+  const late = await terminateOwnedProcessGroup("chromium", lateChild, {
     identity: async () => identities.shift(),
     signal: (...args) => lateSignals.push(args),
     wait: async () => false,
     waitForLog: async () => {},
   })
-  assert.deepEqual(lateSignals, [[-42, "SIGTERM"]], "reused PID must never receive SIGKILL")
+  assert.deepEqual(lateSignals, [[lateChild, "SIGTERM"]], "reused PID must never receive SIGKILL")
   assert.equal(late.pidReuseSafe, false)
 
   const capturedSignals = []

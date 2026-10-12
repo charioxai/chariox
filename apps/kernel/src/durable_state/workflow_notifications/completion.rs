@@ -41,6 +41,7 @@ pub(crate) fn capture_in(
             "INSERT OR IGNORE INTO workflow_notification_occurrences VALUES (?1,?2,NULL)",
             params![source.source_id, run.id()],
         )?;
+        prune_occurrences(tx)?;
         if inserted == 0 {
             continue;
         }

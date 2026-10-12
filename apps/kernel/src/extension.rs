@@ -125,11 +125,6 @@ impl RemoteExtensionManifest {
             .map(|tool| tool.tool_name.as_str())
     }
 
-    pub fn without_mcp_tools(mut self) -> Self {
-        self.tools.retain(|tool| tool.kind != ExtensionKind::Mcp);
-        self
-    }
-
     pub fn home_proxy_tool(&self, tool_name: &str) -> Option<&RemoteExtensionTool> {
         self.tools.iter().find(|tool| {
             tool.execution_location == ExtensionExecutionLocation::Home
@@ -425,29 +420,6 @@ mod tests {
         );
         assert!(manifest.home_proxy_tool("home_script").is_some());
         assert!(manifest.home_proxy_tool("missing").is_none());
-    }
-
-    #[test]
-    fn native_worker_manifest_removes_mcp_tools_only() {
-        let manifest = RemoteExtensionManifest {
-            tools: vec![
-                tool(ExtensionKind::Script, "home_script"),
-                tool(ExtensionKind::Connector, "home_connector_lookup"),
-                tool(ExtensionKind::App, "home_app_action"),
-                tool(ExtensionKind::Mcp, "worker_browser"),
-            ],
-            ..RemoteExtensionManifest::default()
-        }
-        .without_mcp_tools();
-
-        assert_eq!(
-            manifest
-                .tools
-                .iter()
-                .map(|tool| tool.tool_name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["home_script", "home_connector_lookup", "home_app_action"]
-        );
     }
 
     #[test]

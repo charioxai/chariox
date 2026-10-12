@@ -93,7 +93,7 @@ App adapter has narrower 64 KiB payload/prompt ceilings; it does not silently
 truncate. Artifact references are metadata and confer no file, URL or credential
 access.
 
-## Private workflow notifications (local 452 / peer 82; MP-08 / MP-10 / MP-11)
+## Private workflow notifications (local 452 / peer 82, main: local 491 / peer 101; MP-08 / MP-10 / MP-11)
 
 MP-11 F8 is closed by the existing lease-scoped authorization: leased-resource
 requests must match the authenticated `LeaseCallerBinding`, and a mismatch
@@ -341,3 +341,8 @@ exclude prompts, artifacts, and credentials.
 Errors have stable codes and a `retryable` flag. Version negotiation rejects a peer
 whose major protocol version is unsupported. Readiness means durable storage is
 writable; liveness only means the process event loop is responsive.
+
+MP-08 / MP-11: completion-occurrence diagnostics retain the most recent 4,096
+rows across the kernel. Upgrade, capture and sweep bound this window; durable
+terminal run state retains completion deduplication, and pending App receipts
+are independent of diagnostic retention.

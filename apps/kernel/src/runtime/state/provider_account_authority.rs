@@ -72,11 +72,20 @@ impl KernelRuntimeOwnedState {
             }
             return Ok(agent.owner_user_id().to_string());
         }
-        Ok(
-            crate::account_profile::provider_account_authority_owner_user_id(
-                &self.config_projection.snapshot(),
-                agent.owner_user_id(),
-            ),
+        let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
+            return Ok(
+                crate::account_profile::provider_account_authority_owner_user_id(
+                    &self.config_projection.snapshot(),
+                    agent.owner_user_id(),
+                ),
+            );
+        };
+        crate::account_profile::provider_account_authority_owner_for_profile(
+            &self.config_projection.snapshot(),
+            &self.provider_account_profiles,
+            agent.owner_user_id(),
+            provider,
+            agent.provider_account_profile(),
         )
     }
 }

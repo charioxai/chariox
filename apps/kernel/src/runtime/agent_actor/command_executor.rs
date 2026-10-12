@@ -84,6 +84,9 @@ impl AgentRuntimeCommandExecutor {
             AgentCommand::SteerQueuedPrompt { request } => {
                 boxed_agent_handler(|| self.steer_queued_prompt(request))
             }
+            AgentCommand::SteerActivePrompt { request } => {
+                boxed_agent_handler(|| self.steer_active_prompt(request))
+            }
             AgentCommand::CancelQueuedPrompt { request } => {
                 boxed_agent_handler(|| self.cancel_queued_prompt(request))
             }
@@ -275,6 +278,7 @@ impl AgentRuntimeCommandExecutor {
                 &request.session_id,
                 &target_agent_id,
                 &request.attachment_id,
+                request.expected_prompt_id.as_deref(),
             )
             .await?;
         publish_session_runtime_projection(
@@ -325,6 +329,22 @@ impl AgentRuntimeCommandExecutor {
             agent_activity,
             agent_activity_revision: self.session_projection.change_sequence(),
         })
+    }
+
+    async fn steer_active_prompt(
+        &self,
+        mut request: crate::local::SteerActivePromptRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.prompt_commands
+            .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
+            .await?;
+        request.attachments = materialize_inline_prompt_attachments(
+            &request.session_id,
+            &request.target_agent_id,
+            request.attachments,
+        )?;
+        let prompt = self.prompt_commands.steer_active_prompt(request).await?;
+        Ok(LocalDaemonResponse::ActivePromptSteered { prompt })
     }
 
     async fn cancel_queued_prompt(

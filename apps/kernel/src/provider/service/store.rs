@@ -516,9 +516,10 @@ impl ProviderProcessServiceStore {
         &self,
         session_id: String,
         provider_run_id: String,
+        prompt_id: String,
     ) -> Result<(), DaemonError> {
         self.write()
-            .enqueue_structured_prompt_abort(session_id, provider_run_id)
+            .enqueue_structured_prompt_abort(session_id, provider_run_id, prompt_id)
     }
 
     pub(crate) fn structured_submit_epoch(&self) -> u64 {

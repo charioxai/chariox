@@ -42,9 +42,13 @@ mod pre_lane_request;
 mod priority_dispatch;
 mod refresh_dispatch;
 mod relay_peer_bridge;
+mod retired_cloud_controls;
 mod runtime_tool_bridge;
 mod slice_relay_token_bridge;
 pub(crate) use slice_relay_token_bridge::ManagedSliceRelayTokenInstallRequest;
+pub(in crate::runtime) use slice_relay_token_bridge::{
+    managed_slice_relay_identity_from_environment, ManagedSliceRelayIdentity,
+};
 mod status_projection_bridge;
 mod transport_bridge;
 

@@ -101,7 +101,11 @@ pub(crate) enum KernelEvent {
         message_id: String,
         completed_at_ms: u64,
     },
+    RoomWorkflowsChanged {
+        inventory: crate::runtime::projection::RoomWorkflowInventory,
+    },
     SessionSnapshot {
+        room_workflows: crate::runtime::projection::RoomWorkflowInventory,
         session: Box<RuntimeSession>,
         provider_run: Box<Option<PublicProviderRun>>,
         #[allow(
@@ -255,7 +259,11 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
                 })
             }).collect::<Vec<_>>(),
         }),
+        KernelEvent::RoomWorkflowsChanged { inventory } => {
+            serde_json::json!({"event_id": event_id, "event": "room_workflows_changed", "inventory": inventory})
+        }
         KernelEvent::SessionSnapshot {
+            room_workflows,
             session,
             provider_run,
             agent_activity,
@@ -263,6 +271,7 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
         } => serde_json::json!({
             "event_id": event_id,
             "event": "session_snapshot",
+            "room_workflows": room_workflows,
             "active_prompt": session.active_prompt().map(|prompt| serde_json::json!({
                 "id": prompt.id(),
                 "status": prompt.status(),
@@ -734,6 +743,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::TerminalOutput { .. } => "terminal_output",
         KernelEvent::RuntimeNotices { .. } => "runtime_notices",
         KernelEvent::AssistantMessageCompleted { .. } => "assistant_message_completed",
+        KernelEvent::RoomWorkflowsChanged { .. } => "room_workflows_changed",
         KernelEvent::SessionSnapshot { .. } => "session_snapshot",
         KernelEvent::AgentTaskUpdated { .. } => "agent_task_updated",
         KernelEvent::AgentActivityChanged { .. } => "agent_activity_changed",
@@ -766,6 +776,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
             notices.first().map(|notice| notice.session_id.as_str())
         }
         KernelEvent::AssistantMessageCompleted { session_id, .. } => Some(session_id.as_str()),
+        KernelEvent::RoomWorkflowsChanged { inventory } => Some(&inventory.session_id),
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
         KernelEvent::AgentTaskUpdated { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::AgentActivityChanged { session_id, .. } => Some(session_id.as_str()),
@@ -828,7 +839,8 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         } => recipient_attachment_ids
             .iter()
             .any(|id| id == attachment_id),
-        KernelEvent::SessionSnapshot { .. }
+        KernelEvent::RoomWorkflowsChanged { .. }
+        | KernelEvent::SessionSnapshot { .. }
         | KernelEvent::AgentTaskUpdated { .. }
         | KernelEvent::AgentActivityChanged { .. }
         | KernelEvent::ProviderRunChanged { .. }
@@ -1006,4 +1018,17 @@ pub(crate) fn serialize_frame_value(mut value: Value) -> Result<String, DaemonEr
         }
     }
     Ok(encoded)
+}
+
+/// Inventory replacements share the existing attachment event stream.
+pub(crate) fn room_workflows_changed_event(
+    snapshot: &SessionSnapshotProjection,
+    previous: Option<&SessionSnapshotProjection>,
+) -> Option<KernelEvent> {
+    let previous = previous?;
+    (snapshot.room_workflows != previous.room_workflows).then(|| {
+        KernelEvent::RoomWorkflowsChanged {
+            inventory: snapshot.room_workflows.clone(),
+        }
+    })
 }

@@ -2,6 +2,17 @@ diff --git a/index-0wbvecnk.js b/index-0wbvecnk.js
 index 0c926100cef4bfc551c0656416278cbc5a1213b3..3fbeeee1178d8d0a3473d0bbb8dda736d5a2711b 100644
 --- a/index-0wbvecnk.js
 +++ b/index-0wbvecnk.js
+@@ -12803,7 +12803,9 @@
+     this.opentui.symbols.textBufferSetDefaultBg(buffer, bgPtr);
+   }
+   textBufferSetDefaultAttributes(buffer, attributes) {
+-    const attrValue = attributes === null ? null : new Uint8Array([attributes]);
++    // MP-08/MP-11: native reads u32, including the 24-bit hyperlink ID.
++    // A one-byte buffer lets neighboring bytes corrupt otherwise plain text.
++    const attrValue = attributes === null ? null : new Uint32Array([attributes]);
+     this.opentui.symbols.textBufferSetDefaultAttributes(buffer, attrValue);
+   }
+   textBufferResetDefaults(buffer) {
 @@ -13684,6 +13684,10 @@
    }
    setText(text) {

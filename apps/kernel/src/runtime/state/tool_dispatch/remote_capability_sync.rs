@@ -140,6 +140,11 @@ impl KernelRuntimeState {
         &self,
         agent: &crate::agent::AgentInstance,
     ) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteMcp>, DaemonError> {
+        // Home grants execute through the same home proxy in every client mode.
+        // Worker-local definitions are admitted separately by RequiredRemoteMcp.
+        if agent.remote_execution().is_some() {
+            return Ok(Vec::new());
+        }
         let mcp_grants = agent.mcp_grants();
         if mcp_grants.is_empty() {
             return Ok(Vec::new());

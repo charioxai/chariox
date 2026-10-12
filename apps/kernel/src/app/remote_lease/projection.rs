@@ -375,13 +375,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     }
                     continue;
                 }
+                let native_prompt_id = entry
+                    .merge_key
+                    .as_deref()
+                    .and_then(|key| key.strip_prefix("prompt:"))
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or(&prompt_history_key)
+                    .to_string();
                 if !leased_agent
                     .projected_prompt_ids
                     .iter()
-                    .any(|id| id == &prompt_history_key)
+                    .any(|id| id == &native_prompt_id)
                 {
                     prompts.push(RelayProjectedPrompt {
-                        prompt_id: prompt_history_key,
+                        prompt_id: native_prompt_id,
                         text: entry.text,
                     });
                 }
@@ -394,6 +401,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .projected_prompt_ids
                     .iter()
                     .any(|id| id == prompt.id())
+                && !prompts
+                    .iter()
+                    .any(|projected| projected.prompt_id == prompt.id())
             {
                 prompts.push(RelayProjectedPrompt {
                     prompt_id: prompt.id().to_string(),
@@ -451,7 +461,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             && leased_agent
                 .replayable_completion
                 .as_ref()
-                .is_some_and(|replay| replay.provider_run_id == provider_run_id)
+                .is_some_and(|replay| {
+                    replay.provider_run_id == provider_run_id
+                        && replay.home_prompt_id == home_prompt_id
+                })
         {
             // Prompt-state settlement also emits a generic prompt completion
             // record. Prefer the provider message identity retained while the
@@ -511,7 +524,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 || leased_agent
                     .replayable_completion
                     .as_ref()
-                    .is_some_and(|replay| replay.provider_run_id == provider_run_id));
+                    .is_some_and(|replay| {
+                        replay.provider_run_id == provider_run_id
+                            && replay.home_prompt_id == home_prompt_id
+                    }));
         let explicit_completion_waiting_for_prompt_settlement =
             completion_waits_for_native_prompt_settlement
                 && backing_prompt_active
@@ -519,13 +535,22 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 && leased_agent
                     .replayable_completion
                     .as_ref()
-                    .is_some_and(|replay| replay.provider_run_id == provider_run_id);
+                    .is_some_and(|replay| {
+                        replay.provider_run_id == provider_run_id
+                            && replay.home_prompt_id == home_prompt_id
+                    });
         let explicit_completion_waiting = explicit_completion_waiting_for_output
             || explicit_completion_waiting_for_prompt_settlement;
         let completion_already_projected = leased_agent
             .replayable_completion
             .as_ref()
-            .filter(|replay| replay.provider_run_id == provider_run_id)
+            .filter(|replay| {
+                replay.provider_run_id == provider_run_id
+                    && (replay.home_prompt_id == home_prompt_id
+                        // After the scoped turn is retired, its replay still
+                        // suppresses synthetic completions from old history.
+                        || (home_prompt_id.is_none() && !backing_prompt_active))
+            })
             .is_some_and(|replay| {
                 let completion_key = leased_provider_run_completion_key(
                     &leased_agent,
@@ -549,7 +574,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             if let Some(replay) = leased_agent
                 .replayable_completion
                 .as_ref()
-                .filter(|replay| replay.provider_run_id == provider_run_id)
+                .filter(|replay| {
+                    replay.provider_run_id == provider_run_id
+                        && replay.home_prompt_id == home_prompt_id
+                })
             {
                 let completion_key = leased_provider_run_completion_key(
                     &leased_agent,
@@ -680,7 +708,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             if let Some(replay) = leased_agent
                 .replayable_completion
                 .as_ref()
-                .filter(|replay| replay.provider_run_id == provider_run_id)
+                .filter(|replay| {
+                    replay.provider_run_id == provider_run_id
+                        && replay.home_prompt_id == home_prompt_id
+                })
             {
                 completions.push(RelayProjectedCompletion {
                     message_id: replay.message_id.clone(),
@@ -1091,7 +1122,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
             if !saw_completion && !workflow_output_ready {
                 return Ok(outcome);
             }
-            if active_prompt.workflow_run_id().is_some() && !workflow_output_ready {
+            let intentionally_cancelled = active_prompt.status() == PromptStatus::Cancelling;
+            if !intentionally_cancelled
+                && active_prompt.workflow_run_id().is_some()
+                && !workflow_output_ready
+            {
                 if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
                     active_prompt.workflow_run_id(),
                     active_prompt.workflow_node_run_id(),
@@ -1181,17 +1216,28 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 }
                 return Ok(outcome);
             }
+            // Completion is the worker's stop acknowledgement. Preserve the
+            // home cancellation intent instead of turning that receipt into success.
+            let completed = if intentionally_cancelled {
+                crate::app::workflow_runtime::cancel_workflow_prompt_from_runtime(
+                    self.app,
+                    session_id,
+                    &active_prompt,
+                )?;
+                self.app
+                    .prompt_owner_finalize_active_prompt_cancellation(session_id, agent_id)?
+            } else {
+                self.app
+                    .prompt_owner_complete_active_prompt_only(session_id, agent_id)?
+            };
             self.record_projected_prompt_settlement(
                 session_id,
                 agent_id,
-                &active_prompt,
+                &completed,
                 provider_run_id,
                 projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                 projected_termination.clone(),
             );
-            let completed = self
-                .app
-                .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
             // A matching worker completion settles the same flow-control turn
             // started by native prompt projection. Clear it before publishing
             // the home snapshot, otherwise completed prompts remain WORKING.
@@ -1206,7 +1252,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
             let _ =
                 crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);
-            if let Some(termination) = projected_termination.as_ref() {
+            if let Some(termination) = projected_termination
+                .as_ref()
+                .filter(|_| !intentionally_cancelled)
+            {
                 let _ = self
                     .app
                     .agents()
@@ -1232,7 +1281,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         workflow_node_run_id,
                     )?;
                 }
-            } else {
+            } else if !intentionally_cancelled {
                 crate::app::workflow_runtime::complete_workflow_prompt_from_runtime(
                     self.app,
                     session_id,
@@ -1349,7 +1398,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
         settled_at_ms: u64,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
     ) {
-        let settlement_status = if provider_termination.is_some() {
+        let settlement_status = if matches!(
+            prompt.status(),
+            PromptStatus::Cancelling | PromptStatus::Cancelled
+        ) {
+            crate::git_observer::CompletedTurnSettlementStatus::Cancelled
+        } else if provider_termination.is_some() {
             crate::git_observer::CompletedTurnSettlementStatus::Failed
         } else {
             crate::git_observer::CompletedTurnSettlementStatus::Completed
@@ -1403,15 +1457,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
             return Ok(());
         };
         let prompt = PromptQueueItem::new(
-            self.app.sessions_mut().reserve_prompt_id(),
+            projected.prompt_id,
             &attachment_id,
             agent_id,
             &projected.text,
             PromptStatus::Queued,
         );
-        let outcome =
-            self.app
-                .prompt_owner_submit_prepared_prompt(session_id, prompt.clone(), false)?;
+        let outcome = self
+            .app
+            .prompt_owner_submit_projected_native_prompt(session_id, prompt.clone())?;
         self.app.spawn_user_prompt_history_append(
             session_id,
             &attachment_id,
@@ -2216,8 +2270,11 @@ mod explicit_completion_tests {
             .is_none());
     }
 
-    #[test]
-    fn reused_provider_run_waits_for_output_from_each_home_prompt() {
+    fn reused_explicit_completion_run() -> (
+        crate::app::DaemonApp,
+        crate::execution_lease::LeasedAgent,
+        String,
+    ) {
         let mut config = DaemonConfig::for_tests();
         config.accept_remote_leases = true;
         let mut app =
@@ -2256,6 +2313,10 @@ mod explicit_completion_tests {
             .get_mut(&leased_agent.id)
             .expect("leased agent should remain registered")
             .provider = "codex".to_string();
+        app.leased_agents
+            .get_mut(&leased_agent.id)
+            .unwrap()
+            .active_home_prompt_id = Some("home-prompt-a".to_string());
         let first_completed_at_ms = RemoteLeaseRuntime::new(&mut app)
             .leased_agent_snapshot_for_test(&leased_agent.id)
             .and_then(|agent| agent.active_home_prompt_started_at_ms)
@@ -2325,6 +2386,16 @@ mod explicit_completion_tests {
             .get_mut(&leased_agent.id)
             .unwrap()
             .provider = "codex".to_string();
+        app.leased_agents
+            .get_mut(&leased_agent.id)
+            .unwrap()
+            .active_home_prompt_id = Some("home-prompt-b".to_string());
+        (app, leased_agent, provider_run_id)
+    }
+
+    #[test]
+    fn reused_provider_run_waits_for_output_from_each_home_prompt() {
+        let (mut app, leased_agent, provider_run_id) = reused_explicit_completion_run();
         let second_completed_at_ms = RemoteLeaseRuntime::new(&mut app)
             .leased_agent_snapshot_for_test(&leased_agent.id)
             .and_then(|agent| agent.active_home_prompt_started_at_ms)
@@ -2354,6 +2425,63 @@ mod explicit_completion_tests {
             )
             .expect("second active prompt should load")
             .is_some());
+    }
+
+    #[test]
+    fn mp08_mp10_reused_run_projects_cancelled_prompt_without_provider_output() {
+        let (mut app, leased_agent, provider_run_id) = reused_explicit_completion_run();
+        let before_second_output = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+            .expect("second completion-only projection should succeed");
+        if let Some((_, RelayPeerEvent::LeasedRuntimeProjection { completions, .. })) =
+            before_second_output
+        {
+            assert!(completions.is_empty());
+        }
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .expect("second active prompt should load")
+            .is_some());
+
+        app.prompt_owner_begin_cancelling_active_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("second prompt should begin cancellation");
+        let cancelled = app
+            .finalize_active_prompt_cancellation(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+                Some(&provider_run_id),
+            )
+            .expect("official provider abort settlement should finalize the prompt");
+        let projected = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection_with_recovery(
+                &leased_agent.id,
+                &provider_run_id,
+                false,
+                true,
+            )
+            .expect("cancelled prompt projection should succeed")
+            .expect("cancelled prompt should release a completion without provider output");
+        let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = projected.1;
+        assert_eq!(completions.len(), 1);
+        assert_eq!(
+            completions[0].message_id,
+            format!("prompt-complete:{}", cancelled.prompt.id())
+        );
+        let repeated = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+            .expect("repeat cancellation projection should succeed");
+        if let Some((_, RelayPeerEvent::LeasedRuntimeProjection { completions, .. })) = repeated {
+            assert!(
+                completions.is_empty(),
+                "cancellation completion should project exactly once"
+            );
+        }
     }
 
     #[test]
@@ -2470,7 +2598,20 @@ mod explicit_completion_tests {
                 Vec::new(),
             )
             .expect("native prompt should be recorded");
-        assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+        let PromptSubmissionOutcome::Started {
+            prompt: native_prompt,
+        } = outcome
+        else {
+            panic!("native prompt should start");
+        };
+        let (_, context) = RemoteLeaseRuntime::new(&mut app)
+            .native_interaction_context_for_backing_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+                provider_run.id(),
+            )
+            .expect("native turn should retain its home interaction context");
+        assert_eq!(context.home_prompt_id.as_deref(), Some(native_prompt.id()));
 
         let projection = RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection(&leased_agent.id, provider_run.id(), false)
@@ -2479,6 +2620,34 @@ mod explicit_completion_tests {
         let RelayPeerEvent::LeasedRuntimeProjection { prompts, .. } = projection.1;
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].text, "native prompt from home TUI\n");
+        assert_eq!(prompts[0].prompt_id, native_prompt.id());
+
+        let worktree = crate::test_support::TestWorktree::new("native-worker-prompt-home");
+        let (home, home_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                home.id(),
+                "native-home",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        RemoteLeaseRuntime::new(&mut app)
+            .project_remote_native_prompt_started(
+                home.id(),
+                home_agent.id(),
+                provider_run.id(),
+                prompts[0].clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            app.prompt_owner_active_prompt_for_agent(home.id(), home_agent.id())
+                .unwrap()
+                .unwrap()
+                .id(),
+            prompts[0].prompt_id
+        );
     }
 
     #[test]
@@ -2720,6 +2889,15 @@ mod explicit_completion_tests {
 
     #[test]
     fn detached_ordinary_queue_head_does_not_strand_following_workflow_prompt() {
+        assert_detached_ordinary_queue_advances(false);
+    }
+
+    #[test]
+    fn mp08_mp10_cancelled_turn_advances_detached_queue_without_stranding_workflow() {
+        assert_detached_ordinary_queue_advances(true);
+    }
+
+    fn assert_detached_ordinary_queue_advances(cancel: bool) {
         let mut config = DaemonConfig::for_tests();
         config.accept_remote_leases = true;
         let mut app =
@@ -2884,6 +3062,13 @@ mod explicit_completion_tests {
             detached_prompt.id(),
         );
 
+        if cancel {
+            app.prompt_owner_begin_cancelling_active_prompt(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .unwrap();
+        }
         let projected = RemoteLeaseRuntime::new(&mut app)
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
@@ -2905,6 +3090,14 @@ mod explicit_completion_tests {
             )
             .expect("completion should admit the detached ordinary head");
 
+        assert_eq!(
+            projected.completions[0].completed.status(),
+            if cancel {
+                PromptStatus::Cancelled
+            } else {
+                PromptStatus::Completed
+            }
+        );
         // Queued prompts outlive their source attachment, so the detached
         // ordinary head runs first and the workflow prompt waits behind it.
         let ordinary = projected.completions[0]
@@ -3032,6 +3225,94 @@ fn leased_tool_stream_key(leased: &LeasedAgent, run: &str, identity: &Option<Str
 #[cfg(test)]
 mod mp11_projection_admission_tests {
     use super::*;
+    #[test]
+    fn mp08_mp10_worker_completion_preserves_home_cancellation_settlement() {
+        let mut app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new("home", "home"))
+            .unwrap();
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-1".into(),
+                    worker_machine_id: "worker-machine".into(),
+                    execution_lease_id: "lease".into(),
+                    leased_agent_id: "leased".into(),
+                    active_worker_provider_run_id: Some("run".into()),
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "cancellation-test",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let prompt = PromptQueueItem::new(
+            "cancelled-home-turn",
+            attachment.id(),
+            agent.id(),
+            "research",
+            PromptStatus::Queued,
+        );
+        let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .unwrap()
+        else {
+            panic!("first prompt must start");
+        };
+        app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
+            .unwrap();
+        app.agents
+            .set_remote_execution_active_worker_provider_run_id(agent.id(), Some("run".into()))
+            .unwrap();
+        crate::transport::flow_control::note_prompt_started(&mut app, "run");
+        let projected = RemoteLeaseRuntime::new(&mut app)
+            .project_remote_runtime_projection(
+                crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
+                crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id: session.id().into(),
+                    home_agent_id: agent.id().into(),
+                    provider_run_id: "run".into(),
+                    provider_run: None,
+                    prompts: vec![],
+                    output_chunks: vec![],
+                    notices: vec![],
+                    completions: vec![RelayProjectedCompletion {
+                        message_id: "prompt-complete:worker-turn".into(),
+                        completed_at_ms: crate::session::unix_epoch_ms(),
+                        home_prompt_id: Some(prompt.id().into()),
+                        provider_termination: None,
+                    }],
+                },
+            )
+            .unwrap();
+        assert_eq!(projected.completions.len(), 1);
+        assert_eq!(
+            projected.completions[0].completed.status(),
+            PromptStatus::Cancelled
+        );
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            app.completed_git_turn_snapshot_store()
+                .latest_projection_for_agent(session.id(), agent.id())
+                .unwrap()
+                .settlement_status,
+            crate::git_observer::CompletedTurnSettlementStatus::Cancelled
+        );
+    }
+
     #[test]
     fn mp11_projection_requires_exact_source_session_and_retained_lease() {
         let mut app =

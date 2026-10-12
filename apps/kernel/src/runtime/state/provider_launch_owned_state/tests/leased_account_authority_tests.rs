@@ -295,7 +295,7 @@ async fn leased_account_authority_survives_launch_reload_and_worker_recovery() {
                     .iter()
                     .any(|(_, value)| value == "synthetic-cloud-owner"));
             }
-            let run = crate::provider::RuntimeProviderRun::new(
+            let mut run = crate::provider::RuntimeProviderRun::new(
                 "leased-account-run",
                 &prepared,
                 crate::provider::ProviderLaunchResult {
@@ -310,6 +310,8 @@ async fn leased_account_authority_survives_launch_reload_and_worker_recovery() {
                     structured_endpoint: None,
                 },
             );
+            // Recovery resolves credentials for a live run, not a retired start.
+            run.mark_running();
             let reload = super::super::super::provider_reload::policy_reload_launch_request(
                 &run,
                 &leased.backing_agent_id,

@@ -102,10 +102,15 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version70 combines Apps Phase1 and autonomous Room observation contracts (MP-08/MP-10).
 /// MP-08/MP-10/MP-11: version 90 negotiates bounded stripes over the multidomain and main worker shapes.
 /// Older worker contracts are rejected before dispatch.
+/// Version 101 (main) binds the embedded local response union to local protocol 491,
+/// restores owner-private workflow notifications to the Browser/Computer peer
+/// union and pairs exact home-prompt cancellation admission (MP-08/MP-10/MP-11).
 /// Version 102 reconciles the agent-model union and its leased watcher contract (MP-08/MP-09/MP-10/MP-11).
 /// Version 114 integrates the 102 agent-model/leased-watcher union, main's
 /// identity-preserving renewal and the native display binary-event transport
-/// (MP-08/MP-09/MP-10/MP-11). Generated consumers follow this allocated version.
+/// (MP-08/MP-09/MP-10/MP-11), and includes main's 101 kernel ownership,
+/// waiting-room and Room workflow contracts (#974). Generated consumers follow
+/// this allocated version.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 114;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

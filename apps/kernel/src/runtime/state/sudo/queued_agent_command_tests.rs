@@ -77,6 +77,7 @@ async fn assert_queued_prompt(cancel: bool, replace: bool, include_run: bool, co
             session_id: window.session_id.clone(),
             attachment_id: f.request.attachment_id.clone(),
             target_agent_id: Some(target.clone()),
+            expected_prompt_id: None,
         })
     } else {
         let mut request = f.request.clone();

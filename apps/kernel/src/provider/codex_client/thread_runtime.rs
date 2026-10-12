@@ -97,7 +97,8 @@ impl CodexClient {
             self.log_thread_config_overrides("thread/start", &config_overrides);
             params["config"] = json!(config_overrides);
         }
-        if self.metadata_only_discovery {
+        // MP-08 / MP-11: Isolated discovery settles native notifications; no rollout is required.
+        if self.read_only_discovery_permissions {
             params["ephemeral"] = json!(true);
             params["persistExtendedHistory"] = json!(false);
         }
@@ -338,6 +339,30 @@ impl CodexClient {
             }),
             buffered_notifications,
         )?;
+        Ok(())
+    }
+
+    /// MP-08 / MP-10: official Codex thread-scoped unified-exec teardown.
+    /// Requires initialize.capabilities.experimentalApi (already enabled).
+    pub fn thread_background_terminals_clean(
+        &self,
+        socket: &mut CodexSocket,
+        next_request_id: &mut u64,
+        thread_id: &str,
+        buffered_notifications: &mut Vec<CodexNotification>,
+    ) -> Result<(), DaemonError> {
+        let _: Value = self.send_request_buffering_notifications(
+            socket,
+            next_request_id,
+            "thread/backgroundTerminals/clean",
+            json!({ "threadId": thread_id }),
+            buffered_notifications,
+        )?;
+        crate::logging::debug_with_fields(
+            "daemon.provider.codex",
+            "codex thread terminals cleaned trace",
+            json!({"provider_run_id":self.provider_run_id}),
+        );
         Ok(())
     }
 

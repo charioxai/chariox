@@ -1,3 +1,4 @@
+import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import assert from "node:assert/strict"
 import test from "node:test"
 
@@ -21,7 +22,18 @@ import type {
   WaitingRoomState,
 } from "./waiting-room-types.js"
 
-test("waiting room activation connects detached kernel before control actions", async () => {
+test("MP-08 / MP-11 existing slice activation uses worker-owned authentication", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: { action: "create", launch: { provider: "codex", model: "gpt-5.4", effort: "low", accountProfile: "same-profile", sliceRef: "slice-existing" } },
+    remoteState: { providerAccounts: [{ provider: "codex", profile_id: "same-profile", label: "Source signed out", is_default: true, auth_state: "not_configured", owner_user_id: "local", origin: "linked", usage: {profile_id: "same-profile", provider: "codex", availability: "unavailable", source: "test"} }] },
+  })
+  await harness.controller.activate()
+  assert.equal(harness.createdLaunches.length, 1)
+  assert.equal(harness.createdLaunches[0]?.launch.sliceRef, "slice-existing")
+})
+
+test("detached waiting room Login does not require a kernel connection", async () => {
   const harness = createHarness({
     kernelConnected: false,
     controlDecision: { action: "cloud" },
@@ -30,7 +42,6 @@ test("waiting room activation connects detached kernel before control actions", 
   await harness.controller.activate()
 
   assert.deepEqual(harness.calls, [
-    "connectKernel",
     "handleCloudCommand",
   ])
 })
@@ -854,12 +865,24 @@ test("waiting room activation undoes target attachment before rolling back its c
   ])
 })
 
+test("ordinary session activation cannot launch from cached or pending inventory", async () => {
+  const harness = createHarness({
+    remoteState: { inventoryStatus: "loading" },
+    controlDecision: { action: "none" },
+    activationDecision: { action: "create", launch: { provider: "opencode", model: "gpt-5.4", effort: "medium" } },
+  })
+  await harness.controller.activate()
+  assert(!harness.calls.some(call => call.startsWith("createSession")))
+  assert(harness.calls.some(call => call.includes("Waiting for selected kernel inventory")))
+})
+
 function createHarness(options: {
   kernelConnected?: boolean
   controlDecision: WaitingRoomControlActivationDecision
   activationDecision?: WaitingRoomActivationDecision
   createSessionDecision?: WaitingRoomCreateSessionDecision
   accountProfile?: string | null
+  onLaunchRefused?: WaitingRoomActivationControllerDeps["onLaunchRefused"]
   createError?: Error
   createGate?: Promise<void>
   createStarted?: () => void
@@ -936,6 +959,7 @@ function createHarness(options: {
     openSessionBrowserDialog: () => {
       calls.push("openSessionBrowserDialog")
     },
+    ...(options.onLaunchRefused ? { onLaunchRefused: options.onLaunchRefused } : {}),
     createSession: async (workspacePath, worktreePath, launch) => {
       calls.push("createSession")
       options.createStarted?.()
@@ -1123,4 +1147,27 @@ function sessionListEntry(id: string, alias: string | null): SessionListEntry {
     status: "Active",
     connected_cli_count: 0,
   }
+}
+
+for (const code of ["local_transport_error", "outcome_unknown"]) {
+  test(`MP-08/MP-10/MP-11 no-draft launch recovery fences ${code}`, async () => {
+    const launch = {provider: "codex" as const, model: "gpt-6.1-sol", effort: ""}
+    let recovery: (() => void) | undefined
+    const options = {
+      controlDecision: {action: "none" as const},
+      activationDecision: {action: "create" as const, launch},
+      createSessionDecision: {action: "create" as const, launch},
+      createError: new LocalIpcError("handle kernel response", "working directory does not exist", code),
+      onLaunchRefused: (_message: string, retry: () => void) => { recovery = retry },
+    }
+    const h = createHarness(options)
+    await h.controller.activate()
+    assert.equal(Boolean(recovery), code === "local_transport_error")
+    if (recovery) {
+      options.createError = undefined as never
+      recovery()
+      for (let n = 0; n < 10 && !h.attachedSessions.length; n++) await new Promise(resolve => setTimeout(resolve, 0))
+      assert.equal(h.attachedSessions.length, 1)
+    }
+  })
 }

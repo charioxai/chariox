@@ -1,4 +1,55 @@
 use super::*;
+
+#[test]
+fn mp08_mp10_active_prompt_steering_protocol_483_shape_and_hash() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let request = LocalDaemonRequest::SteerActivePrompt(crate::local::SteerActivePromptRequest {
+        session_id: "session".into(),
+        attachment_id: "attachment".into(),
+        target_agent_id: "agent".into(),
+        expected_active_prompt_id: "home-prompt".into(),
+        prompt: "change direction".into(),
+        attachments: vec![],
+    });
+    let expected = serde_json::json!({ "SteerActivePrompt": {
+        "session_id": "session", "attachment_id": "attachment", "target_agent_id": "agent",
+        "expected_active_prompt_id": "home-prompt", "prompt": "change direction", "attachments": [],
+    } });
+    let snapshot = serde_json::to_value(request).unwrap();
+    assert_eq!(snapshot, expected);
+    let hash = Sha256::digest(serde_json::to_string(&snapshot).unwrap().as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "98c8cd14cd20061709d76b8aa2e2094b715e96044df6842a40189ca978f915b1"
+    );
+    let prompt: crate::session::PromptQueueItem = serde_json::from_value(serde_json::json!({
+        "id": "steer", "source_attachment_id": "attachment", "target_agent_id": "agent",
+        "prompt": "change direction", "attachments": [], "created_at_ms": 1, "updated_at_ms": 2,
+        "status": "Running", "prompt_origin": "chariox", "workflow_run_id": null, "workflow_node_run_id": null,
+    })).unwrap();
+    assert_eq!(
+        serde_json::to_value(LocalDaemonResponse::ActivePromptSteered { prompt }).unwrap(),
+        serde_json::json!({
+            "ActivePromptSteered": { "prompt": {
+                "id": "steer", "source_attachment_id": "attachment", "target_agent_id": "agent",
+                "prompt": "change direction", "attachments": [], "created_at_ms": 1, "updated_at_ms": 2,
+                "status": "Running", "prompt_origin": "chariox", "workflow_run_id": null, "workflow_node_run_id": null,
+            } }
+        })
+    );
+    let mut missing_expected = expected;
+    missing_expected["SteerActivePrompt"]
+        .as_object_mut()
+        .unwrap()
+        .remove("expected_active_prompt_id");
+    assert!(
+        serde_json::from_value::<LocalDaemonRequest>(missing_expected).is_err(),
+        "target identity must be required"
+    );
+}
 use crate::local::{RelayStatus, WaitingRoomGitCredentialSummary, WaitingRoomInventorySnapshot};
 
 #[test]
@@ -616,6 +667,7 @@ fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
             session_id: "session-1".to_string(),
             attachment_id: "attachment-1".to_string(),
             target_agent_id: Some("agent-1".to_string()),
+            expected_prompt_id: None,
         });
     let active_cancel_snapshot =
         serde_json::to_value(active_cancel_request).expect("active cancel request should encode");
@@ -1072,4 +1124,39 @@ fn relay_chunk_transport_490_100_schema_and_wire_hashes() {
         {"kind":"transport_ack","transfer_id":1,"offset":6,"allowed_targets":["other-kernel"]}
     ))
     .is_err());
+}
+
+// MP-08/MP-10/MP-11: allocated cancellation admission contract.
+#[test]
+fn mp08_exact_prompt_cancellation_shape_requires_a_new_protocol() {
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let request = LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
+        session_id: "session".into(),
+        attachment_id: "attachment".into(),
+        target_agent_id: Some("agent".into()),
+        expected_prompt_id: Some("home-prompt".into()),
+    });
+    let expected = serde_json::json!({"CancelActivePrompt": {
+        "session_id":"session", "attachment_id":"attachment", "target_agent_id":"agent", "expected_prompt_id":"home-prompt",
+    }});
+    let value = serde_json::to_value(request).unwrap();
+    assert_eq!(value, expected);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_string(&value).unwrap().as_bytes())
+        ),
+        "f60f7c3fbab2cbca12072695315f88cc1085316f257810ec61ff45cba8633e5a"
+    );
+    let mut legacy = value;
+    legacy["CancelActivePrompt"]
+        .as_object_mut()
+        .unwrap()
+        .remove("expected_prompt_id");
+    let decoded: LocalDaemonRequest = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), legacy);
 }

@@ -171,8 +171,13 @@ impl KernelRuntimeState {
         self.owned
             .terminal_stream
             .notify_terminal_projection_change(session.id());
+        let snapshot = self.owned.session_snapshot(session.id())?;
         Ok(Some(LocalDaemonResponse::SessionState {
-            session: self.owned.session_snapshot(session.id())?,
+            room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
+                &snapshot,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+            ),
+            session: snapshot,
             agent_activity: self.agent_activity_for_session(&session),
             agent_activity_revision: self.owned.session_projection.change_sequence(),
         }))

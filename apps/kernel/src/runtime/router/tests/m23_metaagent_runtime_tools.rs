@@ -6,7 +6,7 @@ struct TestMetaRuntimeEnv {
 
 impl TestMetaRuntimeEnv {
     fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
+        let root = crate::test_support::test_workspace_root().join(format!(
             "chariox-m23-metaagent-runtime-{label}-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()

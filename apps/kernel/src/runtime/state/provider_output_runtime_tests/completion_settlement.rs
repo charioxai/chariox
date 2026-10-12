@@ -1088,12 +1088,7 @@ async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
     let promoted = runtime
         .owned
         .prompt_state_owner
-        .activate_next_queued_prompt_with_prompt_id(
-            &current_session,
-            agent.id(),
-            None,
-            runtime.owned.session_store.reserve_prompt_id(),
-        )
+        .activate_next_queued_prompt_for_dispatch(&current_session, agent.id(), None)
         .expect("workflow prompt promotion should succeed")
         .expect("workflow prompt should promote");
     assert_eq!(promoted.workflow_node_run_id(), Some(node_run_id.as_str()));
@@ -1998,7 +1993,8 @@ async fn failed_prompt_dispatch_advances_the_next_queued_prompt() {
     let active = projected
         .active_prompt_for_agent(agent.id())
         .expect("queued prompt should become active");
-    assert_ne!(active.id(), queued_prompt_id);
+    assert_eq!(active.id(), queued_prompt_id);
+    assert_eq!(active.pending_prompt_id(), None);
     assert_eq!(active.prompt(), "second prompt should advance\n");
     assert!(projected
         .queued_prompts_for_agent(agent.id())

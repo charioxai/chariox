@@ -104,10 +104,23 @@ impl DaemonApp {
         if crate::provider::canonical_provider_family(&request.provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
-            let account_owner_user_id = self.provider_account_owner_for_execution(
+            let execution_owner_user_id = self.provider_account_owner_for_execution(
                 &request.session_id,
                 request.agent_id.as_deref(),
             )?;
+            let account_owner_user_id = if execution_owner_user_id
+                == crate::account_profile::provider_account_authority_owner_user_id(
+                    &self.config,
+                    &request.owner_user_id,
+                ) {
+                crate::account_profile::provider_account_authority_for_launch(
+                    &self.config,
+                    &self.provider_account_profiles,
+                    &request,
+                )?
+            } else {
+                execution_owner_user_id
+            };
             let profile = if request.client_interface.is_chariox() {
                 refresh_provider_usage_before_launch(
                     &self.provider_account_profiles,
@@ -158,7 +171,17 @@ impl DaemonApp {
             for (name, value) in provider_credential_env.iter() {
                 launch_environment.insert(name, zeroize::Zeroizing::new(value.to_string()));
             }
+            let selection = request
+                .resolved_provider_account
+                .as_ref()
+                .map(|account| account.selection().to_string())
+                .unwrap_or_else(|| request.account_profile.clone());
             request.account_profile = profile.profile_id;
+            crate::account_profile::bind_provider_account_authority(
+                &mut request,
+                account_owner_user_id,
+                selection,
+            );
             request = request
                 .with_provider_account_env(provider_account_env)
                 .with_provider_credential_env(launch_environment);

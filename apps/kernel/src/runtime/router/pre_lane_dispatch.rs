@@ -19,6 +19,7 @@ impl CommandRouter {
         request: &LocalDaemonRequest,
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        super::retired_cloud_controls::require_kernel_authority(request)?;
         if let Some(actor) = command.caller.metaagent_id.as_deref() {
             self.runtime_state
                 .authorize_room_provider_epoch(Some(actor), command.provider_run_id.as_deref())?;
@@ -100,6 +101,15 @@ impl CommandRouter {
                 request.clone(),
             )
             .await
+            .map(Some);
+        }
+        if let LocalDaemonRequest::PreflightProviderAccountPortability(request) = request {
+            return crate::runtime::provider_account_portability::execute_preflight(
+                &self.config_projection.snapshot(),
+                &self.provider_account_profiles,
+                command,
+                request,
+            )
             .map(Some);
         }
         // MP-08 / MP-10 / MP-11: poll only the selected request handler.

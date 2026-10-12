@@ -63,20 +63,30 @@ pub(crate) struct TestWorktree {
     path: PathBuf,
 }
 
+pub(crate) fn test_workspace_root() -> PathBuf {
+    let root = std::env::var_os("CHARIOX_TEST_WORKTREE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    assert!(root.is_absolute(), "test workspace parent must be absolute");
+    root
+}
+
 impl TestWorktree {
     pub(crate) fn new(label: &str) -> Self {
         let nonce = crate::session::unix_epoch_ms();
         let sequence = TEST_WORKTREE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        // Provider workspaces must remain outside protected runtime state, even
-        // when TMPDIR points at disk-backed Chariox test scratch.
-        let root = std::env::var_os("CHARIOX_TEST_WORKTREE_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
+        // MP-08 / MP-11: scratch can live in protected service state, while
+        // real session workspaces must stay outside that state. Builder lanes
+        // provide their own disposable workspace parent without moving TMPDIR.
+        let root = test_workspace_root();
         let path = root.join(format!(
             "chariox-test-worktree-{label}-{}-{nonce}-{sequence}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).expect("test worktree should exist");
+        // Disk-backed test TMPDIRs may use an alias outside protected service
+        // state. Provider discovery binds to its canonical working directory.
+        let path = path.canonicalize().expect("test worktree should resolve");
         Self { path }
     }
 

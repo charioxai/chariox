@@ -247,3 +247,66 @@ process.stdin.resume()
     supervisor.stop_all();
     let _ = std::fs::remove_file(pid_file);
 }
+
+#[test]
+fn mp08_stdio_retry_reinitializes_after_a_transport_failure() {
+    crate::test_support::isolated_env_test!();
+    let Some(mut config) = node_stdio_config(
+        r#"
+import fs from 'node:fs'
+import readline from 'node:readline'
+let initialized = false
+let notified = false
+const marker = process.env.CHARIOX_TEST_RECOVERY_MARKER
+const send = v => process.stdout.write(JSON.stringify(v) + '\n')
+readline.createInterface({input: process.stdin}).on('line', line => {
+  const m = JSON.parse(line)
+  if (m.method === 'initialize') {
+    initialized = true
+    send({jsonrpc:'2.0', id:m.id, result:{protocolVersion:'2025-03-26', capabilities:{}, serverInfo:{name:'recovery',version:'1'}}})
+  } else if (m.method === 'notifications/initialized') {
+    notified = true
+  } else if (!initialized || !notified) {
+    send({jsonrpc:'2.0', id:m.id, error:{code:-32602,message:'not initialized'}})
+  } else if (!fs.existsSync(marker)) {
+    fs.writeFileSync(marker, 'failed once')
+    process.stdout.write('invalid protocol output\n\n')
+  } else {
+    send({jsonrpc:'2.0', id:m.id, result:{content:[{type:'text',text:'recovered'}]}})
+  }
+})
+"#,
+    ) else {
+        return;
+    };
+    let marker = std::env::temp_dir().join(format!(
+        "mp08-stdio-recovery-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    if let CharioxMcpTransportConfig::Stdio { env, .. } = &mut config.transport {
+        env.insert(
+            "CHARIOX_TEST_RECOVERY_MARKER".into(),
+            marker.display().to_string(),
+        );
+    }
+    let dispatch = |payload| {
+        crate::provider::mcp_proxy::dispatch_provider_mcp_proxy_request(
+            "mp08-recovery-run",
+            "mp08-recovery-session",
+            &config,
+            payload,
+        )
+    };
+    dispatch(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})).unwrap();
+    dispatch(json!({"jsonrpc":"2.0","method":"notifications/initialized"})).unwrap();
+    assert!(dispatch(json!({"jsonrpc":"2.0","id":2,"method":"tools/call"})).is_err());
+    let retry = dispatch(json!({"jsonrpc":"2.0","id":3,"method":"tools/call"}));
+    crate::provider::mcp_proxy::shutdown_provider_mcp_proxy_session("mp08-recovery-session");
+    let _ = std::fs::remove_file(marker);
+    let retry = retry.expect("retry should restore the established MCP handshake");
+    assert_eq!(
+        retry.pointer("/result/content/0/text"),
+        Some(&json!("recovered"))
+    );
+}

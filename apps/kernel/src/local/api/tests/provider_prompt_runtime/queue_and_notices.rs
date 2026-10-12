@@ -203,11 +203,7 @@ fn local_request_api_exposes_queue_config_and_notices() {
                 .started_next
                 .expect("queued prompt should start after completion");
             assert_eq!(started_next.prompt(), "second");
-            if queued_prompt.durable_operation_id().is_some() {
-                assert_eq!(started_next.id(), queued_prompt.id());
-            } else {
-                assert_ne!(started_next.id(), queued_prompt.id());
-            }
+            assert_eq!(started_next.id(), queued_prompt.id());
             assert_eq!(started_next.pending_prompt_id(), None);
             started_next.id().to_string()
         }
@@ -298,6 +294,7 @@ fn local_request_api_can_cancel_an_active_prompt() {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
                 target_agent_id: None,
+                expected_prompt_id: None,
             },
         ))
         .expect("cancel should succeed");

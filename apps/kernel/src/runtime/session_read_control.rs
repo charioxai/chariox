@@ -52,6 +52,8 @@ pub(crate) fn projected_session_state_response(
     }
     let agent_activity =
         runtime_state.agent_activity_for_session_with_unread(&session, Some(caller_user_id));
+    let room_workflows =
+        crate::runtime::projection::RoomWorkflowInventory::project(&session, caller_user_id);
     let redacted_session = match session.redacted_for_user_with_workflow_history(
         caller_user_id,
         runtime_state.durable_state_store(),
@@ -60,6 +62,7 @@ pub(crate) fn projected_session_state_response(
         Err(error) => return Some(Err(error)),
     };
     Some(Ok(LocalDaemonResponse::SessionState {
+        room_workflows,
         agent_activity: redact_agent_activity_for_session(agent_activity, &redacted_session),
         agent_activity_revision: session_projection.change_sequence(),
         session: redacted_session,

@@ -30,9 +30,8 @@ export type CloudRelayProfile = {
   client_alias?: string | null
   machine_id?: string | null
   machine_alias?: string | null
-  machine_credential?: string | null
-  cloud_session_token?: string | null
-  cloud_session_expires_at_ms?: number | null
+  kernel_id?: string | null
+  kernel_enrolled?: boolean
   token_expires_at_ms?: number | null
 }
 
@@ -46,7 +45,7 @@ export type CloudRelayLoginStart = {
 }
 
 export type CloudRelayLoginPoll = {
-  status: "authorization_pending" | "expired_token" | "approved"
+  status: "authorization_pending" | "expired_token" | "access_denied" | "approved"
   interval_seconds?: number | null
   expires_at?: string | null
   profile?: CloudRelayProfile | null
@@ -321,6 +320,7 @@ export type TerminalPairingLinkJoined = {
   terminal: TerminalRecord
   pairing: PairingJoinRecord
   relay_token?: string | null
+  kernel_pairing?: boolean
 }
 
 export type RelayKernelPresence = {
