@@ -442,9 +442,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 {
                     let context =
                         self.claude_native_prompt_context(session_id, &agent_id, prompt)?;
-                    crate::provider::ensure_claude_native_hidden_context_fits(
+                    let context = crate::provider::fit_claude_native_hidden_context(
                         provider_run_id,
-                        &context,
+                        context,
                     )?;
                     fs::write(context_file, &context).map_err(|error| {
                         DaemonError::ProviderProtocol {
@@ -1655,10 +1655,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 attachment_context,
             ])
         };
-        crate::provider::ensure_claude_native_hidden_context_fits(
-            provider_run_id,
-            &hidden_context,
-        )?;
+        let hidden_context =
+            crate::provider::fit_claude_native_hidden_context(provider_run_id, hidden_context)?;
         fs::write(context_file, hidden_context).map_err(|error| DaemonError::ProviderProtocol {
             provider_run_id: provider_run_id.to_string(),
             operation: "claude_hidden_context_write",

@@ -67,6 +67,48 @@ pub(crate) fn ensure_claude_native_hidden_context_fits(
     })
 }
 
+// MP-08 / MP-10 / MP-11: optional home replay is sized against the complete worker turn.
+pub(crate) fn fit_claude_native_hidden_context(
+    provider_run_id: &str,
+    hidden_context: String,
+) -> Result<String, DaemonError> {
+    if ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context).is_ok() {
+        return Ok(hidden_context);
+    }
+    let open = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_OPEN;
+    let close = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_CLOSE;
+    let Some(start) = hidden_context.find(open) else {
+        ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context)?;
+        return Ok(hidden_context);
+    };
+    let body_start = start + open.len();
+    let Some(body_end) = hidden_context[body_start..]
+        .find(close)
+        .map(|end| body_start + end)
+    else {
+        ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context)?;
+        return Ok(hidden_context);
+    };
+    let prefix = &hidden_context[..start];
+    let suffix = &hidden_context[body_end + close.len()..];
+    let required = format!("{prefix}{suffix}");
+    // Mandatory origin, skill, attachment and prompt assembly instructions are never truncated.
+    ensure_claude_native_hidden_context_fits(provider_run_id, &required)?;
+    let capacity = CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS * (CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES - 3);
+    let room = capacity.saturating_sub(required.len() + open.len() + close.len());
+    if room == 0 {
+        return Ok(required);
+    }
+    let body = &hidden_context[body_start..body_end];
+    let mut end = body.len().min(room);
+    while !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    let fitted = format!("{prefix}{open}{}{close}{suffix}", &body[..end]);
+    ensure_claude_native_hidden_context_fits(provider_run_id, &fitted)?;
+    Ok(fitted)
+}
+
 pub(super) struct ClaudeNativeTuiFiles {
     root: ClaudeRuntimeFilesRoot,
     pub(super) events_file: PathBuf,

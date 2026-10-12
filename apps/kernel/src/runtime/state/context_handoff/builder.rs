@@ -70,8 +70,8 @@ pub(super) fn build_recreated_lease_context(
         }
     }
     let latest = turns.pop()?;
-    const OPEN: &str = "<chariox_context_handoff>\nChariox reconstructed this bounded background from home history after worker lease recreation. The active user request is supplied separately.\n\n";
-    const CLOSE: &str = "\n</chariox_context_handoff>";
+    const OPEN: &str = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_OPEN;
+    const CLOSE: &str = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_CLOSE;
     const LATEST: &str = "Latest turn:\n";
     const PRIOR: &str = "Prior turns:\n";
     let mut room = max_bytes.checked_sub(OPEN.len() + CLOSE.len() + LATEST.len())?;

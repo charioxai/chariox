@@ -2956,3 +2956,90 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
         }
     }
 }
+
+// MP-08 / MP-10 / MP-11: fit after the worker adds its normal origin context.
+#[test]
+fn review976_recreated_replay_fits_complete_claude_worker_context() {
+    assert_recreated_replay_fits_worker("claude");
+    assert_recreated_replay_fits_worker("claude-headless");
+}
+
+fn assert_recreated_replay_fits_worker(provider: &str) {
+    let worktree = crate::test_support::TestWorktree::new("claude-replay-fit");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-replay-fit-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("hidden-context.txt");
+    fs::write(&context_file, "").unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        provider,
+        "default",
+        "sonnet",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let run = RuntimeProviderRun::new(
+        "claude-replay-fit",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    if provider == "claude-headless" {
+        // Let the native composer startup grace expire; no provider process is started here.
+        std::thread::sleep(std::time::Duration::from_millis(4_100));
+    }
+    let required = "x".repeat(if provider == "claude-headless" {
+        21_000
+    } else {
+        45_000
+    });
+    let open = "<chariox_context_handoff>\nChariox reconstructed this bounded background from home history after worker lease recreation. The active user request is supplied separately.\n\n";
+    let close = "\n</chariox_context_handoff>";
+    let body_room = crate::provider::claude_native_hidden_context_room(&required).min(24_000)
+        - open.len()
+        - close.len();
+    let hidden = format!("{required}\n\n{open}{}{close}", "🦀".repeat(body_room / 4));
+    crate::provider::ensure_claude_native_hidden_context_fits(run.id(), &hidden).unwrap();
+    let injected = ProviderOutputClaudeNativeBridge::new(&mut app).inject_prompt(
+        session.id(),
+        run.id(),
+        agent.id(),
+        context_file.to_str().unwrap(),
+        &run,
+        &ClaudeNativePromptInjection {
+            id: "recreated-prompt",
+            origin_prompt_id: "normal-origin-prompt",
+            prompt: "",
+            hidden_system_context: &hidden,
+            attachments: &[],
+        },
+    );
+    let delivered = fs::read_to_string(&context_file).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    injected.expect("optional replay must fit after normal worker context is added");
+    assert!(delivered.contains(&required));
+    assert!(delivered.contains("normal-origin-prompt"));
+    crate::provider::ensure_claude_native_hidden_context_fits(run.id(), &delivered).unwrap();
+    assert!(
+        delivered.contains("<chariox_context_handoff>")
+            == delivered.contains("</chariox_context_handoff>")
+    );
+}

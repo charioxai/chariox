@@ -575,9 +575,9 @@ fn write_claude_hidden_context(
     let Some(path) = &state.context_file else {
         return Ok(());
     };
-    crate::provider::ensure_claude_native_hidden_context_fits(
+    let hidden_system_context = crate::provider::fit_claude_native_hidden_context(
         provider_run_id,
-        hidden_system_context.trim(),
+        hidden_system_context.trim().to_string(),
     )?;
     std::fs::write(path, hidden_system_context.trim()).map_err(|error| {
         DaemonError::ProviderProtocol {
