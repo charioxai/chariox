@@ -549,8 +549,19 @@ Those lifecycle semantics belong to PR2.
 
 ## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
 
-MP-08 / MP-09 / MP-10 / MP-11 A10: the agent-model union uses local protocol
-493 and relay peer protocol 102. Leased watched processes use the existing
+MP-08 / MP-09 / MP-10 / MP-11: the integrated acceptance contract uses local
+protocol **506** and relay peer protocol **114**. It combines the agent-model
+493/102 task, wake, Goal and leased-watcher contracts; main's local 490 bounded
+relay response framing and socket-local receipts; and the native display,
+App-view, Notes, grant, capture, DOM-mirror and agent-tab contracts integrated
+at local 491. The display history includes bounded stripes (447), binary frames
+with WebP tiles and scroll rectangles (466), and relay display push/ACKs (475).
+Binary transport downgrade does not admit an obsolete worker runtime: remote
+lease creation, restored bindings, Room browser forwarding, context transfer and
+hosted slice receipts require peer 114 or newer. Client feature floors depend on
+the contracts they use; this entry allocates no new protocol version.
+
+MP-08 / MP-09 / MP-10 / MP-11 A10: leased watched processes use the existing
 signed, lease-scoped peer connection. Home owns the task, registration and inbox;
 worker owns a durable launch receipt and the common watched-process supervisor.
 Start is pinned to the current home prompt, worker run, placement and lease.
@@ -682,10 +693,9 @@ invocation reference, and tracks the existing run/nodes as covered obligations.
 It never replays a template launch. Completed/cancelled runs stay terminal;
 restart retains the migration receipt, source cursors and finite check-in.
 
-The goal shape, compact task acknowledgements and `completion_check` origin use
-the coordinator-assigned local protocol 493, published with matching snapshots
-and dependent Goal client gates. The integration lane still owns relay-peer 102;
-this change retains the current peer version and snapshots until that union lands.
+The goal shape, compact task acknowledgements and `completion_check` origin were
+introduced at local protocol 493 and are retained in the integrated 506/114
+contract above, with matching snapshots and dependent Goal client gates.
 
 ## 3.4 Workflow Coordination Semantics
 

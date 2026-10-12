@@ -103,7 +103,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: version 90 negotiates bounded stripes over the multidomain and main worker shapes.
 /// Older worker contracts are rejected before dispatch.
 /// Version 102 reconciles the agent-model union and its leased watcher contract (MP-08/MP-09/MP-10/MP-11).
-/// MP-08/MP-10/MP-11 integrated acceptance head; generated consumers follow this constant.
+/// Version 114 integrates the 102 agent-model/leased-watcher union, main's
+/// identity-preserving renewal and the native display binary-event transport
+/// (MP-08/MP-09/MP-10/MP-11). Generated consumers follow this allocated version.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 114;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

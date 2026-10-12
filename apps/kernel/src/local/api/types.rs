@@ -286,5 +286,11 @@ pub use workspace::*;
 /// complete Environment operation contract on top of 472 (developed as 471;
 /// MP-02/MP-03/MP-08/MP-10/MP-11).
 /// Version 493 reconciles the agent-model union, task/wake projections and leased watchers (MP-08/MP-09/MP-10/MP-11).
-/// MP-08/MP-10/MP-11 integrated acceptance head; generated consumers follow this constant.
+/// MP-08/MP-10/MP-11: version 447 added bounded stripe display, App views,
+/// Notes, grants, captures and DOM mirrors; 466 added binary display frames,
+/// WebP tiles and scroll rectangles; 475 added relay display push/ACKs.
+/// Version 490 added bounded relay response framing and socket-local receipts.
+/// Version 491 combined native display and agent-tab provenance/activity.
+/// Version 506 integrates those contracts with the 493 agent-model union;
+/// generated consumers follow this coordinator-allocated acceptance version.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 506;
