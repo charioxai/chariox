@@ -171,6 +171,11 @@ fn scan_git_status(
     {
         use std::os::unix::process::ExitStatusExt;
         if status.signal().is_some() && (!killed_for_refusal || status.signal() != Some(9)) {
+            crate::logging::warn_with_fields(
+                "daemon.managed_context.owner",
+                "MP-08 Copy admission scan interrupted",
+                serde_json::json!({"signal": status.signal()}),
+            );
             return Err(scan_unavailable());
         }
     }
