@@ -599,7 +599,7 @@ exit 90
     }
     for (value, message) in [
         (expired.as_str(), "rejected the setup token"),
-        (unavailable.as_str(), "Check the network and the Claude CLI"),
+        (unavailable.as_str(), "Check the network and Claude CLI"),
     ] {
         let (command, request) = paste(value);
         let error = router
