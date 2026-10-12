@@ -12,8 +12,10 @@ pub(super) fn catalog_read_view(
     for provider in &mut catalog.all {
         let focused = !summary_only
             && focus_provider.is_some_and(|focus| {
-                provider.id == focus
-                    || (focus == "opencode" && provider.id.starts_with("opencode/"))
+                let requested = crate::provider::canonical_provider_family(focus);
+                let family =
+                    crate::provider::canonical_provider_family(&provider.id).unwrap_or("opencode");
+                requested == Some(family) || provider.id == focus
             });
         if !focused {
             let default = catalog.default.get(&provider.id);
@@ -45,7 +47,7 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
         let full = OpenCodeProviderCatalog {
-            all: ["codex", "opencode/go"]
+            all: ["codex", "opencode-go"]
                 .into_iter()
                 .map(|id| OpenCodeProviderInfo {
                     id: id.into(),
@@ -56,9 +58,9 @@ mod tests {
                 .collect(),
             default: BTreeMap::from([
                 ("codex".into(), "m0".into()),
-                ("opencode/go".into(), "m1".into()),
+                ("opencode-go".into(), "m1".into()),
             ]),
-            connected: vec!["codex".into(), "opencode/go".into()],
+            connected: vec!["codex".into(), "opencode-go".into()],
         };
         let summary = catalog_read_view(full.clone(), true, None);
         assert_eq!(summary.default, full.default);
@@ -69,8 +71,13 @@ mod tests {
         let focused = catalog_read_view(full.clone(), false, Some("codex"));
         assert_eq!(focused.all[0].models, full.all[0].models);
         assert_eq!(focused.all[1].models.len(), 1);
-        let opencode = catalog_read_view(full.clone(), false, Some("opencode/go"));
+        let opencode = catalog_read_view(full.clone(), false, Some("opencode-go"));
         assert_eq!(opencode.all[1].models, full.all[1].models);
         assert_eq!(opencode.all[0].models.len(), 1);
+        let family = catalog_read_view(full.clone(), false, Some("opencode"));
+        assert_eq!(
+            family.all[1].models, full.all[1].models,
+            "an OpenCode account includes its Go service's complete model list"
+        );
     }
 }
