@@ -925,6 +925,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentSession: () => isAttached() ? sessionState().id : undefined,
   })
   let recordDaemonActivity: (activityType: string) => void = () => {}
+  let handleKernelSessionUnavailable: (message: string) => Promise<void> | void = () => {}
   const {
     hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart,
     transitionToNoSession, detachCurrentAttachment, rollbackAttachedSession, attachBinding, recoverProviderRun,
@@ -942,6 +943,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       catchUpAttachedSession(client, sessionId, attachmentId, session, appLogger),
     primeAttachedSessionBinding, clearLocalBusyStateForAuthoritativeIdle,
     recordDaemonActivity: (activityType) => recordDaemonActivity(activityType),
+    handleSessionUnavailable: (message) => handleKernelSessionUnavailable(message),
     currentModelId, currentVariantId, focusedAgentId, clearPendingPromptAttachments,
     clearActiveToolLabels: primaryTranscriptRuntimeStore.clearActiveToolLabels,
     clearAgentPaneRuntime, setDirectoryTreeState, replaceTranscriptEntries, applyResponseLayout,
@@ -1058,6 +1060,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
 
   const {
     recordDaemonActivity: runtimeRecordDaemonActivity,
+    handleKernelSessionUnavailable: runtimeHandleKernelSessionUnavailable,
     ensureBackgroundPollersStarted,
     processKernelTerminalOutputRecord: runtimeProcessKernelTerminalOutputRecord,
   } = createCliAppProcessRuntimeComposition({
@@ -1128,6 +1131,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     sessionStatusMode, workspaceLiveSyncStatus, renderSplitPaneFooters, hydrateCurrentAttachedSession,
   })
   recordDaemonActivity = runtimeRecordDaemonActivity
+  handleKernelSessionUnavailable = runtimeHandleKernelSessionUnavailable
   setKernelTerminalOutputRecordProcessor(runtimeProcessKernelTerminalOutputRecord)
 
   return (

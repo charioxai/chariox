@@ -1,3 +1,4 @@
+import { isSessionUnavailableError } from "./session-errors.js"
 import process from "node:process"
 
 import { createCliExitController } from "./cli-exit-controller.js"
@@ -38,6 +39,7 @@ import { createWaitingRoomTransitionController } from "./waiting-room-transition
 type AnyFn = (...args: any[]) => any
 
 export type CliSessionLifecycleCompositionDeps = {
+  handleSessionUnavailable?: (message: string) => Promise<void> | void
   drainAppInstall?: () => Promise<void>
   client: any
   options: any
@@ -192,6 +194,11 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
       deps.setStatusLine("Waiting to reconnect to the Chariox kernel.")
       deps.appendNotice(`Kernel event subscription failed: ${deps.formatError(error)}`, "warning")
       deps.updateSessionChrome()
+      // A stale attachment never subscribes: re-attach and re-subscribe
+      // (session-unavailable recovery) instead of retrying the same pair.
+      if (isSessionUnavailableError(error)) {
+        void deps.handleSessionUnavailable?.(deps.formatError(error))
+      }
     },
   })
   const syncKernelEventSubscription = () => kernelEventSubscriptionController.sync()

@@ -775,6 +775,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     ensureBackgroundPollersStarted,
     processKernelTerminalOutputRecord: kernelEventController.processTerminalOutputRecord,
     recordDaemonActivity,
+    handleKernelSessionUnavailable,
   }
 }
 
