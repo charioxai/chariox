@@ -353,7 +353,7 @@ pub(crate) async fn execute_join_pairing_invite_request(
 }
 
 pub(crate) async fn execute_join_terminal_pairing_link_request(
-    runtime_state: &KernelRuntimeState,
+    _runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: JoinTerminalPairingLinkRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
