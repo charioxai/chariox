@@ -184,7 +184,7 @@ fn envp04_dependencies_cannot_borrow_stale_readiness() {
     ];
     rows[0].stale = true;
     rows[2].check_operation_id = Some("older-operation".into());
-    invalidate_check_dependencies(&env, &mut rows, &target, "check");
+    invalidate_check_dependencies(&env, &mut rows, &target, Some("check"));
     assert_eq!(rows[1].status, EnvironmentObservationStatus::NeedsYourInput);
     assert_eq!(rows[2].status, EnvironmentObservationStatus::NeedsYourInput);
     assert!(
@@ -319,3 +319,40 @@ mod review0212;
 
 #[path = "review0821_check_tests.rs"]
 mod review0821;
+
+#[path = "review1118_check_tests.rs"]
+mod review1118;
+
+// MP-08 / MP-10 / MP-11: a later partial Check cannot extend prerequisite evidence.
+#[test]
+fn review1301_partial_check_dependency_expires_on_snapshot() {
+    let (_root, store, mut env) = environment();
+    let mut dependent = requirement("dependent");
+    dependent.depends_on = vec!["base".into()];
+    let mut transitive = requirement("transitive");
+    transitive.depends_on = vec!["dependent".into()];
+    env.project_requirements = vec![requirement("base"), dependent, transitive];
+    let target = EnvironmentTargetBinding {
+        machine_id: "machine".into(),
+        target_instance_generation: "boot".into(),
+        slice_ref: None,
+    };
+    let mut checks = super::check_store::EnvironmentChecks::default();
+    checks.folder_binding_digest = folder_bindings_digest(&env);
+    checks.observations = vec![
+        observation(&env, "base", &target, 1000),
+        observation(&env, "dependent", &target, 241000),
+        observation(&env, "transitive", &target, 241000),
+    ];
+    store.save_checks(&env.local_project_id, &checks).unwrap();
+    store.attach_checks(&mut env, &target, 241001).unwrap();
+    assert!(env
+        .observations
+        .iter()
+        .all(|o| !o.stale && o.status == EnvironmentObservationStatus::Ready));
+    store.attach_checks(&mut env, &target, 301001).unwrap();
+    assert!(
+        env.observations.iter().all(|o| o.stale),
+        "dependent and transitive evidence must expire with their prerequisite"
+    );
+}

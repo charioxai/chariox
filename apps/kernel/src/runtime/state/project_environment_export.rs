@@ -354,7 +354,7 @@ impl KernelRuntimeState {
             visible_user_prompt: project_environment_discovery_prompt(input)?,
             hidden_system_context: "Classify only the supplied Project environment metadata. No tools or source contents are available.".into(),
         }, "discover Project environment", ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery).await?;
-        parse_project_environment_discovery_output(&output, input)
+        parse_project_environment_discovery_decisions(&output, input)
     }
 
     async fn environment_utility_identity(

@@ -144,7 +144,9 @@ pub(crate) fn check_requirement(
             RequirementSpec::MachineNeeds { .. } => {
                 super::check_platform::check_platform(ctx, env, r, &roots, &mut facts, deadline)
             }
-            RequirementSpec::Accounts { .. } => super::check_admission::check_admission(ctx, r),
+            RequirementSpec::Accounts { .. } => {
+                super::check_admission::check_admission(ctx, r, deadline)
+            }
             RequirementSpec::AgentTools {
                 tool_kind,
                 registry_ref,
@@ -163,7 +165,9 @@ pub(crate) fn check_requirement(
                 operation,
                 deadline,
             ),
-            RequirementSpec::CharioxApps { .. } => super::check_admission::check_admission(ctx, r),
+            RequirementSpec::CharioxApps { .. } => {
+                super::check_admission::check_admission(ctx, r, deadline)
+            }
             RequirementSpec::SetupChecks {
                 commands,
                 probes,
@@ -238,7 +242,7 @@ pub(crate) fn invalidate_check_dependencies(
     env: &ProjectEnvironment,
     observations: &mut [MachineObservation],
     target: &EnvironmentTargetBinding,
-    operation: &str,
+    operation: Option<&str>,
 ) {
     for _ in 0..observations.len() {
         let good: std::collections::BTreeSet<_> = observations
@@ -268,7 +272,8 @@ pub(crate) fn invalidate_check_dependencies(
                 dependencies.extend(depends_on.iter().cloned());
             }
             if dependencies.iter().any(|id| !good.contains(id)) {
-                o.stale |= o.check_operation_id.as_deref() != Some(operation);
+                o.stale |= operation
+                    .is_none_or(|operation| o.check_operation_id.as_deref() != Some(operation));
                 o.status = NeedsYourInput;
                 o.reason_code = "dependency_unready".into();
                 o.safe_summary =

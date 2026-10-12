@@ -132,13 +132,8 @@ pub(super) fn version_until(
     if roots.iter().any(|r| path.starts_with(r)) {
         return Err("untrusted_executable");
     }
-    let mut command = std::process::Command::new(&path);
-    command
-        .args(args)
-        .current_dir("/")
-        .env_clear()
-        .env("LANG", "C")
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin");
+    let mut command = super::check_executable::command(&path, roots)?;
+    command.args(args);
     if matches!(name, "cargo" | "rustc") {
         for key in ["RUSTUP_HOME", "RUSTUP_TOOLCHAIN"] {
             if let Some(value) = std::env::var_os(key) {

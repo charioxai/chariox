@@ -10,13 +10,16 @@ mod apply_store;
 mod check;
 mod check_admission;
 mod check_assets;
+mod check_executable;
 mod check_gui_identity;
 mod check_health;
 mod check_inventory;
+mod check_journal;
 mod check_package_inventory;
 mod check_platform;
 mod check_runner;
 mod check_selection;
+mod check_start;
 mod check_store;
 mod check_tools;
 mod detect;
@@ -50,6 +53,7 @@ pub(crate) use apply_plan::*;
 pub(crate) use apply_store::*;
 pub(crate) use check::*;
 pub(crate) use check_selection::*;
+pub(crate) use check_start::*;
 pub(crate) use check_store::*;
 pub use detect::*;
 pub use detect_store::*;
@@ -86,3 +90,12 @@ mod apply_tests;
 
 #[cfg(test)]
 mod source_alias_tests;
+mod review1118_metadata_tests;
+
+#[cfg(test)]
+mod review1301_inventory_tests;
+#[cfg(test)]
+mod review1301_metadata_tests;
+
+#[cfg(test)]
+mod check_journal_tests;

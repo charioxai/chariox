@@ -199,9 +199,51 @@ fn verify_files(
         let RequirementSpec::Files { folder_id, entries } = &mut requirement.spec else {
             continue;
         };
+        // MP-08 / MP-10 / MP-11: clients may exclude absent paths, but
+        // cannot manufacture or edit kernel measurements while doing so.
+        for entry in entries
+            .iter_mut()
+            .filter(|entry| entry.transfer_inclusion == EnvironmentTransferInclusion::Exclude)
+        {
+            let measured = current
+                .project_requirements
+                .iter()
+                .chain(
+                    current
+                        .folders
+                        .iter()
+                        .flat_map(|folder| &folder.requirements),
+                )
+                .chain(
+                    current
+                        .proposals
+                        .iter()
+                        .map(|proposal| &proposal.requirement),
+                )
+                .filter(|saved| saved.requirement_id == requirement.requirement_id)
+                .find_map(|saved| match &saved.spec {
+                    RequirementSpec::Files {
+                        folder_id: saved_folder,
+                        entries: saved_entries,
+                    } if saved_folder == folder_id => saved_entries.iter().find(|saved| {
+                        saved.relative_path == entry.relative_path && saved.kind == entry.kind
+                    }),
+                    _ => None,
+                });
+            entry.content_digest = measured.and_then(|saved| saved.content_digest.clone());
+            entry.byte_count = measured.and_then(|saved| saved.byte_count);
+            entry.git_ignored = measured.and_then(|saved| saved.git_ignored);
+            entry.secret_looking = measured.is_some_and(|saved| saved.secret_looking);
+            entry.credential_filter_verdict = measured
+                .map(|saved| saved.credential_filter_verdict.clone())
+                .unwrap_or(EnvironmentCredentialFilterVerdict::NotChecked);
+        }
         // MP-08 / MP-10 / MP-11: exclusion is saved metadata, including
         // imported selections deliberately absent from this machine.
-        if entries.iter().all(|entry| entry.transfer_inclusion == EnvironmentTransferInclusion::Exclude) {
+        if entries
+            .iter()
+            .all(|entry| entry.transfer_inclusion == EnvironmentTransferInclusion::Exclude)
+        {
             continue;
         }
         // MP-08 / MP-10 / MP-11: a detached folder cannot be rescanned, but

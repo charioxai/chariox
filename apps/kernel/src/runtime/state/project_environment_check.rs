@@ -36,119 +36,29 @@ impl KernelRuntimeState {
             ));
         }
         let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
-        let lock = store.lock_briefly_async(project.id()).await?;
-        let project = self.owned.session_store.get_project(&request.project_id)?;
-        if project.owner_user_id() != user {
-            return Err(environment_error(
-                "caller does not own the selected Project",
-            ));
-        }
-        let env = store.snapshot_locked(&project)?;
-        if env.content_digest != request.revision_digest {
-            return Err(environment_error("revision conflict; refresh before Check"));
-        }
-        let requirements: Vec<_> = env
-            .project_requirements
-            .iter()
-            .chain(env.folders.iter().flat_map(|f| &f.requirements))
-            .collect();
-        if request
-            .selected_items
-            .iter()
-            .any(|id| !requirements.iter().any(|r| &r.requirement_id == id))
-        {
-            return Err(environment_error(
-                "Check selection does not belong to the saved revision",
-            ));
-        }
-        let mut checks = store.load_checks(project.id())?;
-        checks.observations.retain(|o| {
-            requirements
-                .iter()
-                .any(|r| r.requirement_id == o.requirement_id)
-        });
-        if checks.folder_binding_digest != folder_bindings_digest(&env) {
-            for observation in &mut checks.observations {
-                observation.stale = true;
+        let admission_store = store.clone();
+        let admission_request = request.clone();
+        let admission_target = target.clone();
+        let owner = user.to_owned();
+        let project_id = request.project_id.clone();
+        let runtime = self.clone();
+        let started = tokio::task::spawn_blocking(move || {
+            admission_store.start_check(admission_request, &owner, admission_target, || {
+                runtime.owned.session_store.get_project(&project_id)
+            })
+        })
+        .await
+        .map_err(|_| environment_error("Check admission task failed"))??;
+        let (env, operation, workspaces) = match started {
+            CheckStart::Replay(operation) => {
+                return Ok(LocalDaemonResponse::EnvironmentOperation { operation })
             }
-        }
-
-        for op in &mut checks.operations {
-            if op.target != target
-                && matches!(
-                    op.phase,
-                    EnvironmentOperationPhase::Requested
-                        | EnvironmentOperationPhase::Running
-                        | EnvironmentOperationPhase::Validating
-                )
-            {
-                op.phase = EnvironmentOperationPhase::Failed;
-                op.recovery_state = EnvironmentRecoveryState::Settled;
-            }
-        }
-        if let Some(op) = checks
-            .operations
-            .iter()
-            .find(|o| o.operation_id == request.operation_id)
-        {
-            if op.revision_digest != request.revision_digest
-                || op.target != target
-                || op.selected_items != request.selected_items
-            {
-                return Err(environment_error(
-                    "Check operation identity already names another request",
-                ));
-            }
-            return Ok(LocalDaemonResponse::EnvironmentOperation {
-                operation: op.clone(),
-            });
-        }
-        if checks.operations.iter().any(|o| {
-            o.target == target
-                && matches!(
-                    o.phase,
-                    EnvironmentOperationPhase::Requested
-                        | EnvironmentOperationPhase::Running
-                        | EnvironmentOperationPhase::Validating
-                )
-        }) {
-            return Err(environment_error(
-                "Check already running for this Project; refresh its operation",
-            ));
-        }
-        let now = crate::session::unix_epoch_ms();
-        let operation = EnvironmentOperation {
-            operation_id: request.operation_id.clone(),
-            attempt: 1,
-            local_project_id: project.id().into(),
-            revision_digest: env.content_digest.clone(),
-            target: target.clone(),
-            kind: EnvironmentOperationKind::Check,
-            phase: EnvironmentOperationPhase::Requested,
-            selected_items: request.selected_items.clone(),
-            per_item_opt_ins: vec![],
-            per_item_results: vec![],
-            created_at_ms: now,
-            updated_at_ms: now,
-            cancellation: None,
-            receipts: vec![],
-            recovery_state: EnvironmentRecoveryState::Pending,
+            CheckStart::New {
+                environment,
+                operation,
+                workspace_ids,
+            } => (environment, operation, workspace_ids),
         };
-        checks.operations.retain(|o| {
-            matches!(
-                o.phase,
-                EnvironmentOperationPhase::Ready
-                    | EnvironmentOperationPhase::Failed
-                    | EnvironmentOperationPhase::Cancelled
-            )
-        });
-        if checks.operations.len() >= 16 {
-            checks.operations.remove(0);
-        }
-        checks.operations.push(operation.clone());
-        store.save_checks(project.id(), &checks)?;
-        drop(lock);
-        let workspaces = project.workspace_ids().to_vec();
         let ctx = EnvironmentCheckContext {
             config,
             owner: user.into(),
@@ -160,6 +70,8 @@ impl KernelRuntimeState {
         let acknowledged = operation.clone();
         let failure_identity = operation.clone();
         tokio::spawn(async move {
+            // Let the admitted response reach transport before probes compete for I/O.
+            tokio::task::yield_now().await;
             let result = tokio::task::spawn_blocking(move || {
                 let owner = ctx.owner.clone();
                 let project_id = request.project_id.clone();

@@ -109,9 +109,34 @@ export function environmentObservationExpiry(environment: ProjectEnvironment, no
 export function environmentObservationStatus(environment: ProjectEnvironment, id: string): string {
   const o = observation(environment,id)
   if (!o || o.checked_at_ms == null) return "Not checked"
-  if (o.stale || o.revision_digest !== environment.content_digest || o.checked_at_ms > Date.now() || Date.now() - o.checked_at_ms > 5 * 60 * 1000) return "Last check stale · check again"
+  const now = Date.now()
+  if (!currentObservation(environment, o, now) || (o.status === "ready" && !currentPrerequisites(environment, id, o.target, now))) return "Last check stale · check again"
   return observationLabels[o.status]
 }
+
+// MP-08 / MP-10 / MP-11: readiness borrows evidence only from current same-target
+// prerequisites. This is a read projection; it never probes or changes history.
+function currentObservation(environment: ProjectEnvironment, o: ProjectEnvironment["observations"][number], now: number): boolean {
+  return !o.stale && o.environment_id === environment.lineage.environment_id && o.revision_digest === environment.content_digest && o.checked_at_ms != null && o.checked_at_ms <= now && now - o.checked_at_ms <= 5 * 60 * 1000
+}
+function currentPrerequisites(environment: ProjectEnvironment, id: string, target: ProjectEnvironment["observations"][number]["target"], now: number): boolean {
+  const requirements = new Map([...environment.project_requirements, ...environment.folders.flatMap(f => f.requirements)].map(r => [r.requirement_id, r]))
+  const observations = new Map((environment.observations ?? []).filter(o => o.environment_id === environment.lineage.environment_id).map(o => [o.requirement_id, o]))
+  const pending = [{id, leave: false}], active = new Set<string>(), done = new Set<string>()
+  while (pending.length) {
+    const item = pending.pop()!
+    if (item.leave) { active.delete(item.id); done.add(item.id); continue }
+    if (active.has(item.id)) return false
+    if (done.has(item.id)) continue
+    const r = requirements.get(item.id), o = observations.get(item.id)
+    if (!r || !o || o.status !== "ready" || !currentObservation(environment, o, now) || o.target.machine_id !== target.machine_id || o.target.target_instance_generation !== target.target_instance_generation || o.target.slice_ref !== target.slice_ref) return false
+    active.add(item.id)
+    pending.push({id: item.id, leave: true})
+    for (const dependency of [...r.depends_on, ...(r.spec.kind === "services" ? r.spec.depends_on : [])]) pending.push({id: dependency, leave: false})
+  }
+  return true
+}
+
 export function environmentObservationDetails(environment: ProjectEnvironment, id: string): string[] {
   const o = observation(environment,id)
   if (!o) return []

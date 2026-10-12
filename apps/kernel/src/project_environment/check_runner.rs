@@ -47,6 +47,7 @@ impl ProjectEnvironmentStore {
         self.save_checks(project.id(), &checks)?;
         drop(lock);
         let selected = check_selection(&env, &operation.selected_items)?;
+        let mut last_progress = std::time::Instant::now();
         for r in env
             .project_requirements
             .iter()
@@ -94,6 +95,20 @@ impl ProjectEnvironmentStore {
                 safe_summary: observation.safe_summary.clone(),
                 receipt_ids: vec![],
             });
+            let changed_evidence = checks
+                .observations
+                .iter()
+                .find(|prior| {
+                    prior.requirement_id == observation.requirement_id
+                        && prior.target == observation.target
+                })
+                .is_none_or(|prior| {
+                    prior.status != observation.status
+                        || prior.stale != observation.stale
+                        || prior.reason_code != observation.reason_code
+                        || prior.measured_facts != observation.measured_facts
+                        || prior.revision_digest != observation.revision_digest
+                });
             checks.record_observation(observation);
             operation.updated_at_ms = crate::session::unix_epoch_ms();
             if let Some(op) = checks
@@ -104,7 +119,15 @@ impl ProjectEnvironmentStore {
                 *op = operation.clone();
             }
             checks.folder_binding_digest = folder_bindings_digest(&env);
-            self.save_checks(project.id(), &checks)?;
+            // MP-08 / MP-10 / MP-11: cheap probes complete in a burst. Keep
+            // bounded progress without a durable file/directory sync per item.
+            // Changed evidence is visible before the next possibly slow probe.
+            // Requested, Running and final settlement remain durable fences.
+            if changed_evidence || last_progress.elapsed() >= std::time::Duration::from_millis(100)
+            {
+                self.save_checks(project.id(), &checks)?;
+                last_progress = std::time::Instant::now();
+            }
         }
         let _lock = self.lock(&env.local_project_id)?;
         let project = validate()?;
@@ -117,7 +140,7 @@ impl ProjectEnvironmentStore {
             &env,
             &mut checks.observations,
             &target,
-            &operation.operation_id,
+            Some(&operation.operation_id),
         );
         for result in &mut operation.per_item_results {
             if let Some(o) = checks.observations.iter().find(|o| {

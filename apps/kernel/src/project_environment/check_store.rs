@@ -32,6 +32,7 @@ impl EnvironmentChecks {
                     checked > now || now.saturating_sub(checked) > OBSERVATION_TTL_MS
                 });
         }
+        super::check::invalidate_check_dependencies(env, &mut self.observations, target, None);
     }
     pub(crate) fn record_observation(&mut self, observation: MachineObservation) {
         self.observations.retain(|prior| {
@@ -49,30 +50,38 @@ impl ProjectEnvironmentStore {
         &self,
         project: &str,
     ) -> Result<EnvironmentChecks, crate::error::DaemonError> {
-        let mut o = std::fs::OpenOptions::new();
-        o.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-        }
-        let f = match o.open(self.path(project).with_extension("checks.json")) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(EnvironmentChecks::default())
-            }
-            Err(_) => return Err(environment_error("Check journal unavailable")),
-        };
-        if !f.metadata().is_ok_and(|m| m.is_file()) {
-            return Err(environment_error("Check journal must be regular"));
-        }
-        let mut bytes = vec![];
-        f.take(8 * 1024 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| environment_error("Check journal unavailable"))?;
-        if bytes.len() > 8 * 1024 * 1024 {
-            return Err(environment_error("Check journal exceeds bounds"));
-        }
+        let _publication = self.check_journal_lock(project)?;
+        let bytes =
+            match super::check_journal::read(&self.path(project).with_extension("checks.wal"))? {
+                Some(bytes) => bytes,
+                None => {
+                    let mut o = std::fs::OpenOptions::new();
+                    o.read(true);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::OpenOptionsExt;
+                        o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+                    }
+                    let f = match o.open(self.path(project).with_extension("checks.json")) {
+                        Ok(f) => f,
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            return Ok(EnvironmentChecks::default())
+                        }
+                        Err(_) => return Err(environment_error("Check journal unavailable")),
+                    };
+                    if !f.metadata().is_ok_and(|m| m.is_file()) {
+                        return Err(environment_error("Check journal must be regular"));
+                    }
+                    let mut bytes = vec![];
+                    f.take(8 * 1024 * 1024 + 1)
+                        .read_to_end(&mut bytes)
+                        .map_err(|_| environment_error("Check journal unavailable"))?;
+                    if bytes.len() > 8 * 1024 * 1024 {
+                        return Err(environment_error("Check journal exceeds bounds"));
+                    }
+                    bytes
+                }
+            };
         let checks: EnvironmentChecks = serde_json::from_slice(&bytes)
             .map_err(|_| environment_error("invalid Check journal"))?;
         if checks
@@ -94,8 +103,8 @@ impl ProjectEnvironmentStore {
         if bytes.len() > 8 * 1024 * 1024 {
             return Err(environment_error("Check journal exceeds bounds"));
         }
-        crate::config::write_private_file(&self.path(project).with_extension("checks.json"), &bytes)
-            .map_err(|_| environment_error("Check journal write failed"))
+        let _publication = self.check_journal_lock(project)?;
+        super::check_journal::append(&self.path(project).with_extension("checks.wal"), &bytes)
     }
     pub(crate) fn attach_checks(
         &self,
