@@ -1,4 +1,4 @@
-use chariox_relay::protocol::ClientTarget;
+use std::time::Duration;
 
 use super::*;
 
@@ -43,20 +43,19 @@ impl KernelRuntimeState {
         let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
         self.register_remote_home_extension_invocation(&context, &metadata)
             .await;
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
-            &relay_config,
-            ClientTarget {
-                daemon_id: Some(home_kernel_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::InvokeHomeExtensionTool {
-                context: context.clone(),
-                metadata: metadata.clone(),
-                tool: tool.clone(),
-                arguments: arguments.clone(),
-            },
-        )
-        .await;
+        let response = self
+            .send_worker_home_runtime_request(
+                &relay_config,
+                &home_kernel_id,
+                RelayPeerRequest::InvokeHomeExtensionTool {
+                    context: context.clone(),
+                    metadata: metadata.clone(),
+                    tool: tool.clone(),
+                    arguments: arguments.clone(),
+                },
+                Duration::from_millis(relay_config.relay_request_timeout_ms),
+            )
+            .await;
         self.unregister_remote_home_extension_invocation(&context, &metadata)
             .await;
         let response = response?;
@@ -163,21 +162,20 @@ impl KernelRuntimeState {
         let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
         self.register_remote_home_extension_invocation(&context, &metadata)
             .await;
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
-            &relay_config,
-            ClientTarget {
-                daemon_id: Some(home_kernel_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::InvokeHomeMcpProxy {
-                context: context.clone(),
-                metadata: metadata.clone(),
-                name: name.to_string(),
-                tool,
-                payload: payload.clone(),
-            },
-        )
-        .await;
+        let response = self
+            .send_worker_home_runtime_request(
+                &relay_config,
+                &home_kernel_id,
+                RelayPeerRequest::InvokeHomeMcpProxy {
+                    context: context.clone(),
+                    metadata: metadata.clone(),
+                    name: name.to_string(),
+                    tool,
+                    payload: payload.clone(),
+                },
+                Duration::from_millis(relay_config.relay_request_timeout_ms),
+            )
+            .await;
         self.unregister_remote_home_extension_invocation(&context, &metadata)
             .await;
         let response = response?;
@@ -240,18 +238,18 @@ impl KernelRuntimeState {
         }
         let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
         for entry in entries {
-            let _ = crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                &relay_config,
-                ClientTarget {
-                    daemon_id: Some(entry.context.home_kernel_id.clone()),
-                    daemon_alias: None,
-                },
-                RelayPeerRequest::CancelHomeExtensionInvocation {
-                    context: entry.context,
-                    metadata: entry.metadata,
-                },
-            )
-            .await;
+            let home_kernel_id = entry.context.home_kernel_id.clone();
+            let _ = self
+                .send_worker_home_runtime_request(
+                    &relay_config,
+                    &home_kernel_id,
+                    RelayPeerRequest::CancelHomeExtensionInvocation {
+                        context: entry.context,
+                        metadata: entry.metadata,
+                    },
+                    Duration::from_millis(relay_config.relay_request_timeout_ms),
+                )
+                .await;
         }
     }
 }

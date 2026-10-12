@@ -40,6 +40,8 @@ pub struct CodexRuntimeState {
     /// event drain reconstructs a client for server requests.
     read_only_discovery_permissions: bool,
     pub(super) ephemeral: bool,
+    pub(super) metadata_only_discovery: bool,
+    pub(super) notification_only: bool,
     pub(super) socket: CodexSocket,
     pub(super) next_request_id: u64,
     pub(super) buffered_notifications: Vec<CodexNotification>,
@@ -76,6 +78,22 @@ impl std::fmt::Debug for CodexRuntimeState {
 }
 
 impl CodexRuntimeState {
+    #[cfg(test)]
+    pub(crate) fn active_turn_binding_fixture(
+        endpoint: String,
+        socket: CodexSocket,
+    ) -> crate::provider::ProviderRuntimeBinding {
+        let mut state = Self::new(endpoint, "notification-thread".into(), socket, 1);
+        state.active_turn_id = Some("notification-turn".into());
+        crate::provider::ProviderRuntimeBinding::Codex(CodexRuntimeBinding {
+            state,
+            selection: CodexRunSelection {
+                model: None,
+                variant: None,
+            },
+        })
+    }
+
     pub(super) fn new(
         endpoint: String,
         thread_id: String,
@@ -88,6 +106,8 @@ impl CodexRuntimeState {
             thread_ready: true,
             read_only_discovery_permissions: false,
             ephemeral: false,
+            metadata_only_discovery: false,
+            notification_only: false,
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),
@@ -112,6 +132,8 @@ impl CodexRuntimeState {
             thread_ready: false,
             read_only_discovery_permissions: false,
             ephemeral: false,
+            metadata_only_discovery: false,
+            notification_only: false,
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),

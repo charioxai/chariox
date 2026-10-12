@@ -322,3 +322,22 @@ test("TUI inventory defaults retain the kernel launch worktree when no CLI works
     assert.equal(normalizeWaitingRoomWorktreeSelectionId(""), "existing:/repo-feature")
   } finally { clearWaitingRoomWorktreeInventory() }
 })
+
+test("MP-08/MP-11 periodic inventory refresh never rebuilds an attached session's transcript", async () => {
+  let visible = false
+  let renders = 0
+  const controller = createWaitingRoomWorkspaceController({
+    getWorkspace: () => "/w", getWorktree: () => "/w", setWorkspace: () => {}, setWorktree: () => {},
+    resetSelection: () => {}, render: () => { renders++ }, visible: () => visible,
+    send: async <T>(request: unknown) => ("ListWorkspaceWorktrees" in (request as object)
+      ? { WorkspaceWorktreesListed: { worktrees: [{ path: "/w", branch: "main", current: true }] } }
+      : { WorkspaceGitOverview: { overview: { repo_root: "/w", compare_refs: [] } } }) as T,
+  })
+  try {
+    await controller.applyInventory(inventory("mac", "/w"))
+    assert.equal(renders, 0, "attached: inventory state updates without destroying the transcript")
+    visible = true
+    await controller.applyInventory(inventory("mac", "/w"))
+    assert.ok(renders > 0)
+  } finally { clearWaitingRoomWorktreeInventory() }
+})

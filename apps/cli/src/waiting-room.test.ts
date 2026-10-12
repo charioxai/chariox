@@ -362,6 +362,18 @@ test("waiting room shows loading rows before inventory arrives", () => {
   assert.equal(rows.find((row) => row.id === "machines-loading")?.value, "loading..")
 })
 
+test("a failed first inventory attempt keeps placeholders while retrying", () => {
+  const catalog = fallbackProviderCatalog()
+  const state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
+  const rows = waitingRoomRows(state, [], catalog, {
+    inventoryStatus: "error",
+    loadingFrame: 2,
+  })
+  assert.equal(rows.some(row => row.id === "no-sessions"), false)
+  assert.equal(rows.find(row => row.id === "sessions-loading")?.value, "loading..")
+  assert.equal(rows.find(row => row.id === "machines-loading")?.value, "loading..")
+})
+
 test("waiting room shows relay kernels as selectable targets", () => {
   const catalog = fallbackProviderCatalog()
   let state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")

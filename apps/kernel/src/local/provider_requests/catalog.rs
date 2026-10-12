@@ -1044,7 +1044,9 @@ fn claude_auth_status_from_value(
             .get("subscriptionType")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string),
-        login_hint: Some("Run `claude auth login` to authenticate Claude Code.".to_string()),
+        login_hint: Some(
+            "Choose Log in in Provider Accounts to open the Claude authorization link.".to_string(),
+        ),
         detected_version,
     }
 }
@@ -1642,6 +1644,13 @@ exit 2
 
         assert_eq!(status.provider, "claude-p");
         assert_eq!(status.auth_state, "not_logged_in");
+        // MP-08/MP-10/MP-11: sign-in guidance stays in the OAuth UI.
+        assert!(status
+            .login_hint
+            .as_deref()
+            .unwrap()
+            .contains("authorization link"));
+        assert!(!status.login_hint.as_deref().unwrap().contains("Run `"));
         assert_eq!(status.account_profile, "work");
         assert_eq!(status.detected_version.as_deref(), Some("claude 1.2.3"));
     }

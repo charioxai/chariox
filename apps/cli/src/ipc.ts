@@ -2,6 +2,7 @@ export * from "@chariox/kernel-client/ipc"
 export type * from "@chariox/kernel-client/ipc"
 
 import { LocalIpcClient as KernelClient } from "@chariox/kernel-client/ipc"
+import { exactPromptCancellationCapability, exactPromptCancellationMinimumProtocolVersion } from "@chariox/kernel-client/ipc-requests"
 import { kernelFeatureMinimum, requireKernelFeatureProtocol } from "./kernel-feature-minimum.js"
 import { loadLocalKernelPresences, localKernelEndpoint, localKernelPresenceFreshnessMs } from "./local-kernel-presence.js"
 
@@ -16,8 +17,18 @@ export class LocalIpcClient extends KernelClient {
   }
 
   override async send<TResponse>(request: unknown): Promise<TResponse> {
-    if (kernelFeatureMinimum(request)) {
-      requireKernelFeatureProtocol(request, (await this.kernelProtocol()).version)
+    const feature = kernelFeatureMinimum(request)
+    if (feature) {
+      let version = (await this.kernelProtocol()).version
+      if (version === undefined && feature.feature === "Exact prompt cancellation") {
+        // Unix and remote relay attachments have no local version advertisement.
+        // Probe the attached kernel's existing status, never the relay issuer.
+        const response = await super.send<{ RelayStatus?: { status?: { capabilities?: string[] } } }>({ RelayStatus: null })
+        if (response.RelayStatus?.status?.capabilities?.includes(exactPromptCancellationCapability)) {
+          version = exactPromptCancellationMinimumProtocolVersion
+        }
+      }
+      requireKernelFeatureProtocol(request, version)
     }
     return super.send<TResponse>(request)
   }

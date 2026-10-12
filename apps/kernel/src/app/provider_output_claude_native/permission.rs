@@ -7,6 +7,7 @@ use crate::session::unix_epoch_ms;
 
 const CLAUDE_HOOK_PERMISSION_TOMBSTONE_TTL_MS: u64 = 30_000;
 const CLAUDE_YOLO_RENDERED_PERMISSION_SUPPRESSION_MS: u64 = 2_500;
+
 const CLAUDE_HEADLESS_BYPASS_SELECTION_MARKER: &str = "startup-bypass-selection";
 const CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX: &str = "startup-workspace-trust:";
 const CLAUDE_HEADLESS_WORKSPACE_TRUST_DENIED_PREFIX: &str = "startup-workspace-trust-denied:";
@@ -133,6 +134,23 @@ pub(super) fn claude_headless_workspace_trust_interaction_id(context_file: &str)
                 .map(ToOwned::to_owned)
         })
         .filter(|interaction_id| !interaction_id.is_empty())
+}
+
+pub(super) fn write_claude_workspace_trust_selection_marker(context_file: &str) {
+    write_claude_native_marker(
+        context_file,
+        &format!(
+            "{CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX}select-yes:{}",
+            unix_epoch_ms()
+        ),
+    );
+}
+
+pub(super) fn claude_workspace_trust_selection_started_at(context_file: &str) -> Option<u64> {
+    claude_headless_workspace_trust_interaction_id(context_file)?
+        .strip_prefix("select-yes:")?
+        .parse()
+        .ok()
 }
 
 pub(super) fn claude_headless_workspace_trust_interaction_marker(marker: &str) -> bool {
@@ -480,39 +498,50 @@ pub(super) fn claude_rendered_permission_visible(text: &str) -> bool {
         && (normalized.contains("3. No") || compact.contains("3.No"))
 }
 
-pub(super) fn claude_headless_workspace_trust_visible(text: &str) -> bool {
-    let normalized = normalize_claude_rendered_permission_text(text);
-    let normalized_lower = normalized.to_ascii_lowercase();
-    let compact = normalized_lower.replace(' ', "");
-    (normalized_lower.contains("quick safety check") || compact.contains("quicksafetycheck"))
-        && (normalized_lower.contains("trust this folder") || compact.contains("trustthisfolder"))
+pub(super) fn claude_rendered_permission_details(text: &str) -> String {
+    // MP-08 / MP-10 / MP-11: expose the provider's actual action/arguments,
+    // never terminal control sequences or Chariox hidden instructions.
+    let mut visible = normalize_claude_rendered_permission_text(text);
+    while visible.contains(crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_START) {
+        visible = redact_native_hidden_instructions(&visible);
+    }
+    format!(
+        "Claude Code asks to run this tool:\n{}",
+        visible.chars().take(4000).collect::<String>().trim()
+    )
 }
 
-/// MP-08 / MP-10 / MP-11: an explicit trust approval selects the observed
-/// affirmative row. Enter alone accepts the provider's current default, which
-/// may be No. Unknown selections fail closed rather than guessing.
-pub(super) fn claude_workspace_trust_approval_input(text: &str) -> Option<Vec<u8>> {
+/// Select Yes using the rendered selector, including an explicit highlighted
+/// row. Without a highlight, Claude starts on the first displayed choice.
+pub(super) fn claude_workspace_trust_approval_input(text: &str) -> Option<&'static [u8]> {
     if !claude_headless_workspace_trust_visible(text) {
         return None;
     }
     let compact = normalize_claude_rendered_permission_text(text)
         .to_ascii_lowercase()
         .replace(' ', "");
-    let selected = compact.rfind('❯')?;
-    let row = compact[selected + '❯'.len_utf8()..]
-        .trim_start_matches(|ch: char| ch.is_ascii_digit() || ch == '.');
-    if row.starts_with("yes,itrustthisfolder") {
-        return Some(b"\r".to_vec());
+    // Official releases render this selector both with and without numbers.
+    let choices = compact.replace("1.", "").replace("2.", "");
+    let yes = choices.rfind("yes,itrustthisfolder")?;
+    let no = choices.rfind("no,exit")?;
+    let yes_selected = choices[..yes].ends_with('❯');
+    let no_selected = choices[..no].ends_with('❯');
+    if yes_selected {
+        return Some(b"\r");
     }
-    if row.starts_with("no,exit") {
-        let affirmative = compact.rfind("yes,itrustthisfolder")?;
-        return Some(if affirmative > selected {
-            b"\x1b[B\r".to_vec()
-        } else {
-            b"\x1b[A\r".to_vec()
-        });
+    if yes < no {
+        Some(if no_selected { b"\x1b[A" } else { b"\r" })
+    } else {
+        Some(b"\x1b[B")
     }
-    None
+}
+
+pub(super) fn claude_headless_workspace_trust_visible(text: &str) -> bool {
+    let normalized = normalize_claude_rendered_permission_text(text);
+    let normalized_lower = normalized.to_ascii_lowercase();
+    let compact = normalized_lower.replace(' ', "");
+    (normalized_lower.contains("quick safety check") || compact.contains("quicksafetycheck"))
+        && (normalized_lower.contains("trust this folder") || compact.contains("trustthisfolder"))
 }
 
 pub(super) fn claude_headless_bypass_confirmation_visible(text: &str) -> bool {
@@ -737,11 +766,11 @@ mod workspace_trust_selection_tests {
         for (choices, input) in [
             (
                 "❯ No, exit\n  Yes, I trust this folder",
-                b"\x1b[B\r".as_slice(),
+                b"\x1b[B".as_slice(),
             ),
             (
                 "  Yes, I trust this folder\n❯ No, exit",
-                b"\x1b[A\r".as_slice(),
+                b"\x1b[A".as_slice(),
             ),
             (
                 "❯ 1. Yes, I trust this folder\n  2. No, exit",
@@ -751,7 +780,7 @@ mod workspace_trust_selection_tests {
         ] {
             let frame = format!("Quick safety check\nDo you trust this folder?\n{choices}");
             assert_eq!(
-                claude_workspace_trust_approval_input(&frame).as_deref(),
+                claude_workspace_trust_approval_input(&frame),
                 Some(input)
             );
         }

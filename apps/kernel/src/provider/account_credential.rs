@@ -20,16 +20,15 @@ pub(crate) fn provider_account_credential_id(
     provider: &str,
     profile_id: &str,
 ) -> String {
+    let provider = provider.trim().to_ascii_lowercase();
     let identity = format!(
         "{}\0{}\0{}",
         owner_user_id.trim(),
-        crate::provider::canonical_provider_family(provider)
-            .map(str::to_string)
-            .unwrap_or_else(|| provider.trim().to_ascii_lowercase()),
+        crate::provider::canonical_provider_family(&provider).unwrap_or(provider.as_str()),
         profile_id.trim()
     );
     let digest = Sha256::digest(identity.as_bytes());
-    format!("provider-account-{}-{digest:x}", canonical_label(provider))[..64].to_string()
+    format!("provider-account-{}-{digest:x}", canonical_label(&provider))[..64].to_string()
 }
 
 pub(crate) fn resolve_provider_account_credentials(

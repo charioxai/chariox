@@ -1,4 +1,4 @@
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 490
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 491
 
 export type * from "./kernel-types-apps.js"
 
@@ -15,4 +15,5 @@ export type * from "./kernel-types-event-publication.js"
 export type * from "./kernel-types-environment.js"
 export type * from "./kernel-types-project-environment.js"
 
+export type * from "./kernel-types-workflow-notifications.js"
 export type * from "./kernel-types-project-environment-aggregate.js"
