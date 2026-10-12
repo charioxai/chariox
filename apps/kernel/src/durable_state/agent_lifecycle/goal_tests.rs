@@ -1077,3 +1077,38 @@ fn a12_handled_paused_goal_outcome_preserves_nonzero_guard() {
     assert_eq!(after.progress_sequence, before.progress_sequence);
     assert_eq!(after.blocked_revision, before.blocked_revision);
 }
+// MP-08 / MP-09 / MP-10 / MP-11 A12 (accam r3): a workflow node's completion
+// check is a continuation of its bound task. It keeps that lineage and can
+// neither rebind it nor block the B->C edge until the 60 s bound.
+#[test]
+fn a12_workflow_bound_check_keeps_its_lineage_and_settles() {
+    let f = Fixture::new();
+    plain(&f);
+    let bind = |prompt: &str, node: &str| {
+        f.store.agent_lifecycle(Operation::BindWorkflow {
+            task: "p".into(),
+            prompt: prompt.into(),
+            run: "run".into(),
+            node: node.into(),
+        })
+    };
+    bind("p", "node").unwrap();
+    f.settle("p", true);
+    let id = f.task().pending_prompt_id.clone().unwrap();
+    f.begin(&id);
+    bind(&id, "node").expect("the check continuation keeps its workflow lineage");
+    assert!(bind(&id, "other-node").is_err());
+    let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
+        task: "p".into(),
+        prompt: id,
+        result: serde_json::json!({"status":"achieved","final_answer":"Built and tested","evidence":["public:artifact"]}).to_string(),
+        now: 4,
+    }) else {
+        panic!()
+    };
+    assert_eq!(task.state, ExecutionState::Done);
+    assert_eq!(
+        f.store.agent_task_workflow("p").unwrap(),
+        Some(("run".into(), "node".into()))
+    );
+}

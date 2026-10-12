@@ -385,7 +385,10 @@ impl KernelRuntimeState {
             ))
             .await
             {
-                self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id.clone(),prompt:task.prompt_id.clone(),reason:format!("Correction delivery failed or uncertain: {e}; reconcile before owner resume")})?;
+                // Admission may already have advanced the durable turn to the continuation.
+                let prompt = self.owned.durable_state_store.agent_tasks(Some(&task.room_id), Some(&task.agent_id))?
+                    .into_iter().find(|t| t.task_id == task.task_id).map_or_else(|| task.prompt_id.clone(), |t| t.prompt_id);
+                self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id.clone(),prompt,reason:format!("Correction delivery failed or uncertain: {e}; reconcile before owner resume")})?;
             }
         } else if (task.state == ExecutionState::Done || task.state == ExecutionState::Cancelled)
             && !resources_unsettled
