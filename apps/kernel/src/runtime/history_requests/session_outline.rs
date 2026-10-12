@@ -23,7 +23,7 @@ use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind};
 use projection::{blob_id, MAX_OUTLINE_EVENTS_PER_BLOB, MAX_OUTLINE_INLINE_CHARS};
 use projection::{
     event_needs_outline_blob, event_projects_as_outline_entry, has_content,
-    outline_blobs_from_events, outline_page_entry_from_event, outline_page_entry_from_event_group,
+    outline_blob_content_events, outline_blobs_from_events, outline_page_entry_from_event, outline_page_entry_from_event_group,
     page_entry_from_event, parse_blob_id, MAX_OUTLINE_INLINE_ENTRIES_PER_TURN,
 };
 
@@ -153,7 +153,7 @@ fn load_blob_content_page(
         sequence_start,
         sequence_end,
     )?;
-    let entries = events
+    let entries = outline_blob_content_events(events)
         .into_iter()
         .filter(|event| event_belongs_to_external_import(agent_import, event))
         .filter_map(page_entry_from_event)

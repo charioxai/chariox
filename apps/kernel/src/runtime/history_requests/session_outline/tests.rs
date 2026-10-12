@@ -7,3 +7,4 @@ use crate::terminal::TerminalOutputKind;
 mod pagination_and_promptless;
 mod turn_lifecycle;
 mod batch_blob_contents;
+mod split_tool_calls;

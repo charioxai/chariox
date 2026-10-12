@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::error::DaemonError;
 use crate::history::{
@@ -113,12 +113,16 @@ pub(super) fn outline_blobs_from_events(
 
 /// One blob per tool call and per thought (provider merge key); other kinds
 /// group by kind. A blob never spans a transcript entry rendered inline, so
-/// its content stays in output order between the entries around it.
+/// its content stays in output order between the entries around it. The one
+/// exception is a later snapshot of a tool call already seen (OpenCode stores
+/// "running" and "completed" as rows a sentence can fall between): it joins
+/// the call's blob, which keeps the call's first position.
 fn outline_blob_event_groups(
     events: &[HistoryEvent],
     is_candidate: impl Fn(&HistoryEvent) -> bool,
 ) -> Vec<Vec<&HistoryEvent>> {
     let mut groups = Vec::<Vec<&HistoryEvent>>::new();
+    let mut tool_call_groups = HashMap::<String, usize>::new();
     let mut open_group = false;
     for event in events {
         if !is_candidate(event) {
@@ -128,6 +132,13 @@ fn outline_blob_event_groups(
             continue;
         }
         let identity = outline_blob_identity(event);
+        if let Some(index) = outline_blob_tool_call_id(&identity)
+            .and_then(|call_id| tool_call_groups.get(call_id))
+        {
+            groups[*index].push(event);
+            open_group = *index == groups.len() - 1;
+            continue;
+        }
         let continues = open_group
             && groups
                 .last()
@@ -137,9 +148,39 @@ fn outline_blob_event_groups(
             Some(group) if continues => group.push(event),
             _ => groups.push(vec![event]),
         }
+        if let Some(call_id) = outline_blob_tool_call_id(&identity) {
+            tool_call_groups.insert(call_id.to_string(), groups.len() - 1);
+        }
         open_group = true;
     }
     groups
+}
+
+fn outline_blob_tool_call_id(
+    identity: &(Option<SessionHistoryEntryKind>, Option<String>),
+) -> Option<&str> {
+    match identity {
+        (Some(SessionHistoryEntryKind::ProviderTool), Some(call_id)) => Some(call_id),
+        _ => None,
+    }
+}
+
+/// A blob's events: a tool call's blob may span rows of other entries
+/// (see `outline_blob_event_groups`), which belong to those entries.
+pub(super) fn outline_blob_content_events(events: Vec<HistoryEvent>) -> Vec<HistoryEvent> {
+    let call_id = events
+        .first()
+        .map(outline_blob_identity)
+        .and_then(|identity| outline_blob_tool_call_id(&identity).map(str::to_string));
+    match call_id {
+        Some(call_id) => events
+            .into_iter()
+            .filter(|event| {
+                outline_blob_tool_call_id(&outline_blob_identity(event)) == Some(call_id.as_str())
+            })
+            .collect(),
+        None => events,
+    }
 }
 
 fn outline_blob_identity(
