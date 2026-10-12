@@ -15,6 +15,7 @@ import {
   resolveSessionHistoryBlobLoadTarget,
   stitchPrependedHistoryTranscript,
   type SessionHistoryTranscriptEntry,
+  adoptLoadedLiveToolRows,
 } from "./session-history-transcript.js"
 import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
@@ -1063,3 +1064,23 @@ function transcriptEntry(
     ...overrides,
   }
 }
+
+// MP-08 / MP-10 (panes R11): a turn-end rebuild keeps tool rows the TUI has in
+// full; only calls it never saw stay unloaded placeholders.
+test("turn-end history rebuild adopts loaded live tool rows by tool id", () => {
+  const snapshot = JSON.stringify({ id: "call-1", tool: "bash", status: "completed", input: { command: "ls" }, output: "README.md" })
+  const history = [
+    { id: 1, role: "tool", text: "", sourceText: "", turnId: 1, mergeKey: "call-1", historyBlobId: "history:3:4", blobCollapsible: true, blobCollapsed: true, blobTitle: "Listed files" },
+    { id: 2, role: "tool", text: "", sourceText: "", turnId: 1, mergeKey: "call-2", historyBlobId: "history:6:7", blobCollapsible: true, blobCollapsed: true, blobTitle: "Ran pwd" },
+  ]
+  const live = [
+    { id: 9, role: "tool", text: "Listed files", sourceText: snapshot, turnId: 1, mergeKey: "call-1", blobCollapsible: true, blobCollapsed: false },
+  ]
+
+  const adopted = adoptLoadedLiveToolRows(history as never[], live as never[]) as Array<Record<string, unknown>>
+
+  assert.equal(adopted[0]?.historyBlobId, undefined)
+  assert.equal(adopted[0]?.sourceText, snapshot)
+  assert.equal(adopted[0]?.blobCollapsed, false)
+  assert.equal(adopted[1]?.historyBlobId, "history:6:7")
+})

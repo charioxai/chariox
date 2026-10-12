@@ -607,7 +607,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
   const {
     turnCompletionController, cancelPendingTurnCompletion, recordTurnActivity, collapsedTurnIdsForAgent,
-    setExpandedTurnState, applyCollapsedTurns, toggleTurn, toggleBlob,
+    setExpandedTurnState, applyCollapsedTurns, toggleTurn, toggleBlob, toggleAllBlobs,
     appendEntry, appendUserPrompt, appendSteeredPrompt, appendNotice,
     appendCloudNotice, appendProviderError, clearLocalBusyStateForAuthoritativeIdle, applyProviderActivity,
     markAssistantMessageCompleted, syncVisibleActivityLabel, appendProviderChunk, appendToolUpdate,
@@ -1051,6 +1051,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     openProjectEnvironment, handleProjectEnvironmentKey,
     handleManagedMachineDialogKey, openManagedMachineDialog,
     toggleWorkspaceScreen: workflowActions.toggleWorkspaceScreen,
+    toggleTranscriptDetails: toggleAllBlobs,
     cycleWorkflowCanvasNode: workflowActions.cycleWorkflowCanvasNode,
     copyPromptSelection, removePromptAttachmentsForEdit, removeLastPendingPromptAttachment,
   })

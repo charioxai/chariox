@@ -215,6 +215,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
   const applyVisibleTranscriptState = transcriptStateController.applyVisibleState
   const toggleTurn = transcriptStateController.toggleTurn
   const toggleBlob = transcriptStateController.toggleBlob
+  const toggleAllBlobs = transcriptStateController.toggleAllBlobs
   const appendEntry = transcriptStateController.appendEntry
 
   const transcriptViewportController = createTranscriptViewportController({
@@ -342,6 +343,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
     applyCollapsedTurns,
     toggleTurn,
     toggleBlob,
+    toggleAllBlobs,
     appendEntry,
     appendUserPrompt,
     appendSteeredPrompt,

@@ -215,6 +215,7 @@ export type CliInputRoutingCompositionDeps = {
   handleManagedMachineDialogKey: AnyFn
   openManagedMachineDialog: AnyFn
   toggleWorkspaceScreen: AnyFn
+  toggleTranscriptDetails: AnyFn
   workflowScreenActive: AnyFn
   cycleWorkflowCanvasNode: AnyFn
   handleCycleAgentFocus: AnyFn
@@ -721,6 +722,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     commandCenterQuery: () => deps.commandCenterController.query(),
     clearCommandCenter: deps.clearCommandCenter,
     toggleWorkspaceScreen: deps.toggleWorkspaceScreen,
+    toggleTranscriptDetails: deps.toggleTranscriptDetails,
     isAttached: deps.isAttached,
     workflowScreenActive: deps.workflowScreenActive,
     cycleWorkflowCanvasNode: deps.cycleWorkflowCanvasNode,

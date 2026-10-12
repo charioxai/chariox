@@ -42,6 +42,7 @@ import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
 import {
   sessionHistoryEntryKindTranscriptRole,
   sessionHistoryOutlineBlobDisplay,
+  sessionHistoryOutlineBlobToolId,
 } from "./session-history-outline.js"
 import {
   orderedSessionHistoryOutlineItems,
@@ -547,8 +548,10 @@ function outlineBlobTranscriptEntry(
   id: number,
 ): SessionHistoryTranscriptEntry {
   const display = sessionHistoryOutlineBlobDisplay(blob)
+  const toolId = sessionHistoryOutlineBlobToolId(blob)
   return {
     id,
+    ...(toolId ? { mergeKey: toolId } : {}),
     role: sessionHistoryOutlineBlobTranscriptRole(blob.kind),
     text: "",
     sourceText: "",
@@ -578,4 +581,35 @@ function sessionHistoryOutlineBlobTranscriptRole(
   return role === "reasoning" || role === "error" || role === "status"
     ? role
     : "tool"
+}
+
+// MP-08 / MP-10 (panes R11): when a pane is rebuilt from history at turn end,
+// a tool call the client already has in full keeps its loaded row instead of
+// turning back into an unloaded placeholder.
+export function adoptLoadedLiveToolRows<TEntry extends SessionHistoryTranscriptEntry>(
+  historyEntries: readonly TEntry[],
+  liveEntries: readonly SessionHistoryTranscriptEntry[],
+): TEntry[] {
+  const loaded = new Map<string, SessionHistoryTranscriptEntry>()
+  for (const entry of liveEntries) {
+    if (entry.role === "tool" && entry.mergeKey && !entry.historyBlobId && entry.sourceText) {
+      loaded.set(entry.mergeKey, entry)
+    }
+  }
+  return historyEntries.map((entry) => {
+    const live = entry.role === "tool" && entry.historyBlobId && entry.mergeKey
+      ? loaded.get(entry.mergeKey)
+      : undefined
+    if (!live) {
+      return entry
+    }
+    const { historyBlobId: _blobId, historyBlobAgentId: _blobAgentId, blobTitle: _title, blobSummary: _summary, ...rest } = entry
+    return {
+      ...rest,
+      text: live.text,
+      sourceText: live.sourceText,
+      historyBlobLoaded: true,
+      blobCollapsed: live.blobCollapsed ?? true,
+    } as TEntry
+  })
 }

@@ -156,10 +156,24 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
     return nextEntry
   }
 
+  // Ctrl+O: expand every collapsed tool / thought row, or collapse them all
+  // when none is collapsed — the keyboard path when app mouse is off.
+  const toggleAllBlobs = () => {
+    const blobs = compactTranscriptDisplayEntries(deps.entries())
+      .filter((entry) => entry.blobCollapsible && entry.role !== "turn_toggle" && !entry.hidden)
+    const expand = blobs.some((entry) => entry.blobCollapsed !== false)
+    for (const entry of blobs) {
+      if ((entry.blobCollapsed !== false) === expand) {
+        toggleBlob(entry.id, !expand)
+      }
+    }
+  }
+
   return {
     appendEntry,
     applyVisibleState,
     toggleBlob,
+    toggleAllBlobs,
     toggleTurn,
   }
 }

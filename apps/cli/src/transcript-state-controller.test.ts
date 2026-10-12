@@ -83,6 +83,31 @@ test("transcript state controller toggles turns through shared display state", (
   assert.equal(harness.focusRetained, 1)
 })
 
+// MP-08 / MP-10 (panes R11): Ctrl+O opens every collapsed tool / thought row,
+// then a second press collapses them all.
+test("transcript state controller expands every collapsed row, then collapses them all", () => {
+  const harness = transcriptHarness({
+    entries: [
+      entry(1, "user", "prompt", { turnId: 1 }),
+      entry(2, "tool", "ls", { turnId: 1, blobCollapsible: true, blobCollapsed: true }),
+      entry(3, "reasoning", "thinking", { turnId: 1, blobCollapsible: true, blobCollapsed: true }),
+      entry(4, "assistant", "done", { turnId: 1 }),
+    ],
+  })
+
+  harness.controller.toggleAllBlobs()
+  assert.deepEqual(
+    harness.entries.filter((item) => item.blobCollapsible).map((item) => [item.id, item.blobCollapsed]),
+    [[2, false], [3, false]],
+  )
+
+  harness.controller.toggleAllBlobs()
+  assert.deepEqual(
+    harness.entries.filter((item) => item.blobCollapsible).map((item) => [item.id, item.blobCollapsed]),
+    [[2, true], [3, true]],
+  )
+})
+
 test("transcript state controller toggles serialized zero turn ids", () => {
   const harness = transcriptHarness({
     entries: [

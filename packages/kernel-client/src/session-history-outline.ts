@@ -286,3 +286,18 @@ export function sessionHistoryOutlineBlobDisplay(
   }
   return { title: blob.title, summary: blob.summary }
 }
+
+// The provider tool call id an outline tool blob previews (protocol ≥508).
+export function sessionHistoryOutlineBlobToolId(
+  blob: Pick<SessionHistoryOutlineBlob, "kind" | "preview">,
+): string | null {
+  if (blob.kind !== "provider_tool" || !blob.preview) {
+    return null
+  }
+  try {
+    const id = (JSON.parse(blob.preview) as { id?: unknown }).id
+    return typeof id === "string" && id ? id : null
+  } catch {
+    return null
+  }
+}
