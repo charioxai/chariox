@@ -124,3 +124,90 @@ fn review1301_http_sessions_keep_owner_headers_and_release_only_owned_leases() {
         ]
     );
 }
+
+// MP-08 / MP-10 / MP-11: cancellation must overtake a slow POST for both transport modes.
+#[test]
+fn review0253_http_session_allows_concurrent_cancellation() {
+    for stateful in [false, true] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let backing = CharioxMcpServerConfig::streamable_http(
+            "review0253",
+            format!("http://{}/mcp", listener.local_addr().unwrap()),
+        );
+        let (slow_seen_tx, slow_seen_rx) = std::sync::mpsc::channel();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel();
+        let gate = Arc::new(Mutex::new(gate_rx));
+        let server = std::thread::spawn(move || {
+            let mut workers = vec![];
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let gate = gate.clone();
+                let slow_seen = slow_seen_tx.clone();
+                workers.push(std::thread::spawn(move||{
+                    stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                    let mut reader=BufReader::new(&mut stream);let mut headers=String::new();
+                    loop{let mut line=String::new();reader.read_line(&mut line).unwrap();headers.push_str(&line);if line=="\r\n"{break}}
+                    let length=headers.lines().find_map(|l|l.to_ascii_lowercase().strip_prefix("content-length:").map(|n|n.trim().parse::<usize>().unwrap())).unwrap();
+                    let mut body=vec![0;length];reader.read_exact(&mut body).unwrap();drop(reader);
+                    let request:serde_json::Value=serde_json::from_slice(&body).unwrap();
+                    let method=request["method"].as_str().unwrap();
+                    if method!="initialize" && stateful {assert!(headers.to_ascii_lowercase().contains("mcp-session-id: synthetic-review0253"));}
+                    if method=="tools/call" {slow_seen.send(()).unwrap();let _=gate.lock().unwrap().recv_timeout(Duration::from_secs(3));}
+                    if method=="notifications/cancelled" {stream.write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();return}
+                    let session=if method=="initialize" && stateful {"Mcp-Session-Id: synthetic-review0253\r\n"}else{""};
+                    let body=serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":{"protocolVersion":"2025-03-26"}}).to_string();
+                    write!(stream,"HTTP/1.1 200 OK\r\n{session}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+                }));
+            }
+            for worker in workers {
+                worker.join().unwrap()
+            }
+        });
+        let run = if stateful {
+            "review0253-stateful"
+        } else {
+            "review0253-stateless"
+        };
+        dispatch(
+            run,
+            run,
+            &backing,
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+        )
+        .unwrap();
+        let slow_backing = backing.clone();
+        let slow = std::thread::spawn(move || {
+            dispatch(
+                run,
+                run,
+                &slow_backing,
+                serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call"}),
+            )
+        });
+        slow_seen_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (cancel_tx, cancel_rx) = std::sync::mpsc::channel();
+        let cancel = std::thread::spawn(move || {
+            let result = dispatch(
+                run,
+                run,
+                &backing,
+                serde_json::json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2}}),
+            );
+            cancel_tx.send(result.is_ok()).unwrap();
+            result
+        });
+        let overtook = cancel_rx
+            .recv_timeout(Duration::from_millis(300))
+            .unwrap_or(false);
+        gate_tx.send(()).unwrap();
+        slow.join().unwrap().unwrap();
+        cancel.join().unwrap().unwrap();
+        server.join().unwrap();
+        release_run(run);
+        assert!(
+            overtook,
+            "cancellation was serialized behind the in-flight POST (stateful={stateful})"
+        );
+    }
+}
+
