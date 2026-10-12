@@ -275,12 +275,26 @@ where
     T: serde::de::DeserializeOwned,
 {
     let url = format!("{api_url}{path}");
-    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    // Native Cloud calls must not follow browser login redirects.
+    let agent = ureq::AgentBuilder::new()
+        .timeout(timeout)
+        .redirects(0)
+        .build();
     let response = agent
         .post(&url)
         .set("content-type", "application/json")
         .send_string(&body.to_string())
         .map_err(cloud_transport_error)?;
+    let status = response.status();
+    if !(200..300).contains(&status) {
+        return Err(DaemonError::LocalTransport {
+            operation: "cloud relay request",
+            message: format!(
+                "cloud relay request failed with {status}: POST {} (redirects disabled)",
+                path.split('?').next().unwrap_or_default(),
+            ),
+        });
+    }
     let payload = response
         .into_string()
         .map_err(|error| DaemonError::LocalTransport {
@@ -730,5 +744,109 @@ mod tests {
         assert!(result.is_err());
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
         fixture.join().expect("stalled Cloud fixture");
+    }
+
+    #[tokio::test]
+    async fn cloud_json_post_reports_migration_redirect_without_following_it() {
+        for status in [301, 302, 303, 307, 308] {
+            assert_cloud_post_redirect(status).await;
+        }
+    }
+
+    async fn assert_cloud_post_redirect(status: u16) {
+        use std::io::Write;
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind migration redirect fixture");
+        let address = listener.local_addr().expect("migration fixture address");
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept migration request");
+            read_fixture_request(&mut stream);
+            write!(stream, "HTTP/1.1 {status} Found\r\nLocation: http://{address}/access-login?secret=synthetic-location-sentinel\r\nContent-Type: text/html\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .expect("send Access redirect");
+            drop(stream);
+            listener.set_nonblocking(true).expect("poll login listener");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+            while std::time::Instant::now() < deadline {
+                if let Ok((mut followed, _)) = listener.accept() {
+                    read_fixture_request(&mut followed);
+                    let body = "<html>synthetic-login-body-sentinel</html>";
+                    write!(followed, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                        .expect("send Access login page");
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            false
+        });
+        let result = post_cloud_json::<serde_json::Value>(
+            format!("http://{address}"),
+            "/auth/kernel/migrate",
+            serde_json::json!({"machineCredential": "synthetic-request-sentinel"}),
+        )
+        .await;
+        let followed = fixture.join().expect("migration redirect fixture");
+        let error = result.expect_err("migration redirect must remain a request failure");
+        assert!(matches!(
+            error,
+            DaemonError::LocalTransport {
+                operation: "cloud relay request",
+                ..
+            }
+        ));
+        let message = error.to_string();
+        assert!(
+            message.contains(&status.to_string()),
+            "report the original HTTP status"
+        );
+        assert!(
+            message.contains("/auth/kernel/migrate"),
+            "identify the failing Cloud call"
+        );
+        assert!(
+            !message.contains("sentinel"),
+            "do not expose request, Location or response material"
+        );
+        assert!(
+            cloud_error_is_retryable(&error),
+            "policy repairs must allow retry"
+        );
+        assert!(
+            !is_stale_cloud_link_error(&error),
+            "a redirect must not clear the profile"
+        );
+        assert!(
+            !followed,
+            "credential-bearing Cloud POST must not follow redirects"
+        );
+    }
+
+    #[tokio::test]
+    async fn cloud_json_post_preserves_created_runtime_token_response() {
+        use std::io::Write;
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind runtime token fixture");
+        let address = listener
+            .local_addr()
+            .expect("runtime token fixture address");
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept runtime token request");
+            read_fixture_request(&mut stream);
+            let body = r#"{"token":"synthetic-runtime-token","tokenId":"synthetic-token-id","expiresAt":"2026-10-12T20:20:00.000Z"}"#;
+            write!(stream, "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                .expect("send created runtime token");
+        });
+        let result =
+            post_cloud_json::<crate::runtime::cloud_api_client::CloudRuntimeTokenResponse>(
+                format!("http://{address}"),
+                "/relay/token",
+                serde_json::json!({"kernelCredential": "synthetic-kernel-credential"}),
+            )
+            .await;
+        fixture.join().expect("runtime token fixture");
+        let issued = result.expect("JSON 201 remains the runtime token contract");
+        assert_eq!(issued.token, "synthetic-runtime-token");
+        assert_eq!(issued.expires_at, "2026-10-12T20:20:00.000Z");
     }
 }
