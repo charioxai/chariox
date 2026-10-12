@@ -460,6 +460,7 @@ where
 
 #[cfg(test)]
 mod tests;
+mod workflow_run_updates;
 
 fn build_session_snapshot(
     app: &mut crate::app::DaemonApp,
@@ -536,9 +537,19 @@ pub(crate) fn watch_subscription_state(
     let completions = app
         .terminal_mut()
         .drain_completion_records(session_id, attachment_id);
-    let workflow_run_updates = app
-        .terminal()
-        .drain_workflow_run_updates(session_id, attachment_id);
+    let workflow_run_updates = match workflow_run_updates::drain_visible_workflow_run_updates(
+        app,
+        session_id,
+        attachment_id,
+        &attachment_owner_user_id,
+    ) {
+        Ok(updates) => updates,
+        Err(_) => {
+            return WatchResult::Unavailable(
+                "Workflow history is currently unavailable.".to_string(),
+            );
+        }
+    };
     let workflow_design_events = app.workflow_design_event_store().events_since(
         session_id,
         last_workflow_design_sequence,
