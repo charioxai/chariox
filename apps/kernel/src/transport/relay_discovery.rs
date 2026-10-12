@@ -589,9 +589,10 @@ async fn query_relay_once_body(
     let mut socket_trace = trace
         .as_deref()
         .map(|trace| TemporaryPeerTestTrace::socket(trace.identity));
+    let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
     let (mut socket, _) = timeout(
         request_timeout,
-        super::relay_socket_connect::connect(&relay_url),
+        crate::transport::relay_socket_connect::connect(&relay_url),
     )
     .await
     .map_err(|_| {
@@ -688,11 +689,14 @@ async fn query_relay_once_body(
                 socket_trace.as_ref().and_then(|trace| trace.local_addr),
             );
         }
-        match timeout(request_timeout, socket.next()).await.map_err(|_| {
-            DaemonError::LocalTransport {
-                operation: "read relay metadata response",
-                message: format!("timed out after {}ms", config.relay_request_timeout_ms),
-            }
+        match timeout(
+            request_timeout,
+            chariox_relay::frame_transport::read_message(&mut socket, &mut relay_frames),
+        )
+        .await
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "read relay metadata response",
+            message: format!("timed out after {}ms", config.relay_request_timeout_ms),
         })? {
             Some(Ok(Message::Text(text))) => serde_json::from_str::<RelayEnvelope>(&text)
                 .map_err(|error| DaemonError::LocalTransport {

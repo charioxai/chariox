@@ -1665,10 +1665,8 @@ mod tests {
         // Test real encrypted peer receipts; all keys are disposable product identities.
         let home = crate::config::DaemonConfig::for_tests();
         let worker = crate::config::DaemonConfig::for_tests();
-        for version in [
-            70,
-            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        ] {
+        let current = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
+        for version in [70, 73, current - 1, current] {
             for (slice_id, nonce) in [
                 ("slice-1", "nonce-1"),
                 ("other", "nonce-1"),
@@ -1700,9 +1698,7 @@ mod tests {
                         "slice-1",
                         "nonce-1",
                     ),
-                    version == crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
-                        && slice_id == "slice-1"
-                        && activation_nonce == "nonce-1"
+                    version == current && slice_id == "slice-1" && activation_nonce == "nonce-1"
                 );
             }
         }

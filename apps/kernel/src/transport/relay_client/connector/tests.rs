@@ -544,7 +544,7 @@ async fn exercise_post_connect_confirmation(
 }
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_71_hosted_confirmation_gate() {
+fn mp08_mp10_mp11_browser_artifact_peer_100_hosted_confirmation_gate() {
     let home = crate::config::DaemonConfig::for_tests();
     let worker = crate::config::DaemonConfig::for_tests();
     for version in [

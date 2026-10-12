@@ -191,11 +191,11 @@ async fn check() {
             })
             .await
             .unwrap();
-            if advertised == 70 {
+            if advertised == 99 {
                 let error =
-                    result.expect_err("v70 must be rejected before spawn or artifact dispatch");
+                    result.expect_err("v99 must be rejected before spawn or artifact dispatch");
                 assert!(
-                    error.to_string().contains("protocol 70"),
+                    error.to_string().contains("protocol 99"),
                     "{error}; request kinds: {:?}",
                     *requests.lock().await
                 );

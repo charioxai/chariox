@@ -57,7 +57,10 @@ pub(super) fn store(root: &Path, source: &Path) -> Result<(String, u64, PathBuf)
                     invalid("artifact blob size mismatch"),
                 ));
             }
-            let actual = copy_and_hash(&mut existing, &mut io::sink())
+            // Concurrent publication/cleanup changes the blob's link count and
+            // ctime, not its bytes. Its content address supplies the integrity
+            // check; mutable source capture still requires stable timestamps.
+            let actual = copy_bounded_and_hash(&mut existing, &mut io::sink(), size)
                 .map_err(|error| artifact_error("verify existing artifact blob", error))?;
             if actual != (sha256.clone(), size) {
                 return Err(artifact_error(
@@ -88,21 +91,8 @@ pub(super) fn open_regular(path: &Path) -> io::Result<File> {
 
 fn copy_and_hash(input: &mut File, output: &mut impl Write) -> io::Result<(String, u64)> {
     let before = input.metadata()?;
-    let mut hasher = Sha256::new();
-    let mut copied = 0;
-    let mut buffer = [0u8; 64 * 1024];
-    // A growing source cannot turn an approved finite file into an endless read.
-    let mut bounded = input.take(before.len().saturating_add(1));
-    loop {
-        let read = bounded.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        output.write_all(&buffer[..read])?;
-        hasher.update(&buffer[..read]);
-        copied += read as u64;
-    }
-    let after = bounded.into_inner().metadata()?;
+    let (digest, copied) = copy_bounded_and_hash(input, output, before.len())?;
+    let after = input.metadata()?;
     if copied != before.len()
         || before.len() != after.len()
         || before.modified()? != after.modified()?
@@ -115,6 +105,28 @@ fn copy_and_hash(input: &mut File, output: &mut impl Write) -> io::Result<(Strin
         if (before.ctime(), before.ctime_nsec()) != (after.ctime(), after.ctime_nsec()) {
             return Err(invalid("artifact source changed during capture"));
         }
+    }
+    Ok((digest, copied))
+}
+
+fn copy_bounded_and_hash(
+    input: &mut File,
+    output: &mut impl Write,
+    size: u64,
+) -> io::Result<(String, u64)> {
+    let mut hasher = Sha256::new();
+    let mut copied = 0;
+    let mut buffer = [0u8; 64 * 1024];
+    // A growing source cannot turn an approved finite file into an endless read.
+    let mut bounded = input.take(size.saturating_add(1));
+    loop {
+        let read = bounded.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        output.write_all(&buffer[..read])?;
+        hasher.update(&buffer[..read]);
+        copied += read as u64;
     }
     Ok((hex_lower(&hasher.finalize()), copied))
 }
@@ -133,6 +145,76 @@ impl Drop for TemporaryBlob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // MP-08/MP-10/MP-11: remove the publisher's pending link during hashing.
+    #[test]
+    fn blob_hash_survives_concurrent_pending_link_cleanup() {
+        struct PendingCleanup(PathBuf);
+        impl Write for PendingCleanup {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                fs::remove_file(&self.0)?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let root = TestRoot::new();
+        let pending = root.0.join("pending");
+        let published = root.0.join("published");
+        let bytes = b"approved original";
+        fs::write(&pending, bytes).unwrap();
+        fs::hard_link(&pending, &published).unwrap();
+        let mut opened = open_regular(&published).unwrap();
+        let actual = copy_bounded_and_hash(
+            &mut opened,
+            &mut PendingCleanup(pending.clone()),
+            bytes.len() as u64,
+        )
+        .unwrap();
+        assert!(!pending.exists());
+        assert_eq!(fs::read(published).unwrap(), bytes);
+        assert_eq!(
+            actual,
+            (hex_lower(&Sha256::digest(bytes)), bytes.len() as u64)
+        );
+    }
+
+    // MP-08/MP-10/MP-11: source capture still rejects ctime-only mutations.
+    #[cfg(unix)]
+    #[test]
+    fn source_mutation_with_restored_size_and_mtime_is_rejected() {
+        struct MutatingOutput {
+            source: PathBuf,
+            modified: std::time::SystemTime,
+        }
+        impl Write for MutatingOutput {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                fs::write(&self.source, vec![2; 128 * 1024])?;
+                OpenOptions::new()
+                    .write(true)
+                    .open(&self.source)?
+                    .set_modified(self.modified)?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let root = TestRoot::new();
+        let source = root.0.join("source");
+        fs::write(&source, vec![1; 128 * 1024]).unwrap();
+        let mut opened = open_regular(&source).unwrap();
+        let before = opened.metadata().unwrap();
+        let mut output = MutatingOutput {
+            source,
+            modified: before.modified().unwrap(),
+        };
+        assert!(copy_and_hash(&mut opened, &mut output).is_err());
+        let after = opened.metadata().unwrap();
+        assert_eq!(before.len(), after.len());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+    }
 
     #[test]
     fn copy_hashes_the_opened_inode_after_the_source_path_is_replaced() {
