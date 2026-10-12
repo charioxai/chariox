@@ -192,19 +192,7 @@ pub(crate) async fn execute_resolve_kernel_client_connection_request(
                 // connections to the exact kernel id.
                 target_daemon_alias: kernel.kernel_id.clone(),
                 client_id,
-                // A kernel-owned legacy machine profile bootstraps a terminal
-                // against the kernel. Its local Room ID is not a Cloud shared-session
-                // identity; the kernel admits the requested Room on attachment.
-                // Client-only profiles retain their actual shared-session scope.
-                session_id: if profile
-                    .machine_credential
-                    .as_deref()
-                    .is_some_and(|credential| !credential.trim().is_empty())
-                {
-                    None
-                } else {
-                    request.session_id.clone()
-                },
+                session_id: request.session_id.clone(),
                 public_key_thumbprint: None,
             },
         )
