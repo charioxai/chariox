@@ -1,5 +1,6 @@
 import process from "node:process"
 import { StringDecoder } from "node:string_decoder"
+import { stripVTControlCharacters } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import type { LocalIpcClient } from "../ipc.js"
@@ -90,15 +91,23 @@ export type ClaudeRemoteRenderedReadiness = {
 
 export function createClaudeRemoteRenderedReadiness(): ClaudeRemoteRenderedReadiness {
   let output = ""
+  const decoder = new StringDecoder("utf8")
   let ready = false
   const waiters = new Set<() => void>()
   return {
     observe: (records, providerRunId, agentId) => {
       if (ready) return
       for (const bytes of claudeRemoteRenderedTerminalBytes(records, providerRunId, agentId)) {
-        output = `${output}${bytes.toString("utf8")}`.slice(-32_768)
+        output = `${output}${decoder.write(bytes)}`.slice(-32_768)
       }
-      if (!output.includes("Claude Code") || !output.includes("\u001b[?2004h")) return
+      // MP-08/MP-11: title updates may be disabled, and cursor positioning
+      // splits the painted name. Paste mode is also enabled during onboarding;
+      // only the provider's composer (empty or showing its hint) accepts a task.
+      const compact = stripVTControlCharacters(output).replace(/\s/g, "")
+      const promptIndex = compact.lastIndexOf("❯")
+      const composer = promptIndex >= 0 ? compact.slice(promptIndex + 1) : ""
+      if (!compact.includes("ClaudeCode") || !output.includes("\u001b[?2004h")
+        || !/^(?:[─━╌]{3,}|Try["“])/.test(composer)) return
       ready = true
       for (const resolve of waiters) resolve()
       waiters.clear()
