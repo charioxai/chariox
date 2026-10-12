@@ -169,8 +169,6 @@ impl RoomSecretObservations {
             rooms.insert(room.into(), self.initial(room)?);
         }
         let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
-        // Set the memory fence even if persisting the marker fails. Input must then abort.
-        protection.revision = protection.revision.saturating_add(1);
         let known = protection
             .values
             .iter()
@@ -188,6 +186,9 @@ impl RoomSecretObservations {
             return Err(protection_error());
         }
         if !known {
+            // MP-08 / MP-10 / MP-11: fence actual changes before persistence;
+            // re-registering a known value does not invalidate prepared handoffs.
+            protection.revision = protection.revision.saturating_add(1);
             protection
                 .retired_values
                 .retain(|existing| existing.as_str() != value);
