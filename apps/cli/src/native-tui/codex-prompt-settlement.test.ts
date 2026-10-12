@@ -15,7 +15,7 @@ test("MP-08/MP-11 settlement recovery pages past newer turns and accepts only ma
   } } as unknown as LocalIpcClient
   const settled = await loadCodexPromptSettlements(client, "session", "agent", ["A", "new", "failed"])
   assert.deepEqual(cursors, [null, { before_sequence: 50 }])
-  assert.deepEqual([...settled], [["A", 2000], ["failed", 3000]])
+  assert.deepEqual([...settled], [["A", { completedAtMs: 2000, status: "cancelled" }], ["failed", { completedAtMs: 3000, status: "failed" }]])
 })
 
 test("MP-08/MP-11 settlement recovery rejects a nonadvancing kernel history cursor", async () => {

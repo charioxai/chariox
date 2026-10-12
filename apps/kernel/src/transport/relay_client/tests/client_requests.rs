@@ -75,7 +75,7 @@ async fn proxied_session_requests_are_handled_through_relay() {
     let list_request_private_key = send_client_request(
         &mut client_socket,
         "list-1",
-        &config.daemon_id,
+        &config,
         &daemon_public_key,
         LocalDaemonRequest::ListSessions(ListSessionsRequest),
     )
@@ -97,7 +97,7 @@ async fn proxied_session_requests_are_handled_through_relay() {
     let state_request_private_key = send_client_request(
         &mut client_socket,
         "state-1",
-        &config.daemon_id,
+        &config,
         &daemon_public_key,
         LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
             session_id: created_session_id.clone(),
@@ -114,7 +114,7 @@ async fn proxied_session_requests_are_handled_through_relay() {
     let attach_request_private_key = send_client_request(
         &mut client_socket,
         "attach-1",
-        &config.daemon_id,
+        &config,
         &daemon_public_key,
         LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
             session_id: created_session_id.clone(),
@@ -142,7 +142,7 @@ async fn proxied_session_requests_are_handled_through_relay() {
     let validate_request_private_key = send_client_request(
         &mut client_socket,
         "validate-1",
-        &config.daemon_id,
+        &config,
         &daemon_public_key,
         LocalDaemonRequest::ValidateWorkflowHandoff(ValidateWorkflowHandoffRequest {
             session_id: created_session_id.clone(),
@@ -342,7 +342,7 @@ async fn authenticated_public_client_preserves_worker_relay_retryability_async()
     let _worker_error_private_key = send_client_request(
         &mut client_socket,
         "worker-business-error-1",
-        &config_home.daemon_id,
+        &config_home,
         &daemon_public_key,
         worker_request(),
     )
@@ -389,7 +389,7 @@ async fn authenticated_public_client_preserves_worker_relay_retryability_async()
     let _transient_private_key = send_client_request(
         &mut client_socket,
         "relay-disconnect-1",
-        &config_home.daemon_id,
+        &config_home,
         &daemon_public_key,
         worker_request(),
     )
@@ -487,7 +487,7 @@ async fn relay_client_command_ids_reject_conflicting_retries() {
         &mut client_socket,
         "list-1",
         &command_id,
-        &config.daemon_id,
+        &config,
         &daemon_public_key,
         LocalDaemonRequest::ListSessions(ListSessionsRequest),
     )
@@ -503,7 +503,7 @@ async fn relay_client_command_ids_reject_conflicting_retries() {
         &mut client_socket,
         "state-1",
         &command_id,
-        &config.daemon_id,
+        &config,
         &daemon_public_key,
         LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
             session_id: created_session_id.clone(),
@@ -608,7 +608,7 @@ async fn interactive_session_requests_are_handled_through_relay() {
     let resolve_private_key = send_client_request(
         &mut client_socket,
         "resolve-1",
-        &config.daemon_id,
+        &config,
         &daemon_public_key,
         LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
             session_ref: "main".to_string(),
@@ -626,7 +626,7 @@ async fn interactive_session_requests_are_handled_through_relay() {
     let focus_private_key = send_client_request(
         &mut client_socket,
         "focus-1",
-        &config.daemon_id,
+        &config,
         &daemon_public_key,
         LocalDaemonRequest::FocusAgent(FocusAgentRequest {
             session_id: created_session_id.clone(),
@@ -644,7 +644,7 @@ async fn interactive_session_requests_are_handled_through_relay() {
     let config_private_key = send_client_request(
         &mut client_socket,
         "config-1",
-        &config.daemon_id,
+        &config,
         &daemon_public_key,
         LocalDaemonRequest::UpdateSessionConfig(UpdateSessionConfigRequest {
             session_id: created_session_id.clone(),
@@ -665,7 +665,7 @@ async fn interactive_session_requests_are_handled_through_relay() {
     let detach_private_key = send_client_request(
         &mut client_socket,
         "detach-1",
-        &config.daemon_id,
+        &config,
         &daemon_public_key,
         LocalDaemonRequest::DetachFromSession(DetachFromSessionRequest {
             attachment_id: attachment_id.clone(),
@@ -758,7 +758,7 @@ async fn terminal_resize_errors_are_returned_through_relay() {
     let resize_private_key = send_client_request(
         &mut client_socket,
         "resize-1",
-        &config.daemon_id,
+        &config,
         &daemon_public_key,
         LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
             session_id: created_session_id,

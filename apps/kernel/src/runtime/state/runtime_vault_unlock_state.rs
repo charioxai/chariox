@@ -41,17 +41,25 @@ impl Drop for VaultUnlockGuard {
 }
 
 impl KernelRuntimeState {
-    pub(super) async fn prepare_provider_launch_request_with_vault(
+    pub(in crate::runtime) async fn prepare_provider_launch_request_with_vault(
         &self,
         request: crate::provider::LaunchProviderRequest,
         operation: &'static str,
     ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        let config = self.owned.config_projection.snapshot();
+        let request = self.owned.prepare_provider_launch_account(request)?;
         let _vault_unlock = self
             .ensure_provider_account_vault_unlocked_for_launch(&request, operation)
             .await?;
-        let config = self.owned.config_projection.snapshot();
-        self.owned
-            .prepare_provider_launch_request(request, config.runtime_mcp_url())
+        let mut request = self
+            .owned
+            .prepare_provider_launch_request(request, config.runtime_mcp_url())?;
+        let credentials = std::mem::take(&mut request.provider_credential_env);
+        drop(_vault_unlock);
+        let credentials = self
+            .checked_claude_credentials(&request, credentials)
+            .await?;
+        Ok(request.with_provider_credential_env(credentials))
     }
 
     async fn ensure_provider_account_vault_unlocked_for_launch(
@@ -80,11 +88,13 @@ impl KernelRuntimeState {
             .as_ref()
             .map(|agent| agent.owner_user_id())
             .unwrap_or_else(|| session.owner_user_id());
-        let account_owner_user_id =
-            crate::account_profile::provider_account_authority_owner_user_id(
-                &config,
-                runtime_owner_user_id,
-            );
+        let mut owned_request = request.clone();
+        owned_request.owner_user_id = runtime_owner_user_id.to_string();
+        let account_owner_user_id = crate::account_profile::provider_account_authority_for_launch(
+            &config,
+            &self.owned.provider_account_profiles,
+            &owned_request,
+        )?;
         let profile = self.owned.provider_account_profiles.get(
             &account_owner_user_id,
             &request.provider,
@@ -121,24 +131,46 @@ impl KernelRuntimeState {
             run.model(),
         )
         .with_owner_user_id(run.owner_user_id().to_string());
+        crate::account_profile::copy_provider_account_selection(run, &mut request);
+        request.client_interface = run.client_interface();
         if let Some(agent_id) = run.agent_instance_id() {
             request = request.with_agent_id(agent_id.to_string());
         }
         let _vault_unlock = self
             .ensure_provider_account_vault_unlocked_for_launch(&request, operation)
             .await?;
+        // MP-08 / MP-10 / MP-11: Vault UI is an await boundary. A retired
+        // starting run must not verify credentials or begin account recovery.
+        if run.state() == crate::provider::ProviderRunState::Starting
+            && self
+                .owned
+                .provider_store
+                .get_run(run.id())
+                .ok()
+                .is_none_or(|current| {
+                    current.state() != crate::provider::ProviderRunState::Starting
+                        || current.started_at_ms() != run.started_at_ms()
+                })
+        {
+            return Err(DaemonError::LocalTransport {
+                operation,
+                message: "provider run retired while awaiting Vault unlock".to_string(),
+            });
+        }
         let config = self.owned.config_projection.snapshot();
-        let account_owner_user_id =
-            crate::account_profile::provider_account_authority_owner_user_id(
-                &config,
-                run.owner_user_id(),
-            );
-        crate::provider::resolve_provider_account_credentials(
+        let account_owner_user_id = crate::account_profile::provider_account_authority_for_run(
+            &config,
+            &self.owned.provider_account_profiles,
+            run,
+        )?;
+        let credentials = crate::provider::resolve_provider_account_credentials(
             &config,
             &account_owner_user_id,
             run.provider(),
             run.account_profile(),
-        )
+        )?;
+        drop(_vault_unlock);
+        self.checked_claude_credentials(&request, credentials).await
     }
 
     pub(super) async fn resolve_remote_provider_launch_credential(
@@ -161,16 +193,19 @@ impl KernelRuntimeState {
 
         let config = self.owned.config_projection.snapshot();
         let account_owner_user_id =
-            crate::account_profile::provider_account_authority_owner_user_id(
+            crate::account_profile::provider_account_authority_owner_for_profile(
                 &config,
+                &self.owned.provider_account_profiles,
                 agent.owner_user_id(),
-            );
+                agent.provider(),
+                agent.provider_account_profile(),
+            )?;
         let profile = self.owned.provider_account_profiles.get(
             &account_owner_user_id,
             agent.provider(),
             agent.provider_account_profile(),
         )?;
-        let request = crate::provider::LaunchProviderRequest::new(
+        let mut request = crate::provider::LaunchProviderRequest::new(
             agent.session_id(),
             crate::provider::adapter_key_for_provider(agent.provider()),
             agent.provider(),
@@ -179,6 +214,11 @@ impl KernelRuntimeState {
         )
         .with_owner_user_id(agent.owner_user_id().to_string())
         .with_agent_id(agent.id().to_string());
+        crate::account_profile::bind_provider_account_authority(
+            &mut request,
+            account_owner_user_id.clone(),
+            agent.provider_account_profile().to_string(),
+        );
         let _vault_unlock = self
             .ensure_provider_account_vault_unlocked_for_launch(&request, operation)
             .await?;
@@ -188,12 +228,16 @@ impl KernelRuntimeState {
             agent.provider(),
             &profile.profile_id,
         )?;
+        drop(_vault_unlock);
+        environment = self
+            .checked_claude_credentials(&request, environment)
+            .await?;
         let token = environment
             .remove(crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
             .filter(|value| !value.trim().is_empty())
             .ok_or(DaemonError::InvalidConfig {
                 field: "provider account credential",
-                message: "remote Claude launch requires a Chariox-vault setup token; use `provider setup-token claude <account-profile>` on the home kernel",
+                message: "remote Claude launch requires sign-in; choose Log in in Provider Accounts on the home kernel",
             })?;
         Ok(Some(
             crate::transport::relay_peer::RemoteProviderLaunchCredential {
@@ -243,18 +287,38 @@ impl KernelRuntimeState {
         agent_id: Option<&str>,
         operation: &'static str,
     ) -> Result<VaultUnlockGuard, DaemonError> {
+        let Some((session_id, agent_id)) = self
+            .preflight_vault_unlock_for_command_context(command, session_id, agent_id, operation)
+            .await?
+        else {
+            return Ok(VaultUnlockGuard::not_required());
+        };
+        self.ensure_vault_unlocked_for_agent(&session_id, &agent_id, operation)
+            .await
+    }
+
+    /// Validate where an unlock interaction can be shown without acquiring a
+    /// Vault lease. Verification of caller-supplied input can then run while
+    /// the Vault stays locked; the actual write repeats this same preflight.
+    pub(crate) async fn preflight_vault_unlock_for_command_context(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        session_id: Option<&str>,
+        agent_id: Option<&str>,
+        operation: &'static str,
+    ) -> Result<Option<(String, String)>, DaemonError> {
         let user_config = self.owned.config_projection.snapshot().user_config;
         if user_config.credential_vault.backend
             != crate::config::CredentialVaultBackend::CharioxEncrypted
         {
-            return Ok(VaultUnlockGuard::not_required());
+            return Ok(None);
         }
         let vault_path = expand_vault_path(&user_config.credential_vault.path);
         if user_config.credential_vault.unlock_policy
             != crate::config::CredentialVaultUnlockPolicy::Always
             && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked
         {
-            return Ok(VaultUnlockGuard::unlocked_until_expiry());
+            return Ok(None);
         }
         let session_id = session_id
             .or(command.session_id.as_deref())
@@ -271,8 +335,7 @@ impl KernelRuntimeState {
                 operation,
             )
             .await?;
-        self.ensure_vault_unlocked_for_agent(session_id, &agent_id, operation)
-            .await
+        Ok(Some((session_id.to_owned(), agent_id)))
     }
 
     /// The unlock popup is an agent's runtime interaction. Without a named
@@ -890,6 +953,70 @@ mod tests {
         }
     }
 
+    // MP-11 F1: exercise the actual wait and shared management reply path.
+    #[tokio::test]
+    async fn vault_management_reply_after_expiry_requires_unlock() {
+        let workspace = crate::test_support::TestWorktree::new("vault-expired-reply");
+        let private_state = crate::test_support::TestWorktree::new("vault-expired-reply-state");
+        let path = private_state.path().join("vault.json");
+        crate::secret::create_chariox_encrypted_vault_for_test(&path, "test passphrase").unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = path.display().to_string();
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(workspace.session_request())
+            .unwrap();
+        let state =
+            super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
+        for choice in ["extend_30m", "extend_60m"] {
+            crate::secret::unlock_chariox_encrypted_vault(
+                &path,
+                "test passphrase",
+                crate::secret::VaultUnlockLease::KernelShutdown,
+            )
+            .unwrap();
+            let call = state.manage_credential_vault_unlock(session.id(), agent.id());
+            tokio::pin!(call);
+            let interaction = tokio::select! {
+                result = &mut call => panic!("management must await reply: {result:?}"),
+                result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                    loop {
+                        let snapshot = state.owned.session_store.get_session(session.id()).unwrap();
+                        if let Some(interaction) = snapshot.active_interaction_for_agent(agent.id()) {
+                            break interaction.clone();
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                }) => result.expect("management interaction"),
+            };
+            crate::secret::expire_chariox_encrypted_vault_for_test(&path);
+            state
+                .owned
+                .resolve_runtime_interaction(
+                    session.id(),
+                    interaction.id(),
+                    choice,
+                    None,
+                    Some(session.owner_user_id()),
+                    false,
+                )
+                .unwrap();
+            let result = call.await;
+            crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            assert!(result.is_err(), "reply must not revive an expired key");
+            assert!(crate::secret::is_chariox_vault_locked_error(
+                &result.unwrap_err()
+            ));
+            if choice == "extend_30m" {
+                crate::secret::create_chariox_encrypted_vault_for_test(&path, "test passphrase")
+                    .unwrap();
+            }
+        }
+    }
+
     #[test]
     fn vault_passphrase_prompt_cannot_encode_an_unlock_lease_as_the_secret() {
         let interaction = vault_passphrase_interaction("session-1", "agent-1", "test");
@@ -1240,9 +1367,18 @@ mod mp11_always_tests {
                     },
                 )
                 .await;
+            // MP-11: this refusal must precede any provider invocation. A
+            // regression must fail locally, never call an installed real CLI.
+            let previous_claude_bin = std::env::var_os("CHARIOX_CLAUDE_BIN");
+            std::env::set_var("CHARIOX_CLAUDE_BIN", root.join("must-not-execute-claude"));
             let provider = crate::runtime::user_config_executor::execute_set_provider_account_credential_request(projection, &state, &command,
                 crate::local::SetProviderAccountCredentialRequest { session_id: None, agent_id: None, provider: "claude".into(), account_profile: profile.profile_id,
                     value: "synthetic-value".into(), run: false, overwrite: true }).await;
+            if let Some(previous) = previous_claude_bin {
+                std::env::set_var("CHARIOX_CLAUDE_BIN", previous);
+            } else {
+                std::env::remove_var("CHARIOX_CLAUDE_BIN");
+            }
             let refused = [set, delete, provider].into_iter().all(|result| {
                 result.is_err_and(|error| error.to_string().contains("requires a session_id"))
             });

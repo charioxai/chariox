@@ -14,6 +14,24 @@ impl KernelRuntimeState {
         expected_prompt_id: Option<&str>,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
+        self.cancel_remote_agent_prompt_if_matches(
+            session_id,
+            target_agent_id,
+            attachment_id,
+            None,
+            authority,
+        )
+        .await
+    }
+
+    pub(super) async fn cancel_remote_agent_prompt_if_matches(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        expected_prompt_id: Option<&str>,
+        authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
+    ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
         self.authorize_prompt_command(authority)?;
         let owned = &self.owned;
         if owned
@@ -35,6 +53,11 @@ impl KernelRuntimeState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
+        if expected_prompt_id.is_some_and(|expected| active_prompt.id() != expected) {
+            return Err(DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            });
+        }
         if matches!(
             active_prompt.durable_delivery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Accepted)

@@ -66,6 +66,31 @@ test("session unavailable recovery transitions when state lookup fails", async (
   ])
 })
 
+// MP-08/MP-10: a restart can invalidate an attachment without ending its session.
+test("session unavailable recovery retains the session while its kernel is restarting", async () => {
+  const harness = createHarness({
+    getSessionState: async () => { throw new Error("local transport closed") },
+  })
+  await harness.controller.handle("Session unavailable.")
+  assert.deepEqual(harness.calls, [
+    "lookup-failed:session-1:Session unavailable.:local transport closed",
+    "retry-recovery",
+  ])
+  assert.equal(harness.session.id, "session-1")
+})
+
+test("session unavailable recovery ignores a failed lookup after selection changes", async () => {
+  const harness = createHarness({
+    getSessionState: async () => {
+      harness.session = { id: "session-2" }
+      throw new Error("missing")
+    },
+  })
+  await harness.controller.handle("Session unavailable.")
+  assert.deepEqual(harness.calls, [])
+  assert.equal(harness.session.id, "session-2")
+})
+
 test("session unavailable recovery exits when the selected session changes", async () => {
   const harness = createHarness({
     attachToSession: async (sessionId) => {
@@ -144,6 +169,8 @@ function createHarness(options: {
       const errorMessage = error instanceof Error ? error.message : String(error)
       calls.push(`lookup-failed:${sessionId}:${message}:${errorMessage}`)
     },
+    isSessionUnavailableError: (error: unknown) => error instanceof Error && error.message === "missing",
+    onTransientFailure: () => { calls.push("retry-recovery") },
     transitionToNoSession: async (message) => {
       calls.push(`transition:${message}`)
     },

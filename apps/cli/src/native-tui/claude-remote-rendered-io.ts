@@ -1,3 +1,4 @@
+import { sendClaudeRemoteRenderedInput as sendRemoteRenderedInput } from "./claude-remote-rendered-control.js"
 import process from "node:process"
 import { StringDecoder } from "node:string_decoder"
 import { stripVTControlCharacters } from "node:util"
@@ -7,7 +8,6 @@ import type { LocalIpcClient } from "../ipc.js"
 import {
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
-  sendTerminalInputRequest,
   submitPromptRequest,
 } from "../ipc-requests.js"
 import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer.js"
@@ -48,6 +48,7 @@ export function forwardClaudeRemoteRenderedStdin(options: {
             options.attachmentId,
             options.providerRunId,
             data,
+            options.agentId,
           )
         }
       })
@@ -120,7 +121,9 @@ export function createClaudeRemoteRenderedReadiness(): ClaudeRemoteRenderedReadi
       for (const finish of waiters) finish(error)
       waiters.clear()
     },
-    wait: async (timeoutMs = 60_000) => {
+    // MP-08/MP-11: onboarding is human-paced. Provider exit or disconnect
+    // fails this wait; an optional explicit deadline remains for bounded callers.
+    wait: async (timeoutMs) => {
       if (failure) throw failure
       if (ready) return
       await new Promise<void>((resolve, reject) => {
@@ -130,7 +133,7 @@ export function createClaudeRemoteRenderedReadiness(): ClaudeRemoteRenderedReadi
           if (error) reject(error)
           else resolve()
         }
-        const timeout = setTimeout(() => {
+        const timeout = timeoutMs === undefined ? undefined : setTimeout(() => {
           waiters.delete(onReady)
           reject(new Error(`timed out waiting ${timeoutMs}ms for the remote Claude TUI input surface`))
         }, timeoutMs)
@@ -294,6 +297,7 @@ async function forwardRemoteRenderedInputChunk(options: {
       options.attachmentId,
       options.providerRunId,
       action.data,
+      options.agentId,
     )
   }
 }
@@ -337,18 +341,6 @@ async function submitOrForwardRemoteRenderedEnter(options: {
       visiblePrompt || "Please use the attached file.",
       attachments,
     ),
-  )
-}
-
-async function sendRemoteRenderedInput(
-  client: LocalIpcClient,
-  sessionId: string,
-  attachmentId: string,
-  providerRunId: string,
-  data: Buffer | string,
-) {
-  await client.send<Record<string, unknown>>(
-    sendTerminalInputRequest(sessionId, attachmentId, data, providerRunId),
   )
 }
 

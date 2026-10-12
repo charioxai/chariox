@@ -14,6 +14,7 @@ pub(super) type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscri
 /// Who a relay subscription serves: the caller's user and, for its passkey
 /// popups (protocol 403), its connection class.
 pub(super) struct RelaySubscriber {
+    pub(super) caller: crate::runtime::command::KernelCaller,
     pub(super) user_id: String,
     pub(super) connection_class: crate::local::KernelConnectionClass,
 }
@@ -70,9 +71,32 @@ pub(super) async fn handle_relay_subscribe(
     subscription_scope: Option<String>,
     resume_from_event_id: Option<u64>,
 ) -> Result<(), DaemonError> {
+    let paired = match router.admit_self_host_terminal(&client_public_key) {
+        Ok(grant) => grant.is_some(),
+        Err(error) => {
+            send_outgoing_envelope(
+                outgoing_tx,
+                RelayEnvelope::DaemonResponse {
+                    relay_request_id,
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                },
+            )?;
+            return Ok(());
+        }
+    };
     let subscriber = RelaySubscriber {
-        user_id: relay_subscription_caller_user_id(caller_identity.as_ref()),
-        connection_class: crate::runtime::command::relay_connection_class(caller_identity.as_ref()),
+        caller: crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone()),
+        user_id: if paired {
+            crate::session::DEFAULT_LOCAL_USER_ID.into()
+        } else {
+            relay_subscription_caller_user_id(caller_identity.as_ref())
+        },
+        connection_class: if paired {
+            crate::local::KernelConnectionClass::Terminal
+        } else {
+            crate::runtime::command::relay_connection_class(caller_identity.as_ref())
+        },
     };
     let is_inventory_subscription =
         subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE);
@@ -123,7 +147,15 @@ pub(super) async fn handle_relay_subscribe(
         );
     }
     if !is_inventory_subscription {
-        let validation = if let Some(user_id) = caller_identity
+        let validation = if paired {
+            router
+                .ensure_relay_subscription_attachment_for_user(
+                    &session_id,
+                    &attachment_id,
+                    &subscriber.user_id,
+                )
+                .await
+        } else if let Some(user_id) = caller_identity
             .as_ref()
             .and_then(|identity| identity.user_id.as_deref())
         {
@@ -376,6 +408,9 @@ pub(super) async fn run_relay_subscription_loop(
     let event_stream_id = subscription_event_stream_id(&session_id, &attachment_id);
 
     loop {
+        if router.admit_self_host_terminal(&client_public_key).is_err() {
+            break;
+        }
         if let Some(event) = passkey_prompts.next_event(&router) {
             if emit_relay_event(
                 &router,
@@ -586,12 +621,24 @@ pub(super) async fn run_relay_subscription_loop(
                         break;
                     }
                     let workflow_run_events =
-                        workflow_run_updated_events(&snapshot, previous_snapshot_ref);
+                        workflow_run_updated_events(&snapshot, previous_snapshot_ref)
+                            .into_iter()
+                            .chain(
+                                crate::transport::kernel_protocol::room_workflows_changed_event(
+                                    &snapshot,
+                                    previous_snapshot_ref,
+                                ),
+                            )
+                            .collect::<Vec<_>>();
                     let workflow_run_only =
                         workflow_run_only_changed(&snapshot, previous_snapshot_ref)
                             && !workflow_run_events.is_empty();
                     for event in workflow_run_events {
-                        emitted_projection_delta = true;
+                        // Inventory is an additional read model. Definition changes still
+                        // need the existing full snapshot for canvas and other consumers.
+                        if !matches!(&event, KernelEvent::RoomWorkflowsChanged { .. }) {
+                            emitted_projection_delta = true;
+                        }
                         if emit_relay_event(
                             &router,
                             &outgoing_tx,
@@ -619,6 +666,7 @@ pub(super) async fn run_relay_subscription_loop(
                         &event_runtime,
                         &event_stream_id,
                         KernelEvent::SessionSnapshot {
+                            room_workflows: snapshot.room_workflows,
                             session: Box::new(snapshot.session),
                             provider_run: Box::new(
                                 snapshot
@@ -812,7 +860,8 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     } else {
         None
     };
-    let mut previous_remote_machines = resumed.then(|| router.transport_remote_machines_snapshot());
+    let mut previous_remote_machines =
+        resumed.then(|| router.relay_remote_machines_snapshot(&subscriber.caller));
     let mut previous_provider_catalog = resumed
         .then(|| router.transport_provider_catalog_snapshot())
         .flatten();
@@ -821,6 +870,9 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     let mut tick: u64 = 0;
     let mut next_heartbeat_at = Instant::now();
     loop {
+        if router.admit_self_host_terminal(&client_public_key).is_err() {
+            break;
+        }
         if let Some(event) = passkey_prompts.next_event(&router) {
             if emit_relay_event(
                 &router,
@@ -843,7 +895,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
             || (!resumed && tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS))
         {
             match router
-                .waiting_room_public_snapshot(&subscriber.user_id)
+                .waiting_room_public_snapshot(&subscriber.user_id, Some(&subscriber.caller))
                 .await
             {
                 Ok(snapshot) => {
@@ -915,7 +967,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
             );
         }
         if tick.is_multiple_of(RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS) {
-            let machines = router.transport_remote_machines_snapshot();
+            let machines = router.relay_remote_machines_snapshot(&subscriber.caller);
             if previous_remote_machines.as_ref() != Some(&machines) {
                 previous_remote_machines = Some(machines.clone());
                 if emit_relay_event(

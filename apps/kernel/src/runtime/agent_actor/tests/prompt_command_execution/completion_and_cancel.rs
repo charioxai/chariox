@@ -147,7 +147,7 @@ async fn prompt_cancel_uses_owned_runtime_state_without_app_lock_for_structured_
         FocusedAgentProjection::default(),
         session_projection.clone(),
         agent_runtime_projection.clone(),
-        prompt_state_owner,
+        prompt_state_owner.clone(),
         crate::session::PromptIdAllocator::default(),
     );
 
@@ -155,7 +155,7 @@ async fn prompt_cancel_uses_owned_runtime_state_without_app_lock_for_structured_
         session_id: session_id.clone(),
         attachment_id,
         target_agent_id: None,
-        expected_prompt_id: None,
+        expected_prompt_id: Some(prompt.id().to_string()),
     };
     let local_request = LocalDaemonRequest::CancelActivePrompt(request.clone());
     let command = crate::runtime::command::KernelCommand::from_local_request(
@@ -165,6 +165,28 @@ async fn prompt_cancel_uses_owned_runtime_state_without_app_lock_for_structured_
         &local_request,
     );
     let _locked_app = app.lock().await;
+    // MP-08/MP-10/MP-11: a delayed display control for A must leave B running.
+    let mut stale = request.clone();
+    stale.expected_prompt_id = Some("settled-prompt-A".into());
+    assert!(matches!(
+        runtime.dispatch_prompt_cancel(&command, stale).await,
+        Err(DaemonError::NoActivePrompt { .. })
+    ));
+    assert_eq!(
+        prompt_state_owner
+            .active_prompt_for_agent(&session_snapshot, &agent_id)
+            .map(|active| (active.id().to_string(), active.status())),
+        Some((prompt.id().to_string(), prompt.status()))
+    );
+    let mut foreign = request.clone();
+    foreign.attachment_id = "foreign-attachment".into();
+    assert!(
+        runtime
+            .dispatch_prompt_cancel(&command, foreign)
+            .await
+            .is_err(),
+        "an expected prompt cannot bypass attachment admission"
+    );
     let response = timeout(
         Duration::from_millis(100),
         runtime.dispatch_prompt_cancel(&command, request),
@@ -301,7 +323,7 @@ async fn prompt_complete_advances_queued_prompt_with_owned_runtime_state_without
         .started_next
         .as_ref()
         .expect("queued prompt should promote");
-    assert_ne!(started_next.id(), second.id());
+    assert_eq!(started_next.id(), second.id());
     assert!(started_next.pending_prompt_id().is_none());
     assert_eq!(started_next.prompt(), second.prompt());
     let projected_active = session_projection
@@ -469,12 +491,7 @@ async fn assert_conditional_prompt_cancel_preserves_successor(remote: bool) {
         .complete_active_prompt_if_matches(&session, agent.id(), Some(&expected_prompt_id))
         .unwrap();
     let successor = prompt_owner
-        .activate_next_queued_prompt_with_prompt_id(
-            &session,
-            agent.id(),
-            None,
-            app.sessions_mut().reserve_prompt_id(),
-        )
+        .activate_next_queued_prompt_for_dispatch(&session, agent.id(), None)
         .unwrap()
         .unwrap();
     prompt_owner

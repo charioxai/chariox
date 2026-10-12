@@ -1415,3 +1415,48 @@ async fn concurrent_subscription_admission_has_one_owner() {
     }).count();
     assert_eq!(conflict_count, 1);
 }
+
+// MP-08 / MP-10 / MP-11: a socket that stops reading must retain the current bound.
+#[tokio::test]
+async fn silent_peer_is_removed_within_original_heartbeat_bound() {
+    use futures_util::SinkExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let registry_for_connection = registry.clone();
+    let task = tokio::spawn(async move {
+        let (stream, peer) = listener.accept().await.unwrap();
+        handle_connection(
+            stream,
+            peer,
+            registry_for_connection,
+            RelayAuthVerifier::shared(Some("public-fixture".into())),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .await
+        .unwrap();
+    });
+    let (mut client, _) =
+        tokio_tungstenite::connect_async(format!("ws://{address}/?chariox_transport=chunks-v1"))
+            .await
+            .unwrap();
+    let mut registration = daemon_registration("silent-peer");
+    registration.auth_token = "public-fixture".to_string();
+    client
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(registry.read().await.peers.len(), 1);
+    // Never read, so neither automatic Pong nor transport ACK can acknowledge data.
+    tokio::time::timeout(Duration::from_secs(25), task)
+        .await
+        .expect("dead peer must close within the original 5s check + 15s deadline + check jitter")
+        .unwrap();
+    assert!(registry.read().await.peers.is_empty());
+    drop(client);
+}

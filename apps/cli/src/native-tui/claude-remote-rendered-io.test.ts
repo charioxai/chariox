@@ -151,6 +151,22 @@ test("MP-08/MP-11 styled Claude onboarding is not a ready composer", async () =>
   await readiness.wait(100)
 })
 
+test("MP-08/MP-11 initial prompt allows more than sixty seconds for native onboarding", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] })
+  const readiness = createClaudeRemoteRenderedReadiness()
+  let outcome = "pending"
+  const waiting = readiness.wait().then(() => { outcome = "ready" }, () => { outcome = "failed" })
+  context.mock.timers.tick(61_000)
+  await Promise.resolve()
+  assert.equal(outcome, "pending")
+  readiness.observe([{
+    provider_run_id: "run-1", agent_id: "agent-1", kind: "provider_terminal",
+    bytes: [...Buffer.from("\u001b[?2004hClaude Code\r\n❯ \r\n────────────────────\r\n")],
+  }], "run-1", "agent-1")
+  await waiting
+  assert.equal(outcome, "ready")
+})
+
 test("MP-08/MP-11 provider exit releases an initial prompt readiness wait immediately", async () => {
   const readiness = createClaudeRemoteRenderedReadiness()
   const waiting = readiness.wait(50)

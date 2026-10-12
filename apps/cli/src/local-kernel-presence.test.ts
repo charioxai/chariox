@@ -48,28 +48,22 @@ test("local kernel presence formats IPv6 endpoints", () => {
   }), "ws://[::1]:43121/kernel")
 })
 
-test("MP-08 local kernel presence resolves under CHARIOX_HOME like the kernel", (context) => {
-  const home = mkdtempSync(join(tmpdir(), "chariox-kernel-presence-home-"))
-  const previous = { charioxHome: process.env.CHARIOX_HOME, xdg: process.env.XDG_CONFIG_HOME, explicit: process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR }
+test("MP-08/MP-10 VERSION(P01) finds the protocol lease under explicit CHARIOX_HOME", context => {
+  const root = mkdtempSync(join(tmpdir(), "envp01-protocol-home-"))
+  const keys = ["CHARIOX_HOME", "CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR", "XDG_CONFIG_HOME"] as const
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]))
   context.after(() => {
-    for (const [key, value] of [["CHARIOX_HOME", previous.charioxHome], ["XDG_CONFIG_HOME", previous.xdg], ["CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR", previous.explicit]] as const) {
-      if (value === undefined) delete process.env[key]
-      else process.env[key] = value
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key]
+      else process.env[key] = previous[key]
     }
-    rmSync(home, { force: true, recursive: true })
+    rmSync(root, { recursive: true, force: true })
   })
+  process.env.CHARIOX_HOME = root
+  process.env.XDG_CONFIG_HOME = join(root, "other-config")
   delete process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR
-  process.env.CHARIOX_HOME = home
-  process.env.XDG_CONFIG_HOME = join(home, "elsewhere")
-  mkdirSync(join(home, "kernels", "active"), { recursive: true })
-  writeFileSync(join(home, "kernels", "active", "kernel-h.json"), JSON.stringify({
-    schema_version: 1,
-    kernel_id: "kernel-h",
-    machine_id: "machine-h",
-    host: "127.0.0.1",
-    port: 43_118,
-    heartbeat_at_ms: Date.now(),
-  }))
-
-  assert.deepEqual(loadLocalKernelPresences().map((presence) => presence.kernelId), ["kernel-h"])
+  const directory = join(root, "kernels", "active")
+  mkdirSync(directory, { recursive: true })
+  writeFileSync(join(directory, "kernel.json"), JSON.stringify({ schema_version: 1, kernel_id: "old-kernel", machine_id: "machine", host: "127.0.0.1", port: 43121, heartbeat_at_ms: 100000, local_daemon_protocol_version: 435 }))
+  assert.equal(loadLocalKernelPresences(undefined, 100001)[0]?.protocolVersion, 435)
 })

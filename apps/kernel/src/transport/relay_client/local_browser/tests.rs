@@ -92,6 +92,9 @@ impl Kernel {
     fn build(paired_at_start: bool, port: Option<u16>) -> Self {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_credential: None,
+            kernel_id: None,
+            kernel_public_key_thumbprint: None,
             api_url: ORIGIN.into(),
             email: "user@example.test".into(),
             account_id: "account-1".into(),
@@ -596,6 +599,9 @@ fn mp11_authority_tracks_pairing_origin_and_kernel_key() {
     let mut config = DaemonConfig::for_tests();
     assert_eq!(current_authority(&config), None);
     config.cloud_relay = Some(PersistedCloudRelayProfile {
+        kernel_credential: None,
+        kernel_id: None,
+        kernel_public_key_thumbprint: None,
         api_url: "https://cloud.example.test/".into(),
         email: String::new(),
         account_id: "account-1".into(),

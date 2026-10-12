@@ -1,3 +1,4 @@
+import type { CloudClient } from "./cloud-client.js"
 import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { LocalIpcClient } from "./ipc.js"
 import { resolveKernelClientConnection } from "./relay-api.js"
@@ -11,20 +12,36 @@ type KernelClientTarget = {
   isActive(): boolean
 }
 
-async function openWaitingRoomKernelClient(controlClient: LocalIpcClient, target: KernelClientTarget) {
-  // MP-08 / MP-11: resolve through the current authority; never probe a
-  // discovered TCP endpoint before its listener has been authenticated.
+async function openWaitingRoomKernelClient(controlClient: LocalIpcClient, target: KernelClientTarget, cloud?: { client?: CloudClient | undefined; kernelConnected?: (() => boolean) | undefined }) {
+  const issuingClient = "currentClient" in controlClient && typeof controlClient.currentClient === "function"
+    ? controlClient.currentClient() as LocalIpcClient : controlClient
+  // MP-08 / MP-11: discovery is eligibility only; authenticate the selected
+  // listener through the current kernel or the terminal's Cloud authority.
+  const useCloudClient = cloud?.client && !cloud.kernelConnected?.() && await cloud.client.profile()
+  const cloudTargetClient = useCloudClient ? await cloud!.client!.connect(target.kernelRef) : null
   const relayIdentity = createCliRelayIdentityStore().getOrCreate()
-  const connection = await resolveKernelClientConnection(controlClient, { ...target, publicKeyThumbprint: relayIdentity.publicKeyThumbprint })
-  if (!target.isActive()) return null
-  const client = new LocalIpcClient(connection.relayUrl, {
-    relayAuthToken: connection.relayToken,
-    relayIdentity,
-    targetDaemonId: connection.targetDaemonId ?? undefined,
-    targetDaemonAlias: connection.targetDaemonAlias ?? undefined,
+  const connection = cloudTargetClient ? null : await resolveKernelClientConnection(issuingClient, {
+    ...target, publicKeyThumbprint: relayIdentity.publicKeyThumbprint,
   })
-  return { client, label: connection.targetDaemonAlias ?? connection.kernelId ?? target.kernelRef,
-    machineId: connection.machineId, kernelId: connection.kernelId }
+  if (!target.isActive()) { await cloudTargetClient?.close(); return null }
+  const client = cloudTargetClient ?? new LocalIpcClient(connection!.relayUrl, {
+    relayAuthToken: connection!.relayToken, relayIdentity,
+    targetDaemonId: connection!.targetDaemonId ?? undefined,
+    targetDaemonAlias: connection!.targetDaemonAlias ?? undefined,
+  })
+  if (connection?.tokenExpiresAtMs) {
+    const release = issuingClient.retainForRelayRenewal()
+    client.startRelayAuthRenewal(connection.tokenExpiresAtMs, async () => {
+      const fresh = await resolveKernelClientConnection(issuingClient, {
+        kernelRef: connection.kernelId ?? connection.targetDaemonId ?? target.kernelRef,
+        machineRef: connection.machineId ?? target.machineRef, clientId: target.clientId,
+        publicKeyThumbprint: relayIdentity.publicKeyThumbprint,
+      })
+      return { token: fresh.relayToken, expiresAtMs: fresh.tokenExpiresAtMs! }
+    }, release)
+  }
+  return { client, label: connection?.targetDaemonAlias ?? connection?.kernelId ?? target.kernelRef,
+    machineId: connection?.machineId, kernelId: connection?.kernelId }
 }
 
 export async function withWaitingRoomWorkspaceClient<T>(
@@ -48,11 +65,12 @@ export async function browseWaitingRoomKernelWorkspace(
   controlClient: LocalIpcClient,
   target: KernelClientTarget,
   applyInventory: (inventory: WaitingRoomInventory, client: LocalIpcClient) => Promise<void>,
+  getInventory: (client: LocalIpcClient) => Promise<WaitingRoomInventory> = getWaitingRoomInventory,
 ) {
   const connection = await openWaitingRoomKernelClient(controlClient, target)
   if (!connection) return
   try {
-    const inventory = await getWaitingRoomInventory(connection.client)
+    const inventory = await getInventory(connection.client)
     if (!target.isActive()) return
     if (inventory.kernelId !== target.kernelRef || inventory.machineId !== target.machineRef) {
       throw new Error("workspace inventory identity does not match the selected managed machine")
@@ -67,6 +85,9 @@ export async function browseWaitingRoomKernelWorkspace(
 
 export function createWaitingRoomKernelConnectionController(deps: {
   client: MutableLocalIpcClient
+  cloudClient?: CloudClient | undefined
+  kernelConnected?: () => boolean
+  getInventory?: (client: LocalIpcClient) => Promise<WaitingRoomInventory>
   clientId: string
   initialTargetKernelId?: string | null
   homeKernelId(): string | null
@@ -92,7 +113,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
     const sourceMachineId = connectedMachineId
     if (!targetKernelRef || targetKernelRef === "local" || targetKernelRef === currentKernelId) {
       if (connected && targetKernelRef && targetKernelRef !== "local") {
-        const inventory = await getWaitingRoomInventory(deps.client)
+        const inventory = await (deps.getInventory ?? getWaitingRoomInventory)(deps.client)
         if (!isActive()) return false
         connected(inventory)
       }
@@ -104,7 +125,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
       machineRef: machineRef === "local" ? deps.homeMachineId() : machineRef ?? null,
       clientId: deps.clientId,
       isActive,
-    })
+    }, { client: deps.cloudClient, kernelConnected: deps.kernelConnected })
     if (!connection) return false
     const nextClient = connection.client
     if (typeof deps.client.replaceClient !== "function") {
@@ -113,7 +134,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
     }
     let targetInventory: WaitingRoomInventory
     try {
-      targetInventory = await getWaitingRoomInventory(nextClient)
+      targetInventory = await (deps.getInventory ?? getWaitingRoomInventory)(nextClient)
     } catch (error) {
       await nextClient.close()
       throw error

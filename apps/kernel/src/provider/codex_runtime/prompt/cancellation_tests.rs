@@ -151,7 +151,14 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
                     turn_count += 1;
                     json!({"turn": {"id": format!("turn-{}", methods.len())}})
                 }
-                "turn/interrupt" => json!({}),
+                "turn/interrupt" => {
+                    // MP-08 / MP-10: The kernel targets the active managed
+                    // provider turn, preserving its conversation for follow-up.
+                    assert_eq!(request["params"]["threadId"], "thread-original");
+                    assert_eq!(request["params"]["turnId"], "turn-2");
+                    json!({})
+                }
+                "thread/backgroundTerminals/clean" => json!({}),
                 other => panic!("unexpected RPC {other}"),
             };
             socket
@@ -358,7 +365,13 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
         assert_eq!(applied_context, "context before cancellation");
         assert_eq!(
             methods,
-            ["thread/start", "turn/start", "turn/interrupt", "turn/start"]
+            [
+                "thread/start",
+                "turn/start",
+                "turn/interrupt",
+                "thread/backgroundTerminals/clean",
+                "turn/start"
+            ]
         );
         return;
     }
@@ -375,6 +388,7 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
             "thread/start",
             "turn/start",
             "turn/interrupt",
+            "thread/backgroundTerminals/clean",
             "thread/inject_items",
             "turn/start"
         ]

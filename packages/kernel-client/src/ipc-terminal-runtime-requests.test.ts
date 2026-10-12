@@ -2,7 +2,16 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
-import { cancelActivePromptRequest, respondToInteractionRequest } from "./ipc-terminal-runtime-requests.js"
+import { activePromptSteeringMinimumProtocolVersion, respondToInteractionRequest, steerActivePromptRequest } from "./ipc-terminal-runtime-requests.js"
+
+test("MP-08 MP-10 protocol 491 atomically admits steering against a home prompt", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 502)
+  assert.equal(activePromptSteeringMinimumProtocolVersion, 491)
+  assert.deepEqual(steerActivePromptRequest("s", "a", "agent", "home-prompt", "new direction", []), {
+    SteerActivePrompt: { session_id: "s", attachment_id: "a", target_agent_id: "agent",
+      expected_active_prompt_id: "home-prompt", prompt: "new direction", attachments: [] },
+  })
+})
 
 test("protocol 392: a critical approval carries the passkey and an optional remember window", () => {
   assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 502)
@@ -18,11 +27,15 @@ test("protocol 392: a critical approval carries the passkey and an optional reme
   assert.equal("passkey_remember_minutes" in respondToInteractionRequest("s", "i", "approve", null, { passkey: "pk" }).RespondToInteraction, false)
 })
 
-test("MP-08/MP-10 native cancellation carries its prompt fence and preserves legacy callers", () => {
-  assert.deepEqual(cancelActivePromptRequest("s", "a", "agent"), {
+// MP-08 / MP-10 / MP-11: preserve legacy cancellation, pin the new optional field.
+test("MP-08 MP-10 exact cancellation forwards the home prompt with protocol499", async () => {
+  const r = await import("./ipc-terminal-runtime-requests.js")
+  assert.equal(r.exactPromptCancellationMinimumProtocolVersion, 491)
+  assert.equal(r.cancelActivePromptRequest("s", "a", "agent", "").CancelActivePrompt.expected_prompt_id, "")
+  assert.deepEqual(r.cancelActivePromptRequest("s", "a", "agent", "prompt"), {
+    CancelActivePrompt: { session_id: "s", attachment_id: "a", target_agent_id: "agent", expected_prompt_id: "prompt" },
+  })
+  assert.deepEqual(r.cancelActivePromptRequest("s", "a", "agent"), {
     CancelActivePrompt: { session_id: "s", attachment_id: "a", target_agent_id: "agent" },
   })
-  for (const expected of ["prompt-A", ""]) {
-    assert.equal(cancelActivePromptRequest("s", "a", "agent", expected).CancelActivePrompt.expected_prompt_id, expected)
-  }
 })

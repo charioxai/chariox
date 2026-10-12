@@ -1,3 +1,4 @@
+import {linkManagedSliceProviderProfile} from "./lib/managed-slice-provider-profile.mjs"
 import {requireScopedProviderPath,withPrivateDrillRuntime} from "./lib/private-drill-runtime.mjs"
 import { execFile, spawn } from "node:child_process"
 import net from "node:net"
@@ -295,6 +296,8 @@ async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, pro
   })
   let ownedSliceId = null
   try {
+    const providerProfiles = new Map()
+    for (const provider of providers) providerProfiles.set(provider, await linkManagedSliceProviderProfile(client, provider, process.env))
     const name = `native-tui-${process.pid}`
     const created = unwrap(await client.send(createSliceRequest({
       name,
@@ -305,7 +308,8 @@ async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, pro
     ownedSliceId = created.id
     const started = unwrap(await client.send(startSliceRequest(created.id)), "SliceStarted").slice
     for (const provider of providers) {
-      await client.send(importSliceProviderAuthRequest(started.id, provider))
+      const profile = providerProfiles.get(provider)
+      unwrap(await client.send(importSliceProviderAuthRequest(started.id, provider, profile.profile_id)), "SliceProviderAuthImported")
     }
     if (!started.worker_kernel_id) {
       throw new Error(`started managed slice ${started.id} did not discover its worker kernel`)
@@ -435,7 +439,7 @@ async function runDrill(privateRoot) {
     await mkdir(xdgStateHome, { recursive: true })
     await mkdir(xdgDataHome, { recursive: true })
     await mkdir(xdgCacheHome, { recursive: true })
-    if (options.providers.includes("opencode")) {
+    if (options.providers.includes("opencode") && !options.homeManagedSliceLocalDocker) {
       const sourceXdgDataHome = process.env.XDG_DATA_HOME?.trim()
       const sourceOpenCodeDataHome = process.env.OPENCODE_DATA_HOME?.trim()
         || path.join(requireScopedProviderPath(process.env,"XDG_DATA_HOME"), "opencode")

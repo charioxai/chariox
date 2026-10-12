@@ -1,9 +1,10 @@
+import { resolveKernelClientConnection } from "./relay-api.js"
 import assert from "node:assert/strict"
 import test from "node:test"
 
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client/kernel-types"
 
-import { issueKernelCloudRelayClientToken, joinKernelTerminalPairingLink, logoutCloudRelay, resolveKernelClientConnection } from "./relay-api.js"
+import { issueKernelCloudRelayClientToken, joinKernelTerminalPairingLink, pollCloudRelayLogin } from "./relay-api.js"
 import type { LocalIpcClient } from "./ipc.js"
 
 function fakeClient(send: (request: unknown) => Promise<unknown>): LocalIpcClient {
@@ -161,18 +162,23 @@ test("alias-scoped and ambiguous client tokens preserve the requested alias", as
   }
 })
 
-test("MP-08 Cloud logout accepts the kernel's unit-variant acknowledgement", async () => {
-  const requests: unknown[] = []
-  const client = {
-    send: async (request: unknown) => {
-      requests.push(request)
-      return "CloudRelayLoggedOut"
-    },
-  } as unknown as LocalIpcClient
+test("a second terminal obtains public enrollment status directly from its attached kernel", async () => {
+  const { getKernelCloudRelayProfile, connectKernelCloudRelay } = await import("./relay-api.js")
+  const privateResponse = tokenResponse().CloudRelayClientTokenIssued.profile
+  const profile = {...privateResponse, kernel_id: "kernel-a", kernel_enrolled: true, machine_credential: "synthetic-machine", cloud_session_token: "synthetic-session", kernel_credential: "synthetic-kernel"}
+  const client = fakeClient(async request => "CloudRelayStatus" in (request as object) ? {CloudRelayStatus: {profile}} : {CloudRelayConnected: {profile, status: {configured: true, connected: true}}})
+  const publicProfile = await getKernelCloudRelayProfile(client)
+  assert.equal(publicProfile?.kernelId, "kernel-a")
+  assert.ok(!JSON.stringify(publicProfile).includes("synthetic"))
+  const connected = await connectKernelCloudRelay(client)
+  assert.equal(connected.profile.kernelEnrolled, true)
+  assert.ok(!("relayToken" in connected))
+})
 
-  await logoutCloudRelay(client)
-
-  assert.equal(requests.length, 1)
-  const unexpected = { send: async () => "SomethingElse" } as unknown as LocalIpcClient
-  await assert.rejects(logoutCloudRelay(unexpected), /expected CloudRelayLoggedOut/)
+test("device denial survives the kernel-to-CLI poll projection without a profile", async () => {
+  const client = fakeClient(async (request) => {
+    assert.deepEqual(request, { PollCloudRelayLogin: { api_url: "https://cloud.example.test", device_code: "synthetic-device-code", supports_access_denied: true } })
+    return { CloudRelayLoginPolled: { result: { status: "access_denied", interval_seconds: null, expires_at: null, profile: null } } }
+  })
+  assert.deepEqual(await pollCloudRelayLogin(client, "https://cloud.example.test", "synthetic-device-code"), { status: "access_denied" })
 })

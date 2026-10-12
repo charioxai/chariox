@@ -1,4 +1,6 @@
-import type { RuntimeSession, TerminalOutputRecord } from "../cli-types.js"
+import type { CodexPromptSettlement } from "./codex-prompt-settlement.js"
+import { traceCodexLifecycle } from "./codex-lifecycle-trace.js"
+import type { AgentRuntimeActivity, TerminalOutputRecord } from "../cli-types.js"
 import { isProviderIdleStatus } from "@chariox/kernel-client/provider-status"
 import {
   terminalRecordTranscriptProjection,
@@ -6,46 +8,53 @@ import {
 } from "@chariox/kernel-client/terminal-record-transcript"
 
 type ProjectedItem = {
-  key: string
   turnId: string
   itemId: string
   kind: "agentMessage" | "reasoning"
   text: string
-  completedAtMs: number
-  promptId: string | null
-  record: Pick<TerminalOutputRecord, "timestamp_ms" | "kind" | "merge_key" | "source_attachment_id">
 }
 
 export function createCodexKernelOutputProjection(options: {
   agentId: string
   broadcast: (message: unknown) => void
   debug: (label: string, payload: unknown) => void
-  resolveSettledPrompts?: (promptIds: string[]) => Promise<Map<string, number>>
+  resolveSettledPrompts?: (promptIds: string[]) => Promise<Map<string, CodexPromptSettlement>>
   nowMs?: () => number
+  onTurnMapped?: (threadId: string, turnId: string, promptId: string) => void
 }) {
   const nowMs = options.nowMs ?? Date.now
   let projectedThreadId: string | null = null
-  let nextProjectedTurnId = 1
+  let nextProjectedItemId = 1
   const projectedItems = new Map<string, ProjectedItem>()
-  let projectedUserTurn: { turnId: string; promptId: string | null } | null = null
+  const projectedTurns = new Map<string, { id: string, startedAtMs: number, completed: boolean }>()
+  let activePromptId: string | null = null
 
   const recordTimestampMs = (record: TerminalOutputRecord): number =>
     Number.isFinite(record.timestamp_ms) ? record.timestamp_ms : nowMs()
 
-  const turnPayload = (turnId: string, status: "inProgress" | "completed", timestampMs: number) => ({
+  const turnPayload = (turnId: string, status: "inProgress" | "completed" | "interrupted" | "failed", timestampMs: number, completedAtMs?: number) => ({
     id: turnId,
     items: [],
     itemsView: "notLoaded",
     status,
     error: null,
     startedAt: Math.floor(timestampMs / 1000),
-    completedAt: status === "completed" ? Math.floor(timestampMs / 1000) : null,
+    completedAt: completedAtMs === undefined ? null : Math.floor(completedAtMs / 1000),
     durationMs: null,
   })
 
-  const startProjectedTurn = (timestampMs: number) => {
+  const startProjectedTurn = (timestampMs: number, promptId?: string | null) => {
     if (!projectedThreadId) return null
-    const turnId = `chariox-projected-turn-${nextProjectedTurnId++}`
+    // MP-08 / MP-10 / MP-11: Native provider output can omit prompt_id.
+    // It belongs to the admitted active home prompt, never an anonymous turn.
+    const key = promptId ?? activePromptId
+    if (!key) return null
+    const existing = projectedTurns.get(key)
+    if (existing) return existing.completed ? null : existing.id
+    const turnId = `chariox-native-${key}`
+    projectedTurns.set(key, { id: turnId, startedAtMs: timestampMs, completed: false })
+    activePromptId = key
+    options.onTurnMapped?.(projectedThreadId, turnId, key)
     options.broadcast({
       jsonrpc: "2.0",
       method: "thread/status/changed",
@@ -65,37 +74,65 @@ export function createCodexKernelOutputProjection(options: {
     return turnId
   }
 
-  const completeProjectedItem = (projection: ProjectedItem) => {
-    if (!projectedThreadId) return
-    options.broadcast({
-      jsonrpc: "2.0",
-      method: "item/completed",
-      params: {
-        item: projection.kind === "reasoning"
-          ? { type: "reasoning", id: projection.itemId, summary: [], content: [] }
-          : { type: "agentMessage", id: projection.itemId, text: projection.text, phase: "final_answer", memoryCitation: null },
-        threadId: projectedThreadId,
-        turnId: projection.turnId,
-        completedAtMs: projection.completedAtMs,
-      },
-    })
-    options.broadcast({
-      jsonrpc: "2.0",
-      method: "thread/status/changed",
-      params: {
-        threadId: projectedThreadId,
-        status: { type: "idle" },
-      },
-    })
-    options.broadcast({
-      jsonrpc: "2.0",
-      method: "turn/completed",
-      params: {
-        threadId: projectedThreadId,
-        turn: turnPayload(projection.turnId, "completed", projection.completedAtMs),
-      },
-    })
-    projectedItems.delete(projection.key)
+  // MP-08 / MP-10: Output silence says nothing about tool/approval waits.
+  // Only the kernel's exact prompt settlement can complete its display turn.
+  const settlePrompt = (completion: NonNullable<AgentRuntimeActivity["last_completed_turn"]>) => {
+    traceCodexLifecycle("activity", { promptId: completion?.prompt_id,
+      activePromptId, knownPromptIds: [...projectedTurns.keys()],
+      settlement: completion?.settlement_status })
+    if (!completion || completion.agent_id !== options.agentId || !projectedThreadId) return
+    const turn = projectedTurns.get(completion.prompt_id)
+    if (!turn || turn.completed) return
+    for (const [key, item] of projectedItems) {
+      if (item.turnId !== turn.id) continue
+      options.broadcast({
+        jsonrpc: "2.0", method: "item/completed",
+        params: {
+          item: item.kind === "reasoning"
+            ? { type: "reasoning", id: item.itemId, summary: [], content: [] }
+            : { type: "agentMessage", id: item.itemId, text: item.text, phase: "final_answer", memoryCitation: null },
+          threadId: projectedThreadId, turnId: turn.id, completedAtMs: completion.completed_at_ms,
+        },
+      })
+      projectedItems.delete(key)
+    }
+    traceCodexLifecycle("turn_completed", { promptId: completion.prompt_id, turnId: turn.id, threadId: projectedThreadId })
+    turn.completed = true
+    if (activePromptId === completion.prompt_id) {
+      activePromptId = null
+      options.broadcast({ jsonrpc: "2.0", method: "thread/status/changed",
+        params: { threadId: projectedThreadId, status: { type: "idle" } } })
+    }
+    const status = completion.settlement_status === "cancelled" ? "interrupted" : completion.settlement_status
+    options.broadcast({ jsonrpc: "2.0", method: "turn/completed", params: {
+      threadId: projectedThreadId, turn: turnPayload(turn.id, status, turn.startedAtMs, completion.completed_at_ms),
+    } })
+    // Retain bounded tombstones so delayed records cannot reopen settled turns.
+    if (projectedTurns.size > 64) {
+      for (const [key, value] of projectedTurns) {
+        if (projectedTurns.size <= 64) break
+        if (value.completed) projectedTurns.delete(key)
+      }
+    }
+  }
+
+  const projectAgentActivity = async (activity: AgentRuntimeActivity | undefined) => {
+    const completion = activity?.last_completed_turn
+    if (completion) settlePrompt(completion)
+    // MP-08/MP-11: a pump can miss more than one settlement. Recover only
+    // known predecessor prompts; the current active prompt stays snapshot-owned.
+    const predecessors = [...projectedTurns].filter(([id, turn]) =>
+      !turn.completed && id !== activePromptId && id !== completion?.prompt_id).map(([id]) => id)
+    if (!predecessors.length || !options.resolveSettledPrompts) return
+    const threadId = projectedThreadId
+    const settled = await options.resolveSettledPrompts(predecessors)
+    if (projectedThreadId !== threadId) return
+    for (const [promptId, value] of settled) {
+      if (!predecessors.includes(promptId)) continue
+      settlePrompt({ agent_id: options.agentId, prompt_id: promptId,
+        completed_at_ms: value.completedAtMs, settlement_status: value.status,
+        turn_id: promptId, provider_run_id: "", changed_paths: [], undo_available: false })
+    }
   }
 
   const project = (records: TerminalOutputRecord[]) => {
@@ -136,12 +173,11 @@ export function createCodexKernelOutputProjection(options: {
       const timestampMs = recordTimestampMs(record)
 
       if (recordProjection.transcriptRole === "user") {
-        const turnId = startProjectedTurn(timestampMs)
+        const turnId = recordProjection.steeringPrompt
+          ? (activePromptId === null ? null : projectedTurns.get(activePromptId)?.id)
+          : startProjectedTurn(timestampMs, record.prompt_id)
         if (!turnId) continue
-        // Escape can arrive before the first assistant delta, while the TUI
-        // still identifies the projected user echo as its executing turn.
-        projectedUserTurn = { turnId, promptId: record.prompt_id ?? null }
-        const itemId = `chariox-projected-user-${timestampMs}-${nextProjectedTurnId}`
+        const itemId = `chariox-projected-user-${timestampMs}-${nextProjectedItemId++}`
         options.broadcast({
           jsonrpc: "2.0",
           method: "item/started",
@@ -181,20 +217,13 @@ export function createCodexKernelOutputProjection(options: {
         })
         continue
       }
-      const itemKey = `${record.prompt_id ?? "unscoped"}:${itemKind}:${recordProjection.mergeKey ?? "default"}`
+      const itemKey = `${record.prompt_id ?? activePromptId ?? ""}:${itemKind}:${recordProjection.mergeKey ?? "default"}`
       let itemProjection = projectedItems.get(itemKey)
       if (!itemProjection) {
-        const turnId = startProjectedTurn(timestampMs)
+        const turnId = startProjectedTurn(timestampMs, record.prompt_id)
         if (!turnId) continue
-        const itemId = `chariox-projected-${itemKind}-${timestampMs}-${nextProjectedTurnId}`
-        itemProjection = {
-          key: itemKey, turnId, itemId, kind: itemKind, text: "", completedAtMs: timestampMs, promptId: record.prompt_id ?? null,
-          record: {
-            timestamp_ms: timestampMs, kind: record.kind,
-            ...(record.merge_key !== undefined ? { merge_key: record.merge_key } : {}),
-            ...(record.source_attachment_id !== undefined ? { source_attachment_id: record.source_attachment_id } : {}),
-          },
-        }
+        const itemId = `chariox-projected-${itemKind}-${timestampMs}-${nextProjectedItemId++}`
+        itemProjection = { turnId, itemId, kind: itemKind, text: "" }
         projectedItems.set(itemKey, itemProjection)
         options.broadcast({
           jsonrpc: "2.0",
@@ -210,7 +239,6 @@ export function createCodexKernelOutputProjection(options: {
         })
       }
       itemProjection.text += recordProjection.transcriptText
-      itemProjection.completedAtMs = Math.max(itemProjection.completedAtMs, timestampMs)
       options.broadcast({
         jsonrpc: "2.0",
         method: itemKind === "reasoning" ? "item/reasoning/textDelta" : "item/agentMessage/delta",
@@ -221,44 +249,39 @@ export function createCodexKernelOutputProjection(options: {
           delta: recordProjection.transcriptText,
         },
       })
-      if (record.kind === "provider_error") completeProjectedItem(itemProjection)
       options.debug("projected_output_to_tui", { agentId: options.agentId, kind: record.kind, byteLength: record.bytes.length })
+    }
+  }
+
+  // MP-08 / MP-10: An approval waits inside an active home turn. The official
+  // TUI defers its overlay while an assistant item is streaming, so finish
+  // only this prompt's preamble items before projecting the blocking request.
+  const finishPromptItemsForInteraction = (promptId: string) => {
+    const turn = projectedTurns.get(promptId)
+    if (!projectedThreadId || !turn || turn.completed || activePromptId !== promptId) return
+    for (const [key, item] of projectedItems) {
+      if (item.turnId !== turn.id) continue
+      options.broadcast({ jsonrpc: "2.0", method: "item/completed", params: {
+        threadId: projectedThreadId, turnId: turn.id, completedAtMs: nowMs(),
+        item: item.kind === "reasoning"
+          ? { type: "reasoning", id: item.itemId, summary: [], content: [] }
+          : { type: "agentMessage", id: item.itemId, text: item.text, phase: "commentary", memoryCitation: null },
+      } })
+      projectedItems.delete(key)
     }
   }
 
   return {
     project,
-    promptIdForTurn: (turnId: string) => projectedUserTurn?.turnId === turnId
-      ? projectedUserTurn.promptId
-      : [...projectedItems.values()].find((item) => item.turnId === turnId)?.promptId ?? null,
-    recordForTurn: (turnId: string) => [...projectedItems.values()].find((item) => item.turnId === turnId)?.record ?? null,
-    projectSessionState: async (session: RuntimeSession) => {
-      const activity = session.agent_activity?.[options.agentId]
-      const completed = activity?.last_completed_turn
-      // The snapshot is read before draining output. Its completion timestamp
-      // fences unscoped legacy records if another turn starts during the drain.
-      for (const item of projectedItems.values()) {
-        if (!completed || (item.promptId ? item.promptId !== completed.prompt_id : item.completedAtMs > completed.completed_at_ms)) continue
-        item.completedAtMs = completed.completed_at_ms
-        completeProjectedItem(item)
-      }
-      // last_completed_turn is a latest-value projection, not a completion
-      // log. Recover older outstanding IDs from kernel-owned durable history.
-      // Exact IDs, rather than timestamps or idle state, fence newer turns.
-      const promptState = session.prompt_states?.[options.agentId]
-      const liveIds = new Set([promptState?.active_prompt?.id, ...(promptState?.queued_prompts ?? []).map((prompt) => prompt.id)])
-      const unresolvedIds = [...new Set([...projectedItems.values()].flatMap((item) =>
-        item.promptId && !liveIds.has(item.promptId) ? [item.promptId] : []))]
-      if (!unresolvedIds.length || !options.resolveSettledPrompts) return
-      const settlements = await options.resolveSettledPrompts(unresolvedIds)
-      for (const item of projectedItems.values()) {
-        const completedAt = item.promptId ? settlements.get(item.promptId) : undefined
-        if (completedAt === undefined) continue
-        item.completedAtMs = completedAt
-        completeProjectedItem(item)
-      }
-    },
+    finishPromptItemsForInteraction,
+    projectAgentActivity,
+    startPrompt: (promptId: string) => startProjectedTurn(nowMs(), promptId),
     setThreadId: (threadId: string) => {
+      if (projectedThreadId !== threadId) {
+        projectedItems.clear()
+        projectedTurns.clear()
+        activePromptId = null
+      }
       projectedThreadId = threadId
     },
   }

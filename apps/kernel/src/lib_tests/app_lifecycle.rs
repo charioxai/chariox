@@ -108,6 +108,7 @@ fn failed_kernel_prompt_abort_finalizes_cancelling_prompt() {
     let result = app.finish_kernel_prompt_abort(
         session.id().to_string(),
         run.id().to_string(),
+        cancellation.prompt.id().to_string(),
         Err(DaemonError::LocalTransport {
             operation: "abort test",
             message: "abort dispatch failed".to_string(),

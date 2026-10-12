@@ -219,6 +219,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .optional_agent(request.agent_id.as_deref())
         }
+        LocalDaemonRequest::PreflightProviderAccountPortability(_) => {
+            LocalRequestMetadata::new("provider_account.portability.preflight", Interactive)
+        }
         LocalDaemonRequest::ListManagedEnvironmentCatalog(_) => {
             LocalRequestMetadata::new("managed_environment.catalog", Normal)
         }
@@ -313,6 +316,12 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 metadata = metadata.agent(agent_id);
             }
             metadata
+        }
+        LocalDaemonRequest::SteerActivePrompt(request) => {
+            LocalRequestMetadata::new("prompt.active.steer", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+                .agent(&request.target_agent_id)
         }
         LocalDaemonRequest::SteerQueuedPrompt(request) => {
             LocalRequestMetadata::new("prompt.queued.steer", Interactive)
@@ -544,6 +553,10 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .workflow_run(&request.workflow_run_ref)
         }
+        LocalDaemonRequest::ControlRoomWorkflowRuns(request) => {
+            LocalRequestMetadata::new("room_workflow_runs.control", Normal)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::PauseWorkflowRun(request) => {
             LocalRequestMetadata::new("workflow_run.pause", Normal)
                 .session(&request.session_id)
@@ -603,6 +616,43 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RevokeAppFileGrants(_) => "app.file.revoke",
         LocalDaemonRequest::AcceptAppHostAction(_) => "app.host.accept",
         LocalDaemonRequest::CreateSession(_) => "session.create",
+        LocalDaemonRequest::DetectProjectEnvironment(_) => {
+            "project.environment.DetectProjectEnvironment"
+        }
+        LocalDaemonRequest::PreviewEnvironmentDiff(_) => {
+            "project.environment.PreviewEnvironmentDiff"
+        }
+        LocalDaemonRequest::SaveProjectEnvironmentRevision(_) => {
+            "project.environment.SaveProjectEnvironmentRevision"
+        }
+        LocalDaemonRequest::PlanProjectEnvironment(_) => {
+            "project.environment.PlanProjectEnvironment"
+        }
+        LocalDaemonRequest::ApplyProjectEnvironment(_) => {
+            "project.environment.ApplyProjectEnvironment"
+        }
+        LocalDaemonRequest::CheckProjectEnvironment(_) => {
+            "project.environment.CheckProjectEnvironment"
+        }
+        LocalDaemonRequest::GetEnvironmentOperation(_) => {
+            "project.environment.GetEnvironmentOperation"
+        }
+        LocalDaemonRequest::CancelEnvironmentOperation(_) => {
+            "project.environment.CancelEnvironmentOperation"
+        }
+        LocalDaemonRequest::RetryEnvironmentOperation(_) => {
+            "project.environment.RetryEnvironmentOperation"
+        }
+        LocalDaemonRequest::ExportProjectEnvironment(_) => {
+            "project.environment.ExportProjectEnvironment"
+        }
+        LocalDaemonRequest::PreviewEnvironmentImport(_) => {
+            "project.environment.PreviewEnvironmentImport"
+        }
+        LocalDaemonRequest::CommitEnvironmentImport(_) => {
+            "project.environment.CommitEnvironmentImport"
+        }
+        LocalDaemonRequest::GetProjectEnvironment(_) => "project.environment.get",
         LocalDaemonRequest::ListProjects(_) => "project.list",
         LocalDaemonRequest::GetProjectEnvironmentManifest(_) => "project.environment_manifest.get",
         LocalDaemonRequest::AdjustProjectEnvironment(_) => "project.environment.adjust",
@@ -879,6 +929,12 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SyncRemoteExtensionManifest(_) => "agent.extension.manifest_sync",
         LocalDaemonRequest::ListHomeExtensionAudit(_) => "agent.extension.audit",
         LocalDaemonRequest::ListAgents(_) => "agent.list",
+        LocalDaemonRequest::RegisterWorkflowNotificationSource(_) => {
+            "workflow.notifications.register"
+        }
+        LocalDaemonRequest::AttachWorkflowNotification(_) => "workflow.notifications.attach",
+        LocalDaemonRequest::DetachWorkflowNotification(_) => "workflow.notifications.detach",
+        LocalDaemonRequest::ListWorkflowNotifications(_) => "workflow.notifications.list",
         LocalDaemonRequest::CreateWorkflow(_) => "workflow.create",
         LocalDaemonRequest::CreateAgentWorkflow(_) => "workflow.create_from_agent",
         LocalDaemonRequest::ValidateWorkflowCode(_) => "workflow_code.validate",
@@ -990,6 +1046,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AckWorkflowTurn(_) => "workflow_turn.ack",
         LocalDaemonRequest::ValidateWorkflowHandoff(_) => "workflow_handoff.validate",
         LocalDaemonRequest::CancelWorkflowRun(_) => "workflow_run.cancel",
+        LocalDaemonRequest::ControlRoomWorkflowRuns(_) => "room_workflow_runs.control",
         LocalDaemonRequest::PauseWorkflowRun(_) => "workflow_run.pause",
         LocalDaemonRequest::ResumeWorkflowRun(_) => "workflow_run.resume",
         LocalDaemonRequest::ListWorkflowPromptQueues(_) => "workflow_prompt_queue.list",
@@ -1015,6 +1072,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::SubmitPrompts(_)
         | LocalDaemonRequest::CancelActivePrompt(_)
         | LocalDaemonRequest::SteerQueuedPrompt(_)
+        | LocalDaemonRequest::SteerActivePrompt(_)
         | LocalDaemonRequest::CancelQueuedPrompt(_)
         | LocalDaemonRequest::UpdateQueuedPrompt(_)
         | LocalDaemonRequest::ResizeTerminal(_)
@@ -1028,6 +1086,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::GetDaemonHealth(_)
         | LocalDaemonRequest::GetKernelResourceTelemetry(_)
         | LocalDaemonRequest::ExportDebugBundle(_)
+        | LocalDaemonRequest::PreflightProviderAccountPortability(_)
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
         | LocalDaemonRequest::CreateDisposableWorker(_)
         | LocalDaemonRequest::GetDisposableWorker(_)
