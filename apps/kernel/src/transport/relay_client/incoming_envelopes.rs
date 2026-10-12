@@ -544,6 +544,30 @@ fn test_peer_response_kind(
 mod tests {
     use super::*;
 
+    // MP-08/MP-10/MP-11: hosted soaks lost every browser subscription when a
+    // response finished after a Cloud token renewal. Rotation is renewed in-band.
+    #[test]
+    fn token_rotation_after_response_keeps_the_socket_for_in_band_renewal() {
+        let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let reconnect_gate = RelayReconnectGate::default();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_token = Some("renewed-token".to_string());
+
+        let decision = enqueue_dynamic_relay_reconnect_if_changed(
+            &outgoing_tx,
+            &reconnect_gate,
+            "wss://relay.example.test",
+            "previous-token",
+            &config,
+        )
+        .expect("renewal decision should succeed");
+
+        assert_eq!(decision, RelayReconnectDecision::Unchanged);
+        assert!(priority_rx.try_recv().is_err());
+        assert!(reconnect_gate.begin_daemon_request());
+    }
+
     #[test]
     fn token_rollover_after_peer_response_preserves_live_socket_and_admission() {
         // MP-08/MP-10/MP-11: a peer reply may finish with a token snapshot
