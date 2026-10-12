@@ -1175,6 +1175,12 @@ fn opencode_backend_catalog(catalog: OpenCodeProviderCatalog) -> OpenCodeProvide
         .filter(|provider| !provider.models.is_empty())
         .map(|mut provider| {
             provider.remote_machine_aliases.clear();
+            // MP-08 / MP-10 / MP-11: discovery keeps backend identities, but
+            // runtime model selectors only use connected backends. Shipping
+            // every unavailable model fills the shared viewer uplink.
+            if !source_connected.contains(&provider.id) {
+                provider.models.clear();
+            }
             provider
         })
         .collect::<Vec<_>>();
@@ -1723,6 +1729,62 @@ exit 2
         assert_eq!(codex.remote_machine_aliases, vec!["builder".to_string()]);
         assert_eq!(opencode.name, "OpenCode");
         assert_eq!(opencode.remote_machine_aliases, vec!["builder".to_string()]);
+    }
+
+    #[test]
+    fn opencode_backend_catalog_does_not_ship_unavailable_model_payloads() {
+        let model = OpenCodeProviderModel {
+            id: "model".into(),
+            name: "Model".into(),
+            status: "active".into(),
+            limit: None,
+            variants: BTreeMap::from([("high".into(), json!({"config": "x".repeat(1024 * 1024)}))]),
+        };
+        let catalog = opencode_backend_catalog(OpenCodeProviderCatalog {
+            all: vec![
+                OpenCodeProviderInfo {
+                    id: "unconfigured".into(),
+                    name: "Unavailable".into(),
+                    remote_machine_aliases: vec![],
+                    models: BTreeMap::from([("model".into(), model.clone())]),
+                },
+                OpenCodeProviderInfo {
+                    id: "opencode-go".into(),
+                    name: "Go".into(),
+                    remote_machine_aliases: vec![],
+                    models: BTreeMap::from([("model".into(), model)]),
+                },
+            ],
+            default: BTreeMap::from([
+                ("unconfigured".into(), "model".into()),
+                ("opencode-go".into(), "model".into()),
+            ]),
+            connected: vec!["opencode-go".into()],
+        });
+        // MP-08 / MP-10 / MP-11: keep discovery names, but only usable models
+        // belong on the runtime catalogue transport. Connected models are exact.
+        assert_eq!(catalog.all.len(), 2);
+        assert!(catalog
+            .all
+            .iter()
+            .find(|p| p.id == "unconfigured")
+            .unwrap()
+            .models
+            .is_empty());
+        assert!(!catalog.default.contains_key("unconfigured"));
+        assert_eq!(
+            catalog
+                .all
+                .iter()
+                .find(|p| p.id == "opencode-go")
+                .unwrap()
+                .models["model"]
+                .variants["high"]["config"]
+                .as_str()
+                .unwrap()
+                .len(),
+            1024 * 1024
+        );
     }
 
     #[test]
