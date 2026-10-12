@@ -270,6 +270,7 @@ test("provider selection controller reports provider update failures", async () 
 
 function createHarness(options: {
   attached?: boolean
+  agents?: RuntimeSession["agents"]
   currentSelection?: { provider: string; accountProfile?: string; model: string; effort: string }
   providerRun?: RuntimeProviderRun | null
   preferences?: CharioxPreferences
@@ -332,7 +333,7 @@ function createHarness(options: {
     isAttached: () => options.attached ?? false,
     focusedAgentId: () => "agent-1",
     providerRunState: () => providerRun,
-    sessionState: () => ({ id: "session-1" }) as RuntimeSession,
+    sessionState: () => ({ id: "session-1", agents: options.agents ?? [] }) as RuntimeSession,
     updateAgentProfile: async (sessionId, agentId, profile) => {
       profileUpdates.push({ sessionId, agentId, profile })
       if (options.updateAgentProfile) {
@@ -380,3 +381,16 @@ function createHarness(options: {
     warnings: () => warnings,
   }
 }
+
+test("MP-08 / MP-11 account recovery updates rejected agent while another is focused", async () => {
+  const h = createHarness({attached: true, currentSelection: {provider: "opencode", model: "opencode/gpt-5.4", effort: "medium"},
+    agents: [{id: "agent-b", provider: "codex", model: "codex/gpt-5.4", effort: "high", account_profile: "unsigned"}] as RuntimeSession["agents"],
+    providerAccounts: [{provider: "codex", profile_id: "signed", label: "Signed", auth_state: "authenticated", is_default: false}] as ProviderAccountProfile[]})
+  await h.controller.applyAccountSelection("signed", {sessionId: "session-1", agentId: "agent-b"})
+  assert.equal(h.profileUpdates().at(-1)?.agentId, "agent-b")
+  assert.equal(h.profileUpdates().at(-1)?.profile.provider, "codex")
+  assert.equal(h.reconciledStates().length, 0)
+  assert.equal(h.providerRunCleared(), false)
+  await h.controller.applyAccountSelection("signed", {sessionId: "different", agentId: "agent-b"})
+  assert.equal(h.profileUpdates().length, 1)
+})

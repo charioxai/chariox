@@ -43,23 +43,7 @@ export type TerminalPairingLinkView = {
   expires_at_ms: number
 }
 
-type KernelCloudRelayProfile = {
-  api_url: string
-  email: string
-  account_id: string
-  user_id: string
-  account_slug: string
-  realm_id: string
-  relay_url: string
-  issuer_id: string
-  client_id?: string | null
-  client_alias?: string | null
-  machine_id?: string | null
-  machine_alias?: string | null
-  kernel_id?: string | null
-  kernel_enrolled?: boolean
-  token_expires_at_ms?: number | null
-}
+type KernelCloudRelayProfile = import("@chariox/kernel-client").CloudRelayProfile
 
 type KernelCloudRelayLoginStart = {
   api_url: string
@@ -71,7 +55,7 @@ type KernelCloudRelayLoginStart = {
 }
 
 type KernelCloudRelayLoginPoll = {
-  status: "authorization_pending" | "expired_token" | "approved"
+  status: "authorization_pending" | "expired_token" | "access_denied" | "approved"
   interval_seconds?: number | null
   expires_at?: string | null
   profile?: KernelCloudRelayProfile | null
@@ -139,7 +123,7 @@ export async function pollCloudRelayLogin(
   apiUrl: string,
   deviceCode: string,
 ) {
-  const response = await client.send<Record<string, unknown>>(pollCloudRelayLoginRequest(apiUrl, deviceCode))
+  const response = await client.send<Record<string, unknown>>(pollCloudRelayLoginRequest(apiUrl, deviceCode, true))
   const payload = expectVariant<{ result: KernelCloudRelayLoginPoll }>(response, "CloudRelayLoginPolled").result
   if (payload.status === "authorization_pending") {
     return {
@@ -150,6 +134,9 @@ export async function pollCloudRelayLogin(
   }
   if (payload.status === "expired_token") {
     return { status: "expired_token" as const }
+  }
+  if (payload.status === "access_denied") {
+    return { status: "access_denied" as const }
   }
   if (!payload.profile) {
     throw new Error("cloud device login approval response was incomplete")

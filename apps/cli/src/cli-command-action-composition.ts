@@ -13,6 +13,7 @@ import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
 import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
+import type { ProviderLoginLinkOptions } from "./provider-login-link.js"
 import { formatAgentLabel } from "./agent-label.js"
 import { grantAgentApp, revokeAgentApp } from "./app-binding-api.js"
 import {
@@ -228,6 +229,8 @@ export type CliCommandActionCompositionDeps = {
   flashFooter: AnyFn
   appendNotice: AnyFn
   readSecret?: AnyFn
+  showProviderLoginLink?: (url: string, options?: ProviderLoginLinkOptions) => Promise<boolean | void>
+  providerLoginInteractions?: { track: (login: { login_id: string; provider: string; account_profile: string }) => void }
   appendCloudNotice: AnyFn
   formatError: AnyFn
   attachBinding: AnyFn
@@ -566,6 +569,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     sendProviderLoginInput: (loginId, dataBase64) => sendProviderLoginInput(client, loginId, dataBase64),
     cancelProviderLogin: (loginId) => cancelProviderLogin(client, loginId),
     ...(readSecret ? { readSecret } : {}),
+    ...(deps.showProviderLoginLink ? { showProviderLoginLink: deps.showProviderLoginLink } : {}),
+    ...(deps.providerLoginInteractions ? { trackProviderLogin: deps.providerLoginInteractions.track } : {}),
     storeProviderSetupToken: (profile, value, replace) => storeProviderSetupToken(client, profile, value, replace, {
       ...(isAttached() ? { sessionId: sessionState().id, agentId: focusedAgentId() } : {}),
     }),
@@ -593,6 +598,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       saveProfile: async profile => { await saveRelayCloudProfile(profile); setPreferencesState((current: any) => mergeRelayCloudProfile(current, profile)) },
       refresh: refreshWaitingRoomData,
       openUrl: openExternalUrl,
+      // MP-08 / MP-11: loopback is owner-authenticated; over relay only the session owner's own terminal reads kernel status.
+      ownsKernel: profile => !client.isRelayTransport() || Boolean(profile?.userId && isAttached() && sessionState().owner_user_id === profile.userId),
     }) } : {}),
     getCloudRelayProfile: async () => deps.kernelConnected?.() === false
       ? await deps.cloudClient?.profile() ?? null

@@ -12,7 +12,6 @@ use crate::runtime::cloud_api_client::{
     issue_cloud_terminal_client_token, CloudTerminalClientOptions,
 };
 use crate::runtime::cloud_relay_connection_executor::require_cloud_relay_token_key_binding;
-use crate::runtime::cloud_relay_profile_store::clear_cloud_profile_if_stale;
 use crate::runtime::invite_tokens::{
     decode_pairing_invite_token, encode_pairing_invite_token, encode_terminal_pairing_link,
     PairingInviteToken,
@@ -170,7 +169,7 @@ pub(crate) async fn execute_create_pairing_invite_request(
 }
 
 pub(crate) async fn execute_create_terminal_pairing_link_request(
-    runtime_state: &KernelRuntimeState,
+    _runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: CreateTerminalPairingLinkRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -202,7 +201,8 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
         profile.relay_url == relay_url
             && (profile.cloud_session_token.is_some() || profile.machine_credential.is_some())
     }) {
-        match issue_cloud_terminal_client_token(
+        // A refused receiving terminal grant does not revoke the issuer.
+        let (qualified_id, issued) = issue_cloud_terminal_client_token(
             &profile,
             &terminal_id,
             &target_daemon_id,
@@ -213,17 +213,9 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
                 ..CloudTerminalClientOptions::default()
             },
         )
-        .await
-        {
-            Ok((qualified_id, issued)) => {
-                terminal_id = qualified_id;
-                issued.token
-            }
-            Err(error) => {
-                clear_cloud_profile_if_stale(runtime_state, &error).await?;
-                return Err(error);
-            }
-        }
+        .await?;
+        terminal_id = qualified_id;
+        issued.token
     } else {
         super::self_host_terminal_grants::pairing_transport_token(
             config
@@ -353,7 +345,7 @@ pub(crate) async fn execute_join_pairing_invite_request(
 }
 
 pub(crate) async fn execute_join_terminal_pairing_link_request(
-    runtime_state: &KernelRuntimeState,
+    _runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: JoinTerminalPairingLinkRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -487,7 +479,7 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
                 issued
             }
             Err(error) => {
-                clear_cloud_profile_if_stale(runtime_state, &error).await?;
+                // A refused receiving terminal grant does not revoke the issuer.
                 return Err(error);
             }
         };

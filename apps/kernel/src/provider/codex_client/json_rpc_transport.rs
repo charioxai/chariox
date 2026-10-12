@@ -89,6 +89,13 @@ impl CodexClient {
         socket
             .send(Message::Text(payload.to_string().into()))
             .map_err(|error| self.protocol_error("codex_write", error.to_string()))?;
+        if method == "turn/interrupt" {
+            crate::logging::debug_with_fields(
+                "daemon.provider.codex",
+                "codex turn interrupt sent trace",
+                json!({"provider_run_id":self.provider_run_id,"turn_id":payload["params"]["turnId"],"request_id":request_id}),
+            );
+        }
 
         let deadline = Instant::now() + timeout;
         loop {
@@ -107,7 +114,9 @@ impl CodexClient {
             }
             if message.id.as_ref() == Some(&json!(request_id)) {
                 if let Some(error) = rpc_error_message(&message) {
-                    return Err(self.protocol_error(method, error));
+                    return Err(self
+                        .protocol_error(method, error)
+                        .steer_not_submitted(method == "turn/steer"));
                 }
                 let result = message.result.ok_or_else(|| {
                     self.protocol_error(method, "Codex returned no response payload".to_string())
@@ -125,6 +134,7 @@ impl CodexClient {
                 log_unparsed_turn_lifecycle(&self.provider_run_id, &message);
             }
             if let Some(notification) = parsed_notification {
+                super::runtime_trace::notification_received(&self.provider_run_id, &notification);
                 buffered_notifications.push(notification);
             } else if !is_turn_lifecycle_method(message.method.as_deref()) {
                 if let Some(message_method) = message.method.as_deref() {
@@ -184,6 +194,10 @@ impl CodexClient {
                         log_unparsed_turn_lifecycle(&self.provider_run_id, &message);
                     }
                     if let Some(notification) = notification {
+                        super::runtime_trace::notification_received(
+                            &self.provider_run_id,
+                            &notification,
+                        );
                         return Ok(Some(notification));
                     }
                     if !is_turn_lifecycle_method(message.method.as_deref()) {
@@ -255,7 +269,7 @@ impl CodexClient {
         Ok(())
     }
 
-    fn read_next_message(
+    pub(super) fn read_next_message(
         &self,
         socket: &mut CodexSocket,
         timeout: Duration,
@@ -323,7 +337,7 @@ fn codex_read_should_retry(error: &std::io::Error) -> bool {
     )
 }
 
-fn codex_request_timeout(method: &str) -> Duration {
+pub(super) fn codex_request_timeout(method: &str) -> Duration {
     match method {
         "thread/start" | "thread/resume" => Duration::from_secs(120),
         _ => Duration::from_secs(30),

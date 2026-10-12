@@ -13,13 +13,11 @@ import { CloudClientCredentialStore } from "./cloud-client-credential-store.js"
 import { CloudClientAuthError } from "./cloud-client-http.js"
 
 type Family = { clientId: string; key: string; access: string; refresh: string; revoked: boolean }
-// Renewal includes the real OS profile lock and synchronized credential writes.
-// The disk path can exceed the 500 ms renewal window of a two-second grant
-// on shared builders. Keep accelerated expiries and the same seven-rotation
-// assertions, while allowing two seconds for serialized profile writes.
 const ACCESS_LIFETIME_MS = 2_800
 const GRANT_LIFETIME_MS = 2_000
-async function fixture({ accessLifetimeMs = ACCESS_LIFETIME_MS, grantLifetimeMs = GRANT_LIFETIME_MS } = {}) {
+async function fixture(options: { accessLifetimeMs?: number; grantLifetimeMs?: number } = {}) {
+  const accessLifetimeMs = options.accessLifetimeMs ?? ACCESS_LIFETIME_MS
+  const grantLifetimeMs = options.grantLifetimeMs ?? GRANT_LIFETIME_MS
   const key = createECDH("prime256v1"); key.generateKeys()
   const daemon = new RelayClientIdentity(key.getPrivateKey())
   const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 })
@@ -152,7 +150,8 @@ function profile(root: string) {
 const authCode = (code: string) => (error: unknown) => error instanceof CloudClientAuthError && error.code === code
 
 test("detached client-only login survives process resume and several access/grant expiries without reconnect or re-login", async () => {
-  const root = await mkdtemp(join(tmpdir(), "kauth-detached-")), cloud = await fixture({ accessLifetimeMs: 8_400, grantLifetimeMs: 6_000 })
+  // MP-08 / MP-10 / MP-11: allow disk-backed fsync and profile locking during renewal.
+  const root = await mkdtemp(join(tmpdir(), "kauth-detached-")), cloud = await fixture({ accessLifetimeMs: 11_200, grantLifetimeMs: 8_000 })
   const first = profile(root), notices: string[] = []
   const resumed = profile(root)
   try {

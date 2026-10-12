@@ -271,12 +271,24 @@ pub(super) async fn run_subscription_loop(
                         break;
                     }
                     let workflow_run_events =
-                        workflow_run_updated_events(&snapshot, previous_snapshot_ref);
+                        workflow_run_updated_events(&snapshot, previous_snapshot_ref)
+                            .into_iter()
+                            .chain(
+                                crate::transport::kernel_protocol::room_workflows_changed_event(
+                                    &snapshot,
+                                    previous_snapshot_ref,
+                                ),
+                            )
+                            .collect::<Vec<_>>();
                     let workflow_run_only =
                         workflow_run_only_changed(&snapshot, previous_snapshot_ref)
                             && !workflow_run_events.is_empty();
                     for event in workflow_run_events {
-                        emitted_projection_delta = true;
+                        // Inventory is an additional read model. Definition changes still
+                        // need the existing full snapshot for canvas and other consumers.
+                        if !matches!(&event, KernelEvent::RoomWorkflowsChanged { .. }) {
+                            emitted_projection_delta = true;
+                        }
                         if !emit_kernel_event(
                             &runtime,
                             &outgoing_tx,
@@ -302,6 +314,7 @@ pub(super) async fn run_subscription_loop(
                         &close_tx,
                         &close_requested,
                         KernelEvent::SessionSnapshot {
+                            room_workflows: snapshot.room_workflows,
                             session: Box::new(snapshot.session),
                             provider_run: Box::new(
                                 snapshot
@@ -826,6 +839,7 @@ pub(super) async fn emit_replay_gap_snapshot(
                 close_tx,
                 close_requested,
                 KernelEvent::SessionSnapshot {
+                    room_workflows: projection.room_workflows,
                     session: Box::new(projection.session),
                     provider_run: Box::new(
                         projection

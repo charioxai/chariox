@@ -139,6 +139,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CancelActivePrompt(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::SteerActivePrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::SteerQueuedPrompt(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -343,6 +346,18 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ListAgents(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::RegisterWorkflowNotificationSource(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::AttachWorkflowNotification(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::DetachWorkflowNotification(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::ListWorkflowNotifications(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
         LocalDaemonRequest::CreateWorkflow(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -484,6 +499,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CancelWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::ControlRoomWorkflowRuns(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::PauseWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -551,6 +569,19 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetDisposableWorker(_)
         | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
         | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)
+        | LocalDaemonRequest::DetectProjectEnvironment(_)
+        | LocalDaemonRequest::PreviewEnvironmentDiff(_)
+        | LocalDaemonRequest::SaveProjectEnvironmentRevision(_)
+        | LocalDaemonRequest::PlanProjectEnvironment(_)
+        | LocalDaemonRequest::ApplyProjectEnvironment(_)
+        | LocalDaemonRequest::CheckProjectEnvironment(_)
+        | LocalDaemonRequest::GetEnvironmentOperation(_)
+        | LocalDaemonRequest::CancelEnvironmentOperation(_)
+        | LocalDaemonRequest::RetryEnvironmentOperation(_)
+        | LocalDaemonRequest::ExportProjectEnvironment(_)
+        | LocalDaemonRequest::PreviewEnvironmentImport(_)
+        | LocalDaemonRequest::CommitEnvironmentImport(_)
+        | LocalDaemonRequest::GetProjectEnvironment(_)
         | LocalDaemonRequest::GetProjectEnvironmentManifest(_)
         | LocalDaemonRequest::KeepDisposableWorkerRunning(_)
         | LocalDaemonRequest::KeepManagedEnvironmentRunning(_)

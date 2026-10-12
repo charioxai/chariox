@@ -11,7 +11,6 @@ use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchRe
 
 use super::executable_resolution::ExecutableResolutionState;
 
-mod auth_probe;
 mod catalog;
 mod launch_args;
 mod mcp_config;
@@ -19,7 +18,6 @@ mod native_tui;
 mod usage_capture;
 mod usage_probe;
 
-pub(crate) use auth_probe::verify_claude_setup_token;
 pub use catalog::claude_provider_catalog;
 use catalog::CLAUDE_HEADLESS_PROVIDER_ID;
 pub(crate) use launch_args::claude_args_with_execution_config;
@@ -32,7 +30,9 @@ pub(crate) use native_tui::{
     ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
     CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
 };
-pub(crate) use usage_probe::probe_claude_account_usage;
+pub(crate) use usage_probe::{
+    probe_claude_account_usage, verify_claude_account_credential, ClaudeCredentialCheckError,
+};
 
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";
 
@@ -284,6 +284,24 @@ fn plan_claude_launch_unlocked(
     };
     native.persist_for_launch();
     Ok(launch)
+}
+
+pub(crate) fn prepare_vaulted_claude_native_onboarding(
+    request: &LaunchProviderRequest,
+) -> Result<(), DaemonError> {
+    if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
+        && !request.client_interface.is_chariox()
+        && request.provider != CLAUDE_HEADLESS_PROVIDER_ID
+        && request
+            .provider_credential_env
+            .iter()
+            .any(|(name, token)| name == "CLAUDE_CODE_OAUTH_TOKEN" && !token.trim().is_empty())
+    {
+        // Initialize the selected profile before secrets are separated from the
+        // planner request and its metadata is persisted.
+        ensure_claude_headless_onboarding_state(Some(request))?;
+    }
+    Ok(())
 }
 
 fn ensure_claude_headless_onboarding_state(
@@ -956,6 +974,72 @@ mod tests {
             "CLAUDE_CONFIG_DIR".to_string(),
             selected_config_dir.display().to_string(),
         )]));
+        let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
+
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
+        if let Some(previous_config_dir) = previous_config_dir {
+            std::env::set_var("CLAUDE_CONFIG_DIR", previous_config_dir);
+        } else {
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
+        }
+
+        assert_eq!(
+            launch.pty_env.get("CLAUDE_CONFIG_DIR").map(String::as_str),
+            Some(selected_config_dir.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            fs::read_to_string(selected_config_dir.join(".claude.json"))
+                .expect("selected profile onboarding state should exist"),
+            "{\"hasCompletedOnboarding\":true}\n"
+        );
+        assert!(
+            !ambient_config_dir.join(".claude.json").exists(),
+            "launch must not initialize the ambient profile"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mp08_mp10_vaulted_native_claude_skips_login_onboarding_in_selected_profile() {
+        crate::test_support::isolated_env_test!();
+        let _guard = env_guard();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-vault-native-onboarding-{}",
+            std::process::id()
+        ));
+        let executable = root.join("claude");
+        let ambient_config_dir = root.join("ambient");
+        let selected_config_dir = root.join("selected");
+        fs::create_dir_all(&ambient_config_dir).expect("ambient config dir should exist");
+        fs::create_dir_all(&selected_config_dir).expect("selected config dir should exist");
+        write_executable_fixture(&executable, "#!/bin/sh\nsleep 60\n");
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &executable);
+        let previous_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
+        std::env::set_var("CLAUDE_CONFIG_DIR", &ambient_config_dir);
+
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "claude",
+            "claude",
+            "selected",
+            "claude-headless/claude-opus-4-8",
+        )
+        .with_provider_account_env(std::collections::BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".to_string(),
+            selected_config_dir.display().to_string(),
+        )]));
+        let mut credentials = crate::provider::ProviderCredentialEnvironment::default();
+        credentials.insert(
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            zeroize::Zeroizing::new("synthetic-setup-token".to_string()),
+        );
+        let request = request
+            .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
+            .with_provider_credential_env(credentials);
+        super::prepare_vaulted_claude_native_onboarding(&request)
+            .expect("selected account should initialize");
+        let mut request = request;
+        let _credentials = std::mem::take(&mut request.provider_credential_env);
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
         std::env::remove_var("CHARIOX_CLAUDE_BIN");

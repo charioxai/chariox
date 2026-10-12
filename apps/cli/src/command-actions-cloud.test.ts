@@ -212,6 +212,7 @@ test("/cloud links instead of opening when the local kernel is not linked", asyn
 
   assert.equal(startedDeviceLogin, true)
   assert.match(notices[0] ?? "", /Link this kernel to Chariox Cloud/)
+  assert.ok((notices[0] ?? "").includes("Open: Cmd-click the link.\nTerminal.app: Cmd-double-click.\nCopy: select the link, then Cmd-C."))
   assert.doesNotMatch(notices[0] ?? "", /Opening Chariox Cloud/)
 })
 
@@ -344,6 +345,7 @@ test("/cloud link triggers hosted device login flow", async () => {
 
   assert.deepEqual(flashed, [])
   assert.match(notices[0] ?? "", /Link this kernel to Chariox Cloud/)
+  assert.ok((notices[0] ?? "").includes("Open: Cmd-click the link.\nTerminal.app: Cmd-double-click.\nCopy: select the link, then Cmd-C."))
   assert.equal(notices.at(-1), "cloud linked: user")
 })
 
@@ -483,46 +485,19 @@ test("relay cloud connect reports pending relay registration clearly", async () 
   assert.match(notices.at(-1) ?? "", /machine=machine-1/)
 })
 
-test("relay cloud pair-machine stores the local machine identity", async () => {
-  const notices: string[] = []
-  let savedProfile: Record<string, unknown> | null = null
-  const profile = {
-    apiUrl: "https://cloud.example",
-    email: "user@example.com",
-    accountId: "account-1",
-    userId: "user-1",
-    accountSlug: "user",
-    realmId: "realm-1",
-    relayUrl: "wss://relay.example",
-    issuerId: "issuer-1",
-  }
+test("MP-08 / MP-11 retired relay cloud pair-machine refuses without storing a machine identity", async () => {
+  const footers: string[] = []
+  let saved = false
   const handlers = createCommandActionHandlers(makeCommandDeps({
-    appendNotice: (message: string) => { notices.push(message) },
-    getCloudRelayProfile: () => profile,
-    getRelayStatus: async () => ({
-      configured: false,
-      connected: false,
-      relay_url: null,
-      relay_token_configured: false,
-      daemon_id: "daemon-1",
-      machine_id: "machine-1",
-      machine_alias: "laptop",
-    }),
-    pairCloudRelayMachine: async (_profile: Record<string, unknown>, machineId: string, alias?: string) => ({
-      ...profile,
-      machineId,
-      ...(alias ? { machineAlias: alias } : {}),
-    }),
-    saveCloudRelayProfile: async (next: Record<string, unknown> | null) => {
-      savedProfile = next
-    },
+    flashFooter: (message: string) => { footers.push(message) },
+    pairCloudRelayMachine: async () => { throw new Error("retired kernel human Cloud control must not be called") },
+    saveCloudRelayProfile: async () => { saved = true },
   }))
 
   await handlers.handleRelayCommand({ kind: "relay", raw: "/relay cloud pair-machine", args: ["cloud", "pair-machine"] })
 
-  assert.equal((savedProfile as { machineId?: string } | null)?.machineId, "machine-1")
-  assert.equal((savedProfile as { machineAlias?: string } | null)?.machineAlias, "laptop")
-  assert.equal(notices.at(-1), "cloud machine linked: machine-1")
+  assert.equal(saved, false)
+  assert.match(footers.at(-1) ?? "", /pair-machine is retired; run \/cloud link on the receiving kernel/)
 })
 
 test("relay cloud connect prefers paired machine tokens", async () => {

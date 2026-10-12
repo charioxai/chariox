@@ -1,5 +1,5 @@
+import { spawnOwned, signalOwnedProcessGroup } from "../apps/kernel/slice-linux-docker/owned-process-signals.mjs"
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -62,18 +62,18 @@ test('a sampled breach reaches the process owner and stops an owned idle Node he
   const heartbeat = join(scratch, 'heartbeat');
   // Fixed test code, no App/package/native build and no meaningful allocation.
   const code = "const fs=require('node:fs');fs.writeFileSync(process.argv[1],'x');process.stdout.write('ready');setInterval(()=>fs.appendFileSync(process.argv[1],'x'),10);";
-  const child = spawn(process.execPath, ['-e', code, heartbeat], { detached: true, env: {}, stdio: ['ignore', 'pipe', 'ignore'] });
+  const child = spawnOwned(process.execPath, ['-e', code, heartbeat], { detached: true, env: {}, stdio: ['ignore', 'pipe', 'ignore'] });
   let closed = false;
   child.once('close', () => { closed = true; });
   const ended = once(child, 'close');
   t.after(async () => {
-    if (!closed) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
+    if (!closed) { try { signalOwnedProcessGroup(child, 'SIGKILL'); } catch {} }
     await ended.catch(() => {});
     await rm(scratch, { recursive: true, force: true });
   });
   await once(child.stdout, 'data');
   const watch = startMacResourceWatch({ initialSwapBytes: 0, sample: async () => ({ ...good(), availableMemoryBytes: 0 }),
-    stop: () => process.kill(-child.pid, 'SIGKILL') });
+    stop: () => signalOwnedProcessGroup(child, 'SIGKILL') });
   assert.equal((await watch.done).reason, 'available-memory');
   assert.equal((await ended)[1], 'SIGKILL');
   const bytes = await readFile(heartbeat);

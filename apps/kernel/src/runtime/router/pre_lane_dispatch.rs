@@ -33,6 +33,7 @@ impl CommandRouter {
         request: &LocalDaemonRequest,
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        super::retired_cloud_controls::require_kernel_authority(request)?;
         if let Some(response) = self
             .runtime_state
             .app_control()
@@ -321,6 +322,20 @@ impl CommandRouter {
                     .runtime_state
                     .start_project_environment_adjustment(request.clone(), caller_user_id)
                     .await
+                    .map(Some);
+            }
+            request if request.unsupported_environment_capability().is_some() => {
+                return Ok(Some(LocalDaemonResponse::EnvironmentUnsupportedFeature {
+                    feature: request
+                        .unsupported_environment_capability()
+                        .expect("matched unsupported feature"),
+                    supported_schema: 1,
+                }));
+            }
+            LocalDaemonRequest::GetProjectEnvironment(request) => {
+                return self
+                    .runtime_state
+                    .get_project_environment(request.clone(), caller_user_id)
                     .map(Some);
             }
             LocalDaemonRequest::GetProjectEnvironmentManifest(request) => {

@@ -122,6 +122,7 @@ export async function handleCloudSlashCommand(
     return
   }
   const getProfile = ["invite", "members", "collaborators"].includes(area)
+    || (area === "deployments" && ["list", "ls"].includes(action ?? ""))
     ? deps.getCloudCollaborationProfile ?? deps.getCloudControlProfile
     : deps.getCloudControlProfile
   const controlProfile = getProfile ? await getProfile() : await deps.getCloudRelayProfile?.() ?? null

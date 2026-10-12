@@ -38,21 +38,19 @@ struct PublicationProviderAccountBinding {
 pub(crate) fn materialize_publication_provider_accounts(
     registry: &ProviderAccountProfileRegistry,
     owner_user_id: &str,
-    config: &crate::config::DaemonConfig,
 ) -> Result<(), DaemonError> {
     let Some(source) = std::env::var_os(PUBLICATION_PROVIDER_ACCOUNT_BINDINGS) else {
         return Ok(());
     };
     let bindings = validated_bindings(source.to_string_lossy().as_bytes())?;
     materialize_validated_bindings(registry, owner_user_id, &bindings)?;
-    refresh_materialized_provider_account_auth(registry, owner_user_id, &bindings, config)
+    refresh_materialized_provider_account_auth(registry, owner_user_id, &bindings)
 }
 
 fn refresh_materialized_provider_account_auth(
     registry: &ProviderAccountProfileRegistry,
     owner_user_id: &str,
     bindings: &PublicationProviderAccountBindings,
-    config: &crate::config::DaemonConfig,
 ) -> Result<(), DaemonError> {
     for binding in &bindings.accounts {
         let result = crate::local::provider_requests::provider_auth_status_response(
@@ -62,7 +60,6 @@ fn refresh_materialized_provider_account_auth(
                 provider: binding.provider.clone(),
                 account_profile: binding.account_profile.clone(),
             },
-            config,
         );
         if let Err(error) = result {
             registry.update_observation(
@@ -466,13 +463,8 @@ exit 2
             )
             .is_err());
 
-        refresh_materialized_provider_account_auth(
-            &registry,
-            "local",
-            &bindings,
-            &crate::config::DaemonConfig::for_tests(),
-        )
-        .expect("refresh deployment account auth");
+        refresh_materialized_provider_account_auth(&registry, "local", &bindings)
+            .expect("refresh deployment account auth");
 
         registry
             .require_authenticated(
@@ -500,13 +492,8 @@ exit 2
 "#,
         )
         .expect("replace Claude fixture with unauthenticated response");
-        refresh_materialized_provider_account_auth(
-            &registry,
-            "local",
-            &bindings,
-            &crate::config::DaemonConfig::for_tests(),
-        )
-        .expect("record unauthenticated deployment account");
+        refresh_materialized_provider_account_auth(&registry, "local", &bindings)
+            .expect("record unauthenticated deployment account");
         assert!(registry
             .require_authenticated(
                 "local",
@@ -533,13 +520,8 @@ exit 2
 "#,
         )
         .expect("replace Claude fixture with operational failure");
-        refresh_materialized_provider_account_auth(
-            &registry,
-            "local",
-            &bindings,
-            &crate::config::DaemonConfig::for_tests(),
-        )
-        .expect("operational auth failure must not abort publication startup");
+        refresh_materialized_provider_account_auth(&registry, "local", &bindings)
+            .expect("operational auth failure must not abort publication startup");
         assert_eq!(
             registry
                 .get("local", "claude", "profile-claude")

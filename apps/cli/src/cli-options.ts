@@ -211,7 +211,7 @@ function applyTerminalPairingLinkOptions(options: CliOptions, pairingLink: strin
   options.clientId = parsed.terminalId ?? options.clientId
 }
 
-function parseTerminalPairingLink(pairingLink: string) {
+export function parseTerminalPairingLink(pairingLink: string) {
   const payload = pairingLink.trim().replace(/^chariox-terminal-pair-v1[.]/, "")
   let decoded: Record<string, unknown>
   try {

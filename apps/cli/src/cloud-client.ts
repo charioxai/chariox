@@ -26,6 +26,11 @@ export class CloudClient {
   private revoked = false
   constructor(readonly store = new CloudClientCredentialStore(), private readonly identity: () => RelayClientIdentity = () => createCliRelayIdentityStore().getOrCreate()) {}
 
+  // MP-08 / MP-11: preflight human authority before shared-shell local side effects.
+  async ensureAuthenticated(): Promise<boolean> {
+    if (!await this.store.load()) return false
+    return this.authenticated(async () => true)
+  }
   async profile(): Promise<RelayCloudProfile | null> { return publicRelayCloudProfile((await this.store.load())?.profile) }
   async humanProfile(): Promise<CloudControlProfile | null> {
     const value = await this.store.load()

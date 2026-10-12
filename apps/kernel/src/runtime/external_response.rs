@@ -128,10 +128,23 @@ response_policies! {
         EventGeneratorAuthorizationStarted,
         EventConnectionAuthorizationStarted,
         EventConnectionAuthorizationObserved,
+        // Environment authorization URLs and reserved export/import/apply
+        // payloads stay with the host terminal; P01 delivers none of them.
+        EnvironmentProviderAuthorizationLink,
+        ProjectEnvironmentExport,
+        EnvironmentImportPreview,
+        EnvironmentImportCommitted,
+        ProjectEnvironmentPlan,
     ],
     Public => [
         // MP-07/MP-08/MP-11: receipt metadata only; SSH admission stays owner-scoped.
         SshMachine,
+        WorkflowNotificationSourceRegistered,
+        WorkflowNotificationAttached,
+        WorkflowNotificationDetached,
+        WorkflowNotifications,
+        RoomWorkflowRunsControlled,
+        ActivePromptSteered,
         CloudRelayLoggedOut,
         KernelSudoRequested,
         KernelAccessGranted,
@@ -187,6 +200,12 @@ response_policies! {
         ProjectRestored,
         ProjectEnvironmentAdjustmentStarted,
         ProjectEnvironmentManifest,
+        // Value-free Environment aggregates: names, versions and Vault references only.
+        ProjectEnvironment,
+        ProjectEnvironmentDiff,
+        ProjectEnvironmentSaved,
+        EnvironmentOperation,
+        EnvironmentUnsupportedFeature,
         ProjectEnvironmentSetupStarted,
         ProjectEnvironmentSetupStatus,
         ProjectEnvironmentSetupCancelled,

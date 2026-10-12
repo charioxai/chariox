@@ -106,12 +106,14 @@ impl AgentPromptCommandService {
         session_id: &str,
         target_agent_id: &str,
         attachment_id: &str,
+        expected_prompt_id: Option<&str>,
     ) -> Result<KernelPromptCancellation, DaemonError> {
         self.state
-            .cancel_agent_prompt_with_external_authority(
+            .cancel_agent_prompt_if_matches_with_external_authority(
                 session_id,
                 target_agent_id,
                 attachment_id,
+                expected_prompt_id,
                 self.request_authority(),
             )
             .await
@@ -132,6 +134,16 @@ impl AgentPromptCommandService {
                 prompt_id,
                 self.request_authority(),
             )
+            .await
+    }
+
+    pub(crate) async fn steer_active_prompt(
+        &self,
+        request: crate::local::SteerActivePromptRequest,
+    ) -> Result<PromptQueueItem, DaemonError> {
+        self.state
+            .with_external_command_authority(self.request_authority())
+            .steer_active_prompt(request)
             .await
     }
 

@@ -97,3 +97,89 @@ exercises the actual command handlers and client adapters against synthetic loca
 Cloud/relay/kernel seams, including commands and encrypted events across several
 grant expiries and safe child signalling. These checks do not establish a live
 Cloud/PostgreSQL run, hosted transport or fresh-machine MP-10 acceptance.
+
+## MP-08 / MP-10 / MP-11 receiving terminal revocation (main protocol 487)
+
+A kernel-paired Cloud CLIENT retains its receiving terminal authority during
+issuance and renewal. Cloud resolves the stable terminal hash in the delegated
+subject, checks the receiving account, key and active CLIENT session, and binds
+the grant to that session. CLIENT revocation and logout therefore sweep these
+tokens through the existing relay revocation feed, including active sockets.
+The check applies to default SDK renewal without a CLI callback. A remote
+terminal cannot switch the authenticated subject or key to request an
+unregistered attached-local identity. The original terminal ID and its existing
+kernel-derived subject identify the same receiver during renewal.
+
+Attached-local delegation and self-hosted operator pairing retain their existing
+paths. No serialized shape is added; the rebase retains main's protocol 487 and
+the ownership feature's minimum 478. Focused regressions remain supplementary:
+hosted Settings revocation, actual receiving TUI/default SDK refusal and the
+DPR 1/2 two-hour renewal gate require separate live evidence.
+
+MP-08 / MP-10 / MP-11: Cloud terminal pairing uses the receiving CLIENT identity (`cli:<public-key-thumbprint>`) for its join and renewal. The invitation terminal label does not replace that identity. Self-hosted terminal labels retain their existing behavior.
+
+## MP-08 / MP-10 / MP-11 fresh receiving CLIENT acceptance (protocol 491)
+
+Current ownership and provider-portability requests require local protocol 491;
+relay peers use protocol 101. The earlier protocol numbers above describe
+historical implementation checkpoints. Acceptance receipts must identify the
+actual kernel, relay, compiled CLI and Cloud sources, along with binary hashes.
+A protocol match alone does not establish source provenance.
+
+Run receiving-terminal cells on a fresh, separate Linux machine with its own
+CLIENT profile. Transfer public client assets only; leave provider credentials
+on their execution kernels. Verify the receiver's approved SSH host pin before
+access. Use a compatible public Node distribution for the login helper: copying
+a distribution's small `/usr/bin/node` launcher also requires its matching
+`libnode` and dependencies and is insufficient as a portable client kit. Verify
+archive and payload checksums, then run each installed runtime on the receiver.
+Keep disposable profiles and temporary files outside source checkouts.
+
+The real-provider pairing scenario in
+`apps/cli/scripts/lib/hosted-cloud-remote-cli-scenarios.mjs` prepares an independent
+receiving CLIENT through `prepareHostedRemoteTerminal`. Preserve a fail-first
+run of the earlier scenario without that preparation, then require normal
+browser device approval and successful attachment using the real compiled TUI.
+An owner's key-bound grant must never be copied into the receiving profile.
+
+MP-08 / MP-10 / MP-11: before a fresh execution kernel's TUI provider turn,
+link the product-created credential scope and refresh that same profile through
+`RefreshProviderAccountProfile` (TUI: `/provider accounts refresh`). Linking
+registers the profile with `unknown` auth state; it does not verify login.
+Use `prepareHostedLinkedProviderAccount` in
+`apps/cli/scripts/lib/hosted-linked-provider-account.mjs` for drill setup and
+require `authenticated` before launching the TUI. The hosted relay drill accepts
+`CHARIOX_CLOUD_HOSTED_REMOTE_CLI_ACCOUNT_PATH` for this execution-kernel scope;
+both TUIs then select the verified profile explicitly. Retain the link-only RED
+prompt refusal and the refreshed GREEN real-provider turn. This changes drill
+preparation, not kernel admission or provider credential ownership.
+
+
+`OWN-TUI-2H` requires two uninterrupted hours through hosted WSS under the
+campaign's 8 Mbit/s uplink and at least 60 ms RTT. Keep the original command and
+event sockets, the session identity, and the receiving key stable. Drive real
+provider turns from the TUI and the real Web entry at DPR 1 and 2 after 20, 60
+and 100 minutes. For public-document tasks, verify completed provider-tool
+history as well as the visible reply. Record socket closures and replacements,
+console output, screenshots, latency measurements and resource samples. Prompt
+composer feedback is a separate metric from provider latency and browser
+mirroring performance.
+
+After the soak, revoke only the disposable receiving CLIENT through Settings.
+Require its TUI to retire within the existing 420-second grant bound, deny a
+fresh pairing with its cached CLIENT authority, and prove both kernels and
+owner Web/provider work survive. Independently signed-in nonowners must neither
+enumerate owner kernels nor attach with an owner pairing link. End the sessions,
+log out disposable CLIENT profiles, unlink disposable kernels, stop every
+owned process and stack, remove shaping and peer allowances, and record cleanup
+before releasing the receiver. Rental expiry is a hard stop; a shortened run
+does not pass `OWN-TUI-2H`.
+
+MP-08 / MP-10 / MP-11: explicit CLIENT-token receivers renew through their
+still-valid, key-bound paired grant without requiring a private Cloud login.
+The kernel and Cloud retain receiving identity, key, target and active-session
+checks on every issuance. Automatic CLIENT acquisition continues to refresh its
+private profile. Validate both explicit token sources beyond the original
+five-minute grant expiry with an absent private profile, active commands/events
+and a real provider response; revoke the disposable receiving CLIENT and require
+renewal refusal. A join-only receipt does not establish renewal acceptance.

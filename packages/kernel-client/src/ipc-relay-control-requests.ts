@@ -1,3 +1,6 @@
+// MP-08 / MP-10 / MP-11: credential-free ownership and receiving CLIENT authority.
+export const kernelOwnershipMinimumProtocolVersion = 491
+
 export const relayClientKeyBindingMinimumProtocolVersion = 349
 
 export function relayStatusRequest() {
@@ -34,11 +37,12 @@ export function startCloudRelayLoginRequest(apiUrl: string, input: {
   }
 }
 
-export function pollCloudRelayLoginRequest(apiUrl: string, deviceCode: string) {
+export function pollCloudRelayLoginRequest(apiUrl: string, deviceCode: string, supportsAccessDenied = false) {
   return {
     PollCloudRelayLogin: {
       api_url: apiUrl,
       device_code: deviceCode,
+      ...(supportsAccessDenied ? { supports_access_denied: true } : {}),
     },
   }
 }

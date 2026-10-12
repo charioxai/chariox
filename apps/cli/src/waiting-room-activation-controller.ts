@@ -1,3 +1,4 @@
+import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import type { RuntimeSession, SliceRecord } from "./cli-types.js"
 import type {
   BackendProviderId,
@@ -25,6 +26,7 @@ import {
   waitingRoomExecutionMode,
   waitingRoomPermissionLevel,
 } from "./waiting-room-state.js"
+import { selectedProviderAccountStartBlockReason } from "./waiting-room-provider-accounts.js"
 
 export type WaitingRoomCreateSessionLaunch = WaitingRoomLaunchConfig & {
   account_profile: string | null
@@ -42,6 +44,7 @@ export type WaitingRoomPreparedManagedLaunch = {
 }
 
 export type WaitingRoomActivationControllerDeps = {
+  onLaunchRefused?: (message: string, retry: () => void) => void
   isKernelConnected: () => boolean
   connectKernel: () => Promise<void>
   getWaitingRoomState: () => WaitingRoomState
@@ -274,6 +277,10 @@ export function createWaitingRoomActivationController(
 
   const createAndAttachSession = async (launch: WaitingRoomLaunchConfig) => {
     const managedLaunch = Boolean(launch.managedEnvironment)
+    const inventoryStatus = deps.getRemoteState().inventoryStatus
+    if (!managedLaunch && (inventoryStatus === "loading" || inventoryStatus === "error")) {
+      throw new Error("Waiting for selected kernel inventory. Try again after it connects.")
+    }
     const prepared = launch.managedEnvironment
       ? await deps.prepareManagedSessionLaunch?.(launch)
       : {
@@ -298,6 +305,12 @@ export function createWaitingRoomActivationController(
         await deps.prepareSessionOwnerClient?.(preparedLaunch)
         prepared.assertActive()
       }
+      const accountBlock = preparedLaunch.sliceRef ? null : selectedProviderAccountStartBlockReason(
+        deps.getRemoteState().providerAccounts, preparedLaunch.provider,
+        preparedLaunch.accountProfile ?? deps.getAccountProfile() ?? undefined,
+        null, preparedLaunch.model,
+      )
+      if (accountBlock) throw new Error(accountBlock)
       const sliceRef = await prepareSliceForLaunch(preparedLaunch, (sliceRef) => {
         createdSliceRef = sliceRef
       })
@@ -375,6 +388,12 @@ export function createWaitingRoomActivationController(
         await prepared.rollback()
       } catch (rollbackError) {
         cleanupErrors.push(`failed to restore the source kernel connection: ${deps.formatError(rollbackError)}`)
+      }
+      if (!session && error instanceof LocalIpcError && error.code === "local_transport_error"
+        && cleanupErrors.length === 0) {
+        deps.onLaunchRefused?.(deps.formatError(error), () => {
+          void startSessionFromWaitingRoomDefaults().catch(() => {})
+        })
       }
       if (cleanupErrors.length > 0) {
         throw new Error(`${deps.formatError(error)}; ${cleanupErrors.join("; ")}`)

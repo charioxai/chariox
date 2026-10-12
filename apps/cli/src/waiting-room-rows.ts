@@ -2,7 +2,7 @@ import { catalogModelOptions, type ProviderCatalog } from "./provider-catalog.js
 import type { SessionListEntry } from "./sessions.js"
 import { DEFAULT_THEME_REGISTRY, themeLabel, type ThemeRegistry } from "./theme-registry.js"
 import { waitingRoomChoice } from "./waiting-room-choice.js"
-import { waitingRoomRemoteRows } from "./waiting-room-remote-rows.js"
+import { waitingRoomInventoryPending, waitingRoomRemoteRows } from "./waiting-room-remote-rows.js"
 import {
   waitingRoomSessionRows,
   waitingRoomSessions,
@@ -39,7 +39,7 @@ export function waitingRoomRows(
   themeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY,
 ) {
   const choice = waitingRoomChoice(state, sessions, catalog, remote)
-  const inventoryLoading = remote.inventoryStatus === "loading"
+  const inventoryLoading = waitingRoomInventoryPending(remote, waitingRoomSessions(sessions).length > 0)
   const loadingText = waitingRoomLoadingText(remote.loadingFrame)
   const modelOptions = catalogModelOptions(catalog, state.providerId)
   const visibleSessions = waitingRoomSessions(sessions)
@@ -68,6 +68,9 @@ export function waitingRoomRows(
     titleWidth,
   })
 
+  if (inventoryLoading && visibleSessions.length > 0) {
+    rows.push({ id: "inventory-refreshing", title: "Inventory", value: "cached/refreshing", titleWidth, indent: 0, focused: false, selectable: false, scrollbar: "" })
+  }
   if (projects.length > 0) {
     rows.push(...waitingRoomProjectRows(state, remote.projects, sessions, { inventoryLoading, loadingText, titleWidth }))
   } else {

@@ -1,6 +1,7 @@
 import process from "node:process"
 import { runContextCommand } from "./context-command.js"
 import { runCloudClientCommand } from "./cloud-client-command.js"
+import { TUI_MOUSE_ENABLED } from "./terminal-mouse-policy.js"
 import { runSudoCommand } from "./sudo-command.js"
 import { runAccessCommand } from "./access-command.js"
 
@@ -74,7 +75,9 @@ async function main() {
       gatherStats: false,
       exitOnCtrlC: false,
       useKittyKeyboard: {},
-      useMouse: true,
+      ...(!TUI_MOUSE_ENABLED ? { useThread: false } : {}),
+      // MP-08/MP-10: the terminal owns plain drag-selection and Cmd-C.
+      useMouse: TUI_MOUSE_ENABLED,
       enableMouseMovement: false,
       useAlternateScreen: true,
       autoFocus: true,

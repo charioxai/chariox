@@ -1,4 +1,5 @@
 import type { RelayCloudProfile } from "./preferences.js"
+import { TERMINAL_LINK_OPEN_HINT } from "./external-url.js"
 export { buildHostedCloudViewUrl } from "@chariox/kernel-client/slice-screen-viewer"
 
 export type RelayStatus = {
@@ -43,6 +44,7 @@ export type CloudCommandLifecycleDeps = {
   ) => Promise<
     | { status: "authorization_pending"; intervalSeconds: number; expiresAtMs: number }
     | { status: "expired_token" }
+    | { status: "access_denied" }
     | { status: "approved"; profile: RelayCloudProfile }
   >
   openExternalUrl?: (url: string) => Promise<boolean>
@@ -166,6 +168,7 @@ export async function openHostedCloud(deps: CloudCommandLifecycleDeps): Promise<
       "Opening Chariox Cloud.",
       `url=${terminalUrl}`,
       opened ? "browser=opened" : "browser=manual",
+      TERMINAL_LINK_OPEN_HINT,
       ...(relayLine ? [relayLine] : []),
     ].join("\n"),
   )
@@ -190,6 +193,7 @@ export async function startHostedCloudLink(deps: CloudCommandLifecycleDeps): Pro
       `url=${started.verificationUrl}`,
       `code=${started.userCode}`,
       opened ? "browser=opened" : "browser=manual",
+      TERMINAL_LINK_OPEN_HINT,
     ].join("\n"),
   )
   let intervalMs = Math.max(started.intervalSeconds, 1) * 1000
@@ -225,6 +229,10 @@ export async function startHostedCloudLink(deps: CloudCommandLifecycleDeps): Pro
       }
       await deps.refreshWaitingRoomData?.()
       appendCloudNotice(deps, `cloud linked: ${profile.accountSlug}`)
+      return
+    }
+    if (polled.status === "access_denied") {
+      appendCloudNotice(deps, "cloud login denied by the account owner")
       return
     }
     if (polled.status === "expired_token") {

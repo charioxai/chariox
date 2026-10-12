@@ -6,8 +6,17 @@ use crate::error::DaemonError;
 
 impl DaemonConfig {
     pub fn persist_relay_config(&self) -> Result<(), DaemonError> {
-        if self.cloud_relay.is_some() || self.kernel_cloud_state_exists() {
+        if self.cloud_relay.is_some() {
             return self.persist_kernel_cloud_state();
+        }
+        if self.kernel_cloud_state_exists() {
+            // An explicit relay override suppresses the in-memory Cloud profile.
+            // Transport configuration is not an enrollment unlink operation.
+            let mut retained = self.clone();
+            retained.try_load_kernel_cloud_state()?;
+            retained.relay_url = self.relay_url.clone();
+            retained.relay_token = self.relay_token.clone();
+            return retained.persist_kernel_cloud_state();
         }
         let mut persisted = load_persisted_daemon_config();
         persisted.relay_url = self.relay_url.clone();

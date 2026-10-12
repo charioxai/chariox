@@ -54,3 +54,11 @@ test("MP-11 setup offer does not run after failed login and explicit setup requi
   await assert.rejects(handle(["setup"]), /Sign in first/)
   assert.equal(offered, false); assert.equal(started, false)
 })
+
+test("MP-08 / MP-11 attached collaborators can read their own terminal Cloud status", async () => {
+  const notices: string[] = []
+  const client = {profile:async () => ({accountSlug:"my-account", clientId:"my-terminal"})} as unknown as CloudClient
+  const handle = createCloudClientCommands({client, isKernelConnected:() => true, apiUrl:() => "https://cloud.example.test", notice:value => notices.push(value), saveProfile:async () => {}, refresh:async () => {}})
+  assert.equal(await handle(["status"]), true)
+  assert.match(notices.join("\n"), /my-account/)
+})

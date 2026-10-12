@@ -204,8 +204,53 @@ for (const state of ["signed-out", "foreign-account", "foreign-cloud"] as const)
     const base = {...makeCommandDeps(), client, cloudClient: {humanProfile: async () => human}, options: {}, preferencesState: () => ({}), kernelConnected: () => true, flashFooter: (value: string) => notices.push(value)}
     const deps = new Proxy(base, {get: (target, key) => key in target ? target[key as keyof typeof target] : () => {}})
     const handlers = createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps)
-    const command = {kind: "cloud" as const, raw: "/cloud deployments list", args: ["deployments", "list"]}
+    const command = {kind: "cloud" as const, raw: "/cloud deployments create", args: ["deployments", "create", "project"]}
     if (human) await assert.rejects(handlers.handleCloudCommand(command), /Cloud account conflict/)
     else {await handlers.handleCloudCommand(command); assert.deepEqual(notices, ["sign in with /cloud login first"])}
+  })
+}
+
+// MP-08 / MP-11: listing the caller's account does not require owner kernel access.
+test("MP-08 / MP-11 collaborator deployment list uses its private account without kernel status", async t => {
+  const notices: string[] = []
+  const human = {apiUrl:"https://my-cloud.example.test", accountId:"my-account", cloudSessionToken:"synthetic-human-access"}
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    const url = new URL(String(input))
+    assert.equal(url.origin, human.apiUrl)
+    assert.equal(url.searchParams.get("accountId"), human.accountId)
+    return Response.json({portfolio:[]})
+  })
+  const client = {send:async () => {throw new Error("collaborator must not read owner Cloud status")}}
+  const base = {...makeCommandDeps(), client, cloudClient:{humanProfile:async () => human}, options:{}, preferencesState:() => ({}), kernelConnected:() => true, appendCloudNotice:(value:string) => notices.push(value), flashFooter:(value:string) => notices.push(value)}
+  const deps = new Proxy(base, {get:(target,key) => key in target ? target[key as keyof typeof target] : () => {}})
+  const handlers = createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps)
+  await handlers.handleCloudCommand({kind:"cloud", raw:"/cloud deployments list", args:["deployments","list"]})
+  assert.ok(notices.some(value => /No deployed workflows/.test(value)))
+})
+
+// MP-08 / MP-11: /cloud status shows the terminal profile; only the kernel owner also reads kernel relay state.
+for (const caller of ["owner", "relay-owner", "collaborator"] as const) {
+  test(`MP-08 / MP-11 ${caller} /cloud status shows the terminal profile${caller === "collaborator" ? " without owner-only kernel status" : " and the kernel link"}`, async () => {
+    const notices: string[] = [], ipc: string[] = []
+    const kernelProfile = {api_url:"https://cloud.example.test", email:"owner@example.test", account_id:"account", user_id:"owner", account_slug:"owner-account", realm_id:"realm", relay_url:"wss://relay.example.test", issuer_id:"issuer", kernel_enrolled:true}
+    const terminal = caller === "owner" ? null : {accountSlug:caller === "collaborator" ? "my-account" : "owner-account", clientId:"my-terminal", userId:caller === "collaborator" ? "collaborator" : "owner"}
+    const client = {isRelayTransport:() => caller !== "owner", send:async (request:Record<string, unknown>) => {
+      const variant = Object.keys(request)[0]!; ipc.push(variant)
+      if (caller === "collaborator") throw new Error(`${variant} requires the kernel owner`)
+      if (variant === "CloudRelayStatus") return {CloudRelayStatus:{profile:kernelProfile}}
+      if (variant === "RelayStatus") return {RelayStatus:{status:{configured:true, connected:false, relay_url:"wss://relay.example.test", relay_token_configured:true, daemon_id:"kernel", machine_id:"machine-1"}}}
+      throw new Error(`unexpected ${variant}`)
+    }}
+    const session = {...makeSession(), owner_user_id:"owner"}
+    const base = {...makeCommandDeps(), client, cloudClient:{profile:async () => terminal, stop:() => {}}, options:{}, preferencesState:() => ({}), kernelConnected:() => true, isAttached:() => caller !== "owner", sessionState:() => session, appendCloudNotice:(value:string) => notices.push(value), flashFooter:(value:string) => notices.push(value)}
+    const deps = new Proxy(base, {get:(target,key) => key in target ? target[key as keyof typeof target] : () => {}})
+    await createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps).handleCloudCommand({kind:"cloud", raw:"/cloud status", args:["status"]})
+    const text = notices.join("\n")
+    assert.match(text, terminal ? new RegExp(`Terminal profile: ${terminal.accountSlug}`) : /Terminal is signed out/)
+    if (caller === "collaborator") {assert.deepEqual(ipc, []); assert.doesNotMatch(text, /Cloud linked/); return}
+    assert.match(text, /Cloud linked\.\naccount=owner-account/)
+    assert.match(text, /relay=not connected/)
+    assert.match(text, /machine=machine-1/)
+    assert.match(text, /kernel=offline in Cloud/)
   })
 }
