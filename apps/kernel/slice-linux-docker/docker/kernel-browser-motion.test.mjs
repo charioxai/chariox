@@ -219,3 +219,30 @@ for(const native of [true,false])test('MP-08/MP-10 congestion rate change keeps 
   assert.ok(calls[1].bitrate<8000000,'congestion lowers the rate');assert.equal(calls[1].key,!native);
  }finally{await m.close()}
 });
+
+test('MP-08/MP-10/MP-11 small protected bootstrap is exact once, then motion remains video',async()=>{
+ let latest,offer,exact=0,encoded=0,held=0;
+ const raw=serial=>({serial,width:16,height:16,retain(){held++},release(){held--},nativeExact:async()=>{exact++;return{native_exact:true,width:16,height:16,data_base64:'iVBORw0KGgo='}}});
+ const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
+ const encoder={nativeSession:'owned',encode:async()=>{encoded++;return{key:true,data_base64:'AAAA'}}};
+ const m=new MotionEncoder(source,encoder,{bootstrapExact:true,bitrate:8000000,codec:'avc1.420033'});
+ try{
+  latest={serial:1,width:16,height:16,raw:raw(1)};offer(latest);await m.active;
+  const first=m.take();assert.equal(first.force_lossless,true);assert.equal(first.native_exact,true);assert.equal(encoded,0);
+  latest={serial:2,width:16,height:16,raw:raw(2)};offer(latest);await m.active;
+  assert.equal(m.take().encoded.key,true);assert.equal(exact,1);assert.equal(encoded,1);
+ }finally{await m.close();assert.equal(held,0)}
+});
+
+test('MP-08/MP-10/MP-11 oversized bootstrap retains the video path',async()=>{
+ let latest,offer;const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
+ const raw={width:16,height:16,retain(){},release(){},nativeExact:async()=>({native_exact:true,width:16,height:16,data_base64:'x'.repeat(64*1024+1)})};
+ const m=new MotionEncoder(source,{nativeSession:'owned',encode:async()=>({key:true,data_base64:'AAAA'})},{bootstrapExact:true,bitrate:8000000,codec:'avc1.420033'});
+ try{latest={serial:1,width:16,height:16,raw};offer(latest);await m.active;assert.equal(m.take().encoded.key,true)}finally{await m.close()}
+});
+test('MP-11 bootstrap cancelled during native exact preparation publishes no pixels',async()=>{
+ let latest,offer,resolve,held=0;const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
+ const raw={width:16,height:16,retain(){held++},release(){held--},nativeExact:()=>new Promise(r=>{resolve=r})};
+ const m=new MotionEncoder(source,{nativeSession:'owned',encode:async()=>{throw Error('unexpected codec')}},{bootstrapExact:true,bitrate:8000000,codec:'avc1.420033'});
+ latest={serial:1,width:16,height:16,raw};offer(latest);const closed=m.close();resolve({native_exact:true,width:16,height:16,data_base64:'AAAA'});await closed;assert.equal(m.take(),null);assert.equal(held,0);
+});

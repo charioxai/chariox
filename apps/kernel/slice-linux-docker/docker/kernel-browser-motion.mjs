@@ -10,8 +10,8 @@ const motionHeight=raw=>Number.isSafeInteger(raw.motion_height)&&raw.motion_heig
 const denseNative=raw=>raw?.nativeEncode&&!raw[displayMaskRegions]?.length&&Array.isArray(raw.damage)&&raw.damage.length===4&&
  (raw.damage[2]-raw.damage[0])*(raw.damage[3]-raw.damage[1])>raw.width*raw.height/2&&motionHeight(raw)>=raw.height*.75;
 export class MotionEncoder {
- constructor(source,encoder,{bitrate,codec,independent=false,stripes=false,valid=()=>true,shouldEncode=()=>true,timing=()=>{},now=()=>performance.now()}={}){
-  Object.assign(this,{source,encoder,bitrate,codec,independent,stripes,valid,shouldEncode,timing,now});this.frames=[];this.pending=null;this.active=null;this.key=true;this.resetRows=new Set();this.rate=new CreditBudget(bitrate,now);this.revision=0;this.lastSerial=-1;this.closed=false;this.readyWaiters=new Set();
+ constructor(source,encoder,{bitrate,codec,independent=false,stripes=false,bootstrapExact=false,valid=()=>true,shouldEncode=()=>true,timing=()=>{},now=()=>performance.now()}={}){
+  Object.assign(this,{source,encoder,bitrate,codec,independent,stripes,bootstrapExact,valid,shouldEncode,timing,now});this.frames=[];this.pending=null;this.active=null;this.key=true;this.resetRows=new Set();this.rate=new CreditBudget(bitrate,now);this.revision=0;this.lastSerial=-1;this.closed=false;this.readyWaiters=new Set();
   this.off=source.subscribe(sample=>this.offer(sample));this.offer(source.sample());
  }
  wakeReady(){for(const wake of [...this.readyWaiters])wake();}
@@ -31,6 +31,20 @@ export class MotionEncoder {
   while(this.pending&&!this.closed&&!this.failure&&this.frames.length<2){
    const sample=this.pending;this.pending=null;this.native=Boolean(sample.raw?.nativeEncode);const rowMode=Boolean(this.stripes&&sample.raw&&!denseNative(sample.raw));if(this.rowMode!==rowMode)this.key=true;this.rowMode=rowMode;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
    try{
+   // MP-08/MP-10/MP-11: one small protected native PNG establishes the
+   // canvas without eight cold decoder-worker fetches. Motion stays video.
+   // Dense desktops keep the existing codec path, never a synthetic base.
+   if(this.bootstrapExact&&sample.raw?.nativeExact){
+    this.bootstrapExact=false;let exact;
+    try{exact=await sample.raw.nativeExact({encoder:this.encoder.nativeSession,regions:sample.raw[displayMaskRegions]??[],patch:false});}
+    catch(error){if(!error?.busy&&!error?.refused)throw error;}
+    if(this.closed||!this.valid()||revision!==this.revision)continue;
+    if(exact?.native_exact===true&&exact.width===sample.raw.width&&exact.height===sample.raw.height&&typeof exact.data_base64==='string'&&exact.data_base64.length<=64*1024){
+     const {raw,...protectedSample}=sample;
+     this.frames.push({...protectedSample,...exact,refinement_serial:sample.serial,motion:false,force_lossless:true});
+     this.key=true;this.wakeReady();continue;
+    }
+   }
    let encoded;
    try{encoded=rowMode?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec,sample[displayMaskRegions]??[]);}
    // MP-11: an overlapping exact encode (busy) or one refused protected frame
