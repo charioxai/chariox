@@ -66,13 +66,13 @@ pub(super) async fn send_outgoing_reply(
     outgoing_tx: &RelayOutgoingSender,
     envelope: RelayEnvelope,
 ) -> Result<(), DaemonError> {
-    outgoing_tx
-        .send(envelope)
-        .await
-        .map_err(|_| DaemonError::LocalTransport {
-            operation: "send relay envelope",
-            message: "relay connection writer is closed".to_string(),
-        })
+    if outgoing_tx.send(envelope).await {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "send relay envelope",
+        message: "relay connection writer is closed".to_string(),
+    })
 }
 
 #[cfg(test)]

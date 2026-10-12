@@ -510,14 +510,15 @@ fn defer_or_enqueue_relay_close(
 }
 
 fn enqueue_relay_close(outgoing_tx: &RelayOutgoingSender) -> Result<(), DaemonError> {
-    outgoing_tx
-        .send_after_queued_events(RelayEnvelope::Close {
-            reason: "relay configuration changed after peer response".to_string(),
-        })
-        .map_err(|_| DaemonError::LocalTransport {
-            operation: "send relay envelope",
-            message: "relay connection writer is closed".to_string(),
-        })
+    if outgoing_tx.send_after_queued_events(RelayEnvelope::Close {
+        reason: "relay configuration changed after peer response".to_string(),
+    }) {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "send relay envelope",
+        message: "relay connection writer is closed".to_string(),
+    })
 }
 
 #[cfg(test)]

@@ -224,33 +224,27 @@ impl RelayOutgoingSender {
     }
 
     /// MP-08/MP-10/MP-11: replies wait for lane capacity; they are never dropped.
-    async fn send(
-        &self,
-        envelope: RelayEnvelope,
-    ) -> Result<(), mpsc::error::SendError<RelayEnvelope>> {
+    /// Returns false only when the writer is closed.
+    async fn send(&self, envelope: RelayEnvelope) -> bool {
         if relay_envelope_uses_event_lane(&envelope) {
-            self.event_tx.send(envelope).await
+            self.event_tx.send(envelope).await.is_ok()
         } else {
-            self.priority_tx.send(envelope).await
+            self.priority_tx.send(envelope).await.is_ok()
         }
     }
 
     /// MP-08/MP-10/MP-11: a deferred reconnect Close follows every queued bulk
     /// reply through the FIFO event lane instead of overtaking it.
-    fn send_after_queued_events(
-        &self,
-        envelope: RelayEnvelope,
-    ) -> Result<(), mpsc::error::SendError<RelayEnvelope>> {
+    /// Returns false only when the writer is closed.
+    fn send_after_queued_events(&self, envelope: RelayEnvelope) -> bool {
         match self.event_tx.try_send(envelope) {
             Err(mpsc::error::TrySendError::Full(envelope)) => {
                 let event_tx = self.event_tx.clone();
                 tokio::spawn(async move { event_tx.send(envelope).await });
-                Ok(())
+                true
             }
-            Err(mpsc::error::TrySendError::Closed(envelope)) => {
-                Err(mpsc::error::SendError(envelope))
-            }
-            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+            Ok(()) => true,
         }
     }
 }
