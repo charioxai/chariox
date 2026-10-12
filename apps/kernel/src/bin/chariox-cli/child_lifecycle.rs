@@ -30,9 +30,7 @@ async fn run_unix(mut command: Command) -> std::io::Result<ExitStatus> {
                     return Err(std::io::Error::last_os_error());
                 }
                 if libc::getppid() as u32 != parent_pid {
-                    return Err(std::io::Error::other(
-                        "CLI launcher exited before child exec",
-                    ));
+                    return Err(std::io::Error::from_raw_os_error(libc::ECHILD));
                 }
                 Ok(())
             });
