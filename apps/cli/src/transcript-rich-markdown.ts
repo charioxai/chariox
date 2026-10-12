@@ -6,11 +6,30 @@ import { normalizeMarkdownFenceInfoStrings } from "./transcript-markdown.js"
 
 const fenceOpenPattern = /^ {0,3}(`{3,}|~{3,})/
 const taskMarkerPattern = /^(\s*(?:[-*+]|\d{1,9}[.)])[ \t]+)\[([ xX])\](?=[ \t])/gm
+const imagePattern = /!\[([^\]\n]*)\]\(\s*<?([^\s)>]+)>?(?:\s+"[^"\n]*")?\s*\)/g
+const dataImagePattern = /^data:image\/([a-z0-9.+-]+);base64,([a-z0-9+/=]+)$/i
 
 export function prepareTranscriptMarkdown(text: string): string {
   return mapMarkdownProse(normalizeMarkdownFenceInfoStrings(text), (prose) => (
-    mapOutsideCodeSpans(prose, renderTaskMarkers)
+    mapOutsideCodeSpans(prose, (text) => renderImages(renderTaskMarkers(text)))
   ))
+}
+
+// Terminals get a one-line placeholder: alt text, file name and host (or
+// inline size), and for remote images a clickable OSC-8 link to open it.
+function renderImages(prose: string): string {
+  return prose.replace(imagePattern, (_match, rawAlt: string, src: string) => {
+    const alt = escapeLinkText(rawAlt.trim() || "image")
+    const inline = dataImagePattern.exec(src)
+    if (inline) return `▣ image: ${alt} · ${inline[1]!.toLowerCase()} ${formatBytes(base64Bytes(inline[2]!))} (inline; open in the web app)`
+    if (/^https?:\/\//i.test(src)) {
+      const url = safeUrl(src)
+      if (!url) return `▣ image: ${alt}`
+      const file = decodeSafe(url.pathname.split("/").pop() ?? "")
+      return `[▣ image: ${alt} · ${escapeLinkText([file, url.host].filter(Boolean).join(" · "))}](${url.href})`
+    }
+    return `▣ image: ${alt} · ${escapeLinkText(src.replace(/^file:\/\//i, ""))} (workspace file)`
+  })
 }
 
 function renderTaskMarkers(prose: string): string {
@@ -85,4 +104,34 @@ function findClosingRun(text: string, from: number, length: number): number {
     index = end
   }
   return -1
+}
+
+function escapeLinkText(value: string): string {
+  return value.replace(/[[\]\\]/g, "\\$&")
+}
+
+function safeUrl(value: string): URL | null {
+  try {
+    return new URL(value)
+  } catch {
+    return null
+  }
+}
+
+function decodeSafe(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+function base64Bytes(data: string): number {
+  return Math.floor(data.length * 3 / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0)
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }

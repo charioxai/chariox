@@ -34,3 +34,16 @@ test("code spans of equal backtick runs are protected; unmatched backticks are t
   const upper = (text: string) => text.toUpperCase()
   assert.equal(mapOutsideCodeSpans("a `b` c ``d ` e`` f ` g", upper), "A `b` C ``d ` e`` F ` G")
 })
+
+test("images become a one-line placeholder with name, host and an open link", () => {
+  assert.equal(
+    prepareTranscriptMarkdown("![Wikimedia logo](https://upload.wikimedia.org/wikipedia/commons/8/81/Wikimedia-logo.svg \"logo\")"),
+    "[▣ image: Wikimedia logo · Wikimedia-logo.svg · upload.wikimedia.org](https://upload.wikimedia.org/wikipedia/commons/8/81/Wikimedia-logo.svg)",
+  )
+  assert.equal(
+    prepareTranscriptMarkdown("![dot](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==)"),
+    "▣ image: dot · png 70 B (inline; open in the web app)",
+  )
+  assert.equal(prepareTranscriptMarkdown("![plot v2](./out/plot.png)"), "▣ image: plot v2 · ./out/plot.png (workspace file)")
+  assert.equal(prepareTranscriptMarkdown("`![code](x.png)`\n```\n![fence](y.png)\n```"), "`![code](x.png)`\n```\n![fence](y.png)\n```")
+})
