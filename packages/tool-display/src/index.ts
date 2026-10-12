@@ -215,12 +215,22 @@ function summarizeToolDisplay(update: ToolTranscriptUpdate, patchFiles: ApplyPat
     return `${readInput.filePath}${formatReadWindow(readInput)}`
   }
   return nonEmpty(update.description)
-    ?? nonEmpty(update.title)
+    ?? summaryProviderTitle(update)
     ?? firstLine(update.text)
     ?? plainMarkdownLine(firstLine(markdown))
     ?? firstLine(update.output)
     ?? firstLine(update.error)
     ?? ""
+}
+
+// OpenCode titles a file tool with the path relative to its workspace
+// ("../../tmp/a.txt"); the row title already names that file.
+function summaryProviderTitle(update: ToolTranscriptUpdate) {
+  const title = nonEmpty(update.title)
+  const input = update.input && typeof update.input === "object" ? update.input as Record<string, unknown> : null
+  const path = [input?.filePath, input?.file_path, input?.path].find((value): value is string => typeof value === "string" && value.trim() !== "")
+  const base = (value: string) => value.trim().split(/[\\/]/).pop()
+  return title && path && base(title) === base(path) ? null : title
 }
 
 function firstLine(value: unknown) {

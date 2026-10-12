@@ -84,3 +84,19 @@ test("tool icons follow the tool kind for each provider's tool shapes", () => {
     assert.equal([...glyph].length, 1)
   }
 })
+
+// MP-08 / MP-10 (panes Phase-1 drill): OpenCode's workspace-relative title
+// ("../../tmp/a.txt") does not repeat the file the row title already names.
+test("file tool summaries skip the provider's relative copy of the path", () => {
+  const display = formatToolDisplay({
+    id: "w1",
+    tool: "write",
+    status: "completed",
+    title: "../../../../tmp/a.txt",
+    input: { filePath: "/tmp/a.txt", content: "x" },
+    output: "Wrote file successfully.",
+  })
+  assert.equal(display.title, "Wrote /tmp/a.txt")
+  assert.doesNotMatch(display.summary, /\.\.\//)
+  assert.equal(formatToolDisplay({ id: "m1", tool: "search_docs", title: "context7", input: { q: "x" } }).summary, "context7")
+})
