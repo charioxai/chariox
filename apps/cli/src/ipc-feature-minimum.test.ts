@@ -176,3 +176,50 @@ test("MP-08 MP-10 exact cancellation checks attached kernel capability on Unix a
     assert.deepEqual(requests.slice(-2), [{ RelayStatus: null }, request])
   }
 })
+
+// MP-08 / MP-10 / MP-11: cross both CLI and shared gates without replacing send.
+test("MP-08 MP-10 main491 exact cancellation crosses the actual CLI transport", async context => {
+  const root = mkdtempSync(join(tmpdir(), "chariox-exact-cancel-"))
+  const previous = process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR
+  process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR = root
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+  await new Promise<void>(resolve => server.once("listening", resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+  let capabilities = ["exact_prompt_cancellation_v499"]
+  const requests: unknown[] = []
+  server.on("connection", socket => socket.on("message", data => {
+    const frame = JSON.parse(String(data))
+    requests.push(frame.request)
+    socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, error: null,
+      response: "RelayStatus" in frame.request
+        ? { RelayStatus: { status: { daemon_id: "k", machine_id: "m", capabilities } } }
+        : { PromptCancelled: {} } }))
+  }))
+  const client = new LocalIpcClient(`ws://127.0.0.1:${address.port}/kernel`)
+  context.after(async () => {
+    client.destroy()
+    for (const socket of server.clients) socket.terminate()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    if (previous === undefined) delete process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR
+    else process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR = previous
+    rmSync(root, { recursive: true, force: true })
+  })
+  const request = { CancelActivePrompt: { session_id: "s", attachment_id: "a", expected_prompt_id: "home-prompt" } }
+  // Unknown version: both fresh capability probes must admit main's sole marker.
+  assert.deepEqual(await client.send(request), { PromptCancelled: {} })
+  assert.deepEqual(requests, [{ RelayStatus: null }, { RelayStatus: null }, request])
+  // Numeric 491 and later advertisements never bypass a missing capability.
+  for (const version of [491, 502]) {
+    await client.close()
+    writeFileSync(join(root, "kernel.json"), JSON.stringify({ schema_version: 1, kernel_id: "k",
+      machine_id: "m", host: "127.0.0.1", port: address.port, heartbeat_at_ms: Date.now(),
+      local_daemon_protocol_version: version }))
+    assert.deepEqual(await client.send(request), { PromptCancelled: {} })
+    capabilities = []
+    const before = requests.length
+    await assert.rejects(client.send(request), /does not support exact_prompt_cancellation_v499/)
+    assert.deepEqual(requests.slice(before), [{ RelayStatus: null }])
+    capabilities = ["exact_prompt_cancellation_v499"]
+  }
+})

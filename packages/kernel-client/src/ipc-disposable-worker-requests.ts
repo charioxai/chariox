@@ -50,7 +50,7 @@ export async function requireKernelControlCapability(
   if (expected?.machineId !== undefined && status.machine_id !== expected.machineId) {
     throw new Error("Kernel control capability status belongs to another machine")
   }
-  const capability = name === "CancelActivePrompt" ? "conditional_prompt_cancellation_v1"
+  const capability = name === "CancelActivePrompt" ? "exact_prompt_cancellation_v499"
     : name === "KeepManagedEnvironmentRunning" ? "managed_environment_keep_running_v1" : "disposable_worker_control_v1"
   if (!Array.isArray(status.capabilities)
     || !status.capabilities.every(value => typeof value === "string")

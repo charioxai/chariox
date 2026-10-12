@@ -42,7 +42,7 @@ test("bare Unix controls use websocket frames and fresh capabilities", async t =
 })
 
 // MP-08 / MP-10 / MP-11: verify the real shared transport refuses silent downgrade.
-test("conditional cancellation is sent only to a supporting connected kernel", async t => {
+test("MP-08/MP-10/MP-11 exact cancellation admits main491 capability on the actual connected transport", async t => {
   const websocket = new WebSocketServer({ host: "127.0.0.1", port: 0 })
   await new Promise<void>(resolve => websocket.once("listening", resolve))
   const address = websocket.address()
@@ -64,12 +64,12 @@ test("conditional cancellation is sent only to a supporting connected kernel", a
     await new Promise<void>(resolve => websocket.close(() => resolve()))
   })
   const request = { CancelActivePrompt: { session_id: "s", attachment_id: "a", expected_prompt_id: "A" } }
-  await assert.rejects(client.send(request), /conditional_prompt_cancellation_v1/)
+  await assert.rejects(client.send(request), /does not support/)
   assert.deepEqual(seen, [{ RelayStatus: null }])
-  capabilities = ["conditional_prompt_cancellation_v1"]
+  capabilities = ["exact_prompt_cancellation_v499"]
   assert.deepEqual(await client.send(request), { ok: true })
   capabilities = []
-  await assert.rejects(client.send(request), /conditional_prompt_cancellation_v1/)
+  await assert.rejects(client.send(request), /does not support/)
   const legacy = { CancelActivePrompt: { session_id: "s", attachment_id: "a" } }
   assert.deepEqual(await client.send(legacy), { ok: true })
   assert.deepEqual(seen, [{ RelayStatus: null }, { RelayStatus: null }, request, { RelayStatus: null }, legacy])
