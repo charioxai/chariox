@@ -570,3 +570,24 @@ test('MP-10: spaced precise wheel steps scroll the viewer every frame (document,
     assert.equal(taken, false, 'MP-10: a snap scroller keeps the native wheel');
   } finally { await page.close(); }
 });
+
+// Review #320@4f8b54237 P3: the kernel refuses a text action over 16384 UTF-16 units, so a long paste changed nothing.
+test('MP-08: review #320@4f8b54237-1 a paste longer than one text action reaches the kernel in order, in slices that never split a surrogate pair', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'textarea', form: textForm('', 0) }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'div', attrs: { contenteditable: 'true' } }, { id: 'n6', parent: 'n5', kind: 'text', text: 'rich' }])), focused: 'n4' });
+    const text = 'a'.repeat(16383) + '😀' + 'b'.repeat(20000);
+    for (const selector of ['textarea', 'div']) {
+      const actions = await page.evaluate(async ({ selector, text }) => {
+        const doc = window.r.frame.contentDocument, el = doc.querySelector(selector); el.focus(); window.sent.splice(0);
+        const transfer = new DataTransfer(); transfer.setData('text/plain', text);
+        el.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertFromPaste', data: selector === 'textarea' ? text : null, dataTransfer: selector === 'textarea' ? null : transfer, bubbles: true, cancelable: true, composed: true }));
+        await new Promise(resolve => setTimeout(resolve, 50));
+        return window.sent.splice(0).filter(action => action.kind === 'text').map(action => action.text);
+      }, { selector, text });
+      assert(actions.length === 3 && actions.every(slice => slice.length <= 16384), `MP-08: ${selector} slices ${actions.map(slice => slice.length)}`);
+      assert.equal(actions[0].length, 16383, 'MP-08: the slice ends before a surrogate pair it would split');
+      assert.equal(actions.join(''), text, `MP-08: the ${selector} paste arrives whole and in order`);
+    }
+  } finally { await page.close(); }
+});

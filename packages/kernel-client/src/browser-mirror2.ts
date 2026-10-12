@@ -10,6 +10,7 @@ export const browserMirror2MinimumProtocolVersion = 501
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 const CREDIT_WINDOW = 4 // credits in flight at most (attachBrowserMirror2)
+const TEXT_LIMIT = 16384 // UTF-16 units per text action (the kernel refuses more)
 const DELETIONS: Record<string, string[]> = {
   deleteContentBackward: ['Backspace'], deleteContentForward: ['Delete'], deleteWordBackward: ['Ctrl+Backspace'], deleteWordForward: ['Ctrl+Delete'],
   deleteSoftLineBackward: ['Shift+Home', 'Backspace'], deleteHardLineBackward: ['Shift+Home', 'Backspace'], deleteSoftLineForward: ['Shift+End', 'Delete'], deleteHardLineForward: ['Shift+End', 'Delete'],
@@ -90,6 +91,15 @@ export class BrowserMirror2Renderer {
     if (action.kind === 'scroll_to' && last?.action.kind === 'scroll_to' && last.action.node_id === action.node_id) { last.action = action; last.epoch = epoch; return }
     this.queue.push({ action, epoch }); this.pendingInputs++
     void this.pump()
+  }
+  // The kernel admits at most TEXT_LIMIT UTF-16 units per text action: a longer paste goes in order, in slices that
+  // never split a surrogate pair.
+  private enqueueText(text: string): void {
+    for (let at = 0; at < text.length;) {
+      let end = Math.min(text.length, at + TEXT_LIMIT)
+      if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]!)) end--
+      this.enqueue({ kind: 'text', text: text.slice(at, end) }); at = end
+    }
   }
   private async pump(): Promise<void> {
     if (this.sending) return
@@ -190,9 +200,9 @@ export class BrowserMirror2Renderer {
       if (input.inputType.startsWith('delete')) { this.syncRange(); for (const key of ranged() ? ['Delete'] : DELETIONS[input.inputType] ?? []) this.enqueue({ kind: 'key', key }); return }
       const data = input.data ?? (input.inputType.startsWith('insertFromPaste') ? input.dataTransfer?.getData('text/plain') : null)
       if (data === composed || !data) return
-      this.syncRange(); this.enqueue({ kind: 'text', text: data })
+      this.syncRange(); this.enqueueText(data)
     })
-    on('compositionend', event => { event.preventDefault(); const data = (event as CompositionEvent).data; if (data) { composed = data; setTimeout(() => { composed = null }, 0); this.enqueue({ kind: 'text', text: data }) } this.syncRange(false) })
+    on('compositionend', event => { event.preventDefault(); const data = (event as CompositionEvent).data; if (data) { composed = data; setTimeout(() => { composed = null }, 0); this.enqueueText(data) } this.syncRange(false) })
     // The range a composition replaces is synced as it starts; its result is where the kernel's caret ends.
     on('compositionstart', () => this.syncRange())
     on('selectionchange', () => { if (this.applying) return; const selection = doc.getSelection(); if (!selection || selection.isCollapsed) return; const a = this.ids.get(selection.anchorNode!), b = this.ids.get(selection.focusNode!); if (a && b && this.records.get(a)?.kind === 'text' && this.records.get(b)?.kind === 'text') this.enqueue({ kind: 'selection', anchor_id: a, anchor_offset: selection.anchorOffset, focus_id: b, focus_offset: selection.focusOffset }) })

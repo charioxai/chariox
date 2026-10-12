@@ -75,6 +75,17 @@ test('MP-08/MP-10: native clipboard paste replaces a selected contenteditable ra
     assert.deepEqual(await page.evaluate(()=>window.pasteFields),[{data_null:true,plain_text:true}]);
     assert(actions.some(a=>a.kind==='selection'));assert(actions.some(a=>a.kind==='text'&&a.text==='Chariox'));assert.deepEqual(errors,[]);
   }));
+// Review #320@4f8b54237 P3: a paste over the kernel's 16384-unit text limit was refused whole and changed nothing.
+test('MP-08: a native clipboard paste longer than one text action reaches the kernel whole',()=>roundtrip(
+  '<!doctype html><textarea id="field"></textarea>','',async({page,next,apply,evaluate,errors})=>{
+    await apply(await next());
+    const text='x'.repeat(16383)+'\u{1F600}'+'y'.repeat(5000);
+    await page.evaluate(async text=>{await navigator.clipboard.writeText(text);window.r.frame.contentDocument.getElementById('field').focus();},text);
+    for(let i=0;i<40&&await evaluate('document.activeElement?.id')!=='field';i++){await apply(await next());await page.waitForTimeout(25);}
+    await page.keyboard.press('Control+v');
+    for(let i=0;i<120&&await evaluate('field.value.length')!==text.length;i++)await page.waitForTimeout(25);
+    assert.equal(await evaluate('field.value'),text,'MP-08: every slice of the paste reaches the kernel field in order');assert.deepEqual(errors,[]);
+  }));
 for(const origin of ['localhost:PORT','127.0.0.1:CHILDPORT'])test(`MP-08/MP-10: ${origin} foreign child closed custom root presents its real tile pixels`,()=>roundtrip(
   `<!doctype html><iframe src="http://${origin}/child" style="width:320px;height:140px"></iframe>`,
   '<!doctype html><x-closed id="box" style="display:block;width:100px;height:60px"></x-closed><script>customElements.define("x-closed",class extends HTMLElement{constructor(){super();this.attachShadow({mode:"closed"}).innerHTML=\'<div style="width:100px;height:60px;background:rgb(3,41,207)">closed child</div>\'}});onmessage=e=>{if(e.data==="large"){box.style.width="900px";box.style.height="600px"}}</script>',
