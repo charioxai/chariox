@@ -158,7 +158,7 @@ for (const raw of [
   "/workflow notifications on source --fields verdict,review_url",
   "/workflow notifications off source",
   "/workflow trigger notification list",
-  "/workflow trigger notification attach source --workflow receiver",
+  "/workflow trigger notification attach source --publication trigger-reference",
   "/workflow trigger notification detach subscription-1",
 ]) {
   test(`${raw} routes through the shared shell instead of the legacy workflow handler`, async () => {

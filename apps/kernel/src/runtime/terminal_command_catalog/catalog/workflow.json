@@ -648,7 +648,7 @@
               {
                 "id": "workflow-trigger-notification-attach",
                 "label": "attach",
-                "description": "Attach a source; append source reference and --workflow receiver",
+                "description": "Attach a source; append source reference and --publication trigger-reference",
                 "value": "/workflow trigger notification attach "
               },
               {
