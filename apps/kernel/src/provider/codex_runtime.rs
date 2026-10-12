@@ -4,6 +4,7 @@ mod events;
 mod input;
 mod interrupt;
 mod lifecycle;
+mod output_ready;
 mod prompt;
 mod run_config;
 mod state;

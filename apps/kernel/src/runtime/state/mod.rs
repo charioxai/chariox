@@ -1068,22 +1068,22 @@ impl KernelRuntimeState {
 }
 
 #[derive(Debug, Default)]
-struct RuntimeChangeSignal {
+pub(crate) struct RuntimeChangeSignal {
     sequence: AtomicU64,
     notify: Notify,
 }
 
 impl RuntimeChangeSignal {
-    fn sequence(&self) -> u64 {
+    pub(crate) fn sequence(&self) -> u64 {
         self.sequence.load(Ordering::Acquire)
     }
 
-    fn record_change(&self) {
+    pub(crate) fn record_change(&self) {
         self.sequence.fetch_add(1, Ordering::AcqRel);
         self.notify.notify_waiters();
     }
 
-    async fn wait_for_change_after(&self, sequence: u64) {
+    pub(crate) async fn wait_for_change_after(&self, sequence: u64) {
         if self.sequence() != sequence {
             return;
         }

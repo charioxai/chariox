@@ -114,6 +114,12 @@ impl ProviderProcessServiceStore {
         self.read().native_interaction_bridge()
     }
 
+    pub(crate) fn output_ready_signal(
+        &self,
+    ) -> crate::provider::output_ready::ProviderOutputReadySignal {
+        self.read().output_ready_signal()
+    }
+
     pub(crate) fn run_actor_completion_signal(
         &self,
     ) -> crate::provider::ProviderRunActorCompletionSignal {

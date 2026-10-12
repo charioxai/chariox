@@ -291,10 +291,16 @@ pub(in crate::provider) fn drain_opencode_events(
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => {
                 let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
+                state.live_text_from_start = false;
+                let output_notifier = state.event_subscription.output_notifier.clone();
                 state.event_subscription = client.subscribe_events_with_retry(
                     OPENCODE_EVENT_RESUBSCRIBE_TIMEOUT,
                     OPENCODE_EVENT_RESUBSCRIBE_RETRY_INTERVAL,
                 )?;
+                state
+                    .event_subscription
+                    .output_notifier
+                    .inherit_binding(&output_notifier);
                 if let Ok(snapshot) = client.snapshot(&state.session_id) {
                     if resolved_model.is_none() {
                         resolved_model = snapshot

@@ -16,6 +16,7 @@ struct PollFailureState {
 #[derive(Clone, Default)]
 pub(crate) struct StructuredOutputRecordStore {
     records: Arc<Mutex<BTreeMap<String, Vec<TerminalOutputRecord>>>>,
+    output_ready: Arc<Mutex<BTreeSet<String>>>,
     next_poll_due_at_ms: Arc<Mutex<BTreeMap<String, u64>>>,
     in_flight_prompt_ids: Arc<Mutex<BTreeMap<String, Option<String>>>>,
     consecutive_poll_failures: Arc<Mutex<BTreeMap<String, PollFailureState>>>,
@@ -48,6 +49,13 @@ impl StructuredOutputRecordStore {
             .extend(records);
     }
 
+    pub(crate) fn mark_output_ready(&self, run_id: String) {
+        self.output_ready
+            .lock()
+            .expect("structured output readiness poisoned")
+            .insert(run_id);
+    }
+
     pub(crate) fn poll_due(&self, provider_run_id: &str, now_ms: u64) -> bool {
         if self
             .consecutive_poll_failures
@@ -66,11 +74,16 @@ impl StructuredOutputRecordStore {
         {
             return false;
         }
-        self.next_poll_due_at_ms
+        self.output_ready
             .lock()
-            .expect("structured output poll schedule poisoned")
-            .get(provider_run_id)
-            .is_none_or(|due_at_ms| *due_at_ms <= now_ms)
+            .expect("structured output readiness poisoned")
+            .contains(provider_run_id)
+            || self
+                .next_poll_due_at_ms
+                .lock()
+                .expect("structured output poll schedule poisoned")
+                .get(provider_run_id)
+                .is_none_or(|due_at_ms| *due_at_ms <= now_ms)
     }
 
     pub(crate) fn enqueue_poll<E>(
@@ -95,8 +108,13 @@ impl StructuredOutputRecordStore {
             .lock()
             .expect("structured output poll schedule poisoned")
             .remove(provider_run_id);
+        self.output_ready
+            .lock()
+            .expect("structured output readiness poisoned")
+            .remove(provider_run_id);
         let result = enqueue();
         if !matches!(&result, Ok(true)) {
+            self.mark_output_ready(provider_run_id.to_string());
             self.take_in_flight_prompt_id(provider_run_id);
         }
         result
@@ -177,6 +195,10 @@ impl StructuredOutputRecordStore {
     }
 
     pub(crate) fn stop_polling(&self, provider_run_id: &str) {
+        self.output_ready
+            .lock()
+            .expect("structured output readiness poisoned")
+            .remove(provider_run_id);
         self.next_poll_due_at_ms
             .lock()
             .expect("structured output poll schedule poisoned")
@@ -474,6 +496,40 @@ mod tests {
             store
                 .schedule_after_poll_failure_for_prompt("provider-run-1", Some("prompt-2"), 3_000,),
             Some(1),
+        );
+    }
+}
+
+#[cfg(test)]
+mod output_ready_tests {
+    use super::StructuredOutputRecordStore;
+    #[test]
+    fn provider_arrival_survives_an_in_flight_empty_poll_backoff() {
+        let store = StructuredOutputRecordStore::default();
+        store.mark_poll_enqueued("run", Some("prompt".into()));
+        store.mark_output_ready("run".into());
+        assert!(!store.poll_due("run", 1000));
+        store.take_in_flight_prompt_id("run");
+        store.schedule_after_empty_poll("run", 1000);
+        assert!(
+            store.poll_due("run", 1001),
+            "an event bypasses the 500ms fallback"
+        );
+        assert!(store
+            .enqueue_poll("run", Some("prompt".into()), || Ok::<_, ()>(true))
+            .unwrap());
+        store.take_in_flight_prompt_id("run");
+        store.schedule_after_empty_poll("run", 1001);
+        assert!(
+            !store.poll_due("run", 1002),
+            "the next empty poll retains fallback backoff"
+        );
+        store.mark_output_ready("run".into());
+        store.clear("run");
+        store.schedule_after_empty_poll("run", 1002);
+        assert!(
+            !store.poll_due("run", 1003),
+            "clear removes stale readiness"
         );
     }
 }

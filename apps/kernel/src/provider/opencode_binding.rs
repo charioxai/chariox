@@ -1169,6 +1169,8 @@ fn submit_opencode_prompt_with_policy(
         !policy.is_read_only_discovery() && opencode_prompt_should_allow_native_bash(run),
     )?;
     state.note_prompt_submitted(message_id);
+    // Subscription was established before this new prompt was submitted.
+    state.live_text_from_start = true;
     Ok(())
 }
 

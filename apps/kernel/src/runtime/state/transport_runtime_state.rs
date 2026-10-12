@@ -101,10 +101,22 @@ impl KernelRuntimeState {
                 .provider_output_deadlines
                 .take_due_provider_run_ids(now_ms),
         );
+        for run_id in self
+            .owned
+            .provider_store
+            .output_ready_signal()
+            .take_ready_provider_run_ids()
+        {
+            self.owned
+                .structured_output_records
+                .mark_output_ready(run_id.clone());
+            ready_provider_run_ids.insert(run_id);
+        }
         self.reap_structured_prompt_jobs_and_dispatch();
         let mut pumped_provider_run_ids = Vec::with_capacity(ready_provider_run_ids.len());
         for provider_run_id in ready_provider_run_ids {
             let Ok(provider_run) = self.owned.provider_store.get_run(&provider_run_id) else {
+                self.owned.structured_output_records.clear(&provider_run_id);
                 continue;
             };
             let session_id = provider_run.session_id().to_string();
@@ -356,6 +368,17 @@ impl KernelRuntimeState {
     pub(crate) async fn wait_for_pty_output_change_after(&self, sequence: u64) {
         self.owned
             .pty_output_signal
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn provider_output_ready_sequence(&self) -> u64 {
+        self.owned.provider_store.output_ready_signal().sequence()
+    }
+    pub(crate) async fn wait_for_provider_output_ready_after(&self, sequence: u64) {
+        self.owned
+            .provider_store
+            .output_ready_signal()
             .wait_for_change_after(sequence)
             .await;
     }

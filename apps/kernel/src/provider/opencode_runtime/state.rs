@@ -38,6 +38,7 @@ pub(crate) struct OpenCodeRuntimeState {
     pub(super) session_id: String,
     pub(super) emitted_text_by_part: BTreeMap<String, String>,
     pub(super) emitted_tool_summaries: BTreeMap<String, String>,
+    pub(in crate::provider) live_text_from_start: bool,
     pub(super) buffered_text_deltas: BTreeMap<String, Vec<String>>,
     pub(super) message_roles: BTreeMap<String, String>,
     pub(super) part_kinds: BTreeMap<String, String>,
@@ -67,6 +68,7 @@ impl OpenCodeRuntimeState {
             session_id,
             emitted_text_by_part: BTreeMap::new(),
             emitted_tool_summaries: BTreeMap::new(),
+            live_text_from_start: false,
             buffered_text_deltas: BTreeMap::new(),
             message_roles: BTreeMap::new(),
             part_kinds: BTreeMap::new(),
@@ -84,6 +86,14 @@ impl OpenCodeRuntimeState {
             unmatched_session_error_idle_since: None,
             native_approval_origin: None,
         }
+    }
+
+    pub(in crate::provider) fn bind_output_ready(
+        &self,
+        run_id: String,
+        signal: crate::provider::output_ready::ProviderOutputReadySignal,
+    ) {
+        self.event_subscription.output_notifier.bind(run_id, signal);
     }
 
     pub(in crate::provider) fn base_url(&self) -> &str {
@@ -157,6 +167,7 @@ impl OpenCodeRuntimeState {
 
     pub(in crate::provider) fn settle_aborted_turn(&mut self, messages: &[OpenCodeMessage]) {
         self.session_errors_require_prompt_match = true;
+        self.live_text_from_start = false;
         while self.event_subscription.receiver.try_recv().is_ok() {}
         self.emitted_text_by_part.clear();
         self.emitted_tool_summaries.clear();

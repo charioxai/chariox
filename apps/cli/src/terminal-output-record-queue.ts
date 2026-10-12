@@ -1,5 +1,6 @@
 type TerminalOutputRecordQueueOptions<TimerHandle, RecordValue> = {
   delayMs: number
+  immediateFirstRecord?: boolean
   maxRecordsPerFlush?: number
   maxPendingRecords?: number
   scheduleTimer: (callback: () => void, delayMs: number) => TimerHandle
@@ -68,7 +69,15 @@ export function createTerminalOutputRecordQueue<TimerHandle, RecordValue>(
       if (records.length === 0) {
         return
       }
-      pendingRecords.push(...records)
+      // MP-08 / MP-10: render the leading record before opening the
+      // coalescing window. Later records retain the bounded batching budget.
+      if (options.immediateFirstRecord && pendingTimer === undefined && pendingRecords.length === 0) {
+        scheduleFlush()
+        pendingRecords.push(...records)
+        options.processRecords(pendingRecords.splice(0, 1))
+      } else {
+        pendingRecords.push(...records)
+      }
       // A busy producer can outrun the delayed flush. Process overflow now so
       // the queue stays bounded without dropping transcript records.
       while (pendingRecords.length > maxPendingRecords) {

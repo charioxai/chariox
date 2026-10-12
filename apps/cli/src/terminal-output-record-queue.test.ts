@@ -167,3 +167,35 @@ test("terminal output record queue bounds retained records when producers outrun
   assert.equal(queue.pendingCount(), 0)
   assert.equal(queue.hasPendingFlush(), false)
 })
+
+// MP-08 / MP-10: the leading record must reach rendering without waiting for
+// the stream coalescing window; the rest still share one bounded flush.
+test("terminal output record queue delivers the first record immediately and coalesces the rest", () => {
+  const timers: FakeTimer[] = []
+  const processed: number[][] = []
+  const queue = createTerminalOutputRecordQueue<FakeTimer, number>({
+    delayMs: 48,
+    immediateFirstRecord: true,
+    maxRecordsPerFlush: 2,
+    scheduleTimer(callback, delayMs) {
+      const timer = { callback, delayMs, cleared: false }
+      timers.push(timer)
+      return timer
+    },
+    clearTimer(timer) { timer.cleared = true },
+    processRecords(records) { processed.push(records) },
+  })
+  queue.queue([1, 2, 3])
+  assert.deepEqual(processed, [[1]])
+  assert.equal(queue.pendingCount(), 2)
+  queue.queue([4])
+  assert.equal(timers.length, 1)
+  timers[0]!.callback()
+  assert.deepEqual(processed, [[1], [2, 3]])
+  timers[1]!.callback()
+  assert.deepEqual(processed, [[1], [2, 3], [4]])
+  queue.queue([5])
+  assert.deepEqual(processed, [[1], [2, 3], [4], [5]])
+  queue.drain()
+  assert.equal(queue.hasPendingFlush(), false)
+})

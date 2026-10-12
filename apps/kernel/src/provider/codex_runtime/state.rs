@@ -43,6 +43,8 @@ pub struct CodexRuntimeState {
     pub(super) metadata_only_discovery: bool,
     pub(super) notification_only: bool,
     pub(super) socket: CodexSocket,
+    #[cfg(unix)]
+    output_readiness: Option<super::output_ready::CodexOutputReadiness>,
     pub(super) next_request_id: u64,
     pub(super) buffered_notifications: Vec<CodexNotification>,
     pub(super) active_turn_id: Option<String>,
@@ -109,6 +111,8 @@ impl CodexRuntimeState {
             metadata_only_discovery: false,
             notification_only: false,
             socket,
+            #[cfg(unix)]
+            output_readiness: None,
             next_request_id,
             buffered_notifications: Vec::new(),
             active_turn_id: None,
@@ -135,6 +139,8 @@ impl CodexRuntimeState {
             metadata_only_discovery: false,
             notification_only: false,
             socket,
+            #[cfg(unix)]
+            output_readiness: None,
             next_request_id,
             buffered_notifications: Vec::new(),
             active_turn_id: None,
@@ -143,6 +149,26 @@ impl CodexRuntimeState {
             authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),
             text_items: BTreeMap::new(),
             tool_items: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn bind_output_ready(
+        &mut self,
+        run_id: String,
+        signal: crate::provider::output_ready::ProviderOutputReadySignal,
+    ) {
+        let notifier = crate::provider::output_ready::ProviderEventNotifier::default();
+        notifier.bind(run_id, signal);
+        #[cfg(unix)]
+        {
+            self.output_readiness =
+                super::output_ready::CodexOutputReadiness::start(&self.socket, notifier);
+        }
+    }
+    pub(crate) fn acknowledge_output_poll(&self) {
+        #[cfg(unix)]
+        if let Some(readiness) = &self.output_readiness {
+            readiness.polled();
         }
     }
 

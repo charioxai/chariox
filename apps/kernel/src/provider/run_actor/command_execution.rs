@@ -288,6 +288,7 @@ pub(super) fn execute_output_poll_command(
             thread::sleep(output_poll_delay);
         }
         let poll = drain_codex_events(run, &mut state, native_interaction_bridge.read());
+        state.acknowledge_output_poll();
         let resolved_resume_state =
             completed_codex_turn_resume_state(state.thread_id(), poll.as_ref().ok());
         runtime_registry.restore_codex_runtime_if_live(run_id, &slot, state);

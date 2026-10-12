@@ -18,6 +18,7 @@ use super::{OpenCodeClient, OpenCodeEvent};
 pub struct OpenCodeEventSubscription {
     pub receiver: Receiver<OpenCodeEvent>,
     stop: Arc<AtomicBool>,
+    pub(crate) output_notifier: crate::provider::output_ready::ProviderEventNotifier,
 }
 
 impl OpenCodeEventSubscription {
@@ -29,6 +30,7 @@ impl OpenCodeEventSubscription {
     pub(crate) fn for_tests(receiver: Receiver<OpenCodeEvent>) -> Self {
         Self {
             receiver,
+            output_notifier: Default::default(),
             stop: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -72,6 +74,8 @@ impl OpenCodeClient {
         let stop_for_thread = stop.clone();
         let provider_run_id = self.provider_run_id.clone();
 
+        let output_notifier = crate::provider::output_ready::ProviderEventNotifier::default();
+        let notifier = output_notifier.clone();
         thread::spawn(move || {
             let mut reader = BufReader::new(Cursor::new(buffered_body).chain(stream));
             let mut data_lines = Vec::new();
@@ -94,7 +98,7 @@ impl OpenCodeClient {
                             let payload = data_lines.join("\n");
                             data_lines.clear();
                             if let Some(event) = parse_sse_event(&payload, &provider_run_id) {
-                                if tx.send(event).is_err() {
+                                if notifier.send(&tx, event).is_err() {
                                     break;
                                 }
                             }
@@ -115,7 +119,11 @@ impl OpenCodeClient {
             }
         });
 
-        Ok(OpenCodeEventSubscription { receiver: rx, stop })
+        Ok(OpenCodeEventSubscription {
+            receiver: rx,
+            stop,
+            output_notifier,
+        })
     }
 
     pub fn subscribe_events_with_retry(

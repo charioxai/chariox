@@ -114,6 +114,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
   })
   const terminalOutputRecordQueue = createTerminalOutputRecordQueue<ReturnType<typeof deps.scheduleTimer>, TerminalOutputRecord>({
     delayMs: STREAM_BATCH_WINDOW_MS,
+    immediateFirstRecord: true,
     maxRecordsPerFlush: STREAM_RECORDS_PER_FLUSH,
     maxPendingRecords: STREAM_RECORDS_PER_FLUSH * 4,
     scheduleTimer: deps.scheduleTimer,
