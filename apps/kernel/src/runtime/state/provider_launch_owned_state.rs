@@ -1169,7 +1169,8 @@ mod tests {
             crate::session::DEFAULT_LOCAL_USER_ID,
             "claude",
             &profile.profile_id,
-        ).expect("MP-08/MP-11: a registered credential requires Vault admission for every mode"));
+        )
+        .expect("MP-08/MP-11: a registered credential requires Vault admission for every mode"));
         drop(app);
 
         std::env::remove_var("CHARIOX_HOME");

@@ -84,11 +84,6 @@ pub(crate) fn resolve_provider_account_credentials_for_launch(
     if claude_login_runs_agents(profiles, owner_user_id, profile_id)? {
         return Ok(ProviderCredentialEnvironment::default());
     }
-    let environment =
-        resolve_provider_account_credentials(config, owner_user_id, provider, profile_id)?;
-    if !environment.is_empty() {
-        return Ok(environment);
-    }
     Err(DaemonError::InvalidConfig {
         field: "provider account credential",
         message:
