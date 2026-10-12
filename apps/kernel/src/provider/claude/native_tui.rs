@@ -97,14 +97,43 @@ pub(crate) fn fit_claude_native_hidden_context(
     let capacity = CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS * (CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES - 3);
     let room = capacity.saturating_sub(required.len() + open.len() + close.len());
     if room == 0 {
-        return Ok(required);
+        ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context)?;
+        return Ok(hidden_context);
     }
     let body = &hidden_context[body_start..body_end];
-    let mut end = body.len().min(room);
-    while !body.is_char_boundary(end) {
-        end -= 1;
+    const TRUNCATED: &str = "[truncated]\n";
+    // Latest turn is last in the home packet. Retain that turn before older
+    // summaries, trimming the start at a UTF-8 boundary and disclosing the cut.
+    let keep = room.saturating_sub(TRUNCATED.len());
+    if keep == 0 {
+        ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context)?;
+        return Ok(hidden_context);
     }
-    let fitted = format!("{prefix}{open}{}{close}{suffix}", &body[..end]);
+    let latest_start = body
+        .find("\nLatest turn:\n")
+        .map(|index| index + 1)
+        .or_else(|| body.starts_with("Latest turn:\n").then_some(0))
+        .unwrap_or(body.len());
+    let (prior, latest) = body.split_at(latest_start);
+    let mut latest_end = latest.len().min(keep);
+    while !latest.is_char_boundary(latest_end) {
+        latest_end -= 1;
+    }
+    if !latest.is_empty() && latest_end <= "Latest turn:\n".len() {
+        // A header without any latest-turn detail is not a usable replay.
+        ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context)?;
+        return Ok(hidden_context);
+    }
+    let prior_room = keep - latest_end;
+    let mut begin = prior.len().saturating_sub(prior_room);
+    while !prior.is_char_boundary(begin) {
+        begin += 1;
+    }
+    let fitted = format!(
+        "{prefix}{open}{TRUNCATED}{}{}{close}{suffix}",
+        &prior[begin..],
+        &latest[..latest_end]
+    );
     ensure_claude_native_hidden_context_fits(provider_run_id, &fitted)?;
     Ok(fitted)
 }

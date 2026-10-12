@@ -3016,7 +3016,12 @@ fn assert_recreated_replay_fits_worker(provider: &str) {
     let body_room = crate::provider::claude_native_hidden_context_room(&required).min(24_000)
         - open.len()
         - close.len();
-    let hidden = format!("{required}\n\n{open}{}{close}", "🦀".repeat(body_room / 4));
+    let latest = "Latest turn:\nInterrupted attempt: preserve the pending tool and next step";
+    let body = format!(
+        "Prior turns:\n{}\n\n{latest}",
+        "🦀".repeat((body_room - latest.len() - 17) / 4)
+    );
+    let hidden = format!("{required}\n\n{open}{body}{close}");
     crate::provider::ensure_claude_native_hidden_context_fits(run.id(), &hidden).unwrap();
     let injected = ProviderOutputClaudeNativeBridge::new(&mut app).inject_prompt(
         session.id(),
@@ -3037,9 +3042,30 @@ fn assert_recreated_replay_fits_worker(provider: &str) {
     injected.expect("optional replay must fit after normal worker context is added");
     assert!(delivered.contains(&required));
     assert!(delivered.contains("normal-origin-prompt"));
+    assert!(
+        delivered.contains(latest),
+        "worker trimming must retain the latest interrupted attempt"
+    );
+    assert!(
+        delivered.contains("[truncated]"),
+        "worker trimming must disclose omitted prior turns"
+    );
     crate::provider::ensure_claude_native_hidden_context_fits(run.id(), &delivered).unwrap();
     assert!(
         delivered.contains("<chariox_context_handoff>")
             == delivered.contains("</chariox_context_handoff>")
+    );
+}
+
+// MP-08 / MP-10 / MP-11: mandatory worker context cannot consume a replay with no latest body.
+#[test]
+fn review976r2_claude_rejects_replay_with_only_a_partial_latest_header() {
+    let open = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_OPEN;
+    let close = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_CLOSE;
+    let capacity = 8 * (6_000 - 3);
+    let required = "x".repeat(capacity - open.len() - close.len() - 16);
+    let context = format!("{required}{open}Latest turn:\n{}{close}", "🦀".repeat(100));
+    assert!(
+        crate::provider::fit_claude_native_hidden_context("tiny-replay-budget", context).is_err()
     );
 }
