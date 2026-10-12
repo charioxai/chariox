@@ -266,6 +266,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
     clearAllAuxiliaryAgentPanes: agentPaneTranscriptRenderController.clearAll,
     clearAuxiliaryAgentPane,
     rebuildAuxiliaryAgentPane,
+    rebuildEmptyAuxiliaryAgentPanes: agentPaneTranscriptRenderController.rebuildEmptyPanes,
     updateAuxiliaryTranscriptEntry,
     reconcileMountedAuxiliaryTranscript,
     pruneAuxiliaryAgentPanes,

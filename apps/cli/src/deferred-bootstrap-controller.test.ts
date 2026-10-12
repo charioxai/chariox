@@ -93,6 +93,37 @@ test("deferred bootstrap controller keeps the session hydrating until attached h
   assert.deepEqual(failed.hydrating, [false])
 })
 
+// MP-08 / MP-10 (panes R1 review): a startup history that settles after the
+// user attached elsewhere must not clear the newer attach's hydrating state.
+test("deferred bootstrap controller leaves hydration to a newer attachment", async () => {
+  let resolveHistory!: (value: Awaited<NonNullable<BootstrapDeferredState["attachedHistory"]>>) => void
+  const harness = bootstrapHarness({
+    attachmentSessionId: "session-a",
+    attachmentId: "attachment-a",
+    deferred: {
+      attachedHistory: new Promise((resolve) => {
+        resolveHistory = resolve
+      }),
+    },
+  })
+
+  harness.controller.apply()
+  harness.attachmentSessionId = "session-b"
+  harness.attachmentId = "attachment-b"
+  resolveHistory({
+    sessionId: "session-a",
+    visibleAgentId: "agent-1",
+    agentEntries: { "agent-1": [entry(1, "assistant", "stale")] },
+    historyEntries: [entry(1, "assistant", "stale")],
+    promptHistoryEntries: [],
+    nextHistoryCursor: null,
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.deepEqual(harness.replaceCalls, [])
+  assert.deepEqual(harness.hydrating, [])
+})
+
 test("deferred bootstrap controller prepends attached history when transcript already exists", async () => {
   const harness = bootstrapHarness({
     attachmentSessionId: "session-1",
@@ -147,12 +178,14 @@ test("deferred bootstrap controller ignores stale attached history", async () =>
 function bootstrapHarness(options: {
   deferred?: BootstrapDeferredState
   attachmentSessionId?: string | null
+  attachmentId?: string | null
   currentTranscriptEntryCount?: number
   entryCounter?: number
 } = {}) {
   const harness = {
     deferred: options.deferred,
     attachmentSessionId: options.attachmentSessionId ?? null,
+    attachmentId: options.attachmentId ?? null,
     currentTranscriptEntryCount: options.currentTranscriptEntryCount ?? 0,
     entryCounter: options.entryCounter ?? 0,
     providerCatalog: null as ProviderCatalog | null,
@@ -173,6 +206,7 @@ function bootstrapHarness(options: {
   harness.controller = createDeferredBootstrapController({
     getDeferred: () => harness.deferred,
     currentAttachmentSessionId: () => harness.attachmentSessionId,
+    currentAttachmentId: () => harness.attachmentId,
     currentTranscriptEntryCount: () => harness.currentTranscriptEntryCount,
     entryCounter: () => harness.entryCounter,
     setProviderCatalog: (catalog) => {

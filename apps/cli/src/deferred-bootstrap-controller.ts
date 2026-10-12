@@ -13,6 +13,7 @@ export type DeferredBootstrapControllerDeps = {
   applyWaitingRoomDefaults?: (defaults: { provider?: string; model?: string; effort?: string }) => void
   getDeferred: () => BootstrapDeferredState | undefined
   currentAttachmentSessionId: () => string | null
+  currentAttachmentId: () => string | null
   currentTranscriptEntryCount: () => number
   entryCounter: () => number
   setProviderCatalog: (catalog: ProviderCatalog) => void
@@ -106,10 +107,14 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
       warn("failed to hydrate terminal command catalog after bootstrap", error)
     })
 
+    // Only the startup attachment's hydration ends here; a newer attach owns its own.
+    const startupAttachmentId = deps.currentAttachmentId()
     void deferred.attachedHistory?.then(applyAttachedHistory).catch((error) => {
       warn("failed to hydrate attached history after bootstrap", error)
     }).finally(() => {
-      deps.setSessionHydratingState(false)
+      if (deps.currentAttachmentId() === startupAttachmentId) {
+        deps.setSessionHydratingState(false)
+      }
     })
   }
 

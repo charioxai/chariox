@@ -110,6 +110,14 @@ export function createAgentPaneTranscriptRenderController<
     scrollbox.requestRender()
   }
 
+  // Panes built while history was loading show the loading state; rebuild them
+  // once it settles so they show their entries or the real empty state.
+  const rebuildEmptyPanes = () => {
+    for (const agentId of [...deps.emptyRenderables.keys()]) {
+      rebuildPane(agentId)
+    }
+  }
+
   const mountEntry = (agentId: string, entry: TranscriptEntry, requestRender = true) => {
     const scrollbox = deps.scrollboxes.get(agentId)
     if (!scrollbox) {
@@ -210,6 +218,7 @@ export function createAgentPaneTranscriptRenderController<
     clearAll,
     clearPane,
     rebuildPane,
+    rebuildEmptyPanes,
     mountEntry,
     updateEntry,
     reconcileMountedTranscript,
