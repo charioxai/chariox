@@ -28,6 +28,9 @@ const connection = {
     }
     if (method === 'Target.closeTarget') { pages.delete(params.targetId); return {}; }
     if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'frame', loaderId: pages.get(session)?.document_id } } };
+    // MP-08/MP-11: production popup attribution observes native input before
+    // mirror admission. The fixture must expose its ordinary CDP setup seam.
+    if (['Runtime.enable', 'Runtime.addBinding', 'Page.addScriptToEvaluateOnNewDocument'].includes(method)) return {};
     if (method === 'Page.createIsolatedWorld') return { executionContextId: 42 };
     if (method === 'Emulation.setDeviceMetricsOverride') return {};
     if (method === 'Page.getResourceTree') return {frameTree:{frame:{id:'frame'},resources:[]}};
@@ -47,7 +50,7 @@ const connection = {
 const host = new KernelBrowserHost(process.argv[3], {
   chromium,
   browserFactory: () => ({
-    connection, ensureConnection: async () => connection, close: async () => {},
+    connection, ensureConnection: async () => connection, ensureTargetSession: async (_, target) => target, close: async () => {},
     reconcile: async () => ({ tabs: [...pages].map(([target_id, tab]) => ({ target_id, title: 'MD-N5 fixture', ...tab })) }),
     navigate: async ({ target_id, url }) => pages.set(target_id, { url, document_id: `doc-${++revision}` }),
     resolvePageTarget: async target => ({ connection, sessionId: target }),
