@@ -119,6 +119,10 @@ async fn assert_home_handoff_envelope(active_run: bool, current_lease_output: bo
         .remote_dispatch
         .take()
         .expect("accepted remote prompt should carry a dispatch");
+    if protect {
+        // Cached background was prepared before the Room became protected.
+        dispatch.hidden_system_context = "cached setting: private-room-fixture".to_string();
+    }
     let submitted_prompt = PromptQueueItem::new(
         format!("worker-{}", dispatch.prompt_id),
         "worker-attachment",
@@ -162,9 +166,15 @@ async fn assert_home_handoff_envelope(active_run: bool, current_lease_output: bo
         panic!("expected the worker prompt envelope")
     };
     assert_eq!(prompt, "hold the worker response while manifest sync runs");
+    if protect {
+        assert!(
+            !hidden_system_context.contains("private-room-fixture"),
+            "cached context must obey current Room protection even without history replay"
+        );
+    }
     if active_run || current_lease_output {
         assert!(
-            hidden_system_context.is_empty(),
+            !hidden_system_context.contains("accepted goal: audit continuity"),
             "same-lease native continuity must skip home replay"
         );
     } else {
@@ -231,4 +241,14 @@ async fn current_lease_history_keeps_native_continuity() {
 #[tokio::test]
 async fn recreated_lease_handoff_uses_current_room_protection() {
     assert_home_handoff_envelope(false, false, true).await;
+}
+
+#[tokio::test]
+async fn active_lease_scrubs_cached_context_without_replaying_history() {
+    assert_home_handoff_envelope(true, false, true).await;
+}
+
+#[tokio::test]
+async fn current_lease_scrubs_cached_context_without_replaying_history() {
+    assert_home_handoff_envelope(false, true, true).await;
 }
