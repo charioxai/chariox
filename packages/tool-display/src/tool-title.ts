@@ -1,4 +1,4 @@
-import type { ApplyPatchFile, ToolTranscriptUpdate } from "./types.js"
+import type { ApplyPatchFile, ToolDisplayIcon, ToolTranscriptUpdate } from "./types.js"
 
 // Verb + object titles for tool rows ("Ran ls -la", "Read README.md",
 // "Edited 2 files (+3 −1)"), shared by every client. The raw tool name is
@@ -86,6 +86,72 @@ export function toolDisplayTitle(update: ToolTranscriptUpdate, patchFiles: reado
       return `${verb("Delegated", "Delegating")} ${toolTitleShort(toolTitleString(input, "description", "prompt")) ?? "a task"}`
   }
   return `${verb("Called", "Calling")} ${toolTitleCalledName(update)}`
+}
+
+// One single-width glyph per icon for terminal clients.
+export const TOOL_DISPLAY_ICON_GLYPHS: Readonly<Record<ToolDisplayIcon, string>> = {
+  terminal: "$",
+  read: "☰",
+  edit: "✎",
+  search: "⌕",
+  web: "◎",
+  browser: "▣",
+  mcp: "⌘",
+  agent: "✦",
+  plan: "☐",
+  tool: "•",
+}
+
+// The icon shown left of a tool row's title; same classification as the title.
+export function toolDisplayIcon(update: ToolTranscriptUpdate, patchFiles: readonly ApplyPatchFile[] = []): ToolDisplayIcon {
+  const input = toolTitleRecord(update.input)
+  const name = toolTitleCanonicalName(update.tool)
+  const raw = typeof update.tool === "string" ? update.tool : ""
+  const browser = (value: string) => /browser|computer|playwright|chrome|screenshot|navigate|webview/i.test(value)
+  if (patchFiles.length > 0) {
+    return "edit"
+  }
+  if (browser(raw)) {
+    return "browser"
+  }
+  const command = toolTitleCommand(input)
+  if (command !== null || TOOL_TITLE_SHELL.has(name)) {
+    const program = command ? toolTitleSimpleProgram(toolTitleUnwrapShell(command)) : null
+    if (program === "cat" || program === "bat" || program === "less" || program === "ls" || program === "tree") return "read"
+    if (program === "rg" || program === "grep") return "search"
+    return "terminal"
+  }
+  switch (name) {
+    case "read": case "readfile": case "view": case "charioxreadartifact": case "readartifact":
+    case "ls": case "list": case "listdir": case "listfiles": case "listdirectory": case "todoread":
+      return name === "todoread" ? "plan" : "read"
+    case "edit": case "multiedit": case "strreplace": case "strreplacebasededittool": case "notebookedit":
+    case "applypatch": case "patch": case "charioxeditartifact": case "charioxapplypatch": case "charioxpatchartifact":
+    case "mcpcharioxpatchartifact": case "editartifact": case "patchartifact": case "write": case "writefile":
+    case "create": case "charioxwriteartifact": case "writeartifact": case "charioxdeleteartifact":
+    case "deleteartifact": case "charioxmoveartifact": case "moveartifact":
+      return "edit"
+    case "grep": case "search": case "rg": case "codebasesearch": case "searchfiles": case "glob": case "find": case "findfiles":
+      return "search"
+    case "websearch": case "webquery": case "webfetch": case "fetch": case "fetchurl":
+      return "web"
+    case "todowrite": case "updateplan": case "todo":
+      return "plan"
+    case "task": case "agent": case "spawnagent":
+      return "agent"
+  }
+  // Codex MCP calls carry the server in `title`.
+  const server = typeof update.title === "string" && /^[\w.-]+$/.test(update.title.trim()) ? update.title.trim() : ""
+  if (browser(server)) {
+    return "browser"
+  }
+  return raw.startsWith("mcp__") || server ? "mcp" : "tool"
+}
+
+// The program of a one-line command without pipes or substitutions.
+function toolTitleSimpleProgram(script: string) {
+  const line = script.trim()
+  return /^[^|;&<>`$()\n]+$/.test(line) ? line.split(/\s+/)[0]!.split("/").pop() ?? null : null
 }
 
 const TOOL_TITLE_SHELL = new Set([

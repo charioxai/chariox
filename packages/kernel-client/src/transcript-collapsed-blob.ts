@@ -1,7 +1,9 @@
 import {
+  TOOL_DISPLAY_ICON_GLYPHS,
   formatToolDisplay,
   parseToolTranscriptUpdate,
   readApplyPatchFiles,
+  type ToolDisplayIcon,
   type ToolTranscriptUpdate,
 } from "@chariox/tool-display"
 
@@ -11,6 +13,7 @@ export type CollapsedTranscriptBlobEntry = {
   readonly sourceText?: string | null
   readonly blobTitle?: string | null
   readonly blobSummary?: string | null
+  readonly blobIcon?: string | null
   readonly historyBlobId?: string | null
   readonly historyBlobLoaded?: boolean | null
   readonly historyBlobLoading?: boolean | null
@@ -27,6 +30,7 @@ export type CollapsedTranscriptBlobPresentation = {
 export type CollapsedTranscriptBlobDescription = {
   readonly title: string
   readonly summary: string
+  readonly icon?: ToolDisplayIcon
 }
 
 const TOOL_STATUS_LABELS: Record<string, string> = {
@@ -59,9 +63,10 @@ export function collapsedTranscriptBlobPresentation(
   const stateLabel = collapsedBlobStateLabel(entry)
   const summary = cleanText(entry.blobSummary)
   const heading = stateLabel ? `${title} · ${stateLabel}` : title
+  const glyph = TOOL_DISPLAY_ICON_GLYPHS[entry.blobIcon as ToolDisplayIcon] ?? null
 
   return {
-    headline: [`> ${heading}`, summary].filter(Boolean).join("  "),
+    headline: [`> ${glyph ? `${glyph} ` : ""}${heading}`, summary].filter(Boolean).join("  "),
     detail: collapsedBlobDetail(entry, stateLabel),
     actionLabel: collapsedBlobActionLabel(entry),
     stateLabel,
@@ -85,7 +90,9 @@ function describeToolBlob(entry: CollapsedTranscriptBlobEntry): CollapsedTranscr
   }
 
   const tool = nonEmpty(parsed.tool) || "tool"
-  const title = `${formatToolDisplay(parsed).title}${formatToolStatusLabel(parsed.status)}`
+  const display = formatToolDisplay(parsed)
+  const title = `${display.title}${formatToolStatusLabel(parsed.status)}`
+  const icon = display.icon
 
   if (tool === "apply_patch") {
     const files = readApplyPatchFiles(parsed)
@@ -93,36 +100,37 @@ function describeToolBlob(entry: CollapsedTranscriptBlobEntry): CollapsedTranscr
       const summary = files.length === 1
         ? files[0]!.title
         : `${files.length} files`
-      return { title, summary }
+      return { title, icon, summary }
     }
   }
 
   if (tool === "read") {
     const input = readPathInput(parsed.input)
     if (input?.path) {
-      return { title, summary: `${input.path}${input.window ? ` ${input.window}` : ""}` }
+      return { title, icon, summary: `${input.path}${input.window ? ` ${input.window}` : ""}` }
     }
   }
 
   if (tool === "todowrite") {
     const todos = readTodoCount(parsed)
     if (todos) {
-      return { title, summary: `${todos.remaining} remaining of ${todos.total}` }
+      return { title, icon, summary: `${todos.remaining} remaining of ${todos.total}` }
     }
   }
 
   const command = readCommand(parsed.input)
   if (command) {
-    return { title, summary: `$ ${command}` }
+    return { title, icon, summary: `$ ${command}` }
   }
 
   const inferredPath = readPathInput(parsed.input)?.path ?? readPathInput(parsed.raw)?.path
   if (inferredPath) {
-    return { title, summary: inferredPath }
+    return { title, icon, summary: inferredPath }
   }
 
   return {
     title,
+    icon,
     summary: firstPresent(
       nonEmpty(parsed.description),
       nonEmpty(parsed.title),

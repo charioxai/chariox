@@ -570,6 +570,7 @@ function outlineBlobTranscriptEntry(
     blobCollapsed: true,
     blobTitle: display.title,
     blobSummary: display.summary,
+    ...(display.icon ? { blobIcon: display.icon } : {}),
     historyBlobId: blob.blob_id,
     historyBlobAgentId: agentId,
     historyBlobLoaded: false,
@@ -612,7 +613,7 @@ export function adoptLoadedLiveToolRows<TEntry extends SessionHistoryTranscriptE
     if (!live) {
       return entry
     }
-    const { historyBlobId: _blobId, historyBlobAgentId: _blobAgentId, blobTitle: _title, blobSummary: _summary, ...rest } = entry
+    const { historyBlobId: _blobId, historyBlobAgentId: _blobAgentId, blobTitle: _title, blobSummary: _summary, blobIcon: _icon, ...rest } = entry
     return {
       ...rest,
       text: live.text,

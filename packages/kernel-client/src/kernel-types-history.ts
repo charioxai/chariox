@@ -219,6 +219,8 @@ export type TranscriptEntry = {
   blobCollapsed?: boolean
   blobTitle?: string
   blobSummary?: string
+  /** Tool kind icon shown left of a tool row's title (`TOOL_DISPLAY_ICON_GLYPHS`). */
+  blobIcon?: string
   historyDeferred?: boolean
   historyEntryIndex?: number
   historyFragmentStart?: number

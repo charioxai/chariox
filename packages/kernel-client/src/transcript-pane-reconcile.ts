@@ -13,6 +13,7 @@ type TranscriptPaneKernelFields = Pick<
   | "blobCollapsed"
   | "blobTitle"
   | "blobSummary"
+  | "blobIcon"
 > & {
   readonly turnId?: KernelTranscriptEntry["turnId"] | null
 }
@@ -31,6 +32,7 @@ export type TranscriptPaneEntry = {
   readonly blobCollapsed?: TranscriptPaneKernelFields["blobCollapsed"]
   readonly blobTitle?: TranscriptPaneKernelFields["blobTitle"]
   readonly blobSummary?: TranscriptPaneKernelFields["blobSummary"]
+  readonly blobIcon?: TranscriptPaneKernelFields["blobIcon"]
 }
 
 export type TranscriptPaneRenderable<TEntry extends TranscriptPaneEntry> = {
@@ -69,6 +71,7 @@ export function transcriptEntriesEqual<TEntry extends TranscriptPaneEntry>(
     && left.blobCollapsed === right.blobCollapsed
     && left.blobTitle === right.blobTitle
     && left.blobSummary === right.blobSummary
+    && left.blobIcon === right.blobIcon
 }
 
 export function transcriptEntriesShareMountedPrefix<TEntry extends TranscriptPaneEntry>(

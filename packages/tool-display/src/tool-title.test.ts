@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { formatToolDisplay, toolDisplayTitle } from "./index.js"
+import { TOOL_DISPLAY_ICON_GLYPHS, formatToolDisplay, toolDisplayIcon, toolDisplayTitle } from "./index.js"
 
 // MP-08 / MP-10 (panes R2, PANE-02): titles are verb + object, never a raw
 // underscore function name, and identical for every client.
@@ -56,3 +56,31 @@ test("patch tool titles name the file and the line counts", () => {
   assert.equal(display.title, "Edited src/app.ts (+2 −1)")
 })
 
+// MP-08 / MP-10 (panes, Miguel 2026-10-12 addition A): every tool row has an
+// icon left of its title, one per tool kind, shared by web and TUI.
+test("tool icons follow the tool kind for each provider's tool shapes", () => {
+  const cases: Array<[Parameters<typeof toolDisplayIcon>[0], ReturnType<typeof toolDisplayIcon>]> = [
+    [{ id: "1", tool: "exec_command", input: { cmd: "/bin/bash -lc 'pnpm test'" } }, "terminal"],
+    [{ id: "2", tool: "bash", input: { command: "/bin/bash -lc 'cat README.md'" } }, "read"],
+    [{ id: "3", tool: "bash", input: { command: "rg -n pane src" } }, "search"],
+    [{ id: "4", tool: "Read", input: { file_path: "/w/a.ts" } }, "read"],
+    [{ id: "5", tool: "read", title: "screenshot.png", input: { filePath: "/w/screenshot.png" } }, "read"],
+    [{ id: "6", tool: "edit", input: { filePath: "a.ts", oldString: "x", newString: "y" } }, "edit"],
+    [{ id: "7", tool: "Write", input: { file_path: "notes.md", content: "x" } }, "edit"],
+    [{ id: "8", tool: "Grep", input: { pattern: "TODO" } }, "search"],
+    [{ id: "9", tool: "webfetch", input: { url: "https://example.com" } }, "web"],
+    [{ id: "10", tool: "mcp__playwright__browser_navigate", input: { url: "https://example.com" } }, "browser"],
+    [{ id: "11", tool: "mcp__context7__search_docs", input: { q: "x" } }, "mcp"],
+    [{ id: "12", tool: "search_docs", title: "context7", input: { q: "x" } }, "mcp"],
+    [{ id: "13", tool: "Task", input: { description: "Audit" } }, "agent"],
+    [{ id: "14", tool: "todowrite", input: { todos: [] } }, "plan"],
+    [{ id: "15", tool: "mystery" }, "tool"],
+  ]
+  for (const [update, icon] of cases) {
+    assert.equal(toolDisplayIcon(update), icon, `${update.tool}`)
+    assert.equal(formatToolDisplay(update).icon, icon)
+  }
+  for (const glyph of Object.values(TOOL_DISPLAY_ICON_GLYPHS)) {
+    assert.equal([...glyph].length, 1)
+  }
+})

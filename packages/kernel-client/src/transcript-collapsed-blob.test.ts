@@ -83,6 +83,7 @@ test("describeCollapsedTranscriptBlob summarizes tool command metadata", () => {
     }),
   }), {
     title: "Ran git status · COMPLETED",
+    icon: "terminal",
     summary: "$ git status",
   })
 })
@@ -98,6 +99,7 @@ test("describeCollapsedTranscriptBlob summarizes tool-specific structured metada
     }),
   }), {
     title: "Reading src/app.ts · RUNNING",
+    icon: "read",
     summary: "src/app.ts [offset=5, limit=20]",
   })
 
@@ -117,6 +119,7 @@ test("describeCollapsedTranscriptBlob summarizes tool-specific structured metada
     }),
   }), {
     title: "Updated plan · COMPLETED",
+    icon: "plan",
     summary: "2 remaining of 3",
   })
 })
@@ -141,4 +144,15 @@ test("describeCollapsedTranscriptBlob titles a thought with its first line", () 
     title: "Thought",
     summary: "Checking the README",
   })
+})
+
+// MP-08 / MP-10 (panes, Miguel 2026-10-12 addition A): a tool row's headline
+// shows its kind's single-width glyph left of the title.
+test("collapsed tool blob headline shows the tool kind glyph before the title", () => {
+  const sourceText = JSON.stringify({ id: "call-1", tool: "exec_command", status: "completed", input: { cmd: "pnpm test" } })
+  const described = describeCollapsedTranscriptBlob({ role: "tool", text: "", sourceText })
+  assert.equal(described.icon, "terminal")
+  const presentation = collapsedTranscriptBlobPresentation({ role: "tool", blobTitle: described.title, blobSummary: described.summary, blobIcon: described.icon })
+  assert.match(presentation.headline, /^> \$ Ran pnpm test/)
+  assert.match(collapsedTranscriptBlobPresentation({ role: "reasoning", blobTitle: "Thought", blobSummary: "plan" }).headline, /^> Thought/)
 })

@@ -23,7 +23,7 @@ import {
   trimTrailingNewlines,
 } from "./strings.js"
 import { isNativeReadTool } from "./tool-names.js"
-import { toolDisplayTitle } from "./tool-title.js"
+import { toolDisplayIcon, toolDisplayTitle } from "./tool-title.js"
 import type {
   ApplyPatchFile,
   ToolDisplay,
@@ -53,10 +53,11 @@ export type {
   ToolDisplayBlock,
   ToolDisplayPatchFile,
   ToolDisplayPatchLine,
+  ToolDisplayIcon,
   ToolDisplayStatus,
   ToolTranscriptUpdate,
 } from "./types.js"
-export { toolDisplayTitle } from "./tool-title.js"
+export { TOOL_DISPLAY_ICON_GLYPHS, toolDisplayIcon, toolDisplayTitle } from "./tool-title.js"
 export {
   mergeToolTranscriptUpdate,
   parseToolTranscriptUpdate,
@@ -170,6 +171,7 @@ export function formatToolDisplay(update: ToolTranscriptUpdate): ToolDisplay {
     version: 1,
     tool,
     ...(status ? { status } : {}),
+    icon: toolDisplayIcon(update, patchFiles),
     title,
     summary,
     collapsed: {

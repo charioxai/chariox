@@ -27,6 +27,7 @@ type TranscriptDisplayKernelFields = Pick<
   | "blobCollapsed"
   | "blobTitle"
   | "blobSummary"
+  | "blobIcon"
   | "toggleMode"
 >
 
@@ -80,13 +81,14 @@ export type TranscriptBlobToggleProjection<TEntry extends TranscriptDisplayEntry
 export type CollapsedTranscriptTurnIdsByAgent = Record<string, number[]>
 
 type MutableTranscriptDisplayEntry =
-  Omit<TranscriptDisplayEntry, "turnId" | "hidden" | "blobCollapsible" | "blobCollapsed" | "blobTitle" | "blobSummary" | "toggleMode"> & {
+  Omit<TranscriptDisplayEntry, "turnId" | "hidden" | "blobCollapsible" | "blobCollapsed" | "blobTitle" | "blobSummary" | "blobIcon" | "toggleMode"> & {
   turnId?: number | null | undefined
   hidden?: boolean
   blobCollapsible?: boolean
   blobCollapsed?: boolean
   blobTitle?: string
   blobSummary?: string
+  blobIcon?: string
   toggleMode?: "expand" | "collapse"
 }
 
@@ -234,6 +236,11 @@ export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntr
           if (preview) {
             entry.blobTitle = preview.title
             entry.blobSummary = preview.summary
+            if (preview.icon) {
+              entry.blobIcon = preview.icon
+            } else {
+              delete entry.blobIcon
+            }
           }
         }
       } else {
@@ -241,6 +248,7 @@ export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntr
         delete entry.blobCollapsed
         delete entry.blobTitle
         delete entry.blobSummary
+        delete entry.blobIcon
       }
       if (!collapsibleTurn || expanded) {
         entry.hidden = false
