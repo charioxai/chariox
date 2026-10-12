@@ -747,6 +747,7 @@ fn model_label(model: Option<&str>) -> &str {
 mod tests {
     mod brief_protection;
     mod compaction_recovery_review;
+    mod revalidation_review;
     use super::builder::MAX_HANDOFF_BYTES;
     use super::*;
     use crate::runtime::state::KernelRuntimeState;

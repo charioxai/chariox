@@ -31,6 +31,9 @@ const TRUNCATED: &str = "\n[truncated]";
 #[derive(Debug, Clone, Default)]
 pub(super) struct AgentConversation {
     turns: Vec<HandoffTurn>,
+    // MP-08 / MP-10 / MP-11: raw history boundary for policy revalidation,
+    // including explicit snapshots whose target is a different agent.
+    history_source: Option<(String, u64)>,
     pub(super) facts: KernelFacts,
     pub(super) brief: Option<String>,
 }
@@ -44,7 +47,11 @@ pub(super) fn load_agent_conversation(
 ) -> Result<AgentConversation, DaemonError> {
     let events = history_store.load_session_events(session_id, Some(agent_id))?;
     let events = protection.protect_history_events(events);
-    let conversation = AgentConversation::from_events(&events);
+    let mut conversation = AgentConversation::from_events(&events);
+    conversation.history_source = Some((
+        agent_id.into(),
+        events.iter().map(|event| event.sequence).max().unwrap_or(0),
+    ));
     Ok(match dispatching_prompt_id {
         Some(prompt_id) => conversation.before_prompt(prompt_id),
         None => conversation,
@@ -52,11 +59,33 @@ pub(super) fn load_agent_conversation(
 }
 
 impl AgentConversation {
+    /// Protect raw source events before any clipping; preserve the capture boundary.
+    pub(super) fn rebuild_under_current_policy(
+        &self,
+        history: &OperationalHistoryStore,
+        session_id: &str,
+        protection: &super::super::room_secret_observation::RoomSecretObservations,
+    ) -> Result<Self, DaemonError> {
+        let Some((source_agent, through)) = &self.history_source else {
+            return Err(DaemonError::LocalTransport {
+                operation: "provider.context_handoff",
+                message: "Handoff has no source history boundary".into(),
+            });
+        };
+        let mut events = history.load_session_events(session_id, Some(source_agent))?;
+        events.retain(|event| event.sequence <= *through);
+        let events = protection.protect_history_events(events);
+        let mut conversation = Self::from_events(&events);
+        conversation.history_source = self.history_source.clone();
+        Ok(conversation)
+    }
+
     pub(super) fn from_events(events: &[HistoryEvent]) -> Self {
         let mut sorted = events.to_vec();
         sorted.sort_by_key(|event| event.sequence);
         Self {
             turns: collect_turns(&sorted),
+            history_source: None,
             facts: KernelFacts::from_events(&sorted),
             brief: None,
         }

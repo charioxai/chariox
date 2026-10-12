@@ -243,8 +243,8 @@ async fn cancellation_during_brief_promotes_followup_through_shared_preparation(
     fixture.wait_for("final-provider-envelope").await;
     let envelope = fixture.envelope();
     assert!(
-        envelope.contains("brief-only-amber"),
-        "queued followup omitted the retained handoff brief"
+        !envelope.contains("brief-only-amber") && envelope.contains("notes notes"),
+        "fitting followup must preserve verbatim history without re-inserting a stale brief"
     );
     assert!(
         !envelope.contains("cancelled request"),
@@ -312,7 +312,7 @@ async fn final_handoff_rejects_room_fenced_during_brief() {
 }
 
 #[tokio::test]
-async fn explicit_handoff_rejects_room_policy_changed_after_capture() {
+async fn explicit_handoff_rebuilds_after_room_policy_changed_after_capture() {
     let fixture = PausedBrief::new(false, false).await;
     let mut handoff = fixture
         .runtime
@@ -347,11 +347,12 @@ async fn explicit_handoff_rejects_room_policy_changed_after_capture() {
         .runtime
         .submit_structured_prompt_with_handoff(&dispatch, &fixture.run, Some(handoff), "")
         .await;
+    result.unwrap();
+    fixture.wait_for("final-provider-envelope").await;
     assert!(
-        result.is_err(),
-        "explicit stale snapshot must require a fresh invocation"
+        !fixture.envelope().contains(SECRET),
+        "explicit handoff failed to rebuild protected history"
     );
-    assert!(!fixture.root.path().join("final-provider-envelope").exists());
 }
 
 #[tokio::test]
@@ -384,7 +385,7 @@ async fn final_handoff_waits_for_room_input_before_rebuilding_protected_history(
 
 // MP-08 / MP-10 / MP-11: the new native policy must inherit explicit-snapshot replay fences.
 #[tokio::test]
-async fn native_policy_rejects_explicit_snapshot_after_room_change() {
+async fn native_policy_rebuilds_explicit_snapshot_after_room_change() {
     let fixture = PausedBrief::new(false, false).await;
     let mut handoff = fixture
         .runtime
@@ -419,9 +420,10 @@ async fn native_policy_rejects_explicit_snapshot_after_room_change() {
         false,
         String::new(),
     );
+    let context = result.unwrap();
     assert!(
-        result.is_err(),
-        "native explicit snapshot replay ignored changed Room protection"
+        !context.contains(SECRET),
+        "native replay ignored changed Room protection"
     );
 }
 

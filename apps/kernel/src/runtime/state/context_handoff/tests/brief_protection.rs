@@ -1,8 +1,8 @@
 use super::*;
 
-struct TestRoot(std::path::PathBuf);
+pub(super) struct TestRoot(std::path::PathBuf);
 impl TestRoot {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
             "chariox-brief-protection-{}-{}",
             std::process::id(),
@@ -11,7 +11,7 @@ impl TestRoot {
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
-    fn path(&self) -> &std::path::Path {
+    pub(super) fn path(&self) -> &std::path::Path {
         &self.0
     }
 }
