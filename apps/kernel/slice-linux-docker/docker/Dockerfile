@@ -118,6 +118,7 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     libwayland-server0 \
     libxkbcommon0 \
     lsof \
+    mousepad \
     novnc \
     openbox \
     pkg-config \
@@ -145,12 +146,14 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     x11-xserver-utils \
     xclip \
     xdotool \
+    xfce4-terminal \
     xterm \
     xvfb \
     xserver-xorg-core \
     xserver-xorg-video-dummy \
     xcvt \
     zstd \
+  && update-alternatives --set x-terminal-emulator /usr/bin/xfce4-terminal.wrapper \
   && test -x /usr/bin/x-terminal-emulator \
   && rm -rf /var/lib/apt/lists/*
 
