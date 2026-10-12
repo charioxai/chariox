@@ -11,11 +11,12 @@ impl super::super::KernelRuntimeOwnedState {
     ) {
         if let Err(error) = self
             .operational_history_store
-            .clear_remote_lease_context_pending(
+            .clear_remote_lease_context_if_replayed(
                 &dispatch.session_id,
                 &dispatch.agent_id,
                 &dispatch.worker_kernel_id,
                 &dispatch.leased_agent_id,
+                &dispatch.prompt_id,
             )
         {
             crate::logging::warn_with_fields(
@@ -36,6 +37,24 @@ impl super::super::KernelRuntimeOwnedState {
         fresh_workflow: bool,
         native_provider_run: bool,
     ) -> Result<String, crate::error::DaemonError> {
+        if let Some(binding) = agent
+            .remote_execution()
+            .filter(|b| b.leased_agent_id == leased_agent_id)
+        {
+            if self
+                .operational_history_store
+                .remote_lease_context_pending(agent.session_id(), agent.id(), binding)
+                .unwrap_or(false)
+            {
+                self.operational_history_store
+                    .record_remote_lease_context_replay(
+                        agent.session_id(),
+                        agent.id(),
+                        binding,
+                        None,
+                    )?;
+            }
+        }
         let hidden_context = self
             .room_secret_observations
             .scrub_runtime_result(agent.session_id(), hidden_context.to_string())?;
@@ -77,6 +96,15 @@ impl super::super::KernelRuntimeOwnedState {
         else {
             return existing();
         };
+        // Record what this exact submission carries before transport. Receipt
+        // reconciliation can then acknowledge it after a home restart too.
+        self.operational_history_store
+            .record_remote_lease_context_replay(
+                agent.session_id(),
+                agent.id(),
+                binding,
+                Some(prompt_id),
+            )?;
         match (hidden_context.trim(), restored.trim()) {
             (_, "") => existing(),
             ("", restored) => Ok(restored.to_string()),

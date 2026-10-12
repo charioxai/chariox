@@ -12,6 +12,16 @@ async fn assert_home_handoff_envelope_with_recovery(
     protect: bool,
     recovered: bool,
 ) {
+    assert_home_handoff_scenario(active_run, current_lease_output, protect, recovered, None).await;
+}
+
+async fn assert_home_handoff_scenario(
+    active_run: bool,
+    current_lease_output: bool,
+    protect: bool,
+    recovered: bool,
+    workflow_flush: Option<bool>,
+) {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.relay_url = Some(CANCELLATION_GUARD_RELAY_URL.to_string());
     config.relay_token = Some("recreated-handoff-test-token".to_string());
@@ -107,6 +117,33 @@ async fn assert_home_handoff_envelope_with_recovery(
             )
             .unwrap();
     }
+    let workflow_ids = workflow_flush.map(|flush| {
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("replay-workflow".into()))
+            .unwrap();
+        app.sessions_mut()
+            .set_workflow_flush_agent_context_before_run(session.id(), workflow.id(), flush)
+            .unwrap();
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .unwrap();
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(session.id(), workflow.id(), node.id(), None)
+            .unwrap();
+        let run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("continue audit".into()),
+            )
+            .unwrap();
+        (run.id().to_string(), run.node_runs()[0].id().to_string())
+    });
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     if recovered {
@@ -130,13 +167,20 @@ async fn assert_home_handoff_envelope_with_recovery(
         .owned
         .submit_remote_prepared_prompt(&KernelPreparedPromptSubmission {
             session_id: session_id.clone(),
-            prompt: PromptQueueItem::new(
-                "pending:recreated-handoff",
-                &attachment_id,
-                &agent_id,
-                "hold the worker response while manifest sync runs",
-                PromptStatus::Queued,
-            ),
+            prompt: {
+                let prompt = PromptQueueItem::new(
+                    "pending:recreated-handoff",
+                    &attachment_id,
+                    &agent_id,
+                    "hold the worker response while manifest sync runs",
+                    PromptStatus::Queued,
+                );
+                if let Some((run, node)) = &workflow_ids {
+                    prompt.with_workflow_context(run, node)
+                } else {
+                    prompt
+                }
+            },
             force_queue: false,
             refresh_projection: true,
         })
@@ -146,10 +190,21 @@ async fn assert_home_handoff_envelope_with_recovery(
         .remote_dispatch
         .take()
         .expect("accepted remote prompt should carry a dispatch");
+    if let Some((run, node)) = &workflow_ids {
+        dispatch.workflow_context = Some(crate::execution_lease::RemoteWorkflowTurnContext {
+            home_kernel_id: "home-kernel".into(),
+            home_session_id: session_id.clone(),
+            home_agent_id: agent_id.clone(),
+            workflow_run_id: run.clone(),
+            workflow_node_run_id: node.clone(),
+            delivery_token: "test-workflow-delivery".into(),
+        });
+    }
     if protect {
         // Cached background was prepared before the Room became protected.
         dispatch.hidden_system_context = "cached setting: private-room-fixture".to_string();
     }
+    let settlement_dispatch = dispatch.clone();
     let submitted_prompt = PromptQueueItem::new(
         format!("worker-{}", dispatch.prompt_id),
         "worker-attachment",
@@ -199,7 +254,7 @@ async fn assert_home_handoff_envelope_with_recovery(
             "cached context must obey current Room protection even without history replay"
         );
     }
-    if active_run || current_lease_output {
+    if active_run || current_lease_output || workflow_flush == Some(true) {
         assert!(
             !hidden_system_context.contains("accepted goal: audit continuity"),
             "same-lease native continuity must skip home replay"
@@ -249,11 +304,40 @@ async fn assert_home_handoff_envelope_with_recovery(
         "provider-run-recreated-handoff"
     );
     let accepted = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
-    assert!(!runtime
+    runtime
+        .owned
+        .settle_remote_dispatch_if_current(
+            &settlement_dispatch,
+            Some("provider-run-recreated-handoff"),
+        )
+        .unwrap();
+    let pending = runtime
         .owned
         .operational_history_store
         .remote_lease_context_pending(&session_id, &agent_id, accepted.remote_execution().unwrap())
-        .unwrap());
+        .unwrap();
+    assert_eq!(
+        pending,
+        workflow_flush == Some(true),
+        "only replay-bearing acknowledgements consume the marker"
+    );
+    if workflow_flush == Some(true) {
+        let next = runtime
+            .owned
+            .remote_prompt_hidden_context(
+                &accepted,
+                CANCELLATION_GUARD_LEASED_AGENT_ID,
+                "ordinary-next",
+                "",
+                false,
+                false,
+            )
+            .unwrap();
+        assert!(
+            next.contains("accepted goal: audit continuity"),
+            "fresh workflow acceptance must leave replay for the next ordinary prompt"
+        );
+    }
 }
 
 #[tokio::test]
@@ -591,4 +675,14 @@ async fn review976_history_read_failure_keeps_scrubbed_existing_context() {
         .expect("optional replay failure must not block a turn");
     assert!(context.contains("required context"));
     assert!(!context.contains("history-canary"));
+}
+
+// MP-08 / MP-10 / MP-11: actual workflow policy, outgoing envelope, submission and durable ACK.
+#[tokio::test]
+async fn review976r2_continuing_workflow_receives_pending_replay() {
+    assert_home_handoff_scenario(false, false, false, false, Some(false)).await;
+}
+#[tokio::test]
+async fn review976r2_fresh_workflow_ack_preserves_pending_replay() {
+    assert_home_handoff_scenario(false, false, false, false, Some(true)).await;
 }

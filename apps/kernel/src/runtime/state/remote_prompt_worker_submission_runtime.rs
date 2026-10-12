@@ -884,12 +884,20 @@ impl KernelRuntimeState {
                     daemon_alias: None,
                 };
                 let relay_state = callback_state.connected_relay_state_for_config(&config).await;
+                let session = callback_state.owned.session_store.get_session(agent.session_id())?;
+                let fresh_workflow = callback_state.owned.prompt_state_owner
+                    .active_prompt_for_agent(&session, agent.id())
+                    .filter(|active| active.id() == closure_prompt_id)
+                    .map(|active| callback_state.owned.workflow_prompt_requires_fresh_provider_context(
+                        agent.session_id(), agent.id(), &active,
+                    ))
+                    .transpose()?.unwrap_or(false);
                 let hidden_system_context = callback_state.owned.remote_prompt_hidden_context(
                     &agent,
                     &remote_execution.leased_agent_id,
                     &closure_prompt_id,
                     &hidden_system_context,
-                    workflow_context.is_some(),
+                    fresh_workflow,
                     native_provider_run,
                 )?;
                 let request = RelayPeerRequest::SubmitLeasedPrompt {
