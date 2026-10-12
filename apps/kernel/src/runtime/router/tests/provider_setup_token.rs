@@ -437,38 +437,27 @@ exit 90
             false,
         )
         .unwrap();
-        for refresh in [false, true] {
-            if refresh {
-                let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
-                    "RefreshProviderAccountProfile": { "provider": "claude", "account_profile": profile.profile_id }
-                })).unwrap();
-                let command =
-                    KernelCommand::from_local_request("legacy-refresh", None, None, &request);
-                router.dispatch(command, request).await.unwrap();
-                assert_eq!(
-                    auth_state(&router),
-                    crate::account_profile::ProviderAccountAuthState::Unknown
-                );
-            }
-            let request = LocalDaemonRequest::GetProviderAuthStatus(
-                crate::local::GetProviderAuthStatusRequest {
-                    provider: "claude".into(),
-                    account_profile: profile.profile_id.clone(),
-                },
-            );
-            let command = KernelCommand::from_local_request("legacy-status", None, None, &request);
-            let LocalDaemonResponse::ProviderAuthStatus { status } =
-                router.dispatch(command, request).await.unwrap()
-            else {
-                panic!("expected auth status");
-            };
-            assert_eq!(status.auth_state, "unknown");
-            let hint = status.login_hint.unwrap();
-            assert!(
-                hint.contains("checked automatically") && !hint.contains("--replace"),
-                "{hint}"
+        let turns_before = std::fs::read_to_string(root.join("model-turns")).unwrap();
+        for _ in 0..2 {
+            crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                &router.provider_account_profiles,
+                "local",
+                "claude",
+                &profile.profile_id,
+                &config,
+            )
+            .unwrap();
+            assert_eq!(
+                auth_state(&router),
+                crate::account_profile::ProviderAccountAuthState::Unknown,
+                "automatic refresh must retain unverified legacy state"
             );
         }
+        assert_eq!(
+            std::fs::read_to_string(root.join("model-turns")).unwrap(),
+            turns_before,
+            "automatic refresh must not spend a verification turn"
+        );
     }
     if scenario == "legacy" {
         let (session, agent) = {
@@ -524,7 +513,11 @@ exit 90
             path.with_extension("backup").display(),
             path.display()
         );
-        let script = script.replace("echo '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"OK\"}'", &format!("{fault}echo '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"OK\"}}'"));
+        let success_line = script
+            .lines()
+            .find(|line| line.contains("CHARIOX_AUTH_OK"))
+            .expect("valid model-turn fixture");
+        let script = script.replace(success_line, &format!("{fault}{success_line}"));
         std::fs::write(&binary, script).unwrap();
     }
     let (command, request) = paste(&good);
@@ -731,7 +724,7 @@ if [ "$1" = -p ]; then
   echo check >> '{root}/checks'
   [ '{mode}' = network ] && exit 3
   if [ '{mode}' = expired-cached ] && [ ! -f '{root}/expired' ]; then
-    echo '{{"type":"result","is_error":false,"result":"OK"}}'; exit 0
+    echo '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"usage":{{"output_tokens":7}},"result":"CHARIOX_AUTH_OK"}}'; exit 0
   fi
   echo '{{"type":"result","is_error":true,"api_error_status":401,"result":"API Error: 401 Invalid authentication credentials"}}'
   exit 1
