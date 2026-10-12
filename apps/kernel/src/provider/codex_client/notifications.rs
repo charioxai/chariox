@@ -1,5 +1,6 @@
 //! Codex JSON-RPC notification shape parsing.
 
+use base64::Engine as _;
 use serde_json::{json, Value};
 
 use crate::provider::ProviderRunTokenUsage;
@@ -198,12 +199,7 @@ pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotific
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                chunk: msg
-                    .get("chunk")
-                    .or_else(|| msg.get("delta"))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
+                chunk: legacy_output_chunk(msg.get("chunk").or_else(|| msg.get("delta"))),
             })
         }
         "codex/event/patch_apply_begin" => {
@@ -474,4 +470,55 @@ fn legacy_codex_file_change_item(params: &Value, msg: &Value, status: &str) -> V
         "status": status,
         "changes": msg.get("changes").cloned().unwrap_or_else(|| json!([])),
     })
+}
+
+// MP-08 / MP-10: legacy exec events serialize ByteString as a JSON byte
+// array; string/base64 senders remain supported by the existing decoder.
+fn legacy_output_chunk(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| value.as_u64().and_then(|value| u8::try_from(value).ok()))
+            .collect::<Option<Vec<_>>>()
+            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod output_chunk_tests {
+    use super::*;
+    #[test]
+    fn legacy_byte_array_output_notifications_are_not_discarded() {
+        let text = "line 1\nΔ\n";
+        let notification = parse_notification(
+            serde_json::from_value(json!({
+                "method":"codex/event/exec_command_output_delta",
+                "params":{"msg":{"call_id":"call-1","chunk":text.as_bytes()}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let CodexNotification::ExecCommandOutputDelta { call_id, chunk } = notification else {
+            panic!("expected legacy output");
+        };
+        assert_eq!(call_id, "call-1");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(chunk)
+                .unwrap(),
+            text.as_bytes()
+        );
+    }
+    #[test]
+    fn legacy_chunk_strings_are_preserved_and_invalid_byte_arrays_are_rejected() {
+        assert_eq!(
+            legacy_output_chunk(Some(&json!("bGluZSAxCg=="))),
+            "bGluZSAxCg=="
+        );
+        assert_eq!(legacy_output_chunk(Some(&json!([108, 256]))), "");
+        assert_eq!(legacy_output_chunk(Some(&json!([108, -1]))), "");
+    }
 }

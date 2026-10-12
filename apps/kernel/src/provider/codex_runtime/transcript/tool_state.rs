@@ -14,8 +14,15 @@ use crate::provider::codex_runtime::CodexOutputChunk;
 pub(in crate::provider::codex_runtime) struct CodexToolTranscriptState {
     pub(in crate::provider::codex_runtime) item: Value,
     pub(in crate::provider::codex_runtime) streamed_output: String,
+    pub(in crate::provider::codex_runtime) output_stream: Option<ToolOutputStream>,
     pub(in crate::provider::codex_runtime) progress_messages: Vec<String>,
     pub(in crate::provider::codex_runtime) last_emitted: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::provider::codex_runtime) enum ToolOutputStream {
+    Legacy,
+    Modern,
 }
 
 pub(in crate::provider::codex_runtime) fn codex_exec_command_item(
@@ -77,6 +84,7 @@ pub(in crate::provider::codex_runtime) fn sync_tool_item_with_manifest(
         .or_insert_with(|| CodexToolTranscriptState {
             item: item.clone(),
             streamed_output: String::new(),
+            output_stream: None,
             progress_messages: Vec::new(),
             last_emitted: None,
         });
@@ -90,6 +98,37 @@ pub(in crate::provider::codex_runtime) fn append_tool_output_delta(
     item_type: &str,
     delta: &str,
 ) -> Option<CodexOutputChunk> {
+    append_output_delta_from_stream(
+        tool_items,
+        item_id,
+        item_type,
+        delta,
+        ToolOutputStream::Modern,
+    )
+}
+
+pub(in crate::provider::codex_runtime) fn append_legacy_tool_output_delta(
+    tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
+    item_id: &str,
+    item_type: &str,
+    delta: &str,
+) -> Option<CodexOutputChunk> {
+    append_output_delta_from_stream(
+        tool_items,
+        item_id,
+        item_type,
+        delta,
+        ToolOutputStream::Legacy,
+    )
+}
+
+fn append_output_delta_from_stream(
+    tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
+    item_id: &str,
+    item_type: &str,
+    delta: &str,
+    stream: ToolOutputStream,
+) -> Option<CodexOutputChunk> {
     if delta.is_empty() {
         return None;
     }
@@ -98,9 +137,20 @@ pub(in crate::provider::codex_runtime) fn append_tool_output_delta(
         .or_insert_with(|| CodexToolTranscriptState {
             item: placeholder_tool_item(item_id, item_type),
             streamed_output: String::new(),
+            output_stream: None,
             progress_messages: Vec::new(),
             last_emitted: None,
         });
+    // MP-08 / MP-10: app-server can emit both legacy and modern deltas for
+    // one call. Keep the first live stream, avoiding duplicated bytes while
+    // preserving the prefix delivered before the modern stream starts.
+    if entry
+        .output_stream
+        .is_some_and(|selected| selected != stream)
+    {
+        return None;
+    }
+    entry.output_stream = Some(stream);
     entry.streamed_output.push_str(delta);
     render_tool_chunk_if_changed(item_id, entry, &RemoteExtensionManifest::default())
 }
@@ -118,6 +168,7 @@ pub(in crate::provider::codex_runtime) fn append_tool_progress(
         .or_insert_with(|| CodexToolTranscriptState {
             item: placeholder_tool_item(item_id, "mcpToolCall"),
             streamed_output: String::new(),
+            output_stream: None,
             progress_messages: Vec::new(),
             last_emitted: None,
         });
@@ -157,4 +208,39 @@ pub(super) fn normalize_merge_key(item_id: &str, fallback: &str) -> String {
 pub(super) fn non_empty(value: &str) -> Option<&str> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then_some(trimmed)
+}
+
+#[cfg(test)]
+mod output_stream_tests {
+    use super::*;
+    #[test]
+    fn legacy_prefix_and_modern_mirror_do_not_duplicate_streamed_tool_output() {
+        let mut state = BTreeMap::new();
+        let first =
+            append_legacy_tool_output_delta(&mut state, "call", "commandExecution", "line 1\n")
+                .unwrap();
+        assert!(
+            append_tool_output_delta(&mut state, "call", "commandExecution", "line 1\n").is_none()
+        );
+        let second =
+            append_legacy_tool_output_delta(&mut state, "call", "commandExecution", "line 2\n")
+                .unwrap();
+        let first: Value = serde_json::from_slice(&first.bytes).unwrap();
+        let second: Value = serde_json::from_slice(&second.bytes).unwrap();
+        assert_eq!(first["output"], "line 1");
+        assert_eq!(second["output"], "line 1\nline 2");
+    }
+    #[test]
+    fn modern_only_and_late_legacy_mirror_keep_the_existing_stream() {
+        let mut state = BTreeMap::new();
+        append_tool_output_delta(&mut state, "call", "commandExecution", "first ").unwrap();
+        assert!(
+            append_legacy_tool_output_delta(&mut state, "call", "commandExecution", "first ")
+                .is_none()
+        );
+        let second =
+            append_tool_output_delta(&mut state, "call", "commandExecution", "second").unwrap();
+        let second: Value = serde_json::from_slice(&second.bytes).unwrap();
+        assert_eq!(second["output"], "first second");
+    }
 }
