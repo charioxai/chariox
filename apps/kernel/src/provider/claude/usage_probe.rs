@@ -157,6 +157,31 @@ fn run_claude_print(
     timeout: Duration,
     label: &'static str,
 ) -> Result<(std::process::ExitStatus, Option<serde_json::Value>), DaemonError> {
+    let mut arguments = vec!["-p", args[0], "--output-format", "json", "--no-session-persistence", "--no-chrome", "--tools", ""];
+    arguments.extend_from_slice(&args[1..]);
+    run_claude_arguments(executable, environment, &arguments, timeout, label)
+}
+
+pub(super) fn run_claude_probe(
+    executable: &Path,
+    environment: &BTreeMap<String, String>,
+    arguments: &[&str],
+    timeout: Duration,
+) -> Result<serde_json::Value, DaemonError> {
+    let (status, result) = run_claude_arguments(executable, environment, arguments, timeout, "Claude probe")?;
+    if !status.success() {
+        return Err(probe_error(format!("Claude probe exited unsuccessfully ({status})")));
+    }
+    result.ok_or_else(|| probe_error("Claude returned invalid probe JSON".into()))
+}
+
+fn run_claude_arguments(
+    executable: &Path,
+    environment: &BTreeMap<String, String>,
+    arguments: &[&str],
+    timeout: Duration,
+    label: &'static str,
+) -> Result<(std::process::ExitStatus, Option<serde_json::Value>), DaemonError> {
     let print_error = |message: String| DaemonError::LocalTransport {
         operation: label,
         message,
@@ -177,15 +202,7 @@ fn run_claude_print(
         .try_clone()
         .map_err(|_| print_error("failed to pin Claude stderr".into()))?;
     let mut command = Command::new(executable);
-    command.arg("-p").arg(args[0]).args([
-        "--output-format",
-        "json",
-        "--no-session-persistence",
-        "--no-chrome",
-        "--tools",
-        "",
-    ]);
-    command.args(&args[1..]);
+    command.args(arguments);
     command.current_dir(root.path());
     for (name, value) in environment {
         command.env(name, value);
