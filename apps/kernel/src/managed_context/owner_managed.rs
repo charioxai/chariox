@@ -237,6 +237,14 @@ pub(crate) fn admission_error(message: impl Into<String>) -> DaemonError {
         "context transfer requires exactly one destination binding" => {
             "destination_binding_invalid"
         }
+        "credential-free context contains credential-bearing or unclassifiable material" => {
+            "credential_free_refused"
+        }
+        "Copy exceeds the 1 GiB scan-byte limit"
+        | "Copy history exceeds the 1 GiB scan-byte limit"
+        | "Copy history object exceeds the 16 MiB per-file limit" => "scan_size_limit",
+        "Copy history scan exceeded the 120 second time limit"
+        | "Copy history scan failed or exceeded its 120 second time limit" => "history_scan_failed",
         _ => "other",
     };
     crate::logging::warn_with_fields(
