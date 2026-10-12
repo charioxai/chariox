@@ -114,8 +114,8 @@ export function createWaitingRoomReconcileController(
   }
 
   return {
-    reconcile: (next: WaitingRoomState) => reconcileWith(next, deps.setWaitingRoomState),
-    reconcileProjection: (next: WaitingRoomState) => reconcileWith(
+    reconcile: (next: WaitingRoomState = deps.getCurrentState()) => reconcileWith(next, deps.setWaitingRoomState),
+    reconcileProjection: (next: WaitingRoomState = deps.getCurrentState()) => reconcileWith(
       next,
       deps.setProjectedWaitingRoomState ?? deps.setWaitingRoomState,
     ),
