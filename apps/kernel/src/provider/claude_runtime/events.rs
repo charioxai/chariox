@@ -40,8 +40,10 @@ fn apply_system_message(
         record_claude_session_id(state, batch, session_id);
     }
     if batch.resolved_model.is_none() {
-        if let Some(model) = string_field(value, "model") {
-            batch.resolved_model = Some(format_claude_model(&model));
+        if let Some(model) =
+            string_field(value, "model").and_then(|model| format_claude_model(&model))
+        {
+            batch.resolved_model = Some(model);
             batch.resolved_model_source = Some("claude.system");
         }
     }
@@ -79,8 +81,9 @@ fn apply_stream_event(
             .get("message")
             .and_then(|message| message.get("model"))
             .and_then(Value::as_str)
+            .and_then(format_claude_model)
         {
-            batch.resolved_model = Some(format_claude_model(model));
+            batch.resolved_model = Some(model);
             batch.resolved_model_source = Some("claude.stream_event");
         }
     }
@@ -249,8 +252,12 @@ fn apply_assistant_message(
 ) {
     let message = value.get("message").unwrap_or(value);
     if batch.resolved_model.is_none() {
-        if let Some(model) = message.get("model").and_then(Value::as_str) {
-            batch.resolved_model = Some(format_claude_model(model));
+        if let Some(model) = message
+            .get("model")
+            .and_then(Value::as_str)
+            .and_then(format_claude_model)
+        {
+            batch.resolved_model = Some(model);
             batch.resolved_model_source = Some("claude.assistant");
         }
     }
@@ -511,12 +518,17 @@ fn string_field(value: &Value, field: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn format_claude_model(model: &str) -> String {
+fn format_claude_model(model: &str) -> Option<String> {
     let model = model.trim();
+    // Claude emits synthetic assistant messages for failures such as quota
+    // exhaustion. Their placeholder is not an observed execution model.
+    if model.is_empty() || model.strip_prefix("claude/").unwrap_or(model) == "<synthetic>" {
+        return None;
+    }
     if model.starts_with("claude/") {
-        model.to_string()
+        Some(model.to_string())
     } else {
-        format!("claude/{model}")
+        Some(format!("claude/{model}"))
     }
 }
 
