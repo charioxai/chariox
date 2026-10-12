@@ -58,9 +58,12 @@ impl super::super::KernelRuntimeOwnedState {
         {
             return existing();
         }
-        let events = self
+        let Ok(events) = self
             .operational_history_store
-            .load_session_events(agent.session_id(), Some(agent.id()))?;
+            .load_session_events(agent.session_id(), Some(agent.id()))
+        else {
+            return existing();
+        };
         let room = if native_provider_run
             && crate::provider::adapter_key_for_provider(agent.provider()) == "claude"
         {

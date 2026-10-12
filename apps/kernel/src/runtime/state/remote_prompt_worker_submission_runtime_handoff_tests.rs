@@ -516,3 +516,79 @@ async fn review976_completed_projection_skips_replay_until_lease_identity_change
         "existing context"
     );
 }
+
+#[tokio::test]
+async fn review976_history_read_failure_keeps_scrubbed_existing_context() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "history-workspace",
+            "history-worktree",
+        ))
+        .unwrap();
+    let agent = app
+        .agents
+        .bind_remote_execution(
+            agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: CANCELLATION_GUARD_WORKER_ID.into(),
+                worker_machine_id: "history-machine".into(),
+                execution_lease_id: "history-lease".into(),
+                leased_agent_id: "new-lease".into(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    let history = app.operational_history_store();
+    history
+        .mark_remote_lease_context_pending(
+            session.id(),
+            agent.id(),
+            agent.remote_execution().unwrap(),
+        )
+        .unwrap();
+    history
+        .append(&crate::history::HistoryEvent::transcript(
+            1,
+            &crate::history::SessionHistoryEntry::user_prompt(
+                session.id(),
+                "attachment",
+                agent.id(),
+                "previous task",
+            ),
+            crate::history::HistoryEventTurnContext::default(),
+        ))
+        .unwrap();
+    let connection = rusqlite::Connection::open(history.path()).unwrap();
+    connection
+        .execute(
+            "UPDATE history_events SET event_json = 'broken-json' WHERE agent_id = ?1",
+            [agent.id()],
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .owned
+        .room_secret_observations
+        .register(session.id(), "history-canary")
+        .unwrap();
+    let context = runtime
+        .owned
+        .remote_prompt_hidden_context(
+            &agent,
+            "new-lease",
+            "next",
+            "required context history-canary",
+            false,
+            false,
+        )
+        .expect("optional replay failure must not block a turn");
+    assert!(context.contains("required context"));
+    assert!(!context.contains("history-canary"));
+}
