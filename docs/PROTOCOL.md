@@ -3183,8 +3183,8 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
 `GetProjectEnvironment { projectId }` retains the complete aggregate. Optional
 `view: { knownDigest, proposals }` returns `ProjectEnvironmentView { view }`.
 A summary retains the complete saved specification, current observations and
-operation headers, reports proposal/operation item counts, and includes the
-first eight proposals. `observed_at_ms` supplies a kernel-clock reference for remote-client freshness.
+operation headers and reports proposal/operation item counts. Proposal bodies
+load only when review begins. `observed_at_ms` supplies a kernel-clock reference for remote-client freshness.
 Unchanged summaries omit `environment`; clients may
 reuse only a matching Project/kernel-bound cached digest. Full operation
 details are loaded explicitly through the ordinary full read.

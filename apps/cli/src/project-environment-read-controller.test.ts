@@ -198,14 +198,16 @@ test("TUI next proposal crosses a snapshot-bound page and reports the total coun
  const requirement={requirement_id:"one",title:"One",scope:{kind:"project"},origins:[],spec:{kind:"software",identity:"node",version_constraint:null,detect_only:true},depends_on:[],platform_variants:[],required:false,legacy_entry:null}
  const first={proposal_id:"one",requirement},second={proposal_id:"two",requirement:{...requirement,requirement_id:"two",title:"Two"}}
  const environment={schema_version:1,local_project_id:"p",lineage:{project_id:"p",environment_id:"e"},revision:0,content_digest:"digest",project_requirements:[],folders:[],proposals:[],observations:[],operations:[],delivered_capabilities:{enabled_environment_operations:["get","save"]}}
- const view={snapshot_digest:"snapshot",environment,proposal_count:2,proposal_offset:0,next_proposal_offset:1,proposals:[first],operation_item_counts:[]}
+ const view={observed_at_ms:Date.now(),snapshot_digest:"snapshot",environment,proposal_count:2,proposal_offset:0,next_proposal_offset:0,proposals:[],operation_item_counts:[]}
  let rendered!:()=>void
- const controller=createProjectEnvironmentReadController({send:async request=>{requests.push(request);return {ProjectEnvironmentView:{view:requests.length===1 ? view : {...view,environment:null,proposal_offset:1,next_proposal_offset:null,proposals:[second]}}}},render(){rendered?.()},pageSize:()=>100})
+ const controller=createProjectEnvironmentReadController({send:async request=>{requests.push(request);return {ProjectEnvironmentView:{view:requests.length===1 ? view : requests.length===2 ? {...view,environment:null,next_proposal_offset:1,proposals:[first]} : {...view,environment:null,proposal_offset:1,next_proposal_offset:null,proposals:[second]}}}},render(){rendered?.()},pageSize:()=>100})
  await controller.open("p")
+ assert(controller.visibleLines().some(l=>l.includes("2 proposals · n to begin review")))
+ const firstPage=new Promise<void>(resolve=>{rendered=resolve});controller.handleKey({name:"n"});await firstPage
  assert(controller.visibleLines().some(l=>l.includes("Review 1/2 · One")))
  const done=new Promise<void>(resolve=>{rendered=resolve})
  controller.handleKey({name:"n"});await done
- assert.equal(requests[1].GetProjectEnvironment.view.proposals.snapshotDigest,"snapshot")
+ assert.equal(requests[2].GetProjectEnvironment.view.proposals.snapshotDigest,"snapshot")
  assert(controller.visibleLines().some(l=>l.includes("Review 2/2 · Two")))
  controller.close()
 })

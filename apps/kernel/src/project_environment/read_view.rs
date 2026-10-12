@@ -58,7 +58,7 @@ pub fn environment_read_view(
             }
             (page.offset, page.limit, true)
         }
-        None => (0, 8, false),
+        None => (0, 0, false),
     };
     // A count bound alone is insufficient: a single requirement can contain many Files.
     // Keep every proposal reachable without truncating its provenance or Secret defaults.
@@ -156,6 +156,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(first.proposal_count, 1000);
+        assert!(first.proposals.is_empty(), "opening is summary-only");
+        assert_eq!(first.next_proposal_offset, Some(0));
         assert!(first.environment.as_ref().unwrap().proposals.is_empty());
         assert!(serde_json::to_vec(&first).unwrap().len() < 16 * 1024);
         let mut seen = first.proposals.clone();
