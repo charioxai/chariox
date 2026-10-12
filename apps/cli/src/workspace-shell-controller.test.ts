@@ -204,3 +204,28 @@ test("workspace shell submit controller binds submit dependencies", async () => 
   assert.equal(result.ok, true)
   assert.equal(result.context, context)
 })
+
+for (const previousWorkflow of [undefined, "wf-A"]) {
+  test(`MP-08 / MP-10 notification settings use the TUI selection over shell ${previousWorkflow ?? "none"}`, async () => {
+    let stored = createDefaultShellContext({ sessionId: "s1", workflowId: previousWorkflow })
+    let selected: string | null = "wf-B"
+    const result = await submitWorkspaceShellCommand("workflow notifications on", {
+      client: {} as LocalIpcClient,
+      executeShellLine: async (_line, context, _deps, write) => {
+        assert.equal(context.workflowId, "wf-B")
+        write?.(`Notifications for ${context.workflowId}: on`)
+        return { ok: true, context }
+      },
+      workspaceShellContext: () => stored,
+      setWorkspaceShellContext: (context) => { stored = context },
+      nextEntryId: () => 1, setWorkspaceShellEntries: () => {},
+      sessionState: () => session({ workflows: [{ id: "wf-A", nodes: [] }, { id: "wf-B", nodes: [] }] }),
+      refreshSessionState: async () => session(), applySessionState: () => {},
+      selectedWorkflowId: () => selected, setSelectedWorkflowId: (id) => { selected = id },
+      setSelectedWorkflowNodeId: () => {}, rebuildTranscript: () => {}, flashFooter: () => {},
+    })
+    assert.equal(result.ok, true)
+    assert.equal(stored.workflowId, "wf-B")
+    assert.equal(selected, "wf-B")
+  })
+}
