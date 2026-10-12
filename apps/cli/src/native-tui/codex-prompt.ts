@@ -12,6 +12,18 @@ export function extractCodexPrompt(params: Record<string, unknown> | undefined):
   return text.endsWith("\n") ? text : `${text}\n`
 }
 
+// MP-08 / MP-10: Codex clears a pending steer by comparing its committed
+// user-message text with the submitted input. Preserve that text exactly;
+// the terminal newline used for initial prompts would strand the receipt.
+export function extractCodexSteeringPrompt(params: Record<string, unknown> | undefined): string {
+  const input = Array.isArray(params?.input) ? params.input : []
+  return input.flatMap((part) => {
+    if (!part || typeof part !== "object") return []
+    const record = part as Record<string, unknown>
+    return record.type === "text" && typeof record.text === "string" ? [record.text] : []
+  }).join("")
+}
+
 export function extractCodexAttachments(params: Record<string, unknown> | undefined): PromptAttachmentPart[] {
   const input = Array.isArray(params?.input) ? params.input : []
   return input.flatMap((part) => {

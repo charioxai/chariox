@@ -70,8 +70,9 @@ export async function compileCli(options) {
   const requireFromCli = createRequire(path.join(appDir, "package.json"))
   const coreDir = path.dirname(realpathSync(requireFromCli.resolve("@opentui/core/package.json")))
   const nativePackage = `@opentui/core-${target.os}-${target.arch}`
+  let nativeModule
   try {
-    createRequire(path.join(coreDir, "package.json")).resolve(`${nativePackage}/package.json`)
+    nativeModule = createRequire(path.join(coreDir, "package.json")).resolve(`${nativePackage}/index.ts`)
   } catch {
     throw new Error(`${nativePackage} is not installed; compile ${options.target} on a ${options.target} host`)
   }
@@ -80,6 +81,7 @@ export async function compileCli(options) {
   const workerPath = embeddedRoot + path.relative(repoRoot, parserWorker).split(path.sep).join("/")
 
   let pinned = 0
+  let nativeLoaderPinned = 0
   const result = await Bun.build({
     entrypoints: [entry, parserWorker],
     root: repoRoot,
@@ -97,6 +99,15 @@ export async function compileCli(options) {
     plugins: [{
       name: "chariox-release",
       setup(build) {
+        // The hyperlink capability helper must use the embedded renderer,
+        // rather than look for a source node_modules tree at run time.
+        build.onLoad({ filter: /[\\/]terminal-render-library\.js$/ }, () => {
+          nativeLoaderPinned += 1
+          return {
+            contents: `export async function loadTerminalRenderLibrary() { return (await import(${JSON.stringify(nativeModule)})).default; }`,
+            loader: "js",
+          }
+        })
         // Bun resolves solid-js through its "node" condition to Solid's server
         // build, which never runs effects: load the client build instead, as
         // @opentui/solid/bun-plugin does for the TUI started from source.
@@ -121,6 +132,7 @@ export async function compileCli(options) {
     throw new Error(`bun build failed:\n${result.logs.map((log) => String(log)).join("\n")}`)
   }
   if (pinned !== 1) throw new Error(`expected one OpenTUI platform import, pinned ${pinned}`)
+  if (nativeLoaderPinned !== 1) throw new Error(`expected one terminal renderer loader, pinned ${nativeLoaderPinned}`)
   return { outfile: path.resolve(options.outfile), target: options.target, bunTarget: target.bun, nativePackage, workerPath }
 }
 

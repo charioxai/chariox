@@ -231,7 +231,10 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
     let expected_kernel_id = if let Some(id) = target.daemon_id.as_deref() {
         canonical_peer_daemon_id(id).unwrap_or(id).to_string()
     } else if let Some(alias) = target.daemon_alias.as_deref() {
-        let peer = relay_discovery::get_live_kernel(config, alias).await?;
+        let discovery =
+            crate::runtime::cloud_api_client::relay_metadata_discovery_config(config).await?;
+        let peer = relay_discovery::get_live_kernel(&discovery, alias).await?;
+        authorize()?;
         if peer.public_key != target_public_key {
             return Err(DaemonError::LocalTransport {
                 operation: "resolve relay peer alias",
@@ -513,7 +516,9 @@ pub(crate) async fn enqueue_peer_request_via_connected_relay_authorized(
             if stale_public_key.is_some() {
                 state.write().await.forget_peer_public_key(&target_ref);
             }
-            let kernel = relay_discovery::get_live_kernel(config, &target_ref).await?;
+            let discovery =
+                crate::runtime::cloud_api_client::relay_metadata_discovery_config(config).await?;
+            let kernel = relay_discovery::get_live_kernel(&discovery, &target_ref).await?;
             authorize()?;
             let public_key = kernel.public_key;
             relay_crypto::decode_public_key(&public_key)?;
@@ -801,12 +806,16 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
             operation: "send relay peer request",
             message: "relay_token is not configured".to_string(),
         })?;
+    // MP-08 / MP-10 / MP-11: temporary peer discovery must use a metadata
+    // grant, while registration below retains the original kernel grant.
+    let discovery_config =
+        crate::runtime::cloud_api_client::relay_metadata_discovery_config(config).await?;
     #[cfg(test)]
     let kernel = {
         let peer_call_id = test_trace.peer_call_id();
         test_trace.record("metadata_discovery_started", None);
         match relay_discovery::get_live_kernel_for_temporary_peer_test_call(
-            config,
+            &discovery_config,
             target_ref,
             peer_call_id,
         )
@@ -823,7 +832,7 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
         }
     };
     #[cfg(not(test))]
-    let kernel = relay_discovery::get_live_kernel(config, target_ref).await?;
+    let kernel = relay_discovery::get_live_kernel(&discovery_config, target_ref).await?;
     authorize()?;
     let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize relay peer request",
@@ -840,6 +849,7 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     let connect_timeout = response_timeout
         .map(|deadline| deadline.min(transport_timeout))
         .unwrap_or(transport_timeout);
+    let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
     let (mut socket, _) = timeout(connect_timeout, connect_relay_socket(&relay_url))
         .await
         .map_err(|_| DaemonError::LocalTransport {
@@ -930,7 +940,8 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
         })?;
     let read_response = async {
         loop {
-            match socket.next().await {
+            match chariox_relay::frame_transport::read_message(&mut socket, &mut relay_frames).await
+            {
                 Some(Ok(Message::Text(text))) => {
                     let envelope =
                         serde_json::from_str::<RelayEnvelope>(&text).map_err(|error| {
@@ -1423,3 +1434,7 @@ mod relay_rtt_tests {
         assert_eq!(fields["error"], serde_json::json!("timed out"));
     }
 }
+
+#[cfg(test)]
+#[path = "peer_metadata_auth_tests.rs"]
+mod metadata_auth_tests;

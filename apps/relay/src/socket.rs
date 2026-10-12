@@ -10,7 +10,7 @@ pub async fn connect_relay_socket(
     url: &str,
 ) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, Response), Error> {
     // Interactive request/response tails must not wait for a delayed TCP ACK.
-    connect_async_with_config(url, None, true).await
+    connect_async_with_config(&crate::frame_transport::transport_url(url), None, true).await
 }
 
 // MP-08 / MP-10 / MP-11: one transport policy for every relay role.

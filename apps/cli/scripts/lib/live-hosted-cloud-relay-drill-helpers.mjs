@@ -4,12 +4,13 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { resolveBuiltBinary } from "./drill-runtime-helpers.mjs"
+import { createCloudDrillClient, loadCloudRelayDrillModules } from "./live-cloud-relay-drill-helpers.mjs"
+export { connectSessionScopedCloudClient, createCloudDrillClient, loadCloudRelayDrillModules, waitForCloudRelayTarget } from "./live-cloud-relay-drill-helpers.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..", "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const apiUrl = (process.env.CHARIOX_CLOUD_HOSTED_API_URL ?? "https://staging.chariox.com").replace(/\/$/, "")
-const pollTimeoutMs = Number(process.env.CHARIOX_CLOUD_HOSTED_POLL_TIMEOUT_MS ?? 10 * 60 * 1000)
 const remoteCliHost = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_HOST ?? "root@195.201.123.115"
 const remoteCliKey = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_KEY ?? path.join(os.homedir(), ".ssh/chariox_hetzner_staging")
 const devAuthSecret = process.env.CHARIOX_CLOUD_DEV_AUTH_SECRET ?? ""
@@ -17,14 +18,12 @@ const devAuthSecret = process.env.CHARIOX_CLOUD_DEV_AUTH_SECRET ?? ""
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export function log(name, details = null) {
-  if (details == null) console.log(`[hosted-cloud-relay-drill] ${name}`)
-  else console.log(`[hosted-cloud-relay-drill] ${name}`, JSON.stringify(details))
+  if (details == null) console.log(`[MP-08/MP-10/MP-11 hosted-cloud-relay-drill] ${name}`)
+  else console.log(`[MP-08/MP-10/MP-11 hosted-cloud-relay-drill] ${name}`, JSON.stringify(details))
 }
 
-export function assert(condition, message, details = null) {
-  if (!condition) {
-    throw new Error(`${message}${details == null ? "" : `\n${JSON.stringify(details, null, 2)}`}`)
-  }
+export function assert(condition, message) {
+  if (!condition) throw new Error(message) // Responses can contain credentials.
 }
 
 export async function run(command, args, options = {}) {
@@ -49,20 +48,9 @@ export function spawnProcess(command, args, options) {
     stdio: ["ignore", "pipe", "pipe"],
   })
   const name = options.name ?? path.basename(command)
-  if (options.logStdout !== false) {
-    child.stdout.on("data", (chunk) => {
-      for (const line of chunk.toString().trimEnd().split("\n").filter(Boolean)) {
-        log(`${name}:stdout`, line)
-      }
-    })
-  }
-  if (options.logStderr !== false) {
-    child.stderr.on("data", (chunk) => {
-      for (const line of chunk.toString().trimEnd().split("\n").filter(Boolean)) {
-        log(`${name}:stderr`, line)
-      }
-    })
-  }
+  // Service output is private runtime data, never evidence.
+  child.stdout.resume()
+  child.stderr.resume()
   child.on("exit", (code, signal) => {
     log(`${name}:exit`, { code, signal })
   })
@@ -97,10 +85,12 @@ export async function runSsh(command, options = {}) {
 }
 
 export async function terminateChild(child, signal = "SIGTERM") {
-  if (!child || child.exitCode != null) return
+  if (!child || child.exitCode != null || child.signalCode != null) return
+  if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw new Error("refusing to signal an invalid child PID")
   child.kill(signal)
   await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(5_000)])
-  if (child.exitCode == null) {
+  if (child.exitCode == null && child.signalCode == null) {
+    if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw new Error("refusing to signal an invalid child PID")
     child.kill("SIGKILL")
     await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(2_000)])
   }
@@ -185,61 +175,6 @@ export function unwrap(resp, key) {
   return resp?.[key] ?? resp
 }
 
-export function profileFromKernel(profile, expiresAt) {
-  assert(profile, "kernel cloud response should include a profile")
-  return {
-    apiUrl: profile.api_url,
-    email: profile.email,
-    accountId: profile.account_id,
-    userId: profile.user_id,
-    accountSlug: profile.account_slug,
-    realmId: profile.realm_id,
-    relayUrl: profile.relay_url,
-    issuerId: profile.issuer_id,
-    ...(profile.client_id ? { clientId: profile.client_id } : {}),
-    ...(profile.client_alias ? { clientAlias: profile.client_alias } : {}),
-    ...(profile.machine_id ? { machineId: profile.machine_id } : {}),
-    ...(profile.machine_alias ? { machineAlias: profile.machine_alias } : {}),
-    ...(profile.machine_credential ? { machineCredential: profile.machine_credential } : {}),
-    ...(profile.cloud_session_token ? { cloudSessionToken: profile.cloud_session_token } : {}),
-    ...(expiresAt ? { cloudSessionExpiresAtMs: Date.parse(expiresAt) } : {}),
-  }
-}
-
-export function tokenFromKernel(token, profile) {
-  assert(token, "kernel cloud token response should include a token")
-  return {
-    relayUrl: token.relay_url,
-    relayToken: token.relay_token,
-    tokenExpiresAtMs: Date.parse(token.token_expires_at),
-    profile: profile ? profileFromKernel(profile) : undefined,
-  }
-}
-
-export function parseCloudClientTokenNotice(notices) {
-  const notice = [...notices].reverse().find((item) => (
-    item.startsWith("cloud relay client token\n") || item.startsWith("cloud client token\n")
-  ))
-  assert(notice, "cloud relay client-token command should append a token notice", notices)
-  const fields = Object.fromEntries(
-    notice
-      .split("\n")
-      .slice(1)
-      .map((line) => {
-        const index = line.indexOf("=")
-        return index === -1 ? [line, ""] : [line.slice(0, index), line.slice(index + 1)]
-      }),
-  )
-  const relayUrl = fields.relay_url ?? fields.transport
-  assert(relayUrl, "client token notice should include relay_url or transport", fields)
-  const tokenMatch = fields.command?.match(/\s--relay-token\s+(\S+)/)
-  assert(tokenMatch?.[1], "client token command should include --relay-token", fields.command)
-  return {
-    relayUrl,
-    relayToken: tokenMatch[1],
-  }
-}
-
 export async function postJson(url, body, headers = {}) {
   const response = await fetch(url, {
     method: "POST",
@@ -247,7 +182,7 @@ export async function postJson(url, body, headers = {}) {
     body: JSON.stringify(body),
   })
   if (!response.ok) {
-    throw new Error(`POST ${url} failed with ${response.status}: ${await response.text()}`)
+    throw new Error(`Cloud drill request failed (HTTP ${response.status})`)
   }
   return response.json().catch(() => null)
 }
@@ -361,20 +296,6 @@ export async function pairCloudMachineDirect({ profile, machineId, alias }) {
   return response
 }
 
-export async function issueMachineRelayToken({ profile, machineId }) {
-  const response = await postJson(`${apiUrl}/relay/token`, {
-    sessionToken: profile.cloudSessionToken,
-    accountId: profile.accountId,
-    subject: machineId,
-    subjectKind: "machine",
-    realmId: profile.realmId,
-    userId: profile.userId,
-    machineId,
-  })
-  assert(response?.token, "machine relay token should be returned", response)
-  return response.token
-}
-
 export async function approveDevDeviceLogin({ role, userCode, accountSlug }) {
   if (!devAuthSecret) return false
   const slug = accountSlug ?? `hosted-${role}-${process.pid}-${Date.now()}`
@@ -405,33 +326,6 @@ export async function expectReject(promise, label, expectedText) {
   throw new Error(`${label} unexpectedly succeeded`)
 }
 
-export async function issueSessionScopedClientToken(apiUrl, {
-  sessionToken,
-  accountId,
-  realmId,
-  subject,
-  userId,
-  clientId,
-  sessionId,
-  targetDaemonAlias,
-  allowUnpairedClientSubject,
-}) {
-  const runtime = await postJson(`${apiUrl}/relay/token`, {
-    sessionToken,
-    accountId,
-    subject,
-    subjectKind: "client",
-    realmId,
-    userId,
-    clientId,
-    sessionId,
-    allowedTargets: [targetDaemonAlias],
-    ...(allowUnpairedClientSubject ? { allowUnpairedClientSubject: true } : {}),
-  })
-  assert(runtime.token, "session-scoped relay token should be returned", runtime)
-  return runtime.token
-}
-
 export async function waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace, localAuthEnvironment) {
   let lastError = null
   for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -458,145 +352,29 @@ export async function allowDevStubProvider(client, requests, label) {
   await client.send(requests.setUserConfigValueRequest("providers.workspace_live_sync", "off"))
 }
 
-export async function manualCloudDeviceLogin({ role, clientId, clientAlias, localClient, requests }) {
-  log(`${role}-cloud-login-start`, { apiUrl })
-  const login = unwrap(
-    await localClient.send(requests.startCloudRelayLoginRequest(apiUrl, {
-      clientId,
-      clientAlias,
-    })),
-    "CloudRelayLoginStarted",
-  ).login
-  const expiresAtMs = Math.min(Date.parse(login.expires_at), Date.now() + pollTimeoutMs)
-  log(`${role}-approve-cloud-login`, {
-    verificationUrl: login.verification_url,
-    userCode: login.user_code,
-    expiresAt: login.expires_at,
-  })
-  await approveDevDeviceLogin({ role, userCode: login.user_code })
-  while (Date.now() < expiresAtMs) {
-    const result = unwrap(
-      await localClient.send(requests.pollCloudRelayLoginRequest(apiUrl, login.device_code)),
-      "CloudRelayLoginPolled",
-    ).result
-    log(`${role}-cloud-login-poll-result`, { status: result.status })
-    if (result.status === "approved") {
-      assert(result.profile?.cloud_session_token, `${role} cloud login should return a cloud session token`, result)
-      return {
-        profile: profileFromKernel(result.profile, result.expires_at),
-        cloudSessionToken: result.profile.cloud_session_token,
-      }
-    }
-    if (result.status === "expired_token") {
-      throw new Error(`${role} cloud login expired`)
-    }
-    await sleep(Math.max(result.interval_seconds ?? 2, 1) * 1000)
-  }
-  throw new Error(`${role} cloud login timed out`)
+/** MP-08 / MP-10 / MP-11: each human authenticates through the ordinary CLIENT
+ * flow with an isolated product identity and private credential store. */
+export async function manualCloudDeviceLogin({ role, stateRoot, modules, terminal, accountSlug, expectedAccountId, baseUrl = apiUrl, approve = approveDevDeviceLogin }) {
+  modules ??= await loadCloudRelayDrillModules()
+  terminal ??= createCloudDrillClient(modules, stateRoot, `${role}-terminal`)
+  try {
+    const profile = await terminal.client.login(baseUrl, async verification => {
+      log(`${role}-approve-cloud-login`, verification)
+      await approve({ role, userCode: verification.userCode, accountSlug })
+    }, expectedAccountId)
+    return { ...terminal, profile }
+  } catch (error) { terminal.client.stop(); throw error }
 }
 
-export function appendCookies(jar, response) {
-  const setCookie = response.headers.getSetCookie?.() ?? []
-  for (const cookie of setCookie) {
-    const pair = cookie.split(";", 1)[0]
-    const index = pair.indexOf("=")
-    if (index > 0) jar.set(pair.slice(0, index), pair.slice(index + 1))
-  }
-}
-
-export function cookieHeader(jar) {
-  return [...jar].map(([name, value]) => `${name}=${value}`).join("; ")
-}
-
-export async function devBrowserCloudLogin({ role }) {
-  if (!devAuthSecret) {
-    throw new Error("CHARIOX_CLOUD_DEV_AUTH_SECRET is required for hosted browser dev login")
-  }
-  const slug = `hosted-${role}-${process.pid}-${Date.now()}`
-  const email = `ma.gutierrez.estevez+${slug}@gmail.com`
-  const jar = new Map()
-  const csrfResponse = await fetch(`${apiUrl}/auth/csrf`)
-  if (!csrfResponse.ok) {
-    throw new Error(`GET /auth/csrf failed with ${csrfResponse.status}: ${await csrfResponse.text()}`)
-  }
-  appendCookies(jar, csrfResponse)
-  const csrf = await csrfResponse.json()
-  log(`${role}-dev-browser-login`, { accountSlug: slug, email })
-  const loginResponse = await fetch(`${apiUrl}/auth/dev/browser-login`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-chariox-dev-auth-secret": devAuthSecret,
-      cookie: cookieHeader(jar),
-    },
-    body: JSON.stringify({
-      email,
-      accountSlug: slug,
-      displayName: `Hosted ${role} drill`,
-      providerSubject: `dev|${slug}`,
-    }),
-  })
-  if (!loginResponse.ok) {
-    throw new Error(`POST /auth/dev/browser-login failed with ${loginResponse.status}: ${await loginResponse.text()}`)
-  }
-  appendCookies(jar, loginResponse)
-  const cloudSessionResponse = await fetch(`${apiUrl}/auth/cloud-session`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "csrf-token": csrf.csrfToken,
-      cookie: cookieHeader(jar),
-    },
-    body: JSON.stringify({ accountSlug: slug, accountName: slug }),
-  })
-  if (!cloudSessionResponse.ok) {
-    throw new Error(`POST /auth/cloud-session failed with ${cloudSessionResponse.status}: ${await cloudSessionResponse.text()}`)
-  }
-  const result = await cloudSessionResponse.json()
-  return {
-    profile: {
-      email: result.profile.email,
-      accountId: result.profile.accountId,
-      userId: result.profile.userId,
-      accountSlug: result.profile.accountSlug,
-      realmId: result.profile.realmId,
-      relayUrl: result.profile.relayUrl,
-      issuerId: result.profile.issuerId,
-    },
-    cloudSessionToken: result.cloudSessionToken,
-  }
-}
-
-export async function waitForRelayTarget(LocalIpcClient, requests, relayUrl, relayToken, targetDaemonAlias) {
-  let lastError = null
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-    const client = new LocalIpcClient(relayUrl, {
-      relayAuthToken: relayToken,
-      targetDaemonAlias,
-      kernelPingIntervalMs: 60_000,
-      kernelMaxMissedPongs: 10,
+export async function cleanupHostedCloudTerminal(terminal, options = {}) {
+  try {
+    const credential = await terminal.client.store.session(terminal.identity.publicKeyThumbprint)
+    await cleanupHostedCloudIdentity({
+      ...options, profile: credential.profile, cloudSessionToken: credential.accessToken,
+      clientIds: options.clientIds ?? [credential.clientId],
     })
-    try {
-      await Promise.race([
-        client.send(requests.listSessionsRequest()),
-        sleep(2_000).then(() => { throw new Error("probe timeout") }),
-      ])
-      await client.close()
-      return
-    } catch (error) {
-      lastError = error
-      await client.close().catch(() => {})
-      if (attempt === 0 || attempt % 10 === 9) {
-        log("relay-target-wait-retry", {
-          targetDaemonAlias,
-          attempt: attempt + 1,
-          error: error instanceof Error ? error.message : String(error),
-        })
-      }
-      await sleep(250)
-    }
-  }
-  throw new Error(`relay target did not become reachable: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
+    if (options.logout !== false) await terminal.client.store.clear()
+  } finally { terminal.client.stop() }
 }
 
 export async function sendWithRetry(client, request, label, attempts = 5) {
@@ -632,27 +410,6 @@ export function installSendRetry(client, label) {
   const send = client.send.bind(client)
   client.send = (request) => sendWithRetry({ send }, request, label)
   return client
-}
-
-export async function handleRelayCommandWithRetry(handlers, command, label, attempts = 3) {
-  let lastError = null
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      return await handlers.handleRelayCommand(command)
-    } catch (error) {
-      lastError = error
-      if (attempt === attempts - 1) {
-        break
-      }
-      log("relay-command-retry", {
-        label,
-        attempt: attempt + 1,
-        error: error instanceof Error ? error.message : String(error),
-      })
-      await sleep(1_000 * (attempt + 1))
-    }
-  }
-  throw lastError
 }
 
 export async function waitForRemoteMachine(client, requests, machineRef) {
@@ -753,133 +510,42 @@ export async function waitForSession(client, requests, sessionId, timeoutMs = 20
   throw new Error(`timed out waiting for session ${sessionId}\n${JSON.stringify(lastListed, null, 2)}`)
 }
 
-export function createHostedCommandDeps({
-  workspace,
-  clientId,
-  localClient,
-  requests,
-  profileRef,
-  notices,
-  ownerAccountSlug,
-}) {
+/** MP-08 / MP-10 / MP-11: kernel enrollment and terminal sign-in have separate
+ * authorities. Use product adapters; never extract human tokens from IPC. */
+export function createHostedCommandDeps({ workspace, localClient, profileRef, notices, ownerAccountSlug, terminal, modules, baseUrl = apiUrl, approve = approveDevDeviceLogin }) {
+  const appendNotice = message => {
+    notices.push(message)
+    log("command-notice", { firstLine: message.split("\n")[0] })
+  }
+  const openUrl = async url => {
+    const userCode = new URL(url).searchParams.get("user_code")
+    if (userCode) await approve({role: "owner", userCode, accountSlug: ownerAccountSlug})
+    return false
+  }
   return {
-    workspace,
-    worktree: workspace,
-    clientId,
+    workspace, worktree: workspace, clientId: `cli:${terminal.identity.publicKeyThumbprint}`,
     isAttached: () => false,
-    sessionState: () => ({ id: null, agents: [], workflows: [] }),
-    attachmentState: () => null,
-    providerRunState: () => null,
-    currentModelId: () => "gpt-5.2",
-    currentVariantId: () => "low",
-    currentProviderId: () => "codex",
-    focusedAgentId: () => null,
-    multiAgentResponseLayout: () => "individual",
-    maxAgentsPerScreen: () => 3,
-    flashFooter: (message, tone) => log("command-footer", { tone, message }),
-    appendNotice: (message) => {
-      notices.push(message)
-      log("command-notice", { firstLine: message.split("\n")[0] })
+    sessionState: () => ({id: null, agents: [], workflows: []}),
+    flashFooter: (message, tone) => {
+      if (tone === "error") throw new Error(message)
+      log("command-footer", {tone, message})
     },
-    formatError: (error) => error instanceof Error ? error.message : String(error),
-    cloudRelayApiUrl: apiUrl,
-    getCloudRelayProfile: () => profileRef.current,
-    saveCloudRelayProfile: async (profile) => {
-      profileRef.current = profile
-    },
-    bootstrapCloudRelay: async () => {
-      throw new Error("hosted drill uses device login, not bootstrap")
-    },
-    pairCloudRelayClient: async (_profile, nextClientId, alias) => {
-      const paired = unwrap(
-        await localClient.send(requests.pairCloudRelayClientRequest(nextClientId, alias)),
-        "CloudRelayClientPaired",
-      )
-      return profileFromKernel(paired.profile)
-    },
-    pairCloudRelayMachine: async (_profile, machineId, alias) => {
-      const paired = unwrap(
-        await localClient.send(requests.pairCloudRelayMachineRequest(machineId, alias)),
-        "CloudRelayMachinePaired",
-      )
-      return profileFromKernel(paired.profile)
-    },
-    getRelayStatus: async () => unwrap(
-      await localClient.send(requests.relayStatusRequest()),
-      "RelayStatus",
-    ).status,
-    configureRelay: async (relayUrl, relayToken) => unwrap(
-      await localClient.send(requests.configureRelayRequest(relayUrl, relayToken)),
-      "RelayConfigured",
-    ).status,
-    startCloudDeviceLogin: async (nextApiUrl, input) => {
-      log("kernel-cloud-login-start", { apiUrl: nextApiUrl })
-      const login = unwrap(
-        await localClient.send(requests.startCloudRelayLoginRequest(nextApiUrl, input)),
-        "CloudRelayLoginStarted",
-      ).login
-      log("approve-cloud-login", {
-        verificationUrl: login.verification_url,
-        userCode: login.user_code,
-        expiresAt: login.expires_at,
-      })
-      await approveDevDeviceLogin({
-        role: "owner",
-        userCode: login.user_code,
-        accountSlug: ownerAccountSlug,
-      })
-      return {
-        apiUrl: login.api_url,
-        deviceCode: login.device_code,
-        userCode: login.user_code,
-        verificationUrl: login.verification_url,
-        expiresAtMs: Math.min(Date.parse(login.expires_at), Date.now() + pollTimeoutMs),
-        intervalSeconds: login.interval_seconds,
-      }
-    },
-    pollCloudDeviceLogin: async (nextApiUrl, deviceCode) => {
-      const result = unwrap(
-        await localClient.send(requests.pollCloudRelayLoginRequest(nextApiUrl, deviceCode)),
-        "CloudRelayLoginPolled",
-      ).result
-      log("kernel-cloud-login-poll-result", { status: result.status })
-      if (result.status === "authorization_pending") {
-        return {
-          status: "authorization_pending",
-          intervalSeconds: result.interval_seconds ?? 2,
-          expiresAtMs: result.expires_at ? Date.parse(result.expires_at) : Date.now() + 30_000,
-        }
-      }
-      if (result.status === "expired_token") {
-        return { status: "expired_token" }
-      }
-      return {
-        status: "approved",
-        profile: profileFromKernel(result.profile, result.expires_at),
-      }
-    },
-    issueCloudKernelRelayToken: async () => {
-      const connected = unwrap(
-        await localClient.send(requests.connectCloudRelayRequest()),
-        "CloudRelayConnected",
-      )
-      return tokenFromKernel(connected.token, connected.profile)
-    },
-    issueCloudMachineRelayToken: async () => {
-      const connected = unwrap(
-        await localClient.send(requests.connectCloudRelayRequest()),
-        "CloudRelayConnected",
-      )
-      return tokenFromKernel(connected.token, connected.profile)
-    },
-    issueCloudClientRelayToken: async (_profile, targetDaemonAlias, options = {}) => {
-      const issued = unwrap(
-        await localClient.send(requests.issueCloudRelayClientTokenRequest(targetDaemonAlias, clientId, options.sessionId)),
-        "CloudRelayClientTokenIssued",
-      )
-      return tokenFromKernel(issued.token, issued.profile)
-    },
+    appendNotice,
+    formatError: error => error instanceof Error ? error.message : String(error),
+    cloudRelayApiUrl: baseUrl,
+    getCloudRelayProfile: () => modules.relayApi.getKernelCloudRelayProfile(localClient),
+    getCloudControlProfile: () => terminal.client.humanProfile(),
+    getCloudCollaborationProfile: () => terminal.client.humanProfile(),
+    saveCloudRelayProfile: async profile => {profileRef.current = profile},
+    startCloudDeviceLogin: (url, input) => modules.relayApi.startCloudRelayLogin(localClient, url, input),
+    pollCloudDeviceLogin: (url, deviceCode) => modules.relayApi.pollCloudRelayLogin(localClient, url, deviceCode),
+    connectCloudRelay: () => modules.relayApi.connectKernelCloudRelay(localClient),
+    getRelayStatus: () => modules.relayApi.getRelayStatus(localClient),
+    openExternalUrl: openUrl,
+    handleClientCloudCommand: modules.createCloudClientCommands({
+      client: terminal.client, isKernelConnected: () => true, apiUrl: () => baseUrl,
+      notice: appendNotice, saveProfile: async () => {}, refresh: async () => {}, openUrl,
+    }),
     refreshWaitingRoomData: async () => {},
-    openExternalUrl: async () => false,
   }
 }

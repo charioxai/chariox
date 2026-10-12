@@ -1,5 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { TERMINAL_LINK_OPEN_HINT } from "./external-url.js"
+import { formatWaitingRoomMenuRow } from "./waiting-room-menu-row.js"
 
 import {
   waitingRoomRemoteKernelCanDelete,
@@ -212,4 +214,14 @@ test("waiting room remote helpers classify deletable and attachable inventory", 
     leased_agent_count: 0,
     local_session_count: 0,
   }), true)
+})
+
+// MP-08 / MP-11: The real notice was clipped before its copy instruction.
+test("Cloud link gestures remain visible in narrow waiting-room rows", () => {
+  const rows = waitingRoomRemoteRows({ focus: "relay", machineIndex: 0, remoteKernelIndex: 0 }, { cloudNotice: TERMINAL_LINK_OPEN_HINT }, 24)
+  const visible = rows.filter(row => row.id.startsWith("cloud-notice:")).map(row => formatWaitingRoomMenuRow(row, 80)).join("\n")
+  assert.match(visible, /Cmd-click/)
+  assert.match(visible, /Terminal\.app: Cmd-double-click/)
+  assert.match(visible, /Cmd-C/)
+  assert.doesNotMatch(visible, /\.\.\./)
 })

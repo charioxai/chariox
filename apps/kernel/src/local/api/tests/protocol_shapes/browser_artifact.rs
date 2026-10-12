@@ -1,8 +1,8 @@
-//! MP-08/MP-10/MP-11: protocol 472 Browser artifact snapshot and hash.
+//! MP-08/MP-10/MP-11: protocol 491 Browser artifact snapshot and hash.
 use super::*;
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_protocol_435_snapshot_and_hash() {
+fn mp08_mp10_mp11_browser_artifact_protocol_478_snapshot_and_hash() {
     use sha2::{Digest, Sha256};
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
     let wire = serde_json::json!({"RoomBrowserArtifact": {
@@ -26,7 +26,7 @@ fn mp08_mp10_mp11_browser_artifact_protocol_435_snapshot_and_hash() {
 }
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_73_shape_hashes() {
+fn mp08_mp10_mp11_browser_artifact_peer_98_shape_hashes() {
     use crate::transport::room_browser_controller::{
         RoomBrowserControllerCommand, RoomBrowserControllerResult,
     };

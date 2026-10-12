@@ -103,8 +103,8 @@ test("provider command can switch backends and manage codex auth", async () => {
   await handlers.handleProviderCommand({ kind: "provider", raw: "/provider reauth", value: "reauth" })
 
   assert.deepEqual(events, ["provider:codex", "provider:claude-p", "provider:claude-headless"])
-  assert.equal(flashedMessage, "codex reauth started • code ABCD-1234 • https://auth.openai.com/codex/device")
-  assert.equal(notice, "codex reauth started • code ABCD-1234 • https://auth.openai.com/codex/device")
+  assert.equal(flashedMessage, "codex reauth started • code ABCD-1234 • authorization link below")
+  assert.equal(notice, "\nhttps://auth.openai.com/codex/device\n")
 })
 
 test("config command renders kernel mutation effects", async () => {

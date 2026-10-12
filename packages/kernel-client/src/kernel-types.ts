@@ -15,4 +15,5 @@ export type * from "./kernel-types-event-publication.js"
 export type * from "./kernel-types-environment.js"
 export type * from "./kernel-types-project-environment.js"
 
+export type * from "./kernel-types-workflow-notifications.js"
 export type * from "./kernel-types-project-environment-aggregate.js"

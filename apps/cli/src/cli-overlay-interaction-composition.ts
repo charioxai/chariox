@@ -1,6 +1,7 @@
 import { createProjectEnvironmentReadController, projectEnvironmentPageSize } from "./project-environment-read-controller.js"
 import { copyTextToClipboard } from "./clipboard.js"
 import { MouseButton } from "@opentui/core"
+import { createEffect, on } from "solid-js"
 
 import { createCliDialogOverlayController } from "./cli-dialog-overlay-controller.js"
 import {
@@ -162,6 +163,11 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
   const renderHotkeysOverlay = dialogOverlayController.render
   const closeSessionBrowserDialog = dialogOverlayController.closeSessionBrowser
 
+  createEffect(on(
+    () => deps.sessionBrowserOpen() ? [sessionBrowserSessions(), deps.sessionBrowserIndex()] : null,
+    state => { if (state) renderHotkeysOverlay() },
+  ))
+
   const sessionBrowserController = createSessionBrowserController({
     isOpen: deps.sessionBrowserOpen,
     visibleSessions: sessionBrowserSessions,
@@ -227,7 +233,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     closeHotkeys: dialogOverlayController.closeHotkeys,
     closeSessionBrowserDialog,
     closeTerminalPairingDialog: dialogOverlayController.closeTerminalPairing,
-    copyPromptSelection: clipboardController.copyPromptSelection,
+    copyPromptSelection: () => clipboardController.copyPromptSelection() || clipboardController.copySelection(),
     dialogOverlayOpen: dialogOverlayController.isOpen,
     handleHotkeysToggleShortcut: hotkeysToggleController.handle,
     handlePromptSelectionSurfaceMouseUp: promptSurfaceMouseController.handleMouseUp,

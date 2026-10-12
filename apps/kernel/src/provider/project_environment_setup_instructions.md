@@ -26,9 +26,10 @@ include the appropriate openssh-client/ssh and tmux system-tool steps and bounde
 not assume the managed image already provides them. Prefer the project's existing setup recipe and
 return it with bounded validation for the kernel to apply and verify later on the selected worker.
 
-Project evidence discovery is read-only and the provider capability is enforced as read-only. Do
-not use a shell, setup script, validation command, installer, network credential, or file mutation
-in this turn. Do not reject a project definition or evidence merely
+Project evidence discovery is read-only and the provider capability is enforced as read-only.
+For recipe discovery, use provider-native read-only file inspection, including shell reads only
+where the provider's enforced read-only sandbox permits them. Do not execute setup scripts,
+validation commands or installers, use network credentials, or mutate files in this turn. Do not reject a project definition or evidence merely
 because a script or fixture mentions `ssh-keyscan`, `dd`, `private_key`, or another application
 identifier; those words are not shell semantics or authorization. The confirmed disposable-worker
 command boundary removes Chariox-provided credential/account environment bindings and gives opaque setup and

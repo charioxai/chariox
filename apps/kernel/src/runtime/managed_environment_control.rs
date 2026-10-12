@@ -315,28 +315,12 @@ pub(super) fn preflight_provider_account_exports(
     provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     selection: &ManagedEnvironmentProviderAccounts,
 ) -> Result<(), DaemonError> {
-    let ManagedEnvironmentProviderAccounts::Selected { accounts } = selection else {
-        return Ok(());
-    };
-    let owner_user_id = crate::account_profile::provider_account_authority_owner_user_id(
+    crate::runtime::provider_account_portability::preflight_selection(
         config,
-        cloud.user_id.as_str(),
-    );
-    for account in accounts {
-        provider_account_profiles
-            .export_managed_context_materialization(
-                &owner_user_id,
-                &account.provider,
-                &account.account_profile,
-            )
-            .map_err(|_| {
-                control_error(format!(
-                    "selected {} provider account `{}` has no transferable credentials",
-                    account.provider, account.account_profile
-                ))
-            })?;
-    }
-    Ok(())
+        provider_account_profiles,
+        &cloud.user_id,
+        selection,
+    )
 }
 
 pub(super) fn authorized_cloud_profile<'a>(
@@ -609,6 +593,9 @@ mod tests {
         let mut config = DaemonConfig::for_tests();
         assert!(authorized_cloud_profile(&config, crate::session::DEFAULT_LOCAL_USER_ID).is_err());
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             user_id: "cloud-user-1".to_string(),
             ..PersistedCloudRelayProfile::default()
         });
@@ -624,6 +611,9 @@ mod tests {
             ManagedEnvironmentCloudFixture::start(serde_json::Value::Null, serde_json::Value::Null);
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             account_id: "account-1".to_string(),
             user_id: "owner-1".to_string(),
             cloud_session_token: Some("session-secret".to_string()),
@@ -710,6 +700,9 @@ mod tests {
         .expect("provider credential");
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             user_id: "cloud-user-1".to_string(),
             ..PersistedCloudRelayProfile::default()
         });
@@ -983,6 +976,9 @@ mod tests {
     async fn managed_machine_credential_never_authorizes_reimage_control() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             account_id: "account-1".to_string(),
             user_id: "owner-1".to_string(),
             machine_credential: Some(format!("mcred_{}", "a".repeat(40))),
@@ -1015,6 +1011,9 @@ mod tests {
             ManagedEnvironmentCloudFixture::start(serde_json::Value::Null, serde_json::Value::Null);
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             account_id: "account-1".to_string(),
             user_id: "cloud-user-1".to_string(),
             cloud_session_token: Some("session-secret".to_string()),
@@ -1081,6 +1080,9 @@ mod tests {
             ManagedEnvironmentCloudFixture::start(serde_json::Value::Null, serde_json::Value::Null);
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             account_id: "account-1".to_string(),
             user_id: "cloud-user-1".to_string(),
             cloud_session_token: Some("session-secret".to_string()),
@@ -1125,6 +1127,9 @@ mod tests {
         );
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             account_id: "account-1".to_string(),
             user_id: "cloud-user-1".to_string(),
             cloud_session_token: Some("session-secret".to_string()),
@@ -1167,6 +1172,9 @@ mod tests {
         );
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             account_id: "account / one".to_string(),
             user_id: "owner-1".to_string(),
             cloud_session_token: Some("session-secret".to_string()),
@@ -1250,6 +1258,9 @@ mod tests {
     async fn managed_environment_control_uses_authenticated_cloud_profile_for_all_operations() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             account_id: "account / one".to_string(),
             user_id: "cloud-user-1".to_string(),
             cloud_session_token: Some("session-secret".to_string()),

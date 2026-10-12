@@ -507,6 +507,8 @@ refresh_slice_support_files() {
       find /var/lib/apt/lists -mindepth 1 -delete
     fi
   ' || fail "could not prepare desktop services in the existing slice image"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/owned_process_signals.py" "$SLICE_NAME:/opt/chariox-slice/owned_process_signals.py" "shared process ownership guard"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/runtime-process-owner.py" "$SLICE_NAME:/opt/chariox-slice/runtime-process-owner.py" "runtime process ownership guard"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/chariox-slice/start-runtime.sh" "runtime launcher"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-providers.sh" "$SLICE_NAME:/opt/chariox-slice/start-providers.sh" "provider launcher"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/chariox-slice/slice-screen.sh" "screen launcher"
