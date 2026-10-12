@@ -606,6 +606,12 @@ test("executeShellCommand manages workflow triggers", async () => {
   const publication = makeWorkflowPublication({ queue_ref: "priority" })
   const session = makeSession({ workflows: [makeWorkflow()], workflow_publications: [publication] })
   const fake = fakeClient((request) => {
+    if ("ResolveWorkflow" in request) {
+      throw new Error("workflow not found: endpoint-1")
+    }
+    if ("ListWorkflows" in request) {
+      return { WorkflowsListed: { workflows: session.workflows } }
+    }
     if ("CreateWorkflowPublication" in request) {
       return { WorkflowPublicationCreated: { publication, session } }
     }
@@ -643,7 +649,7 @@ test("executeShellCommand manages workflow triggers", async () => {
   assert.equal(disableResult.ok, true)
   assert.match(disableResult.message ?? "", /disabled workflow trigger publication-1/)
   assert.deepEqual(fake.requests, [
-    { ResolveWorkflow: { session_id: "session-1", workflow_ref: "endpoint-1" } },
+    { ListWorkflows: { session_id: "session-1" } },
     {
       CreateWorkflowPublication: {
         session_id: "session-1",
@@ -971,7 +977,7 @@ for (const workflowRef of ["workflow-1", "review", "workflow-"]) {
     const session = makeSession({ workflows: [workflow], workflow_publications: [publication] })
     const fake = fakeClient((request) => {
       requests.push(request)
-      if ("ResolveWorkflow" in request) return { WorkflowResolved: { workflow } }
+      if ("ListWorkflows" in request) return { WorkflowsListed: { workflows: session.workflows } }
       return { WorkflowPublicationCreated: { publication, session } }
     })
     const context = createDefaultShellContext({ sessionId: "session-1", workflowId: "workflow-other" })
@@ -981,5 +987,20 @@ for (const workflowRef of ["workflow-1", "review", "workflow-"]) {
     assert.equal(create.CreateWorkflowPublication.workflow_ref, workflowRef)
     assert.equal(create.CreateWorkflowPublication.endpoint_ref, "endpoint-1")
     assert.equal(create.CreateWorkflowPublication.alias, null)
+  })
+}
+
+for (const failingVariant of ["ListWorkflows", "CreateWorkflowPublication"]) {
+  test(`MP-08 / MP-10 trigger create reports ${failingVariant} request failures`, async () => {
+    const fake = fakeClient((request) => {
+      if (failingVariant in request) throw new Error(`${failingVariant} unavailable`)
+      if ("ListWorkflows" in request) return { WorkflowsListed: { workflows: [makeWorkflow()] } }
+      throw new Error("unexpected request")
+    })
+    const context = createDefaultShellContext({ sessionId: "session-1", workflowId: "workflow-1" })
+    await assert.rejects(
+      executeShellCommand(parseShellCommand("workflow trigger create endpoint-1 public_qa"), context, { client: fake.client }),
+      new RegExp(`${failingVariant} unavailable`),
+    )
   })
 }

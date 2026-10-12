@@ -3,6 +3,7 @@ import { resolve as resolvePath } from "node:path"
 import type {
   RuntimeSession,
   WorkflowPublicationDefinition,
+  WorkflowDefinition,
   WorkflowPublicationPackageFile,
 } from "./kernel-types.js"
 import {
@@ -12,7 +13,7 @@ import {
   exportWorkflowPublicationPackageRequest,
   getWorkflowPublicationRequest,
   listWorkflowPublicationsRequest,
-  resolveWorkflowRequest,
+  listWorkflowsRequest,
 } from "./ipc-requests.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 import { sessionContextAgentId } from "./shell-session-context.js"
@@ -133,8 +134,13 @@ export async function executeWorkflowPublicationCommand(
 
   if (action === "create" || action === "new") {
     const parsed = await parseWorkflowPublicationCreateOptions(rest, context.workflowId, async (ref) => {
-      const response = await deps.client.send(resolveWorkflowRequest(sessionId, ref))
-      return Boolean(response.WorkflowResolved)
+      const response = await deps.client.send(listWorkflowsRequest(sessionId))
+      const { workflows } = expectVariant<{ workflows: WorkflowDefinition[] }>(response, "WorkflowsListed")
+      const normalizedRef = ref.trim().toLowerCase()
+      if (workflows.some((workflow) => workflow.id === normalizedRef)) return true
+      if (workflows.some((workflow) => workflow.alias === normalizedRef)) return true
+      if (workflows.filter((workflow) => workflow.id.startsWith(normalizedRef)).length === 1) return true
+      return workflows.filter((workflow) => workflow.alias?.startsWith(normalizedRef)).length === 1
     })
     if (!parsed.ok) {
       return { ok: false, message: parsed.message }
@@ -263,8 +269,8 @@ async function parseWorkflowPublicationCreateOptions(
     options.methods = methods
   }
   // MP-08 / MP-10: generated guidance supplies workflow + endpoint with no alias.
-  // Resolve aliases/prefixes and different workflows through the ordinary kernel resolver.
-  // A first ref that is not a workflow retains the contextual endpoint + alias form.
+  // Resolve against the session inventory: a missing workflow is a normal miss,
+  // while an inventory/creation request failure still reaches the user.
   const explicitWorkflow = positional.length >= 3
     || (positional.length >= 2 && (!currentWorkflowId || positional[0] === currentWorkflowId
       || await resolvesWorkflow(positional[0]!)))
