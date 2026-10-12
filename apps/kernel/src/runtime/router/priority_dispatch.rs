@@ -428,15 +428,14 @@ impl CommandRouter {
             | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)) => {
                 boxed_handler(|| async move {
                     let caller_user_id = command_caller_user_id(&command);
-                    let directory =
-                        if crate::runtime::cloud_relay_authorization::kernel_cloud_owner(
-                            &self.config_projection.snapshot(),
-                            &command,
-                        ) {
-                            self.remote_relay_inventory_projection.clone()
-                        } else {
-                            Default::default()
-                        };
+                    let directory = if crate::runtime::cloud_relay_authorization::kernel_cloud_owner(
+                        &self.config_projection.snapshot(),
+                        &command,
+                    ) {
+                        self.remote_relay_inventory_projection.clone()
+                    } else {
+                        Default::default()
+                    };
                     execute_waiting_room_request(
                         &self.runtime_state,
                         &self.session_projection,

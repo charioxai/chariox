@@ -143,10 +143,7 @@ impl DaemonApp {
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, &agent_id)
                 .is_some();
-        let prompt = if will_queue
-            || preserve_native_identity
-            || self.config().room_agent_tools
-        {
+        let prompt = if will_queue || preserve_native_identity || self.config().room_agent_tools {
             prompt
         } else {
             prompt.with_id(self.sessions.reserve_prompt_id())
