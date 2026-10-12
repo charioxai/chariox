@@ -152,6 +152,8 @@ pub(crate) struct KernelRuntimeState {
     forwarded_peer_binding: Option<forwarded_peer_authority::ForwardedPeerBinding>,
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
+    #[cfg(test)]
+    queue_promotion_exit_probe: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
@@ -765,6 +767,8 @@ impl KernelRuntimeState {
             forwarded_peer_binding: None,
             #[cfg(test)]
             app_lock_wait_probe: None,
+            #[cfg(test)]
+            queue_promotion_exit_probe: None,
             app,
             provider_runtime_lanes,
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),

@@ -1,6 +1,8 @@
 use super::*;
 #[path = "profile_compaction/queue_head_review.rs"]
 mod queue_head_review;
+#[path = "profile_compaction/unknown_context_review.rs"]
+mod unknown_context_review;
 use crate::provider::{
     AgentEndpointMode, AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest,
     ProviderLaunchResult, ProviderResumeState, ProviderRunState, ProviderRunTokenUsage,

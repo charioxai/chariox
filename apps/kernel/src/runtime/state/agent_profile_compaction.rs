@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use crate::provider::{ProviderRunState, ProviderUtilityExecutionPolicy, RuntimeProviderRun};
 
 use super::KernelRuntimeState;
+mod unknown_context;
 
 /// The share of the new window above which the session is compacted first.
 const COMPACT_ABOVE_WINDOW_PERCENT: u64 = 75;
@@ -31,16 +32,26 @@ impl KernelRuntimeState {
         account_profile: Option<&str>,
         model: Option<&str>,
     ) -> Result<(), crate::error::DaemonError> {
-        let Some(run) = self
+        let run = self
             .owned
             .provider_store
-            .get_run_for_agent(session_id, agent.id())
-        else {
-            return Ok(());
-        };
+            .get_run_for_agent(session_id, agent.id());
         let target_provider = provider.unwrap_or(agent.provider());
         let target_account = account_profile.unwrap_or(agent.provider_account_profile());
         let Some(target_model) = model.or(agent.model()) else {
+            return Ok(());
+        };
+        if self.recover_unknown_context_downshift(
+            session_id,
+            agent,
+            run.as_ref(),
+            target_provider,
+            target_account,
+            target_model,
+        )? {
+            return Ok(());
+        }
+        let Some(run) = run else {
             return Ok(());
         };
         // Both local and leased callers hold the idle profile-transition claim.
