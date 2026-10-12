@@ -347,12 +347,13 @@ async fn manual_setup_token_verifies_before_storage_and_authenticates_alias() {
                 LocalDaemonResponse::ProviderAccountCredentialStored { .. }
             ));
             // MP-08/MP-11: a native-file status read must not erase the
-            // stored-token observation or resolve a Vault secret for a read.
+            // stored-token observation; verification uses the live Vault config.
             let stored_status = crate::local::provider_requests::observe_provider_auth_status(
                 &router.provider_account_profiles,
                 "local",
                 "claude-p",
                 &profile.profile_id,
+                &router.runtime_state.config_snapshot().await,
             )
             .unwrap();
             assert_eq!(

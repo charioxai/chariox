@@ -938,8 +938,8 @@ the supplied Claude token with one bounded official model turn and no tools, and
 writes the secret plus provider-only credential policy. The successful verification records
 the account authentication observation, so both `claude` and `claude-p` can
 launch through the same stored credential. Subscription usage windows and native token-presence status are not authentication evidence. A failed check leaves the prior secret
-and account observation unchanged. Native-file status reads preserve the stored-token
-observation without opening the Vault or updating its validation time. Command
+and account observation unchanged. Account status and refresh verify the current stored token through the live
+runtime Vault configuration; native-file login state cannot substitute for it. Command
 history and debug output redact the value. No client currently requires this
 operation during normal session attachment, so minimum supported protocol
 versions do not change.
