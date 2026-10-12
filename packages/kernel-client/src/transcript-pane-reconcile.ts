@@ -194,7 +194,8 @@ export function reconcileMountedTranscriptPane<TEntry extends TranscriptPaneEntr
   scrollbox.requestRender()
 }
 
-function transcriptPaneEntryIsMounted<TEntry extends TranscriptPaneEntry>(
+// Rows a pane mounts: folded-turn rows and deferred history fragments are not.
+export function transcriptPaneEntryIsMounted<TEntry extends TranscriptPaneEntry>(
   entry: TEntry,
 ): boolean {
   return !entry.hidden && !entry.historyDeferred

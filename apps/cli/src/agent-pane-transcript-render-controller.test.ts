@@ -38,6 +38,19 @@ test("agent pane transcript render controller rebuilds only panes showing the em
   assert.equal(mounted.wrapper.destroyed, false)
 })
 
+// MP-08 / MP-10 (panes R11): a rebuilt split pane mounts what the shared
+// reconcile mounts: rows of a folded turn stay unmounted.
+test("agent pane transcript render controller rebuild skips hidden rows", () => {
+  const harness = renderHarness({
+    paneEntries: { "agent-1": [entry(1, "user", "go"), { ...entry(2, "tool", "ls"), hidden: true }, entry(3, "assistant", "done")] },
+    scrollboxes: new Map([["agent-1", scrollbox([])]]),
+  })
+
+  harness.controller.rebuildPane("agent-1")
+
+  assert.deepEqual(harness.scrollboxes.get("agent-1")?.childIds(), ["entry-1", "entry-3"])
+})
+
 test("agent pane transcript render controller mounts entries and removes empty state", () => {
   const empty = child("empty")
   const harness = renderHarness({

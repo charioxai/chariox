@@ -1,5 +1,8 @@
 import type { TranscriptEntry } from "./cli-types.js"
-import { reconcileMountedTranscriptPane } from "@chariox/kernel-client/transcript-pane-reconcile"
+import {
+  reconcileMountedTranscriptPane,
+  transcriptPaneEntryIsMounted,
+} from "@chariox/kernel-client/transcript-pane-reconcile"
 
 export type AgentPaneTranscriptChild = {
   id: string
@@ -102,7 +105,7 @@ export function createAgentPaneTranscriptRenderController<
     }
 
     const renderables = entryRenderablesForAgent(agentId)
-    for (const entry of paneEntries.filter((candidate) => !candidate.historyDeferred)) {
+    for (const entry of paneEntries.filter(transcriptPaneEntryIsMounted)) {
       const renderable = deps.buildEntryRenderable(agentId, entry)
       renderables.set(entry.id, renderable)
       scrollbox.add(renderable.wrapper)
