@@ -257,9 +257,13 @@ function parseWorkflowPublicationCreateOptions(
   if (methods.length > 0) {
     options.methods = methods
   }
-  const workflowRef = positional.length >= 3 ? positional[0] : currentWorkflowId
-  const endpointRef = positional.length >= 3 ? positional[1] : positional[0]
-  const alias = positional.length >= 3 ? positional[2] : positional[1]
+  // MP-08 / MP-10: generated guidance supplies workflow + endpoint with no alias.
+  // Preserve the contextual endpoint + alias form when its first ref is not the selected workflow.
+  const explicitWorkflow = positional.length >= 3
+    || (positional.length >= 2 && (!currentWorkflowId || positional[0] === currentWorkflowId))
+  const workflowRef = explicitWorkflow ? positional[0] : currentWorkflowId
+  const endpointRef = explicitWorkflow ? positional[1] : positional[0]
+  const alias = explicitWorkflow ? positional[2] : positional[1]
   if (!workflowRef || !endpointRef) {
     return { ok: false, message: "usage: workflow trigger create [workflow-ref] <endpoint-ref> [alias] [--queue <queue-ref>] [--route <route>] [--method POST] [--parser-json <json>] [--transport-json <json>] [--input-schema-json <json>] [--trace-exposure-json <json>] [--mode async]" }
   }

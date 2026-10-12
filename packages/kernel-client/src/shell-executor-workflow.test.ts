@@ -938,3 +938,26 @@ test("executeShellCommand creates workflow schedules with explicit workflow ref"
     { CreateWorkflowSchedule: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", queue_ref: null, trigger: { kind: "cron", expression: "15 30 14 * * *", timezone: "Europe/Berlin" }, invocation_prompt: "Run it", overlap_policy: "skip", max_runs_configured: false, max_runs: null } },
   ])
 })
+
+
+for (const workflowId of [undefined, "workflow-1"]) {
+  for (const kind of ["event_based", "ingress"]) {
+    test(`MP-08 / MP-10 generated trigger guidance accepts explicit workflow/endpoint without alias (${kind}, context=${workflowId ?? "none"})`, async () => {
+      const requests: Record<string, unknown>[] = []
+      const publication = makeWorkflowPublication({ kind, alias: null })
+      const session = makeSession({ workflows: [makeWorkflow()], workflow_publications: [publication] })
+      const fake = fakeClient((request) => { requests.push(request); return { WorkflowPublicationCreated: { publication, session } } })
+      const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", workflowId })
+      const command = kind === "event_based"
+        ? "workflow trigger create workflow-1 endpoint-1 --kind event_based"
+        : "workflow trigger create workflow-1 endpoint-1 --route /"
+      const result = await executeShellCommand(parseShellCommand(command), context, { client: fake.client })
+      assert.equal(result.ok, true, result.message)
+      const request = requests[0] as { CreateWorkflowPublication: { workflow_ref: string; endpoint_ref: string; alias: string | null; kind?: string | null } }
+      assert.equal(request.CreateWorkflowPublication.workflow_ref, "workflow-1")
+      assert.equal(request.CreateWorkflowPublication.endpoint_ref, "endpoint-1")
+      assert.equal(request.CreateWorkflowPublication.alias, null)
+      if (kind === "event_based") assert.equal(request.CreateWorkflowPublication.kind, kind)
+    })
+  }
+}
