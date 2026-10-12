@@ -874,6 +874,15 @@ mod tests {
                 1,
                 "chunk hooks must record the actual native prompt once"
             );
+            if wanted.is_none() {
+                assert!(
+                    events
+                        .iter()
+                        .any(|e| e["hook_event_name"] == "CharioxContextFailed"
+                            && e["hook_context_request_id"] == event["hook_context_request_id"]),
+                    "failed hook did not notify the kernel"
+                );
+            }
             let receipts = events
                 .iter()
                 .filter(|e| e["hook_event_name"] == "CharioxContextDelivered")

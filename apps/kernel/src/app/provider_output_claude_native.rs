@@ -437,6 +437,19 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 .get("hook_event_name")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            if event_name == "CharioxContextFailed" {
+                outcome.terminal_failure = self.failed_context_delivery(
+                    session_id,
+                    &agent_id,
+                    provider_run_id,
+                    context_file,
+                    &event,
+                )?;
+                if outcome.terminal_failure.is_some() {
+                    return Ok(outcome);
+                }
+                continue;
+            }
             if event_name == "CharioxContextDelivered" {
                 self.accept_context_delivery(
                     session_id,
@@ -448,6 +461,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 continue;
             }
             if event_name == "UserPromptSubmit" {
+                if context_delivery::request_expired(&event) {
+                    continue;
+                }
                 clear_claude_hook_permission_tombstone(context_file);
                 let Some(prompt) = event
                     .get("prompt")
@@ -577,6 +593,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 } else {
                     None
                 };
+                // Preparation may itself exceed the official hook's response wait.
+                if context_delivery::request_expired(&event) {
+                    continue;
+                }
                 let Some(runtime_attachment_id) = runtime_attachment_id.as_deref() else {
                     continue;
                 };

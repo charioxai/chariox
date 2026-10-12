@@ -38,21 +38,28 @@ pub(super) fn stage(
     })
 }
 
+pub(super) fn request_expired(event: &Value) -> bool {
+    event
+        .get("hook_context_deadline_ms")
+        .and_then(Value::as_u64)
+        .is_some_and(|deadline| unix_epoch_ms() >= deadline)
+}
+
 impl ProviderOutputClaudeNativeBridge<'_> {
-    pub(super) fn accept_context_delivery(
+    fn matching_context_delivery(
         &mut self,
         session_id: &str,
         agent_id: &str,
         run_id: &str,
         context_file: &str,
         event: &Value,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Option<PendingDelivery>, DaemonError> {
         let pending_path = format!("{context_file}.context-delivery");
         let Some(pending) = fs::read(&pending_path)
             .ok()
             .and_then(|text| serde_json::from_slice::<PendingDelivery>(&text).ok())
         else {
-            return Ok(());
+            return Ok(None);
         };
         let active = self
             .app
@@ -68,7 +75,7 @@ impl ProviderOutputClaudeNativeBridge<'_> {
                         .unwrap_or(&pending.prompt_id),
                 )
         {
-            return Ok(());
+            return Ok(None);
         }
         let current = self.app.providers.get_run(run_id)?;
         if let Some(receipt_session) = event.get("session_id").and_then(Value::as_str) {
@@ -78,16 +85,53 @@ impl ProviderOutputClaudeNativeBridge<'_> {
                     .provider_session_id(current.adapter_key())
             });
             if current_session != Some(receipt_session) {
-                return Ok(());
+                return Ok(None);
             }
         }
+        Ok(Some(pending))
+    }
+
+    pub(super) fn failed_context_delivery(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        run_id: &str,
+        context_file: &str,
+        event: &Value,
+    ) -> Result<Option<String>, DaemonError> {
+        let Some(pending) =
+            self.matching_context_delivery(session_id, agent_id, run_id, context_file, event)?
+        else {
+            return Ok(None);
+        };
+        let _ = fs::remove_file(format!("{context_file}.context-delivery"));
+        // A rejected steering hook never rejects the already-running target turn.
+        if pending.managed && pending.active_prompt_id.as_deref() != Some(&pending.prompt_id) {
+            return Ok(None);
+        }
+        Ok(Some("Claude blocked the prompt because Chariox context delivery failed. Retry after the kernel is ready.".into()))
+    }
+
+    pub(super) fn accept_context_delivery(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        run_id: &str,
+        context_file: &str,
+        event: &Value,
+    ) -> Result<(), DaemonError> {
+        let Some(pending) =
+            self.matching_context_delivery(session_id, agent_id, run_id, context_file, event)?
+        else {
+            return Ok(());
+        };
         if pending.managed {
             write_claude_native_marker(context_file, &format!("accepted:{}", pending.prompt_id));
             self.consume_accepted_failed_request_context(session_id, agent_id, context_file)?;
         } else if let Some(policy) = self.prompt_handoff {
             policy.accepted(session_id, agent_id, run_id)?;
         }
-        let _ = fs::remove_file(pending_path);
+        let _ = fs::remove_file(format!("{context_file}.context-delivery"));
         Ok(())
     }
 }
