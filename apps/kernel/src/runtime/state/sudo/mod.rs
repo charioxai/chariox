@@ -34,6 +34,8 @@ mod queued_agent_command_tests;
 #[cfg(test)]
 mod queued_command_tests;
 #[cfg(test)]
+mod recall_tests;
+#[cfg(test)]
 mod relaunch_tests;
 #[cfg(test)]
 mod remote_command_tests;

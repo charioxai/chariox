@@ -66,7 +66,7 @@ impl KernelRuntimeState {
             "keyword" => {
                 let request = crate::local::SearchRecallRequest {
                     query: args.query,
-                    session_id: scoped_session_id(
+                    session_id: self.scoped_session_id(
                         provider_run,
                         args.scope.as_deref(),
                         args.session_id,
@@ -103,7 +103,7 @@ impl KernelRuntimeState {
                 let request = SemanticSearchRecallRequest {
                     query: args.query,
                     mode: Some(mode),
-                    session_id: scoped_session_id(
+                    session_id: self.scoped_session_id(
                         provider_run,
                         args.scope.as_deref(),
                         args.session_id,
@@ -149,7 +149,11 @@ impl KernelRuntimeState {
         args: QueryRecallArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let query = recall_query_from_request(crate::local::QueryRecallRequest {
-            session_id: scoped_session_id(provider_run, args.scope.as_deref(), args.session_id)?,
+            session_id: self.scoped_session_id(
+                provider_run,
+                args.scope.as_deref(),
+                args.session_id,
+            )?,
             agent_id: args.agent_id,
             provider: args.provider,
             model: args.model,
@@ -176,35 +180,66 @@ impl KernelRuntimeState {
     }
 }
 
-fn scoped_session_id(
-    provider_run: &crate::provider::RuntimeProviderRun,
-    scope: Option<&str>,
-    requested_session_id: Option<String>,
-) -> Result<Option<String>, DaemonError> {
-    match scope.unwrap_or("current_session") {
-        "current_session" => {
-            if requested_session_id
-                .as_deref()
-                .is_some_and(|requested| requested != provider_run.session_id())
-            {
-                return Err(DaemonError::LocalTransport {
-                    operation: "runtime_tool_recall_scope",
-                    message: "current-session recall requires the caller room; use an explicit broader scope for broader recall".into(),
-                });
+impl KernelRuntimeState {
+    /// MP-08/MP-11 G08: `all` covers every room the caller can access: its own
+    /// room, plus an explicit live same-owner room under the caller's live
+    /// /sudo window. It never expands to a global or foreign lookup.
+    fn scoped_session_id(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        scope: Option<&str>,
+        requested_session_id: Option<String>,
+    ) -> Result<Option<String>, DaemonError> {
+        let current = provider_run.session_id();
+        let other = requested_session_id.filter(|requested| requested != current);
+        match (scope.unwrap_or("current_session"), other) {
+            ("current_session", None) | ("all", None) => Ok(Some(current.to_string())),
+            ("current_session", Some(_)) => Err(recall_scope_error(
+                "current-session recall is limited to the caller room; use scope all with an explicit session_id under live /sudo",
+            )),
+            ("all", Some(target)) => {
+                self.authorize_other_recall_room(provider_run, &target)?;
+                Ok(Some(target))
             }
-            Ok(Some(provider_run.session_id().to_string()))
+            (other, _) => Err(recall_scope_error(&format!(
+                "scope must be one of: current_session, all; got `{other}`"
+            ))),
         }
-        // MP-08/MP-11 G08: legacy MCP encodings cannot expand a provider's
-        // Room authority, even when a lookup would return no records.
-        "all" => Err(DaemonError::LocalTransport {
-            operation: "runtime_tool_recall_scope",
-            message: "agent recall is limited to the caller room; global scope is unavailable"
-                .into(),
-        }),
-        other => Err(DaemonError::LocalTransport {
-            operation: "runtime_tool_recall_scope",
-            message: format!("scope must be one of: current_session, all; got `{other}`"),
-        }),
+    }
+
+    fn authorize_other_recall_room(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        target: &str,
+    ) -> Result<(), DaemonError> {
+        let denied = || {
+            recall_scope_error(
+                "recall outside the caller room requires live /sudo and a live session of the same owner",
+            )
+        };
+        let token = provider_run.runtime_mcp_auth_token().ok_or_else(denied)?;
+        let turn = self.sudo_for_auth_token(token).map_err(|_| denied())?;
+        if provider_run.agent_instance_id() != Some(turn.agent_id.as_str()) {
+            return Err(denied());
+        }
+        let session = self
+            .owned
+            .session_store
+            .get_session(target)
+            .map_err(|_| denied())?;
+        if session.owner_user_id() != turn.owner_user_id
+            || session.status() == crate::session::SessionStatus::Ended
+        {
+            return Err(denied());
+        }
+        Ok(())
+    }
+}
+
+fn recall_scope_error(message: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "runtime_tool_recall_scope",
+        message: message.into(),
     }
 }
 
@@ -423,49 +458,6 @@ fn protected_semantic_recall_events_tool_result(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // MP-11 G08: current-session recall uses the authenticated provider room.
-    #[test]
-    fn mp11_review_recall_current_scope_rejects_foreign_room() {
-        let request = crate::provider::LaunchProviderRequest::new(
-            "caller-room",
-            "caller-agent",
-            "codex",
-            "default",
-            "default",
-        );
-        let run = crate::provider::RuntimeProviderRun::new(
-            "recall-run",
-            &request,
-            crate::provider::ProviderLaunchResult {
-                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
-                process_label: "codex".into(),
-                pty_target: None,
-                pty_program: None,
-                pty_args: vec![],
-                pty_env: std::collections::BTreeMap::new(),
-                pty_env_remove: vec![],
-                working_directory: None,
-                structured_endpoint: None,
-            },
-        );
-        for scope in [None, Some("current_session")] {
-            assert_eq!(
-                scoped_session_id(&run, scope, None).unwrap().as_deref(),
-                Some("caller-room")
-            );
-            assert_eq!(
-                scoped_session_id(&run, scope, Some("caller-room".into()))
-                    .unwrap()
-                    .as_deref(),
-                Some("caller-room")
-            );
-            assert!(
-                scoped_session_id(&run, scope, Some("different-room".into())).is_err(),
-                "MP-11 G08: current-session recall must reject a different room"
-            );
-        }
-    }
 
     fn event(sequence: u64, content: &str) -> crate::history::HistoryEvent {
         crate::history::HistoryEvent::transcript(

@@ -4,7 +4,7 @@ use crate::provider::{
 };
 
 #[test]
-fn mp11_g08_both_recall_encodings_deny_foreign_and_global_scope() {
+fn mp11_g08_both_recall_encodings_deny_other_rooms_without_sudo() {
     std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(|| {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
             let worktree = crate::test_support::TestWorktree::new("g08-recall-scope");
@@ -36,7 +36,8 @@ fn mp11_g08_both_recall_encodings_deny_foreign_and_global_scope() {
                 }
                 let mut arguments = serde_json::json!({"query":"g08-marker", "scope":"all"});
                 if name.contains("query_recall") { arguments.as_object_mut().unwrap().remove("query"); }
-                if router.dispatch_authenticated_runtime_tool_call("g08-recall-bearer", name, arguments).await.is_ok() { failures.push(format!("{name} / global")); }
+                // `all` without a target resolves to the caller room, never a global lookup.
+                if !router.dispatch_authenticated_runtime_tool_call("g08-recall-bearer", name, arguments).await.is_ok_and(|result| result.ok) { failures.push(format!("{name} / all caller room")); }
             }
             let current = router.dispatch_authenticated_runtime_tool_call("g08-recall-bearer", "chariox.search_recall", serde_json::json!({"query":"g08-marker", "session_id":room.id()})).await.unwrap();
             assert!(current.ok, "MP-11 G08: current-room legacy recall remains usable");

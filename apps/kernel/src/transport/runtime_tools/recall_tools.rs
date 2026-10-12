@@ -59,7 +59,7 @@ pub fn recall_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
             name: SEARCH_RECALL_TOOL.to_string(),
-            description: "Search Chariox recall events for prior conversation, workflow, Git, and runtime records. Defaults to the current session; set scope to all only when broader recall is needed.".to_string(),
+            description: "Search Chariox recall events for prior conversation, workflow, Git, and runtime records. Defaults to the current session. scope all covers only sessions you can access: another session of the same owner needs an explicit session_id and live /sudo; other owners' sessions are never searched.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["query"],
