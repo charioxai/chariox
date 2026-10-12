@@ -105,8 +105,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 102 reconciles the agent-model union and its leased watcher contract (MP-08/MP-09/MP-10/MP-11).
 /// MP-08/MP-10/MP-11 integrated acceptance head; generated consumers follow this constant.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 114;
-/// MP-08/MP-10/MP-11: negotiated binary framing preserves the legacy runtime admission floor.
-pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = 90;
+/// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
+/// independently of a relay's ability to downgrade its binary transport.
+pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -2336,19 +2337,23 @@ mod leased_watched_process_protocol_tests {
 #[cfg(test)]
 mod mp08_transport_compatibility_tests {
     #[test]
-    fn mp08_peer96_transport_preserves_legacy_worker_runtime_admission() {
+    fn mp08_mp11_transport_downgrade_cannot_admit_legacy_worker_contracts() {
         assert_eq!(
             super::RELAY_PEER_PROTOCOL_VERSION,
             crate::test_support::expected_relay_peer_protocol_version()
         );
-        // MP-08/MP-10/MP-11: real remote-binding admission keeps the existing
-        // security floor. Unknown/pre90 workers fail; peer94 stays compatible.
+        // MP-08/MP-10/MP-11: transport negotiation does not grant an older
+        // worker the integrated task, wake and leased-watcher contract.
         for (version, compatible) in [
             (None, false),
             (Some(89), false),
-            (Some(90), true),
-            (Some(94), true),
-            (Some(96), true),
+            (Some(90), false),
+            (Some(94), false),
+            (Some(96), false),
+            (Some(102), false),
+            (Some(super::RELAY_PEER_PROTOCOL_VERSION - 1), false),
+            (Some(super::RELAY_PEER_PROTOCOL_VERSION), true),
+            (Some(super::RELAY_PEER_PROTOCOL_VERSION + 1), true),
         ] {
             let binding: crate::agent::RemoteAgentBinding =
                 serde_json::from_value(serde_json::json!({
