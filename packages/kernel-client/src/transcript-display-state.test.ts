@@ -254,7 +254,7 @@ test("applyTranscriptDisplayState uses shared collapsed blob descriptions by def
   const toolEntry = entries.find((entry) => entry.id === 3)
   assert.equal(toolEntry?.blobCollapsible, true)
   assert.equal(toolEntry?.blobCollapsed, true)
-  assert.equal(toolEntry?.blobTitle, "bash · COMPLETED")
+  assert.equal(toolEntry?.blobTitle, "Ran git status · COMPLETED")
   assert.equal(toolEntry?.blobSummary, "$ git status")
 })
 

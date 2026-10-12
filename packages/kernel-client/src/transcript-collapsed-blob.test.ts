@@ -82,7 +82,7 @@ test("describeCollapsedTranscriptBlob summarizes tool command metadata", () => {
       input: { command: "git status" },
     }),
   }), {
-    title: "bash · COMPLETED",
+    title: "Ran git status · COMPLETED",
     summary: "$ git status",
   })
 })
@@ -97,7 +97,7 @@ test("describeCollapsedTranscriptBlob summarizes tool-specific structured metada
       input: { path: "src/app.ts", offset: 5, limit: 20 },
     }),
   }), {
-    title: "read · RUNNING",
+    title: "Reading src/app.ts · RUNNING",
     summary: "src/app.ts [offset=5, limit=20]",
   })
 
@@ -116,7 +116,7 @@ test("describeCollapsedTranscriptBlob summarizes tool-specific structured metada
       },
     }),
   }), {
-    title: "todowrite · COMPLETED",
+    title: "Updated plan · COMPLETED",
     summary: "2 remaining of 3",
   })
 })

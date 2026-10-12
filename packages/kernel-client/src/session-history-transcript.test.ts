@@ -36,7 +36,7 @@ test("session history transcript hydration reconstructs tools and suppresses ord
 
   assert.deepEqual(entries.map((entry) => entry.role), ["user", "reasoning", "tool", "assistant"])
   assert.equal(entries[0]?.text, "build")
-  assert.match(entries[2]?.text ?? "", /\*\*bash\*\*/)
+  assert.match(entries[2]?.text ?? "", /\*\*Running npm test\*\*/)
   assert.match(entries[2]?.text ?? "", /npm test/)
   assert.equal(entries[3]?.text, "all green\n")
 })
@@ -432,7 +432,7 @@ test("shared history transcript fragment merge rebuilds structured tool fragment
   )
 
   assert.equal(merged.mergeKey, "tool-1")
-  assert.match(merged.text, /\*\*bash\*\*/)
+  assert.match(merged.text, /\*\*(Ran|Running) pnpm test\*\*/)
   assert.match(merged.text, /pnpm test/)
   assert.equal(merged.sourceText, toolPayload)
 })

@@ -22,10 +22,8 @@ import {
   renderDetail,
   trimTrailingNewlines,
 } from "./strings.js"
-import {
-  isNativeReadTool,
-  nativeToolDisplayTitle,
-} from "./tool-names.js"
+import { isNativeReadTool } from "./tool-names.js"
+import { toolDisplayTitle } from "./tool-title.js"
 import type {
   ApplyPatchFile,
   ToolDisplay,
@@ -58,6 +56,7 @@ export type {
   ToolDisplayStatus,
   ToolTranscriptUpdate,
 } from "./types.js"
+export { toolDisplayTitle } from "./tool-title.js"
 export {
   mergeToolTranscriptUpdate,
   parseToolTranscriptUpdate,
@@ -78,9 +77,8 @@ export function formatToolTranscriptUpdate(update: ToolTranscriptUpdate) {
   }
 
   const sections: string[] = []
-  const tool = nonEmpty(update.tool) ?? "tool"
   const status = nonEmpty(update.status)
-  sections.push(`**${tool}**${formatToolPlacementBadge(update.placement)}${formatToolStatusBadge(status)}`)
+  sections.push(`**${toolDisplayTitle(update)}**${formatToolPlacementBadge(update.placement)}${formatToolStatusBadge(status)}`)
 
   const title = nonEmpty(update.title)
   const description = nonEmpty(update.description)
@@ -167,7 +165,7 @@ export function formatToolDisplay(update: ToolTranscriptUpdate): ToolDisplay {
   }
 
   const summary = summarizeToolDisplay(update, patchFiles, markdown)
-  const title = toolDisplayTitleWithPlacement(nativeToolDisplayTitle(tool), update.placement)
+  const title = toolDisplayTitleWithPlacement(toolDisplayTitle(update, patchFiles), update.placement)
   return {
     version: 1,
     tool,

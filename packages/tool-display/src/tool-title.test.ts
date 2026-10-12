@@ -1,0 +1,54 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import { formatToolDisplay, toolDisplayTitle } from "./index.js"
+
+// MP-08 / MP-10 (panes R2, PANE-02): titles are verb + object, never a raw
+// underscore function name, and identical for every client.
+test("tool titles use a verb and an object for each provider's tool shapes", () => {
+  const cases: Array<[Parameters<typeof toolDisplayTitle>[0], string]> = [
+    // Codex app-server
+    [{ id: "1", tool: "bash", status: "completed", input: { command: "/bin/bash -lc 'git status --short'" } }, "Ran git status --short"],
+    [{ id: "2", tool: "bash", status: "running", input: { command: "/bin/bash -lc 'cargo test -p kernel'" } }, "Running cargo test -p kernel"],
+    [{ id: "3", tool: "bash", status: "completed", input: { command: "/bin/bash -lc 'cat README.md'" } }, "Read README.md"],
+    [{ id: "4", tool: "bash", status: "completed", input: { command: "/bin/bash -lc 'ls -la'" } }, "Listed files"],
+    [{ id: "5", tool: "bash", status: "completed", input: { command: "/bin/bash -lc 'rg -n toolDisplay packages'" } }, "Searched for toolDisplay in packages"],
+    [{ id: "6", tool: "bash", status: "completed", input: { command: "/bin/bash -lc 'echo hi > /tmp/a.txt && cat /tmp/a.txt'" } }, "Ran echo hi > /tmp/a.txt && cat /tmp/a.txt"],
+    [{ id: "7", tool: "search_docs", title: "context7", status: "completed", input: { q: "x" } }, "Called context7.search docs"],
+    // Claude Code
+    [{ id: "c1", tool: "Bash", status: "running", input: { command: "npm test", description: "Run tests" } }, "Running npm test"],
+    [{ id: "c2", tool: "Read", status: "completed", input: { file_path: "/repo/src/app.ts" } }, "Read /repo/src/app.ts"],
+    [{ id: "c3", tool: "Edit", status: "completed", input: { file_path: "src/app.ts", old_string: "a", new_string: "b" } }, "Edited src/app.ts"],
+    [{ id: "c4", tool: "Write", status: "completed", input: { file_path: "notes.md", content: "x" } }, "Wrote notes.md"],
+    [{ id: "c5", tool: "Grep", status: "completed", input: { pattern: "TODO", path: "src" } }, "Searched for TODO in src"],
+    [{ id: "c6", tool: "Glob", status: "completed", input: { pattern: "**/*.ts" } }, "Searched files matching **/*.ts"],
+    [{ id: "c7", tool: "WebFetch", status: "completed", input: { url: "https://example.com", prompt: "x" } }, "Fetched https://example.com"],
+    [{ id: "c8", tool: "WebSearch", status: "completed", input: { query: "chariox" } }, "Searched the web for chariox"],
+    [{ id: "c9", tool: "TodoWrite", status: "completed", input: { todos: [] } }, "Updated plan"],
+    [{ id: "c10", tool: "mcp__github__create_pull_request", status: "completed", input: {} }, "Called github.create pull request"],
+    [{ id: "c11", tool: "Task", status: "running", input: { description: "Audit the pane", prompt: "..." } }, "Delegating Audit the pane"],
+    // OpenCode
+    [{ id: "o1", tool: "read", status: "completed", input: { filePath: "/w/README.md" } }, "Read /w/README.md"],
+    [{ id: "o2", tool: "edit", status: "running", input: { filePath: "a.ts", oldString: "x", newString: "y" } }, "Editing a.ts"],
+    [{ id: "o3", tool: "list", status: "completed", input: { path: "/w" } }, "Listed /w"],
+    [{ id: "o4", tool: "webfetch", status: "completed", input: { url: "https://developer.mozilla.org", format: "markdown" } }, "Fetched https://developer.mozilla.org"],
+    [{ id: "o5", tool: "todowrite", status: "completed", input: { todos: [] } }, "Updated plan"],
+    [{ id: "o6", tool: "some_custom_tool", status: "completed" }, "Called some custom tool"],
+  ]
+  for (const [update, expected] of cases) {
+    const title = toolDisplayTitle(update)
+    assert.equal(title, expected, JSON.stringify(update))
+    assert.equal(formatToolDisplay(update).title, expected)
+    assert.doesNotMatch(title, /_/)
+  }
+})
+
+test("patch tool titles name the file and the line counts", () => {
+  const display = formatToolDisplay({
+    id: "p1",
+    tool: "apply_patch",
+    status: "completed",
+    raw: JSON.stringify([{ path: "src/app.ts", kind: "update", diff: "@@ -1,2 +1,2 @@\n-old()\n+next()\n+more()" }]),
+  })
+  assert.equal(display.title, "Edited src/app.ts (+2 −1)")
+})

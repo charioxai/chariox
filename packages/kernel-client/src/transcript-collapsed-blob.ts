@@ -1,4 +1,5 @@
 import {
+  formatToolDisplay,
   parseToolTranscriptUpdate,
   readApplyPatchFiles,
   type ToolTranscriptUpdate,
@@ -80,7 +81,7 @@ function describeToolBlob(entry: CollapsedTranscriptBlobEntry): CollapsedTranscr
   }
 
   const tool = nonEmpty(parsed.tool) || "tool"
-  const title = `${tool}${formatToolStatusLabel(parsed.status)}`
+  const title = `${formatToolDisplay(parsed).title}${formatToolStatusLabel(parsed.status)}`
 
   if (tool === "apply_patch") {
     const files = readApplyPatchFiles(parsed)
