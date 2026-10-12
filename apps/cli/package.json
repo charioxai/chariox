@@ -177,7 +177,8 @@
     "tar-stream": "^3.1.7",
     "ws": "^8.18.3",
     "@chariox/kernel-client": "workspace:*",
-    "@chariox/tool-display": "workspace:*"
+    "@chariox/tool-display": "workspace:*",
+    "markdown-it": "^15.0.2"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",

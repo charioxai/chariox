@@ -47,3 +47,12 @@ test("images become a one-line placeholder with name, host and an open link", ()
   assert.equal(prepareTranscriptMarkdown("![plot v2](./out/plot.png)"), "▣ image: plot v2 · ./out/plot.png (workspace file)")
   assert.equal(prepareTranscriptMarkdown("`![code](x.png)`\n```\n![fence](y.png)\n```"), "`![code](x.png)`\n```\n![fence](y.png)\n```")
 })
+
+// MP-08 / MP-10 (PANE-09): Markdown code containers must remain literal.
+test("quoted and indented code protect math, images and task syntax", () => {
+  const quoted = "> ```text\n> $x^2$ ![image](x.png)\n> - [x] literal\n> ```"
+  const indented = "    $x^2$ ![image](x.png)\n    - [x] literal"
+  const nested = "- example:\n\n    ```text\n    $x^2$ ![image](x.png)\n    - [x] literal\n    ```"
+  for (const code of [quoted, indented, nested]) assert.equal(prepareTranscriptMarkdown(code), code)
+  assert.equal(prepareTranscriptMarkdown("> $x^2$\n\n- [x] real"), "> x²\n\n- ☑ real")
+})

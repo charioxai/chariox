@@ -1,3 +1,4 @@
+import MarkdownIt from "markdown-it"
 import { normalizeMarkdownFenceInfoStrings } from "./transcript-markdown.js"
 import { renderTranscriptMath } from "./transcript-math.js"
 
@@ -5,7 +6,7 @@ import { renderTranscriptMath } from "./transcript-math.js"
 // OpenTUI's Markdown renderable shows as raw source. Transforms run on prose
 // only: fenced code blocks and inline code spans pass through byte-for-byte.
 
-const fenceOpenPattern = /^ {0,3}(`{3,}|~{3,})/
+const markdown = new MarkdownIt({ html: false })
 const taskMarkerPattern = /^(\s*(?:[-*+]|\d{1,9}[.)])[ \t]+)\[([ xX])\](?=[ \t])/gm
 const imagePattern = /!\[([^\]\n]*)\]\(\s*<?([^\s)>]+)>?(?:\s+"[^"\n]*")?\s*\)/g
 const dataImagePattern = /^data:image\/([a-z0-9.+-]+);base64,([a-z0-9+/=]+)$/i
@@ -41,28 +42,23 @@ function renderTaskMarkers(prose: string): string {
 // unterminated fence (still streaming) protects everything after it.
 export function mapMarkdownProse(text: string, transform: (prose: string) => string): string {
   const lines = text.split("\n")
+  const protectedLines = new Set<number>()
+  // Token maps retain source line numbers inside lists and blockquotes too.
+  // Use the Markdown parser rather than guessing fences from indentation.
+  for (const token of markdown.parse(text, {})) {
+    if ((token.type === "fence" || token.type === "code_block") && token.map) {
+      for (let line = token.map[0]; line < token.map[1]; line += 1) protectedLines.add(line)
+    }
+  }
   const output: string[] = []
   let prose: string[] = []
-  let fence: { readonly marker: string; readonly length: number } | null = null
   const flush = () => {
     if (prose.length > 0) output.push(transform(prose.join("\n")))
     prose = []
   }
-  for (const line of lines) {
-    if (fence) {
-      output.push(line)
-      const close = fenceOpenPattern.exec(line)
-      if (close && close[1]![0] === fence.marker && close[1]!.length >= fence.length && line.trim() === close[1]) fence = null
-      continue
-    }
-    const open = fenceOpenPattern.exec(line)
-    if (open && !(open[1]![0] === "`" && line.slice(line.indexOf(open[1]!) + open[1]!.length).includes("`"))) {
-      flush()
-      output.push(line)
-      fence = { marker: open[1]![0]!, length: open[1]!.length }
-      continue
-    }
-    prose.push(line)
+  for (const [index, line] of lines.entries()) {
+    if (protectedLines.has(index)) { flush(); output.push(line) }
+    else prose.push(line)
   }
   flush()
   return output.join("\n")
