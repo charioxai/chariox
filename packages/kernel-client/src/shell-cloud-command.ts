@@ -25,6 +25,7 @@ import {
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
+  ensureAuthenticated?: (() => Promise<boolean>) | undefined
 }
 
 export type ShellCloudCommandDeps = {
@@ -40,7 +41,7 @@ export async function executeCloudCommand(
 ): Promise<ShellCommandResult> {
   const [area, action, ...args] = parsed.args
   const cloudClient = deps.cloudAccountClient
-  if (!cloudClient) return {ok:false, message:"Sign in the client Cloud account before using cloud commands; kernel enrollment does not grant human account authority"}
+  if (!cloudClient || (cloudClient.ensureAuthenticated && !await cloudClient.ensureAuthenticated())) return {ok:false, message:"Sign in the client Cloud account before using cloud commands; kernel enrollment does not grant human account authority"}
   if (area === "invite" && action === "create") {
     if (!context.sessionId) {
       return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }

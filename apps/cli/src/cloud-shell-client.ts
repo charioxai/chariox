@@ -3,7 +3,7 @@ import type { CloudClient } from "./cloud-client.js"
 import type { ShellExecutorDeps } from "@chariox/kernel-client/shell-executor"
 export function cloudShellClient(client?: CloudClient): ShellExecutorDeps["cloudAccountClient"] {
   if (!client) return undefined
-  return {async send(request) {
+  return {ensureAuthenticated: () => client.ensureAuthenticated(), async send(request) {
     const value = request as Record<string, any>
     if ("CreateCloudSessionInvite" in value) {
       const r = value.CreateCloudSessionInvite

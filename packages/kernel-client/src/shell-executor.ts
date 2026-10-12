@@ -36,6 +36,7 @@ import { executePromptSettingsCommand } from "./shell-prompt-settings-command.js
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
+  ensureAuthenticated?: (() => Promise<boolean>) | undefined
 }
 
 export type ShellExecutorDeps = ShellPlacementDeps & {

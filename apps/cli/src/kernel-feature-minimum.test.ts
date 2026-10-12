@@ -94,3 +94,7 @@ test("MP-08 / MP-11 automation inject refuses 490 before transport", () => {
   assert.throws(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, 490), /needs protocol ≥491/)
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, 491))
 })
+
+test("MP-08 / MP-11 automation injection requires a confirmed kernel generation", () => {
+  for (const version of [undefined, 0, NaN]) assert.throws(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, version), /kernel support unknown.*491/)
+})
