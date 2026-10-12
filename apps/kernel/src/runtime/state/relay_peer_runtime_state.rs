@@ -833,10 +833,46 @@ impl KernelRuntimeState {
         let finish_provider_run_id = provider_run_id.clone();
         let outcome = self
             .with_app_side_effect(move |app| {
-                RemoteLeaseRuntime::new(app)
-                    .finish_prepared_leased_prompt_submission(prepared, provider_run_id)
+                let backing_session_id = prepared.leased_agent.backing_session_id.clone();
+                let backing_agent_id = prepared.leased_agent.backing_agent_id.clone();
+                let finished = RemoteLeaseRuntime::new(app)
+                    .finish_prepared_leased_prompt_submission(prepared, provider_run_id);
+                // A failed admission that left no backing prompt cannot run.
+                // Only that exact outcome may settle the receipt as rejected.
+                let left_no_prompt = finished.is_err()
+                    && app
+                        .prompt_owner_active_prompt_for_agent(
+                            &backing_session_id,
+                            &backing_agent_id,
+                        )
+                        .is_ok_and(|active| active.is_none())
+                    && app
+                        .prompt_owner_peek_next_queued_prompt(
+                            &backing_session_id,
+                            &backing_agent_id,
+                        )
+                        .is_ok_and(|queued| queued.is_none());
+                Ok((finished, left_no_prompt))
             })
             .await?;
+        let outcome = match outcome {
+            (Ok(outcome), _) => outcome,
+            (Err(error), left_no_prompt) => {
+                if let Some(home_prompt_id) = finish_home_prompt_id
+                    .as_deref()
+                    .filter(|_| new_receipt && left_no_prompt)
+                {
+                    self.update_relay_leased_prompt_admission_receipt(
+                        &finish_leased_agent_id,
+                        home_prompt_id,
+                        WorkerPromptReceiptPhase::Rejected,
+                        None,
+                    )
+                    .await?;
+                }
+                return Err(error);
+            }
+        };
         if let Some(home_prompt_id) = finish_home_prompt_id.as_deref().filter(|_| new_receipt) {
             self.update_relay_leased_prompt_admission_receipt(
                 &finish_leased_agent_id,

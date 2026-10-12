@@ -2100,6 +2100,17 @@ mod receipt_reconciliation {
             remote_prompt_receipt_action("home-prompt-1", "lease-1", Some(rejected.clone())),
             Ok(RemotePromptReceiptAction::RejectUnadmitted)
         );
+        assert_eq!(
+            remote_prompt_receipt_action(
+                "home-prompt-1",
+                "lease-1",
+                Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerDispatching,
+                    ..rejected.clone()
+                }),
+            ),
+            Err("worker admission of the exact prompt is still Dispatching with no accepted or rejected outcome")
+        );
         for conflicting in [
             crate::transport::relay_peer::LeasedPromptReceipt {
                 target_home_prompt_id: Some("active-prompt".to_string()),

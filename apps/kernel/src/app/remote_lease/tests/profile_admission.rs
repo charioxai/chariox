@@ -344,6 +344,88 @@ async fn leased_prompt_reconciles_durable_home_profile_after_lost_ack_and_restar
     );
 }
 
+// MP-08 / MP-10 / MP-11: a worker admission that fails after its provider run
+// was assigned must settle the exact receipt. A receipt left in Dispatching is
+// projected as a queued-steer phase, so home holds its prompt forever.
+#[tokio::test]
+async fn failed_leased_prompt_admission_after_run_assignment_settles_its_receipt() {
+    crate::test_support::isolated_env_test!();
+    let (mut app, lease) = leased_agent_fixture(false);
+    let profile = crate::transport::relay_peer::RelayAgentExecutionProfile::from(
+        &app.agents().get_agent(&lease.backing_agent_id).unwrap(),
+    );
+    // Launch succeeds; the backing prompt admission that follows it fails.
+    crate::app::KernelSessionService::new(&mut app)
+        .detach(&lease.backing_attachment_id)
+        .unwrap();
+    let home_prompt_id = "home-prompt-admission-failure";
+    let git_context = crate::transport::relay_peer::RemoteGitTurnContext {
+        home_session_id: "home-session".to_string(),
+        home_agent_id: lease.home_agent_id.clone(),
+        home_prompt_id: home_prompt_id.to_string(),
+        home_turn_id: home_prompt_id.to_string(),
+        source_attachment_id: None,
+        workspace_live_sync_mode: None,
+        prompt_origin: None,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        prompt_summary: "admission failure".to_string(),
+    };
+    let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 2);
+    let submit = || {
+        router.relay_submit_leased_prompt(
+            &lease.id,
+            profile.clone(),
+            "call the capability loader",
+            "",
+            Vec::new(),
+            None,
+            Some(git_context.clone()),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+            None,
+        )
+    };
+    submit().await.unwrap_err();
+    assert!(
+        app.lock()
+            .await
+            .providers()
+            .get_run_for_agent(&lease.backing_session_id, &lease.backing_agent_id)
+            .is_some(),
+        "the fixture must fail after the worker assigned a provider run"
+    );
+    assert_eq!(
+        router
+            .relay_query_leased_prompt_receipt(&lease.id, home_prompt_id)
+            .await
+            .unwrap(),
+        Some(crate::transport::relay_peer::LeasedPromptReceipt {
+            home_prompt_id: home_prompt_id.to_string(),
+            worker_provider_run_id: String::new(),
+            phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
+            target_home_prompt_id: None,
+            execution_lease_id: Some(lease.lease_id.clone()),
+        }),
+        "home settles this exact shape as an unadmitted prompt"
+    );
+    // The settled receipt fences the same home prompt from a second delivery.
+    assert!(submit()
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("worker rejection receipt fences this home prompt"));
+    assert!(app
+        .lock()
+        .await
+        .prompt_owner_active_prompt_for_agent(&lease.backing_session_id, &lease.backing_agent_id)
+        .unwrap()
+        .is_none());
+}
+
 // MP-08 / MP-10 / MP-11: Target worker re-resolves before its Ready shortcut.
 #[test]
 fn mp08_mp10_mp11_leased_reuse_observes_worker_value_changes() {

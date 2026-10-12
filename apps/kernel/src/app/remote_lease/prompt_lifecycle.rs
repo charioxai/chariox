@@ -54,13 +54,14 @@ fn leased_prompt_admission_receipt_projection(
         WorkerPromptReceiptPhase::Accepted => LeasedPromptReceiptPhase::Active,
         WorkerPromptReceiptPhase::Rejected => LeasedPromptReceiptPhase::SteerRejected,
     };
+    // A rejected admission owns no run, even when it failed after launch.
+    let worker_provider_run_id = match receipt.receipt.phase {
+        WorkerPromptReceiptPhase::Rejected => None,
+        _ => receipt.receipt.worker_provider_run_id.clone(),
+    };
     LeasedPromptReceipt {
         home_prompt_id: receipt.receipt.home_prompt_id.clone(),
-        worker_provider_run_id: receipt
-            .receipt
-            .worker_provider_run_id
-            .clone()
-            .unwrap_or_default(),
+        worker_provider_run_id: worker_provider_run_id.unwrap_or_default(),
         phase,
         target_home_prompt_id: None,
         execution_lease_id: Some(receipt.receipt.execution_lease_id.clone()),
