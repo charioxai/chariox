@@ -89,6 +89,7 @@ extern "C" {
     pub(super) fn cx_capture_fd(c: *mut c_void) -> i32;
     pub(super) fn cx_capture_damage(c: *mut c_void) -> i32;
     pub(super) fn cx_capture_read(c: *mut c_void, out: *mut u8, bounds: *mut i32) -> i32;
+    pub(super) fn cx_codec_row_y(height: i32, count: i32, index: i32) -> i32;
     pub(super) fn cx_codec_open(
         width: i32,
         height: i32,
