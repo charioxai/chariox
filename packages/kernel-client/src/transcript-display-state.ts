@@ -319,18 +319,11 @@ export function projectSettledTranscriptTurnDisplayState<TEntry extends Transcri
 ): TranscriptTurnSettlementProjection<TEntry> {
   const normalized = normalizeTranscriptTurnIds(stripTranscriptDisplayEntries(entries))
   const settledTurnId = computeCurrentTranscriptTurnId(normalized)
+  // A finished turn stays as the user left it: terminal clients never fold it
+  // on their own (its toggle still folds it).
   const nextCollapsedTurnIds = new Set(collapsedTurnIds)
-  if (settledTurnId !== null) {
-    const activeHistoryTurnIds = openHistoryTurnIds(normalized)
-    const turnEntries = normalized.filter((entry) => entry.turnId === settledTurnId)
-    if (
-      !activeHistoryTurnIds.has(settledTurnId)
-      && transcriptTurnIsCollapsible(turnEntries)
-    ) {
-      nextCollapsedTurnIds.add(settledTurnId)
-    } else {
-      nextCollapsedTurnIds.delete(settledTurnId)
-    }
+  if (settledTurnId !== null && openHistoryTurnIds(normalized).has(settledTurnId)) {
+    nextCollapsedTurnIds.delete(settledTurnId)
   }
   const projection = projectTranscriptDisplayState(
     normalized,

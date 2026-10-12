@@ -135,6 +135,20 @@ test("projectSettledTranscriptTurnDisplayState collapses a settled collapsible t
   )
 })
 
+// MP-08 / MP-10 (panes, Miguel 2026-10-12 correction): the TUI never folds
+// a finished turn by itself; the turn keeps its toggle.
+test("projectSettledTranscriptTurnDisplayState leaves a finished turn expanded", () => {
+  const projection = projectSettledTranscriptTurnDisplayState(baseTurnEntries(), [])
+
+  assert.equal(projection.settledTurnId, 1)
+  assert.deepEqual(projection.collapsedTurnIds, [])
+  assert.deepEqual(
+    projection.entries.filter((entry) => !entry.hidden).map((entry) => entry.role),
+    ["user", "turn_toggle", "reasoning", "tool", "assistant"],
+  )
+  assert.equal(projection.entries.find((entry) => entry.role === "turn_toggle")?.text, "click to collapse")
+})
+
 test("projectSettledTranscriptTurnDisplayState keeps open history turns expanded", () => {
   const projection = projectSettledTranscriptTurnDisplayState(
     openHistoryEntries(baseTurnEntries()),
