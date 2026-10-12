@@ -6,6 +6,7 @@ import {
   normalizeToolOutputPayload,
   readString,
 } from "./strings.js"
+import { readEditToolFiles } from "./edit-tool-diff.js"
 import { isWorkspaceLiveSyncTool } from "./tool-names.js"
 import type {
   ApplyPatchFile,
@@ -75,6 +76,11 @@ export function readApplyPatchFiles(update: ToolTranscriptUpdate) {
   const workspaceLiveSyncFiles = readWorkspaceLiveSyncChangeFiles(update)
   if (workspaceLiveSyncFiles.length > 0) {
     return workspaceLiveSyncFiles
+  }
+
+  const editToolFiles = readEditToolFiles(update)
+  if (editToolFiles.length > 0) {
+    return editToolFiles
   }
 
   if (update.tool !== "apply_patch") {
