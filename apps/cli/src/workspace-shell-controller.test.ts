@@ -219,7 +219,7 @@ for (const previousWorkflow of [undefined, "wf-A"]) {
       workspaceShellContext: () => stored,
       setWorkspaceShellContext: (context) => { stored = context },
       nextEntryId: () => 1, setWorkspaceShellEntries: () => {},
-      sessionState: () => session({ workflows: [{ id: "wf-A", nodes: [] }, { id: "wf-B", nodes: [] }] }),
+      sessionState: () => session({ workflows: [{ id: "wf-A", alias: null, nodes: [] }, { id: "wf-B", alias: null, nodes: [] }] }),
       refreshSessionState: async () => session(), applySessionState: () => {},
       selectedWorkflowId: () => selected, setSelectedWorkflowId: (id) => { selected = id },
       setSelectedWorkflowNodeId: () => {}, rebuildTranscript: () => {}, flashFooter: () => {},
