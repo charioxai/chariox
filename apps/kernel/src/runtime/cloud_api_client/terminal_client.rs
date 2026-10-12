@@ -14,7 +14,6 @@ use super::{
 pub(crate) struct CloudTerminalClientOptions {
     pub(crate) pair_account_client: bool,
     pub(crate) client_alias: Option<String>,
-    pub(crate) target_alias: Option<String>,
     pub(crate) ttl_ms: Option<u64>,
     pub(crate) session_id: Option<String>,
     pub(crate) public_key_thumbprint: Option<String>,
@@ -61,16 +60,14 @@ pub(crate) async fn issue_cloud_terminal_client_token(
         post_cloud_json::<serde_json::Value>(profile.api_url.clone(), "/clients/pair", body)
             .await?;
     }
-    let mut targets = vec![target_daemon_id.to_string()];
-    if account_authority {
-        if let Some(alias) = options.target_alias {
-            if !targets.contains(&alias) {
-                targets.push(alias);
-            }
-        }
-    }
     let token_options = CloudRuntimeTokenRequestOptions {
-        ttl_ms: options.ttl_ms,
+        // MP-08/MP-11: account CLIENT grants have Cloud's 15-minute ceiling.
+        // Machine capabilities keep their existing lifetime contract.
+        ttl_ms: if account_authority {
+            options.ttl_ms.map(|ttl| ttl.min(15 * 60_000))
+        } else {
+            options.ttl_ms
+        },
         client_id: Some(client_id.clone()),
         machine_id: if account_authority {
             None
@@ -78,7 +75,8 @@ pub(crate) async fn issue_cloud_terminal_client_token(
             profile.machine_id.clone()
         },
         allow_unpaired_client_subject: !account_authority,
-        allowed_targets: Some(targets),
+        // The alias labels the invite; it must never widen authorization.
+        allowed_targets: Some(vec![target_daemon_id.to_string()]),
         session_id: options.session_id,
         public_key_thumbprint: options.public_key_thumbprint,
         ..CloudRuntimeTokenRequestOptions::default()

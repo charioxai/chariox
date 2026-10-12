@@ -131,7 +131,6 @@ async fn machine_terminal_create_and_key_bound_join_use_only_scoped_runtime_toke
         "kernel-fixture",
         CloudTerminalClientOptions {
             pair_account_client: true,
-            target_alias: Some("friendly-name".into()),
             ..Default::default()
         },
     )
@@ -144,7 +143,6 @@ async fn machine_terminal_create_and_key_bound_join_use_only_scoped_runtime_toke
         CloudTerminalClientOptions {
             public_key_thumbprint: Some("a".repeat(64)),
             ttl_ms: Some(crate::runtime::cloud_relay_control::CLOUD_RELAY_CLIENT_TOKEN_TTL_MS),
-            target_alias: Some("friendly-name".into()),
             ..Default::default()
         },
     )
@@ -187,7 +185,6 @@ async fn account_terminal_pairs_with_bearer_and_uses_session_instead_of_machine_
         CloudTerminalClientOptions {
             pair_account_client: true,
             client_alias: Some("CLI terminal".into()),
-            target_alias: Some("friendly-name".into()),
             session_id: Some("shared-session".into()),
             public_key_thumbprint: Some("b".repeat(64)),
             ..Default::default()
@@ -214,7 +211,11 @@ async fn account_terminal_pairs_with_bearer_and_uses_session_instead_of_machine_
     assert!(body.get("allowUnpairedClientSubject").is_none());
     assert_eq!(
         body["allowedTargets"],
-        serde_json::json!(["kernel-fixture", "friendly-name"])
+        serde_json::json!(["kernel-fixture"])
+    );
+    assert!(
+        body["ttlMs"].as_u64().unwrap() <= 15 * 60_000,
+        "MP-08/MP-11 account CLIENT scope ceiling"
     );
     assert_eq!(body["sessionId"], "shared-session");
     assert_eq!(body["publicKeyThumbprint"], "b".repeat(64));
@@ -259,4 +260,29 @@ async fn account_auto_pair_omits_absent_alias_from_redemption() {
     .unwrap();
     let requests = fixture.join().unwrap();
     assert!(!requests[1].body.as_object().unwrap().contains_key("alias"));
+}
+
+#[tokio::test]
+async fn account_terminal_renewal_caps_ttl_to_cloud_client_scope() {
+    let (url, fixture) = server(&["/relay/token"]);
+    let mut profile = profile(url);
+    profile.cloud_session_token = Some("synthetic-account-session".into());
+    issue_cloud_terminal_client_token(
+        &profile,
+        "account-client",
+        "kernel-fixture",
+        CloudTerminalClientOptions {
+            ttl_ms: Some(crate::runtime::cloud_relay_control::CLOUD_RELAY_CLIENT_TOKEN_TTL_MS),
+            public_key_thumbprint: Some("b".repeat(64)),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let requests = fixture.join().unwrap();
+    assert_eq!(
+        requests[0].body["allowedTargets"],
+        serde_json::json!(["kernel-fixture"])
+    );
+    assert_eq!(requests[0].body["ttlMs"], 15 * 60_000);
 }

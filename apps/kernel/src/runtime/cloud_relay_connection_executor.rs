@@ -237,13 +237,7 @@ async fn issue_cloud_relay_client_token(
     let mut profile = required_cloud_relay_profile(config_projection)?;
     let (requested_client_id, options) = terminal_client_issuance(&profile, &request);
     let config = config_projection.snapshot();
-    let machine_only = profile
-        .cloud_session_token
-        .as_deref()
-        .is_none_or(|token| token.trim().is_empty());
-    let target = if machine_only
-        && config.daemon_alias.as_deref() == Some(request.target_daemon_alias.as_str())
-    {
+    let target = if config.daemon_alias.as_deref() == Some(request.target_daemon_alias.as_str()) {
         config.daemon_id.as_str()
     } else {
         request.target_daemon_alias.as_str()
