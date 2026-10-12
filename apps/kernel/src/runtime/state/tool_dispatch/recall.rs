@@ -66,7 +66,7 @@ impl KernelRuntimeState {
             "keyword" => {
                 let request = crate::local::SearchRecallRequest {
                     query: args.query,
-                    session_id: self.scoped_session_id(
+                    session_id: scoped_session_id(
                         provider_run,
                         args.scope.as_deref(),
                         args.session_id,
@@ -103,7 +103,7 @@ impl KernelRuntimeState {
                 let request = SemanticSearchRecallRequest {
                     query: args.query,
                     mode: Some(mode),
-                    session_id: self.scoped_session_id(
+                    session_id: scoped_session_id(
                         provider_run,
                         args.scope.as_deref(),
                         args.session_id,
@@ -149,11 +149,7 @@ impl KernelRuntimeState {
         args: QueryRecallArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let query = recall_query_from_request(crate::local::QueryRecallRequest {
-            session_id: self.scoped_session_id(
-                provider_run,
-                args.scope.as_deref(),
-                args.session_id,
-            )?,
+            session_id: scoped_session_id(provider_run, args.scope.as_deref(), args.session_id)?,
             agent_id: args.agent_id,
             provider: args.provider,
             model: args.model,
@@ -180,59 +176,24 @@ impl KernelRuntimeState {
     }
 }
 
-impl KernelRuntimeState {
-    /// MP-08/MP-11 G08: `all` covers every room the caller can access: its own
-    /// room, plus an explicit live same-owner room under the caller's live
-    /// /sudo window. It never expands to a global or foreign lookup.
-    fn scoped_session_id(
-        &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
-        scope: Option<&str>,
-        requested_session_id: Option<String>,
-    ) -> Result<Option<String>, DaemonError> {
-        let current = provider_run.session_id();
-        let other = requested_session_id.filter(|requested| requested != current);
-        match (scope.unwrap_or("current_session"), other) {
-            ("current_session", None) | ("all", None) => Ok(Some(current.to_string())),
-            ("current_session", Some(_)) => Err(recall_scope_error(
-                "current-session recall is limited to the caller room; use scope all with an explicit session_id under live /sudo",
+/// MP-08/MP-11 G08: legacy recall stays in the caller room, even under /sudo.
+/// Another room needs `chariox_kernel_request` and its owner scope approval.
+fn scoped_session_id(
+    provider_run: &crate::provider::RuntimeProviderRun,
+    scope: Option<&str>,
+    requested_session_id: Option<String>,
+) -> Result<Option<String>, DaemonError> {
+    let current = provider_run.session_id();
+    match scope.unwrap_or("current_session") {
+        "current_session" | "all" => match requested_session_id {
+            Some(requested) if requested != current => Err(recall_scope_error(
+                "recall tools are limited to the caller room; read another room with chariox_kernel_request under /sudo",
             )),
-            ("all", Some(target)) => {
-                self.authorize_other_recall_room(provider_run, &target)?;
-                Ok(Some(target))
-            }
-            (other, _) => Err(recall_scope_error(&format!(
-                "scope must be one of: current_session, all; got `{other}`"
-            ))),
-        }
-    }
-
-    fn authorize_other_recall_room(
-        &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
-        target: &str,
-    ) -> Result<(), DaemonError> {
-        let denied = || {
-            recall_scope_error(
-                "recall outside the caller room requires live /sudo and a live session of the same owner",
-            )
-        };
-        let token = provider_run.runtime_mcp_auth_token().ok_or_else(denied)?;
-        let turn = self.sudo_for_auth_token(token).map_err(|_| denied())?;
-        if provider_run.agent_instance_id() != Some(turn.agent_id.as_str()) {
-            return Err(denied());
-        }
-        let session = self
-            .owned
-            .session_store
-            .get_session(target)
-            .map_err(|_| denied())?;
-        if session.owner_user_id() != turn.owner_user_id
-            || session.status() == crate::session::SessionStatus::Ended
-        {
-            return Err(denied());
-        }
-        Ok(())
+            _ => Ok(Some(current.to_string())),
+        },
+        other => Err(recall_scope_error(&format!(
+            "scope must be one of: current_session, all; got `{other}`"
+        ))),
     }
 }
 

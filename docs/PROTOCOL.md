@@ -564,10 +564,10 @@ the contracts they use; this entry allocates no new protocol version.
 MP-08 / MP-10 / MP-11 G08: legacy recall tools (`chariox.search_recall`,
 `chariox.query_recall`, used while room agent tools are off) keep the
 `scope` values `current_session` and `all`; the argument shape is unchanged.
-`all` means every session the caller can access, never a global lookup: the
-caller's own session, or an explicit `session_id` of another live session of the
-same owner while the calling agent holds a live `/sudo` window. Other owners'
-sessions and any other session without live `/sudo` are denied before lookup.
+Both values resolve to the caller's own session, including under `/sudo`; any
+other `session_id` is denied before lookup. An agent in a live `/sudo` window
+reads another session through `chariox_kernel_request` with the typed recall
+request, which needs the owner's per-operation scope approval and is audited.
 
 MP-08 / MP-09 / MP-10 / MP-11 A10: leased watched processes use the existing
 signed, lease-scoped peer connection. Home owns the task, registration and inbox;

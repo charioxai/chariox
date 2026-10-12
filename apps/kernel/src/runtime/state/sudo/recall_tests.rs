@@ -1,9 +1,11 @@
-//! MP-08 / MP-10 / MP-11 G08: legacy `scope: "all"` covers only rooms the
-//! caller can access; another own room needs live /sudo, foreign rooms never open.
-use super::tests::{fixture, running};
+//! MP-08 / MP-10 / MP-11 G08: legacy recall tools stay in the caller room, even
+//! under live /sudo. Another room is read only through `chariox_kernel_request`,
+//! which needs the owner's per-operation scope approval.
+use super::tests::{fixture, popup, running, PASSKEY};
+use super::*;
 
 #[tokio::test]
-async fn mp11_g08_recall_all_reaches_own_rooms_under_sudo_never_foreign() {
+async fn mp11_g08_recall_tools_never_leave_the_caller_room_even_under_sudo() {
     let f = fixture();
     let own = crate::session::RuntimeSession::new("recall-own-room", None, "w", "wt", "m", "k");
     let mut foreign =
@@ -29,25 +31,52 @@ async fn mp11_g08_recall_all_reaches_own_rooms_under_sudo_never_foreign() {
             })
         )
     };
+    let turn = running(&f);
     for name in ["chariox.search_recall", "chariox.query_recall"] {
         assert!(
             recall(name, &f.request.session_id).await.unwrap().ok,
             "{name}: caller room"
         );
-        assert!(
-            denied(recall(name, own.id()).await),
-            "{name}: own room needs live /sudo"
-        );
+        for other in [own.id(), foreign.id()] {
+            assert!(
+                denied(recall(name, other).await),
+                "{name}: {other} stays closed under /sudo"
+            );
+        }
     }
-    running(&f);
-    for name in ["chariox.search_recall", "chariox.query_recall"] {
-        assert!(
-            recall(name, own.id()).await.unwrap().ok,
-            "{name}: own room under /sudo"
-        );
-        assert!(
-            denied(recall(name, foreign.id()).await),
-            "{name}: foreign room stays closed"
-        );
-    }
+    assert!(f.state.passkey_prompts_for("local").is_empty());
+
+    // The typed request still reaches another own room with scope approval.
+    let router = f.router.clone();
+    let target = own.id().to_string();
+    let searching = tokio::spawn(async move {
+        router
+            .dispatch_authenticated_runtime_tool_call(
+                "sudo-fixture-bearer",
+                "chariox_kernel_request",
+                serde_json::json!({"request": {"SearchRecall": {"query": "g08-marker", "session_id": target}}}),
+            )
+            .await
+    });
+    let scope_prompt = popup(&f.state).await;
+    assert!(scope_prompt.interaction_id.contains(":scope:"));
+    f.state
+        .answer_terminal_runtime_interaction(
+            &turn.session_id,
+            &scope_prompt.interaction_id,
+            "approve",
+            None,
+            Some("local"),
+            Some(&ApprovalPasskey::new(PASSKEY)),
+            None,
+            Some(KernelConnectionClass::Terminal),
+        )
+        .await
+        .unwrap();
+    let searched = tokio::time::timeout(Duration::from_secs(5), searching)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(searched.payload.get("RecallEvents").is_some());
 }

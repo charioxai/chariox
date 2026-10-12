@@ -4,7 +4,7 @@ use crate::provider::{
 };
 
 #[test]
-fn mp11_g08_both_recall_encodings_deny_other_rooms_without_sudo() {
+fn mp11_g08_both_recall_encodings_deny_other_rooms() {
     std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(|| {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
             let worktree = crate::test_support::TestWorktree::new("g08-recall-scope");
