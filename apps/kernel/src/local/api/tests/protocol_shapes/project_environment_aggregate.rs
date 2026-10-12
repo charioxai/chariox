@@ -6,7 +6,7 @@ fn envp01_aggregate_protocol_471_request_rejects_session_and_agent_context() {
     let request =
         LocalDaemonRequest::GetProjectEnvironment(crate::local::GetProjectEnvironmentRequest {
             project_id: "project-1".into(),
-                view: None,
+            view: None,
         });
     assert_eq!(
         serde_json::to_value(request).unwrap(),
@@ -24,7 +24,13 @@ fn envp01_full_environment_shapes_require_protocol_bump() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
     let contract = include_str!("../../../../project_environment/aggregate.rs");
     let view = include_str!("../../../../project_environment/read_view.rs");
-    assert_eq!(format!("{:x}", Sha256::digest(view.split("#[cfg(test)]").next().unwrap().as_bytes())), "477297d055d83b790a5f36df13bd79c6bff0ce62306e3b66cb4621ea80dbe2ab");
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(view.split("#[cfg(test)]").next().unwrap().as_bytes())
+        ),
+        "477297d055d83b790a5f36df13bd79c6bff0ce62306e3b66cb4621ea80dbe2ab"
+    );
     let requests = include_str!("../../types/project_environment_aggregate.rs");
     assert_eq!(
         format!("{:x}", Sha256::digest(requests.as_bytes())),
@@ -72,15 +78,32 @@ fn envp01_get_response_snapshot_hash() {
 fn environment_view_protocol_505_shapes_and_hash() {
     use sha2::{Digest, Sha256};
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
-    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 113);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        113
+    );
     let value = serde_json::json!({"GetProjectEnvironment":{"projectId":"project-1","view":{"knownDigest":null,"proposals":{"snapshotDigest":"digest","offset":8,"limit":20}}}});
     let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), value);
-    let response = LocalDaemonResponse::ProjectEnvironmentView {view:crate::project_environment::EnvironmentReadView {
-        observed_at_ms:1234,snapshot_digest:"digest".into(), environment:None, proposal_count:42, proposal_offset:8,
-        next_proposal_offset:Some(28), proposals:vec![], operation_item_counts:vec![42],
-    }};
-    let snapshot=serde_json::json!({"ProjectEnvironmentView":{"view":{"observed_at_ms":1234,"snapshot_digest":"digest","environment":null,"proposal_count":42,"proposal_offset":8,"next_proposal_offset":28,"proposals":[],"operation_item_counts":[42]}}});
-    assert_eq!(serde_json::to_value(&response).unwrap(),snapshot);
-    assert_eq!(format!("{:x}",Sha256::digest(serde_json::to_vec(&response).unwrap())),"42585c4c487e819f3b3cab90ce2577c556ea15f06e1d8473ae15b646e020ed48");
+    let response = LocalDaemonResponse::ProjectEnvironmentView {
+        view: crate::project_environment::EnvironmentReadView {
+            observed_at_ms: 1234,
+            snapshot_digest: "digest".into(),
+            environment: None,
+            proposal_count: 42,
+            proposal_offset: 8,
+            next_proposal_offset: Some(28),
+            proposals: vec![],
+            operation_item_counts: vec![42],
+        },
+    };
+    let snapshot = serde_json::json!({"ProjectEnvironmentView":{"view":{"observed_at_ms":1234,"snapshot_digest":"digest","environment":null,"proposal_count":42,"proposal_offset":8,"next_proposal_offset":28,"proposals":[],"operation_item_counts":[42]}}});
+    assert_eq!(serde_json::to_value(&response).unwrap(), snapshot);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&response).unwrap())
+        ),
+        "42585c4c487e819f3b3cab90ce2577c556ea15f06e1d8473ae15b646e020ed48"
+    );
 }
