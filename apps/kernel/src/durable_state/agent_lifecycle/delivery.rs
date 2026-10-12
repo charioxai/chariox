@@ -311,6 +311,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 for mut t in tasks(tx)? {
                     if t.room_id != room
                         || t.agent_id != agent
+                        // MP-08/MP-10/MP-11: a loss ACK cannot override the owner's Blocked decision.
+                        || (t.state == ExecutionState::Blocked && e.kind == "source_lost")
                         || matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
                     {
                         continue;
