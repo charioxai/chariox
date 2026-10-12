@@ -42,6 +42,15 @@ fn refresh_provider_usage_before_launch(
     refresh: impl FnOnce() -> Result<ProviderAccountProfile, DaemonError>,
 ) -> Result<(), DaemonError> {
     let profile = registry.get(owner_user_id, provider, account_profile)?;
+    if crate::provider::canonical_provider_family(provider) == Some("claude")
+        && crate::provider::provider_account_credential_registered(
+            owner_user_id,
+            provider,
+            &profile.profile_id,
+        )?
+    {
+        return Ok(());
+    }
     if provider_usage_refresh_due_for_launch(&profile.usage, now_ms) {
         if let Some(_refresh_lease) = registry.acquire_usage_refresh_attempt(
             owner_user_id,
@@ -311,6 +320,49 @@ mod tests {
             .iter()
             .any(|(name, value)| name == "SHELL_ONLY_SECRET" && value == "synthetic-only"));
         assert!(!format!("{prepared:?}").contains("synthetic-only"));
+    }
+
+    #[test]
+    fn token_launch_skips_automatic_usage_refresh() {
+        crate::test_support::isolated_env_test!();
+        let root =
+            std::env::temp_dir().join(format!("claudesetup-usage-{:016x}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var("CHARIOX_HOME", root.join("home"));
+        let registry = ProviderAccountProfileRegistry::open(root.join("profiles.json")).unwrap();
+        let profile = registry
+            .create_managed("local", "claude", "MP-08-token")
+            .unwrap();
+        let credential_id =
+            crate::provider::provider_account_credential_id("local", "claude", &profile.profile_id);
+        crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .upsert(crate::config::UserCredentialConfig {
+                id: credential_id.clone(),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Vault { key: credential_id },
+                allowed_hosts: vec![],
+                allowed_uses: vec![crate::config::UserCredentialUse::Provider],
+                injection: crate::config::UserCredentialInjectionConfig::Provider,
+                metadata: None,
+            })
+            .unwrap();
+        for alias in ["claude", "claude-p", "claude-headless"] {
+            refresh_provider_usage_before_launch(
+                &registry,
+                "local",
+                alias,
+                &profile.profile_id,
+                crate::session::unix_epoch_ms(),
+                || {
+                    panic!(
+                        "MP-08/MP-11: token profiles have no usage API; do not probe before launch"
+                    )
+                },
+            )
+            .unwrap();
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

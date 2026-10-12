@@ -296,7 +296,35 @@ pub(crate) fn observe_provider_auth_status(
     }
 }
 
+/// Automatic refreshes cannot fetch setup-token usage and must not turn an
+/// already enrolled account into Error because an optional probe failed.
 pub(crate) fn refresh_provider_account_profile_with_config(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    config: &DaemonConfig,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    let profile = registry.get(owner_user_id, provider, account_profile)?;
+    if crate::provider::canonical_provider_family(provider) == Some("claude")
+        && crate::provider::provider_account_credential_registered(
+            owner_user_id,
+            provider,
+            &profile.profile_id,
+        )?
+    {
+        return Ok(profile);
+    }
+    refresh_provider_account_profile_explicitly(
+        registry,
+        owner_user_id,
+        provider,
+        account_profile,
+        config,
+    )
+}
+
+pub(crate) fn refresh_provider_account_profile_explicitly(
     registry: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
     provider: &str,
@@ -408,31 +436,40 @@ fn claude_profile_auth_status(
     for (name, value) in secrets.iter() {
         environment.insert(name.to_string(), value.to_string());
     }
-    let mut verified = crate::provider::verify_claude_setup_token(&executable, &environment);
+    let checked = crate::provider::verify_claude_setup_token(&executable, &environment);
     if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
         zeroize::Zeroize::zeroize(value);
     }
-    if verified.is_ok() {
-        // Re-read availability without treating a relocked Vault as revocation.
-        // A replacement during the turn must not inherit the old token's proof.
-        let current = crate::provider::resolve_provider_account_credentials(
-            config,
-            owner_user_id,
-            provider,
-            &profile.profile_id,
-        )?;
-        if !current.iter().eq(secrets.iter()) {
-            verified = Err(DaemonError::LocalTransport {
-                operation: "verify Claude setup token",
-                message:
-                    "Claude setup token changed during verification; refresh the account again"
-                        .into(),
-            });
+    let verified = match checked {
+        Ok(()) => {
+            // Local unavailability on reread still says nothing about the token.
+            let current = crate::provider::resolve_provider_account_credentials(
+                config,
+                owner_user_id,
+                provider,
+                &profile.profile_id,
+            )?;
+            if current.iter().eq(secrets.iter()) {
+                Ok(())
+            } else {
+                Err(DaemonError::LocalTransport {
+                    operation: "verify Claude setup token",
+                    message:
+                        "Claude setup token changed during verification; refresh the account again"
+                            .into(),
+                })
+            }
         }
-    }
+        Err(error @ crate::provider::ClaudeCredentialCheckError::Inconclusive(_)) => {
+            return Err(error.into_daemon_error())
+        }
+        Err(error @ crate::provider::ClaudeCredentialCheckError::Rejected) => {
+            Err(error.into_daemon_error())
+        }
+    };
     if let Err(error) = verified {
-        // A timeout/transport failure is not proof of revocation. Error closes
-        // admission without falsely declaring the token expired or logged out.
+        // Definitive rejection or an unverified replacement closes admission.
+        // Local and transient failures above preserve the saved observation.
         registry.update_observation(
             owner_user_id,
             provider,

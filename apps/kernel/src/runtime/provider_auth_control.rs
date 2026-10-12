@@ -94,15 +94,24 @@ pub(crate) async fn execute_get_provider_auth_status_request(
     let registry = runtime_state.provider_account_profile_registry().clone();
     let owner_user_id = owner_user_id.to_string();
     let config = runtime_state.config_snapshot().await;
-    let result = tokio::task::spawn_blocking(move || {
-        provider_auth_status_response(&registry, &owner_user_id, request, &config)
+    let (result, changed) = tokio::task::spawn_blocking(move || {
+        let before = registry
+            .get(&owner_user_id, &request.provider, &request.account_profile)
+            .ok();
+        let provider = request.provider.clone();
+        let profile_id = request.account_profile.clone();
+        let result = provider_auth_status_response(&registry, &owner_user_id, request, &config);
+        let after = registry.get(&owner_user_id, &provider, &profile_id).ok();
+        (result, before != after)
     })
     .await
     .map_err(|error| provider_auth_task_error("get provider auth status", error))?;
-    runtime_state
-        .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
-        .await;
-    runtime_state.record_waiting_room_change();
+    if changed {
+        runtime_state
+            .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+            .await;
+        runtime_state.record_waiting_room_change();
+    }
     result
 }
 

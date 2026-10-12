@@ -11,25 +11,15 @@ const AUTH_MARKER: &str = "CHARIOX_AUTH_OK";
 pub(crate) fn verify_claude_setup_token(
     executable: &Path,
     environment: &BTreeMap<String, String>,
-) -> Result<(), DaemonError> {
-    let result = super::usage_probe::run_claude_probe(
+) -> Result<(), super::usage_probe::ClaudeCredentialCheckError> {
+    super::usage_probe::verify_claude_account_credential_with_timeout(
         executable,
         environment,
-        &[
-            "Reply with exactly CHARIOX_AUTH_OK.",
-            "--model",
-            "haiku",
-            "--max-turns",
-            "1",
-            "--system-prompt",
-            "Reply only with the requested authentication marker.",
-        ],
         Duration::from_secs(30),
-    )?;
-    validate_auth_result(&result)
+    )
 }
 
-fn validate_auth_result(value: &serde_json::Value) -> Result<(), DaemonError> {
+pub(super) fn validate_auth_result(value: &serde_json::Value) -> Result<(), DaemonError> {
     let verified = value.get("type").and_then(serde_json::Value::as_str) == Some("result")
         && value.get("subtype").and_then(serde_json::Value::as_str) == Some("success")
         && value.get("is_error").and_then(serde_json::Value::as_bool) == Some(false)

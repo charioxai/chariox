@@ -295,7 +295,7 @@ pub(super) async fn verify_account_token(
         if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
             zeroize::Zeroize::zeroize(value);
         }
-        verified.map(|_| ())
+        verified.map_err(ClaudeCredentialCheckError::into_daemon_error)
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {

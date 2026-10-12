@@ -102,7 +102,7 @@ pub(crate) async fn execute_provider_account_request(
         LocalDaemonRequest::RefreshProviderAccountProfile(request) => {
             Ok(LocalDaemonResponse::ProviderAccountProfile {
                 profile:
-                    crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                    crate::local::provider_requests::refresh_provider_account_profile_explicitly(
                         &registry,
                         &owner_user_id,
                         &request.provider,
