@@ -716,12 +716,14 @@ impl CommandRouter {
                 let (provider, profile_id) = (account.provider.clone(), account.profile_id.clone());
                 let runtime_state = self.runtime_state.clone();
                 tokio::spawn(async move {
+                    let config = runtime_state.config_snapshot().await;
                     let refreshed = tokio::task::spawn_blocking(move || {
-                        crate::local::provider_requests::refresh_provider_account_profile_response(
+                        crate::local::provider_requests::refresh_provider_account_profile_with_config(
                             &registry,
                             &owner_user_id,
                             &provider,
                             &profile_id,
+                            &config,
                         )
                         .map_err(|error| (provider, profile_id, error))
                     })

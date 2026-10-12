@@ -356,21 +356,6 @@ pub(crate) fn observe_provider_auth_status_until(
     }
 }
 
-pub(crate) fn refresh_provider_account_profile_response(
-    registry: &crate::account_profile::ProviderAccountProfileRegistry,
-    owner_user_id: &str,
-    provider: &str,
-    account_profile: &str,
-) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
-    refresh_provider_account_profile_with_config(
-        registry,
-        owner_user_id,
-        provider,
-        account_profile,
-        &DaemonConfig::load_from_env(),
-    )
-}
-
 pub(crate) fn refresh_provider_account_profile_with_config(
     registry: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
