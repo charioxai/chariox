@@ -129,7 +129,7 @@ impl KernelRuntimeState {
         let Some(remote_context) = self.leased_forward_context(provider_run).await? else {
             return Ok(None);
         };
-        self.forward_meta_runtime_tool(remote_context, tool_name, arguments)
+        self.forward_meta_runtime_tool(remote_context, tool_name, arguments, Default::default())
             .await
             .map(Some)
     }
@@ -160,6 +160,7 @@ impl KernelRuntimeState {
         remote_context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
         tool_name: &str,
         arguments: serde_json::Value,
+        min_response_timeout: std::time::Duration,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         // Home may call back into this worker while handling the forwarded
         // tool. Snapshot configuration under the app lock, then release it
@@ -175,7 +176,8 @@ impl KernelRuntimeState {
                     tool_name: tool_name.to_string(),
                     arguments,
                 },
-                std::time::Duration::from_millis(config.relay_request_timeout_ms),
+                std::time::Duration::from_millis(config.relay_request_timeout_ms)
+                    .max(min_response_timeout),
             )
             .await?;
         match response {
