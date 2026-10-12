@@ -76,7 +76,7 @@ if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi
 if [ "$1" = -p ]; then
   printf probe >> '{probe_marker}'
   [ '{mode}' = probe-error ] && exit 3
-  printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"duration_api_ms":0,"num_turns":0,"total_cost_usd":0,"usage":{{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}},"result":"Current session: 17% used\nCurrent week (all models): 41% used"}}'
+  printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"duration_api_ms":0,"num_turns":1,"total_cost_usd":0,"usage":{{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":7}},"result":"CHARIOX_AUTH_OK"}}'
   exit 0
 fi
 [ "$1" = setup-token ] || exit 90
@@ -320,7 +320,7 @@ async fn manual_setup_token_verifies_before_storage_and_authenticates_alias() {
         .unwrap();
     for (accepted, replace) in [(true, false), (false, true)] {
         std::fs::write(&binary, if accepted {
-            "#!/bin/sh\n[ \"$1\" = --version ] && { echo 2.2.0; exit 0; }\n[ \"$1\" = auth ] || exit 90\nif [ -n \"$CLAUDE_CODE_OAUTH_TOKEN\" ]; then printf '%s\n' '{\"loggedIn\":true,\"authMethod\":\"oauth_token\"}'; else printf '%s\n' '{\"loggedIn\":false}'; exit 1; fi\n"
+            "#!/bin/sh\n[ \"$1\" = --version ] && { echo 2.2.0; exit 0; }\nif [ \"$1\" = auth ]; then printf '%s\n' '{\"loggedIn\":false}'; exit 1; fi\n[ \"$1\" = -p ] || exit 90\nprintf '%s\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"result\":\"CHARIOX_AUTH_OK\",\"usage\":{\"output_tokens\":7}}'\n"
         } else { "#!/bin/sh\nprintf '%s\n' '{\"loggedIn\":false}'\nexit 1\n" }).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let request = LocalDaemonRequest::SetProviderAccountCredential(

@@ -590,8 +590,30 @@ mod review_contract_tests {
         let response = json!({"status":"approved","kernelCredential":"synthetic-credential","profile":{"email":"fixture@example.test","accountId":"account-owner","userId":"user-owner","accountSlug":"owner","realmId":"realm-owner","relayUrl":"ws://127.0.0.1:1234","issuerId":"fixture","kernelId":config.daemon_id,"machineId":config.host_machine_id,"publicKeyThumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key)}}).to_string();
         let fixture = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut bytes = [0u8; 8192];
-            let _ = stream.read(&mut bytes).unwrap();
+            // MP-08/MP-11 supplementary fixture: consume the complete POST
+            // before closing; replying after only headers races the sender.
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0u8; 8192];
+                let count = stream.read(&mut chunk).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&chunk[..count]);
+                assert!(request.len() < 16 * 1024);
+                if let Some(end) = request.windows(4).position(|v| v == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap();
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
             write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",response.len(),response).unwrap();
         });
         let result = enroll(
