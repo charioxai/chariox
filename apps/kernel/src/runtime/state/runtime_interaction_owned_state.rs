@@ -542,12 +542,6 @@ impl KernelRuntimeOwnedState {
             {
                 let _ = sender.send(timeout_runtime_interaction_resolution(interaction));
             }
-        } else if let Some(interaction) = &pending.user_domain_interaction {
-            self.finish_user_domain_interaction(
-                &pending,
-                interaction_id,
-                timeout_runtime_interaction_resolution(interaction),
-            );
             return Ok(());
         }
         let activity_mutation = self.begin_managed_activity_mutation();
