@@ -45,6 +45,7 @@ export type ProviderCatalogExecutionLocation =
   | { kind: "slice"; slice_ref: string }
 
 export function getProviderCatalogRequest(options: {
+  summaryOnly?: boolean
   provider?: string | null
   accountProfile?: string | null
   executionLocation?: ProviderCatalogExecutionLocation
@@ -54,6 +55,7 @@ export function getProviderCatalogRequest(options: {
     : {}
   return {
     GetProviderCatalog: {
+      ...(options.summaryOnly ? {summary_only:true} : {}),
       provider: options.provider ?? null,
       account_profiles: accountProfiles,
       execution_location: options.executionLocation ?? { kind: "local" },

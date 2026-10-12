@@ -47,6 +47,7 @@ fn local_daemon_protocol_provider_credential_policy_shape_is_versioned() {
 fn local_daemon_protocol_provider_catalog_selection_shape_is_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
     let request = LocalDaemonRequest::GetProviderCatalog(crate::local::GetProviderCatalogRequest {
+        summary_only: false,
         provider: Some("codex".to_string()),
         account_profiles: std::collections::BTreeMap::from([(
             "codex".to_string(),
@@ -1357,5 +1358,25 @@ fn local_daemon_protocol_claude_setup_token_login_shape_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "61fd156d07bde442ccc678f7875dcf24e419fe7208aed934d5d2ecc15a2cf0ce"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: protocol 505 adds opt-in summaries; legacy full reads stay unchanged.
+#[test]
+fn provider_catalog_summary_protocol_505_snapshot() {
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(include_str!("../../types/provider_control.rs").as_bytes())
+        ),
+        "6a9baa1236e9ace9b489e8e70a7e17027b38282ebdfea825cd97fe6f0b6ebeed"
+    );
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
+    let wire = serde_json::json!({"GetProviderCatalog":{"summary_only":true,"execution_location":{"kind":"local"}}});
+    let request: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "37ff9bfb1609a9e94a60b90cbb244ab14623f36430450980da1ec7baf47fc685"
     );
 }

@@ -1426,6 +1426,7 @@ mod tests {
             .create_managed("owner-a", "codex", "Work")
             .expect("work profile should be created");
         let request = GetProviderCatalogRequest {
+            summary_only: false,
             provider: Some("codex".to_string()),
             account_profiles: BTreeMap::from([("codex".to_string(), work.profile_id.clone())]),
             execution_location: ProviderCatalogExecutionLocation::Slice {

@@ -3198,3 +3198,5 @@ snapshot rejects the page explicitly. Paging does not change Save's revision,
 content digest or opaque proposal-token fences. Web and local/remote TUI share
 this path; complete mutation replies are retained only in the active editor,
 while cold-open caches retain compact or small snapshots.
+
+MP-08 / MP-10 / MP-11, local protocol 505 / relay peer 113: `GetProviderCatalog.summary_only` optionally returns provider identities, connectivity and their default model metadata without other model bodies. Omission keeps the complete unscoped read. An explicit provider request returns that provider's models and default metadata for the other provider rows. Both projections use the same authorized catalog and profile/execution scope; startup summaries and full model reads share its cache. Clients request full models when selecting/reviewing that provider.
