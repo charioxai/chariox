@@ -1,7 +1,7 @@
 # MP-08 / MP-10 / MP-11 automatic direct transport drills
 
-Protocol 502 provides the authenticated browser carrier; protocol 502 adds the
-short, key-bound terminal grant and renewal contract.
+Protocol 502 provides authenticated browser and TUI direct carriers with
+short, key-bound grants and renewal.
 Pair with chariox-cloud #307; OSS #916 owns runtime authority and TUI projection.
 These scenarios validate the same kernel session and command/subscription paths.
 A loopback development run is supplementary; hosted live acceptance still uses

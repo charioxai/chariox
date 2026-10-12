@@ -546,7 +546,7 @@ Current implementation notes:
 - current replay is bounded by the daemon's retained recent-event window; if a resume cursor falls outside that window, the M4.5 contract requires an explicit replay-gap response plus a fresh projection snapshot
 - event ids should not be treated as daemon-restart durable until a persisted event log or equivalent projection checkpoint/tail-event store lands
 
-### Same-machine browser carrier (local protocol 464, MP-08/MP-11)
+### Same-machine browser carrier (local protocol 502, MP-08/MP-11)
 
 MP-08 / MP-11: at protocol 502, relay-addressed detached/native TUI launches
 and waiting-room kernel switches automatically use the shared authenticated
@@ -647,7 +647,7 @@ can instead use a dedicated loopback carrier that has no authority of its own:
    `LogoutCloudRelay`). The kernel owns expiry even if the browser stops timers.
 
 MP-08 / MP-11: the paired Cloud browser tries the authenticated loopback
-carrier automatically from protocol 464 for its own kernels. Shared-session
+carrier automatically from protocol 502 for its own kernels. Shared-session
 viewers retain the relay. There is no application consent step; Chromium may
 present its own Local Network Access prompt. A pending browser permission
 request is not a connection failure. Once connected, the kernel-key challenge
