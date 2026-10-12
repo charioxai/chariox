@@ -70,3 +70,18 @@ test("MP-08/MP-10 pending dialog restore cannot clear a later input visibility c
   });
   assert.equal(capture.visibilityBySession.size, 0);
 });
+
+test('MD-DISPLAY hidden display hold retains physical visibility and drains input before restore',async()=>{
+ const capture=new BrowserInputCapture(),calls=[];
+ const connection={send:async(method,params)=>{calls.push({method,params});return {result:{value:false}}}};
+ const first=await capture.hold(connection,'hidden'),second=await capture.hold(connection,'hidden');
+ assert.equal(await capture.visibility(connection,'hidden'),false);
+ let releaseInput,entered;const held=new Promise(r=>releaseInput=r),started=new Promise(r=>entered=r);
+ const input=capture.run(connection,'hidden',async()=>{entered();await held});await started;
+ await first();let restored=false;const closing=second().then(()=>restored=true);
+ await new Promise(r=>setImmediate(r));assert.equal(restored,false);
+ releaseInput();await input;await closing;
+ assert.deepEqual(calls.filter(x=>x.method.startsWith('Emulation.')).map(x=>x.params.enabled),[true,false]);
+ assert.equal(capture.visibilityBySession.size,0);assert.equal(capture.displayLeases.size,0);
+ assert(!calls.some(x=>x.method==='Page.bringToFront'));
+});

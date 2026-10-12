@@ -22,3 +22,19 @@ pub(super) fn connect(relay_url: &str) -> ConnectFuture<'_> {
         std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() == Ok("1"),
     ))
 }
+
+// MP-08 / MP-10 / MP-11: negotiate both display and bounded framing without
+// constructing the TLS future in the connector's poll frame.
+#[inline(never)]
+pub(super) fn connect_binary_events(relay_url: &str) -> ConnectFuture<'_> {
+    match chariox_relay::binary_event::connection_request(
+        &chariox_relay::frame_transport::transport_url(relay_url),
+    ) {
+        Ok(request) => Box::pin(connect_async_with_config(
+            request,
+            None,
+            std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() == Ok("1"),
+        )),
+        Err(error) => Box::pin(async move { Err(error) }),
+    }
+}

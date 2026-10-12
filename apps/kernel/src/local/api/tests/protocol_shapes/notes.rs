@@ -1,4 +1,4 @@
-//! MD-N3 / MP-08 / MP-11: protocol 443 freezes every note request/event seam.
+//! MD-N3 / MP-08 / MP-11: protocol 447 freezes every note request/event seam.
 use super::*;
 use crate::local::{NoteAnchor, NoteCommand, NoteResult, NoteTextQuote, NoteWindow, NotesRequest};
 #[test]

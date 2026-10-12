@@ -1,4 +1,4 @@
-//! MP-08/MP-11: grant and reachability shape guard; A05 causes/expiry at 462.
+//! MP-08/MP-11: reserved 447/78 grant and reachability shape guard.
 use super::*;
 use crate::local::*;
 use sha2::{Digest, Sha256};

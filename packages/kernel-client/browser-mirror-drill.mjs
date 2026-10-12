@@ -90,7 +90,7 @@ if(process.argv[2]!=='child') {
     let observedPacket;const nextPacket=async()=>observedPacket=JSON.parse(await viewer.evaluate(async()=>JSON.stringify(await window.mirror.next())));
     receipt.environment={node:process.version,chromium:browser.version(),bridge:'bounded same-origin loopback HTTP with recursively sorted JSON maps; no Playwright RPC bridge, Rust or relay'};
     const rendererReviewMode=process.env.CHARIOX_MIRROR_DRILL_RENDERER_REVIEW;
-    if(rendererReviewMode){const inputReview=['input','caret','fallback','coordinate','tab','native-keys','controls'].includes(rendererReviewMode);const {rendererReview}=inputReview?{rendererReview:(await import('./browser-mirror-input-review.mjs')).rendererInputReview}:await import('./browser-mirror-renderer-review.mjs');await rendererReview({source,viewer,originUrl,viewerUrl,receipt,mode:rendererReviewMode,resource});}
+    if(rendererReviewMode){const inputReview=['input','caret','fallback','coordinate','tab','shift-tab','native-keys','controls'].includes(rendererReviewMode);const {rendererReview}=inputReview?{rendererReview:(await import('./browser-mirror-input-review.mjs')).rendererInputReview}:await import('./browser-mirror-renderer-review.mjs');await rendererReview({source,viewer,originUrl,viewerUrl,receipt,mode:rendererReviewMode,resource});}
     for(const dpr of process.env.CHARIOX_MIRROR_DRILL_REVIEW_ONLY||rendererReviewMode?[]:[1,2])for(const kind of ['docs','forms','spa','shadow','frames','media','long']){
       const opened=await source.request({op:'open',url:`${originUrl}/${kind}`,observed_by:'drill'}),generation=opened.generation,tab_id=opened.tab_id;
       const prepared=await source.request({op:'mirror_subscribe',tab_id,generation,device_scale_factor:dpr,observed_by:'drill'});

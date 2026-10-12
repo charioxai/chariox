@@ -17,6 +17,8 @@ const chromium = {
   async stop() { this.child = null; },
 };
 const connection = {
+  // MP-08: this fixture has no popup events; expose the real CDP subscription contract.
+  subscribe() { return () => {}; },
   async send(method, params = {}, session) {
     if (method === 'Target.getTargets') return { targetInfos: [...pages].map(([targetId, tab]) => ({ targetId, type: 'page', ...tab })) };
     if (method === 'Target.createTarget') {
@@ -31,7 +33,9 @@ const connection = {
     if (method === 'Page.getResourceTree') return {frameTree:{frame:{id:'frame'},resources:[]}};
     if (method === 'Runtime.evaluate') {
       if(params.expression.includes('Object.fromEntries([...style]'))return {result:{value:{}}};
-      if(params.expression.includes('__charioxMirror.read('))return {result:{value:{root:'n1',nodes:[{id:'n1',parent:null,children:[],kind:'element',tag:'button',style:{width:'80px',height:'40px'},box:{x:0,y:0,width:80,height:40}}],fonts:[],resources:[],scroll:{x:0,y:0},focused:null}}};
+      if(params.expression.includes('__charioxMirror.read('))return {result:{value:{root:'n1',nodes:[{id:'n1',parent:null,children:[],kind:'element',tag:'button',style:{width:'80px',height:'40px'},box:{x:0,y:0,width:80,height:40}}],fonts:[],resources:[],scroll:{x:0,y:0},focused:'n1'}}};
+      // MP-08/MP-11: successful plain keys need painted and live focus.
+      if(params.expression.includes('__charioxMirror.activeTarget('))return {result:{value:'n1'}};
       if(params.expression.includes('installMirrorObserver'))return {result:{value:true}};
       return { result: { value: false } };
     }

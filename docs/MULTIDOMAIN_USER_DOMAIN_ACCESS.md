@@ -8,7 +8,10 @@ Owner decision, 2026-10-05. Local protocol **432**, relay peer **78**. This
 contract supersedes the focus-revocation text in earlier multidomain receipts.
 The kernel owns it equally on ordinary and managed placements.
 
-Focus grants access. Changing focus keeps the previous agent's grant and gives
+MP-11: focus from an authenticated human terminal grants access. Agent-originated
+focus (including Metaagent orchestration), attach, cycle and alias-routed prompts
+may change session focus but cannot create, restore or refresh browser/Notes
+authority. Changing human focus keeps the previous agent's grant and gives
 the new agent its own grant. Browser and notes loading remain independent.
 Each grant retains stable resources the agent touched. A retained agent has the
 same operations as a focused agent on its granted resources: text entry, keys,

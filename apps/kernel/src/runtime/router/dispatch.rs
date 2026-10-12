@@ -30,6 +30,7 @@ impl CommandRouter {
             crate::runtime::capability_executor::CapabilityRuntimeStore::new(
                 router.runtime_state.clone(),
             );
+        // MD-4: admission policy remains shared; unrelated branches stay off caller stacks.
         let response_command = command.clone();
         crate::runtime::external_response::finish_response(
             &response_command,

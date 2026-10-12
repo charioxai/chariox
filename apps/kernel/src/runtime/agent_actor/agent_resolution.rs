@@ -252,7 +252,7 @@ impl AgentRuntime {
         user: &str,
     ) -> Result<(), DaemonError> {
         if command.is_terminal_caller() {
-            self.store.focus_agent(session, agent, user).await?;
+            self.store.focus_agent(session, agent, user, true).await?;
             self.focus_projection.update(session, Some(agent)).await;
         }
         Ok(())

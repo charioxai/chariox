@@ -100,13 +100,13 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// `event_actions_enabled` and leased provider-run projections lose
 /// `workflow_event_actions_enabled`, which a peer at v68 or below still requires.
 /// Version70 combines Apps Phase1 and autonomous Room observation contracts (MP-08/MP-10).
-/// Version 82 adds owner-private workflow notifications to the Browser/Computer peer union (MP-08/MP-11).
-/// MP-08/MP-10/MP-11: version 86 combines the multidomain and main worker shapes.
-/// Version 87 combines 82 and 86 (MP-08/MP-10/MP-11 A04 + A05).
+/// MP-08/MP-10/MP-11: version 90 negotiates bounded stripes over the multidomain and main worker shapes.
 /// Older worker contracts are rejected before dispatch.
 /// Version 102 reconciles the agent-model union and its leased watcher contract (MP-08/MP-09/MP-10/MP-11).
 /// MP-08/MP-10/MP-11 integrated acceptance head; generated consumers follow this constant.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 114;
+/// MP-08/MP-10/MP-11: negotiated binary framing preserves the legacy runtime admission floor.
+pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = 90;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -2330,5 +2330,34 @@ mod leased_watched_process_protocol_tests {
             format!("{:x}", Sha256::digest(value.to_string())),
             "2432555231cea1828a200e1a9519230b8689bf51496fe714ec1a35cd239122d6"
         );
+    }
+}
+
+#[cfg(test)]
+mod mp08_transport_compatibility_tests {
+    #[test]
+    fn mp08_peer96_transport_preserves_legacy_worker_runtime_admission() {
+        assert_eq!(
+            super::RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        // MP-08/MP-10/MP-11: real remote-binding admission keeps the existing
+        // security floor. Unknown/pre90 workers fail; peer94 stays compatible.
+        for (version, compatible) in [
+            (None, false),
+            (Some(89), false),
+            (Some(90), true),
+            (Some(94), true),
+            (Some(96), true),
+        ] {
+            let binding: crate::agent::RemoteAgentBinding =
+                serde_json::from_value(serde_json::json!({
+                    "worker_kernel_id":"worker","worker_machine_id":"machine",
+                    "execution_lease_id":"lease","leased_agent_id":"agent",
+                    "relay_peer_protocol_version":version,
+                }))
+                .unwrap();
+            assert_eq!(binding.relay_peer_protocol_compatible(), compatible);
+        }
     }
 }

@@ -525,6 +525,14 @@ impl KernelRuntimeOwnedState {
         if pending.passkey_prompt.is_some() {
             self.passkey_prompts.record_change();
         }
+        if let Some(interaction) = &pending.user_domain_interaction {
+            self.finish_user_domain_interaction(
+                &pending,
+                interaction_id,
+                timeout_runtime_interaction_resolution(interaction),
+            );
+            return Ok(());
+        }
         if let Some(interaction) = pending.kernel_wide_interaction.as_ref() {
             if let Some(sender) = pending
                 .responder

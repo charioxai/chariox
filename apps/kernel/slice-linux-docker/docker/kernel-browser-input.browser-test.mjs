@@ -2,9 +2,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { KernelBrowserHost } from "./kernel-browser-host.mjs";
+import { inputHostTab } from "./kernel-browser-input.mjs";
 
 assert(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "MP-10: explicit disposable drill root required");
 
@@ -31,8 +32,19 @@ async function native(markup, operation, instrument = true) {
     const tab = opened.tabs[0];
     const bound = { tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id };
     const input = (event, authority = {}) => host.request({ op: "input", ...bound, input: event, ...authority });
-    await input({ kind: "click", x: 30, y: 25 });
     const { connection, sessionId } = await host.browser.resolvePageTarget(host.tabs.get(tab.tab_id).target_id);
+    let ready=false;
+    for(let tries=0;tries<200&&!ready;tries++) {
+      try {ready=(await connection.send('Runtime.evaluate',{
+        expression:"document.readyState==='complete'&&Boolean(document.querySelector('#field'))",returnByValue:true,
+      },sessionId)).result?.value===true;}
+      catch(error){if(error.code!=='browser_cdp_command_failed'||!error.message.includes('context was destroyed'))throw error;}
+      if(!ready)await new Promise(resolve=>setTimeout(resolve,25));
+    }
+    assert(ready,'MP-11: native fixture must finish loading before input');
+    const state=await host.request({op:'state'});
+    bound.document_id=state.tabs.find(t=>t.tab_id===tab.tab_id).document_id;
+    await input({ kind: "click", x: 30, y: 25 });
     const events = [];
     const send = connection.send.bind(connection);
     connection.send = async (method, params, session) => {
@@ -49,7 +61,7 @@ async function native(markup, operation, instrument = true) {
       assert(!result.exceptionDetails, 'MP-10: credential-free fixture setup/read failed');
       return result.result.value;
     };
-    await operation({ host, bound, input, status, events, evaluate });
+    await operation({ host, bound, input, status, events, evaluate, connection });
   } finally {
     await host.stop();
     await new Promise(resolve => server.close(resolve));
@@ -152,9 +164,157 @@ test(`MP-08/MP-10/MP-11: protected ${target} rejects ${retained ? "retained" : "
       {kind:'text',text:'fixture'}, ...['a','é','😀',' ', 'Enter','Space'].map(key=>({kind:'key',key})),
     ]) {
       events.length=0;
-      await assert.rejects(input(event,{_retained_agent:retained}),/secret field input requires the Vault path/,`${target}/${retained}/${event.key??event.kind}`);
+      await assert.rejects(input(event,{_retained_agent:retained}),{code:'user_domain_sensitive_requires_focus'},`${target}/${retained}/${event.key??event.kind}`);
       assert.equal(events.length,0); assert.equal(await evaluate('window.effects'),0);
       assert.equal((await host.request({op:'state'})).generation,bound.generation);
     }
   }
 },false));
+
+// MP-11: use actual controller, isolated observer and physical Chromium dispatch.
+// This is supplementary security regression evidence, not hosted-client acceptance.
+for (const dpr of [1, 2]) test(`MP-11: plain mirror keys require live painted focus at DPR ${dpr}`, () => native(
+  `${field}<div id="ancestor"><input id="other" value="ordinary"></div><button id="pay" onclick="window.effects++">Public action</button>`,
+  async ({host,bound,input,events,evaluate,connection}) => {
+    const sub=await host.request({op:'mirror_subscribe',...bound,device_scale_factor:dpr});
+    const rows=[];let sequence=0;
+    for(const scenario of ['observed-focus-move','unobserved-focus-move','protected-field','password-field','otp-field','protected-ancestor','protected-shadow-host','changed-geometry','focus-during-preflight']) {
+      for(const key of (scenario==='focus-during-preflight'?['Enter']:['Enter','Backspace','Delete'])) {
+        await evaluate(`(() => {
+          document.querySelector('#late')?.remove(); document.querySelector('#shadow-host')?.remove();
+          const field=document.querySelector('#field'),other=document.querySelector('#other'),ancestor=document.querySelector('#ancestor');
+          field.type='text';field.removeAttribute('autocomplete');field.style.marginLeft='';field.removeAttribute('data-observation-protected');ancestor.removeAttribute('data-observation-protected');
+          field.value='ordinary';other.value='ordinary';window.effects=0;field.focus();
+        })()`);
+        const packet=await host.request({op:'mirror_next',subscription_id:sub.subscription_id,generation:bound.generation,after_sequence:sequence,drift_nodes:[]});sequence=packet.sequence;
+        assert(packet.focused,'MP-11: fixture focus must be painted');
+        await evaluate(`(() => {
+          if(${JSON.stringify(scenario)}==='observed-focus-move')document.querySelector(${JSON.stringify(key==='Enter'?'#pay':'#other')}).focus();
+          if(${JSON.stringify(scenario)}==='unobserved-focus-move'){const e=document.createElement('input');e.id='late';e.value='ordinary';document.body.append(e);e.focus();}
+          if(${JSON.stringify(scenario)}==='protected-field')document.querySelector('#field').setAttribute('data-observation-protected','');
+          if(${JSON.stringify(scenario)}==='password-field')document.querySelector('#field').type='password';
+          if(${JSON.stringify(scenario)}==='otp-field')document.querySelector('#field').setAttribute('autocomplete','one-time-code');
+          if(${JSON.stringify(scenario)}==='protected-ancestor'){document.querySelector('#ancestor').setAttribute('data-observation-protected','');document.querySelector('#other').focus();}
+          if(${JSON.stringify(scenario)}==='protected-shadow-host'){const e=document.createElement('div');e.id='shadow-host';e.setAttribute('data-observation-protected','');document.body.append(e);const field=document.createElement('input');field.value='ordinary';e.attachShadow({mode:'open'}).append(field);field.focus();}
+          if(${JSON.stringify(scenario)}==='changed-geometry')document.querySelector('#field').style.marginLeft='50px';
+        })()`);
+        // Deliberately do not ask for a new mirror packet between focus change/key.
+        events.length=0;let refused=false;
+        const send=connection.send.bind(connection);
+        if(scenario==='focus-during-preflight') connection.send=async(method,params,session)=>{
+          const reply=await send(method,params,session);
+          if(method==='Runtime.evaluate'&&params.expression.includes('let e = document.activeElement'))
+            await send('Runtime.evaluate',{expression:"document.querySelector('#pay').focus()",returnByValue:true},session);
+          return reply;
+        };
+        try {await input({kind:'mirror',subscription_id:sub.subscription_id,sequence,action:{kind:'key',key}});} catch {refused=true;} finally {connection.send=send;}
+        const effects=await evaluate('window.effects');
+        rows.push({scenario,key,dpr,sequence,refused,dispatches:events.length,effects,pass:refused&&events.length===0&&effects===0});
+      }
+    }
+    // Tab moves native focus during keyDown: the release must remain paired.
+    await evaluate("document.querySelector('#field').style.marginLeft='';document.querySelector('#field').removeAttribute('data-observation-protected');document.querySelector('#field').focus()");
+    const packet=await host.request({op:'mirror_next',subscription_id:sub.subscription_id,generation:bound.generation,after_sequence:sequence,drift_nodes:[]});
+    events.length=0;
+    await input({kind:'mirror',subscription_id:sub.subscription_id,sequence:packet.sequence,action:{kind:'key',key:'Tab'}});
+    assert.deepEqual(events.map(event=>event.type),['keyDown','keyUp']);
+    if(process.env.CHARIOX_MIRROR_KEY_EVIDENCE) {
+      const evidence=process.env.CHARIOX_MIRROR_KEY_EVIDENCE;await mkdir(evidence,{recursive:true});
+      const screenshot=await host.request({op:'screenshot',...bound});
+      await writeFile(path.join(evidence,`plain-key-dpr${dpr}.png`),Buffer.from(screenshot.data_base64,'base64'));
+      await writeFile(path.join(evidence,`plain-key-dpr${dpr}.json`),JSON.stringify({mp:['MP-08','MP-10','MP-11'],scope:'Real sandboxed host Chromium/controller fixture; no hosted client/provider acceptance',rows,pairedRelease:events.map(event=>event.type)},null,2)+'\n');
+    }
+    assert(rows.every(row=>row.pass),JSON.stringify(rows.filter(row=>!row.pass)));
+  }
+));
+
+// MP-11: mutate the real target during awaited input preparation, without
+// another mirror packet. These are security regressions, not hosted acceptance.
+for (const dpr of [1, 2]) test(`MP-11: addressed mirror input fences live dispatch at DPR ${dpr}`, () => native(
+  `<div id="ancestor">${field}</div><input id="other"><div id="click-ancestor"><button id="target" title="click-target" style="width:180px;height:40px" onclick="window.effects++"><span>Public action</span></button></div>`,
+  async ({host,bound,input,events,evaluate,connection}) => {
+    const sub=await host.request({op:'mirror_subscribe',...bound,device_scale_factor:dpr});
+    const rows=[];let sequence=0;
+    // Focus itself marks a host mutation; a later refusal may stop the host.
+    // Exercise the exact native dispatch path while retaining this browser to
+    // measure zero physical events and inspect every race in the same document.
+    const dispatch=event=>inputHostTab(host.browser,host.tabs.get(bound.tab_id),event,{
+      resolveMirror:inner=>host.mirror.resolveInput(host.tabs.get(bound.tab_id),inner,'adapter'),
+    });
+    const reset=async()=>evaluate(`(() => {
+      document.querySelector('#overlay')?.remove();
+      document.querySelector('#ancestor').removeAttribute('data-observation-protected');
+      document.querySelector('#ancestor').innerHTML=${JSON.stringify(field)};
+      document.querySelector('#click-ancestor').removeAttribute('data-observation-protected');
+      document.querySelector('#click-ancestor').innerHTML='<button id="target" title="click-target" style="width:180px;height:40px" onclick="window.effects++"><span>Public action</span></button>';
+      window.effects=0;window.inputEffects=0;
+      document.querySelector('#field').focus();
+      document.oninput=()=>window.inputEffects++;
+    })()`);
+    const packet=async()=>{const p=await host.request({op:'mirror_next',subscription_id:sub.subscription_id,generation:bound.generation,after_sequence:sequence,drift_nodes:[]});sequence=p.sequence;return p;};
+    for(const kind of ['text','composition','click']) for(const scenario of kind==='click'
+      ? ['replacement','move','overlay','fractional-overlay','protected-target','protected-ancestor','protected-hit']
+      : ['focus-swap','replacement','protected-target','protected-ancestor','password','final-preflight-protection']) {
+      console.log(`MP-11: addressed DPR${dpr} ${kind}/${scenario}`);
+      await reset();const p=await packet();
+      const node_id=kind==='click'?p.nodes.find(n=>n.attributes?.title==='click-target').id:p.focused;
+      const mutation=`(() => {
+        const e=document.querySelector(${JSON.stringify(kind==='click'?'#target':'#field')});
+        const scenario=${JSON.stringify(scenario)};
+        if(scenario==='focus-swap')document.querySelector('#other').focus();
+        if(scenario==='replacement'){const clone=e.cloneNode(true);e.replaceWith(clone);if(${kind!=='click'})clone.focus();}
+        if(scenario==='move')e.style.marginLeft='200px';
+        if(scenario==='overlay'){const r=e.getBoundingClientRect(),overlay=document.createElement('button');overlay.id='overlay';overlay.style.cssText='position:fixed;z-index:9999;left:'+r.x+'px;top:'+r.y+'px;width:'+r.width+'px;height:'+r.height+'px';overlay.onclick=()=>window.effects++;document.body.append(overlay);}
+        if(scenario==='fractional-overlay'){const r=e.getBoundingClientRect(),overlay=document.createElement('button');overlay.id='overlay';overlay.style.cssText='position:fixed;padding:0;border:0;z-index:9999;left:'+Math.floor(r.x+r.width/2)+'px;top:'+Math.floor(r.y+r.height/2)+'px;width:0.25px;height:0.25px';overlay.onclick=()=>window.effects++;document.body.append(overlay);}
+        if(scenario==='protected-target'||scenario==='final-preflight-protection')e.setAttribute('data-observation-protected','');
+        if(scenario==='protected-ancestor')e.parentElement.setAttribute('data-observation-protected','');
+        if(scenario==='protected-hit')e.firstElementChild.setAttribute('data-observation-protected','');
+        if(scenario==='password')e.type='password';
+      })()`;
+      const send=connection.send.bind(connection),run=host.browser.inputCapture.run.bind(host.browser.inputCapture);
+      let armed=false,preflight=false,mutated=false,refused=false,error;
+      host.browser.inputCapture.run=async(...args)=>{if(kind==='click')armed=true;return run(...args);};
+      connection.send=async(method,params,session)=>{
+        const reply=await send(method,params,session);
+        if(method==='Runtime.evaluate'&&params.expression.includes('.__charioxMirror.focus('))armed=true;
+        if(armed&&method==='Runtime.evaluate'&&params.expression.includes('let e = document.activeElement'))preflight=true;
+        if(armed&&!mutated&&method==='Page.getFrameTree'&&(scenario!=='final-preflight-protection'||preflight)) {
+          const result=await send('Runtime.evaluate',{expression:mutation,returnByValue:true},session);
+          assert(!result.exceptionDetails);mutated=true;
+        }
+        return reply;
+      };
+      events.length=0;
+      const action={kind,node_id,...(kind==='click'?{}:{text:'文',...(kind==='composition'?{selection_start:1,selection_end:1}:{})})};
+      try{await dispatch({kind:'mirror',subscription_id:sub.subscription_id,sequence,action});}
+      catch(e){refused=true;error=e.message;}
+      finally{connection.send=send;host.browser.inputCapture.run=run;}
+      const effects=await evaluate('window.effects+window.inputEffects');
+      rows.push({kind,scenario,dpr,sequence,mutated,preflight,refused,error,dispatches:events.length,effects,pass:mutated&&refused&&events.length===0&&effects===0});
+      if(process.env.CHARIOX_MIRROR_DISPATCH_EVIDENCE) {
+        const screenshot=await host.request({op:'screenshot',...bound});
+        await writeFile(path.join(process.env.CHARIOX_MIRROR_DISPATCH_EVIDENCE,`addressed-dpr${dpr}-${kind}-${scenario}.png`),Buffer.from(screenshot.data_base64,'base64'));
+      }
+    }
+    const positive=[];
+    for(const kind of ['text','composition','click']) {
+      await reset();const p=await packet();events.length=0;
+      const node_id=kind==='click'?p.nodes.find(n=>n.attributes?.title==='click-target').id:p.focused;
+      // A press can move/remove its target; mouseReleased must remain paired.
+      if(kind==='click')await evaluate("document.querySelector('#target').onmousedown=()=>{window.effects++;document.querySelector('#target').remove()}");
+      await dispatch({kind:'mirror',subscription_id:sub.subscription_id,sequence,action:{kind,node_id,...(kind==='click'?{}:{text:'文',...(kind==='composition'?{selection_start:1,selection_end:1}:{})})}});
+      const value=await evaluate("document.querySelector('#field').value");
+      const physical=events.map(e=>e.type??e.method);
+      positive.push({kind,physical,value,pass:kind==='click'?physical.join(',')==='mousePressed,mouseReleased':value.includes('文')});
+    }
+    if(process.env.CHARIOX_MIRROR_DISPATCH_EVIDENCE) {
+      const evidence=process.env.CHARIOX_MIRROR_DISPATCH_EVIDENCE;await mkdir(evidence,{recursive:true});
+      await reset();await packet();
+      const screenshot=await host.request({op:'screenshot',...bound});
+      await writeFile(path.join(evidence,`addressed-dpr${dpr}.png`),Buffer.from(screenshot.data_base64,'base64'));
+      await writeFile(path.join(evidence,`addressed-dpr${dpr}.json`),JSON.stringify({mp:['MP-08','MP-10','MP-11'],scope:'Real sandboxed Chromium/controller security regressions; not hosted client acceptance',rows,positive},null,2)+'\n');
+    }
+    assert(rows.every(row=>row.pass),JSON.stringify(rows.filter(row=>!row.pass)));
+    assert(positive.every(row=>row.pass),JSON.stringify(positive));
+  },false
+));

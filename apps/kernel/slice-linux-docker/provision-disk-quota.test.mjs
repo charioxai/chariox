@@ -145,7 +145,7 @@ test("MP-03/MP-10/MP-11 paired disk-cap fields remain covered by the current uni
   ])
   const runtimeVersion = Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1])
   const clientVersion = Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1])
-  assert.match(snapshot, /assert_eq!\(LOCAL_DAEMON_PROTOCOL_VERSION, crate::test_support::expected_local_protocol_version\(\)\)/)
+  assert.match(snapshot, /assert_eq!\(\s*LOCAL_DAEMON_PROTOCOL_VERSION,\s*crate::test_support::expected_local_protocol_version\(\)\s*\)/)
   assert.equal(runtimeVersion, localProtocolVersion)
   assert.equal(clientVersion, runtimeVersion)
   assert.match(snapshot, /disk_layer_mb/)

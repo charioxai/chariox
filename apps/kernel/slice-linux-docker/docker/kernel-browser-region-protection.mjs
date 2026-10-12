@@ -1,68 +1,60 @@
-// Screenshot-region masks from trusted CDP metadata, never page JavaScript.
-async function regions(connection, sessionId, mirrorStructured = false) {
-  const { root } = await connection.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
-  const { nodeIds } = await connection.send("DOM.querySelectorAll", {
-    nodeId: root.nodeId,
-    selector: 'input[type="password"], [data-chariox-secret], [data-chariox-observation-protected], [data-observation-protected], input[autocomplete*="password" i], input[autocomplete*="one-time-code" i], input[autocomplete*="cc-" i], iframe, frame',
-  }, sessionId);
-  if (!Array.isArray(nodeIds)) throw new Error("Capture protection unavailable");
-  // MP-11: structured mirrors may inspect only same-origin nested documents
-  // that CDP actually exposes. Other frames keep opaque protection.
-  const admittedFrames=new Set();
-  if(mirrorStructured) {
-    const {frameTree}=await connection.send('Page.getFrameTree',{},sessionId);
-    const origin=frameTree?.frame?.securityOrigin;
-    const admit=tree=>{if(!origin||origin==='://'||tree.frame.securityOrigin!==origin)return;admittedFrames.add(tree.frame.id);for(const child of tree.childFrames??[])admit(child);};
-    if(frameTree)admit(frameTree);
+// MP-08/MP-10/MP-11: only the shared collector's recorded Vault fill fields.
+import {displayGeometry as geometry,hostViewport} from './kernel-browser-geometry.mjs';
+import {cropProtectedPng,displayMaskRegions,displayFullMaskRegions} from './kernel-browser-pixels.mjs';
+import {measurePageProtection,protectionDigest} from './browser-protection-regions.mjs';
+import {locateBrowserRegions} from './browser-observation-regions.mjs';
+
+// Compatibility exports for mirror callers; generic masks no longer exist.
+export async function protectedHostRegions() { return []; }
+export async function captureRegionMasks() { return {async afterCapture() { return []; }}; }
+export function regionProtectionChanged(message,sessionId,scope) {
+  if(message.sessionId!==sessionId)return false;
+  return message.method==='DOM.documentUpdated'||message.method==='Page.frameNavigated'||
+    Boolean(scope?.targets)&&['DOM.attributeModified','DOM.attributeRemoved'].includes(message.method)&&message.params?.name==='type';
+}
+export async function captureProtectionFence(connection,sessionId,targetId,policy,{measure=measurePageProtection}={}) {
+  const before=await measure(connection,sessionId,targetId,policy,{includeHidden:true}).catch(()=>null);
+  return {async afterCapture({width,height}) {
+    const after=await measure(connection,sessionId,targetId,policy,{includeHidden:true}).catch(()=>null);
+    const sx=width/after?.viewport?.[0],sy=height/after?.viewport?.[1];
+    if(!before||!after||protectionDigest(before)!==protectionDigest(after)||!(sx>0)||Math.abs(sx-sy)>1e-9)
+      throw Error('MP-11: fill-target capture unavailable; retry');
+    return after.regions.map(([x,y,w,h])=>({x:Math.floor(x*sx),y:Math.floor(y*sy),width:Math.ceil((x+w)*sx)-Math.floor(x*sx),height:Math.ceil((y+h)*sy)-Math.floor(y*sy)}));
+  }};
+}
+export class NativeRegionProtection {
+  constructor(connection,sessionId,options={}) {Object.assign(this,{connection,sessionId,options});this.revision=0;}
+  retire() {this.revision++;this.guard=null;}
+  tracker() {return {targets:Boolean(this.options.policy?.targets?.length||this.options.browser?.fillTargets?.size)};}
+  get beforeAt() {return this.fencedAt??-Infinity;}
+  async measure() {
+    const {policy={targets:[],values:[]},browser,tab,scale=1}=this.options;
+    if(!policy.targets.length&&!browser?.fillTargets?.size)return [];
+    return locateBrowserRegions(policy.targets,browser,policy.values,{contentTarget:tab.target_id,contentScale:scale});
   }
-  const nodes = [...nodeIds], pending = [root], exposedFrames=new Set(), explicitlyProtected=new Set();
-  let visited = 0;
-  while (pending.length) {
-    if (++visited > 100_000) throw new Error("Capture protection tree limit exceeded");
-    const node = pending.pop();
-    if (node.shadowRoots?.length) {
-      if((!mirrorStructured && node.shadowRoots.some(root=>root.shadowRootType!=='user-agent')) || node.shadowRoots.some(root=>root.shadowRootType==='closed'))nodes.push(node.nodeId);
-      if(mirrorStructured)pending.push(...node.shadowRoots.filter(root=>root.shadowRootType==='open'));
-    }
-    if(mirrorStructured) {
-      // Inspect open shadow descendants through trusted CDP metadata, never page
-      // scripts. UA shadow roots of ordinary inputs/media are native controls.
-      const attrs=new Map();for(let i=0;i<(node.attributes?.length??0);i+=2)attrs.set(node.attributes[i],node.attributes[i+1]);
-      if(['data-chariox-secret','data-chariox-observation-protected','data-observation-protected'].some(key=>attrs.has(key)) || node.localName==='input' && (attrs.get('type')?.toLowerCase()==='password'||/password|one-time-code|cc-/i.test(attrs.get('autocomplete')??''))){nodes.push(node.nodeId);explicitlyProtected.add(node.nodeId);}
-    }
-    if(mirrorStructured&&node.contentDocument&&admittedFrames.has(node.frameId)) {
-      exposedFrames.add(node.nodeId);pending.push(node.contentDocument);
-    }
-    pending.push(...(node.children ?? []));
+  async refresh() {
+    const revision=this.revision,before=await this.measure();
+    if(revision!==this.revision)throw Error('MP-11: native region fence retired');
+    this.guard={before};this.fencedAt=performance.timeOrigin+performance.now();
   }
-  if (nodes.length > 1024) throw new Error("Capture protection limit exceeded");
-  const result = [];
-  for (const nodeId of new Set(nodes.filter(id=>!exposedFrames.has(id)||explicitlyProtected.has(id)))) {
-    const { model } = await connection.send("DOM.getBoxModel", { nodeId }, sessionId);
-    const quad = model?.border;
-    if (!Array.isArray(quad) || quad.length !== 8 || quad.some(n => !Number.isFinite(n))) {
-      throw new Error("Capture protection bounds unavailable");
+  async regions(raw) {
+    const guard=this.guard;
+    if(!guard||!Number.isFinite(raw.captured_ms)||raw.captured_ms<this.beforeAt)throw Error('MP-11: fill-target capture unavailable; retry');
+    const after=await this.measure();
+    if(this.guard!==guard)throw Error('MP-11: native region fence retired');
+    if(JSON.stringify(guard.before)!==JSON.stringify(after)) {
+      this.guard=null;throw Error('MP-11: fill-target capture unavailable; retry');
     }
-    const xs = [quad[0], quad[2], quad[4], quad[6]], ys = [quad[1], quad[3], quad[5], quad[7]];
-    result.push({ x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) });
+    return after.map(([x,y,width,height])=>({x,y,width,height}));
   }
-  return result;
 }
 
-export const protectedHostRegions = (connection, sessionId) => regions(connection, sessionId);
-
-export async function captureRegionMasks(connection, sessionId, { mirrorStructured = false } = {}) {
-  // Layout changes or failed metadata checks cannot reveal an unmapped field.
-  const before = await regions(connection, sessionId, mirrorStructured);
-  return { async afterCapture({ width = 1280, height = 800 } = {}) {
-    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error("Capture geometry unavailable");
-    const fullFrame = [{ x: 0, y: 0, width, height }];
-    try {
-      const after = await regions(connection, sessionId, mirrorStructured);
-      if (JSON.stringify(before) !== JSON.stringify(after)) return fullFrame;
-      // CDP bounds are CSS coordinates; the raster crop masks native PNG pixels.
-      return after.map(region => ({ x: region.x * width / 1280, y: region.y * height / 800,
-        width: region.width * width / 1280, height: region.height * height / 800 }));
-    } catch { return fullFrame; }
-  } };
+export async function captureProtectedDisplay(host,tab,clip=null,optimizeForSpeed=true){
+  const scale=host.scales.get(tab.tab_id)??hostViewport().device_scale_factor;let frame;
+  const {protected_regions,...captured}=await host.screenshot(tab,null,true,'png',optimizeForSpeed);
+  frame={...captured,[displayMaskRegions]:protected_regions};
+  const cropped=cropProtectedPng(frame.data_base64,clip,scale);
+  const full=!clip||clip.width===geometry.width&&clip.height===geometry.height;
+  const regions=(frame[displayMaskRegions]??[]).map(r=>({x:(r.x-(full?0:clip.x*scale))*(clip?.scale??1),y:(r.y-(full?0:clip.y*scale))*(clip?.scale??1),width:r.width*(clip?.scale??1),height:r.height*(clip?.scale??1)}));
+  return {...frame,...cropped,[displayMaskRegions]:regions,[displayFullMaskRegions]:frame[displayMaskRegions]};
 }

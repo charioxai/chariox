@@ -1,5 +1,15 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08/MP-10/MP-11 visual protection amendment (2026-10-09)
+
+Miguel’s fill-target decision supersedes earlier visual echo/media/container and
+whole-frame protection entries below. Record the exact Vault-filled browser
+frame/backend node/document/generation or native window/AT-SPI object. On each
+capture cover only a still-filled plain text field with small device-pixel
+padding. Password fields show dots and are not masked; show-password toggles
+are checked each capture. Removal, navigation/generation change or user
+clearing/replacement retires tracking. No other page/desktop content is masked.
+Source regressions alone do not establish MP-10 real live acceptance.
 ## MP-11 room security corrections, am1 (2026-10-08)
 
 Agent allocation uses random 128-bit identities independent of the live-agent

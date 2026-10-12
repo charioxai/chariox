@@ -26,6 +26,8 @@ pub(crate) struct KernelBrowserHost {
 struct HostState {
     browsers: BTreeMap<String, Arc<Mutex<BrowserControllerProcessStdioBackend>>>,
     stopped: bool,
+    mutation_lanes: BTreeMap<String, Arc<Mutex<()>>>,
+    display_gates: BTreeMap<String, Arc<super::kernel_browser_display_gate::DisplayGate>>,
     #[cfg(test)]
     after_controller_check: Option<Arc<dyn Fn() + Send + Sync>>,
     access: UserDomainAccess,
@@ -44,6 +46,7 @@ pub(crate) enum KernelBrowserCapability {
 pub(crate) struct KernelBrowserAdmission {
     user: String,
     agent: Option<String>,
+    agent_label: Option<String>,
     epoch: Arc<BrowserCancellation>,
     cancellation: Arc<BrowserCancellation>,
     terminal_lifetime: Option<crate::runtime::command::TerminalLifetime>,
@@ -66,6 +69,11 @@ impl KernelBrowserAdmission {
                 .terminal_lifetime
                 .as_ref()
                 .is_some_and(|lifetime| !lifetime.is_live())
+    }
+
+    pub(crate) fn with_agent_label(mut self, label: &str) -> Self {
+        self.agent_label = Some(label.into());
+        self
     }
 
     pub(crate) fn with_authority(
@@ -95,6 +103,20 @@ impl KernelBrowserHost {
             inner: Arc::new(Mutex::new(HostState::default())),
             root: root.join("kernel-browser"),
         }
+    }
+    // MD-DISPLAY-04: queued credits wait asynchronously, away from the
+    // controller mutex. Input can enter between captures rather than behind
+    // an entire WAN window of blocking capture/encode/pacing operations.
+    pub(crate) fn display_gate(
+        &self,
+        user: &str,
+    ) -> Arc<super::kernel_browser_display_gate::DisplayGate> {
+        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        state
+            .display_gates
+            .entry(user.into())
+            .or_insert_with(|| Arc::new(super::kernel_browser_display_gate::DisplayGate::default()))
+            .clone()
     }
     pub(crate) fn profile_root(&self, user: &str) -> PathBuf {
         self.root.join(Self::profile_key(user))
@@ -247,6 +269,7 @@ impl KernelBrowserHost {
         Ok(KernelBrowserAdmission {
             user: user.into(),
             agent: Some(agent.into()),
+            agent_label: Some(agent.into()),
             capability,
             epoch: state.access.grant(user, agent)?.epoch.clone(),
             cancellation: state.access.grant(user, agent)?.epoch.clone(),
@@ -263,6 +286,7 @@ impl KernelBrowserHost {
         KernelBrowserAdmission {
             user: user.into(),
             agent: None,
+            agent_label: None,
             epoch: epoch.clone(),
             capability: KernelBrowserCapability::Browser,
             terminal_lifetime: Some(lifetime.clone()),
@@ -349,6 +373,33 @@ impl KernelBrowserHost {
         }
         self.check_admission(admission)?;
         let browser = self.backend(user)?;
+        // MP-08/MP-10/MP-11: mutations keep their existing serial admission,
+        // but never hold the shared controller lock during input/CDP waits.
+        // Takeover/cancellation use the actor model and remain independent.
+        let mutation = method == "host.secret"
+            || (method == "host.browser"
+                && matches!(
+                    params["op"].as_str(),
+                    Some("open" | "close" | "navigate" | "input" | "stop")
+                ));
+        let mutation_lane = if mutation {
+            Some(
+                self.inner
+                    .lock()
+                    .map_err(|_| "MD-2: browser host lock poisoned")?
+                    .mutation_lanes
+                    .entry(user.into())
+                    .or_default()
+                    .clone(),
+            )
+        } else {
+            None
+        };
+        let _mutation_guard = mutation_lane
+            .as_ref()
+            .map(|lane| lane.lock())
+            .transpose()
+            .map_err(|_| "MD-3: browser mutation lane poisoned")?;
         let mut backend = browser
             .lock()
             .map_err(|_| "MD-2: browser operation lock poisoned")?;
@@ -371,6 +422,8 @@ impl KernelBrowserHost {
                 finished: false,
             };
             self.check_admission(admission)?;
+            // Focus can move while the all-tab actor action is being admitted.
+            self.scope_browser_request(admission, method, &params)?;
             let result = backend.stop();
             action.finish(if result.is_ok() {
                 EnvironmentActionTerminal::Completed
@@ -382,11 +435,15 @@ impl KernelBrowserHost {
             return Ok(serde_json::json!({ "state": "stopped", "tabs": [] }));
         }
         if params["_host_generation"].is_u64() {
-            if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
+            if !backend
+                .host_is_live()
+                .map_err(crate::error::HostFailure::Other)?
             {
                 return Err("MD-APP: App host is no longer live".into());
             }
-        } else if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
+        } else if !backend
+            .host_is_live()
+            .map_err(crate::error::HostFailure::Other)?
         {
             // MP-11: state/observation reads cannot start or recover a
             // controller. Startup is explicit and uses the same grant for
@@ -405,6 +462,9 @@ impl KernelBrowserHost {
                             | "display_attach"
                             | "note_selection"
                             | "note_reanchor"
+                            | "mirror_subscribe"
+                            | "mirror_next"
+                            | "mirror_close"
                     )
                 )
             {
@@ -432,7 +492,7 @@ impl KernelBrowserHost {
                 .into();
         }
         self.check_admission(admission)?;
-        backend.host_request_classified("host.protect", policy)?;
+        backend.protect_host(policy)?;
         self.check_admission(admission)?;
         let model = self.actor_model(user)?;
         if method == "host.browser"
@@ -460,15 +520,23 @@ impl KernelBrowserHost {
         let action = if mutation {
             // Reconcile the SAME supervised browser before ledger admission. Takeover
             // uses only the model lock, so it can cancel while CDP holds the backend.
-            let state = backend.host_request_cancellable(
+            let observed_input = method == "host.browser"
+                && params["op"] == "input"
+                && model
+                    .lock()
+                    .map_err(|_| "MD-3: actor lock poisoned")?
+                    .input_is_current(&params);
+            if !observed_input {
+                let state = backend.host_request_cancellable(
                 "host.browser",
                 serde_json::json!({"op":if params["op"] == "open" { "start" } else { "state" }}),
                 admission.map(|a| a.cancellation.clone()),
             )?;
-            model
-                .lock()
-                .map_err(|_| "MD-3: actor lock poisoned")?
-                .reconcile(&state)?;
+                model
+                    .lock()
+                    .map_err(|_| "MD-3: actor lock poisoned")?
+                    .reconcile(&state)?;
+            }
             let actor = browser_actor(admission, &params);
             let (id, cancellation) = {
                 // Disconnect/focus retirement takes the same model lock. Either
@@ -502,8 +570,29 @@ impl KernelBrowserHost {
         };
         // MP-11: focused and retained input share grant/run cancellation.
         // Vault requests also carry their live focus authority from admission.
+        // MP-08/MP-11: controller creation evidence names this kernel-admitted
+        // action. Never accept a caller's action identity at the private seam.
+        params["_action_id"] = action
+            .as_ref()
+            .map(|action| Value::String(action.id.clone()))
+            .unwrap_or(Value::Null);
         let request_params = params.clone();
-        let mut result = backend.host_request_cancellable(method, params, cancellation.clone());
+        let display = method == "host.browser"
+            && params["op"] == "screenshot"
+            && params["display_subscription_id"].is_string();
+        let mut result = if display || (method == "host.browser" && params["op"] == "input") {
+            let signal = cancellation
+                .clone()
+                .unwrap_or_else(|| Arc::new(BrowserCancellation::default()));
+            let pending = backend.begin_cancellable_mutation(method, &params, &signal)?;
+            drop(backend);
+            pending
+                .wait(&signal)
+                .map_err(crate::error::HostFailure::Other)
+                .and_then(|response| response.into_host_result(method))
+        } else {
+            backend.host_request_cancellable(method, params, cancellation.clone())
+        };
         if let Some(action) = action {
             let terminal = if cancellation
                 .as_ref()
@@ -528,11 +617,32 @@ impl KernelBrowserHost {
         // Reconcile authority with full controller state before applying a
         // retained agent's projection; scoped inventory cannot remove another
         // actor's tabs or input ownership from the shared ledger.
+        // Creation evidence belongs to the private controller seam. Never expose
+        // it in the serialized client result or use it to widen capability grants.
+        let tab_creation_actions = result
+            .as_mut()
+            .ok()
+            .and_then(|state| state.as_object_mut())
+            .and_then(|state| {
+                state.remove("_tab_openers");
+                state.remove("_tab_creation_actions")
+            })
+            .unwrap_or(Value::Null);
         if let Ok(state) = &result {
-            model
-                .lock()
-                .map_err(|_| "MD-3: actor lock poisoned")?
-                .reconcile(state)?;
+            let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+            ledger.reconcile_inventory(state, &tab_creation_actions)?;
+        }
+        if let Ok(payload) = &mut result {
+            let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+            if admission.is_some_and(|a| a.revoked_in_actor_lock()) {
+                return Err("MP-11: not_granted: browser authority revoked".into());
+            }
+            if request_params["op"] == "open" {
+                if let Some(tab) = payload["tab_id"].as_str() {
+                    ledger.opened_tab(browser_actor(admission, &request_params), tab);
+                }
+            }
+            ledger.project_tabs(payload);
         }
         if let (Some(admission), Ok(payload)) = (admission, &mut result) {
             if let Some(agent) = admission.agent.as_deref() {
@@ -564,6 +674,17 @@ impl KernelBrowserHost {
                                     .contains(&UserDomainResource::BrowserTab { tab_id: id.into() })
                             })
                         });
+                    }
+                }
+                if let Some(tab) = payload["agent_activity"]["tab_id"].as_str() {
+                    if state.access.focused(user) != Some(agent)
+                        && !state
+                            .access
+                            .grant(user, agent)?
+                            .resources
+                            .contains(&UserDomainResource::BrowserTab { tab_id: tab.into() })
+                    {
+                        payload["agent_activity"] = Value::Null;
                     }
                 }
                 let resource = request_params["tab_id"]
@@ -727,7 +848,9 @@ fn browser_actor(admission: Option<&KernelBrowserAdmission>, params: &Value) -> 
         EnvironmentActor::new(
             format!("agent:{agent}"),
             EnvironmentActorKind::Agent,
-            "Agent",
+            admission
+                .and_then(|a| a.agent_label.as_deref())
+                .unwrap_or(agent),
         )
     } else {
         EnvironmentActor::new(
@@ -1072,3 +1195,5 @@ mod actor_tests;
 mod native_input_tests;
 
 mod access;
+#[cfg(test)]
+mod tabs_tests;
