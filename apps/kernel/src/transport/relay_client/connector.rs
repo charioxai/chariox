@@ -1012,13 +1012,15 @@ async fn run_daemon_relay_connector_inner(
                 router
                     .runtime_state()
                     .retry_pending_slice_observation_revocations();
-                if static_relay.is_none() {
-                    let _ = spawn_pending_managed_slice_activation_confirmation_after_connect(
+                let mut activation_confirmation_task = if static_relay.is_none() {
+                    spawn_pending_managed_slice_activation_confirmation_after_connect(
                         Arc::clone(&router),
                         Arc::clone(&state),
                     )
-                    .await;
-                }
+                    .await
+                } else {
+                    None
+                };
                 if replayed_display_tunnel_count > 0 {
                     crate::logging::info_with_fields(
                         "daemon.relay_client",
@@ -1309,6 +1311,16 @@ async fn run_daemon_relay_connector_inner(
                                 clear_remote_inventory_projection(&router);
                                 disconnect_relay(&router, &state, "relay heartbeat send failed", static_relay.is_none()).await;
                                 break "relay heartbeat send failed";
+                            }
+                            // MP-08/MP-10/MP-11: an initial key-bound slice
+                            // install can retain this socket. Queue its renewed
+                            // registration before confirming through that socket.
+                            if static_relay.is_none()
+                                && activation_confirmation_task.as_ref().is_none_or(|task| task.is_finished())
+                            {
+                                activation_confirmation_task = spawn_pending_managed_slice_activation_confirmation_after_connect(
+                                    Arc::clone(&router), Arc::clone(&state),
+                                ).await;
                             }
                             if should_start_leased_projection_pump(
                                 leased_projection_pump_task.as_ref(),
