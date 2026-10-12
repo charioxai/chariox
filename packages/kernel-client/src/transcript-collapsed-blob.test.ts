@@ -130,3 +130,15 @@ function historyBlobEntry(): CollapsedTranscriptBlobEntry {
     historyBlobLoaded: false,
   }
 }
+
+// MP-08 / MP-10 (panes R15, PANE-07): thoughts are titled "Thought" with their
+// first line, never the raw role name.
+test("describeCollapsedTranscriptBlob titles a thought with its first line", () => {
+  assert.deepEqual(describeCollapsedTranscriptBlob({
+    role: "reasoning",
+    text: "**Checking the README**\nThe file lists three steps.",
+  }), {
+    title: "Thought",
+    summary: "Checking the README",
+  })
+})

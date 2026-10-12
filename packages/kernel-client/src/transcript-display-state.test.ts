@@ -248,7 +248,7 @@ test("applyTranscriptDisplayState uses shared collapsed blob descriptions by def
   const reasoning = entries.find((entry) => entry.id === 2)
   assert.equal(reasoning?.blobCollapsible, true)
   assert.equal(reasoning?.blobCollapsed, true)
-  assert.equal(reasoning?.blobTitle, "reasoning")
+  assert.equal(reasoning?.blobTitle, "Thought")
   assert.equal(reasoning?.blobSummary, "Thinking through the render model")
 
   const toolEntry = entries.find((entry) => entry.id === 3)
@@ -291,7 +291,7 @@ test("applyTranscriptDisplayState applies shared blob defaults by role", () => {
       .map((entry) => [entry.role, entry.blobCollapsible ?? false, entry.blobCollapsed ?? null, entry.blobTitle ?? null]),
     [
       ["user", false, null, null],
-      ["reasoning", true, true, "reasoning"],
+      ["reasoning", true, true, "Thought"],
       ["status", true, true, "status"],
       ["tool", true, true, "tool"],
       ["error", false, null, null],

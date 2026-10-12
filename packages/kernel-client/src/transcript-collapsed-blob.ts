@@ -42,6 +42,10 @@ export function describeCollapsedTranscriptBlob(
   if (entry.role === "tool") {
     return describeToolBlob(entry)
   }
+  // A thought reads "Thought" with its first line, as in the web pane.
+  if (entry.role === "reasoning") {
+    return { title: "Thought", summary: summarizeText(entry.text).replace(/\*\*/g, "") }
+  }
   return {
     title: roleBlobTitle(entry.role),
     summary: summarizeText(entry.text),
