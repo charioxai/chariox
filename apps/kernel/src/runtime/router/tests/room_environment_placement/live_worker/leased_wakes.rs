@@ -1492,7 +1492,10 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
     assert!(delivered.is_ok(), "{delivered:?}");
     assert!(accepted.prompt_id.is_some());
     if restart_worker {
-        assert!(!listed, "the restarted worker lists no privileged tool");
+        assert!(
+            listed,
+            "MP-08/MP-11: the cached interface stays listed after restart; invocation denies"
+        );
         assert!(elevated.is_err(), "the restarted worker denies elevation");
         assert!(
             remaining_windows.is_empty(),
