@@ -93,11 +93,17 @@ pub(crate) async fn execute_get_provider_auth_status_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry = runtime_state.provider_account_profile_registry().clone();
     let owner_user_id = owner_user_id.to_string();
-    tokio::task::spawn_blocking(move || {
-        provider_auth_status_response(&registry, &owner_user_id, request)
+    let config = runtime_state.config_snapshot().await;
+    let result = tokio::task::spawn_blocking(move || {
+        provider_auth_status_response(&registry, &owner_user_id, request, &config)
     })
     .await
-    .map_err(|error| provider_auth_task_error("get provider auth status", error))?
+    .map_err(|error| provider_auth_task_error("get provider auth status", error))?;
+    runtime_state
+        .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+        .await;
+    runtime_state.record_waiting_room_change();
+    result
 }
 
 async fn reconcile_running_terminal_provider_auth(
