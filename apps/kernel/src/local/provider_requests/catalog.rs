@@ -395,26 +395,26 @@ fn claude_profile_auth_status(
     )? {
         return claude_auth_status(provider, &profile.profile_id, profile_environment);
     }
-    let verified = (|| {
-        let secrets = crate::provider::resolve_provider_account_credentials(
-            config,
-            owner_user_id,
-            provider,
-            &profile.profile_id,
-        )?;
-        let mut environment = profile_environment.clone();
-        for (name, value) in secrets.iter() {
-            environment.insert(name.to_string(), value.to_string());
-        }
-        let result = resolve_claude_executable().and_then(|executable| {
-            crate::provider::verify_claude_setup_token(&executable, &environment)
-        });
-        if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
-            zeroize::Zeroize::zeroize(value);
-        }
-        result?;
-        // A replacement while the official turn was running must not inherit
-        // the old token's successful observation.
+    // Local availability says nothing about the enrolled token. In particular,
+    // an idle locked Vault must not erase the previous authentication proof.
+    let secrets = crate::provider::resolve_provider_account_credentials(
+        config,
+        owner_user_id,
+        provider,
+        &profile.profile_id,
+    )?;
+    let executable = resolve_claude_executable()?;
+    let mut environment = profile_environment.clone();
+    for (name, value) in secrets.iter() {
+        environment.insert(name.to_string(), value.to_string());
+    }
+    let mut verified = crate::provider::verify_claude_setup_token(&executable, &environment);
+    if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
+        zeroize::Zeroize::zeroize(value);
+    }
+    if verified.is_ok() {
+        // Re-read availability without treating a relocked Vault as revocation.
+        // A replacement during the turn must not inherit the old token's proof.
         let current = crate::provider::resolve_provider_account_credentials(
             config,
             owner_user_id,
@@ -422,15 +422,14 @@ fn claude_profile_auth_status(
             &profile.profile_id,
         )?;
         if !current.iter().eq(secrets.iter()) {
-            return Err(DaemonError::LocalTransport {
+            verified = Err(DaemonError::LocalTransport {
                 operation: "verify Claude setup token",
                 message:
                     "Claude setup token changed during verification; refresh the account again"
                         .into(),
             });
         }
-        Ok(())
-    })();
+    }
     if let Err(error) = verified {
         // A timeout/transport failure is not proof of revocation. Error closes
         // admission without falsely declaring the token expired or logged out.

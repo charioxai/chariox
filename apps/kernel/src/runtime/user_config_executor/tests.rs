@@ -30,6 +30,18 @@ esac
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.credential_vault.backend =
         crate::config::CredentialVaultBackend::ProcessMemory;
+    if recheck == Some("locked-vault") {
+        let path = root.join("vault.json");
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = path.display().to_string();
+        crate::secret::unlock_chariox_encrypted_vault(
+            &path,
+            "synthetic-passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+    }
     let app = crate::DaemonApp::bootstrap(config).unwrap();
     let projection = app.config_projection_store();
     let runtime = runtime(app);
@@ -67,6 +79,53 @@ esac
             ProviderAccountAuthState::Authenticated,
             "MP-08/MP-10/MP-11: stored-token receipt must establish verified authentication"
         );
+        if matches!(recheck, Some("locked-vault" | "missing-executable")) {
+            let before = registry.get("local", alias, &profile.profile_id).unwrap();
+            if recheck == Some("locked-vault") {
+                crate::secret::lock_chariox_encrypted_vault(root.join("vault.json")).unwrap();
+            } else {
+                std::fs::remove_file(&executable).unwrap();
+            }
+            let config = projection.snapshot();
+            assert!(
+                crate::local::provider_requests::observe_provider_auth_status(
+                    registry,
+                    "local",
+                    alias,
+                    &profile.profile_id,
+                    &config
+                )
+                .is_err()
+            );
+            assert_eq!(registry.get("local", alias, &profile.profile_id).unwrap(), before,
+                "MP-08/MP-11: unavailable local verification must preserve the enrolled observation");
+            assert!(
+                crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                    registry,
+                    "local",
+                    alias,
+                    &profile.profile_id,
+                    &config
+                )
+                .is_err()
+            );
+            assert_eq!(
+                registry.get("local", alias, &profile.profile_id).unwrap(),
+                before
+            );
+            registry
+                .require_authenticated(
+                    "local",
+                    alias,
+                    &profile.profile_id,
+                    Some("haiku"),
+                    "MP-08 locked-vault regression",
+                )
+                .unwrap();
+            drop(runtime);
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
         if let Some(case) = recheck {
             if case == "revoked" {
                 // A definitive provider refusal after enrollment, without
@@ -279,6 +338,18 @@ async fn refresh_rechecks_replaced_setup_token() {
 async fn refresh_rechecks_token_after_native_observation() {
     crate::test_support::isolated_env_test!();
     enrollment("claude", true, Some("native-observation")).await;
+}
+
+#[tokio::test]
+async fn status_and_refresh_preserve_authentication_with_locked_vault() {
+    crate::test_support::isolated_env_test!();
+    enrollment("claude-p", true, Some("locked-vault")).await;
+}
+
+#[tokio::test]
+async fn status_and_refresh_preserve_authentication_without_executable() {
+    crate::test_support::isolated_env_test!();
+    enrollment("claude-headless", true, Some("missing-executable")).await;
 }
 
 fn runtime(app: crate::DaemonApp) -> KernelRuntimeState {
