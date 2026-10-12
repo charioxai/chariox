@@ -1309,15 +1309,21 @@ mod mp11_always_tests {
             let provider = crate::runtime::user_config_executor::execute_set_provider_account_credential_request(projection, &state, &command,
                 crate::local::SetProviderAccountCredentialRequest { session_id: None, agent_id: None, provider: "claude".into(), account_profile: profile.profile_id,
                     value: "synthetic-value".into(), run: false, overwrite: true }).await;
-            let refused = [set, delete, provider].into_iter().all(|result| {
-                result.is_err_and(|error| error.to_string().contains("requires a session_id"))
+            let refusals: Vec<_> = [("set", set), ("delete", delete), ("provider", provider)]
+                .into_iter()
+                .map(|(operation, result)| (operation, result.map_err(|error| error.to_string())))
+                .collect();
+            let refused = refusals.iter().all(|(_, result)| {
+                result
+                    .as_ref()
+                    .is_err_and(|error| error.contains("requires a session_id"))
             });
             crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
             drop(state);
             std::fs::remove_dir_all(root).unwrap();
             assert!(
                 refused,
-                "Always policy reused an existing lease through a command caller"
+                "MP-11: Always operation must refuse before credential verification: {refusals:?}"
             );
         }
     }

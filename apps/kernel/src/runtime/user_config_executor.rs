@@ -100,6 +100,16 @@ pub(crate) async fn execute_set_provider_account_credential_request(
         &provider,
         &request.account_profile,
     )?;
+    // MP-08/MP-11: admit this operation's Vault context before launching an
+    // official-provider verification with the supplied credential.
+    let _vault_unlock = runtime_state
+        .ensure_vault_unlocked_for_command_context(
+            command,
+            request.session_id.as_deref(),
+            request.agent_id.as_deref(),
+            "provider_account_credential_set",
+        )
+        .await?;
     // MP-08 / MP-09 / MP-10 / MP-11: supplied tokens use the same official
     // verification as interactive setup-token enrollment before being stored.
     let token = zeroize::Zeroizing::new(request.value.trim().to_string());
@@ -110,14 +120,6 @@ pub(crate) async fn execute_set_provider_account_credential_request(
         &token,
     )
     .await?;
-    let _vault_unlock = runtime_state
-        .ensure_vault_unlocked_for_command_context(
-            command,
-            request.session_id.as_deref(),
-            request.agent_id.as_deref(),
-            "provider_account_credential_set",
-        )
-        .await?;
     let config = config_projection.snapshot();
     let stored = crate::provider::store_provider_account_credential(
         &config,
