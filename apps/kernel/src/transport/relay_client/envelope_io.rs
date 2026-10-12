@@ -92,6 +92,57 @@ mod tests {
         .is_err());
     }
 
+    #[tokio::test]
+    async fn bulk_replies_cannot_fill_the_control_priority_queue() {
+        let (sender, mut priority, mut events) = RelayOutgoingSender::channel(1);
+        let mut payload = encrypted_payload_for_test();
+        payload.ciphertext = "x".repeat(64 * 1024 + 1);
+        let bulk = RelayEnvelope::DaemonResponse {
+            relay_request_id: "catalogue".into(),
+            encrypted_response: Some(payload),
+            error: None,
+        };
+        send_outgoing_envelope(&sender, bulk).unwrap();
+        assert!(
+            priority.try_recv().is_err(),
+            "bulk reply occupied control lane"
+        );
+        let small = RelayEnvelope::DaemonResponse {
+            relay_request_id: "computer-start".into(),
+            encrypted_response: Some(encrypted_payload_for_test()),
+            error: None,
+        };
+        send_outgoing_envelope(&sender, small).unwrap();
+        assert!(priority.try_recv().is_ok());
+        assert!(events.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn saturated_bulk_queue_preserves_control_and_reports_backpressure() {
+        let (sender, mut priority, _events) = RelayOutgoingSender::channel(1);
+        let bulk = || {
+            let mut payload = encrypted_payload_for_test();
+            payload.ciphertext = "x".repeat(64 * 1024 + 1);
+            RelayEnvelope::DaemonResponse {
+                relay_request_id: "catalogue".into(),
+                encrypted_response: Some(payload),
+                error: None,
+            }
+        };
+        send_outgoing_envelope(&sender, bulk()).unwrap();
+        assert!(send_outgoing_envelope(&sender, bulk()).is_err());
+        send_outgoing_envelope(
+            &sender,
+            RelayEnvelope::DaemonResponse {
+                relay_request_id: "computer-start".into(),
+                encrypted_response: Some(encrypted_payload_for_test()),
+                error: None,
+            },
+        )
+        .unwrap();
+        assert!(priority.try_recv().is_ok());
+    }
+
     #[test]
     fn send_outgoing_envelope_fails_when_relay_queue_is_full() {
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);

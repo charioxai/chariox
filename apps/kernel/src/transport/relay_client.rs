@@ -225,6 +225,15 @@ impl RelayOutgoingSender {
 }
 
 fn relay_envelope_uses_event_lane(envelope: &RelayEnvelope) -> bool {
+    // MP-08 / MP-10 / MP-11: bulk encrypted replies (catalogues, history,
+    // captures) must not fill the priority queue ahead of Computer control.
+    // The relay remains opaque; classify size without inspecting the payload.
+    if matches!(envelope, RelayEnvelope::DaemonResponse { encrypted_response: Some(payload), .. }
+        | RelayEnvelope::DaemonPeerResponse { encrypted_response: Some(payload), .. }
+        if payload.ciphertext.len() > 64 * 1024)
+    {
+        return true;
+    }
     matches!(
         envelope,
         RelayEnvelope::DaemonEvent { .. }
