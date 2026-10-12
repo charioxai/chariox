@@ -165,10 +165,17 @@ mod notes_peer_tests {
     #[test]
     fn md_notes_refuses_unknown_and_pre_union_workers_before_dispatch() {
         let minimum = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
-        for version in [None, Some(70), Some(73), Some(minimum - 1)] {
+        for version in [
+            None,
+            Some(70),
+            Some(73),
+            Some(96),
+            Some(102),
+            Some(minimum - 1),
+        ] {
             assert!(super::require_notes_worker_protocol(version).is_err());
         }
-        for version in [Some(minimum), Some(minimum + 1), Some(94), Some(96)] {
+        for version in [Some(minimum), Some(minimum + 1)] {
             assert!(super::require_notes_worker_protocol(version).is_ok());
         }
     }
