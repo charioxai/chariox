@@ -125,6 +125,7 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     protobuf-compiler \
     pulseaudio \
     python3 \
+    python3-cairo \
     python3-gi \
     python3-venv \
     python3-pil \
