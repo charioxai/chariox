@@ -20,7 +20,11 @@ impl KernelRuntimeState {
         );
         // MP-08 / MP-10 / MP-11: journals and projection use blocking filesystem I/O.
         let response = tokio::task::spawn_blocking(move || {
-            let mut environment = store.snapshot(&project)?;
+            let mut environment = if request.view.is_some() {
+                store.cached_read_snapshot(&project)?
+            } else {
+                store.snapshot(&project)?
+            };
             store.attach_checks(
                 &mut environment,
                 &crate::project_environment::current_check_target(&config),

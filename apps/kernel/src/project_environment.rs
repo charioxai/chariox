@@ -5,6 +5,7 @@ mod aggregate;
 mod aggregate_projection;
 mod aggregate_store;
 mod read_view;
+mod read_cache;
 mod check;
 mod check_admission;
 mod check_assets;
