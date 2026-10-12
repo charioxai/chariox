@@ -27,7 +27,7 @@ struct RelayReconnectGateState {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum RelayReconnectDecision {
+pub(super) enum RelayReconnectDecision {
     Unchanged,
     Deferred(&'static str),
     Queued(&'static str),
@@ -62,7 +62,7 @@ impl RelayReconnectGate {
         Ok(Some(reason))
     }
 
-    fn request_reconnect(
+    pub(super) fn request_reconnect(
         &self,
         outgoing_tx: &RelayOutgoingSender,
         reason: &'static str,
@@ -112,13 +112,20 @@ pub(super) async fn handle_incoming_envelope(
             encrypted_request,
         } => {
             if !reconnect_gate.begin_daemon_request() {
-                crate::logging::info_with_fields(
-                    "daemon.relay_client",
-                    "ignored daemon request while relay reconnect is queued",
-                    serde_json::json!({
-                        "relay_request_id": relay_request_id,
-                    }),
-                );
+                // MP-08/MP-10/MP-11: never leave a new client request hanging
+                // behind the retained bulk reply. Reuse the retryable offline
+                // refusal already understood by local/remote/browser clients.
+                outgoing_tx
+                    .send(RelayEnvelope::DaemonResponse {
+                        relay_request_id,
+                        encrypted_response: None,
+                        error: Some(super::request_errors::relay_error(
+                            "daemon_offline",
+                            "kernel relay connection is reconnecting",
+                            true,
+                        )),
+                    })
+                    .await;
                 return Ok(());
             }
             let router = Arc::clone(router);
@@ -251,6 +258,21 @@ pub(super) async fn handle_incoming_envelope(
             caller_identity,
             encrypted_request,
         } => {
+            // MP-08/MP-10/MP-11: peer launches and captures share the reconnect fence.
+            if !reconnect_gate.begin_daemon_request() {
+                outgoing_tx
+                    .send(RelayEnvelope::DaemonIncomingPeerResponse {
+                        relay_request_id,
+                        encrypted_response: None,
+                        error: Some(super::request_errors::relay_error(
+                            "daemon_offline",
+                            "kernel relay connection is reconnecting",
+                            true,
+                        )),
+                    })
+                    .await;
+                return Ok(());
+            }
             let router = Arc::clone(router);
             let state = Arc::clone(state);
             let outgoing_tx = outgoing_tx.clone();
@@ -306,6 +328,13 @@ pub(super) async fn handle_incoming_envelope(
                         }),
                     );
                     return;
+                }
+                if let Err(error) = reconnect_gate.finish_daemon_request(&outgoing_tx) {
+                    crate::logging::warn_with_fields(
+                        "daemon.relay_client",
+                        "failed to finish peer reply reconnect fence",
+                        serde_json::json!({"error": error.to_string()}),
+                    );
                 }
                 if let Some((active_relay_url, active_relay_token)) = active_dynamic_relay.as_ref()
                 {
@@ -601,6 +630,109 @@ mod tests {
             "the bulk reply must be written before Close: {written:?}"
         );
         assert!(matches!(written.get(1), Some(RelayEnvelope::Close { .. })));
+    }
+
+    // MP-08/MP-10/MP-11: close must not drain a display slideshow first.
+    #[test]
+    fn reconnect_discards_queued_display_events_but_preserves_bulk_replies() {
+        let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(4);
+        let payload = chariox_relay::protocol::EncryptedRelayPayload {
+            sender_public_key: "sender".into(),
+            nonce: "nonce".into(),
+            ciphertext: "x".repeat(64 * 1024 + 1),
+        };
+        outgoing_tx
+            .try_send(RelayEnvelope::DaemonEvent {
+                subscription_id: "display".into(),
+                event_id: 1,
+                encrypted_event: payload.clone(),
+            })
+            .unwrap();
+        outgoing_tx
+            .try_send(RelayEnvelope::DaemonResponse {
+                relay_request_id: "history".into(),
+                encrypted_response: Some(payload),
+                error: None,
+            })
+            .unwrap();
+        RelayReconnectGate::default()
+            .request_reconnect(&outgoing_tx, "config changed")
+            .unwrap();
+        let written: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok())
+            .filter(|envelope| outgoing_tx.should_write(envelope))
+            .collect();
+        assert!(matches!(
+            written.first(),
+            Some(RelayEnvelope::DaemonResponse { .. })
+        ));
+        assert!(matches!(written.get(1), Some(RelayEnvelope::Close { .. })));
+        assert_eq!(written.len(), 2);
+    }
+
+    // MP-08/MP-10/MP-11: a retained bulk reply must not silence new controls.
+    #[tokio::test]
+    async fn closing_connection_replies_to_daemon_and_peer_requests() {
+        let app = Arc::new(tokio::sync::Mutex::new(
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap(),
+        ));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(app, 2));
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let sequence = Arc::new(AtomicU64::new(0));
+        let tasks = Arc::new(Mutex::new(BTreeMap::new()));
+        let events = Arc::new(RelayEventRuntime::for_tests(1));
+        let cache = Arc::new(CommandResultCache::default());
+        let gate = Arc::new(RelayReconnectGate::default());
+        let (outgoing, mut priority, _events) = RelayOutgoingSender::channel(4);
+        gate.request_reconnect(&outgoing, "config changed").unwrap();
+        let payload = chariox_relay::protocol::EncryptedRelayPayload {
+            sender_public_key: "unused".into(),
+            nonce: "unused".into(),
+            ciphertext: "unused".into(),
+        };
+        for request in [
+            RelayEnvelope::DaemonRequest {
+                relay_request_id: "control".into(),
+                caller_identity: None,
+                encrypted_request: payload.clone(),
+            },
+            RelayEnvelope::DaemonIncomingPeerRequest {
+                relay_request_id: "peer".into(),
+                from_daemon_id: "home".into(),
+                caller_identity: None,
+                encrypted_request: payload,
+            },
+        ] {
+            handle_incoming_envelope(
+                IncomingEnvelopeContext {
+                    router: &router,
+                    command_sequence: &sequence,
+                    state: &state,
+                    outgoing_tx: &outgoing,
+                    subscription_tasks: &tasks,
+                    event_runtime: &events,
+                    command_result_cache: &cache,
+                    reconnect_gate: &gate,
+                },
+                None,
+                &serde_json::to_string(&request).unwrap(),
+            )
+            .await
+            .unwrap();
+            let reply = priority
+                .try_recv()
+                .expect("closing requests get an immediate reply");
+            let error = match reply {
+                RelayEnvelope::DaemonResponse {
+                    error: Some(error), ..
+                }
+                | RelayEnvelope::DaemonIncomingPeerResponse {
+                    error: Some(error), ..
+                } => error,
+                other => panic!("expected reconnect refusal: {other:?}"),
+            };
+            assert_eq!(error.code, "daemon_offline");
+            assert!(error.retryable);
+        }
     }
 
     #[test]

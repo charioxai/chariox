@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -164,6 +164,7 @@ const REMOTE_INVENTORY_KERNEL_PROBE_TIMEOUT_MS: u64 = 5_000;
 pub(crate) struct RelayOutgoingSender {
     priority_tx: mpsc::Sender<RelayEnvelope>,
     event_tx: mpsc::Sender<RelayEnvelope>,
+    closing: Arc<AtomicBool>,
 }
 
 impl RelayOutgoingSender {
@@ -189,6 +190,7 @@ impl RelayOutgoingSender {
         Self {
             priority_tx,
             event_tx,
+            closing: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -233,10 +235,18 @@ impl RelayOutgoingSender {
         }
     }
 
+    // MP-08/MP-10/MP-11: discard stale stream events during reconnect,
+    // including coalesced events, but retain every queued reply and Close.
+    #[cfg(test)]
+    fn should_write(&self, envelope: &RelayEnvelope) -> bool {
+        relay_envelope_should_write(envelope, self.closing.load(Ordering::Acquire))
+    }
+
     /// MP-08/MP-10/MP-11: a deferred reconnect Close follows every queued bulk
     /// reply through the FIFO event lane instead of overtaking it.
     /// Returns false only when the writer is closed.
     fn send_after_queued_events(&self, envelope: RelayEnvelope) -> bool {
+        self.closing.store(true, Ordering::Release);
         match self.event_tx.try_send(envelope) {
             Err(mpsc::error::TrySendError::Full(envelope)) => {
                 let event_tx = self.event_tx.clone();
@@ -247,6 +257,14 @@ impl RelayOutgoingSender {
             Ok(()) => true,
         }
     }
+}
+
+fn relay_envelope_should_write(envelope: &RelayEnvelope, closing: bool) -> bool {
+    !closing
+        || !matches!(
+            envelope,
+            RelayEnvelope::DaemonEvent { .. } | RelayEnvelope::DaemonPeerEvent { .. }
+        )
 }
 
 fn relay_envelope_uses_event_lane(envelope: &RelayEnvelope) -> bool {
