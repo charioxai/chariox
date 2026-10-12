@@ -21,7 +21,7 @@ pub(super) fn build_agent_context_handoff_from_history(
 }
 
 pub(super) fn build_agent_context_handoff(events: &[HistoryEvent]) -> Option<String> {
-    let mut turns = collect_turns(events);
+    let mut turns = collect_turns(events, false);
     if turns.is_empty() {
         return None;
     }
@@ -58,7 +58,7 @@ pub(super) fn build_recreated_lease_context(
     prompt_id: &str,
     max_bytes: usize,
 ) -> Option<String> {
-    let mut turns = collect_turns(events);
+    let mut turns = collect_turns(events, true);
     if turns
         .last()
         .is_some_and(|turn| turn.prompt_id.as_deref() == Some(prompt_id))
@@ -75,15 +75,12 @@ pub(super) fn build_recreated_lease_context(
     const LATEST: &str = "Latest turn:\n";
     const PRIOR: &str = "Prior turns:\n";
     let mut room = max_bytes.checked_sub(OPEN.len() + CLOSE.len() + LATEST.len())?;
-    let latest_text = truncate_bytes(&format_latest_turn(&latest), room);
+    let latest_text = format_recreated_latest_turn(&latest, room.min(6_500));
     if latest_text.trim().is_empty() {
         return None;
     }
     room -= latest_text.len();
-    let prior_text = truncate_bytes(
-        &format_prior_turns(&turns),
-        room.saturating_sub(PRIOR.len() + 2),
-    );
+    let prior_text = format_recreated_prior_turns(&turns, room.saturating_sub(PRIOR.len() + 2));
     let mut packet = OPEN.to_string();
     if !prior_text.is_empty() {
         packet.push_str(PRIOR);
@@ -96,12 +93,101 @@ pub(super) fn build_recreated_lease_context(
     Some(packet)
 }
 
+fn format_recreated_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
+    let Some(mut room) = budget.checked_sub(omitted_turns_line(turns.len()).len() + 1) else {
+        return String::new();
+    };
+    let users = turns
+        .iter()
+        .map(|turn| {
+            format!(
+                "- User: {}",
+                single_line(&truncate_bytes(&turn.user_prompt, 1_000))
+            )
+        })
+        .collect::<Vec<_>>();
+    let answers = turns
+        .iter()
+        .map(|turn| {
+            // MP-08 / MP-10 / MP-11: a title and its explanation remain separate
+            // lines; flattening them can change an assistant-only fact.
+            let answer = truncate_bytes(&turn.assistant_outputs.join("\n"), 600)
+                .lines()
+                .map(single_line)
+                .collect::<Vec<_>>()
+                .join("\n    ");
+            (!answer.is_empty()).then(|| format!("  Assistant: {answer}"))
+        })
+        .collect::<Vec<_>>();
+    let mut first = turns.len();
+    while first > 0 && users[first - 1].len() < room {
+        first -= 1;
+        room -= users[first].len() + 1;
+    }
+    let mut answered_from = turns.len();
+    while answered_from > first {
+        let cost = answers[answered_from - 1]
+            .as_ref()
+            .map_or(0, |answer| answer.len() + 1);
+        if cost > room {
+            break;
+        }
+        answered_from -= 1;
+        room -= cost;
+    }
+
+    let mut lines = Vec::new();
+    if first > 0 {
+        lines.push(omitted_turns_line(first));
+    }
+    for (index, (user, answer)) in users.into_iter().zip(answers).enumerate().skip(first) {
+        lines.push(user);
+        lines.extend(answer.filter(|_| index >= answered_from));
+    }
+    lines.join("\n")
+}
+
+fn omitted_turns_line(count: usize) -> String {
+    format!("- ({count} earlier turns omitted; find them with the chariox.search_recall tool.)")
+}
+
+fn format_recreated_latest_turn(turn: &HandoffTurn, max_bytes: usize) -> String {
+    let mut lines = Vec::new();
+    if turn.user_prompt.is_empty() {
+        lines.push("- Interrupted attempt of the current request:".to_string());
+    } else {
+        lines.push(format!(
+            "- User: {}",
+            truncate_bytes(turn.user_prompt.trim(), 1_500)
+        ));
+    }
+    let assistant = truncate_bytes(&turn.assistant_outputs.join("\n"), 1_500 * 2);
+    if !assistant.trim().is_empty() {
+        lines.push(format!("- Assistant output: {}", assistant.trim()));
+    }
+    let details = truncate_bytes(&turn.latest_details.join("\n"), 1_500 * 2);
+    if !details.trim().is_empty() {
+        lines.push(format!(
+            "- Latest-turn tool/status/error details:\n{}",
+            details.trim()
+        ));
+    }
+    truncate_bytes(&lines.join("\n"), max_bytes)
+}
+
 fn truncate_bytes(text: &str, max_bytes: usize) -> String {
-    let mut end = max_bytes.min(text.len());
+    const TRUNCATED: &str = "\n[truncated]";
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut end = max_bytes.checked_sub(TRUNCATED.len()).unwrap_or(0);
+    if end == 0 {
+        return String::new();
+    }
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    text[..end].to_string()
+    format!("{}{TRUNCATED}", &text[..end])
 }
 
 #[derive(Debug, Clone, Default)]
@@ -110,10 +196,11 @@ struct HandoffTurn {
     has_provider_attempt: bool,
     user_prompt: String,
     assistant_outputs: Vec<String>,
+    output_item: Option<Option<String>>,
     latest_details: Vec<String>,
 }
 
-fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
+fn collect_turns(events: &[HistoryEvent], preserve_streamed_spacing: bool) -> Vec<HandoffTurn> {
     let mut sorted = events.to_vec();
     sorted.sort_by_key(|event| event.sequence);
     let mut turns: Vec<HandoffTurn> = Vec::new();
@@ -126,6 +213,7 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
                         has_provider_attempt: false,
                         user_prompt: content,
                         assistant_outputs: Vec::new(),
+                        output_item: None,
                         latest_details: Vec::new(),
                     });
                 }
@@ -133,7 +221,23 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
             HistoryEventKind::ProviderOutput => {
                 if let (Some(turn), Some(content)) = (turns.last_mut(), non_empty_content(&event)) {
                     turn.has_provider_attempt = true;
-                    turn.assistant_outputs.push(content);
+                    if preserve_streamed_spacing {
+                        let item = event
+                            .metadata
+                            .get("merge_key")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string);
+                        let raw = event.content.as_deref().unwrap_or_default();
+                        match turn.assistant_outputs.last_mut() {
+                            Some(output) if turn.output_item.as_ref() == Some(&item) => {
+                                output.push_str(raw)
+                            }
+                            _ => turn.assistant_outputs.push(raw.to_string()),
+                        }
+                        turn.output_item = Some(item);
+                    } else {
+                        turn.assistant_outputs.push(content);
+                    }
                 }
             }
             HistoryEventKind::ProviderTool
@@ -141,6 +245,9 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
             | HistoryEventKind::ProviderStatus
             | HistoryEventKind::Notice => {
                 if let (Some(turn), Some(content)) = (turns.last_mut(), non_empty_content(&event)) {
+                    if event.kind == HistoryEventKind::ProviderTool {
+                        turn.output_item = None;
+                    }
                     turn.has_provider_attempt |= event.kind != HistoryEventKind::Notice;
                     turn.latest_details.push(format!(
                         "{}: {}",
@@ -149,8 +256,12 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
                     ));
                 }
             }
-            HistoryEventKind::ProviderReasoning
-            | HistoryEventKind::PromptInput
+            HistoryEventKind::ProviderReasoning => {
+                if let Some(turn) = turns.last_mut() {
+                    turn.output_item = None;
+                }
+            }
+            HistoryEventKind::PromptInput
             | HistoryEventKind::SessionCreated
             | HistoryEventKind::AgentCreated
             | HistoryEventKind::AgentMoved
@@ -362,6 +473,38 @@ mod tests {
             &format!("{hidden}\n\n{packet}"),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn recreated_lease_keeps_early_facts_and_streamed_answer_spacing() {
+        let mut events = vec![user_event(
+            1,
+            "session",
+            "agent",
+            "Keep codename amber-kestrel",
+        )];
+        for (seq, text) in [(2, "assistant fact: native "), (3, "continuity")] {
+            events.push(output_event(seq, "session", "agent", "old-run", text));
+        }
+        for index in 0..30 {
+            events.push(user_event(
+                4 + index * 2,
+                "session",
+                "agent",
+                &format!("Ordinary follow-up {index}"),
+            ));
+            events.push(output_event(
+                5 + index * 2,
+                "session",
+                "agent",
+                "old-run",
+                "A paragraph about ordinary work.",
+            ));
+        }
+        let packet = build_recreated_lease_context(&events, "current", 24_000).unwrap();
+        assert!(packet.contains("amber-kestrel"));
+        assert!(packet.contains("assistant fact: native continuity"));
+        assert!(packet.len() <= 24_000);
     }
 
     fn user_event(sequence: u64, session_id: &str, agent_id: &str, prompt: &str) -> HistoryEvent {
