@@ -1,3 +1,5 @@
+// MP-08 / MP-10 / MP-11: disambiguate the inherited main test helper.
+use super::super::store::initialize;
 use super::*;
 use crate::durable_state::app_state::{fixture_event_catalog, fixture_event_package};
 use chariox_app_package::{verify, VerificationPolicy};
