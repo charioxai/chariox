@@ -109,7 +109,7 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         if pending.managed && pending.active_prompt_id.as_deref() != Some(&pending.prompt_id) {
             return Ok(None);
         }
-        Ok(Some("Claude blocked the prompt because Chariox context delivery failed. Retry after the kernel is ready.".into()))
+        Ok(Some(pending.prompt_id))
     }
 
     pub(super) fn accept_context_delivery(

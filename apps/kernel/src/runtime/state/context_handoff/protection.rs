@@ -41,11 +41,14 @@ impl super::super::KernelRuntimeOwnedState {
             // Fork/substitute snapshots keep their source agent and capture boundary.
             // Re-read unrendered history so newly protected values are removed before
             // clipping; a retirement can also withhold the earlier source records.
-            handoff.conversation = handoff.conversation.rebuild_under_current_policy(
-                &self.operational_history_store,
-                session_id,
-                protection,
-            )?;
+            handoff.conversation = handoff
+                .conversation
+                .rebuild_under_current_policy(
+                    &self.operational_history_store,
+                    session_id,
+                    protection,
+                )?
+                .before_prompt(prompt_id);
         }
         handoff.conversation.brief = brief;
         handoff.room_revision = Some(revision);
