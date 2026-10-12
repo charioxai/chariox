@@ -1,4 +1,6 @@
 use super::*;
+// MP-08/MP-11: disambiguate the focused-suite schema initializer.
+use crate::durable_state::app_installation_operations::store::initialize;
 use crate::durable_state::app_state::{fixture_event_catalog, fixture_event_package};
 use chariox_app_package::{verify, VerificationPolicy};
 

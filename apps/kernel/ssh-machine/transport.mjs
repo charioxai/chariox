@@ -47,7 +47,7 @@ async function ssh(host, command, input, { signal, timeoutMs = 300_000 } = {}) {
   signal?.addEventListener("abort", cancel, { once: true })
   const closed = new Promise((resolve, reject) => {
     child.once("error", reject)
-    child.once("close", (code) => code === 0 && !failed ? resolve(output) : reject(failed ?? Object.assign(new Error("SSH deployment failed; check SSH access, target prerequisites and install ownership"), { exitCode: code === 75 ? 75 : 1 })))
+    child.once("close", (code) => code === 0 && !failed ? resolve(output) : reject(failed ?? Object.assign(new Error("SSH deployment failed; check SSH access, target prerequisites and install ownership"), { exitCode: [75, 76, 77, 78].includes(code) ? code : 1 })))
   })
   // Attach immediately: close can arrive while the upload is still producing.
   closed.catch(() => {})
@@ -101,6 +101,7 @@ export async function runSshMachine(host, request, release, options = {}) {
   validateRequest(request)
   let pins
   if (request.action === "install") {
+    await runSshMachine(host, { ...request, action: "preflight" }, undefined, options)
     if (!release) throw new Error("signed release and independent public pins required")
     pins = [await admittedPublicPin(release.releasePublicKey, release.releasePublicKeyFingerprint), await admittedPublicPin(release.builderPublicKey, release.builderPublicKeyFingerprint)]
   }
@@ -123,7 +124,7 @@ export async function runSshMachine(host, request, release, options = {}) {
   let result
   try { result = JSON.parse(raw) } catch { throw new Error("SSH target returned an invalid deployment result") }
   if (result?.installId !== request.installId || !["installed", "ready", "stopped", "removed", "absent"].includes(result?.status)) throw new Error("SSH deployment result identity is invalid")
-  if (request.action === "inspect") {
+  if (["inspect", "preflight"].includes(request.action)) {
     if (!["absent", "installed"].includes(result.status)) throw new Error("invalid target inspection")
     return { installId:request.installId,status:result.status }
   }

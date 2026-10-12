@@ -4,6 +4,7 @@
 use super::super::development::vault_artifacts::VaultItem;
 use super::*;
 use std::io::{BufRead, BufReader};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
@@ -49,6 +50,8 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| refused())?;
+    #[cfg(test)]
+    tests::interrupt_scan_child(&mut child, &["--batch"]);
     let stdout = child.stdout.take().ok_or_else(refused)?;
     let mut stdin = child.stdin.take().ok_or_else(refused)?;
     let writer = std::thread::spawn(move || {
@@ -57,11 +60,15 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
     let child = Arc::new(Mutex::new(child));
     let (done, deadline) = mpsc::channel::<()>();
     let watched = child.clone();
+    let killed_for_refusal = Arc::new(AtomicBool::new(false));
+    let watchdog_killed = killed_for_refusal.clone();
     let watchdog = std::thread::spawn(move || {
         if deadline.recv_timeout(Duration::from_secs(120)).is_err() {
             let mut owned = watched.lock().expect("owned Git child");
             if owned.id() > 1 {
-                let _ = owned.kill();
+                if owned.kill().is_ok() {
+                    watchdog_killed.store(true, Ordering::Relaxed);
+                }
             }
         }
     });
@@ -166,7 +173,9 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
     let status = loop {
         let mut owned = child.lock().expect("owned Git child");
         if (result.is_err() || start.elapsed() > Duration::from_secs(120)) && owned.id() > 1 {
-            let _ = owned.kill();
+            if owned.kill().is_ok() {
+                killed_for_refusal.store(true, Ordering::Relaxed);
+            }
         }
         match owned.try_wait() {
             Ok(Some(status)) => break Ok(status),
@@ -174,13 +183,15 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
                 drop(owned);
                 std::thread::sleep(Duration::from_millis(5));
             }
-            Err(_) => break Err(refused()),
+            Err(_) => break Err(scan_unavailable()),
         }
     };
     let _ = done.send(());
     let _ = watchdog.join();
     let _ = writer.join();
-    if !status?.success() {
+    let status = status?;
+    scan_git_status(status, killed_for_refusal.load(Ordering::Relaxed))?;
+    if !status.success() {
         return Err(admission_error(
             "Copy history scan failed or exceeded its 120 second time limit",
         ));

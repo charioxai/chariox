@@ -155,6 +155,29 @@ fn scan_root(parent: &Path) -> Result<ScanRoot, DaemonError> {
     Ok(ScanRoot(path))
 }
 
+fn scan_unavailable() -> DaemonError {
+    DaemonError::ManagedContext {
+        operation: "scan Copy history",
+        code: "managed_context_unavailable",
+        retryable: true,
+        message: "Copy admission scan was interrupted; retry the transfer".into(),
+    }
+}
+fn scan_git_status(
+    status: std::process::ExitStatus,
+    killed_for_refusal: bool,
+) -> Result<(), DaemonError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if status.signal().is_some() && (!killed_for_refusal || status.signal() != Some(9)) {
+            return Err(scan_unavailable());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (status, killed_for_refusal);
+    Ok(())
+}
 fn git(root: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>, DaemonError> {
     let mut child = Command::new("git")
         .args(args)
@@ -170,6 +193,8 @@ fn git(root: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>, DaemonError> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| refused())?;
+    #[cfg(test)]
+    tests::interrupt_scan_child(&mut child, args);
     let mut bytes = Vec::new();
     let read = child
         .stdout
@@ -177,15 +202,16 @@ fn git(root: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>, DaemonError> {
         .ok_or_else(refused)?
         .take(limit + 1)
         .read_to_end(&mut bytes);
-    if read.is_err() || bytes.len() as u64 > limit {
-        // MP-11: signal only the verified child this scan spawned.
-        if child.id() > 1 {
-            let _ = child.kill();
-        }
-        let _ = child.wait();
+    let refused_output = read.is_err() || bytes.len() as u64 > limit;
+    // MP-11: signal only this scan's child; distinguish our policy kill
+    // from a target shutdown interrupting an otherwise retryable import.
+    let killed_for_refusal = refused_output && child.id() > 1 && child.kill().is_ok();
+    let status = child.wait().map_err(|_| scan_unavailable())?;
+    scan_git_status(status, killed_for_refusal)?;
+    if refused_output {
         return Err(refused());
     }
-    if !child.wait().map_err(|_| refused())?.success() {
+    if !status.success() {
         return Err(refused());
     }
     Ok(bytes)

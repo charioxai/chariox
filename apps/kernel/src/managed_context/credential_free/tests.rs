@@ -455,6 +455,26 @@ impl InlineShellFixture {
         accepted: bool,
         development: &crate::managed_context::development::DevelopmentContextExportResult,
     ) {
+        let result = self.target_archive_result(development);
+        let target = self.root.join("target");
+        if accepted {
+            assert!(
+                result.is_ok(),
+                "MP-08 ordinary shell copy refused: {result:?}"
+            );
+            assert!(target.exists());
+        } else {
+            let error = result.expect_err("MP-11 target must reject inline shell credentials");
+            assert!(error.to_string().contains("credential-free context"));
+            assert!(!target.exists(), "MP-11 refusal precedes target mutation");
+            assert!(!self.root.join("kernel-context-context").exists());
+        }
+    }
+    fn target_archive_result(
+        &self,
+        development: &crate::managed_context::development::DevelopmentContextExportResult,
+    ) -> Result<crate::managed_context::package::ManagedContextPackageImportReceipt, DaemonError>
+    {
         use crate::managed_context::{development::*, owner_managed::*, package::*};
         let binding = ManagedContextPackageBinding {
             plan: ManagedContextPlanBinding {
@@ -501,7 +521,7 @@ impl InlineShellFixture {
         })
         .unwrap();
         let target = self.root.join("target");
-        let result = apply_managed_context_package(ManagedContextPackageApplicationRequest {
+        apply_managed_context_package(ManagedContextPackageApplicationRequest {
             transfer_id: "transfer".into(),
             package_path: package.package_path,
             expected_package_sha256: package.package_sha256,
@@ -511,19 +531,7 @@ impl InlineShellFixture {
             project_environment_target: None,
             provider_account_target: None,
             git_credential_target: None,
-        });
-        if accepted {
-            assert!(
-                result.is_ok(),
-                "MP-08 ordinary shell copy refused: {result:?}"
-            );
-            assert!(target.exists());
-            return;
-        }
-        let error = result.expect_err("MP-11 target must reject inline shell credentials");
-        assert!(error.to_string().contains("credential-free context"));
-        assert!(!target.exists(), "MP-11 refusal precedes target mutation");
-        assert!(!self.root.join("kernel-context-context").exists());
+        })
     }
 }
 
@@ -1292,4 +1300,83 @@ fn mp08_mp11_public_source_retains_secret_detection() {
             "MP-08/MP-11 public fixture {path}"
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn mp08_mp11_admission_git_signal_retains_copy_retry() {
+    let root = std::env::current_dir().unwrap();
+    let error = git(&root, &["-c", "alias.copy-interrupt=!if [ \"$PPID\" -gt 1 ] && [ \"$(cat /proc/$PPID/comm)\" = git ]; then kill -TERM \"$PPID\"; fi", "copy-interrupt"], MAX_FILE).unwrap_err();
+    assert!(matches!(
+        error,
+        DaemonError::ManagedContext {
+            code: "managed_context_unavailable",
+            retryable: true,
+            ..
+        }
+    ));
+}
+
+thread_local! {
+    static INTERRUPT_SCAN: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+// MP-11: supplementary interruption injection into a real Git child; never
+// available through production configuration, serialized requests or PATH.
+pub(super) fn interrupt_scan_child(child: &mut std::process::Child, args: &[&str]) {
+    INTERRUPT_SCAN.with(|fault| {
+        if fault.get().is_some_and(|command| args.contains(&command)) {
+            fault.set(None);
+            assert!(child.id() > 1);
+            child
+                .kill()
+                .expect("interrupt only the scan child this invocation owns");
+        }
+    });
+}
+#[test]
+fn mp08_mp11_owner_package_admission_interruption_preserves_retry_and_reimports() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    for command in ["clone", "--batch"] {
+        let fixture = InlineShellFixture::file("README.txt", b"ordinary project\n", true);
+        let archive = fixture.export_archive(None);
+        INTERRUPT_SCAN.with(|fault| fault.set(Some(command)));
+        let error = fixture.target_archive_result(&archive).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                DaemonError::ManagedContext {
+                    code: "managed_context_unavailable",
+                    retryable: true,
+                    ..
+                }
+            ),
+            "{command}: {error}"
+        );
+        assert!(!fixture.root.join("target").exists());
+        INTERRUPT_SCAN.with(|fault| {
+            assert!(
+                fault.get().is_none(),
+                "fault must reach the real admission scan"
+            )
+        });
+        fs::remove_file(fixture.root.join("context.pkg")).unwrap();
+        fixture.assert_target_archive(true, &archive);
+    }
+}
+#[cfg(unix)]
+#[test]
+fn mp08_mp11_scan_limit_kill_stays_terminal() {
+    let root = std::env::current_dir().unwrap();
+    let error = git(&root, &["ls-files"], 1).unwrap_err();
+    assert!(matches!(
+        error,
+        DaemonError::ManagedContext {
+            retryable: false,
+            ..
+        }
+    ));
+    use std::os::unix::process::ExitStatusExt;
+    assert!(scan_git_status(std::process::ExitStatus::from_raw(9), true).is_ok());
+    assert!(scan_git_status(std::process::ExitStatus::from_raw(15), true).is_err());
 }

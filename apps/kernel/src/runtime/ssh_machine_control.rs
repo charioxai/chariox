@@ -122,47 +122,77 @@ async fn ticket_request(
             .send_string(&json!({"purpose":"owner_managed_machine", "machine_label": label, "ttl_seconds":600}).to_string())
             .map_err(|_| error("Cloud enrollment ticket issue refused"))?;
         let bytes = { use std::io::Read; let mut bytes = Zeroizing::new(Vec::new()); response.into_reader().take(8193).read_to_end(&mut bytes).map_err(|_| error("ticket response unreadable"))?; bytes };
-        if bytes.len() > 8192 { return Err(error("ticket response too large")); }
-        let ticket: Ticket = serde_json::from_slice(&bytes).map_err(|_| error("invalid ticket response"))?;
-        let expiry = chrono::DateTime::parse_from_rfc3339(&ticket.expires_at).map_err(|_| error("invalid ticket expiry"))?;
-        let ttl = expiry.timestamp() - chrono::Utc::now().timestamp();
-        if ticket.ticket.is_empty() || ticket.ticket.len() > 4096 || ticket.ticket_id.is_empty() || ticket.ticket_id.len() > 255 || ttl <= 0 || ttl > 600 { return Err(error("invalid ticket response")); }
-        Ok(ticket)
+        // Parse the non-secret ID independently: even malformed ticket fields
+        // must not leave an issued ticket active when this add is refused.
+        #[derive(Deserialize)]
+        struct IssuedId { ticket_id: String }
+        let issued_id = serde_json::from_slice::<IssuedId>(&bytes).ok()
+            .map(|value| value.ticket_id).filter(|id| !id.is_empty() && id.len() <= 255);
+        let result = (|| {
+            if bytes.len() > 8192 { return Err(error("ticket response too large")); }
+            let ticket: Ticket = serde_json::from_slice(&bytes).map_err(|_| error("invalid ticket response"))?;
+            validate_ticket(&ticket, chrono::Utc::now())?;
+            Ok(ticket)
+        })();
+        if result.is_err() {
+            if let Some(id) = issued_id { revoke_blocking(&profile, &id)?; }
+        }
+        result
     }).await.map_err(|_| error("ticket issue task failed"))?
+}
+// MP-07/MP-08/MP-11: Cloud and source clocks may differ slightly.
+fn validate_ticket(ticket: &Ticket, now: chrono::DateTime<chrono::Utc>) -> Result<(), DaemonError> {
+    let expiry = chrono::DateTime::parse_from_rfc3339(&ticket.expires_at)
+        .map_err(|_| error("invalid ticket expiry"))?;
+    let ttl = expiry.signed_duration_since(now);
+    if ticket.ticket.is_empty()
+        || ticket.ticket.len() > 4096
+        || ticket.ticket_id.is_empty()
+        || ticket.ticket_id.len() > 255
+        || ttl <= chrono::Duration::zero()
+        || ttl > chrono::Duration::seconds(603)
+    {
+        return Err(error("invalid ticket response"));
+    }
+    Ok(())
 }
 async fn revoke(
     profile: &crate::config::PersistedCloudRelayProfile,
     id: &str,
 ) -> Result<(), DaemonError> {
-    crate::owner_managed_bootstrap::admit_api_url(&profile.api_url)?;
     let profile = profile.clone();
     let id = id.to_string();
-    tokio::task::spawn_blocking(move || {
-        let credential = profile
-            .kernel_credential
-            .as_deref()
-            .ok_or_else(|| error("missing kernel credential"))?;
-        let response = ureq::AgentBuilder::new()
-            .redirects(0)
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .delete(&format!(
-                "{}/v1/kernel-enrollment-tickets/{}",
-                profile.api_url.trim_end_matches('/'),
-                crate::runtime::cloud_api_client::cloud_url_component(&id)
-            ))
-            .set("x-chariox-kernel-credential", credential)
-            .call();
-        match response {
-            Ok(r) if matches!(r.status(), 200 | 204) => Ok(()),
-            Err(ureq::Error::Status(404, _)) => Ok(()),
-            _ => Err(error(
-                "Cloud ticket revocation failed; ticket expires within ten minutes",
-            )),
-        }
-    })
-    .await
-    .map_err(|_| error("ticket revocation task failed"))?
+    tokio::task::spawn_blocking(move || revoke_blocking(&profile, &id))
+        .await
+        .map_err(|_| error("ticket revocation task failed"))?
+}
+fn revoke_blocking(
+    profile: &crate::config::PersistedCloudRelayProfile,
+    id: &str,
+) -> Result<(), DaemonError> {
+    crate::owner_managed_bootstrap::admit_api_url(&profile.api_url)?;
+    let credential = profile
+        .kernel_credential
+        .as_deref()
+        .ok_or_else(|| error("missing kernel credential"))?;
+    let response = ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .delete(&format!(
+            "{}/v1/kernel-enrollment-tickets/{}",
+            profile.api_url.trim_end_matches('/'),
+            crate::runtime::cloud_api_client::cloud_url_component(id)
+        ))
+        .set("x-chariox-kernel-credential", credential)
+        .call();
+    match response {
+        Ok(r) if matches!(r.status(), 200 | 204) => Ok(()),
+        Err(ureq::Error::Status(404, _)) => Ok(()),
+        _ => Err(error(
+            "Cloud ticket revocation failed; check the ticket in Cloud before retrying",
+        )),
+    }
 }
 const ASSETS: &[(&str, &str)] = &[
     (
@@ -210,6 +240,20 @@ fn install_failure(status: Option<i32>, install_id: Option<&str>) -> DaemonError
     }
     error("SSH install failed; check access, signed release, enrollment and user service prerequisites")
 }
+// MP-07/MP-08/MP-11: only home-validated request fields enter diagnostics.
+fn deployment_failure(status: Option<i32>, input: &Value) -> DaemonError {
+    let id = input.pointer("/request/installId").and_then(Value::as_str);
+    let host = input["host"].as_str().unwrap_or("SSH target");
+    let port = input.pointer("/request/port").and_then(Value::as_u64);
+    match (status, id, port) {
+        (Some(76 | 78), Some(_), Some(port)) => {
+            let port = port + u64::from(status == Some(78));
+            error(&format!("port {port} is in use on {host}; choose another --port (both the kernel port and the next MCP port must be free)"))
+        }
+        (Some(77), Some(id), _) => error(&format!("unit chariox-ssh-{id}.service on {host} belongs to another installation; choose another --id or ask the host administrator to resolve the foreign unit")),
+        _ => install_failure(status, id),
+    }
+}
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -254,10 +298,7 @@ async fn deploy(state: &Path, input: Value) -> Result<Value, DaemonError> {
     .map_err(|_| error("SSH install timed out"))?
     .map_err(|_| error("SSH install subprocess failed"))?;
     if !output.status.success() || output.stdout.len() > 8192 {
-        return Err(install_failure(
-            output.status.code(),
-            input.pointer("/request/installId").and_then(Value::as_str),
-        ));
+        return Err(deployment_failure(output.status.code(), &input));
     }
     serde_json::from_slice(&output.stdout).map_err(|_| error("invalid SSH install result"))
 }
@@ -391,7 +432,12 @@ pub(crate) async fn execute(
             .any(|old| old.install_id == install.install_id)
     {
         installs.push(install.clone());
-        store(&registry, &installs)?;
+        if let Err(store_error) = store(&registry, &installs) {
+            if let Some(ticket) = &ticket {
+                revoke(profile, &ticket.ticket_id).await?;
+            }
+            return Err(store_error);
+        }
     }
     if let Some(ticket) = &ticket {
         input["enrollment"] =
@@ -441,6 +487,25 @@ pub(crate) async fn execute(
 mod tests {
     use super::*;
     #[test]
+    fn byom_mp08_mp11_ticket_accepts_bounded_clock_skew_without_extending_expired_tickets() {
+        let cloud = chrono::DateTime::parse_from_rfc3339("2026-10-12T08:23:57.024Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let ticket = Ticket {
+            ticket: "synthetic-single-use".into(),
+            ticket_id: "ticket-id".into(),
+            expires_at: (cloud + chrono::Duration::seconds(600)).to_rfc3339(),
+        };
+        for skew_ms in [50, 100, 200, 3000] {
+            assert!(
+                validate_ticket(&ticket, cloud - chrono::Duration::milliseconds(skew_ms)).is_ok(),
+                "valid ticket refused at {skew_ms}ms skew"
+            );
+        }
+        assert!(validate_ticket(&ticket, cloud - chrono::Duration::seconds(4)).is_err());
+        assert!(validate_ticket(&ticket, cloud + chrono::Duration::seconds(600)).is_err());
+    }
+    #[test]
     fn byom_mp07_mp11_lock_exit_maps_only_a_validated_install_id_to_recovery() {
         let message = install_failure(Some(75), Some("byom-one")).to_string();
         assert!(message.contains("~/.local/share/chariox/ssh-machines/.byom-one.lock"));
@@ -456,13 +521,39 @@ mod tests {
     }
     #[tokio::test]
     async fn byom_mp08_mp11_issue_revoke_contract_uses_kernel_header_and_no_human_session() {
+        ticket_http_fixture(json!({"ticket":"fixture-single-use", "ticket_id":"ticket-id", "expires_at":(chrono::Utc::now() + chrono::Duration::seconds(590)).to_rfc3339()}), false).await;
+    }
+    #[tokio::test]
+    async fn byom_mp08_mp11_refused_ticket_is_revoked_even_when_only_id_parses() {
+        for body in [
+            json!({"ticket":"fixture-single-use", "ticket_id":"ticket-id", "expires_at":(chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339()}),
+            json!({"ticket":"fixture-single-use", "ticket_id":"ticket-id", "expires_at":"invalid"}),
+            json!({"ticket_id":"ticket-id", "expires_at":"invalid"}),
+        ] {
+            ticket_http_fixture(body, true).await;
+        }
+    }
+    async fn ticket_http_fixture(body: Value, refused: bool) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let api_url = format!("http://{}", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
         let fixture = std::thread::spawn(move || {
             let mut routes = Vec::new();
             for index in 0..2 {
-                let (mut stream, _) = listener.accept().unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                let (mut stream, _) = loop {
+                    match listener.accept() {
+                        Ok(connection) => break connection,
+                        Err(e)
+                            if e.kind() == std::io::ErrorKind::WouldBlock
+                                && std::time::Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(5))
+                        }
+                        Err(_) => panic!("ticket issue/refusal must reach revocation"),
+                    }
+                };
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                     .unwrap();
@@ -502,7 +593,7 @@ mod tests {
                         sent,
                         json!({"purpose":"owner_managed_machine","machine_label":"owned-machine","ttl_seconds":600})
                     );
-                    json!({"ticket":"fixture-single-use", "ticket_id":"ticket-id", "expires_at":(chrono::Utc::now() + chrono::Duration::seconds(590)).to_rfc3339()}).to_string()
+                    body.to_string()
                 } else {
                     "{}".into()
                 };
@@ -516,9 +607,14 @@ mod tests {
             cloud_session_token: Some("must-not-be-used".into()),
             ..Default::default()
         };
-        let ticket = ticket_request(&profile, "owned-machine").await.unwrap();
-        assert!(!ticket.ticket.is_empty());
-        revoke(&profile, &ticket.ticket_id).await.unwrap();
+        let result = ticket_request(&profile, "owned-machine").await;
+        if refused {
+            assert!(result.is_err());
+        } else {
+            let ticket = result.unwrap();
+            assert!(!ticket.ticket.is_empty());
+            revoke(&profile, &ticket.ticket_id).await.unwrap();
+        }
         assert_eq!(
             fixture.join().unwrap(),
             vec![
@@ -526,6 +622,18 @@ mod tests {
                 "DELETE /v1/kernel-enrollment-tickets/ticket-id HTTP/1.1"
             ]
         );
+    }
+    #[test]
+    fn byom_mp07_mp08_mp11_conflicts_name_the_target_and_fix() {
+        let input = json!({"host":"byom-target", "request":{"installId":"byom-one", "port":47310}});
+        for (code, port) in [(76, 47310), (78, 47311)] {
+            let message = deployment_failure(Some(code), &input).to_string();
+            assert!(message.contains(&format!("port {port} is in use on byom-target")));
+            assert!(message.contains("choose another --port"));
+        }
+        let message = deployment_failure(Some(77), &input).to_string();
+        assert!(message.contains("chariox-ssh-byom-one.service on byom-target"));
+        assert!(message.contains("choose another --id"));
     }
     #[test]
     fn byom_mp11_catalog_selection_rejects_shell_hosts_default_port_and_foreign_ids() {

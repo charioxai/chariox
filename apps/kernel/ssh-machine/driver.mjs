@@ -14,5 +14,5 @@ try {
   process.stdout.write(JSON.stringify(result))
 } catch (error) {
   process.stderr.write("MP-07/MP-08/MP-11: SSH deployment failed; check access, signed release, enrollment and user service prerequisites\n")
-  process.exitCode = error?.exitCode === 75 ? 75 : 1
+  process.exitCode = [75, 76, 77, 78].includes(error?.exitCode) ? error.exitCode : 1
 } finally { if (input?.enrollment) input.enrollment.ticket = "" }

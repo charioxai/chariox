@@ -73,7 +73,7 @@ export function createSessionChromeRenderController<TState, TBox = unknown>(
         workspaceLiveSyncStatus: deps.getWorkspaceLiveSyncStatus(),
       })
       : SESSION_NEW_FOOTER_HINT
-    const footerFlashWidth = footerFlash ? ` • ${footerFlash.message}`.length : 0
+    const footerFlashWidth = footerFlash && footerFlash.display !== "toast" ? ` • ${footerFlash.message}`.length : 0
     const compactFooterWidth = deps.getTerminalWidth
       ? Math.max(0, deps.getTerminalWidth() - footerFlashWidth)
       : null

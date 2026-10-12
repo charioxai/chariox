@@ -14,7 +14,7 @@ const digestOf = bytes => `sha256:${createHash("sha256").update(bytes).digest("h
 const fail = message => { throw new Error(message) }
 export function validateRequest(r) {
   if (!r || typeof r !== "object" || Array.isArray(r) || Object.keys(r).some(k => !["action", "installId", "port", "releaseDigest"].includes(k))) fail("invalid SSH install request")
-  if (!["install", "start", "stop", "remove", "upgrade", "repair", "inspect"].includes(r.action)) fail("invalid SSH install action")
+  if (!["install", "start", "stop", "remove", "upgrade", "repair", "inspect", "preflight"].includes(r.action)) fail("invalid SSH install action")
   if (!/^[a-z][a-z0-9-]{0,47}$/.test(r.installId ?? "")) fail("install ID must be 1-48 lowercase letters, digits or hyphens")
   if (!Number.isInteger(r.port) || r.port < 1024 || r.port > 65534 || [43117, 43118, 43119, 43120].includes(r.port)) fail("choose a distinct unprivileged loopback port, other than the ordinary 43118 default")
   if (!/^sha256:[a-f0-9]{64}$/.test(r.releaseDigest ?? "")) fail("a pinned signed release digest is required")
@@ -116,7 +116,7 @@ async function verifyImage(image, digest, pins, stage) {
 async function portFree(port) {
   const server = createServer()
   await new Promise((yes, no) => {
-    server.once("error", () => no(new Error("selected loopback port is already occupied")))
+    server.once("error", () => no(Object.assign(new Error("selected loopback port is already occupied"), { exitCode: 76 })))
     server.listen({ host: "127.0.0.1", port, exclusive: true }, yes)
   })
   await new Promise((yes, no) => server.close(e => e ? no(e) : yes()))
@@ -153,7 +153,7 @@ async function inspectMachine(r, home, stage, serviceManager) {
   const fields = Object.fromEntries(info.trim().split("\n").map(line => line.split(/=(.*)/s).slice(0,2)))
   if (!Object.hasOwn(fields,"DropInPaths") || !Object.hasOwn(fields,"FragmentPath") || fields.DropInPaths) fail("cannot prove install ownership")
   if (!root || !await metadata(root)) {
-    if (fields.LoadState !== "not-found" || fields.FragmentPath || (unit && await metadata(unit))) fail("unit exists without an owned release root")
+    if (fields.LoadState !== "not-found" || fields.FragmentPath || (unit && await metadata(unit))) foreignUnit()
     return { installId:r.installId,status:"absent" }
   }
   await directory(root,false)
@@ -166,6 +166,21 @@ async function inspectMachine(r, home, stage, serviceManager) {
   await verifyImage(join(root,"releases",r.releaseDigest.slice(7)),r.releaseDigest,root,stage)
   return { installId:r.installId,status:"installed",releaseDigest:r.releaseDigest,enrolled:false }
 }
+// MP-07/MP-08/MP-11: read-only before the large release upload. Installation
+// repeats these checks under its lock so this does not weaken race admission.
+function foreignUnit() {
+  throw Object.assign(new Error("unit exists without an owned release root; service name belongs to another installation"), { exitCode: 77 })
+}
+async function portsFree(r) {
+  await portFree(r.port)
+  try { await portFree(r.port + 1) }
+  catch (error) { if (error.exitCode === 76) error.exitCode = 78; throw error }
+}
+async function preflightMachine(r, home, stage, serviceManager) {
+  const prior = await inspectMachine(r, home, stage, serviceManager)
+  if (prior.status === "absent") await portsFree(r)
+  return prior
+}
 // serviceManager is a test seam, never supplied by serialized requests or environment flags.
 export async function runMachine(r, { home = process.env.HOME, stage = here, enrollment, enrollKernel, kernelCommand, releaseAdapter, serviceDefinition, servicePersistence = ensureSystemdUserPersistence, serviceManager = (args, capture) => command("systemctl", ["--user", ...args], capture) } = {}) {
   validateRequest(r)
@@ -177,9 +192,9 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
 
   if (!home || !home.startsWith("/") || home === "/" || resolve(home) !== home || await realpath(home) !== home) fail("user HOME must be an absolute canonical non-root directory")
   await directory(home, false)
-  if (r.action === "inspect") {
+  if (["inspect", "preflight"].includes(r.action)) {
     if (releaseAdapter || serviceDefinition) fail("SSH inspection requires the original image/service contract")
-    return inspectMachine(r, home, stage, serviceManager)
+    return r.action === "preflight" ? preflightMachine(r, home, stage, serviceManager) : inspectMachine(r, home, stage, serviceManager)
   }
   if (!serviceDefinition && ["start", "upgrade", "repair"].includes(r.action)) await servicePersistence()
   const service = serviceDefinition?.name ?? `chariox-ssh-${r.installId}.service`
@@ -221,7 +236,7 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
       if (JSON.stringify((await readdir(root)).sort()) !== JSON.stringify(expected)) fail("unexpected material in install root; retain it and resolve ownership before uninstall")
       marker = JSON.parse(await regular(markerPath))
       if (marker.format !== FORMAT || marker.installId !== r.installId || marker.service !== service || marker.port !== r.port || (marker.releaseDigest !== r.releaseDigest && r.action !== "upgrade")) fail("existing install identity differs; use explicit upgrade rather than replacing it")
-      if (fields.FragmentPath && fields.FragmentPath !== unitPath) fail("service name belongs to another installation")
+      if (fields.FragmentPath && fields.FragmentPath !== unitPath) foreignUnit()
       removing = await pendingRemoval(root, marker, serviceManager)
       if (removing && r.action !== "remove") fail("removal in progress; retry remove before reinstalling")
       const missingUnit = !await metadata(unitPath)
@@ -245,7 +260,7 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
         await serviceManager(["daemon-reload"])
       }
     } else if (await metadata(unitPath) || fields.LoadState !== "not-found" || fields.FragmentPath) {
-      fail("service name belongs to another installation")
+      foreignUnit()
     }
     if (r.action === "stop" || r.action === "remove") {
       if (!marker) fail("no owned install found")
@@ -287,7 +302,7 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
       }
     }
     if (marker && (r.action !== "upgrade" || marker.releaseDigest === r.releaseDigest)) return { installId: r.installId, status: "installed", releaseDigest: marker.releaseDigest, enrolled: false }
-    if (!marker) { await portFree(r.port); await portFree(r.port + 1) }
+    if (!marker) await portsFree(r)
     scratch = await mkdtemp(join(installParent, `.${r.installId}.stage-`))
     const image = join(scratch, "image")
     if (releaseAdapter?.extract) await releaseAdapter.extract(image, stage)
@@ -340,6 +355,6 @@ if (typeof Bun === "undefined" && process.argv[1] && resolve(process.argv[1]) ==
   } catch (error) {
     // Target errors can contain paths/profile output. The home exposes only a bounded generic failure.
     process.stderr.write("MP-07/MP-08/MP-11: SSH machine installation refused\n")
-    process.exitCode = error?.exitCode === 75 ? 75 : 1
+    process.exitCode = [75, 76, 77, 78].includes(error?.exitCode) ? error.exitCode : 1
   }
 }
