@@ -140,7 +140,11 @@ fn release(matches: impl Fn(&OwnerKey) -> bool) {
             .filter_map(|key| sessions.remove(&key))
             .collect()
     };
-    drop(released);
+    if !released.is_empty() {
+        // Callers may hold the provider-service lock. DELETE is best effort and
+        // belongs on a blocking cleanup thread, after all local leases retire.
+        std::thread::spawn(move || drop(released));
+    }
 }
 
 #[cfg(test)]

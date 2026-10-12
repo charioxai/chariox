@@ -112,16 +112,24 @@ fn review1301_http_sessions_keep_owner_headers_and_release_only_owned_leases() {
         .keys()
         .any(|key| key.1 == "review1301-owner-two"));
     assert_eq!(
-        server.join().unwrap(),
-        vec![
-            "initialize:one",
-            "initialize:two",
-            "tools/list:one",
-            "tools/list:two",
-            "delete:synthetic-one",
-            "tools/list:two",
-            "delete:synthetic-two"
-        ]
+        {
+            let mut seen = server.join().unwrap();
+            seen.sort();
+            seen
+        },
+        {
+            let mut expected = vec![
+                "initialize:one",
+                "initialize:two",
+                "tools/list:one",
+                "tools/list:two",
+                "delete:synthetic-one",
+                "tools/list:two",
+                "delete:synthetic-two",
+            ];
+            expected.sort();
+            expected
+        }
     );
 }
 
@@ -211,3 +219,53 @@ fn review0253_http_session_allows_concurrent_cancellation() {
     }
 }
 
+// MP-08 / MP-10 / MP-11: retiring an owner must not await an unreachable upstream DELETE.
+#[test]
+fn review0253_http_release_does_not_wait_for_remote_delete() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let backing = CharioxMcpServerConfig::streamable_http(
+        "review0253-release",
+        format!("http://{}/mcp", listener.local_addr().unwrap()),
+    );
+    let server = std::thread::spawn(move || {
+        let (mut first, _) = listener.accept().unwrap();
+        first
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut reader = BufReader::new(&mut first);
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = n.trim().parse::<usize>().unwrap()
+            }
+            if line == "\r\n" {
+                break;
+            }
+        }
+        let mut bytes = vec![0; length];
+        reader.read_exact(&mut bytes).unwrap();
+        drop(reader);
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}"#;
+        write!(first,"HTTP/1.1 200 OK\r\nMcp-Session-Id: synthetic-release\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        drop(first);
+        let (_delete, _) = listener.accept().unwrap();
+        std::thread::sleep(Duration::from_millis(1200));
+    });
+    dispatch(
+        "review0253-release",
+        "review0253-release",
+        &backing,
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+    )
+    .unwrap();
+    let start = std::time::Instant::now();
+    release_run("review0253-release");
+    let elapsed = start.elapsed();
+    server.join().unwrap();
+    assert!(
+        elapsed < Duration::from_millis(100),
+        "remote lease cleanup blocked its caller for {elapsed:?}"
+    );
+}
