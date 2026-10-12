@@ -1,6 +1,23 @@
 //! MP-08 / MP-10 / MP-11: Check acknowledgement journal durability and recovery.
 use super::*;
 #[test]
+fn journal_slot_padding_preserves_non_aligned_payloads_and_inode_size() {
+    // MP-08 / MP-10 / MP-11: exercise both slot boundaries and shorter reuse.
+    let root = crate::test_support::TestWorktree::new("check-journal-padding");
+    let path = root.path().join("checks.wal");
+    let mut initial_size = None;
+    for len in [4095, 4096, 4097, 65531, 17, 65536] {
+        let bytes = vec![b'x'; len];
+        super::check_journal::append(&path, &bytes).unwrap();
+        assert!(
+            super::check_journal::read(&path).unwrap().as_deref() == Some(bytes.as_slice()),
+            "slot padding must preserve exactly {len} payload bytes"
+        );
+        let size = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(*initial_size.get_or_insert(size), size);
+    }
+}
+#[test]
 fn deleting_a_project_removes_only_its_private_check_journal() {
     let root = crate::test_support::TestWorktree::new("envp04-check-journal-delete");
     let store = ProjectEnvironmentStore::new(root.path());

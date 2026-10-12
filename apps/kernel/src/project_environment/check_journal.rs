@@ -8,6 +8,9 @@ use std::path::Path;
 const LIMIT: u64 = 8 * 1024 * 1024;
 const PAGE: u64 = 4096;
 const MAGIC: &[u8; 8] = b"CXCHECK2";
+#[cfg(target_os = "linux")]
+#[path = "check_journal/direct_io.rs"]
+mod direct_io;
 
 struct Snapshot {
     sequence: u64,
@@ -53,8 +56,17 @@ pub(super) fn append(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
         return publish(path, bytes, sequence);
     }
     let offset = PAGE + (1 - prior.slot) * (PAGE + capacity);
+    let record = record(bytes, sequence);
+    // MP-08 / MP-10 / MP-11: synchronized direct I/O avoids buffered journal
+    // writeback stalls without moving the durable acknowledgment fence.
+    #[cfg(target_os = "linux")]
+    if direct_io::write(&file, &record, offset)
+        .map_err(|_| environment_error("Check journal write failed"))?
+    {
+        return Ok(());
+    }
     file.seek(SeekFrom::Start(offset))
-        .and_then(|_| file.write_all(&record(bytes, sequence)))
+        .and_then(|_| file.write_all(&record))
         .and_then(|_| file.sync_data())
         .map_err(|_| environment_error("Check journal write failed"))
 }
