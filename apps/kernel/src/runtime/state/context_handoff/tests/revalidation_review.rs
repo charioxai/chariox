@@ -242,3 +242,45 @@ async fn fitting_structured_packet_never_acquires_a_stale_stored_brief_on_revali
         "revalidation inserted a stale storage brief"
     );
 }
+
+// MP-08 / MP-10 / MP-11: retries carry their request only through active dispatch.
+#[tokio::test]
+async fn substitute_policy_rebuild_excludes_the_dispatched_request() {
+    for attempted in [false, true] {
+        let (fixture, _root) = protected_fixture(false).await;
+        fixture.user(3, "CURRENT-SUBSTITUTE-REQUEST");
+        if attempted {
+            fixture.error(4, "source", "INTERRUPTED-ATTEMPT-DETAIL");
+        }
+        let (_, agent) = explicit(&fixture, false);
+        let target = test_run("target", &fixture.session_id, &agent, "opencode", "gpt-6");
+        let snapshot = fixture
+            .runtime
+            .owned
+            .context_handoff_for_dispatch(&fixture.session_id, &agent, &target, "prompt-3", false)
+            .unwrap();
+        assert!(!snapshot
+            .render(MAX_HANDOFF_BYTES)
+            .unwrap()
+            .contains("CURRENT-SUBSTITUTE-REQUEST"));
+        fixture
+            .runtime
+            .owned
+            .room_secret_observations
+            .register(&fixture.session_id, "NEW-POLICY-OBSERVATION")
+            .unwrap();
+        let replay = fixture
+            .runtime
+            .owned
+            .revalidate_context_handoff(snapshot, &fixture.session_id, &agent, "prompt-3")
+            .unwrap()
+            .render(MAX_HANDOFF_BYTES)
+            .unwrap();
+        assert!(
+            !replay.contains("CURRENT-SUBSTITUTE-REQUEST"),
+            "policy rebuild replayed the request: {replay}"
+        );
+        assert!(replay.contains("amber"));
+        assert_eq!(replay.contains("INTERRUPTED-ATTEMPT-DETAIL"), attempted);
+    }
+}
