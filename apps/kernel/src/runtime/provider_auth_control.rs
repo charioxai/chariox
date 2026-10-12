@@ -377,13 +377,15 @@ pub(crate) async fn execute_get_provider_login_status_request(
         let registry = runtime_state.provider_account_profile_registry().clone();
         let owner = owner_user_id.to_string();
         let profile_id = record.account_profile.clone();
+        let config = runtime_state.config_snapshot().await;
         let refresh_result = tokio::task::spawn_blocking(move || {
             let refreshed =
-                crate::local::provider_requests::refresh_provider_account_profile_response(
+                crate::local::provider_requests::refresh_provider_account_profile_with_config(
                     &registry,
                     &owner,
                     "codex",
                     &profile_id,
+                    &config,
                 )?;
             refresh_provider_account_family_after_login(
                 &registry,
@@ -392,11 +394,12 @@ pub(crate) async fn execute_get_provider_login_status_request(
                 &profile_id,
                 refreshed,
                 |candidate_profile_id| {
-                    crate::local::provider_requests::refresh_provider_account_profile_response(
+                    crate::local::provider_requests::refresh_provider_account_profile_with_config(
                         &registry,
                         &owner,
                         "codex",
                         candidate_profile_id,
+                        &config,
                     )
                 },
             )
@@ -480,10 +483,11 @@ pub(crate) async fn execute_get_provider_login_status_request(
         let owner = owner_user_id.to_string();
         let provider = record.provider.clone();
         let profile = record.account_profile.clone();
+        let config = runtime_state.config_snapshot().await;
         let refresh_result = tokio::task::spawn_blocking(move || {
             let refreshed =
-                crate::local::provider_requests::refresh_provider_account_profile_response(
-                    &registry, &owner, &provider, &profile,
+                crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                    &registry, &owner, &provider, &profile, &config,
                 )?;
             if record.operation == crate::runtime::state::ProviderAuthProcessOperation::Login
                 && refreshed.auth_state
@@ -496,11 +500,12 @@ pub(crate) async fn execute_get_provider_login_status_request(
                     &profile,
                     refreshed,
                     |candidate_profile_id| {
-                        crate::local::provider_requests::refresh_provider_account_profile_response(
+                        crate::local::provider_requests::refresh_provider_account_profile_with_config(
                             &registry,
                             &owner,
                             &provider,
                             candidate_profile_id,
+                            &config,
                         )
                     },
                 )
