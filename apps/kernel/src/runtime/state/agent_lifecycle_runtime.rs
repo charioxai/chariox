@@ -37,7 +37,10 @@ impl KernelRuntimeOwnedState {
         else {
             unreachable!()
         };
+        // A workflow node turn completes through its validated handoff or final
+        // output; a plain check could only see that handoff after the node completes.
         if !existed
+            && prepared.prompt.workflow_run_id().is_none()
             && super::agent_goal_runtime::parse_goal_prompt(prepared.prompt.prompt())?.is_none()
         {
             self.durable_state_store

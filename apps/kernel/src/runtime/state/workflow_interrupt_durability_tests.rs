@@ -100,6 +100,74 @@ async fn a03_creator_task_cancels_canonical_waiting_workflow_run() {
     workflow_wait_cancellation(true).await;
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11 A01 (accam r3): a workflow node turn settles
+// through workflow completion (handoff/final output), not a plain completion
+// check that could only see the handoff after the node completes.
+#[tokio::test]
+async fn a01_workflow_node_turn_settles_without_a_plain_completion_check() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("a01-workflow-node-settle"),
+        config,
+        false,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let prompt = owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    owned
+        .admit_agent_task(&crate::app::KernelPreparedPromptSubmission {
+            session_id: fixture.session_id.clone(),
+            prompt: prompt.clone(),
+            force_queue: false,
+            refresh_projection: false,
+        })
+        .unwrap();
+    let Outcome::Task(task) = owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: fixture.session_id.clone(),
+            agent: fixture.target_agent_id.clone(),
+            prompt: prompt.id().into(),
+            run: Some("interrupt-provider-run".into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("task")
+    };
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Settle {
+            room: task.room_id.clone(),
+            agent: task.agent_id.clone(),
+            prompt: prompt.id().into(),
+            run: "interrupt-provider-run".into(),
+            has_answer: true,
+            cancelled: false,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let settled = owned
+        .durable_state_store
+        .agent_tasks(Some(&fixture.session_id), Some(&fixture.target_agent_id))
+        .unwrap()
+        .into_iter()
+        .find(|t| t.task_id == task.task_id)
+        .unwrap();
+    assert_eq!(settled.state, ExecutionState::Done, "{settled:?}");
+    assert!(settled.completion_check.is_none(), "{settled:?}");
+    assert!(settled.pending_prompt_id.is_none(), "{settled:?}");
+}
+
 async fn workflow_wait_cancellation(cancel_creator: bool) {
     use crate::durable_state::agent_lifecycle::{AgentWake, ExecutionState, Operation, Outcome};
     let mut config = crate::config::DaemonConfig::for_tests();
