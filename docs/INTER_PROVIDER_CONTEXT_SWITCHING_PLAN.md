@@ -17,7 +17,7 @@ The context packet is bounded and prioritized:
 3. Stable facts and status/error details are included only for the latest turn.
 4. Tool use is included only for the latest turn. Older tool output is excluded.
 
-MP-08 / MP-10 / MP-11: when a worker restart recreates its lease, the home reconstructs its protected conversation into the existing hidden prompt context before the first worker submission. An active worker run or output from the current lease keeps native continuity without replaying the home packet. The user prompt and home history remain unchanged; fresh workflow turns keep their separate context contract.
+MP-08 / MP-10 / MP-11: when a worker restart recreates its lease, the home reconstructs its protected conversation into the existing hidden prompt context before the first worker submission. The existing lease refresh paths record a private, durable marker for that exact execution lease; the first accepted submission consumes it. Ordinary follow-up turns and agent moves do not trigger the recreated-lease packet or a full history read. Rejected submissions retain the marker for retry, including across a home restart. The user prompt and home history remain unchanged; fresh workflow turns keep their separate context contract.
 
 ## Phases
 

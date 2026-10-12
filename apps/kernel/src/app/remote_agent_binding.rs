@@ -1134,6 +1134,16 @@ impl DaemonApp {
                 false,
             );
         }
+        if let Err(error) = self
+            .operational_history_store()
+            .mark_remote_lease_context_pending(
+                agent.session_id(),
+                agent.id(),
+                &refresh.remote_execution,
+            )
+        {
+            return (Err(error), false);
+        }
         let rebound = match self
             .agents
             .bind_remote_execution(&refresh.agent_id, refresh.remote_execution.clone())
@@ -1207,6 +1217,10 @@ impl DaemonApp {
             uses_remote_execution_relay.then_some(relay_config),
             authorize,
         )?;
+        if let Some(binding) = rebound.remote_execution() {
+            self.operational_history_store()
+                .mark_remote_lease_context_pending(rebound.session_id(), rebound.id(), binding)?;
+        }
         self.durable_state_store().append_event(
             "agent.updated",
             Some(rebound.id().to_string()),
@@ -1270,6 +1284,10 @@ impl DaemonApp {
             None,
             uses_remote_execution_relay.then_some(relay_config),
         )?;
+        if let Some(binding) = rebound.remote_execution() {
+            self.operational_history_store()
+                .mark_remote_lease_context_pending(rebound.session_id(), rebound.id(), binding)?;
+        }
         self.durable_state_store().append_event(
             "agent.updated",
             Some(rebound.id().to_string()),
@@ -3059,5 +3077,62 @@ mod cleanup_tests {
             receipts.is_empty(),
             "rejected replies must not be recorded as cleanup"
         );
+    }
+    // MP-08 / MP-10 / MP-11: exercise the existing refresh commit, including restart durability.
+    #[test]
+    fn review976_binding_refresh_persists_exact_lease_context_marker() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "refresh-workspace",
+                "refresh-worktree",
+            ))
+            .unwrap();
+        let original = RemoteAgentBinding {
+            worker_kernel_id: "refresh-worker".into(),
+            worker_machine_id: "refresh-machine".into(),
+            execution_lease_id: "old-execution".into(),
+            leased_agent_id: "old-leased-agent".into(),
+            active_worker_provider_run_id: None,
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+        };
+        app.agents
+            .bind_remote_execution(agent.id(), original.clone())
+            .unwrap();
+        let mut replacement = original.clone();
+        replacement.execution_lease_id = "new-execution".into();
+        replacement.leased_agent_id = "new-leased-agent".into();
+        let refresh = super::RemoteAgentBindingRefreshResult {
+            agent_id: agent.id().into(),
+            expected_binding: original.clone(),
+            remote_execution: replacement.clone(),
+            relay_config: app.config().clone(),
+            relay_state: app.relay_client_state(),
+            use_connected_relay: false,
+            _slice_recovery: None,
+        };
+        let (result, committed) = app.commit_remote_agent_binding_refresh(&refresh);
+        assert!(committed);
+        assert_eq!(result.unwrap().remote_execution(), Some(&replacement));
+        let history = crate::history::OperationalHistoryStore::open(
+            app.operational_history_store().path().to_path_buf(),
+        )
+        .unwrap();
+        assert!(history
+            .remote_lease_context_pending(session.id(), agent.id(), &replacement)
+            .unwrap());
+        assert!(!history
+            .remote_lease_context_pending(session.id(), agent.id(), &original)
+            .unwrap());
+        let (result, committed) = app.commit_remote_agent_binding_refresh(&refresh);
+        assert!(result.is_err());
+        assert!(!committed);
+        assert!(history
+            .remote_lease_context_pending(session.id(), agent.id(), &replacement)
+            .unwrap());
     }
 }

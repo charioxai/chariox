@@ -99,6 +99,8 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
         );
         match outcome {
             RemotePromptSubmissionOutcome::Accepted(provider_run_id) => {
+                // The worker accepted this exact lease; retries must not replay its history.
+                state.owned.clear_accepted_remote_lease_context(dispatch);
                 // Dispatch settlement clears the hold only after its durable ACK write.
                 return Ok(provider_run_id);
             }

@@ -5,6 +5,28 @@ use super::builder::build_recreated_lease_context;
 const MAX_HANDOFF_BYTES: usize = 24_000;
 
 impl super::super::KernelRuntimeOwnedState {
+    pub(in crate::runtime::state) fn clear_accepted_remote_lease_context(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+    ) {
+        if let Err(error) = self
+            .operational_history_store
+            .clear_remote_lease_context_pending(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.worker_kernel_id,
+                &dispatch.leased_agent_id,
+            )
+        {
+            crate::logging::warn_with_fields(
+                "daemon.remote_prompt_dispatch",
+                "accepted lease context marker could not be cleared",
+                serde_json::json!({"session_id": dispatch.session_id, "agent_id": dispatch.agent_id,
+                    "error": error.to_string()}),
+            );
+        }
+    }
+
     pub(in crate::runtime::state) fn remote_prompt_hidden_context(
         &self,
         agent: &crate::agent::AgentInstance,
@@ -18,32 +40,27 @@ impl super::super::KernelRuntimeOwnedState {
             .room_secret_observations
             .scrub_runtime_result(agent.session_id(), hidden_context.to_string())?;
         let existing = || Ok(hidden_context.clone());
-        if fresh_workflow
-            || agent
-                .remote_execution()
-                .is_some_and(|binding| binding.active_worker_provider_run_id.is_some())
+        if fresh_workflow {
+            return existing();
+        }
+        let Some(binding) = agent
+            .remote_execution()
+            .filter(|binding| binding.leased_agent_id == leased_agent_id)
+        else {
+            return existing();
+        };
+        // MP-08 / MP-10 / MP-11: this indexed, private marker describes actual
+        // lease recreation. Raw worker output IDs are not lease identities.
+        if !self
+            .operational_history_store
+            .remote_lease_context_pending(agent.session_id(), agent.id(), binding)
+            .unwrap_or(false)
         {
             return existing();
         }
         let events = self
             .operational_history_store
             .load_session_events(agent.session_id(), Some(agent.id()))?;
-        let latest = events
-            .iter()
-            .filter(|event| event.kind == crate::history::HistoryEventKind::ProviderOutput)
-            .max_by_key(|event| event.sequence);
-        if latest
-            .and_then(|event| event.provider_run_id.as_deref())
-            .and_then(|run| {
-                crate::provider::worker_provider_run_id_from_projected_leased_id(
-                    leased_agent_id,
-                    run,
-                )
-            })
-            .is_some()
-        {
-            return existing();
-        }
         let room = if native_provider_run
             && crate::provider::adapter_key_for_provider(agent.provider()) == "claude"
         {

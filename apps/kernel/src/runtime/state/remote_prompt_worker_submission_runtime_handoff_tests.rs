@@ -97,6 +97,16 @@ async fn assert_home_handoff_envelope_with_recovery(
             .unwrap();
     }
 
+    if !active_run && !current_lease_output {
+        let current = app.agents.get_agent(agent.id()).unwrap();
+        app.operational_history_store()
+            .mark_remote_lease_context_pending(
+                session.id(),
+                agent.id(),
+                current.remote_execution().unwrap(),
+            )
+            .unwrap();
+    }
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     if recovered {
@@ -238,6 +248,12 @@ async fn assert_home_handoff_envelope_with_recovery(
             .expect("prompt submission should succeed"),
         "provider-run-recreated-handoff"
     );
+    let accepted = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+    assert!(!runtime
+        .owned
+        .operational_history_store
+        .remote_lease_context_pending(&session_id, &agent_id, accepted.remote_execution().unwrap())
+        .unwrap());
 }
 
 #[tokio::test]
@@ -273,4 +289,230 @@ async fn current_lease_scrubs_cached_context_without_replaying_history() {
 #[tokio::test]
 async fn recovered_room_scrubs_cached_context_before_remote_transport() {
     assert_home_handoff_envelope_with_recovery(true, false, true, true).await;
+}
+
+// MP-08 / MP-10 / MP-11: history uses raw worker IDs on the real projection path.
+#[tokio::test]
+async fn review976_completed_projection_skips_replay_until_lease_identity_changes() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "projection-workspace",
+            "projection-worktree",
+        ))
+        .unwrap();
+    app.agents
+        .bind_remote_execution(
+            agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: CANCELLATION_GUARD_WORKER_ID.into(),
+                worker_machine_id: "projection-machine".into(),
+                execution_lease_id: "projection-lease".into(),
+                leased_agent_id: CANCELLATION_GUARD_LEASED_AGENT_ID.into(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        "worker-session",
+        "dev-stub",
+        "codex",
+        "default",
+        "model",
+    )
+    .with_agent_id("worker-agent")
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "raw-worker-run",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "projection-fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.append_history_entry(
+        session.id(),
+        crate::history::SessionHistoryEntry::user_prompt(
+            session.id(),
+            "home-attachment",
+            agent.id(),
+            "earlier accepted task",
+        ),
+    );
+    let event = crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+        home_session_id: session.id().into(),
+        home_agent_id: agent.id().into(),
+        provider_run_id: run.id().into(),
+        provider_run: Some(run),
+        prompts: Vec::new(),
+        output_chunks: vec![crate::transport::relay_peer::RelayProjectedOutputChunk {
+            kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+            merge_key: None,
+            bytes: b"completed assistant answer".to_vec(),
+        }],
+        notices: Vec::new(),
+        completions: Vec::new(),
+    };
+    assert!(
+        crate::app::RemoteLeaseRuntime::new(&mut app)
+            .project_remote_runtime_projection(
+                crate::runtime::relay_peer_authority::test_projection_authority(
+                    CANCELLATION_GUARD_WORKER_ID
+                ),
+                event,
+            )
+            .unwrap()
+            .accepted
+    );
+    app.agents
+        .set_remote_execution_active_worker_provider_run_id(agent.id(), None)
+        .unwrap();
+    let events = app
+        .operational_history_store()
+        .load_session_events(session.id(), Some(agent.id()))
+        .unwrap();
+    assert!(events.iter().any(|event| event.kind
+        == crate::history::HistoryEventKind::ProviderOutput
+        && event.provider_run_id.as_deref() == Some("raw-worker-run")));
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let current = runtime.owned.agent_store.get_agent(agent.id()).unwrap();
+    let context = runtime
+        .owned
+        .remote_prompt_hidden_context(
+            &current,
+            CANCELLATION_GUARD_LEASED_AGENT_ID,
+            "next",
+            "existing context",
+            false,
+            true,
+        )
+        .unwrap();
+    assert_eq!(
+        context, "existing context",
+        "completed current-lease turns must not replay history"
+    );
+    let mut replacement = current.remote_execution().unwrap().clone();
+    replacement.execution_lease_id = "recreated-execution-lease".into();
+    replacement.leased_agent_id = "recreated-leased-agent".into();
+    let rebound = runtime
+        .owned
+        .agent_store
+        .bind_remote_execution(agent.id(), replacement)
+        .unwrap();
+    runtime
+        .owned
+        .operational_history_store
+        .mark_remote_lease_context_pending(
+            session.id(),
+            agent.id(),
+            rebound.remote_execution().unwrap(),
+        )
+        .unwrap();
+    let reopened = crate::history::OperationalHistoryStore::open(
+        runtime.owned.operational_history_store.path().to_path_buf(),
+    )
+    .unwrap();
+    assert!(reopened
+        .remote_lease_context_pending(
+            session.id(),
+            agent.id(),
+            rebound.remote_execution().unwrap()
+        )
+        .unwrap());
+    let context = runtime
+        .owned
+        .remote_prompt_hidden_context(
+            &rebound,
+            "recreated-leased-agent",
+            "next",
+            "existing context",
+            false,
+            true,
+        )
+        .unwrap();
+    assert!(context.contains("earlier accepted task"));
+    assert!(context.contains("completed assistant answer"));
+    // A newly launched native process on the recreated lease is not proof that
+    // its conversation already received the home's earlier turns.
+    let mut running = rebound.clone();
+    running.set_remote_execution_active_worker_provider_run_id(Some("new-native-run".into()));
+    assert_eq!(
+        runtime
+            .owned
+            .remote_prompt_hidden_context(
+                &running,
+                "recreated-leased-agent",
+                "next",
+                "existing context",
+                false,
+                true
+            )
+            .unwrap(),
+        context
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .remote_prompt_hidden_context(
+                &rebound,
+                "recreated-leased-agent",
+                "next",
+                "existing context",
+                false,
+                true
+            )
+            .unwrap(),
+        context
+    );
+    reopened
+        .clear_remote_lease_context_pending(
+            session.id(),
+            agent.id(),
+            CANCELLATION_GUARD_WORKER_ID,
+            "old-leased-agent",
+        )
+        .unwrap();
+    assert!(reopened
+        .remote_lease_context_pending(
+            session.id(),
+            agent.id(),
+            rebound.remote_execution().unwrap()
+        )
+        .unwrap());
+    reopened
+        .clear_remote_lease_context_pending(
+            session.id(),
+            agent.id(),
+            CANCELLATION_GUARD_WORKER_ID,
+            "recreated-leased-agent",
+        )
+        .unwrap();
+    assert_eq!(
+        runtime
+            .owned
+            .remote_prompt_hidden_context(
+                &rebound,
+                "recreated-leased-agent",
+                "next",
+                "existing context",
+                false,
+                true
+            )
+            .unwrap(),
+        "existing context"
+    );
 }
