@@ -41,32 +41,26 @@ async fn run_unix(mut command: Command) -> std::io::Result<ExitStatus> {
     let mut child = tokio::process::Command::from(command)
         .kill_on_drop(true)
         .spawn()?;
-    loop {
-        let received = tokio::select! {
-            status = child.wait() => return status,
-            _ = terminate.recv() => libc::SIGTERM,
-            _ = hangup.recv() => libc::SIGHUP,
-            _ = interrupt.recv() => libc::SIGINT,
-        };
-        // Signal only this retained, unreaped child, never a process group.
-        // wait() cannot reap concurrently with this synchronous section.
-        if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) {
-            if pid > 1 && unsafe { libc::kill(pid, received) } != 0 {
-                let error = std::io::Error::last_os_error();
-                if error.raw_os_error() != Some(libc::ESRCH) {
-                    kill_and_reap(&mut child).await?;
-                    return Err(error);
-                }
+    let received = tokio::select! {
+        status = child.wait() => return status,
+        _ = terminate.recv() => libc::SIGTERM,
+        _ = hangup.recv() => libc::SIGHUP,
+        _ = interrupt.recv() => libc::SIGINT,
+    };
+    // Signal only this retained, unreaped child, never a process group.
+    // wait() cannot reap concurrently with this synchronous section.
+    if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) {
+        if pid > 1 && unsafe { libc::kill(pid, received) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                kill_and_reap(&mut child).await?;
+                return Err(error);
             }
         }
-        // SIGINT also means stop the active turn in the TUI; keep it alive
-        // when its normal interrupt handler chooses to continue.
-        if received != libc::SIGINT {
-            match tokio::time::timeout(std::time::Duration::from_millis(1500), child.wait()).await {
-                Ok(status) => return status,
-                Err(_) => return kill_and_reap(&mut child).await,
-            }
-        }
+    }
+    match tokio::time::timeout(std::time::Duration::from_millis(1500), child.wait()).await {
+        Ok(status) => status,
+        Err(_) => kill_and_reap(&mut child).await,
     }
 }
 
@@ -96,6 +90,20 @@ mod tests {
         let mut command = Command::new("sh");
         command.args(["-c", "exit 7"]);
         assert_eq!(run(command).unwrap().code(), Some(7));
+    }
+
+    #[test]
+    fn forwards_interrupt_and_waits_for_the_child_handler() {
+        let parent = std::process::id();
+        assert!(parent > 1);
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "trap 'exit 42' INT; test \"$PPID\" -eq \"$1\" && test \"$1\" -gt 1 || exit 43; kill -s INT \"$1\"; sleep 1; exit 44",
+            "owned-signal-child",
+            &parent.to_string(),
+        ]);
+        assert_eq!(run(command).unwrap().code(), Some(42));
     }
 
     #[test]

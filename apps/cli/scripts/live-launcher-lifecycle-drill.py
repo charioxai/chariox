@@ -130,14 +130,16 @@ def main():
         listener.bind(('127.0.0.1', 0))
         port = listener.getsockname()[1]
     env['CHARIOX_KERNEL_PORT'] = str(port)
-    env['CHARIOX_MCP_PORT'] = '0'
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        env['CHARIOX_MCP_PORT'] = str(listener.getsockname()[1])
     def start(label, path):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 35, 120, 0, 0))
         def setup():
             os.setsid()
             fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
-        proc = subprocess.Popen(['sh', '-c', '"$@" & wait; sleep 3600', 'launcher-drill-shell', str(args.launcher.resolve()), '--kernel-url',
+        proc = subprocess.Popen(['sh', '-c', '"$@"; sleep 3600', 'launcher-drill-shell', str(args.launcher.resolve()), '--kernel-url',
             f'ws://127.0.0.1:{port}/kernel', '--automation-socket', str(path)],
             cwd=root, env=env, stdin=slave, stdout=slave, stderr=slave,
             preexec_fn=setup)
@@ -161,6 +163,20 @@ def main():
         reader.start()
         if not wait_for(lambda: ready(path)):
             raise RuntimeError(f'{label}: TUI automation did not start')
+        def connected():
+            if kernel.poll() is not None:
+                raise RuntimeError('real kernel exited before TUI connected')
+            snapshot = rpc(path, 'snapshot')['data']
+            rows = snapshot.get('waitingRoom', {}).get('rows', [])
+            return not snapshot.get('daemonDisconnected') and any(
+                row.get('id') == 'launch-kernel' and 'loading' not in row.get('value', '').lower()
+                for row in rows)
+        if not wait_for(connected):
+            snapshot = rpc(path, 'snapshot')['data']
+            public_status = dict(daemonDisconnected=snapshot.get('daemonDisconnected'),
+                rowIds=[row.get('id') for row in snapshot.get('waitingRoom', {}).get('rows', [])])
+            (evidence / (label + '-connection-status.json')).write_text(json.dumps(public_status, indent=2))
+            raise RuntimeError(f'{label}: TUI did not load local kernel inventory')
         launcher = [pid for pid, parent, _ in processes() if parent == proc.pid]
         if len(launcher) != 1:
             raise RuntimeError(f'{label}: expected one Rust launcher')
@@ -194,7 +210,16 @@ def main():
                                       stdin=subprocess.DEVNULL, stdout=log, stderr=log)
         owned[kernel.pid] = pid_signals.record(kernel.pid, fresh_launch=True, watch=True)
         children.append(kernel)
-        time.sleep(1)
+        def kernel_listening():
+            if kernel.poll() is not None:
+                raise RuntimeError('real kernel exited during startup')
+            try:
+                with socket.create_connection(('127.0.0.1', port), timeout=.2):
+                    return True
+            except OSError:
+                return False
+        if not wait_for(kernel_listening):
+            raise RuntimeError('real kernel did not listen')
         path = scratch / 'automation.sock'
         first, tui = start('sigterm', path)
         started = time.monotonic()
