@@ -488,6 +488,33 @@ pub(super) fn claude_headless_workspace_trust_visible(text: &str) -> bool {
         && (normalized_lower.contains("trust this folder") || compact.contains("trustthisfolder"))
 }
 
+/// MP-08 / MP-10 / MP-11: an explicit trust approval selects the observed
+/// affirmative row. Enter alone accepts the provider's current default, which
+/// may be No. Unknown selections fail closed rather than guessing.
+pub(super) fn claude_workspace_trust_approval_input(text: &str) -> Option<Vec<u8>> {
+    if !claude_headless_workspace_trust_visible(text) {
+        return None;
+    }
+    let compact = normalize_claude_rendered_permission_text(text)
+        .to_ascii_lowercase()
+        .replace(' ', "");
+    let selected = compact.rfind('❯')?;
+    let row = compact[selected + '❯'.len_utf8()..]
+        .trim_start_matches(|ch: char| ch.is_ascii_digit() || ch == '.');
+    if row.starts_with("yes,itrustthisfolder") {
+        return Some(b"\r".to_vec());
+    }
+    if row.starts_with("no,exit") {
+        let affirmative = compact.rfind("yes,itrustthisfolder")?;
+        return Some(if affirmative > selected {
+            b"\x1b[B\r".to_vec()
+        } else {
+            b"\x1b[A\r".to_vec()
+        });
+    }
+    None
+}
+
 pub(super) fn claude_headless_bypass_confirmation_visible(text: &str) -> bool {
     let normalized = normalize_claude_rendered_permission_text(text);
     let normalized_lower = normalized.to_ascii_lowercase();
@@ -699,5 +726,45 @@ mod approval_lifetime_tests {
             take_claude_permission_inputs(&context_file),
             vec![b"\r".to_vec()]
         );
+    }
+}
+
+#[cfg(test)]
+mod workspace_trust_selection_tests {
+    use super::claude_workspace_trust_approval_input;
+    #[test]
+    fn approval_selects_affirmative_choice_for_current_and_legacy_dialogs() {
+        for (choices, input) in [
+            (
+                "❯ No, exit\n  Yes, I trust this folder",
+                b"\x1b[B\r".as_slice(),
+            ),
+            (
+                "  Yes, I trust this folder\n❯ No, exit",
+                b"\x1b[A\r".as_slice(),
+            ),
+            (
+                "❯ 1. Yes, I trust this folder\n  2. No, exit",
+                b"\r".as_slice(),
+            ),
+            ("❯ Yes, I trust this folder\n  No, exit", b"\r".as_slice()),
+        ] {
+            let frame = format!("Quick safety check\nDo you trust this folder?\n{choices}");
+            assert_eq!(
+                claude_workspace_trust_approval_input(&frame).as_deref(),
+                Some(input)
+            );
+        }
+    }
+    #[test]
+    fn unknown_or_incomplete_choice_never_accepts_a_default() {
+        for frame in [
+            "Quick safety check Do you trust this folder? Yes, I trust this folder",
+            "Quick safety check ❯ No, exit",
+            "Quick safety check Do you trust this folder? ❯ Different choice Yes, I trust this folder",
+            "❯ No, exit Yes, I trust this folder",
+        ] {
+            assert!(claude_workspace_trust_approval_input(frame).is_none());
+        }
     }
 }

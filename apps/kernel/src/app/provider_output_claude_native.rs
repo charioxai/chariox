@@ -36,15 +36,16 @@ use permission::{
     claude_headless_workspace_trust_interaction_id,
     claude_headless_workspace_trust_interaction_marker, claude_headless_workspace_trust_visible,
     claude_native_marker, claude_permission_recent_file, claude_rendered_permission_visible,
-    claude_yolo_rendered_permission_confirmation_pending, clear_claude_hook_permission_tombstone,
-    clear_claude_permission_recent, clear_claude_yolo_rendered_permission_confirmation,
-    extract_native_hidden_instructions, mark_claude_yolo_rendered_permission_confirmed,
-    normalize_claude_visible_prompt_for_headless, read_claude_headless_submit_retry,
-    redact_native_hidden_instructions, should_bridge_claude_permission,
-    take_claude_permission_inputs, take_matching_claude_hook_permission_tombstone,
-    timestamp_millis, update_claude_permission_recent,
-    write_claude_headless_bypass_selection_marker, write_claude_headless_startup_wait_marker,
-    write_claude_headless_submit_retry, write_claude_headless_workspace_trust_denied_marker,
+    claude_workspace_trust_approval_input, claude_yolo_rendered_permission_confirmation_pending,
+    clear_claude_hook_permission_tombstone, clear_claude_permission_recent,
+    clear_claude_yolo_rendered_permission_confirmation, extract_native_hidden_instructions,
+    mark_claude_yolo_rendered_permission_confirmed, normalize_claude_visible_prompt_for_headless,
+    read_claude_headless_submit_retry, redact_native_hidden_instructions,
+    should_bridge_claude_permission, take_claude_permission_inputs,
+    take_matching_claude_hook_permission_tombstone, timestamp_millis,
+    update_claude_permission_recent, write_claude_headless_bypass_selection_marker,
+    write_claude_headless_startup_wait_marker, write_claude_headless_submit_retry,
+    write_claude_headless_workspace_trust_denied_marker,
     write_claude_headless_workspace_trust_interaction_marker, write_claude_hook_context_response,
     write_claude_hook_permission_tombstone, write_claude_native_marker,
     write_claude_permission_input, write_claude_permission_passthrough,
@@ -1715,7 +1716,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         };
         self.app
             .write_provider_pty_input_for_runtime(provider_run_id, &input)?;
-        if input == b"\r" {
+        if input == b"\r" || input == b"\x1b[A\r" || input == b"\x1b[B\r" {
             write_claude_headless_startup_wait_marker(context_file);
             clear_claude_permission_recent(context_file);
             Ok(Some(ClaudeWorkspaceTrustResolution::Approved))
@@ -1741,6 +1742,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             "claude-workspace-trust-{provider_run_id}-{}",
             timestamp_millis()
         );
+        let approval_input = claude_permission_recent_file(context_file)
+            .and_then(|path| fs::read_to_string(path).ok())
+            .and_then(|text| claude_workspace_trust_approval_input(&text));
         write_claude_headless_workspace_trust_interaction_marker(context_file, &interaction_id);
         clear_claude_permission_recent(context_file);
         let interaction = RuntimeInteraction::new(
@@ -1781,7 +1785,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     if resolution.reply.as_deref() == Some("allow")
                         || resolution.choice_id.as_deref() == Some("allow_once") =>
                 {
-                    b"\r".to_vec()
+                    approval_input.unwrap_or_else(|| vec![0x03])
                 }
                 Ok(_) => vec![0x03],
                 Err(error) => {
