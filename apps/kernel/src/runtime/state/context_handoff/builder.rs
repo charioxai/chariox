@@ -219,8 +219,13 @@ fn collect_turns(events: &[HistoryEvent], preserve_streamed_spacing: bool) -> Ve
                 }
             }
             HistoryEventKind::ProviderOutput => {
-                if let (Some(turn), Some(content)) = (turns.last_mut(), non_empty_content(&event)) {
-                    turn.has_provider_attempt = true;
+                let content = if preserve_streamed_spacing {
+                    event.content.clone()
+                } else {
+                    non_empty_content(&event)
+                };
+                if let (Some(turn), Some(content)) = (turns.last_mut(), content) {
+                    turn.has_provider_attempt |= !content.trim().is_empty();
                     if preserve_streamed_spacing {
                         let item = event
                             .metadata
@@ -483,18 +488,18 @@ mod tests {
             "agent",
             "Keep codename amber-kestrel",
         )];
-        for (seq, text) in [(2, "assistant fact: native "), (3, "continuity")] {
+        for (seq, text) in [(2, "assistant fact: native"), (3, " "), (4, "continuity")] {
             events.push(output_event(seq, "session", "agent", "old-run", text));
         }
         for index in 0..30 {
             events.push(user_event(
-                4 + index * 2,
+                5 + index * 2,
                 "session",
                 "agent",
                 &format!("Ordinary follow-up {index}"),
             ));
             events.push(output_event(
-                5 + index * 2,
+                6 + index * 2,
                 "session",
                 "agent",
                 "old-run",
