@@ -165,6 +165,11 @@ impl Process {
             signal_pid(self.child.id().into())?;
             let _ = self.child.kill();
         }
+        // MP-08 / MP-10 / MP-11: group discovery has finished while the leader
+        // was pinned. Reap it before checking its pipes, so a killed ordinary
+        // probe cannot trigger a machine-wide escaped-writer scan merely
+        // because its exit has not yet closed the descriptors.
+        let reaped = self.child.wait().map(|_| ());
         // Exact pipe ownership still identifies escaped writers after setsid
         // or reparenting. Names and parent PIDs alone cannot establish ownership.
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -175,9 +180,6 @@ impl Process {
         };
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let cleanup = Ok(());
-        // MP-08 / MP-10 / MP-11: never signal an unverified process group.
-        // The Child handle owns this unreaped PID; pipe ownership pins other writers.
-        let reaped = self.child.wait().map(|_| ());
         self.stopped = true;
         tracked.and(cleanup).and(reaped)
     }
