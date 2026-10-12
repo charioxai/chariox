@@ -34,7 +34,7 @@ def process_snapshot():
                 text = (entry / "stat").read_text()
                 fields = text[text.rindex(")") + 2:].split()
                 rows.append(dict(pid=int(entry.name), ppid=int(fields[1]),
-                                 pgid=int(fields[2]), sid=int(fields[3]), start=fields[19]))
+                                 pgid=int(fields[2]), sid=int(fields[3]), start=fields[19], state=fields[0]))
             except (FileNotFoundError, ProcessLookupError):
                 pass
         return rows

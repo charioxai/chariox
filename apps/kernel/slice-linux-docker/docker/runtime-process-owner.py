@@ -22,23 +22,44 @@ def settle(owner, launch, sig):
 
 
 def load_record(path):
-    value = json.loads(path.read_text())
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW)) as source:
+        value = json.load(source)
     valid_id(value['pid'])
     if not isinstance(value.get('start'), str) or not value['start'].isdigit():
         raise ValueError('invalid runtime launch generation')
     return value
 
 
-def stop(path):
-    if not path.exists():
-        return 0
+def remove_stale_record(path):
+    try:
+        identity = path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return None
     value = load_record(path)
-    owner = OwnedProcesses()
-    row = next((row for row in owner.snapshot() if row['pid'] == value['pid']), None)
-    if row is None:
-        path.unlink()
+    row = next((row for row in OwnedProcesses().snapshot() if row['pid'] == value['pid']), None)
+    if row is not None and row['start'] == value['start'] and row.get('state') != 'Z':
+        return value
+    # MP-08 / MP-11: an unclean stop leaves only a receipt, not authority over
+    # a reused PID. Remove that exact stale receipt, never signal its successor.
+    current = path.stat(follow_symlinks=False)
+    if (identity.st_dev, identity.st_ino) != (current.st_dev, current.st_ino) or load_record(path) != value:
+        raise ValueError('runtime launch record changed during stale cleanup')
+    path.unlink()
+    return None
+
+
+def stop(path):
+    value = remove_stale_record(path)
+    if value is None:
         return 0
-    launch = owner.record(value['pid'], expected_start=value['start'], watch=True)
+    owner = OwnedProcesses()
+    try:
+        launch = owner.record(value['pid'], expected_start=value['start'], watch=True)
+    except ValueError:
+        # The process can exit or be reused between the two metadata reads.
+        if remove_stale_record(path) is None:
+            return 0
+        raise
     try:
         settle(owner, launch, signal.SIGTERM)
         deadline = time.monotonic() + 30
@@ -57,6 +78,7 @@ def run(path, command):
     if not command:
         raise ValueError('runtime command is missing')
     path.parent.mkdir(parents=True, exist_ok=True)
+    remove_stale_record(path)
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
     owner = OwnedProcesses()
     child = None

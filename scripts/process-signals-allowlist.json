@@ -8,7 +8,7 @@
     },
     {
       "path": "apps/kernel/slice-linux-docker/owned_process_signals.py",
-      "sha256": "7c95020a3c040d1e69eddd911cc2ac3d271a284f50c1535a720a33583257cca1",
+      "sha256": "05e6f706dafbd8dcbd12956c1a8742f6d8a65672b71a919ce08c14e7e55b6eff",
       "reason": "MP-11 canonical Python guard; generation handles required, explicit subgroup IDs bound to the launch generation, PID/start/all member identities verified before os.killpg/os.kill. MP-11: Darwin ownership uses observed PID/PPID descent only; BSD sess is never authority."
     },
     {
