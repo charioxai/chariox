@@ -56,7 +56,7 @@ pub(crate) fn room_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         spec.name = room_name(&spec.name)?;
         if spec.name == "chariox.history.search" { return Some(spec); }
         if spec.name == "chariox.history.read" {
-            spec.description = "Read a sanitized public event_ref returned by chariox.history.search. Room authorization and current protection are revalidated; no filesystem/blob fallback. An explicit other same-owner session_id requires live sudo.".into();
+            spec.description = "Read a sanitized public event_ref returned by chariox.history.search. Room authorization and current protection are revalidated; no filesystem/blob fallback. Limited to the caller room, even under /sudo.".into();
             spec.input_schema = serde_json::json!({"type":"object","required":["event_ref"],"properties":{"event_ref":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false});
             return Some(spec);
         }

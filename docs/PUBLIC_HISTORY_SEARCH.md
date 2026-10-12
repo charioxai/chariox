@@ -20,9 +20,10 @@ paths or arbitrary blobs. Missing, excluded and foreign references return the
 same unavailable result.
 
 MP-08 / MP-11: admission derives identity from the live provider or home-admitted
-lease. Agents can search any peer in their authorized room. An explicitly
-named other session requires a currently live sudo turn and the same owner;
-there is no global/owner argument or implicit sudo scope. The home kernel
+lease. Agents can search any peer in their authorized room. Any
+other session is denied, even under `/sudo`; an elevated agent reads another
+session through `chariox_kernel_request`, which needs the owner's per-operation
+scope approval and is audited. There is no global/owner argument. The home kernel
 remains the history authority for leased agents using the existing forwarding
 and history projection paths. Cloud and relay receive no search index.
 

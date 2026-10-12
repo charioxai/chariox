@@ -1,7 +1,7 @@
-//! MP-08 / MP-10 / MP-11 G08: legacy recall tools stay in the caller room, even
-//! under live /sudo. Another room is read only through `chariox_kernel_request`,
-//! which needs the owner's per-operation scope approval.
-use super::tests::{fixture, popup, running, PASSKEY};
+//! MP-08 / MP-10 / MP-11 G08: legacy recall and room history tools stay in the
+//! caller room, even under live /sudo. Another room is read only through
+//! `chariox_kernel_request`, which needs the owner's per-operation scope approval.
+use super::tests::{fixture, fixture_with_options, popup, running, PASSKEY};
 use super::*;
 
 #[tokio::test]
@@ -79,4 +79,41 @@ async fn mp11_g08_recall_tools_never_leave_the_caller_room_even_under_sudo() {
         .unwrap()
         .unwrap();
     assert!(searched.payload.get("RecallEvents").is_some());
+}
+
+#[tokio::test]
+async fn mp11_g08_history_tools_never_leave_the_caller_room_even_under_sudo() {
+    let f = fixture_with_options(None, true);
+    let own = crate::session::RuntimeSession::new("history-own-room", None, "w", "wt", "m", "k");
+    f.state
+        .owned
+        .session_store
+        .write()
+        .restore_session(own.clone());
+    let history = |name: &'static str, session_id: &str| {
+        let arguments = if name == "chariox.history.search" {
+            serde_json::json!({"query":"g08-marker", "session_id":session_id})
+        } else {
+            serde_json::json!({"event_ref":"evt_guessed", "session_id":session_id})
+        };
+        f.router
+            .dispatch_authenticated_runtime_tool_call("sudo-fixture-bearer", name, arguments)
+    };
+    running(&f);
+    assert!(
+        history("chariox.history.search", &f.request.session_id)
+            .await
+            .unwrap()
+            .ok,
+        "caller room"
+    );
+    for name in ["chariox.history.search", "chariox.history.read"] {
+        let result = history(name, own.id()).await;
+        assert!(
+            matches!(&result, Err(crate::error::DaemonError::LocalTransport { message, .. })
+                if message.contains("limited to the caller room")),
+            "{name}: another own room stays closed under /sudo: {result:?}"
+        );
+    }
+    assert!(f.state.passkey_prompts_for("local").is_empty());
 }

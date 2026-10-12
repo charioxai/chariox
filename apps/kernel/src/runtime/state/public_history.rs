@@ -328,33 +328,14 @@ impl KernelRuntimeState {
             }
             self.authorize_room_provider_epoch(Some(actor), Some(run))?;
         }
-        let target = requested.unwrap_or(session.id());
-        if target == session.id() {
-            return Ok(session.clone());
+        // MP-08/MP-11 G08: like legacy recall, even under /sudo. Another room
+        // needs chariox_kernel_request and its owner scope approval.
+        if requested.is_some_and(|target| target != session.id()) {
+            return Err(denied(
+                "history tools are limited to the caller room; read another room with chariox_kernel_request under /sudo",
+            ));
         }
-        // Sudo requires an explicit exact session, one live admitted provider run,
-        // and the SAME owner. No alias/global/missing scope expansion.
-        let (_, run_id) = self
-            .room_provider_origin
-            .as_ref()
-            .ok_or_else(|| denied("history is outside the caller room"))?;
-        let run = self.owned.provider_store.get_run(run_id)?;
-        let turn = self.sudo_for_auth_token(
-            run.runtime_mcp_auth_token()
-                .ok_or_else(|| denied("history is outside the caller room"))?,
-        )?;
-        if turn.agent_id != agent.id() || turn.owner_user_id != agent.owner_user_id() {
-            return Err(denied("history is outside the caller room"));
-        }
-        let target = self
-            .owned
-            .session_store
-            .get_session(target)
-            .map_err(|_| denied("history is outside the caller room"))?;
-        if target.owner_user_id() != turn.owner_user_id || target.status() == SessionStatus::Ended {
-            return Err(denied("history is outside the caller room"));
-        }
-        Ok(target)
+        Ok(session.clone())
     }
 
     // Canonical state -> projection is the writer lock order. Revalidate outside

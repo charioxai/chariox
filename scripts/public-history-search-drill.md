@@ -49,7 +49,7 @@ In a second terminal with the same environment:
    provider archival coverage.
 4. Create a separate real room through the TUI and run a distinct useful review.
    Have the first room's agent request that room explicitly and try its event
-   reference: search is denied without live same-owner sudo; a foreign reference
+   reference: search is denied, also under live /sudo; a foreign reference
    and a guessed reference have the same unavailable result. An ordinary room
    query must contain no other-room hits, counts, snippets or rebuild progress.
 5. Exercise the real owner-approved protected Vault/login/hand-off workflow in the

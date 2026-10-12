@@ -4,7 +4,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
             name: META_HISTORY_SEARCH_TOOL.into(),
-            description: "Search sanitized public prompts, answers and normalized tool records in this room using literal full-text terms. Returns bounded snippets, opaque event_ref values for chariox.history.read, a scoped cursor, and explicit redaction/index coverage. Unknown legacy/private history is excluded; no file or attachment indexing. Other sessions require a live sudo turn and an explicit exact session_id owned by the same user.".into(),
+            description: "Search sanitized public prompts, answers and normalized tool records in this room using literal full-text terms. Returns bounded snippets, opaque event_ref values for chariox.history.read, a scoped cursor, and explicit redaction/index coverage. Unknown legacy/private history is excluded; no file or attachment indexing. Limited to the caller room, even under /sudo; read another session with chariox_kernel_request.".into(),
             input_schema: serde_json::json!({"type":"object","required":["query"],"properties":{
                 "query":{"type":"string","minLength":1,"maxLength":1024},
                 "agent_ref":{"type":"string"},"session_id":{"type":"string"},
