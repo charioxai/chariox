@@ -218,6 +218,19 @@ pub(crate) fn admission_error(message: impl Into<String>) -> DaemonError {
 
 // MP-08/MP-11: expose only allowlisted refusal reasons, never raw Cloud errors.
 pub(crate) fn cloud_admission_error(error: DaemonError) -> DaemonError {
+    let reason = match crate::runtime::cloud_api_client::cloud_error_code(&error) {
+        Some("authorization_expired") => "authorization_expired",
+        Some("authorization_denied") => "authorization_denied",
+        Some("session_invalid") => "session_invalid",
+        Some("dependency_unavailable") => "dependency_unavailable",
+        Some("invalid_request") => "invalid_request",
+        _ => "other",
+    };
+    crate::logging::warn_with_fields(
+        "daemon.managed_context.owner",
+        "MP-08 owner Cloud admission refused",
+        serde_json::json!({"reason": reason}),
+    );
     let (code, message, retryable) =
         match crate::runtime::cloud_api_client::cloud_error_code(&error) {
             Some("authorization_expired") => (
@@ -338,6 +351,19 @@ pub(crate) async fn authorize_import_ticket(
         || !valid_identity(&profile.user_id)
         || !valid_identity(&profile.realm_id)
     {
+        crate::logging::warn_with_fields(
+            "daemon.managed_context.owner",
+            "MP-08 owner destination enrollment mismatch",
+            serde_json::json!({
+                "destination_machine_matches": destination.machine_id() == config.host_machine_id,
+                "destination_kernel_matches": destination.kernel_id() == config.daemon_id,
+                "profile_machine_matches": profile.machine_id.as_deref() == Some(destination.machine_id()),
+                "profile_kernel_matches": profile.kernel_id.as_deref() == Some(destination.kernel_id()),
+                "profile_key_matches": profile.kernel_public_key_thumbprint.as_deref() == Some(key.as_str()),
+                "source_owner_matches": source.user_id.as_deref() == Some(profile.user_id.as_str()),
+                "realm_matches": source.realm_id == profile.realm_id,
+            }),
+        );
         return Err(admission_error(
             "owner-managed destination enrollment, account, user or key does not match",
         ));

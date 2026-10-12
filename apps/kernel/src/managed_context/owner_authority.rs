@@ -83,7 +83,14 @@ async fn kernel_cloud_request<T: serde::de::DeserializeOwned + Send + 'static>(
         .map_err(|error| {
             cloud_authorization_error(match error {
                 ureq::Error::Transport(_) => true,
-                ureq::Error::Status(status, _) => status == 408 || status == 429 || status >= 500,
+                ureq::Error::Status(status, _) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.managed_context.owner",
+                        "MP-08 owner directory request refused",
+                        json!({"status": status}),
+                    );
+                    status == 408 || status == 429 || status >= 500
+                }
             })
         })?;
         // Bounded, typed response; raw API errors never appear in runtime notices.
@@ -228,7 +235,14 @@ pub(crate) async fn authorize_import(
                 && Some(peer.peer.key_thumbprint.as_str())
                     == caller.public_key_thumbprint.as_deref()
         })
-        .ok_or_else(|| admission_error("Authenticated source is offline or not the same user"))?;
+        .ok_or_else(|| {
+            crate::logging::warn_with_fields(
+                "daemon.managed_context.owner",
+                "MP-08 authenticated source missing from owner directory",
+                json!({}),
+            );
+            admission_error("Authenticated source is offline or not the same user")
+        })?;
     let binding: Binding = crate::runtime::cloud_api_client::post_cloud_json(profile.api_url.clone(), TICKET_ENDPOINT, json!({
         "kernelCredential": profile.kernel_credential, "ownerManagedImport": {
             "contextId": plan.context_id, "planDigest": plan.plan_digest, "source": source.peer, "target": target,

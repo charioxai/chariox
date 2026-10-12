@@ -108,6 +108,13 @@ pub(crate) async fn execute_set_provider_account_credential_request(
             "provider_account_credential_set",
         )
         .await?;
+    let verified_usage = claude_setup_token_login::verify_token(
+        runtime_state.provider_account_profile_registry(),
+        &owner_user_id,
+        &profile.profile_id,
+        &request.value,
+    )
+    .await?;
     let config = config_projection.snapshot();
     let stored = crate::provider::store_provider_account_credential(
         &config,
@@ -117,6 +124,18 @@ pub(crate) async fn execute_set_provider_account_credential_request(
         &request.value,
         request.overwrite,
     )?;
+    runtime_state
+        .provider_account_profile_registry()
+        .update_observation(
+            &owner_user_id,
+            &provider,
+            &profile.profile_id,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            None,
+            None,
+            None,
+            Some(verified_usage),
+        )?;
     runtime_state.record_waiting_room_change();
     Ok(LocalDaemonResponse::ProviderAccountCredentialStored {
         provider,

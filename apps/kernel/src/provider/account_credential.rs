@@ -20,10 +20,15 @@ pub(crate) fn provider_account_credential_id(
     provider: &str,
     profile_id: &str,
 ) -> String {
+    // MP-08/MP-11: storage validates aliases to the canonical family. Lookup,
+    // Vault gating and launch must derive that same handle for claude-p too.
+    let provider_identity = crate::provider::canonical_provider_family(provider)
+        .map(str::to_string)
+        .unwrap_or_else(|| provider.trim().to_ascii_lowercase());
     let identity = format!(
         "{}\0{}\0{}",
         owner_user_id.trim(),
-        provider.trim().to_ascii_lowercase(),
+        provider_identity,
         profile_id.trim()
     );
     let digest = Sha256::digest(identity.as_bytes());
@@ -250,6 +255,20 @@ mod tests {
         let second = provider_account_credential_id("local", "claude", "Work account");
 
         assert_eq!(first, second);
+        assert_eq!(
+            first,
+            "provider-account-claude-da3334b2afcfedf00992e8d6d5c70612f96435bd"
+        );
+        for alias in ["claude-p", "claude-headless"] {
+            assert_eq!(
+                first,
+                provider_account_credential_id("local", alias, "Work account")
+            );
+            assert_ne!(
+                first,
+                provider_account_credential_id("another-owner", alias, "Work account")
+            );
+        }
         assert!(first.starts_with("provider-account-claude-"));
         assert!(first
             .bytes()
@@ -314,6 +333,13 @@ mod tests {
                 .expect("vault-backed credential should require vault access")
         );
 
+        for alias in ["claude-p", "claude-headless"] {
+            assert!(provider_account_credential_registered("local", alias, "work").unwrap());
+            assert!(provider_account_credential_uses_vault("local", alias, "work").unwrap());
+            assert!(
+                !provider_account_credential_registered("another-owner", alias, "work").unwrap()
+            );
+        }
         std::env::remove_var("CHARIOX_HOME");
         let _ = std::fs::remove_dir_all(root);
     }

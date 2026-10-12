@@ -163,7 +163,18 @@ impl OpenCodeHttpFailure {
         method: &'static str,
         path: &str,
     ) -> DaemonError {
-        client.protocol_error(method_to_operation(method, path), self.message)
+        let operation = method_to_operation(method, path);
+        if matches!(
+            path,
+            "/config" | "/agent" | "/provider" | "/config/providers"
+        ) {
+            crate::logging::warn_with_fields(
+                "daemon.provider.opencode",
+                "MP-08 OpenCode catalog request failed",
+                serde_json::json!({"operation": operation, "endpoint": path, "io_kind": self.io_kind.map(|kind| format!("{kind:?}"))}),
+            );
+        }
+        client.protocol_error(operation, self.message)
     }
 }
 
@@ -256,6 +267,17 @@ fn retry_attempts_for_request(method: &'static str, path: &str) -> usize {
 fn read_timeout_for_request(method: &'static str, path: &str) -> Duration {
     if method == "POST" && is_mcp_connect_path(path) {
         return Duration::from_secs(12);
+    }
+    // MP-08/MP-11: the official server's global health is available before
+    // workspace config, agent defaults and the provider catalog finish loading.
+    // Keep health/status polls short; let a catalog read finish on one socket.
+    if method == "GET"
+        && matches!(
+            path,
+            "/config" | "/agent" | "/provider" | "/config/providers"
+        )
+    {
+        return Duration::from_secs(30);
     }
     Duration::from_secs(2)
 }
@@ -465,6 +487,61 @@ mod tests {
         is_retryable_opencode_http_error, method_to_operation, read_timeout_for_request,
         retry_attempts_for_request, OpenCodeHttpFailure,
     };
+
+    // MP-08/MP-10/MP-11: health can pass before an official catalog read is ready.
+    #[test]
+    fn catalog_read_waits_for_response_after_health_timeout() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Arc,
+        };
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let server_done = done.clone();
+        let server_requests = requests.clone();
+        let server = thread::spawn(move || {
+            while !server_done.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(1)))
+                            .unwrap();
+                        let mut request = [0; 1024];
+                        if let Ok(count) = stream.read(&mut request) {
+                            assert!(String::from_utf8_lossy(&request[..count])
+                                .starts_with("GET /provider "));
+                            server_requests.fetch_add(1, Ordering::SeqCst);
+                            thread::sleep(Duration::from_millis(2500));
+                            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("owned listener failed: {error}"),
+                }
+            }
+        });
+        let client = super::OpenCodeClient::new("run", format!("http://{address}")).unwrap();
+        let result = client.send_json_request::<serde_json::Value>("GET", "/provider", None);
+        done.store(true, Ordering::SeqCst);
+        server.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "healthy server catalog readiness must outlive the two-second health socket timeout"
+        );
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "wait for one response instead of duplicating a slow catalog read"
+        );
+    }
 
     #[test]
     fn retries_opencode_mcp_connect_startup_io_failures() {

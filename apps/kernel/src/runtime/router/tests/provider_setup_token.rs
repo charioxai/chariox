@@ -278,3 +278,105 @@ exit 0
     drop(router);
     drop(app);
 }
+
+// MP-08/MP-11: manual token input must establish the same verified account
+// observation as the official interactive setup-token workflow.
+#[tokio::test]
+async fn manual_setup_token_verifies_before_storage_and_authenticates_alias() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-manual-token-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let names = [
+        "HOME",
+        "CHARIOX_HOME",
+        "CHARIOX_CLAUDE_BIN",
+        "CHARIOX_LOG_DIR",
+        "CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT",
+    ];
+    let old = names.iter().map(std::env::var_os).collect::<Vec<_>>();
+    let _cleanup = FixtureCleanup {
+        root: root.clone(),
+        environment: names.iter().copied().zip(old).collect(),
+    };
+    std::env::set_var("HOME", root.join("home"));
+    std::env::set_var("CHARIOX_HOME", root.join("state"));
+    std::env::set_var("CHARIOX_LOG_DIR", root.join("logs"));
+    std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
+    let binary = root.join("claude");
+    std::env::set_var("CHARIOX_CLAUDE_BIN", &binary);
+    let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::ProcessMemory;
+    let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap()));
+    let router = CommandRouter::with_interactive_capacity(app, 1);
+    let profile = router
+        .provider_account_profiles
+        .create_managed("local", "claude", "manual fixture")
+        .unwrap();
+    for (accepted, replace) in [(true, false), (false, true)] {
+        std::fs::write(&binary, if accepted {
+            "#!/bin/sh\n[ \"$1\" = -p ] || exit 90\nprintf '%s\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_api_ms\":0,\"num_turns\":0,\"total_cost_usd\":0,\"usage\":{\"input_tokens\":0,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":0},\"result\":\"Current session: 17% used\\nCurrent week (all models): 41% used\"}'\n"
+        } else { "#!/bin/sh\nexit 3\n" }).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let request = LocalDaemonRequest::SetProviderAccountCredential(
+            crate::local::SetProviderAccountCredentialRequest {
+                provider: "claude-p".into(),
+                account_profile: profile.profile_id.clone(),
+                value: if accepted {
+                    "synthetic-manual-token"
+                } else {
+                    "synthetic-invalid"
+                }
+                .into(),
+                run: false,
+                overwrite: replace,
+                session_id: None,
+                agent_id: None,
+            },
+        );
+        let command = KernelCommand::from_local_request("manual-token", None, None, &request);
+        let result = router.dispatch(command, request).await;
+        if accepted {
+            assert!(matches!(
+                result.unwrap(),
+                LocalDaemonResponse::ProviderAccountCredentialStored { .. }
+            ));
+            assert!(
+                router
+                    .provider_account_profiles
+                    .require_authenticated("local", "claude-p", &profile.profile_id, None, "test")
+                    .is_ok(),
+                "manual token storage must record official verification for prompt admission"
+            );
+        } else {
+            assert!(
+                result.is_err(),
+                "failed verification must not replace the stored credential"
+            );
+            let id = crate::provider::provider_account_credential_id(
+                "local",
+                "claude",
+                &profile.profile_id,
+            );
+            let service = crate::secret::RuntimeSecretService::with_vault_config(
+                crate::credential::load_user_credentials().unwrap(),
+                &router
+                    .runtime_state
+                    .config_snapshot()
+                    .await
+                    .user_config
+                    .credential_vault,
+            )
+            .unwrap();
+            assert_eq!(
+                service.provider_secret_input(&id).unwrap().as_str(),
+                "synthetic-manual-token"
+            );
+        }
+    }
+}

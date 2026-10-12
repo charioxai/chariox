@@ -223,18 +223,35 @@ async fn verify(
     record: &ProviderLoginProcessRecord,
     token: &Zeroizing<String>,
 ) -> Result<(), DaemonError> {
-    let registry = runtime_state.provider_account_profile_registry().clone();
+    verify_token(
+        runtime_state.provider_account_profile_registry(),
+        owner_user_id,
+        &record.account_profile,
+        token,
+    )
+    .await
+    .map(|_| ())
+}
+
+// MP-08/MP-11: manual and captured setup tokens share official verification.
+pub(super) async fn verify_token(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    account_profile: &str,
+    token: &str,
+) -> Result<crate::account_profile::ProviderAccountUsageSnapshot, DaemonError> {
+    let registry = registry.clone();
     let owner_user_id = owner_user_id.to_string();
-    let account_profile = record.account_profile.clone();
-    let token = token.clone();
+    let account_profile = account_profile.to_string();
+    let token = Zeroizing::new(token.trim().to_string());
     tokio::task::spawn_blocking(move || {
         let mut environment =
             registry.resolve_environment(&owner_user_id, "claude", &account_profile)?;
+        let executable = crate::provider::resolve_claude_executable()?;
         environment.insert(
             crate::provider::CLAUDE_OAUTH_TOKEN_ENV.to_string(),
             token.to_string(),
         );
-        let executable = crate::provider::resolve_claude_executable()?;
         let verified = crate::provider::probe_claude_account_usage(
             &executable,
             &account_profile,
@@ -243,7 +260,7 @@ async fn verify(
         if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
             zeroize::Zeroize::zeroize(value);
         }
-        verified.map(|_| ())
+        verified
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {
