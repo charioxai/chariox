@@ -24,7 +24,9 @@ pub(super) async fn start(
     command: &KernelCommand,
     request: SetProviderAccountCredentialRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    if request.provider != "claude" || !request.value.is_empty() {
+    if crate::provider::canonical_provider_family(&request.provider) != Some("claude")
+        || !request.value.is_empty()
+    {
         return Err(login_error(
             "setup-token --run requires Claude and no credential value",
         ));
@@ -223,23 +225,30 @@ async fn verify(
     record: &ProviderLoginProcessRecord,
     token: &Zeroizing<String>,
 ) -> Result<(), DaemonError> {
+    verify_account_token(runtime_state, owner_user_id, &record.account_profile, token).await
+}
+
+/// MP-08 / MP-11: direct import and captured login verify the same profile-scoped
+/// official model turn before storing or observing authentication.
+pub(super) async fn verify_account_token(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    account_profile: &str,
+    token: &Zeroizing<String>,
+) -> Result<(), DaemonError> {
     let registry = runtime_state.provider_account_profile_registry().clone();
     let owner_user_id = owner_user_id.to_string();
-    let account_profile = record.account_profile.clone();
+    let account_profile = account_profile.to_string();
     let token = token.clone();
     tokio::task::spawn_blocking(move || {
         let mut environment =
             registry.resolve_environment(&owner_user_id, "claude", &account_profile)?;
+        let executable = crate::provider::resolve_claude_executable()?;
         environment.insert(
             crate::provider::CLAUDE_OAUTH_TOKEN_ENV.to_string(),
             token.to_string(),
         );
-        let executable = crate::provider::resolve_claude_executable()?;
-        let verified = crate::provider::probe_claude_account_usage(
-            &executable,
-            &account_profile,
-            &environment,
-        );
+        let verified = crate::provider::verify_claude_setup_token(&executable, &environment);
         if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
             zeroize::Zeroize::zeroize(value);
         }
@@ -250,32 +259,6 @@ async fn verify(
         operation: "verify Claude setup token",
         message: error.to_string(),
     })?
-}
-
-// MP-08/MP-11: manually supplied tokens use the same official auth-status
-// seam as linked accounts. Subscription usage windows are not auth evidence.
-pub(super) async fn verify_manual_token(
-    registry: &crate::account_profile::ProviderAccountProfileRegistry,
-    owner_user_id: &str,
-    account_profile: &str,
-    token: &str,
-) -> Result<(), DaemonError> {
-    let registry = registry.clone();
-    let owner_user_id = owner_user_id.to_string();
-    let account_profile = account_profile.to_string();
-    let token = Zeroizing::new(token.trim().to_string());
-    tokio::task::spawn_blocking(move || {
-        let mut environment = registry.resolve_environment(&owner_user_id, "claude", &account_profile)?;
-        environment.insert(crate::provider::CLAUDE_OAUTH_TOKEN_ENV.to_string(), token.to_string());
-        let observed = crate::local::provider_requests::claude_auth_status("claude", &account_profile, &environment);
-        if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
-            zeroize::Zeroize::zeroize(value);
-        }
-        if observed?.auth_state != "authenticated" {
-            return Err(login_error("The official Claude CLI did not recognize the supplied account credential; nothing was stored."));
-        }
-        Ok(())
-    }).await.map_err(|error| login_error(&format!("checking Claude account credential failed: {error}")))?
 }
 
 async fn store_token(

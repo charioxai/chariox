@@ -100,6 +100,13 @@ pub(crate) async fn execute_set_provider_account_credential_request(
         &provider,
         &request.account_profile,
     )?;
+    claude_setup_token_login::verify_account_token(
+        runtime_state,
+        &owner_user_id,
+        &profile.profile_id,
+        &zeroize::Zeroizing::new(request.value.clone()),
+    )
+    .await?;
     let _vault_unlock = runtime_state
         .ensure_vault_unlocked_for_command_context(
             command,
@@ -108,13 +115,6 @@ pub(crate) async fn execute_set_provider_account_credential_request(
             "provider_account_credential_set",
         )
         .await?;
-    claude_setup_token_login::verify_manual_token(
-        runtime_state.provider_account_profile_registry(),
-        &owner_user_id,
-        &profile.profile_id,
-        &request.value,
-    )
-    .await?;
     let config = config_projection.snapshot();
     let stored = crate::provider::store_provider_account_credential(
         &config,
@@ -136,6 +136,9 @@ pub(crate) async fn execute_set_provider_account_credential_request(
             None,
             None,
         )?;
+    runtime_state
+        .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+        .await;
     runtime_state.record_waiting_room_change();
     Ok(LocalDaemonResponse::ProviderAccountCredentialStored {
         provider,
@@ -354,3 +357,6 @@ fn credential_vault_status(
     let user_config = config_projection.snapshot().user_config;
     crate::secret::chariox_encrypted_vault_status(&user_config.credential_vault.path)
 }
+
+#[cfg(test)]
+mod tests;

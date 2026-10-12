@@ -934,10 +934,10 @@ Local daemon protocol v308 adds `SetProviderAccountCredential`. An attached
 client sends a provider, stable account profile, hidden credential value, and
 an explicit overwrite flag. The kernel verifies account ownership, requests a
 Chariox Vault unlock through the existing runtime interaction when needed, verifies
-the supplied Claude token with the official CLI auth-status check, and atomically
-writes the secret plus provider-only credential policy. The successful check records
+the supplied Claude token with one bounded official model turn and no tools, and atomically
+writes the secret plus provider-only credential policy. The successful verification records
 the account authentication observation, so both `claude` and `claude-p` can
-launch through the same stored credential. Subscription usage windows are not required for this check. A failed check leaves the prior secret
+launch through the same stored credential. Subscription usage windows and native token-presence status are not authentication evidence. A failed check leaves the prior secret
 and account observation unchanged. Native-file status reads preserve the stored-token
 observation without opening the Vault or updating its validation time. Command
 history and debug output redact the value. No client currently requires this

@@ -20,15 +20,12 @@ pub(crate) fn provider_account_credential_id(
     provider: &str,
     profile_id: &str,
 ) -> String {
-    // MP-08/MP-11: storage validates aliases to the canonical family. Lookup,
-    // Vault gating and launch must derive that same handle for claude-p too.
-    let provider_identity = crate::provider::canonical_provider_family(provider)
-        .map(str::to_string)
-        .unwrap_or_else(|| provider.trim().to_ascii_lowercase());
     let identity = format!(
         "{}\0{}\0{}",
         owner_user_id.trim(),
-        provider_identity,
+        crate::provider::canonical_provider_family(provider)
+            .map(str::to_string)
+            .unwrap_or_else(|| provider.trim().to_ascii_lowercase()),
         profile_id.trim()
     );
     let digest = Sha256::digest(identity.as_bytes());
@@ -255,25 +252,27 @@ mod tests {
         let second = provider_account_credential_id("local", "claude", "Work account");
 
         assert_eq!(first, second);
-        assert_eq!(
-            first,
-            "provider-account-claude-da3334b2afcfedf00992e8d6d5c70612f96435bd"
-        );
-        for alias in ["claude-p", "claude-headless"] {
-            assert_eq!(
-                first,
-                provider_account_credential_id("local", alias, "Work account")
-            );
-            assert_ne!(
-                first,
-                provider_account_credential_id("another-owner", alias, "Work account")
-            );
-        }
         assert!(first.starts_with("provider-account-claude-"));
         assert!(first
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')));
         assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    fn claude_setup_token_aliases_share_the_canonical_credential_handle() {
+        let canonical = provider_account_credential_id("local", "claude", "work");
+        for alias in ["claude", "claude-p", "claude-headless", " CLAUDE-P "] {
+            assert_eq!(
+                provider_account_credential_id("local", alias, "work"),
+                canonical,
+                "MP-08/MP-10/MP-11: launch and storage must share credential identity for {alias}"
+            );
+        }
+        assert_ne!(
+            canonical,
+            provider_account_credential_id("another-owner", "claude-p", "work")
+        );
     }
 
     #[test]
@@ -333,13 +332,6 @@ mod tests {
                 .expect("vault-backed credential should require vault access")
         );
 
-        for alias in ["claude-p", "claude-headless"] {
-            assert!(provider_account_credential_registered("local", alias, "work").unwrap());
-            assert!(provider_account_credential_uses_vault("local", alias, "work").unwrap());
-            assert!(
-                !provider_account_credential_registered("another-owner", alias, "work").unwrap()
-            );
-        }
         std::env::remove_var("CHARIOX_HOME");
         let _ = std::fs::remove_dir_all(root);
     }
@@ -440,6 +432,47 @@ mod tests {
             resolved.iter().collect::<Vec<_>>(),
             vec![(CLAUDE_OAUTH_TOKEN_ENV, "setup-token-secret")]
         );
+        let profiles =
+            crate::account_profile::ProviderAccountProfileRegistry::open(root.join("profiles"))
+                .unwrap();
+        let profile = profiles
+            .create_managed("local", "claude", "aliases")
+            .unwrap();
+        store_provider_account_credential(
+            &config,
+            "local",
+            "claude-p",
+            &profile.profile_id,
+            "setup-token-secret",
+            false,
+        )
+        .unwrap();
+        for alias in ["claude", "claude-p", "claude-headless"] {
+            assert!(
+                provider_account_credential_registered("local", alias, &profile.profile_id)
+                    .unwrap()
+            );
+            assert!(
+                provider_account_credential_uses_vault("local", alias, &profile.profile_id)
+                    .unwrap()
+            );
+            for interface in [
+                crate::provider::ProviderClientInterface::Chariox,
+                crate::provider::ProviderClientInterface::NativeTui,
+            ] {
+                let env = resolve_provider_account_credentials_for_launch(
+                    &config,
+                    &profiles,
+                    "local",
+                    alias,
+                    &profile.profile_id,
+                    interface,
+                )
+                .unwrap();
+                assert!(!env.is_empty(), "{alias} must resolve the stored token");
+                assert!(!format!("{env:?}").contains("setup-token-secret"));
+            }
+        }
         let duplicate = store_provider_account_credential(
             &config,
             "local",
