@@ -52,11 +52,11 @@ pub(crate) use account_credential::{
 #[cfg(test)]
 pub(crate) use claude::ensure_claude_native_hidden_context_fits;
 pub(crate) use claude::prepare_vaulted_claude_native_onboarding;
-pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
     claude_native_hidden_context_room, fit_claude_native_hidden_context,
     CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS, CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
 };
+pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
     probe_claude_account_usage, verify_claude_account_credential, ClaudeCredentialCheckError,
 };
