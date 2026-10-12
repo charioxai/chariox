@@ -15,6 +15,13 @@ impl KernelRuntimeOwnedState {
             self.provider_run_projection
                 .is_leased_provider_run(run.id())
         });
+        if ProviderAccountLaunchScope::lease_run_holds_home_claude_credential(
+            agent,
+            run.as_ref(),
+            leased,
+        ) {
+            return Ok(());
+        }
         self.provider_account_profiles
             .require_agent_authenticated_with_scope(
                 &self.config_projection.snapshot(),

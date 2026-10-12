@@ -7,6 +7,14 @@ impl DaemonApp {
         &self,
         agent: &crate::agent::AgentInstance,
     ) -> ProviderAccountLaunchScope {
+        let (run, leased) = self.agent_run_lease_marker(agent);
+        ProviderAccountLaunchScope::for_agent_run(agent, run.as_ref(), leased)
+    }
+
+    fn agent_run_lease_marker(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> (Option<crate::provider::RuntimeProviderRun>, bool) {
         let run = self
             .providers
             .get_run_for_agent(agent.session_id(), agent.id());
@@ -14,7 +22,7 @@ impl DaemonApp {
             self.provider_run_projection
                 .is_leased_provider_run(run.id())
         });
-        ProviderAccountLaunchScope::for_agent_run(agent, run.as_ref(), leased)
+        (run, leased)
     }
 
     pub(super) fn require_agent_account_authenticated(
@@ -22,12 +30,20 @@ impl DaemonApp {
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
+        let (run, leased) = self.agent_run_lease_marker(agent);
+        if ProviderAccountLaunchScope::lease_run_holds_home_claude_credential(
+            agent,
+            run.as_ref(),
+            leased,
+        ) {
+            return Ok(());
+        }
         self.provider_account_profiles
             .require_agent_authenticated_with_scope(
                 &self.config,
                 agent,
                 operation,
-                self.provider_account_scope_for_agent(agent),
+                ProviderAccountLaunchScope::for_agent_run(agent, run.as_ref(), leased),
             )
     }
 }

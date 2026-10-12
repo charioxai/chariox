@@ -30,6 +30,28 @@ impl ProviderAccountLaunchScope {
         }
     }
 
+    // A leased Claude replica runs on the home's per-launch credential, so its
+    // worker profile is never logged in. Only its live marked run proves that
+    // credential; without one, launching still requires the home credential.
+    pub(crate) fn lease_run_holds_home_claude_credential(
+        agent: &crate::agent::AgentInstance,
+        run: Option<&crate::provider::RuntimeProviderRun>,
+        marked_leased: bool,
+    ) -> bool {
+        crate::provider::canonical_provider_family(agent.provider()) == Some("claude")
+            && matches!(
+                Self::for_agent_run(agent, run, marked_leased),
+                Self::LeaseReplica
+            )
+            && run.is_some_and(|run| {
+                matches!(
+                    run.state(),
+                    crate::provider::ProviderRunState::Starting
+                        | crate::provider::ProviderRunState::Running
+                )
+            })
+    }
+
     pub(crate) fn owner_user_id(self, config: &crate::config::DaemonConfig, owner: &str) -> String {
         match self {
             Self::Home => {

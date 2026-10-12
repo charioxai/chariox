@@ -426,6 +426,95 @@ async fn failed_leased_prompt_admission_after_run_assignment_settles_its_receipt
         .is_none());
 }
 
+// MP-08 / MP-10 / MP-11: a leased Claude replica runs on the home's per-launch
+// credential; the worker's own Claude profile is never logged in.
+#[tokio::test]
+async fn leased_claude_prompt_admits_on_the_home_credential_run_without_a_worker_login() {
+    crate::test_support::isolated_env_test!();
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let execution_lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "home-session",
+            "home-agent",
+            false,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        )
+        .unwrap();
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &execution_lease.id,
+            "claude-p",
+            "default",
+            Some("haiku".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let profile = crate::transport::relay_peer::RelayAgentExecutionProfile::from(
+        &app.agents().get_agent(&lease.backing_agent_id).unwrap(),
+    );
+    let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 2);
+    let submit = || {
+        router.relay_submit_leased_prompt(
+            &lease.id,
+            profile.clone(),
+            "call the capability loader",
+            "",
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+            None,
+        )
+    };
+    // Without a live run, the worker still requires the home's credential.
+    assert!(submit()
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains(crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE));
+    assert!(app
+        .lock()
+        .await
+        .providers()
+        .get_run_for_agent(&lease.backing_session_id, &lease.backing_agent_id)
+        .is_none());
+    // The live run a credentialed lease launch produced for the admitted profile.
+    let mut worker = app.lock().await;
+    let admitted = worker.leased_agents.get(&lease.id).cloned().unwrap();
+    let run = worker
+        .providers_mut()
+        .launch_run_detached(
+            crate::provider::LaunchProviderRequest::new(
+                &lease.backing_session_id,
+                "dev-stub",
+                &admitted.provider,
+                &admitted.account_profile,
+                "haiku",
+            )
+            .with_agent_id(&lease.backing_agent_id)
+            .with_variant(admitted.effort.clone()),
+        )
+        .unwrap();
+    drop(worker);
+    let (run_id, outcome) = submit().await.unwrap();
+    assert_eq!(run_id, run.id());
+    assert!(matches!(
+        outcome,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+}
+
 // MP-08 / MP-10 / MP-11: Target worker re-resolves before its Ready shortcut.
 #[test]
 fn mp08_mp10_mp11_leased_reuse_observes_worker_value_changes() {
