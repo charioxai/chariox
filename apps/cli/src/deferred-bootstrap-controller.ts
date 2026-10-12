@@ -23,6 +23,7 @@ export type DeferredBootstrapControllerDeps = {
   resetPromptHistoryNavigation: () => void
   setNextHistoryCursor: (cursor: SessionHistoryCursorState) => void
   setAgentPaneEntries: (agentId: string, entries: TranscriptEntry[]) => void
+  setSessionHydratingState: (next: boolean) => void
   setAgentPanePreview: (agentId: string, preview: string) => void
   replaceTranscriptEntries: (entries: TranscriptEntry[], agentId: string | null) => void
   prependTranscriptEntries: (entries: TranscriptEntry[]) => Promise<void>
@@ -107,6 +108,8 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
 
     void deferred.attachedHistory?.then(applyAttachedHistory).catch((error) => {
       warn("failed to hydrate attached history after bootstrap", error)
+    }).finally(() => {
+      deps.setSessionHydratingState(false)
     })
   }
 

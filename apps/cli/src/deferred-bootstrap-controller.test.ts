@@ -57,6 +57,42 @@ test("deferred bootstrap controller replaces matching attached history", async (
   assert.deepEqual(harness.prependCalls, [])
 })
 
+test("deferred bootstrap controller keeps the session hydrating until attached history settles", async () => {
+  let resolveHistory!: (value: Awaited<NonNullable<BootstrapDeferredState["attachedHistory"]>>) => void
+  const harness = bootstrapHarness({
+    attachmentSessionId: "session-1",
+    deferred: {
+      attachedHistory: new Promise((resolve) => {
+        resolveHistory = resolve
+      }),
+    },
+  })
+
+  harness.controller.apply()
+  await flushPromises()
+  assert.deepEqual(harness.hydrating, [])
+
+  resolveHistory({
+    sessionId: "session-1",
+    visibleAgentId: "agent-1",
+    agentEntries: { "agent-1": [entry(1, "assistant", "hello")] },
+    historyEntries: [entry(1, "assistant", "hello")],
+    promptHistoryEntries: [],
+    nextHistoryCursor: null,
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(harness.replaceCalls, [{ agentId: "agent-1", entries: ["hello"] }])
+  assert.deepEqual(harness.hydrating, [false])
+
+  const failed = bootstrapHarness({
+    attachmentSessionId: "session-1",
+    deferred: { attachedHistory: Promise.reject(new Error("offline")) },
+  })
+  failed.controller.apply()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(failed.hydrating, [false])
+})
+
 test("deferred bootstrap controller prepends attached history when transcript already exists", async () => {
   const harness = bootstrapHarness({
     attachmentSessionId: "session-1",
@@ -131,6 +167,7 @@ function bootstrapHarness(options: {
     replaceCalls: [] as Array<{ agentId: string | null; entries: string[] }>,
     prependCalls: [] as Array<Array<{ id: number; text: string }>>,
     warnings: [] as string[],
+    hydrating: [] as boolean[],
     controller: null as ReturnType<typeof createDeferredBootstrapController> | null,
   }
   harness.controller = createDeferredBootstrapController({
@@ -161,6 +198,9 @@ function bootstrapHarness(options: {
     },
     setAgentPaneEntries: (agentId, entries) => {
       harness.agentPaneEntries[agentId] = entries
+    },
+    setSessionHydratingState: (next) => {
+      harness.hydrating.push(next)
     },
     setAgentPanePreview: (agentId, preview) => {
       harness.agentPanePreviews[agentId] = preview

@@ -197,7 +197,8 @@ export function createCliAppState(options: {
   const [agentPanePreviews, setAgentPanePreviews] = createSignal<Record<string, string>>({})
   const [agentPaneEntries, setAgentPaneEntries] = createSignal<Record<string, TranscriptEntry[]>>({})
   const [agentBusyLatches, setAgentBusyLatches] = createSignal<Record<string, boolean>>({})
-  const [sessionHydrating, setSessionHydrating] = createSignal(false)
+  // A startup attach applies its history later; until then the pane is loading, not empty.
+  const [sessionHydrating, setSessionHydrating] = createSignal(Boolean(options.bootstrap.deferred?.attachedHistory))
   const [loadingHistory, setLoadingHistory] = createSignal(false)
   const [historyLoadingMessage, setHistoryLoadingMessage] = createSignal<string | null>(null)
   const [workingAnimationFrame, setWorkingAnimationFrame] = createSignal(0)

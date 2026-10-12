@@ -14,7 +14,7 @@ import {
 } from "./cli-runtime-tuning.js"
 import { clampScrollTop } from "./history-viewport.js"
 import { formatTranscriptPreview } from "@chariox/kernel-client/session-history-preview"
-import { buildEmptyTranscriptRenderable } from "./workspace-renderables.js"
+import { buildEmptyTranscriptRenderable, buildLoadingTranscriptRenderable } from "./workspace-renderables.js"
 import {
   getSessionHistoryBlobContent,
   getSessionHistoryOutline,
@@ -32,6 +32,7 @@ export type CliAgentPaneCompositionDeps = {
   client: any
   renderer: any
   isAttached: AnyFn
+  sessionHydrating: AnyFn
   visibleTranscriptAgentId: AnyFn
   visibleTranscriptEntries: AnyFn
   agentPaneEntries: AnyFn
@@ -147,7 +148,9 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
     emptyRenderables: deps.agentPaneRuntimeStore.emptyRenderables,
     toolStates: deps.agentPaneRuntimeStore.toolStates,
     paneEntries: (agentId) => deps.agentPaneEntries()[agentId] ?? [],
-    buildEmptyRenderable: () => buildEmptyTranscriptRenderable(deps.renderer),
+    buildEmptyRenderable: () => deps.sessionHydrating()
+      ? buildLoadingTranscriptRenderable(deps.renderer)
+      : buildEmptyTranscriptRenderable(deps.renderer),
     buildEntryRenderable: (agentId, entry) => buildTranscriptEntryRenderable(
       deps.renderer,
       entry,

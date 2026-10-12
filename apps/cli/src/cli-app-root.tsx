@@ -812,6 +812,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setCurrentAuxiliaryAgentId: agentPaneRuntimeStore.setCurrentAuxiliaryAgentId,
     registerAgentScrollbox: agentPaneRuntimeStore.registerScrollbox,
     rebuildAuxiliaryAgentPane: (agentId) => rebuildAuxiliaryAgentPane(agentId),
+    rebuildEmptyAuxiliaryAgentPanes: () => {
+      for (const agentId of [...agentPaneRuntimeStore.emptyRenderables.keys()]) rebuildAuxiliaryAgentPane(agentId)
+    },
     primaryTranscriptRuntimeStore, agentPaneEntries,
     replaceTranscriptEntries: (nextEntries, agentId) => replaceTranscriptEntries(nextEntries, agentId),
     logViewDebug, promptSubmissionAgentStateController, setAgentBusyLatches,
@@ -830,7 +833,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     refreshAgentHistories,
     shouldRefreshAgentPanesForSessionChange,
   } = createCliAgentPaneComposition({
-    client, renderer, isAttached, visibleTranscriptAgentId,
+    client, renderer, isAttached, sessionHydrating, visibleTranscriptAgentId,
     visibleTranscriptEntries: transcriptEntryProjectionController.renderableEntries,
     agentPaneEntries, setAgentPaneEntries, setAgentPanePreviews, setCollapsedTurnIdsByAgent,
     setNextHistoryCursor, sessionState, focusedAgentId, maxAgentsPerScreen,
@@ -854,7 +857,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     renderer, appLogger, formatError,
     scheduleTimer: startTimeout,
     isAttached, sessionHydrating, loadingHistory, nextHistoryCursor,
-    setNextHistoryCursor, entryCounter, setEntryCounter, setHistoryLoadingState,
+    setNextHistoryCursor, entryCounter, setEntryCounter, setHistoryLoadingState, setSessionHydratingState,
     setEntries: (nextEntries) => {
       setEntries(reconcile(nextEntries))
     },
