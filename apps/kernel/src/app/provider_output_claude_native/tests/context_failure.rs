@@ -102,7 +102,7 @@ fn context_failure_case(expired: bool) {
         .process(session.id(), run.id(), &run, None)
         .unwrap();
     assert!(
-        failure.terminal_failure.is_some(),
+        !failure.rejected_prompt_ids.is_empty() && failure.terminal_failure.is_none(),
         "hook rejection was ignored; native turn remains WORKING"
     );
 }

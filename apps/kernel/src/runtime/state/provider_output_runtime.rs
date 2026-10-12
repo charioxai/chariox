@@ -83,6 +83,18 @@ impl KernelRuntimeState {
                 })
                 .await?;
             drop(room_guard);
+            if !outcome.rejected_prompt_ids.is_empty() {
+                if let Some(agent_id) = provider_run.agent_instance_id() {
+                    Box::pin(
+                        self.advance_project_queued_prompt_after_settlement(session_id, agent_id),
+                    )
+                    .await;
+                }
+                self.spawn_workflow_prompt_dispatches(
+                    owned.workflow_maybe_start_next_queued_prompt(session_id),
+                );
+                self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
+            }
             if let Some(message) = outcome.terminal_failure {
                 let run = owned
                     .provider_store

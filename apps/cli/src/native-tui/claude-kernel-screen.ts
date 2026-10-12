@@ -34,6 +34,10 @@ export async function runClaudeKernelScreen(args: string[], worktree: string): P
       if (!await screenExists(name)) break
       await sleep(500)
     } while (true)
+    if (!forwarded) {
+      const banner = await readFile(bannerFile, "utf8").catch(() => "")
+      if (banner) { process.stderr.write(banner); forwarded = true }
+    }
     if (!forwarded) throw new Error("Claude native TUI client exited before its kernel runtime banner was ready")
   } finally {
     if (started) await execFileAsync("screen", ["-S", name, "-X", "quit"]).catch(() => {})
@@ -42,8 +46,7 @@ export async function runClaudeKernelScreen(args: string[], worktree: string): P
 }
 
 async function screenExists(name: string): Promise<boolean> {
-  try {
-    const { stdout } = await execFileAsync("screen", ["-ls"])
-    return stdout.split("\n").some(line => line.trim().split(/\s+/)[0]?.endsWith(`.${name}`))
-  } catch { return false }
+  // Stock macOS screen returns 1 even while listing a live session.
+  const { stdout } = await execFileAsync("screen", ["-ls"]).catch((error: { stdout?: string }) => ({ stdout: error.stdout ?? "" }))
+  return stdout.split("\n").some(line => line.trim().split(/\s+/)[0]?.endsWith(`.${name}`))
 }
