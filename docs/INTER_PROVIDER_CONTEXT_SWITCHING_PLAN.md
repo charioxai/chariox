@@ -21,6 +21,8 @@ MP-08 / MP-10 / MP-11: when a worker restart recreates its lease, the home recon
 
 MP-08 / MP-10 / MP-11: Claude sizes the optional replay after adding worker instructions. It removes older summaries before latest-turn detail at UTF-8 boundaries and labels omissions with `[truncated]`. Mandatory instructions remain intact. If no replay payload fits, submission rejects instead of silently consuming the conversation.
 
+MP-08 / MP-10 / MP-11: unavailable Room protection withholds all cached background and history rather than failing the active user prompt. Required worker instructions are assembled normally. No replay is acknowledged while it is withheld, so the marker remains pending until protection recovers.
+
 ## Phases
 
 ### Phase 1: Deterministic Handoff Builder

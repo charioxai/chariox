@@ -12,7 +12,15 @@ async fn assert_home_handoff_envelope_with_recovery(
     protect: bool,
     recovered: bool,
 ) {
-    assert_home_handoff_scenario(active_run, current_lease_output, protect, recovered, None).await;
+    assert_home_handoff_scenario(
+        active_run,
+        current_lease_output,
+        protect,
+        recovered,
+        None,
+        false,
+    )
+    .await;
 }
 
 async fn assert_home_handoff_scenario(
@@ -21,6 +29,7 @@ async fn assert_home_handoff_scenario(
     protect: bool,
     recovered: bool,
     workflow_flush: Option<bool>,
+    protection_unavailable: bool,
 ) {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.relay_url = Some(CANCELLATION_GUARD_RELAY_URL.to_string());
@@ -145,7 +154,7 @@ async fn assert_home_handoff_scenario(
         (run.id().to_string(), run.node_runs()[0].id().to_string())
     });
     let app = Arc::new(Mutex::new(app));
-    let runtime = owned_runtime_state(&app).await;
+    let mut runtime = owned_runtime_state(&app).await;
     if recovered {
         runtime
             .owned
@@ -159,6 +168,19 @@ async fn assert_home_handoff_scenario(
             .room_secret_observations
             .register(session.id(), "private-room-fixture")
             .unwrap();
+    }
+    let unavailable_root = std::env::temp_dir().join(format!(
+        "ctxlease-unavailable-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    if protection_unavailable {
+        std::fs::write(&unavailable_root, "not a directory").unwrap();
+        runtime.owned.room_secret_observations =
+            super::super::room_secret_observation::RoomSecretObservations::new(
+                unavailable_root.clone(),
+                Default::default(),
+            );
     }
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
@@ -200,7 +222,7 @@ async fn assert_home_handoff_scenario(
             delivery_token: "test-workflow-delivery".into(),
         });
     }
-    if protect {
+    if protect || protection_unavailable {
         // Cached background was prepared before the Room became protected.
         dispatch.hidden_system_context = "cached setting: private-room-fixture".to_string();
     }
@@ -248,13 +270,14 @@ async fn assert_home_handoff_scenario(
         panic!("expected the worker prompt envelope")
     };
     assert_eq!(prompt, "hold the worker response while manifest sync runs");
-    if protect {
+    if protect || protection_unavailable {
         assert!(
             !hidden_system_context.contains("private-room-fixture"),
             "cached context must obey current Room protection even without history replay"
         );
     }
-    if active_run || current_lease_output || workflow_flush == Some(true) {
+    if active_run || current_lease_output || workflow_flush == Some(true) || protection_unavailable
+    {
         assert!(
             !hidden_system_context.contains("accepted goal: audit continuity"),
             "same-lease native continuity must skip home replay"
@@ -318,7 +341,7 @@ async fn assert_home_handoff_scenario(
         .unwrap();
     assert_eq!(
         pending,
-        workflow_flush == Some(true),
+        workflow_flush == Some(true) || protection_unavailable,
         "only replay-bearing acknowledgements consume the marker"
     );
     if workflow_flush == Some(true) {
@@ -337,6 +360,9 @@ async fn assert_home_handoff_scenario(
             next.contains("accepted goal: audit continuity"),
             "fresh workflow acceptance must leave replay for the next ordinary prompt"
         );
+    }
+    if protection_unavailable {
+        std::fs::remove_file(unavailable_root).unwrap();
     }
 }
 
@@ -680,9 +706,13 @@ async fn review976_history_read_failure_keeps_scrubbed_existing_context() {
 // MP-08 / MP-10 / MP-11: actual workflow policy, outgoing envelope, submission and durable ACK.
 #[tokio::test]
 async fn review976r2_continuing_workflow_receives_pending_replay() {
-    assert_home_handoff_scenario(false, false, false, false, Some(false)).await;
+    assert_home_handoff_scenario(false, false, false, false, Some(false), false).await;
 }
 #[tokio::test]
 async fn review976r2_fresh_workflow_ack_preserves_pending_replay() {
-    assert_home_handoff_scenario(false, false, false, false, Some(true)).await;
+    assert_home_handoff_scenario(false, false, false, false, Some(true), false).await;
+}
+#[tokio::test]
+async fn review976r2_unavailable_room_withholds_context_without_blocking_prompt() {
+    assert_home_handoff_scenario(false, false, false, false, None, true).await;
 }

@@ -55,9 +55,15 @@ impl super::super::KernelRuntimeOwnedState {
                     )?;
             }
         }
-        let hidden_context = self
+        let hidden_context = match self
             .room_secret_observations
-            .scrub_runtime_result(agent.session_id(), hidden_context.to_string())?;
+            .scrub_runtime_result(agent.session_id(), hidden_context.to_string())
+        {
+            Ok(context) => context,
+            // Unknown protection cannot authorize any cached background. The
+            // active user prompt and mandatory worker instructions still run.
+            Err(_) => return Ok(String::new()),
+        };
         let existing = || Ok(hidden_context.clone());
         if fresh_workflow {
             return existing();
