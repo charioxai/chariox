@@ -430,6 +430,15 @@ async fn failed_leased_prompt_admission_after_run_assignment_settles_its_receipt
 // credential; the worker's own Claude profile is never logged in.
 #[tokio::test]
 async fn leased_claude_prompt_admits_on_the_home_credential_run_without_a_worker_login() {
+    assert_leased_claude_home_credential(false).await;
+}
+
+#[tokio::test]
+async fn leased_claude_environment_change_cannot_relaunch_under_worker_account() {
+    assert_leased_claude_home_credential(true).await;
+}
+
+async fn assert_leased_claude_home_credential(environment_changed: bool) {
     crate::test_support::isolated_env_test!();
     let mut config = crate::config::DaemonConfig::for_tests();
     config.accept_remote_leases = true;
@@ -492,20 +501,70 @@ async fn leased_claude_prompt_admits_on_the_home_credential_run_without_a_worker
     // The live run a credentialed lease launch produced for the admitted profile.
     let mut worker = app.lock().await;
     let admitted = worker.leased_agents.get(&lease.id).cloned().unwrap();
-    let run = worker
-        .providers_mut()
-        .launch_run_detached(
-            crate::provider::LaunchProviderRequest::new(
+    let mut request = crate::provider::LaunchProviderRequest::new(
+        &lease.backing_session_id,
+        "dev-stub",
+        &admitted.provider,
+        &admitted.account_profile,
+        "haiku",
+    )
+    .with_agent_id(&lease.backing_agent_id)
+    .with_variant(admitted.effort.clone());
+    if environment_changed {
+        request.project_environment_revision = Some("old-project-revision".into());
+    }
+    let run = worker.providers_mut().launch_run_detached(request).unwrap();
+    worker
+        .provider_run_projection
+        .mark_leased_provider_run(run.id());
+    if environment_changed {
+        let error = worker
+            .ensure_prompt_provider_run_for_agent(
                 &lease.backing_session_id,
-                "dev-stub",
-                &admitted.provider,
-                &admitted.account_profile,
-                "haiku",
+                &lease.backing_agent_id,
             )
-            .with_agent_id(&lease.backing_agent_id)
-            .with_variant(admitted.effort.clone()),
-        )
-        .unwrap();
+            .expect_err("HOME must replace a credentialed Claude run");
+        assert!(error.to_string().contains(
+            crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
+        ));
+        assert_eq!(
+            worker.providers.get_run(run.id()).unwrap().state(),
+            crate::provider::ProviderRunState::Running
+        );
+        worker
+            .prompt_owner_submit_prepared_prompt(
+                &lease.backing_session_id,
+                crate::session::PromptQueueItem::new(
+                    "queued-after-project-refresh",
+                    &lease.backing_attachment_id,
+                    &lease.backing_agent_id,
+                    "keep the HOME account",
+                    crate::session::PromptStatus::Queued,
+                ),
+                true,
+            )
+            .unwrap();
+        assert!(crate::app::KernelAgentService::new(&mut worker)
+            .advance_next_queued_prompt(&lease.backing_session_id, &lease.backing_agent_id, None)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            worker
+                .providers
+                .get_run_for_agent(&lease.backing_session_id, &lease.backing_agent_id)
+                .unwrap()
+                .id(),
+            run.id()
+        );
+        assert!(worker
+            .prompt_owner_peek_next_queued_prompt(
+                &lease.backing_session_id,
+                &lease.backing_agent_id
+            )
+            .unwrap()
+            .is_some());
+        return;
+    }
     drop(worker);
     let (run_id, outcome) = submit().await.unwrap();
     assert_eq!(run_id, run.id());

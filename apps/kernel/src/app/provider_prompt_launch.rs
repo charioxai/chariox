@@ -75,6 +75,19 @@ impl DaemonApp {
                     ProviderRunState::Ended => {}
                 }
             }
+            // MP-08/MP-10/MP-11: HOME owns this credential. Preserve the live
+            // run until HOME can relaunch it; a local replacement would silently
+            // fall back to the worker's account after retiring the lease marker.
+            if crate::account_profile::ProviderAccountLaunchScope::lease_run_holds_home_claude_credential(
+                &agent, Some(&agent_run),
+                self.provider_run_projection.is_leased_provider_run(agent_run.id()),
+            ) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "refresh leased Claude Project environment",
+                    message: format!("{}: HOME must relaunch the selected Claude profile for changed Project inputs",
+                        crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE),
+                });
+            }
             if agent_run.client_interface() == crate::provider::ProviderClientInterface::NativeTui {
                 return Err(DaemonError::LocalTransport {
                     operation: "refresh native TUI Project environment",
