@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process"
+import { spawnOwned, signalOwnedProcessGroup } from "../../../kernel/slice-linux-docker/owned-process-signals.mjs"
 import { readFile } from "node:fs/promises"
 
 const PROBE = new URL("./managed-browser-computer-parity-host-probe.py", import.meta.url)
@@ -32,14 +32,14 @@ export async function observeManagedParityHost({ host, engine, resources, retain
 export function runBoundedObserverCommand(command, args, { input = "", signal, timeoutMs = 18_000 } = {}) {
   if (signal?.aborted) return Promise.reject(new Error("managed parity host observation aborted"))
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], detached: true })
+    const child = spawnOwned(command, args, { stdio: ["pipe", "pipe", "pipe"], detached: true, retainLeader: true })
     const chunks = []
     let bytes = 0
     let failure = null
     let killTimer
     const killGroup = (kind) => {
       if (!child.pid) return
-      try { process.kill(-child.pid, kind) } catch (error) { if (error.code !== "ESRCH") failure ??= error }
+      try { signalOwnedProcessGroup(child, kind) } catch (error) { if (error.code !== "ESRCH") failure ??= error }
     }
     const stop = (reason) => {
       if (failure) return

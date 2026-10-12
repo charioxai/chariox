@@ -59,6 +59,7 @@ test("KernelPendingRequestRegistry supports a bounded attempt timeout", async ()
 test("KernelPendingRequestRegistry leaves authorization waits untimed but rejects on disconnect", async () => {
   const registry = new KernelPendingRequestRegistry(1)
   const request = registry.register<string>("authorization", "control", 0)
+  registry.noteTransportProgress("control")
   await new Promise(resolve => setTimeout(resolve, 25))
   const pending = registry.take("authorization")
   assert.equal(pending?.timeout, null)
@@ -68,4 +69,45 @@ test("KernelPendingRequestRegistry leaves authorization waits untimed but reject
   const disconnected = registry.register<string>("authorization-2", "control", 0)
   registry.rejectMatching("closed", "control")
   await assert.rejects(disconnected.promise, /closed/)
+})
+
+test("transport progress extends a stall interval within the absolute deadline", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000 })
+  const registry = new KernelPendingRequestRegistry(30)
+  const request = registry.register<string>("progressing", "control", 30, 90)
+  for (let elapsed = 0; elapsed < 60; elapsed += 20) {
+    t.mock.timers.tick(20)
+    registry.noteTransportProgress("control")
+  }
+  registry.take("progressing")?.resolve("complete")
+  assert.equal(await request.promise, "complete")
+})
+
+test("repeated progress cannot extend the absolute response deadline", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000 })
+  const registry = new KernelPendingRequestRegistry(30)
+  const request = registry.register<string>("bounded", "control", 30, 90)
+  const rejected = assert.rejects(request.promise, /timed out/)
+  for (let elapsed = 0; elapsed < 80; elapsed += 20) {
+    t.mock.timers.tick(20)
+    registry.noteTransportProgress("control")
+  }
+  t.mock.timers.tick(10)
+  await rejected
+  assert.equal(registry.take("bounded"), null)
+})
+
+test("progress does not refresh another lane or a stalled response", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000 })
+  const registry = new KernelPendingRequestRegistry(30)
+  const event = registry.register<string>("event-stalled", "event", 30, 90)
+  const control = registry.register<string>("control-progress", "control", 30, 90)
+  const eventRejected = assert.rejects(event.promise, /timed out/)
+  const controlRejected = assert.rejects(control.promise, /timed out/)
+  t.mock.timers.tick(20)
+  registry.noteTransportProgress("control")
+  t.mock.timers.tick(10)
+  await eventRejected
+  t.mock.timers.tick(20)
+  await controlRejected
 })

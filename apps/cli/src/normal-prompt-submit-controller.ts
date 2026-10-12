@@ -22,6 +22,8 @@ import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controlle
 import { NO_FOCUS_AGENT_MESSAGE } from "./cli-runtime-tuning.js"
 
 export type NormalPromptSubmitControllerDeps = {
+  promptBlockReason?: (agentId: string | null, alias: string | null) => string | null
+  onPromptRejected?: (target: {sessionId: string; agentId: string}) => void
   getPendingAttachments: () => readonly PendingPromptAttachment[]
   waitForPendingAgentFocusTransition: () => Promise<void>
   getFocusedAgentId: () => string | null
@@ -80,6 +82,7 @@ export function createNormalPromptSubmitController(
       const aliasRoute = parsePromptAgentAliasRoute(prompt)
       const renderedPrompt = aliasRoute?.prompt ?? prompt
       const rawAttachments = promptSubmissionAttachmentsToParts(deps.getPendingAttachments())
+      let rejectedTarget: {sessionId: string; agentId: string} | undefined
       let submissionUi: SubmittedPromptUiSnapshot | null = null
       try {
         await deps.waitForPendingAgentFocusTransition()
@@ -105,6 +108,15 @@ export function createNormalPromptSubmitController(
           // The prompt area addresses the focus agent, and there is none:
           // keep the prompt and say how to pick or create one.
           deps.flashFooter(NO_FOCUS_AGENT_MESSAGE, "error")
+          return
+        }
+        const addressedAgent = aliasRoute
+          ? deps.getSession().agents.find(agent => agent.alias?.toLowerCase() === aliasRoute.alias.toLowerCase())
+          : deps.getSession().agents.find(agent => agent.id === targetAgentId)
+        if (addressedAgent) rejectedTarget = {sessionId: deps.getSessionId(), agentId: addressedAgent.id}
+        const accountBlock = deps.promptBlockReason?.(targetAgentId, aliasRoute?.alias ?? null)
+        if (accountBlock) {
+          deps.flashFooter(accountBlock, "error")
           return
         }
         const attachments = await deps.preparePromptAttachmentsForSubmit(rawAttachments, {
@@ -155,6 +167,7 @@ export function createNormalPromptSubmitController(
         deps.setStreamingAgentId(transition.streamingAgentId)
         deps.setWorking(transition.working)
         deps.setFatalError(message)
+        if (rejectedTarget) deps.onPromptRejected?.(rejectedTarget)
         deps.flashFooter(message, "error")
         deps.updateSessionChrome()
       }

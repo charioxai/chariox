@@ -1,3 +1,4 @@
+import { signalOwnedProcessGroup, ownedProcessGroupHandles } from "../../../kernel/slice-linux-docker/owned-process-signals.mjs"
 import { randomUUID } from "node:crypto"
 import { execFile } from "node:child_process"
 import { createConnection } from "node:net"
@@ -121,13 +122,14 @@ export async function currentOwnedPids(tasks) {
 }
 
 export async function stopProcessGroup(groupId, child) {
-  if (!Number.isSafeInteger(groupId) || groupId <= 0) throw new Error("owned TUI process-group identity is invalid")
-  const owned = await ownedProcessRows([{ kind: "tui", processGroupId: groupId }])
-  const groups = [...new Set([groupId, ...owned.map(([, , group]) => group)])]
+  if (!Number.isSafeInteger(groupId) || groupId <= 1 || groupId !== child?.pid) throw new Error("owned TUI process-group identity is invalid")
+  // Subgroups inherit the wrapper's launch generation, including after exit.
+  const handles = ownedProcessGroupHandles(child)
+  const groups = handles.map(handle => handle.pid)
   const tasks = groups.map((processGroupId) => ({ kind: "tui", processGroupId }))
   const kill = (signal) => {
-    for (const group of groups) {
-      try { process.kill(-group, signal) } catch (error) { if (error.code !== "ESRCH") throw error }
+    for (const handle of handles) {
+      try { signalOwnedProcessGroup(handle, signal) } catch (error) { if (error.code !== "ESRCH") throw error }
     }
   }
   kill("SIGTERM")

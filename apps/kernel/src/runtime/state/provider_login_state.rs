@@ -172,6 +172,7 @@ impl ClaudeSetupTokenLogin {
 #[derive(Clone)]
 pub(in crate::runtime) struct ProviderLoginProcessRecord {
     pub owner_user_id: String,
+    pub kernel_id: String,
     pub provider: String,
     pub account_profile: String,
     pub credential_scope: String,
@@ -242,12 +243,21 @@ impl ProviderLoginProcessRecord {
             ProviderAuthProcessOperation::Login => "Authenticate provider account",
             ProviderAuthProcessOperation::Logout => "Log out provider account",
         };
-        let message = if self.backend == ProviderLoginProcessBackend::Terminal {
+        let authorization_url = self.setup_token.as_ref().and_then(|login| {
+            login
+                .secrets()
+                .screen
+                .as_ref()
+                .and_then(ClaudeSetupTokenScreen::authorization_url)
+        });
+        let message = if self.setup_token.is_some() {
+            "Open the Claude authorization link to sign in. If Claude gives you a code, paste it below."
+        } else if self.backend == ProviderLoginProcessBackend::Terminal {
             "Complete the provider-native terminal workflow. Its output is projected separately and responses are treated as secrets."
         } else {
             "Complete the provider-native browser authorization flow."
         };
-        Some(crate::session::RuntimeInteraction::new(
+        let mut interaction = crate::session::RuntimeInteraction::new(
             &self.login_id,
             format!(
                 "provider-account:{}:{}",
@@ -274,7 +284,17 @@ impl ProviderLoginProcessRecord {
             }),
             Some(10 * 60),
             None,
-        ))
+        );
+        if self.setup_token.is_some() {
+            let mut start = self.start.clone();
+            start.auth_url = authorization_url;
+            interaction = interaction.with_provider_login(crate::session::RuntimeProviderLogin {
+                kernel_id: self.kernel_id.clone(),
+                login: start,
+                terminal_output_base64: String::new(),
+            });
+        }
+        Some(interaction)
     }
 
     fn vault_passphrase_interaction(
@@ -295,6 +315,18 @@ impl ProviderLoginProcessRecord {
                 "Enter the new Chariox Vault passphrase again.",
             ),
         };
+        let retry_note = self.setup_token.as_ref().and_then(|login| {
+            login
+                .secrets()
+                .notes
+                .lines()
+                .last()
+                .filter(|note| note.starts_with("Chariox Vault unlock failed:"))
+                .map(str::to_string)
+        });
+        let message = retry_note
+            .map(|note| format!("{message}\n{note}"))
+            .unwrap_or_else(|| message.to_string());
         let label = if prompt == ClaudeSetupTokenVaultPrompt::ConfirmCreate {
             "Confirm vault passphrase"
         } else {
@@ -629,6 +661,7 @@ mod tests {
         let now_ms = crate::session::unix_epoch_ms();
         ProviderLoginProcessRecord {
             owner_user_id: owner.to_string(),
+            kernel_id: "test-kernel".into(),
             provider: "claude".to_string(),
             account_profile: "work".to_string(),
             credential_scope: "claude-ambient".to_string(),
@@ -650,6 +683,41 @@ mod tests {
             started_at_ms: now_ms,
             updated_at_ms: now_ms,
         }
+    }
+
+    // MP-08/MP-10/MP-11: OAuth links belong to the kernel interaction.
+    #[test]
+    fn setup_token_projects_oauth_link_and_secret_code_without_command_instructions() {
+        let store = ProviderLoginProcessStore::default();
+        let mut login = record("owner-a", "login-a");
+        login.setup_token = Some(ClaudeSetupTokenLogin::default());
+        login.start.login_kind = "terminal_setup_token".into();
+        store.insert(login).unwrap();
+        let url = "https://claude.com/cai/oauth/authorize?code=true&client_id=fixture";
+        let status = store
+            .append_output(
+                "owner-a",
+                "login-a",
+                [format!("{url}\r\nPaste code here if prompted > ").into_bytes()],
+                2,
+            )
+            .unwrap();
+        let interaction = status.interaction.unwrap();
+        assert_eq!(
+            interaction
+                .provider_login()
+                .unwrap()
+                .login
+                .auth_url
+                .as_deref(),
+            Some(url)
+        );
+        assert!(interaction.message().contains("authorization link"));
+        assert!(!interaction.message().contains("terminal workflow"));
+        assert_eq!(
+            interaction.custom_choice().unwrap().input_kind(),
+            crate::session::RuntimeInteractionInputKind::Secret
+        );
     }
 
     #[test]

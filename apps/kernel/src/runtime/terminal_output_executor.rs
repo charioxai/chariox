@@ -140,6 +140,7 @@ impl TerminalOutputExecutor {
         }
         let active_provider_run_id = session.active_provider_run_id();
         if !session.has_any_prompt_work()
+            && self.provider_run_ids_for_pump(&session).is_empty()
             && (active_provider_run_id.is_none()
                 || active_provider_run_id.is_some_and(|provider_run_id| {
                     self.provider_run_projection

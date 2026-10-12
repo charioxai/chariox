@@ -1,4 +1,5 @@
 import type { RuntimeInteraction } from "./cli-types.js"
+import type { ProviderLoginStripState } from "./provider-login-interaction-controller.js"
 import type { QueuedPromptStripItem } from "@chariox/kernel-client/queued-prompt-strip-state"
 
 type AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent extends { id: string }> = {
@@ -16,6 +17,9 @@ type AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent extends { id: st
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
+  providerLoginState?: (interaction: RuntimeInteraction) => ProviderLoginStripState | null
+  focusCustomChoiceOnce?: (interactionId: string, index: number, requestedAtMs: number) => void
+  onProviderLoginLinkClick?: (interaction: RuntimeInteraction) => void
 }
 
 export type AgentInteractionStripControllerDeps<
@@ -37,6 +41,9 @@ export type AgentInteractionStripControllerDeps<
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
+  providerLoginState?: (interaction: RuntimeInteraction) => ProviderLoginStripState | null
+  focusCustomChoiceOnce?: (interactionId: string, index: number, requestedAtMs: number) => void
+  onProviderLoginLinkClick?: (interaction: RuntimeInteraction) => void
   renderStrips: (options: AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent>) => void
 }
 
@@ -64,6 +71,9 @@ export function createAgentInteractionStripController<
         queuedPromptStripItemsForAgent: deps.queuedPromptStripItemsForAgent,
         selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
         onQueuedPromptAction: deps.onQueuedPromptAction,
+        ...(deps.providerLoginState ? { providerLoginState: deps.providerLoginState } : {}),
+        ...(deps.focusCustomChoiceOnce ? { focusCustomChoiceOnce: deps.focusCustomChoiceOnce } : {}),
+        ...(deps.onProviderLoginLinkClick ? { onProviderLoginLinkClick: deps.onProviderLoginLinkClick } : {}),
       })
     },
   }

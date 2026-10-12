@@ -155,13 +155,6 @@ pub(crate) fn dispatch_provider_mcp_proxy_request(
                 .lock()
                 .expect("stdio MCP process mutex poisoned")
                 .dispatch(payload);
-            if response.is_err() {
-                let discarded = stdio_mcp_supervisor()
-                    .lock()
-                    .expect("stdio MCP supervisor mutex poisoned")
-                    .discard_process(&key, &process);
-                drop(discarded);
-            }
             response
         }
     }?;

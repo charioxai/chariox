@@ -1,4 +1,5 @@
-import type { RelayCloudProfile } from "./preferences.js"
+import { cloudControlFetch } from "./cloud-control-auth.js"
+import type { CloudControlProfile as RelayCloudProfile } from "./cloud-control-auth.js"
 import { preparePublicationReleasePackage } from "./deployed-workflow-package.js"
 import type {
   AcceptDeploymentClaimResult,
@@ -780,7 +781,7 @@ async function getJson<TResponse>(
 ): Promise<TResponse> {
   const url = new URL(`${normalizeApiUrl(profile.apiUrl)}${pathname}`)
   for (const [name, value] of Object.entries(query)) url.searchParams.set(name, value)
-  return readJson<TResponse>(await fetch(url, { headers: cloudHeaders(profile) }))
+  return readJson<TResponse>(await cloudControlFetch(profile, url))
 }
 
 async function postJson<TResponse>(
@@ -807,9 +808,8 @@ async function postJsonResponse<TResponse>(
   pathname: string,
   body: Record<string, unknown>,
 ): Promise<{ readonly response: Response; readonly body: TResponse }> {
-  const response = await fetch(`${normalizeApiUrl(profile.apiUrl)}${pathname}`, {
+  const response = await cloudControlFetch(profile, `${normalizeApiUrl(profile.apiUrl)}${pathname}`, {
     method: "POST",
-    headers: cloudHeaders(profile),
     body: JSON.stringify(body),
   })
   return { response, body: await readJson<TResponse>(response) }
@@ -827,14 +827,6 @@ async function readJson<TResponse>(response: Response): Promise<TResponse> {
     throw new Error(`deployed workflow request returned non-JSON HTTP ${response.status}`)
   }
   return body as TResponse
-}
-
-function cloudHeaders(profile: RelayCloudProfile): HeadersInit {
-  return {
-    accept: "application/json",
-    "content-type": "application/json",
-    ...(profile.cloudSessionToken ? { authorization: `Bearer ${profile.cloudSessionToken}` } : {}),
-  }
 }
 
 function normalizeApiUrl(apiUrl: string): string {

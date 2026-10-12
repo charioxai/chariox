@@ -153,7 +153,7 @@ async fn check() {
     };
     wait_for_daemon_registration(registry, &worker_config.daemon_id).await;
     let assertions = std::panic::AssertUnwindSafe(async {
-        for advertised in [99, 100] {
+        for advertised in [100, 101] {
             version.store(advertised, Ordering::SeqCst);
             requests.lock().await.clear();
             let config = home_config.clone();
@@ -176,8 +176,8 @@ async fn check() {
                     let binding = agent.remote_execution().unwrap();
                     app.destroy_remote_execution_binding(binding, &|| Ok(()))
                         .unwrap();
-                    if advertised == 100 {
-                        assert_eq!(binding.relay_peer_protocol_version, Some(100));
+                    if advertised == 101 {
+                        assert_eq!(binding.relay_peer_protocol_version, Some(101));
                         app.ensure_remote_agent_binding_protocol(binding).unwrap();
                     }
                 }
@@ -185,15 +185,15 @@ async fn check() {
             })
             .await
             .unwrap();
-            if advertised == 99 {
+            if advertised == 100 {
                 let error =
-                    result.expect_err("v99 must be rejected before spawn or artifact dispatch");
+                    result.expect_err("v100 must be rejected before spawn or artifact dispatch");
                 assert!(
-                    error.to_string().contains("protocol 99"),
+                    error.to_string().contains("protocol 100"),
                     "{error}; request kinds: {:?}",
                     *requests.lock().await
                 );
-                assert!(error.to_string().contains("requires 100"));
+                assert!(error.to_string().contains("requires 101"));
                 assert_eq!(
                     *requests.lock().await,
                     ["create_execution_lease", "destroy_execution_lease"]
@@ -201,7 +201,7 @@ async fn check() {
             } else {
                 assert!(
                     result.is_ok(),
-                    "v100 must bind: {}",
+                    "v101 must bind: {}",
                     result
                         .as_ref()
                         .err()
