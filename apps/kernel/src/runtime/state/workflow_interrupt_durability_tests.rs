@@ -1637,12 +1637,13 @@ async fn revoked_remote_workflow_interrupt(discovery: bool, pause: bool) {
         .unwrap();
     assert_eq!(remaining.id(), active.id());
     assert_eq!(remaining.status(), crate::session::PromptStatus::Cancelling);
-    // MP-08 / MP-10 / MP-11: the committed cancellation still settles, while
-    // result delivery to the revoked external caller remains denied.
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("grant revoked or expired"));
+    // MP-08 / MP-10 / MP-11: like committed Meta control, a stop that committed
+    // before revocation still acknowledges its own settlement.
+    assert!(matches!(
+        result.unwrap(),
+        LocalDaemonResponse::WorkflowRunPaused { .. }
+            | LocalDaemonResponse::WorkflowRunCancelled { .. }
+    ));
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11 R1: canonical spelling retains the creator fence.
