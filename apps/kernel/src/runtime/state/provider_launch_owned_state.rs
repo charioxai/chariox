@@ -547,8 +547,8 @@ mod tests {
             launch.provider_credential_env.is_empty(),
             "no Chariox-vault token is needed"
         );
-        // A setup token left in the vault from before is not read either, so
-        // the launch asks for no vault unlock; the native Claude TUI still may.
+        // MP-08 / MP-11: explicit token enrollment selects the Vault credential
+        // for every mode, even when a previous native login remains available.
         let credential_id = crate::provider::provider_account_credential_id(
             crate::session::DEFAULT_LOCAL_USER_ID,
             "claude",
@@ -577,7 +577,7 @@ mod tests {
             )
             .expect("vault use should resolve")
         };
-        assert!(!uses_vault(
+        assert!(uses_vault(
             crate::provider::ProviderClientInterface::Chariox
         ));
         assert!(uses_vault(
