@@ -1,4 +1,4 @@
-// MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 501). The page's own
+// MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 503). The page's own
 // sanitized stylesheets and attributes are rebuilt in a script-free sandbox;
 // deltas apply in place. No origin I/O: resources arrive as kernel bytes.
 import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp, validMirror2Sprite } from './browser-mirror2-security.js'
@@ -6,7 +6,7 @@ import { Mirror2Wheel } from './browser-mirror2-wheel.js'
 import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2State, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
-export const browserMirror2MinimumProtocolVersion = 501
+export const browserMirror2MinimumProtocolVersion = 503
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 const CREDIT_WINDOW = 4 // credits in flight at most (attachBrowserMirror2)
@@ -42,7 +42,8 @@ export class BrowserMirror2Renderer {
   private tileUrls = new Map<string, string>()
   private selects: Array<[Element, Mirror2Form]> = []
   private states: Element[] = [] // UA state to apply once this packet's DOM is attached
-  private targeted: Element | null = null // the element the kernel's fragment names (`:target`)
+  private targeted = new WeakMap<Document, Element>() // per document, the element its fragment names (`:target`)
+  private frameDocuments = new Set<string>() // frame document records (protocol 503: each has its own fragment)
   private bound = new WeakSet<Document>() // a retired frame document is not kept alive by its binding
   private empty: string
   sequence = 0
@@ -329,12 +330,19 @@ export class BrowserMirror2Renderer {
       if ('setCustomValidity' in element) (element as HTMLInputElement).setCustomValidity(state.custom_invalid ? 'invalid' : '')
     } catch { /* a state the viewer cannot take stays at its default */ }
   }
-  // `:target` (rewritten to [chariox-target] by the kernel's sanitizer) marks the element the fragment names.
-  private target(fragment: string | null): void {
+  // `:target` (rewritten to [chariox-target] by the kernel's sanitizer) marks the element a document's fragment
+  // names: the top document's from the packet header, a frame document's from its record (protocol 503).
+  private target(doc: Document, fragment: string | null): void {
     let next: Element | null = null
-    if (fragment && this.doc) { let name = fragment; try { name = decodeURIComponent(fragment) } catch { /* raw */ } next = this.doc.getElementById(name) ?? Array.from(this.doc.getElementsByName(name)).find(e => e.localName === 'a') ?? null }
-    if (next === this.targeted && next?.hasAttribute('chariox-target') !== false) return
-    this.targeted?.removeAttribute('chariox-target'); next?.setAttribute('chariox-target', ''); this.targeted = next
+    if (fragment) { let name = fragment; try { name = decodeURIComponent(fragment) } catch { /* raw */ } next = doc.getElementById(name) ?? Array.from(doc.getElementsByName(name)).find(e => e.localName === 'a') ?? null }
+    const previous = this.targeted.get(doc) ?? null
+    if (next === previous && next?.hasAttribute('chariox-target') !== false) return
+    previous?.removeAttribute('chariox-target'); next?.setAttribute('chariox-target', '')
+    if (next) this.targeted.set(doc, next); else this.targeted.delete(doc)
+  }
+  private targets(fragment: string | null): void {
+    if (this.doc) this.target(this.doc, fragment)
+    for (const id of this.frameDocuments) { const doc = this.dom.get(id), record = this.records.get(id); if (doc?.nodeType === 9 && record) this.target(doc as Document, record.fragment ?? null); else this.frameDocuments.delete(id) }
   }
   // Protocol 501: a <use> needs a same-origin document (data: URLs are not followed), validated here first.
   private sprite(key: string): string | null {
@@ -429,7 +437,7 @@ export class BrowserMirror2Renderer {
       const nested = frame.contentDocument; if (!nested) throw Error('MP-11: nested mirror unavailable')
       const documentRecord = records.find(r => r.parent === id && r.kind === 'document'); if (!documentRecord) continue
       const subtree = this.subtree(records, documentRecord.id)
-      this.records.set(documentRecord.id, documentRecord); this.dom.set(documentRecord.id, nested); this.ids.set(nested, documentRecord.id)
+      this.records.set(documentRecord.id, documentRecord); this.dom.set(documentRecord.id, nested); this.ids.set(nested, documentRecord.id); this.frameDocuments.add(documentRecord.id)
       const built = this.build(subtree.slice(1), nested, frames, scrolls)
       const html = subtree[1] ? built.get(subtree[1].id) as Element | undefined : undefined
       if (html) { if (nested.documentElement) nested.documentElement.replaceWith(html); else nested.appendChild(html); this.csp(nested) }
@@ -471,7 +479,7 @@ export class BrowserMirror2Renderer {
       for (const tile of packet.tiles) this.tile(tile)
       const states = this.states; this.states = []
       for (const element of states) this.uaState(element)
-      this.target(packet.fragment ?? null)
+      this.targets(packet.fragment ?? null)
       // The viewer owns scroll while it scrolls; the kernel's positions (the latest per
       // scroller, kept while deferred) apply on reset or once the viewer settles.
       if (packet.reset) { this.deferred.clear(); this.wheel.cancel() }
@@ -516,7 +524,7 @@ export class BrowserMirror2Renderer {
   private reset(packet: Mirror2Packet, scrolls: Array<[Element, number, number]>): void {
     const doc = this.doc!
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.ids = new WeakMap(); this.counts = { tile: 0, mask: 0 }
+    this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frameDocuments.clear(); this.ids = new WeakMap(); this.counts = { tile: 0, mask: 0 }
     const records = packet.nodes ?? [], frames: Array<{ frame: HTMLIFrameElement; id: string }> = []
     const root = records[0]!
     const main = this.subtree(records, root.id)
@@ -578,6 +586,7 @@ export class BrowserMirror2Renderer {
       case 'scroll': scrolls.push([node as Element, op.scroll[0], op.scroll[1]]); break
       case 'size': { const style = (node as HTMLElement).style; style.setProperty('width', `${op.size[0]}px`, 'important'); style.setProperty('height', `${op.size[1]}px`, 'important'); this.records.get(op.id)!.size = op.size; break }
       case 'res': this.image(op.id, node as Element, op.res); break
+      case 'fragment': { const record = this.records.get(op.id)!; if (op.fragment === null) delete record.fragment; else record.fragment = op.fragment; break }
       case 'state': { const record = this.records.get(op.id)!; record.state = { ...record.state, ...op.state }; this.states.push(node as Element); break }
     }
   }
@@ -627,7 +636,7 @@ type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'fram
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
 export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; packet?(packet: Mirror2Packet): void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
-  if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 501')
+  if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 503')
   const request = async (command: unknown): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } }) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).

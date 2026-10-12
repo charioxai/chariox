@@ -9,7 +9,7 @@ The screen tiers are native App views, mirrored web pages, then protected video.
 This implementation targets host Chromium on Linux. It does not introduce a
 browser inside a slice, a Cloud runtime proxy, or a second input authority.
 
-## Protocol 501: DOM mirror v2 (current; introduced in 482, compact wire in 489, control/UA state in 492, resend/custom validity/sprites in 501)
+## Protocol 503: DOM mirror v2 (current; introduced in 482, compact wire in 489, control/UA state in 492, resend/custom validity/sprites in 501, per-document fragments in 503)
 
 `mirror_subscribe {wire: 2}` selects v2; the 443 computed-style packets below
 remain for one protocol version (TUI/tests) and are superseded for web clients.
@@ -52,7 +52,10 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   (`csrf`, `xsrf`, `token`, `nonce`, `secret`, `passw`) outside the rendered
   set; values outside the rendered set and `aria-*` are capped at 1 KB. Links
   carry `href="#"`; `:target` is rewritten to `[chariox-target]`, which the
-  viewer sets on the element the `fragment` header names, and `:defined` to
+  viewer sets, per document, on the element that document's fragment names
+  (the top document's `fragment` header; a mirrored frame document's
+  `fragment` record field and `fragment` op (503), from its own location for
+  same-origin and cross-origin frames alike), and `:defined` to
   `:not([chariox-undefined])`, which the viewer sets on custom elements the
   kernel reports undefined (no viewer registry definition outlives its source
   document). Both markers are denied page attributes.

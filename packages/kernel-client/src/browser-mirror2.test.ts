@@ -27,7 +27,7 @@ test('MP-11: v2 refuses active elements, handlers, navigable URLs and fetching C
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'use', ns: 'svg', attrs: { href: 'https://x/#icon' } })), new Map()), /unsafe mirror/)
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'foreignObject', ns: 'svg' })), new Map()), /unsafe mirror/)
   assert.match(mirror2SandboxCsp, /script-src 'none'/); assert.match(mirror2SandboxCsp, /connect-src 'none'/); assert.match(mirror2SandboxCsp, /img-src blob: data:;/)
-  assert.equal(browserMirror2MinimumProtocolVersion, 501)
+  assert.equal(browserMirror2MinimumProtocolVersion, 503)
 })
 
 test('MP-11: masks carry no content and leaves never parent nodes', () => {
@@ -63,6 +63,12 @@ test('MP-11: deltas reference known nodes; ops cannot write attributes into mask
   assert.throws(() => validateMirror2Record({ id: 'n3', parent: 'n2', kind: 'element', tag: 'input', state: { custom_invalid: 'too short' } } as unknown as Mirror2Record), /unsafe mirror/)
   validateMirror2Packet({ ...delta([]), fragment: 'section-2' }, previous)
   assert.throws(() => validateMirror2Packet({ ...delta([]), fragment: 'x'.repeat(2049) }, previous), /unsafe mirror header/)
+  // Protocol 503: a frame document's fragment, on document records and `fragment` ops only, bounded like the header.
+  validateMirror2Record({ id: 'n9', parent: 'n8', kind: 'document', fragment: 'section' })
+  for (const record of [{ id: 'n9', parent: 'n8', kind: 'document', fragment: '' }, { id: 'n9', parent: 'n8', kind: 'document', fragment: 'x'.repeat(2049) }, { id: 'n9', parent: 'n8', kind: 'element', tag: 'p', fragment: 'section' }]) assert.throws(() => validateMirror2Record(record as Mirror2Record), /unsafe mirror/, JSON.stringify(record).slice(0, 80))
+  validateMirror2Packet(delta([{ op: 'fragment', id: 'n1', fragment: 'section' }, { op: 'fragment', id: 'n1', fragment: null }]), previous)
+  for (const fragment of ['', 'x'.repeat(2049), 7]) assert.throws(() => validateMirror2Packet(delta([{ op: 'fragment', id: 'n1', fragment } as unknown as NonNullable<Mirror2Packet['ops']>[number]]), previous), /unsafe mirror op/)
+  assert.throws(() => validateMirror2Packet(delta([{ op: 'fragment', id: 'n2', fragment: 'section' }]), previous), /unsafe mirror op/, 'MP-11: an element has no fragment')
   assert.throws(() => validateMirror2Packet(base(tree(element('p', { 'chariox-target': '' }))), new Map()), /unsafe mirror/)
   assert.throws(() => validateMirror2Packet(base(tree(element('x-card', { 'chariox-undefined': '' }))), new Map()), /unsafe mirror/)
   // Slices: 4-aligned offsets inside a bounded whole.
@@ -91,7 +97,7 @@ test('MP-10: context-deflated bodies inflate in order; a repeat costs a few byte
 })
 
 test('MP-10/MP-11: compact rows decode to records (kernel encoder fixture) and refuse malformed rows', () => {
-  const rows = [[1, 0, 1], [1, 1, 'html', { lang: 'en' }], [1, 1, 'body'], [2, 1, 0, 'Hello'], [1, 2, 4, 0, { size: [10, 20], display: 'inline-block', tag: 'span' }], [1, 3, 'svg', { viewBox: '0 0 1 1' }, { ns: 'svg' }], [999999994, 4, 3, 0, { tag: 'iframe' }]]
+  const rows = [[1, 0, 1], [1, 1, 'html', { lang: 'en' }], [1, 1, 'body'], [2, 1, 0, 'Hello'], [1, 2, 4, 0, { size: [10, 20], display: 'inline-block', tag: 'span' }], [1, 3, 'svg', { viewBox: '0 0 1 1' }, { ns: 'svg' }], [999999994, 4, 3, 0, { tag: 'iframe' }], [1, 1, 1, 0, { fragment: 'section' }]]
   assert.deepEqual(decodeMirror2Records(rows, null), [
     { id: 'n1', parent: null, kind: 'document' },
     { id: 'n2', parent: 'n1', kind: 'element', tag: 'html', attrs: { lang: 'en' } },
@@ -100,6 +106,7 @@ test('MP-10/MP-11: compact rows decode to records (kernel encoder fixture) and r
     { size: [10, 20], display: 'inline-block', tag: 'span', id: 'n6', parent: 'n3', kind: 'mask' },
     { ns: 'svg', id: 'n7', parent: 'n3', kind: 'element', tag: 'svg', attrs: { viewBox: '0 0 1 1' } },
     { tag: 'iframe', id: 'n1000000001', parent: 'n3', kind: 'frame' },
+    { fragment: 'section', id: 'n1000000002', parent: 'n1000000001', kind: 'document' },
   ])
   for (const bad of [[[1, 2, 'div']], [[0, 0, 'div']], [[1, 0, 9]], [[1, 0, 0, 5]], [[1, 0, 'div', [1]]], [[1, 0, 'div', 0, 'x']], [['1', 0, 'div']]]) assert.throws(() => decodeMirror2Records(bad, null), /unsafe mirror/, JSON.stringify(bad))
   // Extra keys cannot smuggle unknown record fields past validation.
@@ -125,7 +132,7 @@ const flow = (script: (command: Record<string, unknown>) => Promise<unknown>) =>
   const packets: Mirror2Packet[] = []
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (packet: Mirror2Packet) => { if (failNext) { failNext = always; throw Error('MP-11: nested mirror unavailable') } applied.push(packet.sequence); packets.push(packet) } })
   const requests: Array<Record<string, unknown>> = []
-  const transport = { protocolVersion: 501, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
+  const transport = { protocolVersion: 503, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
   return { applied, packets, failures, requests, failOnce: () => { failNext = true }, failAlways: () => { failNext = true; always = true }, start: (failingMs?: number) => attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: error => failures.push(error) }, { credits: 1, waitMs: 0, renderer, ...(failingMs ? { failingMs } : {}) }) }
 }
 // Protocol 489: a reset carries the binding and header; a delta only what changed.
@@ -364,7 +371,7 @@ test('MP-10: credits that fail together (a dropped socket) count as one failure:
   let sequence = 0, dropped = false, released: Array<() => void> = []
   const applied: number[] = [], requests: Array<Record<string, unknown>> = []
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
-  const transport = { protocolVersion: 501, request: async (request: unknown) => {
+  const transport = { protocolVersion: 503, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
@@ -390,7 +397,7 @@ test('MP-10: protocol 501 a gap (a reply lost with its socket) asks for the miss
   let sequence = 0, gapAt = 0
   const applied: number[] = [], requests: Array<Record<string, unknown>> = []
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
-  const transport = { protocolVersion: 501, request: async (request: unknown) => {
+  const transport = { protocolVersion: 503, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
@@ -419,7 +426,7 @@ test('MP-10: protocol 501 an overdue oldest credit (orphaned by the transport) a
   let sequence = 0
   const applied: Array<[number, number]> = [], requests: Array<Record<string, unknown>> = [], started = Date.now()
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push([p.sequence, Date.now() - started]) } })
-  const transport = { protocolVersion: 501, request: async (request: unknown) => {
+  const transport = { protocolVersion: 503, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() - started })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }

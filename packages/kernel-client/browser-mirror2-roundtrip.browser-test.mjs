@@ -75,6 +75,23 @@ test('MP-08/MP-10: native clipboard paste replaces a selected contenteditable ra
     assert.deepEqual(await page.evaluate(()=>window.pasteFields),[{data_null:true,plain_text:true}]);
     assert(actions.some(a=>a.kind==='selection'));assert(actions.some(a=>a.kind==='text'&&a.text==='Chariox'));assert.deepEqual(errors,[]);
   }));
+// Review #941@531ba0343 P2-3: `:target` was rewritten in every admitted sheet but only the top document's fragment
+// travelled, so a section a frame document targets stayed hidden (initially and after its hash changes).
+for(const [label,hostname] of [['same-origin','127.0.0.1'],['foreign','localhost']])for(const resnapshot of [false,true])test(`MP-10: protocol 503 a ${label} frame document's fragment targets its own section (initial, then a hash change by ${resnapshot?'snapshot':'delta'})`,()=>roundtrip(
+  `<!doctype html><p id="section">top section</p><iframe src="http://${hostname}:PORT/child#section" style="width:320px;height:140px"></iframe>`,
+  '<!doctype html><style>p{display:none}p:target{display:block}</style><p id="section">first target</p><p id="other">second target</p><script>onmessage=e=>{location.hash=e.data}</script>',
+  async({page,host,next,apply,evaluate})=>{
+    await apply(await next());
+    const source=async()=>{const entry=[...host.mirror.streams.values()][0].frames.values().next().value;const expression="[getComputedStyle(document.getElementById('section')).display,getComputedStyle(document.getElementById('other')).display]";if(entry){const r=await entry.child.connection.send('Runtime.evaluate',{expression,contextId:entry.child.contextId,returnByValue:true},entry.child.sessionId);assert(!r.exceptionDetails);return r.result.value;}return evaluate(`frames[0].eval(${JSON.stringify(expression)})`);};
+    const shown=()=>page.evaluate(()=>{const d=window.r.frame.contentDocument.querySelector('iframe').contentDocument;return ['section','other'].map(id=>getComputedStyle(d.getElementById(id)).display);});
+    const native=[await source()],mirror=[await shown()];
+    await evaluate("frames[0].postMessage('other','*');true");
+    for(let i=0;i<20&&JSON.stringify(await shown())!==JSON.stringify(['none','block']);i++)await apply(await next(resnapshot&&i===0));
+    native.push(await source());mirror.push(await shown());
+    assert.deepEqual(native,[['block','none'],['none','block']],'MP-10: the real source activates each child target');
+    assert.deepEqual(mirror,native,'MP-10: the frame document marks its own target, independent of the top document');
+    assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('section').hasAttribute('chariox-target')),false,'MP-10: the top document has no fragment');
+  }));
 // Review #320@4f8b54237 P3: a paste over the kernel's 16384-unit text limit was refused whole and changed nothing.
 test('MP-08: a native clipboard paste longer than one text action reaches the kernel whole',()=>roundtrip(
   '<!doctype html><textarea id="field"></textarea>','',async({page,next,apply,evaluate,errors})=>{

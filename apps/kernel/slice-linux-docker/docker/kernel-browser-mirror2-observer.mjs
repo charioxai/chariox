@@ -109,6 +109,8 @@ export function installMirror2(sanitizeMirrorCss) {
     const ids = new WeakMap(), nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map(), resOf = new Map();
     const styleNodes = new Map(), roots = new Map(), pendingHosts = new Map(), foreign = new Set(), shapes = new Map();
     const opaque = new Set(); // ids of opaque regions (tiles, foreign frames): none means the kernel has nothing to place
+    // Protocol 503: each same-origin frame document's fragment (its `:target`) as last sent; the top document's is a header.
+    const fragments = new Map(), fragmentOf = doc => { const hash = doc.location?.hash ?? ''; return hash.length > 1 ? hash.slice(1, 2049) : null; };
     // Hosts of closed shadow roots (found by the kernel's trusted DOMSnapshot pass):
     // this world cannot read their content, so they are opaque regions.
     const closedHosts = new WeakSet();
@@ -187,6 +189,8 @@ export function installMirror2(sanitizeMirrorCss) {
         listened.add(root);
         const listen = (type, fn) => root.addEventListener(type, fn, { capture: true, passive: true, signal: listening.signal });
         listen('scroll', event => { const target = event.target; dirty.scroll.add(target.nodeType === 9 ? target.documentElement : target); wake(); });
+        // A fragment navigation moves `:target` (the header, or a frame document's fragment op).
+        if (root.nodeType === 9) root.defaultView?.addEventListener('hashchange', wake, { passive: true, signal: listening.signal });
         // The composed target: a control inside an open shadow root, not its retargeted host.
         // State the page's own handlers set in reaction (setCustomValidity) is sampled again after them.
         const formEvent = event => { const target = event.composedPath()[0] ?? event.target; changedForm(target); if (stateNodes.has(mirrored(target))) { dirty.state.add(target); setTimeout(() => { dirty.state.add(target); wake(); }, 0); } if (target.type === 'radio' && target.name) for (const radio of target.getRootNode().querySelectorAll?.('input[type=radio]') ?? []) if (radio.name === target.name) dirty.form.add(radio); wake(); };
@@ -207,7 +211,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const forget = id => {
       const node = nodes.get(id);
       for (const child of kids.get(id) ?? []) forget(child);
-      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); stateNodes.delete(id); sentStates.delete(id); shapes.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id); opaque.delete(id);
+      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); stateNodes.delete(id); sentStates.delete(id); shapes.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id); opaque.delete(id); fragments.delete(id);
       if (node) ids.delete(node);
     };
     // Mirrored form controls: property writes (value, checked, selectedIndex) make no mutation record.
@@ -339,6 +343,7 @@ export function installMirror2(sanitizeMirrorCss) {
       if (type === 9 || type === 11) {
         record.kind = type === 9 ? 'document' : 'shadow';
         const sheets = adopted(node); if (sheets.length) record.adopted = sheets;
+        if (type === 9 && node !== document) { const fragment = fragmentOf(node); fragments.set(id, fragment); if (fragment) record.fragment = fragment; }
         spend(32); out.push(record); remember(record, node);
         watch(node, id); rootSignatures.set(id, adoptedSignature(node));
         for (const child of node.childNodes) { if (type === 9 && child.nodeType !== 1) continue; serialize(child, id, out, depth + 1); }
@@ -398,7 +403,7 @@ export function installMirror2(sanitizeMirrorCss) {
       }
       // Nothing focused (the page's body or root element) is null: the viewer blurs too (protocol 492).
       const focusId = focused && focused !== focused.ownerDocument.body && focused !== focused.ownerDocument.documentElement ? mirrored(focused) : null;
-      return { scroll: [scrollX, scrollY], focused: focusId && kindOf.get(focusId) !== 'mask' ? focusId : null, selection, fragment: location.hash.length > 1 ? location.hash.slice(1, 2049) : null, revision, opaque: opaque.size > 0 };
+      return { scroll: [scrollX, scrollY], focused: focusId && kindOf.get(focusId) !== 'mask' ? focusId : null, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0 };
     };
     const take = () => { const resources = newResources, sheets = pendingSheets; newResources = []; pendingSheets = []; return { resources, sheets }; };
     const resetTargets = () => { targets = new Set(); return true; };
@@ -407,7 +412,7 @@ export function installMirror2(sanitizeMirrorCss) {
       observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map(); snapshotted = true;
       for (const key of Object.keys(dirty)) dirty[key].clear();
       for (const id of [...nodes.keys()]) { const node = nodes.get(id); if (node) ids.delete(node); }
-      nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear();
+      nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
       pendingSheets = []; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.values()].map(({ key, kind, url }) => ({ key, url, kind }));
       const out = [], root = serialize(document, null, out);
@@ -585,6 +590,7 @@ export function installMirror2(sanitizeMirrorCss) {
         const signature = adoptedSignature(root);
         if (signature !== rootSignatures.get(id) || edited.has(id)) { rootSignatures.set(id, signature); ops.push({ op: 'adopted', id, sheets: adopted(root) }); }
       }
+      for (const [id, last] of fragments) { const doc = nodes.get(id), now = doc ? fragmentOf(doc) : last; if (now !== last) { fragments.set(id, now); ops.push({ op: 'fragment', id, fragment: now }); } }
       for (const key of Object.keys(dirty)) dirty[key].clear();
       return { ops, changed: rebound, ...take(), ...header(), pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())) };
     };

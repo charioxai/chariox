@@ -109,7 +109,7 @@ export function decodeMirror2Packet(packet: Mirror2Packet): Mirror2Packet {
   if (packet.ops !== undefined) { if (!Array.isArray(packet.ops)) fail('ops'); decoded.ops = packet.ops.map(op => op?.op === 'children' ? { ...op, nodes: decodeMirror2Records(op.nodes, op.id) } : op) }
   return decoded
 }
-const RECORD_KEYS = new Set(['id', 'parent', 'kind', 'tag', 'ns', 'attrs', 'text', 'css', 'res', 'form', 'scroll', 'size', 'display', 'reason', 'adopted', 'state'])
+const RECORD_KEYS = new Set(['id', 'parent', 'kind', 'tag', 'ns', 'attrs', 'text', 'css', 'res', 'form', 'scroll', 'size', 'display', 'reason', 'adopted', 'state', 'fragment'])
 export function validateMirror2Record(record: Mirror2Record): void {
   if (record && typeof record === 'object' && Object.keys(record).some(key => !RECORD_KEYS.has(key))) fail('node')
   if (!record || typeof record !== 'object' || !id.test(record.id) || record.parent !== null && !id.test(record.parent) || !['document', 'shadow', 'element', 'text', 'frame', 'mask', 'tile'].includes(record.kind)) fail('node')
@@ -132,6 +132,7 @@ export function validateMirror2Record(record: Mirror2Record): void {
   if (record.kind === 'mask' && (record.text !== undefined || record.res !== undefined || record.form !== undefined || record.css !== undefined || Object.keys(record.attrs ?? {}).some(name => !['class', 'id'].includes(name)) || !record.size)) fail('protected payload')
   if (record.kind === 'tile' && !record.size) fail('tile')
   if (record.state !== undefined && (record.kind !== 'element' || record.ns !== undefined || !validState(record.state))) fail('state')
+  if (record.fragment !== undefined && (record.kind !== 'document' || !validFragment(record.fragment) || record.fragment === null)) fail('fragment')
 }
 // Pre-order: every parent precedes its children; leaves never parent nodes.
 function validateTree(records: Mirror2Record[], known: (id: string) => Mirror2Record | undefined, root: string | null): void {
@@ -147,6 +148,7 @@ function validateTree(records: Mirror2Record[], known: (id: string) => Mirror2Re
     seen.set(record.id, record)
   }
 }
+const validFragment = (value: unknown): boolean => value === null || typeof value === 'string' && value.length > 0 && value.length <= 2048
 function validateOp(op: Mirror2Op, known: (id: string) => Mirror2Record | undefined): void {
   if (!op || typeof op !== 'object' || !id.test(op.id)) fail('op')
   switch (op.op) {
@@ -164,6 +166,7 @@ function validateOp(op: Mirror2Op, known: (id: string) => Mirror2Record | undefi
     case 'scroll': case 'size': { const value = op.op === 'scroll' ? op.scroll : op.size; if (!Array.isArray(value) || value.length !== 2 || !finite(value)) fail('op'); break }
     case 'res': if (op.res !== null && !/^r[0-9]{1,9}$/.test(op.res)) fail('op'); break
     case 'state': if (!validState(op.state) || known(op.id) && known(op.id)!.kind !== 'element') fail('op'); break
+    case 'fragment': if (!validFragment(op.fragment) || known(op.id) && known(op.id)!.kind !== 'document') fail('op'); break
     default: fail('op')
   }
 }

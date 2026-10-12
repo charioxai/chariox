@@ -78,8 +78,9 @@ test('MP-10: compact wire records keep ids, parents, kinds and fields (fixture s
     { id: 'n6', parent: 'n3', kind: 'mask', tag: 'span', size: [10, 20], display: 'inline-block' },
     { id: 'n7', parent: 'n3', kind: 'element', tag: 'svg', ns: 'svg', attrs: { viewBox: '0 0 1 1' } },
     { id: 'n1000000001', parent: 'n3', kind: 'frame', tag: 'iframe' },
+    { id: 'n1000000002', parent: 'n1000000001', kind: 'document', fragment: 'section' }, // protocol 503
   ];
-  assert.deepEqual(encodeMirrorRecords(records, null), [[1, 0, 1], [1, 1, 'html', { lang: 'en' }], [1, 1, 'body'], [2, 1, 0, 'Hello'], [1, 2, 4, 0, { size: [10, 20], display: 'inline-block', tag: 'span' }], [1, 3, 'svg', { viewBox: '0 0 1 1' }, { ns: 'svg' }], [999999994, 4, 3, 0, { tag: 'iframe' }]]);
+  assert.deepEqual(encodeMirrorRecords(records, null), [[1, 0, 1], [1, 1, 'html', { lang: 'en' }], [1, 1, 'body'], [2, 1, 0, 'Hello'], [1, 2, 4, 0, { size: [10, 20], display: 'inline-block', tag: 'span' }], [1, 3, 'svg', { viewBox: '0 0 1 1' }, { ns: 'svg' }], [999999994, 4, 3, 0, { tag: 'iframe' }], [1, 1, 1, 0, { fragment: 'section' }]]);
   assert.deepEqual(encodeMirrorRecords([{ id: 'n9', parent: 'n3', kind: 'text', text: 'a' }, { id: 'n10', parent: 'n3', kind: 'element', tag: 'b' }], 'n3'), [[9, 0, 0, 'a'], [1, 0, 'b']]);
   assert.throws(() => encodeMirrorRecords([{ id: 'n9', parent: 'n4', kind: 'text', text: 'a' }], 'n3'), /unordered/);
 });

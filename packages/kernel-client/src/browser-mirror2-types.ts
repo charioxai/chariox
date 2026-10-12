@@ -1,4 +1,4 @@
-// MP-08/MP-10/MP-11 — DOM mirror v2 wire (local protocol 501); kernel remains browser authority.
+// MP-08/MP-10/MP-11 — DOM mirror v2 wire (local protocol 503); kernel remains browser authority.
 export type Mirror2Kind = 'document' | 'shadow' | 'element' | 'text' | 'frame' | 'mask' | 'tile'
 export type Mirror2Form = { value: string; checked: boolean; selected_index: number; selection_start: number | null; selection_end: number | null }
 // Protocol 492: UA state with no attribute footprint (records carry non-default values only); 501: custom validity.
@@ -8,6 +8,7 @@ export type Mirror2Record = {
   tag?: string; ns?: 'svg' | 'math'; attrs?: Record<string, string>; text?: string; css?: string; res?: string
   form?: Mirror2Form; scroll?: [number, number]; size?: [number, number]; display?: string; reason?: string; adopted?: Array<string | { ref: string }>
   css_ref?: string; state?: Mirror2State
+  fragment?: string // protocol 503: a frame document's fragment (its `:target`); the top document's is the header
 }
 export type Mirror2Op =
   | { op: 'children'; id: string; children: string[]; nodes: Mirror2Record[] }
@@ -20,6 +21,7 @@ export type Mirror2Op =
   | { op: 'size'; id: string; size: [number, number] }
   | { op: 'res'; id: string; res: string | null }
   | { op: 'state'; id: string; state: Mirror2State }
+  | { op: 'fragment'; id: string; fragment: string | null }
 // A slice carries `offset`/`total` (base64 characters); slices of a key arrive in order.
 export type Mirror2Resource = { key: string; resource_id: string; mime_type: string; data_base64: string; offset?: number; total?: number }
 export type Mirror2Tile = { node_id: string; x: number; y: number; width: number; height: number; data_base64: string }

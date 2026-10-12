@@ -285,4 +285,7 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: version 501 adds `mirror_next.resend` (the viewer asks for the
 /// packet after its base at once: a lost reply or a failed credit), custom validity
 /// (`state.custom_invalid`) and external SVG `<use>` sprites (sanitized resources).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 501;
+/// MP-08/MP-10/MP-11: version 503 gives each mirrored frame document its own
+/// fragment (`fragment` on frame document records and a `fragment` op), so its
+/// `:target` no longer follows the top document's header.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 503;

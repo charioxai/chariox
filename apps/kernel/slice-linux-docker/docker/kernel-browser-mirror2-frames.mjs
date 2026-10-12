@@ -18,12 +18,12 @@ const rebaseCss = (text, slot) => text.replace(/mr:r([0-9]{1,6})/g, (_, n) => `m
 // field cannot travel from a child frame un-rebased.
 const same = value => value;
 const id = slot => value => rebaseId(value, slot);
-const RECORD = slot => ({ id: id(slot), parent: value => value === null ? null : rebaseId(value, slot), kind: same, tag: same, ns: same, text: same, form: same, scroll: same, size: same, display: same, reason: same, state: same, foreign: same,
+const RECORD = slot => ({ id: id(slot), parent: value => value === null ? null : rebaseId(value, slot), kind: same, tag: same, ns: same, text: same, form: same, scroll: same, fragment: same, size: same, display: same, reason: same, state: same, foreign: same,
   attrs: attrs => attrs.style ? { ...attrs, style: rebaseCss(attrs.style, slot) } : attrs, res: key => rebaseKey(key, slot), css: text => rebaseCss(text, slot), adopted: list => list.map(text => rebaseCss(text, slot)) });
 const OPS = {
   children: slot => ({ children: list => list.map(id(slot)), nodes: list => list.map(record => rebaseRecord(record, slot)) }),
   attr: slot => ({ name: same, value: same }), text: () => ({ text: same }), form: () => ({ form: same }), scroll: () => ({ scroll: same }), size: () => ({ size: same }), state: () => ({ state: same }),
-  css: slot => ({ css: text => rebaseCss(text, slot) }), adopted: slot => ({ sheets: list => list.map(text => rebaseCss(text, slot)) }), res: slot => ({ res: key => key && rebaseKey(key, slot) }),
+  css: slot => ({ css: text => rebaseCss(text, slot) }), adopted: slot => ({ sheets: list => list.map(text => rebaseCss(text, slot)) }), res: slot => ({ res: key => key && rebaseKey(key, slot) }), fragment: () => ({ fragment: same }),
 };
 const DELTA = slot => ({ ops: list => list.map(op => rebaseOp(op, slot)), changed: list => list.map(id(slot)), resources: list => list.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot })),
   focused: value => value ? rebaseId(value, slot) : null, selection: value => value ? { ...value, anchor_id: rebaseId(value.anchor_id, slot), focus_id: rebaseId(value.focus_id, slot) } : null,
@@ -118,10 +118,11 @@ export class MirrorFrames {
         const child = await this.world(world, frame, stream.id);
         const loaderId = await this.loaderId(child);
         const snap = await this.snapshot(child, loaderId, policy, tab, slot);
-        const entry = { slot, owner: id, child, loaderId, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll), focus: rebaseFocus(snap, slot) };
+        const entry = { slot, owner: id, child, loaderId, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll), fragment: snap.fragment ?? null, focus: rebaseFocus(snap, slot) };
         stream.frames.set(id, entry); stream.frameSlots.set(slot, entry);
         const records = snap.nodes.map(r => rebaseRecord(r, slot));
-        records[0] = { ...records[0], parent: id };
+        // The child's own fragment (its header) is its document record's (protocol 503).
+        records[0] = { ...records[0], parent: id, ...(entry.fragment ? { fragment: entry.fragment } : {}) };
         out.records.push(...records);
         out.resources = [...(out.resources ?? []), ...snap.resources.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot }))];
         if (snap.scroll[0] || snap.scroll[1]) out.ops.push({ op: 'scroll', id: records[0].id, scroll: snap.scroll });
@@ -145,6 +146,7 @@ export class MirrorFrames {
         entry.focus = { focused: delta.focused, selection: delta.selection };
         // The child's window position is its header, not an op: forward its changes.
         if (JSON.stringify(delta.scroll) !== entry.scroll) { entry.scroll = JSON.stringify(delta.scroll); out.ops.push({ op: 'scroll', id: entry.documentId, scroll: delta.scroll }); }
+        if ((delta.fragment ?? null) !== entry.fragment) { entry.fragment = delta.fragment ?? null; out.ops.push({ op: 'fragment', id: entry.documentId, fragment: entry.fragment }); }
       } catch {
         // New child document (or lost world): fresh snapshot replaces the owner's child.
         stream.frames.delete(owner); stream.frameSlots.delete(entry.slot);
@@ -153,9 +155,9 @@ export class MirrorFrames {
           const frame = owners.get(owner); if (!frame) continue;
           const slot = ++stream.frameSlot, child = await this.world(this.mirror.parentWorld(stream), frame, stream.id), loaderId = await this.loaderId(child);
           const snap = await this.snapshot(child, loaderId, policy, tab, slot);
-          const next = { slot, owner, child, loaderId, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll), focus: rebaseFocus(snap, slot) };
+          const next = { slot, owner, child, loaderId, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll), fragment: snap.fragment ?? null, focus: rebaseFocus(snap, slot) };
           stream.frames.set(owner, next); stream.frameSlots.set(slot, next);
-          const records = snap.nodes.map(r => rebaseRecord(r, slot)); records[0] = { ...records[0], parent: owner };
+          const records = snap.nodes.map(r => rebaseRecord(r, slot)); records[0] = { ...records[0], parent: owner, ...(next.fragment ? { fragment: next.fragment } : {}) };
           out.ops.push({ op: 'children', id: owner, children: [records[0].id], nodes: records }, ...snap.sheetOps);
           if (snap.scroll[0] || snap.scroll[1]) out.ops.push({ op: 'scroll', id: records[0].id, scroll: snap.scroll });
           out.resources.push(...snap.resources.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot })));
