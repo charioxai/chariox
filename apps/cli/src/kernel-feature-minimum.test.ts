@@ -51,13 +51,6 @@ test("unknown versions and unrelated requests retain existing transport behavior
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ ListSessions: null }, 388))
 })
 
-// MP-08 / MP-10: VERSION(P01).
-test("standalone and reserved Project Environment operations require protocol 471", () => {
-  for (const kind of ["GetProjectEnvironment", "ApplyProjectEnvironment", "PreviewEnvironmentImport", "CommitEnvironmentImport"]) {
-    assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 470), /Project Environment needs protocol ≥471/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 471))
-  }
-})
 
 test("Cloud owner control and terminal pivots require allocated protocol 491", () => {
   for (const name of ["CloudRelayStatus", "StartCloudRelayLogin", "PollCloudRelayLogin", "LogoutCloudRelay", "ConnectCloudRelay", "IssueCloudRelayClientToken", "ResolveKernelClientConnection", "PreflightProviderAccountPortability"]) {
@@ -78,13 +71,6 @@ test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated proto
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "kernel-access", choice_id: "refuse" } }, 451))
 })
 
-// MP-08 / MP-10: VERSION(P01).
-test("standalone and reserved Project Environment operations require protocol 487", () => {
-  for (const kind of ["GetProjectEnvironment", "ApplyProjectEnvironment", "PreviewEnvironmentImport", "CommitEnvironmentImport"]) {
-    assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 472), /Project Environment needs protocol ≥487/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 487))
-  }
-})
 
 // MP-08 / MP-10 / MP-11: old decoders may ignore an optional cancellation fence.
 test("MP-08 MP-10 exact prompt cancellation rejects old and unknown kernels", () => {
@@ -105,4 +91,12 @@ test("MP-08 / MP-11 automation inject refuses 490 before transport", () => {
 
 test("MP-08 / MP-11 automation injection requires a confirmed kernel generation", () => {
   for (const version of [undefined, 0, NaN]) assert.throws(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, version), /kernel support unknown.*491/)
+})
+
+// MP-08 / MP-10 / MP-11: merged tail exposes the compact contract at allocated 505.
+test("standalone and reserved Project Environment operations require protocol 505", () => {
+  for (const kind of ["GetProjectEnvironment", "ApplyProjectEnvironment", "PreviewEnvironmentImport", "CommitEnvironmentImport"]) {
+    assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 504), /Project Environment needs protocol ≥505/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 505))
+  }
 })
