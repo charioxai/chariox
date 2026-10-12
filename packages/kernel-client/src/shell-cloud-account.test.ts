@@ -26,3 +26,17 @@ test("MP-08 / MP-11 a signed-out private adapter refuses before creating a local
   assert.match(result.message!, /client Cloud account/)
   assert.equal(kernelRequests, 0)
 })
+
+test("MP-08 / MP-11 standalone shell without a client adapter reads cloud status from the kernel", async () => {
+  const requests: unknown[] = []
+  const deps = {client:{send:async (request: unknown) => {requests.push(request); return {CloudRelayStatus:{profile:{account_slug:"kernel-account"}}}}}}
+  for (const line of ["cloud status", "cloud"]) {
+    const result = await executeShellCommand(parseShellCommand(line), createDefaultShellContext(), deps)
+    assert.equal(result.ok, true)
+    assert.equal(result.message, "cloud profile kernel-account")
+  }
+  assert.deepEqual(requests, [{CloudRelayStatus:null}, {CloudRelayStatus:null}])
+  const refused = await executeShellCommand(parseShellCommand("cloud members"), createDefaultShellContext({sessionId:"s"}), deps)
+  assert.equal(refused.ok, false)
+  assert.equal(requests.length, 2)
+})

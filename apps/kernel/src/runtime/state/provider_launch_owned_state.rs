@@ -420,6 +420,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mp08_mp11_refused_legacy_terminal_pairing_grant_preserves_machine_enrollment() {
+        crate::test_support::isolated_env_test!();
+        use std::io::{Read, Write};
+        let root = crate::test_support::TestWorktree::new("legacy-pairing-refusal");
+        std::env::set_var("CHARIOX_HOME", root.path().join("home"));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = [0; 8192];
+            let _ = stream.read(&mut bytes).unwrap();
+            let body =
+                r#"{"error":{"code":"session_invalid","message":"receiving terminal revoked"}}"#;
+            write!(stream, "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".into());
+        config.relay_token = Some("synthetic-relay-token".into());
+        let original = crate::config::PersistedCloudRelayProfile {
+            api_url,
+            relay_url: "wss://relay.example.test".into(),
+            machine_id: Some("legacy-machine".into()),
+            machine_credential: Some("synthetic-machine-credential".into()),
+            user_id: "cloud-owner".into(),
+            account_id: "account".into(),
+            realm_id: "realm".into(),
+            ..Default::default()
+        };
+        config.cloud_relay = Some(original.clone());
+        let app = Arc::new(Mutex::new(
+            crate::app::DaemonApp::bootstrap(config).unwrap(),
+        ));
+        let runtime = owned_runtime_state(&app).await;
+        let result =
+            crate::runtime::pairing_invite_executor::execute_create_terminal_pairing_link_request(
+                &runtime,
+                &runtime.owned.config_projection,
+                crate::local::CreateTerminalPairingLinkRequest {
+                    terminal_type: None,
+                    alias: None,
+                    expires_in_ms: None,
+                },
+            )
+            .await;
+        server.join().unwrap();
+        assert!(result.is_err());
+        let retained = runtime
+            .owned
+            .config_projection
+            .snapshot()
+            .cloud_relay
+            .expect("legacy terminal grant refusal must not clear enrollment");
+        assert_eq!(retained.machine_id, original.machine_id);
+        assert_eq!(retained.machine_credential, original.machine_credential);
+    }
+
+    #[tokio::test]
     async fn mp08_mp11_claude_first_use_uses_launch_bound_replica() {
         crate::test_support::isolated_env_test!();
         let root = crate::test_support::TestWorktree::new("claude-first-use-replica");

@@ -593,6 +593,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       saveProfile: async profile => { await saveRelayCloudProfile(profile); setPreferencesState((current: any) => mergeRelayCloudProfile(current, profile)) },
       refresh: refreshWaitingRoomData,
       openUrl: openExternalUrl,
+      // MP-08 / MP-11: loopback is owner-authenticated; over relay only the session owner's own terminal reads kernel status.
+      ownsKernel: profile => !client.isRelayTransport() || Boolean(profile?.userId && isAttached() && sessionState().owner_user_id === profile.userId),
     }) } : {}),
     getCloudRelayProfile: async () => deps.kernelConnected?.() === false
       ? await deps.cloudClient?.profile() ?? null

@@ -40,7 +40,8 @@ export async function executeCloudCommand(
   deps: ShellCloudCommandDeps,
 ): Promise<ShellCommandResult> {
   const [area, action, ...args] = parsed.args
-  const cloudClient = deps.cloudAccountClient
+  // MP-08 / MP-11: without a private client adapter, status stays the kernel's owner-authorized enrollment view.
+  const cloudClient = deps.cloudAccountClient ?? (!area || area === "status" ? deps.client : undefined)
   if (!cloudClient || (cloudClient.ensureAuthenticated && !await cloudClient.ensureAuthenticated())) return {ok:false, message:"Sign in the client Cloud account before using cloud commands; kernel enrollment does not grant human account authority"}
   if (area === "invite" && action === "create") {
     if (!context.sessionId) {

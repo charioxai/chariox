@@ -74,7 +74,7 @@ export async function handleRelayCloudCommand(
     return
   }
   deps.flashFooter(
-    "usage: /relay cloud status | /relay cloud login [api-url] | /relay cloud pair [alias] | /relay cloud pair-machine [machine-id] [alias] | /relay cloud connect | /relay cloud client-token <target-daemon-alias> [session-id] | /relay cloud disable",
+    "usage: /relay cloud status | /relay cloud login [api-url] | /relay cloud connect | /relay cloud client-token <target-daemon-alias> [session-id] | /relay cloud disable",
     "error",
   )
 }

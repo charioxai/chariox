@@ -7,6 +7,7 @@ export function createCloudClientCommands(options: {
   client: CloudClient; isKernelConnected: () => boolean; apiUrl: () => string
   notice: (message: string) => void; saveProfile: (profile: RelayCloudProfile | null) => Promise<void>
   accountId?: () => Promise<string | undefined>; refresh: () => Promise<void>; openUrl?: (url: string) => Promise<boolean>
+  ownsKernel?: (profile: RelayCloudProfile | null) => boolean
 }) {
   return async (args: string[]): Promise<boolean> => {
     const area = args[0]
@@ -21,7 +22,8 @@ export function createCloudClientCommands(options: {
     if (area === "status") {
       const profile = await options.client.profile()
       options.notice(profile ? `Terminal profile: ${profile.accountSlug}\nclient=${profile.clientId}` : "Terminal is signed out. Run /cloud login.")
-      return true
+      // MP-08 / MP-11: false continues to the owner-only kernel link and relay status.
+      return !(options.isKernelConnected() && options.ownsKernel?.(profile))
     }
     const expectedAccountId = await options.accountId?.()
     const profile = await options.client.login(options.apiUrl(), async verification => {

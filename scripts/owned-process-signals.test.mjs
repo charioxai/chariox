@@ -107,7 +107,7 @@ test('MP-11 BSD ownership retains observed descendants after reparenting', () =>
   let rows = [{...row(50), session: '0xabc'}]
   const sent = []
   const g = createOwnedSignalGuard({ snapshot: () => rows, send: (...args) => sent.push(args) })
-  const handle = g.record(50, { sessionLeader: true })
+  const handle = g.record(50)
   rows.push({...row(51, 50), session: '0xabc'})
   g.refresh()
   rows[1].ppid = 1
@@ -197,7 +197,7 @@ for (const session of ['0', '0x0']) test(`MP-11 BSD sess=${session} owns only ob
   let rows = [row(50, 9, 50), row(51, 50, 51), row(90, 1, 90), row(91, 9, 50)].map(r => ({...r, session}))
   const sent = []
   const g = createOwnedSignalGuard({ snapshot: () => rows, send: (...args) => sent.push(args) })
-  const root = g.record(50, {sessionLeader: true})
+  const root = g.record(50)
   assert.deepEqual(g.processes(root).map(h => h.pid), [50, 51])
   assert.deepEqual(g.groups(root).map(h => h.pid), [50, 51])
   assert.throws(() => g.group(root, 'SIGTERM'), /unowned/)

@@ -100,12 +100,13 @@ impl CodexClient {
             }
         }
         interrupt_result.unwrap()?;
-        let cleanup_ok = cleanup_result.unwrap().is_ok();
-        crate::logging::debug_with_fields(
-            "daemon.provider.codex",
-            "codex thread terminal cleanup settled trace",
-            json!({"provider_run_id":self.provider_run_id,"cleanup_ok":cleanup_ok}),
-        );
+        if let Err(error) = cleanup_result.unwrap() {
+            crate::logging::warn_with_fields(
+                "daemon.provider.codex",
+                "codex thread terminal cleanup failed after acknowledged interrupt",
+                json!({"provider_run_id":self.provider_run_id,"error":error.to_string()}),
+            );
+        }
         Ok(())
     }
 }

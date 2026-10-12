@@ -103,7 +103,7 @@ fn format_summary(diagnostic: &Diagnostic) -> String {
     {
         // MP-08/MP-10: describe the known boundary failure without provider
         // output or silently changing the user's container security choice.
-        summary.push_str("; provider namespace setup was denied by the execution environment. Local Docker slices enable slices.linux.allow_provider_sandbox_compatibility by default; if it was disabled, re-enable it and recreate the slice before retrying. If already enabled, verify the host supports the selected provider namespace boundary");
+        summary.push_str("; provider namespace setup was denied by the execution environment. For local Docker slices, provider sandbox compatibility is an explicit opt-in that relaxes container security (adds SYS_ADMIN, NET_ADMIN and SYS_PTRACE and relaxes seccomp and AppArmor); to accept that, run /config set slices.linux.allow_provider_sandbox_compatibility true and recreate the slice before retrying. If already enabled, verify the host supports the selected provider namespace boundary");
     }
     summary
 }
@@ -190,7 +190,12 @@ mod tests {
         assert!(summary.contains("diagnostic_classes=namespace,permission_denied"));
         assert!(!summary.contains("private-fixture-marker"));
         assert!(!summary.contains("bwrap:"));
-        assert!(summary.contains("slices.linux.allow_provider_sandbox_compatibility"));
+        assert!(
+            summary.contains("/config set slices.linux.allow_provider_sandbox_compatibility true")
+        );
+        assert!(summary.contains("explicit opt-in"));
+        assert!(summary.contains("relaxes container security"));
+        assert!(!summary.contains("by default"));
         assert!(summary.contains("recreate the slice"));
     }
 
