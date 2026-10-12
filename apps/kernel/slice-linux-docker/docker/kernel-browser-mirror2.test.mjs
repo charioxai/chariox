@@ -214,3 +214,36 @@ test('MP-11: every field of a child-frame delta is rebased into the frame slot; 
   assert.throws(() => frames.rebaseOp({ op: 'focus_ring', id: 'n3' }, slot), /unrebased mirror op/);
   assert.throws(() => frames.rebaseRecord({ ...record, label_for: 'n3' }, slot), /unrebased mirror record field/);
 });
+
+test('MP-08: a page without opaque regions (and no attached frame) places no tiles without evaluating in the page', async () => {
+  const mirror = new Mirror2({ host: { scales: new Map() } }), calls = [];
+  mirror.evaluate = async (world, expression) => { calls.push(expression); return []; };
+  mirror.frames = { opaqueBoxes: async () => [] };
+  const stream = { frames: new Map(), tileKeys: 'n9', tilesAt: 0 }, world = { ref: 'm' };
+  assert.deepEqual(await mirror.tiles(world, { tab_id: 't' }, stream, false, false, true), []);
+  assert.deepEqual([calls, stream.tileKeys], [[], ''], 'MP-08: a DOM echo does not wait for an evaluation in the page');
+  await mirror.tiles(world, { tab_id: 't' }, stream, false, false, false);
+  assert.deepEqual(calls, ['m.opaqueBoxes()'], 'MP-10: opaque regions are still measured for the 25% budget');
+  stream.frames.set('n5', {}); calls.length = 0;
+  await mirror.tiles(world, { tab_id: 't' }, stream, false, false, true);
+  assert.deepEqual(calls, ['m.opaqueBoxes()'], 'MP-10: an attached child frame may hold opaque regions');
+});
+
+test('MP-08/MP-11: a DOM echo is fenced by the page session\'s navigation events; any other answer asks the renderer (and a moved document is refused)', async () => {
+  const run = async cached => {
+    const frameTrees = [], tab = { tab_id: 't', target_id: 'T', document_id: 'D1' }, stream = { tab_id: 't', issued: 1, document_id: 'D1', policy: 'p', fallback: null, header: {}, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '' };
+    const connection = { send: async method => { if (method === 'Page.getFrameTree') { frameTrees.push(method); return { frameTree: { frame: { loaderId: 'D2' } } }; } return {}; } };
+    const host = { protection: 'p', generation: 1, scales: new Map(), displayTarget: async () => tab, browser: { documentIdsByTarget: new Map([['T', cached]]) } };
+    const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
+    mirror.world = async () => ({ connection, sessionId: 'S', ref: 'm' });
+    mirror.evaluate = async () => ({ ops: [{ op: 'text', id: 'n5', text: 'menu' }], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0 });
+    mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
+    return { frameTrees, packet: await mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 1 }, 'scope').catch(error => error) };
+  };
+  const fresh = await run('D1');
+  assert.deepEqual([fresh.frameTrees, fresh.packet.ops], [[], [{ op: 'text', id: 'n5', text: 'menu' }]], 'MP-08: no renderer round trip ahead of the echo');
+  const moved = await run('D2');
+  assert.deepEqual([moved.frameTrees.length, moved.packet.code], [1, 'stale_document_reference'], 'MP-11: a navigated page is refused by the renderer check');
+  const unknown = await run(undefined);
+  assert.deepEqual([unknown.frameTrees.length, unknown.packet.code], [1, 'stale_document_reference']);
+});

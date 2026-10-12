@@ -346,12 +346,16 @@ export class Mirror2 {
     // Stills, like image bytes, never ride on a DOM change or follow viewer input
     // within QUIET_MS: an echo must not queue behind a lossless region.
     const still = reset || (this.emptyDom(stream, source) && !this.recentInput(stream));
-    if (!fallback) try { tiles = await this.tiles(world, tab, stream, reset, still); } catch (error) {
+    if (!fallback) try { tiles = await this.tiles(world, tab, stream, reset, still, source?.opaque === false); } catch (error) {
       if (!['region_area', 'region_transform'].includes(error.mirrorReason)) throw error;
       fallback = error.mirrorReason; this.host.timing?.(`mirror2_fallback_${fallback}`, timestamp()); source = null; reset = true; resources = [];
     }
     mark('tiles');
-    await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id); assertNotCancelled(signal);
+    // The page session's navigation events arrive in order with the replies above: a cached document equal to the
+    // tab's needs no renderer round trip (which waits for the page's next task ahead of an echo). Any other
+    // answer asks the renderer.
+    if (this.host.browser.documentIdsByTarget?.get(tab.target_id) !== tab.document_id) await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
+    assertNotCancelled(signal);
     if (this.host.protection !== policy || this.host.generation !== command.generation || this.service.streams.get(command.subscription_id) !== stream) {
       stream.policy = null; throw new Error('MP-11: stale mirror protection policy or subscription');
     }
@@ -571,7 +575,10 @@ export class Mirror2 {
   // binds them to video rows: a canvas or video as its own pixels; plugins, closed
   // roots, unattached frames and tainted media as viewport screenshot crops, which
   // a transformed or filtered region cannot use (labelled video fallback).
-  async tiles(world, tab, stream, reset, still) {
+  async tiles(world, tab, stream, reset, still, none = false) {
+    // No opaque region in the page and no attached frame: nothing to place or capture. A DOM echo does not wait
+    // for an evaluation in the page's next task (MP-08 click path, 8-12 ms behind a busy source page).
+    if (none && !stream.frames.size) { stream.tileKeys = ''; return []; }
     let boxes = [...(await this.evaluate(world, `${world.ref}.opaqueBoxes()`)).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)];
     stream.tileKeys = boxes.map(b => b.id).join(',');
     // Plan 3.2 handoff: opaque regions over a quarter of the viewport hand the

@@ -108,6 +108,7 @@ export function installMirror2(sanitizeMirrorCss) {
     let serial = 0, targets = new Set(), records = [], overflow = false, revision = 0;
     const ids = new WeakMap(), nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map(), resOf = new Map();
     const styleNodes = new Map(), roots = new Map(), pendingHosts = new Map(), foreign = new Set(), shapes = new Map();
+    const opaque = new Set(); // ids of opaque regions (tiles, foreign frames): none means the kernel has nothing to place
     // Hosts of closed shadow roots (found by the kernel's trusted DOMSnapshot pass):
     // this world cannot read their content, so they are opaque regions.
     const closedHosts = new WeakSet();
@@ -206,14 +207,14 @@ export function installMirror2(sanitizeMirrorCss) {
     const forget = id => {
       const node = nodes.get(id);
       for (const child of kids.get(id) ?? []) forget(child);
-      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); stateNodes.delete(id); sentStates.delete(id); shapes.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id);
+      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); stateNodes.delete(id); sentStates.delete(id); shapes.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id); opaque.delete(id);
       if (node) ids.delete(node);
     };
     // Mirrored form controls: property writes (value, checked, selectedIndex) make no mutation record.
     // Each option of a multiple select carries its own selectedness (selectedIndex names only the first).
     const formNodes = new Map();
     const formControl = node => ['input', 'textarea', 'select'].includes(node.localName) || node.localName === 'option' && node.closest('select')?.multiple === true;
-    const remember = (record, node) => { if (node.nodeType === 1 && formControl(node)) formNodes.set(record.id, node); nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
+    const remember = (record, node) => { if (node.nodeType === 1 && formControl(node)) formNodes.set(record.id, node); nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); if (record.kind === 'tile' || record.foreign) opaque.add(record.id); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
     const opaqueRecord = (node, record, reason) => {
       const [width, height] = layoutSize(node);
       record.kind = 'tile'; record.reason = reason; record.size = [width, height];
@@ -397,7 +398,7 @@ export function installMirror2(sanitizeMirrorCss) {
       }
       // Nothing focused (the page's body or root element) is null: the viewer blurs too (protocol 492).
       const focusId = focused && focused !== focused.ownerDocument.body && focused !== focused.ownerDocument.documentElement ? mirrored(focused) : null;
-      return { scroll: [scrollX, scrollY], focused: focusId && kindOf.get(focusId) !== 'mask' ? focusId : null, selection, fragment: location.hash.length > 1 ? location.hash.slice(1, 2049) : null, revision };
+      return { scroll: [scrollX, scrollY], focused: focusId && kindOf.get(focusId) !== 'mask' ? focusId : null, selection, fragment: location.hash.length > 1 ? location.hash.slice(1, 2049) : null, revision, opaque: opaque.size > 0 };
     };
     const take = () => { const resources = newResources, sheets = pendingSheets; newResources = []; pendingSheets = []; return { resources, sheets }; };
     const resetTargets = () => { targets = new Set(); return true; };
@@ -406,7 +407,7 @@ export function installMirror2(sanitizeMirrorCss) {
       observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map(); snapshotted = true;
       for (const key of Object.keys(dirty)) dirty[key].clear();
       for (const id of [...nodes.keys()]) { const node = nodes.get(id); if (node) ids.delete(node); }
-      nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear();
+      nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear();
       pendingSheets = []; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.values()].map(({ key, kind, url }) => ({ key, url, kind }));
       const out = [], root = serialize(document, null, out);
