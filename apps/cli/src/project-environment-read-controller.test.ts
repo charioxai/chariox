@@ -8,11 +8,11 @@ test("ENV P01 standalone TUI request and protocol gate", async () => {
   const requests: unknown[] = []
   const controller = createProjectEnvironmentReadController({ send: async request => { requests.push(request); throw new Error("not available") }, render() { }, pageSize: () => 10 })
   await controller.open("project")
-  assert.deepEqual(requests, [{ GetProjectEnvironment: { projectId: "project" } }])
+  assert.deepEqual(requests, [{ GetProjectEnvironment: { projectId: "project", view:{knownDigest:null,proposals:null} } }])
   assert.equal(controller.isOpen(), true)
   assert.deepEqual(controller.visibleLines(), ["not available"])
-  assert.throws(() => requireKernelFeatureProtocol(requests[0], 470), /471/)
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(requests[0], 471))
+  assert.throws(() => requireKernelFeatureProtocol(requests[0], 504), /505/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(requests[0], 505))
   controller.handleKey({ name: "escape" })
   assert.equal(controller.isOpen(), false)
 })
@@ -190,4 +190,22 @@ test("review1301 idle TUI expires dependent Ready without another kernel snapsho
  let requests=0,renders=0
  const controller=createProjectEnvironmentReadController({send:async()=>{requests++;return {ProjectEnvironment:{environment}}},render(){renders++},pageSize:()=>100})
  try {await controller.open("project");assert(controller.visibleLines().some(l=>l.includes("Ready")));const settled=renders;await new Promise(resolve=>setTimeout(resolve,250));assert(controller.visibleLines().some(l=>l.includes("Dependent · Last check stale")));assert(renders>settled);assert.equal(requests,1)} finally{controller.close()}
+})
+
+// MP-08 / MP-10 / MP-11: the TUI reaches proposal pages through the shared kernel read.
+test("TUI next proposal crosses a snapshot-bound page and reports the total count",async()=>{
+ const requests:any[]=[]
+ const requirement={requirement_id:"one",title:"One",scope:{kind:"project"},origins:[],spec:{kind:"software",identity:"node",version_constraint:null,detect_only:true},depends_on:[],platform_variants:[],required:false,legacy_entry:null}
+ const first={proposal_id:"one",requirement},second={proposal_id:"two",requirement:{...requirement,requirement_id:"two",title:"Two"}}
+ const environment={schema_version:1,local_project_id:"p",lineage:{project_id:"p",environment_id:"e"},revision:0,content_digest:"digest",project_requirements:[],folders:[],proposals:[],observations:[],operations:[],delivered_capabilities:{enabled_environment_operations:["get","save"]}}
+ const view={snapshot_digest:"snapshot",environment,proposal_count:2,proposal_offset:0,next_proposal_offset:1,proposals:[first],operation_item_counts:[]}
+ let rendered!:()=>void
+ const controller=createProjectEnvironmentReadController({send:async request=>{requests.push(request);return {ProjectEnvironmentView:{view:requests.length===1 ? view : {...view,environment:null,proposal_offset:1,next_proposal_offset:null,proposals:[second]}}}},render(){rendered?.()},pageSize:()=>100})
+ await controller.open("p")
+ assert(controller.visibleLines().some(l=>l.includes("Review 1/2 · One")))
+ const done=new Promise<void>(resolve=>{rendered=resolve})
+ controller.handleKey({name:"n"});await done
+ assert.equal(requests[1].GetProjectEnvironment.view.proposals.snapshotDigest,"snapshot")
+ assert(controller.visibleLines().some(l=>l.includes("Review 2/2 · Two")))
+ controller.close()
 })

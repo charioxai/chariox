@@ -4,6 +4,7 @@
 mod aggregate;
 mod aggregate_projection;
 mod aggregate_store;
+mod read_view;
 mod check;
 mod check_admission;
 mod check_assets;
@@ -43,6 +44,7 @@ mod store;
 mod transfer;
 
 pub use aggregate::*;
+pub use read_view::*;
 pub use aggregate_projection::*;
 pub(crate) use check::*;
 pub(crate) use check_start::*;

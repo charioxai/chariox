@@ -1271,6 +1271,7 @@ fn envp01_project_read_without_agents_denies_foreign_owner() {
     let request =
         LocalDaemonRequest::GetProjectEnvironment(crate::local::GetProjectEnvironmentRequest {
             project_id: "envp01-no-agent".into(),
+                view: None,
         });
     let response = harness.dispatch_as_user("local", request.clone()).unwrap();
     match response {
@@ -1359,6 +1360,7 @@ fn envp02a_hidden_utility_cleanup_preserves_standalone_project_environment() {
     let get =
         LocalDaemonRequest::GetProjectEnvironment(crate::local::GetProjectEnvironmentRequest {
             project_id: "utility-project".into(),
+                view: None,
         });
     let before = harness.dispatch(get.clone()).unwrap();
     let created = harness
@@ -1464,6 +1466,7 @@ fn envp02b_read(
         .dispatch(LocalDaemonRequest::GetProjectEnvironment(
             crate::local::GetProjectEnvironmentRequest {
                 project_id: "edit-project".into(),
+                view: None,
             },
         ))
         .unwrap();

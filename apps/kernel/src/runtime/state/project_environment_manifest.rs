@@ -19,18 +19,25 @@ impl KernelRuntimeState {
             &config.private_runtime_state_root(),
         );
         // MP-08 / MP-10 / MP-11: journals and projection use blocking filesystem I/O.
-        let environment = tokio::task::spawn_blocking(move || {
+        let response = tokio::task::spawn_blocking(move || {
             let mut environment = store.snapshot(&project)?;
             store.attach_checks(
                 &mut environment,
                 &crate::project_environment::current_check_target(&config),
                 crate::session::unix_epoch_ms(),
             )?;
-            Ok::<_, DaemonError>(environment)
+            Ok::<_, DaemonError>(match request.view {
+                Some(read) => LocalDaemonResponse::ProjectEnvironmentView {
+                    view: crate::project_environment::environment_read_view(environment, read)?,
+                },
+                None => LocalDaemonResponse::ProjectEnvironment { environment },
+            })
         })
         .await
-        .map_err(|_| crate::project_environment::environment_error("Environment read task failed"))??;
-        Ok(LocalDaemonResponse::ProjectEnvironment { environment })
+        .map_err(|_| {
+            crate::project_environment::environment_error("Environment read task failed")
+        })??;
+        Ok(response)
     }
 
     // MP-08 / MP-10 / MP-11: Idle prompt admission refreshes through normal activation.

@@ -3177,3 +3177,23 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   preserved through compaction. Legacy kernels fail closed on that journal
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
+
+### MP-08 / MP-10 / MP-11: Environment compact reads (local 505, peer 113)
+
+`GetProjectEnvironment { projectId }` retains the complete aggregate. Optional
+`view: { knownDigest, proposals }` returns `ProjectEnvironmentView { view }`.
+A summary retains the complete saved specification, current observations and
+operation headers, reports proposal/operation item counts, and includes the
+first eight proposals. Unchanged summaries omit `environment`; clients may
+reuse only a matching Project/kernel-bound cached digest. Full operation
+details are loaded explicitly through the ordinary full read.
+
+Proposal-only reads use `proposals: { snapshotDigest, offset, limit }` with
+limit 1–20. Pages target 32 KiB, preserving complete individual requirements,
+provenance and Secret defaults; an individually larger requirement remains
+whole. `next_proposal_offset` is authoritative. The snapshot digest covers
+Project identity, attachments, revision, discovery and observations. A changed
+snapshot rejects the page explicitly. Paging does not change Save's revision,
+content digest or opaque proposal-token fences. Web and local/remote TUI share
+this path; complete mutation replies are retained only in the active editor,
+while cold-open caches retain compact or small snapshots.

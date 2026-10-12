@@ -1,7 +1,7 @@
 // MP-08 / MP-10: Shared Web/TUI projection; no client-owned observations.
 import type { ProjectEnvironment, Requirement, RequirementSpec, RequirementOrigin } from "./kernel-types-project-environment-aggregate.js"
 
-export const projectEnvironmentMinimumProtocolVersion = 471
+export const projectEnvironmentMinimumProtocolVersion = 505
 export function getProjectEnvironmentRequest(projectId: string) {
   return { GetProjectEnvironment: { projectId } } as const
 }
@@ -148,3 +148,5 @@ export function environmentObservationDetails(environment: ProjectEnvironment, i
 export function checkEnvironmentRequest(environment: ProjectEnvironment, target: ProjectEnvironment["observations"][number]["target"], operationId: string) {
   return {CheckProjectEnvironment:{projectId:environment.local_project_id,operationId,revisionDigest:environment.content_digest,target,selectedItems:[]}} as const
 }
+
+export * from "./project-environment-read-view.js"

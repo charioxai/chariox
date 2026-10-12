@@ -128,6 +128,7 @@ impl KernelRuntimeState {
             .get_project_environment(
                 crate::local::GetProjectEnvironmentRequest {
                     project_id: request.project_id,
+                view: None,
                 },
                 user,
             )

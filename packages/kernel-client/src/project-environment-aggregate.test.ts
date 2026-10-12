@@ -5,7 +5,7 @@ import { getProjectEnvironmentRequest, projectEnvironmentMinimumProtocolVersion,
 import type { ProjectEnvironment } from "./kernel-types-project-environment-aggregate.js"
 
 test("ENV P01 query has no agent/session and requires allocated protocol 471", () => {
-  assert.equal(projectEnvironmentMinimumProtocolVersion, 471)
+  assert.equal(projectEnvironmentMinimumProtocolVersion, 505)
   assert.deepEqual(getProjectEnvironmentRequest("project"), { GetProjectEnvironment: { projectId: "project" } })
 })
 
