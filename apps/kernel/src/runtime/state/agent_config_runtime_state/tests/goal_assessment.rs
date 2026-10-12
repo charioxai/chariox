@@ -247,3 +247,96 @@ async fn a12_assessment_exposes_expired_wake_with_unresolved_source_outcome() {
     );
     assert!(!context.contains("DO_NOT_INCLUDE_EXPIRED_BODY"));
 }
+
+// MP-08 / MP-10 / MP-11 A10/A12: the home evaluates a leased task's
+// public result; private MCP records are deliberately not part of that proof.
+#[tokio::test]
+async fn a10_completion_assesses_leased_public_result_without_requesting_private_trace() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    use crate::history::SessionHistoryEntry;
+    use crate::terminal::TerminalOutputKind;
+    let (_app, runtime, room, agent) = agent_config_runtime().await;
+    let store = &runtime.owned.durable_state_store;
+    let prompt = "leased-health";
+    let run = "leased:lease:worker-run";
+    let mut request = SessionHistoryEntry::user_prompt(
+        &room,
+        "owner",
+        &agent,
+        "Call GetDaemonHealth once and report the returned health status; no other tools or edits.",
+    );
+    request.merge_key = Some(format!("prompt:{prompt}"));
+    let answer = SessionHistoryEntry::provider_output(
+        &room,
+        "worker-run",
+        Some(&agent),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        "GetDaemonHealth returned a healthy kernel with no projection mismatches.",
+    );
+    let private_tool = SessionHistoryEntry::provider_output(
+        &room,
+        "worker-run",
+        Some(&agent),
+        TerminalOutputKind::ProviderTool,
+        None,
+        r#"{"tool":"chariox_kernel_request","input":"PRIVATE_MCP_ARGUMENTS","output":"PRIVATE_MCP_OUTPUT"}"#,
+    );
+    for entry in [request, private_tool, answer] {
+        runtime
+            .owned
+            .append_operational_history_entry(&entry, None, None, None);
+    }
+    for op in [
+        Operation::Begin {
+            owner: "owner".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: prompt.into(),
+            run: Some(run.into()),
+            now: 1,
+        },
+        Operation::EnableCompletionCheck {
+            task: prompt.into(),
+        },
+        Operation::Settle {
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: prompt.into(),
+            run: run.into(),
+            has_answer: true,
+            cancelled: false,
+            now: 2,
+        },
+    ] {
+        store.agent_lifecycle(op).unwrap();
+    }
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .remove(0);
+    let context = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    assert!(!context.contains("PRIVATE_MCP_ARGUMENTS"));
+    assert!(!context.contains("PRIVATE_MCP_OUTPUT"));
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["latest_public_answer_tail"],
+        "GetDaemonHealth returned a healthy kernel with no projection mismatches."
+    );
+    assert_eq!(
+        data["answer_coverage"]["shown_chars"],
+        data["answer_coverage"]["total_chars"]
+    );
+    assert_eq!(data["coverage"]["total"], 0);
+    assert_eq!(
+        data["tool_trace_visibility"],
+        "private tool records are intentionally omitted, not missing evidence coverage"
+    );
+    assert!(context.contains("Do not request private tool traces from the owner solely because the public projection omits them"));
+    assert!(context.contains("Do not invent verification"));
+}

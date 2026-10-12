@@ -614,6 +614,14 @@ with proposed 60-second service bound and 8 KiB public result limit. Its context
 is the original request plus a bounded safe delta/obligation list, with paged
 public references when needed; include coverage so truncation cannot mean done.
 No additional evaluator agent or provider; no secret/private reasoning input.
+MP-08 / MP-10 / MP-11: private runtime/MCP tool records are intentionally
+excluded from the public assessment projection. Their absence is not truncated
+evidence coverage or an owner input requirement. Assess the returned public
+outcome and tracked obligations; do not demand that the owner export a private
+tool trace solely to confirm the preceding turn. Missing public results,
+contradictions, unresolved failures and truncated public coverage still prevent
+completion. Provider confirmation does not independently prove tool-call
+counts or arbitrary semantic correctness.
 Persist intent and result against the objective/ledger/work-turn revision;
 lost ACK reconciles exactly, never spends a second evaluation blindly. A stale
 result re-enters the revision check before accepting completion. Mark this
