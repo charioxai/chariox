@@ -151,6 +151,14 @@ test("MP-08/MP-11 styled Claude onboarding is not a ready composer", async () =>
   await readiness.wait(100)
 })
 
+test("MP-08/MP-11 provider exit releases an initial prompt readiness wait immediately", async () => {
+  const readiness = createClaudeRemoteRenderedReadiness()
+  const waiting = readiness.wait(50)
+  const ended = new Error("Claude native TUI ended before its input composer was ready")
+  readiness.fail(ended)
+  await assert.rejects(waiting, (error) => error === ended)
+})
+
 test("remote Claude initial prompt waits for readiness then submits Enter separately", async () => {
   const requests: Record<string, unknown>[] = []
   const client = {

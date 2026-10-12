@@ -87,16 +87,18 @@ export type RemoteRenderedInputAction =
 export type ClaudeRemoteRenderedReadiness = {
   observe: (records: unknown, providerRunId: string, agentId: string) => void
   wait: (timeoutMs?: number) => Promise<void>
+  fail: (error: Error) => void
 }
 
 export function createClaudeRemoteRenderedReadiness(): ClaudeRemoteRenderedReadiness {
   let output = ""
   const decoder = new StringDecoder("utf8")
   let ready = false
-  const waiters = new Set<() => void>()
+  let failure: Error | null = null
+  const waiters = new Set<(error?: Error) => void>()
   return {
     observe: (records, providerRunId, agentId) => {
-      if (ready) return
+      if (ready || failure) return
       for (const bytes of claudeRemoteRenderedTerminalBytes(records, providerRunId, agentId)) {
         output = `${output}${decoder.write(bytes)}`.slice(-32_768)
       }
@@ -112,12 +114,21 @@ export function createClaudeRemoteRenderedReadiness(): ClaudeRemoteRenderedReadi
       for (const resolve of waiters) resolve()
       waiters.clear()
     },
+    fail: (error) => {
+      if (ready || failure) return
+      failure = error
+      for (const finish of waiters) finish(error)
+      waiters.clear()
+    },
     wait: async (timeoutMs = 60_000) => {
+      if (failure) throw failure
       if (ready) return
       await new Promise<void>((resolve, reject) => {
-        const onReady = () => {
+        const onReady = (error?: Error) => {
           clearTimeout(timeout)
-          resolve()
+          waiters.delete(onReady)
+          if (error) reject(error)
+          else resolve()
         }
         const timeout = setTimeout(() => {
           waiters.delete(onReady)
