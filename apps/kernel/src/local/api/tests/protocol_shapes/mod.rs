@@ -85,5 +85,5 @@ fn history_page_entry(
     }
 }
 
-mod ssh_machine;
 mod room_workflows;
+mod ssh_machine;
