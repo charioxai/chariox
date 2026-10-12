@@ -2,7 +2,7 @@
 use super::*;
 use crate::account_profile::ProviderAccountAuthState;
 
-async fn enrollment(alias: &str, accepted: bool) {
+async fn enrollment(alias: &str, accepted: bool, recheck: Option<&str>) {
     let root = std::env::temp_dir().join(format!("claudesetup-rpc-{:016x}", rand::random::<u64>()));
     std::fs::create_dir_all(&root).unwrap();
     std::env::set_var("CHARIOX_HOME", root.join("home"));
@@ -67,17 +67,109 @@ esac
             ProviderAccountAuthState::Authenticated,
             "MP-08/MP-10/MP-11: stored-token receipt must establish verified authentication"
         );
+        if let Some(case) = recheck {
+            if case == "revoked" {
+                // A definitive provider refusal after enrollment, without
+                // changing the stored token or touching a real login.
+                std::fs::write(&source, "#!/bin/sh\ncase \"$1\" in\n--version) echo fixture;;\nauth) echo '{\"loggedIn\":false}'; exit 1;;\n*) exit 1;;\nesac\n").unwrap();
+                assert!(std::process::Command::new("install")
+                    .args(["-m", "700"])
+                    .arg(&source)
+                    .arg(&executable)
+                    .status()
+                    .unwrap()
+                    .success());
+            } else {
+                crate::provider::store_provider_account_credential(
+                    &projection.snapshot(),
+                    "local",
+                    alias,
+                    &profile.profile_id,
+                    "synthetic-rejected",
+                    true,
+                )
+                .unwrap();
+                if case == "native-observation" {
+                    registry
+                        .update_observation(
+                            "local",
+                            alias,
+                            &profile.profile_id,
+                            ProviderAccountAuthState::Authenticated,
+                            Some("old native login".into()),
+                            None,
+                            None,
+                            None,
+                        )
+                        .unwrap();
+                }
+            }
+            let refresh =
+                crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                    registry,
+                    "local",
+                    alias,
+                    &profile.profile_id,
+                    &projection.snapshot(),
+                );
+            assert!(
+                refresh.is_err(),
+                "MP-08/MP-11: Refresh must verify the current token ({case})"
+            );
+            assert_ne!(
+                registry
+                    .get("local", alias, &profile.profile_id)
+                    .unwrap()
+                    .auth_state,
+                ProviderAccountAuthState::Authenticated,
+                "MP-08/MP-11: failed verification must close launch admission"
+            );
+            registry
+                .update_observation(
+                    "local",
+                    alias,
+                    &profile.profile_id,
+                    ProviderAccountAuthState::Authenticated,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            let status = crate::local::provider_requests::observe_provider_auth_status(
+                registry,
+                "local",
+                alias,
+                &profile.profile_id,
+                &projection.snapshot(),
+            );
+            assert!(
+                status.is_err(),
+                "MP-08/MP-11: Status must verify the current token ({case})"
+            );
+            assert_ne!(
+                registry
+                    .get("local", alias, &profile.profile_id)
+                    .unwrap()
+                    .auth_state,
+                ProviderAccountAuthState::Authenticated
+            );
+            drop(runtime);
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
         let validated = registry
             .get("local", alias, &profile.profile_id)
             .unwrap()
             .last_validated_at_ms;
         for provider in ["claude", "claude-p", "claude-headless"] {
             let refreshed =
-                crate::local::provider_requests::refresh_provider_account_profile_response(
+                crate::local::provider_requests::refresh_provider_account_profile_with_config(
                     registry,
                     "local",
                     provider,
                     &profile.profile_id,
+                    &projection.snapshot(),
                 )
                 .unwrap();
             assert_eq!(
@@ -89,17 +181,18 @@ esac
                 "local",
                 provider,
                 &profile.profile_id,
+                &projection.snapshot(),
             )
             .unwrap();
             assert_eq!(status.auth_state, "authenticated");
             assert!(status.login_hint.is_none());
-            assert_eq!(
+            assert!(
                 registry
                     .get("local", provider, &profile.profile_id)
                     .unwrap()
-                    .last_validated_at_ms,
-                validated,
-                "retaining a verified observation must not invent a fresh verification time"
+                    .last_validated_at_ms
+                    > validated,
+                "MP-08/MP-11: an explicit status check must freshly verify the current token"
             );
         }
         registry
@@ -154,22 +247,38 @@ esac
 #[tokio::test]
 async fn direct_setup_token_enrollment_claude() {
     crate::test_support::isolated_env_test!();
-    enrollment("claude", true).await;
+    enrollment("claude", true, None).await;
 }
 #[tokio::test]
 async fn direct_setup_token_enrollment_claude_p() {
     crate::test_support::isolated_env_test!();
-    enrollment("claude-p", true).await;
+    enrollment("claude-p", true, None).await;
 }
 #[tokio::test]
 async fn direct_setup_token_enrollment_claude_headless() {
     crate::test_support::isolated_env_test!();
-    enrollment("claude-headless", true).await;
+    enrollment("claude-headless", true, None).await;
 }
 #[tokio::test]
 async fn direct_setup_token_enrollment_rejects_unverified_secret() {
     crate::test_support::isolated_env_test!();
-    enrollment("claude-p", false).await;
+    enrollment("claude-p", false, None).await;
+}
+
+#[tokio::test]
+async fn refresh_rechecks_revoked_setup_token() {
+    crate::test_support::isolated_env_test!();
+    enrollment("claude-p", true, Some("revoked")).await;
+}
+#[tokio::test]
+async fn refresh_rechecks_replaced_setup_token() {
+    crate::test_support::isolated_env_test!();
+    enrollment("claude-headless", true, Some("replaced")).await;
+}
+#[tokio::test]
+async fn refresh_rechecks_token_after_native_observation() {
+    crate::test_support::isolated_env_test!();
+    enrollment("claude", true, Some("native-observation")).await;
 }
 
 fn runtime(app: crate::DaemonApp) -> KernelRuntimeState {
