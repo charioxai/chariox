@@ -320,7 +320,7 @@ async fn manual_setup_token_verifies_before_storage_and_authenticates_alias() {
         .unwrap();
     for (accepted, replace) in [(true, false), (false, true)] {
         std::fs::write(&binary, if accepted {
-            "#!/bin/sh\n[ \"$1\" = --version ] && { echo 2.2.0; exit 0; }\n[ \"$1\" = auth ] || exit 90\nprintf '%s\n' '{\"loggedIn\":true,\"authMethod\":\"oauth_token\"}'\n"
+            "#!/bin/sh\n[ \"$1\" = --version ] && { echo 2.2.0; exit 0; }\n[ \"$1\" = auth ] || exit 90\nif [ -n \"$CLAUDE_CODE_OAUTH_TOKEN\" ]; then printf '%s\n' '{\"loggedIn\":true,\"authMethod\":\"oauth_token\"}'; else printf '%s\n' '{\"loggedIn\":false}'; exit 1; fi\n"
         } else { "#!/bin/sh\nprintf '%s\n' '{\"loggedIn\":false}'\nexit 1\n" }).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let request = LocalDaemonRequest::SetProviderAccountCredential(
@@ -346,6 +346,19 @@ async fn manual_setup_token_verifies_before_storage_and_authenticates_alias() {
                 result.unwrap(),
                 LocalDaemonResponse::ProviderAccountCredentialStored { .. }
             ));
+            // MP-08/MP-11: a native-file status read must not erase the
+            // stored-token observation or resolve a Vault secret for a read.
+            let stored_status = crate::local::provider_requests::observe_provider_auth_status(
+                &router.provider_account_profiles,
+                "local",
+                "claude-p",
+                &profile.profile_id,
+            )
+            .unwrap();
+            assert_eq!(
+                stored_status.auth_state, "authenticated",
+                "stored credential status must survive a signed-out native profile"
+            );
             assert!(
                 router
                     .provider_account_profiles

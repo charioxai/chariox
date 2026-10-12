@@ -208,10 +208,46 @@ pub(crate) fn validate_credential_free_plan(
 }
 
 pub(crate) fn admission_error(message: impl Into<String>) -> DaemonError {
+    let message = message.into();
+    // MP-08/MP-11: report the failed gate without logging input, paths or pins.
+    let reason = match message.as_str() {
+        "target owner HOME is unavailable"
+        | "target owner HOME must be a real absolute directory" => "target_home_unavailable",
+        "target owner HOME must not contain links" => "target_home_link",
+        "owner context root is unavailable" => "target_context_root_unavailable",
+        "owner context root must be a real directory" => "target_context_root_link",
+        "owner context root must be private and owned by this kernel user" => {
+            "target_context_root_not_private"
+        }
+        "target kernel has no enrolled owner" | "Target kernel has no enrolled owner" => {
+            "target_enrollment_missing"
+        }
+        "target kernel has no enrollment credential"
+        | "Kernel enrollment credential is required" => "enrollment_credential_missing",
+        "owner-managed destination enrollment, account, user or key does not match" => {
+            "destination_enrollment_mismatch"
+        }
+        "Authenticated source is offline or not the same user" => {
+            "source_missing_from_owner_directory"
+        }
+        "Cloud owner authorization does not match authenticated encrypted peers"
+        | "Cloud owner authorization pins changed" => "cloud_peer_binding_changed",
+        "Cloud owner authorization selection changed" => "cloud_selection_changed",
+        "owner-managed context must exclude all credentials" => "credential_selection_forbidden",
+        "context transfer requires exactly one destination binding" => {
+            "destination_binding_invalid"
+        }
+        _ => "other",
+    };
+    crate::logging::warn_with_fields(
+        "daemon.managed_context.owner",
+        "MP-08 owner admission refused",
+        serde_json::json!({"reason": reason}),
+    );
     DaemonError::ManagedContext {
         code: "owner_managed_context_unauthorized",
         operation: "owner-managed context transfer",
-        message: message.into(),
+        message,
         retryable: false,
     }
 }

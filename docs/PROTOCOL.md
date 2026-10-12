@@ -938,7 +938,8 @@ the supplied Claude token with the official CLI auth-status check, and atomicall
 writes the secret plus provider-only credential policy. The successful check records
 the account authentication observation, so both `claude` and `claude-p` can
 launch through the same stored credential. Subscription usage windows are not required for this check. A failed check leaves the prior secret
-and account observation unchanged. Command
+and account observation unchanged. Native-file status reads preserve the stored-token
+observation without opening the Vault or updating its validation time. Command
 history and debug output redact the value. No client currently requires this
 operation during normal session attachment, so minimum supported protocol
 versions do not change.

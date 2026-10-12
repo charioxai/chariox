@@ -264,7 +264,33 @@ pub(crate) fn observe_provider_auth_status(
             Ok(status)
         }
         Some("claude") => {
-            let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
+            let mut status = claude_auth_status(provider, &profile.profile_id, &environment)?;
+            if status.auth_state != "authenticated"
+                && crate::provider::provider_account_credential_registered(
+                    owner_user_id,
+                    provider,
+                    &profile.profile_id,
+                )?
+            {
+                // MP-08/MP-11: a native-file observation cannot invalidate the
+                // separately stored setup token. Preserve its observation/time
+                // without resolving a secret or requesting a Vault unlock.
+                use crate::account_profile::ProviderAccountAuthState;
+                status.auth_state = match profile.auth_state {
+                    ProviderAccountAuthState::Authenticated => "authenticated",
+                    ProviderAccountAuthState::Expired => "expired",
+                    ProviderAccountAuthState::Error => "error",
+                    ProviderAccountAuthState::Unknown => "unknown",
+                    ProviderAccountAuthState::NotConfigured => "not_logged_in",
+                }
+                .to_string();
+                status.identity_summary = profile.identity_summary;
+                status.plan = profile.plan;
+                if status.auth_state == "authenticated" {
+                    status.login_hint = None;
+                }
+                return Ok(status);
+            }
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             Ok(status)
         }
