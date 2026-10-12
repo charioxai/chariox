@@ -11,8 +11,11 @@ impl RuntimeSession {
         user_id: &str,
         history: Option<&DurableKernelStateStore>,
     ) -> Result<bool, DaemonError> {
-        if self
-            .collaboration_level_for_user(user_id)
+        // The room owner sees every run in its room, including runs it
+        // invoked directly without a creator agent.
+        if self.owner_user_id() == user_id
+            || self
+                .collaboration_level_for_user(user_id)
             .is_some_and(|level| level.can_view_agent_trace())
         {
             return Ok(true);
