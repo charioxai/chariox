@@ -28,9 +28,9 @@ function renderImages(prose: string): string {
       const url = safeUrl(src)
       if (!url) return `▣ image: ${alt}`
       const file = decodeSafe(url.pathname.split("/").pop() ?? "")
-      return `[▣ image: ${alt} · ${escapeLinkText([file, url.host].filter(Boolean).join(" · "))}](${url.href})`
+      return `[▣ image: ${alt} · ${escapeLinkText([file, url.host].filter(Boolean).join(" · "))} · size unknown (open link)](${url.href})`
     }
-    return `▣ image: ${alt} · ${escapeLinkText(src.replace(/^file:\/\//i, ""))} (workspace file)`
+    return `▣ image: ${alt} · ${escapeLinkText(src.replace(/^file:\/\//i, ""))} · size unknown (open in the web app)`
   })
 }
 
