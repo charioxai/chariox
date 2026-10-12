@@ -2,11 +2,11 @@
 import type {ProjectEnvironment, EnvironmentProposal} from "./kernel-types-project-environment-aggregate.js"
 export type EnvironmentViewRead = {readonly knownDigest: string | null; readonly proposals: {readonly snapshotDigest:string;readonly offset:number;readonly limit:number} | null}
 export type EnvironmentReadView = {
-  readonly snapshot_digest:string; readonly environment:ProjectEnvironment | null;
+  readonly observed_at_ms:number; readonly snapshot_digest:string; readonly environment:ProjectEnvironment | null;
   readonly proposal_count:number; readonly proposal_offset:number; readonly next_proposal_offset:number | null;
   readonly proposals:readonly EnvironmentProposal[]; readonly operation_item_counts:readonly number[];
 }
-export type EnvironmentViewMetadata = Omit<EnvironmentReadView,"environment"|"proposals"> & {readonly proposal_page_ids?:readonly string[]}
+export type EnvironmentViewMetadata = Omit<EnvironmentReadView,"environment"|"proposals"> & {readonly received_at_ms?:number;readonly received_at_monotonic_ms?:number;readonly proposal_page_ids?:readonly string[]}
 export function getProjectEnvironmentViewRequest(projectId:string, knownDigest:string | null = null) {
   return {GetProjectEnvironment:{projectId,view:{knownDigest,proposals:null}}} as const
 }
@@ -22,7 +22,7 @@ export function environmentFromView(projectId:string,value:unknown,previous:Proj
   const summary=view.environment ?? (previous?.read_view?.snapshot_digest===view.snapshot_digest ? previous : null)
   if(!summary || summary.local_project_id!==projectId || summary.schema_version!==1)throw new Error("Environment unavailable for this Project")
   const {environment:_,proposals,...read_view}=view
-  return {...summary,proposals,read_view:{...read_view,proposal_page_ids:proposals.map(p=>p.proposal_id)}}
+  return {...summary,proposals,read_view:{...read_view,received_at_ms:Date.now(),received_at_monotonic_ms:performance.now(),proposal_page_ids:proposals.map(p=>p.proposal_id)}}
 }
 export function createEnvironmentReader(send:(request:unknown)=>Promise<unknown>) {
   const snapshots=new Map<string,ProjectEnvironment>()

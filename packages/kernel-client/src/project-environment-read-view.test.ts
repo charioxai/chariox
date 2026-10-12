@@ -4,7 +4,7 @@ import test from "node:test"
 import {createEnvironmentReader,environmentFromView,getEnvironmentProposalPageRequest} from "./project-environment-read-view.js"
 import type {ProjectEnvironment} from "./kernel-types-project-environment-aggregate.js"
 const environment={schema_version:1,local_project_id:"p",project_requirements:[],folders:[],proposals:[],operations:[]} as unknown as ProjectEnvironment
-const view={snapshot_digest:"one",environment,proposal_count:1000,proposal_offset:0,next_proposal_offset:8,proposals:[],operation_item_counts:[]}
+const view={observed_at_ms:Date.now(),snapshot_digest:"one",environment,proposal_count:1000,proposal_offset:0,next_proposal_offset:8,proposals:[],operation_item_counts:[]}
 test("compact reads revalidate every opening and omit unchanged sections",async()=>{
  const requests:any[]=[]
  const read=createEnvironmentReader(async request=>{requests.push(request);return {ProjectEnvironmentView:{view:requests.length===1 ? view : {...view,environment:null}}}})

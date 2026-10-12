@@ -19,6 +19,8 @@ pub struct EnvironmentProposalPageRead {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentReadView {
+    /// Kernel-clock reference for freshness on clients running on another machine.
+    pub observed_at_ms: u64,
     /// Covers Project identity, attachments, saved revision, discovery and current checks.
     pub snapshot_digest: String,
     /// None means an unchanged summary, or an explicit proposal-only page.
@@ -84,6 +86,7 @@ pub fn environment_read_view(
         operation.receipts.clear();
     }
     Ok(EnvironmentReadView {
+        observed_at_ms: crate::session::unix_epoch_ms(),
         environment: if page_only || read.known_digest.as_deref() == Some(&snapshot_digest) {
             None
         } else {
