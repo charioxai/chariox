@@ -12,23 +12,29 @@ pub(super) fn bind(
     run: &str,
     node: &str,
 ) -> Result<Outcome, DaemonError> {
-    current(&load(tx, task)?, prompt)?;
-    tx.execute(
-        "INSERT INTO agent_task_workflows VALUES(?1,?2,?3) ON CONFLICT(task_id) DO NOTHING",
-        params![task, run, node],
-    )
-    .map_err(sql)?;
-    let existing: (String, String) = tx
+    let existing: Option<(String, String)> = tx
         .query_row(
             "SELECT run_id,node_run_id FROM agent_task_workflows WHERE task_id=?1",
             [task],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
+        .optional()
         .map_err(sql)?;
-    if existing != (run.into(), node.into()) {
-        return Err(error("workflow task lineage changed"));
+    match existing {
+        // Continuations of a bound task, including its completion check, keep
+        // the lineage they already have; rebinding grants nothing.
+        Some(existing) if existing == (run.into(), node.into()) => Ok(Outcome::Saved),
+        Some(_) => Err(error("workflow task lineage changed")),
+        None => {
+            current(&load(tx, task)?, prompt)?;
+            tx.execute(
+                "INSERT INTO agent_task_workflows VALUES(?1,?2,?3)",
+                params![task, run, node],
+            )
+            .map_err(sql)?;
+            Ok(Outcome::Saved)
+        }
     }
-    Ok(Outcome::Saved)
 }
 
 impl DurableKernelStateStore {
