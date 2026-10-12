@@ -3,9 +3,12 @@
 // per 50 ms) would then present one change per step. Here a step eases over
 // the frames until the next is due, the way a browser animates a wheel tick;
 // steps at frame rate or faster stay immediate. The scroller is the one native
-// chaining picks; zoom, page/line steps and snap or contained scrollers keep the
-// native wheel. Positions end exactly where the native steps would.
+// chaining picks; zoom, page/line steps, a mouse wheel's notches (the browser
+// animates those itself) and snap or contained scrollers keep the native wheel.
+// Positions end exactly where the native steps would.
 const MAX_EASE_MS = 40
+// A notch: 120 per tick (X11, Chrome), 100 (Windows) or another line-sized step; the kernel's input classifies alike.
+const notch = (delta: number): boolean => delta !== 0 && (delta % 120 === 0 || Math.abs(delta) >= 50)
 
 type Axis = 'x' | 'y'
 type Glide = { el: Element; x: number; y: number; rx: number; ry: number; tau: number; last: number }
@@ -25,7 +28,7 @@ export class Mirror2Wheel {
   take(event: WheelEvent, target: Element | null, now = performance.now()): boolean {
     if (!target || event.ctrlKey || event.deltaMode !== 0 || event.shiftKey && !event.deltaX) return false
     const dx = event.deltaX, dy = event.deltaY
-    if (!dx && !dy) return false
+    if (!dx && !dy || notch(dx) || notch(dy)) return false
     const el = this.scroller(target, dx, dy)
     if (!el) return false
     let glide = this.glides.get(el)

@@ -562,6 +562,9 @@ test('MP-10: spaced precise wheel steps scroll the viewer every frame (document,
     await page.mouse.move(900, 600);
     const immediate = await page.evaluate(async () => { const doc = window.r.frame.contentDocument, at = []; for (let n = 0; n < 8; n++) { doc.querySelector('body').dispatchEvent(new WheelEvent('wheel', { deltaY: 10, bubbles: true, cancelable: true, composed: true })); at.push(doc.defaultView.scrollY); await new Promise(r => setTimeout(r, 8)); } return at; });
     assert.deepEqual(immediate.slice(1), [180, 190, 200, 210, 220, 230, 240], 'MP-10: frame-rate steps apply immediately');
+    // A mouse wheel's notches keep the browser's own animated tick (taking them replaced it with a coarser ease).
+    const notches = await page.evaluate(() => [120, -120, 100, 53].map(deltaY => { const e = new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true, composed: true }); window.r.frame.contentDocument.querySelector('body').dispatchEvent(e); return e.defaultPrevented; }));
+    assert.deepEqual(notches, [false, false, false, false], 'MP-10: wheel notches stay native');
     // A snap container keeps the native wheel (the browser's own snapping); the event is not taken.
     const taken = await page.evaluate(() => { const snap = window.r.frame.contentDocument.getElementById('snap'), e = new WheelEvent('wheel', { deltaY: 16, bubbles: true, cancelable: true, composed: true }); snap.dispatchEvent(e); return e.defaultPrevented; });
     assert.equal(taken, false, 'MP-10: a snap scroller keeps the native wheel');
