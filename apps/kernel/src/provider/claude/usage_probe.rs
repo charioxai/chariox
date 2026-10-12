@@ -34,6 +34,42 @@ fn probe_claude_account_usage_with_timeout(
     environment: &BTreeMap<String, String>,
     timeout: Duration,
 ) -> Result<ProviderAccountUsageSnapshot, DaemonError> {
+    let result = run_claude_probe(
+        executable,
+        environment,
+        &[
+            "-p",
+            "/usage",
+            "--output-format",
+            "json",
+            "--no-session-persistence",
+            "--no-chrome",
+            "--tools",
+            "",
+        ],
+        timeout,
+    )?;
+    let text = validated_claude_usage_result(&result)?;
+    let mut usage = claude_usage_snapshot_from_text(text).ok_or_else(|| {
+        probe_error("Claude did not return subscription usage windows".to_string())
+    })?;
+    usage.profile_id = account_profile.to_string();
+    usage.source = "claude.native_usage".to_string();
+    for meter in &mut usage.meters {
+        meter.source = "claude.native_usage".to_string();
+    }
+    Ok(usage)
+}
+
+// Both official CLI probes share the bounded spool, environment isolation and
+// child lifetime. Their result policies remain separate: /usage cannot verify
+// setup tokens, whose documented scope is model requests only.
+pub(super) fn run_claude_probe(
+    executable: &Path,
+    environment: &BTreeMap<String, String>,
+    arguments: &[&str],
+    timeout: Duration,
+) -> Result<serde_json::Value, DaemonError> {
     validate_claude_probe_environment(environment, linux_profile_home_is_supported())?;
     let root = create_claude_runtime_files_root()?;
     let stdout_path = root.path().join("usage-result.json");
@@ -50,16 +86,7 @@ fn probe_claude_account_usage_with_timeout(
         .try_clone()
         .map_err(|_| probe_error("failed to pin Claude stderr".into()))?;
     let mut command = Command::new(executable);
-    command.args([
-        "-p",
-        "/usage",
-        "--output-format",
-        "json",
-        "--no-session-persistence",
-        "--no-chrome",
-        "--tools",
-        "",
-    ]);
+    command.args(arguments);
     command.current_dir(root.path());
     for (name, value) in environment {
         command.env(name, value);
@@ -110,22 +137,19 @@ fn probe_claude_account_usage_with_timeout(
                 })
             });
         if overflow {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_probe(&mut child);
             return Err(probe_error("Claude usage output limit exceeded".into()));
         }
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_probe(&mut child);
             return Err(probe_error("Claude usage probe timed out".into()));
         }
         match child.wait_timeout(remaining.min(Duration::from_millis(50))) {
             Ok(Some(status)) => break status,
             Ok(None) => {}
             Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                stop_probe(&mut child);
                 return Err(probe_error("failed to wait for Claude usage".into()));
             }
         }
@@ -156,18 +180,16 @@ fn probe_claude_account_usage_with_timeout(
     if output.len() as u64 > CLAUDE_USAGE_PROBE_OUTPUT_BYTES {
         return Err(probe_error("Claude usage output limit exceeded".into()));
     }
-    let result: serde_json::Value = serde_json::from_slice(&output)
-        .map_err(|_| probe_error("Claude returned invalid usage JSON".into()))?;
-    let text = validated_claude_usage_result(&result)?;
-    let mut usage = claude_usage_snapshot_from_text(text).ok_or_else(|| {
-        probe_error("Claude did not return subscription usage windows".to_string())
-    })?;
-    usage.profile_id = account_profile.to_string();
-    usage.source = "claude.native_usage".to_string();
-    for meter in &mut usage.meters {
-        meter.source = "claude.native_usage".to_string();
+    serde_json::from_slice(&output)
+        .map_err(|_| probe_error("Claude returned invalid usage JSON".into()))
+}
+
+fn stop_probe(child: &mut std::process::Child) {
+    // Only this spawned child is owned. Never signal init or a process group.
+    if child.id() > 1 {
+        let _ = child.kill();
+        let _ = child.wait();
     }
-    Ok(usage)
 }
 
 fn validated_claude_usage_result(value: &serde_json::Value) -> Result<&str, DaemonError> {
