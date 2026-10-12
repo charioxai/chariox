@@ -2,8 +2,8 @@ import { resolve as resolvePath } from "node:path"
 
 import type {
   RuntimeSession,
-  WorkflowPublicationDefinition,
   WorkflowDefinition,
+  WorkflowPublicationDefinition,
   WorkflowPublicationPackageFile,
 } from "./kernel-types.js"
 import {
@@ -138,9 +138,7 @@ export async function executeWorkflowPublicationCommand(
       const { workflows } = expectVariant<{ workflows: WorkflowDefinition[] }>(response, "WorkflowsListed")
       const normalizedRef = ref.trim().toLowerCase()
       if (workflows.some((workflow) => workflow.id === normalizedRef)) return true
-      if (workflows.some((workflow) => workflow.alias === normalizedRef)) return true
-      if (workflows.filter((workflow) => workflow.id.startsWith(normalizedRef)).length === 1) return true
-      return workflows.filter((workflow) => workflow.alias?.startsWith(normalizedRef)).length === 1
+      return workflows.some((workflow) => workflow.alias === normalizedRef)
     })
     if (!parsed.ok) {
       return { ok: false, message: parsed.message }
@@ -269,8 +267,9 @@ async function parseWorkflowPublicationCreateOptions(
     options.methods = methods
   }
   // MP-08 / MP-10: generated guidance supplies workflow + endpoint with no alias.
-  // Resolve against the session inventory: a missing workflow is a normal miss,
-  // while an inventory/creation request failure still reaches the user.
+  // Only exact workflow IDs/aliases disambiguate two operands under a selection.
+  // Endpoint refs may share a workflow prefix. Three operands are unambiguous.
+  // Inventory/creation request failures still reach the user.
   const explicitWorkflow = positional.length >= 3
     || (positional.length >= 2 && (!currentWorkflowId || positional[0] === currentWorkflowId
       || await resolvesWorkflow(positional[0]!)))
