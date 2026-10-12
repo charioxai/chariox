@@ -408,16 +408,17 @@ impl KernelRuntimeState {
                 );
                 return Ok(records);
             }
-            match owned
-                .provider_store
-                .enqueue_structured_output_poll(provider_run_id)?
-            {
-                true => {
-                    let prompt_id = active_prompt.map(|prompt| prompt.id().to_string());
+            let prompt_id = active_prompt.map(|prompt| prompt.id().to_string());
+            match owned.structured_output_records.enqueue_poll(
+                provider_run_id,
+                prompt_id,
+                || {
                     owned
-                        .structured_output_records
-                        .mark_poll_enqueued(provider_run_id, prompt_id);
-                }
+                        .provider_store
+                        .enqueue_structured_output_poll(provider_run_id)
+                },
+            )? {
+                true => {}
                 false => owned.structured_output_records.schedule_after_empty_poll(
                     provider_run_id.to_string(),
                     crate::session::unix_epoch_ms(),

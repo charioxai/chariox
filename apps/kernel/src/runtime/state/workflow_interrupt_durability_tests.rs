@@ -1715,3 +1715,118 @@ async fn a03_creator_task_rejects_foreign_canonical_workflow_cancellation() {
         .agent_task_resources_unsettled(&cancelled)
         .unwrap());
 }
+
+// MP-08 / MP-10 / MP-11: Paused can publish before its prompt enters Cancelling.
+#[tokio::test]
+async fn mp08_workflow_resume_waits_for_running_paused_prompt() {
+    let fixture = interrupt_fixture();
+    let state = &fixture.runtime;
+    state
+        .owned
+        .session_store
+        .write()
+        .pause_workflow_run(&fixture.session_id, &fixture.workflow_run_id)
+        .unwrap();
+    let session = state
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let old = state
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    assert_eq!(old.status(), crate::session::PromptStatus::Running);
+    let request = crate::local::ResumeWorkflowRunRequest {
+        session_id: fixture.session_id.clone(),
+        workflow_run_ref: fixture.workflow_run_id.clone(),
+    };
+    let pending = state.execute_workflow_resume_run_request(request);
+    tokio::pin!(pending);
+    tokio::select! { biased;
+        result = &mut pending => panic!("MP-08 Resume crossed unfinished Pause cancellation: {}", result.0.is_ok()),
+        _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+    }
+    // The delayed Pause now reaches its normal owned cancellation admission.
+    state
+        .owned
+        .prompt_state_owner
+        .begin_cancelling_active_prompt(&session, &fixture.target_agent_id)
+        .unwrap();
+    state
+        .owned
+        .workflow_cancel_prompt(&fixture.session_id, &old)
+        .unwrap();
+    state
+        .owned
+        .cancel_active_prompt_only(&fixture.session_id, &fixture.target_agent_id)
+        .unwrap();
+    let (result, _) = tokio::time::timeout(std::time::Duration::from_secs(3), pending)
+        .await
+        .unwrap();
+    let crate::local::LocalDaemonResponse::WorkflowRunResumed { workflow_run, .. } =
+        result.unwrap()
+    else {
+        panic!("resume response required")
+    };
+    assert_ne!(
+        workflow_run.status(),
+        crate::session::WorkflowRunStatus::Stopped
+    );
+    let current = state.owned.session_snapshot(&fixture.session_id).unwrap();
+    assert_ne!(
+        current
+            .workflow_run(&fixture.workflow_run_id)
+            .unwrap()
+            .status(),
+        crate::session::WorkflowRunStatus::Stopped
+    );
+}
+
+#[tokio::test]
+async fn mp08_workflow_resume_running_run_keeps_current_prompt() {
+    let fixture = interrupt_fixture();
+    let state = &fixture.runtime;
+    let before = state
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let active = state
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&before, &fixture.target_agent_id)
+        .unwrap();
+    let request = crate::local::ResumeWorkflowRunRequest {
+        session_id: fixture.session_id.clone(),
+        workflow_run_ref: fixture.workflow_run_id.clone(),
+    };
+    let (result, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        state.execute_workflow_resume_run_request(request),
+    )
+    .await
+    .expect("already-running Resume must not wait for its current turn");
+    assert!(matches!(
+        result.unwrap_err(),
+        DaemonError::InvalidWorkflowRunState {
+            status: crate::session::WorkflowRunStatus::Running,
+            operation: "resume workflow run",
+            ..
+        }
+    ));
+    let after = state
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    assert_eq!(
+        state
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&after, &fixture.target_agent_id)
+            .unwrap(),
+        active
+    );
+}

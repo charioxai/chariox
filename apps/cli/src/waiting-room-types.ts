@@ -113,6 +113,7 @@ export type WaitingRoomState = {
 }
 
 export type WaitingRoomRemoteMachine = {
+  displayFreshness?: "cached/refreshing" | "reconnecting"
   machine_id: string
   machine_alias?: string | null
   registry_alias?: string | null
@@ -126,6 +127,7 @@ export type WaitingRoomRemoteMachine = {
 }
 
 export type WaitingRoomRemoteKernel = {
+  displayFreshness?: "cached/refreshing" | "reconnecting"
   kernel_id: string
   machine_id: string
   machine_alias?: string | null
@@ -150,6 +152,7 @@ export type WaitingRoomRemoteState = {
     connected: boolean
     relay_url?: string | null
     daemon_id?: string | null
+    daemon_alias?: string | null
     machine_id?: string | null
   } | null
   machines?: WaitingRoomRemoteMachine[]

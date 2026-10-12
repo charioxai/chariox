@@ -43,6 +43,7 @@ mod room_environment;
 mod screenshot;
 mod session_control;
 mod slice;
+mod ssh_machine;
 mod terminal_command_catalog;
 mod terminal_interaction;
 mod user_domain_access;
@@ -84,6 +85,7 @@ pub use room_environment::*;
 pub use screenshot::*;
 pub use session_control::*;
 pub use slice::*;
+pub use ssh_machine::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use user_domain_access::*;
@@ -291,6 +293,30 @@ pub use workspace::*;
 /// WebP tiles and scroll rectangles; 475 added relay display push/ACKs.
 /// Version 490 added bounded relay response framing and socket-local receipts.
 /// Version 491 combined native display and agent-tab provenance/activity.
-/// Version 506 integrates those contracts with the 493 agent-model union;
-/// generated consumers follow this coordinator-allocated acceptance version.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 506;
+/// Main's version 491 (#974) adds credential-free Cloud kernel ownership
+/// projections, receiving CLIENT key-bound pivots, Cloud-free terminal pairing
+/// and provider account portability preflight, and requires a distinct relay
+/// subscription identity for every fresh encrypted binding while retaining the
+/// logical session replay cursor. It also restores workflow notifications, Room
+/// workflow inventory and controls, opt-in Cloud device denial and exact
+/// home-prompt cancellation admission (MP-08/MP-10/MP-11).
+/// Version 506 integrates those contracts, including main's 491, with the 493
+/// agent-model union; generated consumers follow this coordinator-allocated
+/// acceptance version.
+/// Version 490 requires bounded relay response framing and socket-local receipts.
+/// Version 491 adds credential-free Cloud kernel ownership projections, receiving
+/// CLIENT key-bound pivots, Cloud-free terminal pairing and provider account
+/// portability preflight, and requires a distinct relay subscription identity for
+/// every fresh encrypted binding while retaining the logical session replay
+/// cursor. It also restores workflow notifications, Room workflow inventory and
+/// controls, opt-in Cloud device denial and exact home-prompt cancellation
+/// admission (MP-08/MP-10/MP-11).
+/// Version 520 (landing 2026-10-14, relay peer 128) adds the same-machine direct
+/// carriers (relay-minted `local_browser_connect` grants, relay-renewed
+/// `local_browser_renew` leases with a 30-second relay identity ceiling, the
+/// loopback `/v1/browser` handshake and short bound-client terminal direct
+/// leases with paired Origin), and owner-managed SSH machine add/remove,
+/// credential-free owner-managed context admission and destination receipts.
+/// Branch-only numbers 456/464/473/502/509 were never released
+/// (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 520;

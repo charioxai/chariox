@@ -13,6 +13,7 @@ mod export;
 mod import;
 mod source_snapshot;
 pub use export::export_kernel_context;
+pub use export::export_kernel_context_without_credentials;
 pub use import::import_kernel_context;
 pub(crate) use import::{cleanup_kernel_context_import, configured_managed_kernel_context_paths};
 pub use source_snapshot::scavenge_source_snapshots;
@@ -26,11 +27,12 @@ pub struct KernelContextExportRequest {
     pub source_key_thumbprint: String,
     pub target_kernel_id: String,
     pub target_key_thumbprint: String,
-    pub vault: crate::secret::TransferredVaultSnapshot,
+    pub vault: Option<crate::secret::TransferredVaultSnapshot>,
 }
 
 #[derive(Clone, PartialEq)]
 pub struct KernelContextImportRequest {
+    pub publication_root: Option<PathBuf>,
     pub snapshot: KernelContextSnapshot,
     pub expected_source: crate::secret::TransferredVaultSourceBinding,
     pub target_kernel_id: String,
@@ -42,6 +44,8 @@ pub struct KernelContextImportRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KernelContextImportReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_root: Option<PathBuf>,
     pub schema_version: u32,
     pub context_id: String,
     pub source_kernel_id: String,
@@ -52,6 +56,8 @@ pub struct KernelContextImportReceipt {
     pub capability_root: PathBuf,
     pub extension_count: usize,
     pub dependency_count: usize,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub without_credentials: bool,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -71,7 +77,8 @@ pub struct KernelContextPayload {
     pub compatibility: KernelContextCompatibility,
     pub extensions: Vec<KernelExtensionSnapshot>,
     pub dependencies: Vec<KernelExtensionDependency>,
-    pub vault: crate::secret::TransferredVaultSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault: Option<crate::secret::TransferredVaultSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,7 +244,7 @@ impl fmt::Debug for KernelContextPayload {
             .field("compatibility", &self.compatibility)
             .field("extension_count", &self.extensions.len())
             .field("dependency_count", &self.dependencies.len())
-            .field("has_vault", &true)
+            .field("has_vault", &self.vault.is_some())
             .finish()
     }
 }

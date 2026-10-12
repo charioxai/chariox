@@ -177,6 +177,13 @@ impl KernelRuntimeOwnedState {
                     metaagent_id,
                     "cancel workflow run",
                 ),
+            LocalDaemonRequest::ControlRoomWorkflowRuns(request) => self
+                .ensure_workflow_controlled_by_metaagent(
+                    &request.session_id,
+                    &request.workflow_id,
+                    metaagent_id,
+                    "control room workflow runs",
+                ),
             LocalDaemonRequest::PauseWorkflowRun(request) => self
                 .ensure_workflow_run_controlled_by_metaagent(
                     &request.session_id,

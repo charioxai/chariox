@@ -11,6 +11,7 @@ mod credentials;
 mod env_loader;
 mod identity;
 mod kernel_access;
+mod kernel_cloud_state;
 mod pairings;
 mod paths;
 mod persisted_daemon;

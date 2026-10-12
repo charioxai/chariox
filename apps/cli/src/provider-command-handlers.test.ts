@@ -724,3 +724,65 @@ test("MP-08/MP-11 TUI setup-token --run uses the kernel login workflow and expli
   assert.deepEqual(calls, [["work", true]])
   assert.match(notices.join("\n"), /login-status capture-1/)
 })
+
+test("MP-08/MP-11 rejected setup token keeps its recovery message visible", async () => {
+  const notices: string[] = []
+  const footers: Array<{ message: string; tone: string }> = []
+  const message = "Claude rejected the setup token: it is invalid, expired or revoked. Nothing was stored. Choose Log in in Provider Accounts to open the Claude authorization link."
+  await handleProviderSlashCommand({
+    currentProviderId: () => "claude-headless",
+    flashFooter: (message, tone) => footers.push({ message, tone }),
+    appendNotice: message => notices.push(message),
+    readSecret: async () => "synthetic-token",
+    storeProviderSetupToken: async () => { throw new Error(`${message} synthetic-token`) },
+  }, { kind: "provider", raw: "/provider setup-token claude default --paste --replace", value: "setup-token claude default --paste --replace" })
+  assert.deepEqual(notices, [`${message} <redacted>`])
+  assert.equal(footers.at(-1)?.tone, "error")
+})
+
+// MP-08/MP-10/MP-11: default setup asks the kernel to authorize, never the user to mint a token.
+test("MP-08/MP-10/MP-11 setup-token defaults to OAuth and paste is advanced", async () => {
+  const calls: unknown[] = []
+  await handleProviderSlashCommand({
+    currentProviderId: () => "claude", flashFooter: () => {}, appendNotice: () => {},
+    readSecret: async () => { throw new Error("must not ask for an existing token") },
+    runProviderSetupToken: async (profile, replace) => { calls.push([profile, replace]); return { provider: "claude", account_profile: profile, login_kind: "terminal_setup_token", login_id: "login-1", auth_url: null, verification_url: null, user_code: null } },
+  }, { kind: "provider", raw: "/provider setup-token claude", value: "setup-token claude" })
+  assert.deepEqual(calls, [["default", false]])
+})
+
+
+test("MP-08/MP-10/MP-11 Claude reauth opens OAuth without logging out", async () => {
+  const calls: string[] = []
+  await handleProviderSlashCommand({
+    currentProviderId: () => "claude", flashFooter: () => {}, appendNotice: () => {},
+    logoutProvider: async () => { calls.push("logout"); return {kind: "logged_out", result: {provider: "claude", account_profile: "default"}} },
+    startProviderLogin: async () => { calls.push("legacy"); return {provider: "claude", account_profile: "default", login_kind: "terminal", login_id: "legacy", auth_url: null, verification_url: null, user_code: null} },
+    runProviderSetupToken: async (profile, replace) => { calls.push(`oauth:${profile}:${replace}`); return {provider: "claude", account_profile: profile, login_kind: "terminal_setup_token", login_id: "login-1", auth_url: null, verification_url: null, user_code: null} },
+  }, {kind: "provider", raw: "/provider reauth claude", value: "reauth claude"})
+  assert.deepEqual(calls, ["oauth:default:true"])
+})
+
+// MP-08 / MP-10 / MP-11: waiting-room actions carry stable IDs, not aliases.
+for (const provider of ["claude", "claude-p", "claude-headless"]) {
+  test(`MP-08 / MP-10 / MP-11 ${provider} refresh accepts the waiting-room profile ID`, async () => {
+    const profile = {
+      owner_user_id: "local", provider: "claude", profile_id: "claude-1-opaque", label: "miguel",
+      origin: "chariox_created" as const, is_default: true, auth_state: "authenticated" as const,
+      usage: {provider: "claude", profile_id: "claude-1-opaque", availability: "unavailable" as const, source: "test"},
+    }
+    const calls: string[] = [], errors: string[] = []
+    const deps: ProviderCommandHandlerDeps = {
+      currentProviderId: () => provider, appendNotice: () => {},
+      flashFooter: (message, tone) => {if (tone === "error") errors.push(message)},
+      listProviderAccountProfiles: async () => [profile],
+      refreshProviderAccountProfile: async (_provider, id) => {calls.push(id);return profile},
+    }
+    assert.equal(await resolveProviderAccountAlias(deps, provider, profile.profile_id), profile.profile_id)
+    await handleProviderSlashCommand(deps, {kind: "provider",
+      raw: `/provider accounts refresh ${provider} ${profile.profile_id}`,
+      value: `accounts refresh ${provider} ${profile.profile_id}`})
+    assert.deepEqual(calls, [profile.profile_id])
+    assert.deepEqual(errors, [])
+  })
+}

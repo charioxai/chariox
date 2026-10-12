@@ -38,6 +38,8 @@ import { buildEmptyTranscriptRenderable } from "./workspace-renderables.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 import { STATUS_BADGE_WIDTH } from "./runtime.js"
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
+import type { RuntimeInteraction } from "./cli-types.js"
+import type { ProviderLoginInteractionController } from "./provider-login-interaction-controller.js"
 import {
   providerAccountDisplayLabel,
   selectedProviderAccount,
@@ -89,6 +91,7 @@ export type CliResponseShellCompositionDeps = {
   selectedQueuedPromptIndexForAgent: AnyFn
   onQueuedPromptAction: AnyFn
   interactionChoiceStore: any
+  providerLoginInteractions: ProviderLoginInteractionController
   promptUsageMeta: AnyFn
   sessionHydrating: AnyFn
   setSessionHydrating: AnyFn
@@ -135,6 +138,7 @@ export type CliResponseShellCompositionDeps = {
   multiAgentMode: AnyFn
   sessionStatusMode: AnyFn
   workspaceLiveSyncStatus: AnyFn
+  connectionLabel: () => string | null
   footerFlash: AnyFn
   promptMetaParts: AnyFn
 }
@@ -185,6 +189,9 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     queuedPromptStripItemsForAgent: deps.queuedPromptStripItemsForAgent,
     selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
     onQueuedPromptAction: deps.onQueuedPromptAction,
+    providerLoginState: deps.providerLoginInteractions.stripState,
+    focusCustomChoiceOnce: deps.interactionChoiceStore.focusCustomChoiceOnce,
+    onProviderLoginLinkClick: (interaction: RuntimeInteraction) => { void deps.providerLoginInteractions.openLink(interaction) },
     renderStrips: renderAgentInteractionStrips,
   })
   const renderAgentInteractions = agentInteractionStripController.render
@@ -332,6 +339,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     getWorkspaceLiveSyncStatus: deps.workspaceLiveSyncStatus,
     getHotkeyToggleLabel: () => HOTKEY_TOGGLE_LABEL,
     getTerminalWidth: deps.terminalWidth,
+    getConnectionLabel: deps.connectionLabel,
     getFooterFlash: deps.footerFlash,
     getPromptMetaParts: deps.promptMetaParts,
     setPromptMetaRenderables: promptMetaRenderController.setRenderables,

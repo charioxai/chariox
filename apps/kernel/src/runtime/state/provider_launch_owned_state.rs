@@ -109,13 +109,10 @@ impl KernelRuntimeOwnedState {
         self.attach_project_environment(request)
     }
 
-    fn prepare_provider_launch_request_without_account_credentials(
+    pub(super) fn prepare_provider_launch_account(
         &self,
         mut request: crate::provider::LaunchProviderRequest,
-        runtime_mcp_url: String,
     ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
-        request.adapter_key =
-            crate::provider::adapter_key_for_provider(&request.adapter_key).to_string();
         let session = self.session_store.get_session(&request.session_id)?;
         let config = self.config_projection.snapshot();
         if request.agent_id.is_none() {
@@ -157,15 +154,14 @@ impl KernelRuntimeOwnedState {
         if crate::provider::canonical_provider_family(&request.provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
-            let account_owner_user_id = request
-                .provider_account_owner_user_id
-                .clone()
-                .unwrap_or_else(|| {
-                    crate::account_profile::provider_account_authority_owner_user_id(
-                        &config,
-                        &request.owner_user_id,
-                    )
-                });
+            let account_owner_user_id = match request.provider_account_owner_user_id.clone() {
+                Some(owner) => owner,
+                None => crate::account_profile::provider_account_authority_for_launch(
+                    &config,
+                    &self.provider_account_profiles,
+                    &request,
+                )?,
+            };
             let profile = self.provider_account_profiles.get(
                 &account_owner_user_id,
                 &request.provider,
@@ -176,9 +172,36 @@ impl KernelRuntimeOwnedState {
                 &request.provider,
                 &profile.profile_id,
             )?;
+            let selection = request
+                .resolved_provider_account
+                .as_ref()
+                .map(|account| account.selection().to_string())
+                .unwrap_or_else(|| request.account_profile.clone());
             request.account_profile = profile.profile_id;
+            crate::account_profile::bind_provider_account_authority(
+                &mut request,
+                account_owner_user_id,
+                selection,
+            );
             request = request.with_provider_account_env(provider_account_env);
         }
+        Ok(request)
+    }
+
+    pub(super) fn prepare_provider_launch_request_without_account_credentials(
+        &self,
+        mut request: crate::provider::LaunchProviderRequest,
+        runtime_mcp_url: String,
+    ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        request.adapter_key =
+            crate::provider::adapter_key_for_provider(&request.adapter_key).to_string();
+        request = self.prepare_provider_launch_account(request)?;
+        let session = self.session_store.get_session(&request.session_id)?;
+        let config = self.config_projection.snapshot();
+        let agent = request
+            .agent_id
+            .as_deref()
+            .and_then(|agent_id| self.agent_store.get_agent(agent_id).ok());
         let effective_config =
             crate::session::effective_agent_execution_config(&session, agent.as_ref());
         if request.execution_mode.is_none() {
@@ -299,15 +322,14 @@ impl KernelRuntimeOwnedState {
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
             let config = self.config_projection.snapshot();
-            let account_owner_user_id = request
-                .provider_account_owner_user_id
-                .clone()
-                .unwrap_or_else(|| {
-                    crate::account_profile::provider_account_authority_owner_user_id(
-                        &config,
-                        &request.owner_user_id,
-                    )
-                });
+            let account_owner_user_id = match request.provider_account_owner_user_id.clone() {
+                Some(owner) => owner,
+                None => crate::account_profile::provider_account_authority_for_launch(
+                    &config,
+                    &self.provider_account_profiles,
+                    &request,
+                )?,
+            };
             let provider_credential_env =
                 crate::provider::resolve_provider_account_credentials_for_launch(
                     &config,
@@ -332,21 +354,19 @@ impl KernelRuntimeOwnedState {
         {
             return Ok(false);
         }
-        let account_owner_user_id = request
-            .provider_account_owner_user_id
-            .clone()
-            .unwrap_or_else(|| {
-                crate::account_profile::provider_account_authority_owner_user_id(
-                    &config,
-                    &request.owner_user_id,
-                )
-            });
+        let account_owner_user_id = match request.provider_account_owner_user_id.clone() {
+            Some(owner) => owner,
+            None => crate::account_profile::provider_account_authority_for_launch(
+                &config,
+                &self.provider_account_profiles,
+                request,
+            )?,
+        };
         crate::provider::launch_uses_vault_credential(
             &self.provider_account_profiles,
             &account_owner_user_id,
             &request.provider,
             &request.account_profile,
-            request.client_interface,
         )
     }
 }
@@ -357,6 +377,581 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
     use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn mp08_mp11_refused_delegated_grant_preserves_kernel_enrollment() {
+        crate::test_support::isolated_env_test!();
+        use std::io::{Read, Write};
+        let root = crate::test_support::TestWorktree::new("delegated-refusal");
+        std::env::set_var("CHARIOX_HOME", root.path().join("home"));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = [0; 8192];
+            let _ = stream.read(&mut bytes).unwrap();
+            let body =
+                r#"{"error":{"code":"session_invalid","message":"receiving terminal revoked"}}"#;
+            write!(stream, "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let mut config = crate::config::DaemonConfig::for_tests();
+        let original = crate::config::PersistedCloudRelayProfile {
+            api_url,
+            kernel_id: Some(config.daemon_id.clone()),
+            kernel_credential: Some("synthetic-kernel-grant".into()),
+            user_id: "cloud-owner".into(),
+            account_id: "account".into(),
+            realm_id: "realm".into(),
+            ..Default::default()
+        };
+        config.cloud_relay = Some(original.clone());
+        let app = Arc::new(Mutex::new(
+            crate::app::DaemonApp::bootstrap(config).unwrap(),
+        ));
+        let runtime = owned_runtime_state(&app).await;
+        let result = crate::runtime::cloud_relay_connection_executor::execute_issue_cloud_relay_client_token_request(&runtime, &runtime.owned.config_projection, crate::local::IssueCloudRelayClientTokenRequest { target_daemon_alias:"kernel-other".into(), client_id:"revoked-terminal".into(), session_id:None, public_key_thumbprint:Some("a".repeat(64)) }).await;
+        server.join().unwrap();
+        assert!(result.is_err());
+        let retained = runtime
+            .owned
+            .config_projection
+            .snapshot()
+            .cloud_relay
+            .expect("delegated refusal must not clear enrollment");
+        assert_eq!(retained.kernel_id, original.kernel_id);
+        assert_eq!(retained.kernel_credential, original.kernel_credential);
+    }
+
+    #[tokio::test]
+    async fn mp08_mp11_refused_legacy_terminal_pairing_grant_preserves_machine_enrollment() {
+        crate::test_support::isolated_env_test!();
+        use std::io::{Read, Write};
+        let root = crate::test_support::TestWorktree::new("legacy-pairing-refusal");
+        std::env::set_var("CHARIOX_HOME", root.path().join("home"));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = [0; 8192];
+            let _ = stream.read(&mut bytes).unwrap();
+            let body =
+                r#"{"error":{"code":"session_invalid","message":"receiving terminal revoked"}}"#;
+            write!(stream, "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".into());
+        config.relay_token = Some("synthetic-relay-token".into());
+        let original = crate::config::PersistedCloudRelayProfile {
+            api_url,
+            relay_url: "wss://relay.example.test".into(),
+            machine_id: Some("legacy-machine".into()),
+            machine_credential: Some("synthetic-machine-credential".into()),
+            user_id: "cloud-owner".into(),
+            account_id: "account".into(),
+            realm_id: "realm".into(),
+            ..Default::default()
+        };
+        config.cloud_relay = Some(original.clone());
+        let app = Arc::new(Mutex::new(
+            crate::app::DaemonApp::bootstrap(config).unwrap(),
+        ));
+        let runtime = owned_runtime_state(&app).await;
+        let result =
+            crate::runtime::pairing_invite_executor::execute_create_terminal_pairing_link_request(
+                &runtime,
+                &runtime.owned.config_projection,
+                crate::local::CreateTerminalPairingLinkRequest {
+                    terminal_type: None,
+                    alias: None,
+                    expires_in_ms: None,
+                },
+            )
+            .await;
+        server.join().unwrap();
+        assert!(result.is_err());
+        let retained = runtime
+            .owned
+            .config_projection
+            .snapshot()
+            .cloud_relay
+            .expect("legacy terminal grant refusal must not clear enrollment");
+        assert_eq!(retained.machine_id, original.machine_id);
+        assert_eq!(retained.machine_credential, original.machine_credential);
+    }
+
+    #[tokio::test]
+    async fn mp08_mp11_claude_first_use_uses_launch_bound_replica() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("claude-first-use-replica");
+        std::env::set_var("CHARIOX_HOME", root.path().join("home"));
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "cloud-owner".into(),
+            ..Default::default()
+        });
+        let app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let registry = app.provider_account_profile_registry();
+        let profile = registry
+            .create_managed("cloud-owner", "claude", "Replica")
+            .unwrap();
+        registry
+            .update_observation(
+                "cloud-owner",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let mut request = crate::provider::LaunchProviderRequest::new(
+            "s",
+            "claude",
+            "claude",
+            &profile.profile_id,
+            "haiku",
+        );
+        request.owner_user_id = "cloud-owner".into();
+        crate::account_profile::bind_provider_account_authority(
+            &mut request,
+            "cloud-owner".into(),
+            profile.profile_id.clone(),
+        );
+        let mut credentials = crate::provider::ProviderCredentialEnvironment::default();
+        credentials.insert(
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            zeroize::Zeroizing::new("synthetic-setup-token".into()),
+        );
+        assert!(runtime
+            .checked_claude_credentials(&request, credentials)
+            .await
+            .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mp08_mp10_owned_native_claude_initializes_before_credentials_are_separated() {
+        crate::test_support::isolated_env_test!();
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "chariox-owned-native-onboarding-{}",
+            std::process::id()
+        ));
+        let profile = root.join("selected");
+        std::fs::create_dir_all(&profile).unwrap();
+        let executable = root.join("claude");
+        std::fs::write(&executable, "#!/bin/sh\nsleep 60\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &executable);
+        let mut app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new("home", "home"))
+            .unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let mut credentials = crate::provider::ProviderCredentialEnvironment::default();
+        credentials.insert(
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            zeroize::Zeroizing::new("synthetic-setup-token".into()),
+        );
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude",
+            "selected",
+            "haiku",
+        )
+        .with_agent_id(agent.id())
+        .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
+        .with_provider_account_env(std::collections::BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            profile.to_string_lossy().into_owned(),
+        )]))
+        .with_provider_credential_env(credentials);
+        let started = runtime.owned.start_provider_launch(request).unwrap();
+        assert!(started
+            .provider_credential_env
+            .iter()
+            .any(|(name, _)| name == "CLAUDE_CODE_OAUTH_TOKEN"));
+        assert!(
+            !started
+                .run
+                .pty_env()
+                .contains_key("CLAUDE_CODE_OAUTH_TOKEN"),
+            "credentials must remain outside persisted launch metadata"
+        );
+        let state:serde_json::Value = serde_json::from_slice(&std::fs::read(profile.join(".claude.json")).expect("owned native launch must initialize selected onboarding before separating credentials")).unwrap();
+        assert_eq!(state["hasCompletedOnboarding"], true);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn home_default_launch_keeps_authority_when_replica_has_same_profile_id() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("home-default-account-authority");
+        std::env::set_var("CHARIOX_HOME", root.path().join("home"));
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "cloud-owner".into(),
+            ..Default::default()
+        });
+        let vault_path = root.path().join("home/credentials.vault");
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = vault_path.display().to_string();
+        let mut app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(
+                crate::session::CreateSessionRequest::new(
+                    workspace.to_string_lossy(),
+                    workspace.to_string_lossy(),
+                )
+                .with_owner_user_id("cloud-owner"),
+            )
+            .unwrap();
+        let registry = app.provider_account_profile_registry();
+        let profile = registry.create_managed("local", "claude", "Home").unwrap();
+        registry
+            .set_default("local", "claude", &profile.profile_id)
+            .unwrap();
+        let local_env = registry
+            .resolve_environment("local", "claude", &profile.profile_id)
+            .unwrap();
+        let mut replica = registry
+            .export_materialization("local", "claude", &profile.profile_id)
+            .unwrap();
+        replica.profile.owner_user_id = "cloud-owner".into();
+        registry
+            .materialize_replica("cloud-owner", &replica)
+            .unwrap();
+        assert_eq!(
+            registry
+                .get("local", "claude", "default")
+                .unwrap()
+                .profile_id,
+            profile.profile_id
+        );
+        assert_eq!(
+            registry
+                .get("cloud-owner", "claude", &profile.profile_id)
+                .unwrap()
+                .profile_id,
+            profile.profile_id
+        );
+        assert_ne!(
+            registry
+                .resolve_environment("cloud-owner", "claude", &profile.profile_id)
+                .unwrap(),
+            local_env
+        );
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault_path,
+            "test passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        crate::provider::store_provider_account_credential(
+            &config,
+            "local",
+            "claude",
+            &profile.profile_id,
+            "synthetic-home-token",
+            false,
+        )
+        .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::for_user(
+                session.id(),
+                "account-next-client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+                "cloud-owner",
+            ))
+            .unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude",
+            "default",
+            "haiku",
+        )
+        .with_agent_id(agent.id());
+        let workflow = runtime
+            .owned
+            .prepare_workflow_provider_launch_request(request.clone(), config.runtime_mcp_url())
+            .expect("workflow preparation must keep the home Vault decision");
+        assert!(
+            runtime
+                .owned
+                .provider_launch_request_uses_vaulted_account_credential(&workflow)
+                .unwrap(),
+            "resolved home default must retain the local vaulted credential"
+        );
+        let prepared = runtime
+            .owned
+            .prepare_provider_launch_request(request, config.runtime_mcp_url())
+            .expect("home credential must attach despite the credential-less replica");
+        assert_eq!(prepared.provider_account_env, local_env);
+        assert!(prepared
+            .provider_credential_env
+            .iter()
+            .any(|(name, value)| name == "CLAUDE_CODE_OAUTH_TOKEN"
+                && value == "synthetic-home-token"));
+        let repeated = runtime
+            .owned
+            .prepare_provider_launch_request(prepared.clone(), config.runtime_mcp_url())
+            .unwrap();
+        assert_eq!(repeated.provider_account_env, local_env);
+        let run = crate::provider::RuntimeProviderRun::new(
+            "account-authority-regression",
+            &prepared,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "account-authority-regression".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: local_env.clone(),
+                pty_env_remove: Vec::new(),
+                working_directory: prepared.working_directory.clone(),
+                structured_endpoint: None,
+            },
+        );
+        // MP-08 / MP-10 / MP-11: finish the real launch state transition,
+        // then admit a second prompt while the same-id replica is expired.
+        registry
+            .update_observation(
+                "local",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        registry
+            .update_observation(
+                "cloud-owner",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Expired,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        let started = crate::app::StartedProviderLaunch {
+            run: run.clone(),
+            previous_active_run_id: None,
+            provider_credential_env: prepared.provider_credential_env.clone(),
+        };
+        let completed = runtime
+            .owned
+            .finish_provider_launch_success(&started, None)
+            .unwrap();
+        let source = attachment.id();
+        let prompt = crate::app::KernelPreparedPromptSubmission {
+            session_id: session.id().into(),
+            prompt: crate::session::PromptQueueItem::new(
+                "account-next-turn",
+                source,
+                agent.id(),
+                "continue on the authenticated home account",
+                crate::session::PromptStatus::Queued,
+            ),
+            force_queue: false,
+            refresh_projection: true,
+        };
+        assert!(runtime
+            .owned
+            .submit_local_prepared_prompt_for_provider_run(&prompt, Some(completed.id()))
+            .expect("next prompt must use the completed home run's account authority")
+            .is_some());
+        let completed_agent = runtime.owned.agent_store.get_agent(agent.id()).unwrap();
+        assert_eq!(
+            completed_agent.provider_account_profile(),
+            "default",
+            "launch completion must retain the home selection alias"
+        );
+        let restored_completed: crate::provider::RuntimeProviderRun =
+            serde_json::from_value(serde_json::to_value(&completed).unwrap()).unwrap();
+        runtime
+            .owned
+            .require_agent_account_authenticated(
+                &completed_agent,
+                Some(&restored_completed),
+                "MP-08 / MP-10 / MP-11 restored home admission",
+            )
+            .unwrap();
+        assert!(runtime.owned.provider_account_allows_queued_prompt_advance(
+            session.id(),
+            &completed_agent,
+            "MP-08 / MP-10 / MP-11 home queue"
+        ));
+        // MP-08 / MP-10 / MP-11: recover from the current authenticated
+        // launch before testing expired-account denial. Expired credentials
+        // now enter the product login recovery flow rather than bypassing it.
+        let credentials = runtime
+            .resolve_provider_account_credentials_for_run_with_vault(
+                &completed,
+                "MP-08 / MP-10 / MP-11 home recovery",
+            )
+            .await
+            .unwrap();
+        assert!(credentials
+            .iter()
+            .any(|(name, value)| name == "CLAUDE_CODE_OAUTH_TOKEN"
+                && value == "synthetic-home-token"));
+        registry
+            .update_observation(
+                "local",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Expired,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        registry
+            .update_observation(
+                "cloud-owner",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        // MP-08 / MP-10 / MP-11: #945 admits a registered Claude token
+        // for its first-use check even after an expired observation. Remove
+        // this disposable home credential to test denial without that exception.
+        runtime
+            .owned
+            .require_agent_account_authenticated(
+                &completed_agent,
+                Some(&completed),
+                "MP-08 / MP-10 / MP-11 registered Claude first use",
+            )
+            .unwrap();
+        let reload = super::super::provider_reload::policy_reload_launch_request(
+            &run,
+            agent.id(),
+            crate::provider::ProviderResumeState::default(),
+        );
+        let reloaded = runtime
+            .owned
+            .prepare_provider_launch_request(reload, config.runtime_mcp_url())
+            .unwrap();
+        assert_eq!(reloaded.provider_account_env, local_env);
+        let serialized = serde_json::to_value(&run).unwrap();
+        assert!(serialized.get("resolved_provider_account").is_none());
+        let restored: crate::provider::RuntimeProviderRun =
+            serde_json::from_value(serialized).unwrap();
+        let restored_reload = super::super::provider_reload::policy_reload_launch_request(
+            &restored,
+            agent.id(),
+            crate::provider::ProviderResumeState::default(),
+        );
+        let restored_prepared = runtime
+            .owned
+            .prepare_provider_launch_request(restored_reload, config.runtime_mcp_url())
+            .expect("restored account roots must retain the home authority");
+        assert_eq!(restored_prepared.provider_account_env, local_env);
+        // Managed providers retain roots in --setenv and host bind arguments,
+        // not in the scrubbed parent environment. Restoring those runs must
+        // preserve the same authority without a new serialized field.
+        let mut managed = serde_json::to_value(&run).unwrap();
+        let source = local_env.get("CLAUDE_CONFIG_DIR").unwrap();
+        let destination = "/home/chariox/.provider-account/root-1";
+        managed["pty_env"] = serde_json::json!({});
+        managed["pty_args"] = serde_json::json!([
+            "--setenv",
+            crate::provider::MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
+            "1",
+            "--bind",
+            source,
+            destination,
+            "--setenv",
+            "CLAUDE_CONFIG_DIR",
+            destination,
+            "--",
+            "claude",
+        ]);
+        let managed: crate::provider::RuntimeProviderRun = serde_json::from_value(managed).unwrap();
+        let managed_reload = super::super::provider_reload::policy_reload_launch_request(
+            &managed,
+            agent.id(),
+            crate::provider::ProviderResumeState::default(),
+        );
+        let managed_prepared = runtime
+            .owned
+            .prepare_provider_launch_request(managed_reload, config.runtime_mcp_url())
+            .expect("restored managed bindings must retain home authority");
+        assert_eq!(managed_prepared.provider_account_env, local_env);
+        let mut tampered = repeated;
+        tampered.owner_user_id = "another-owner".into();
+        assert!(
+            crate::account_profile::provider_account_authority_for_launch(
+                &config,
+                &runtime.owned.provider_account_profiles,
+                &tampered,
+            )
+            .is_err(),
+            "resolution provenance cannot authorize another runtime owner"
+        );
+        // MP-08 / MP-10 / MP-11: remove the disposable credential only
+        // after verifying reload authority with the credential still present.
+        crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .remove(&crate::provider::provider_account_credential_id(
+                "local",
+                "claude",
+                &profile.profile_id,
+            ))
+            .unwrap();
+        assert!(
+            runtime
+                .owned
+                .submit_local_prepared_prompt_for_provider_run(&prompt, Some(completed.id()))
+                .is_err(),
+            "authenticated replica must never rescue an expired home run"
+        );
+        assert!(
+            !runtime.owned.provider_account_allows_queued_prompt_advance(
+                session.id(),
+                &completed_agent,
+                "MP-08 / MP-10 / MP-11 expired home queue"
+            )
+        );
+        crate::secret::lock_chariox_encrypted_vault(&vault_path).unwrap();
+        crate::secret::clear_vault_secret_process_cache().unwrap();
+    }
 
     #[tokio::test]
     async fn owned_launch_preparation_preserves_account_without_injecting_project_repositories() {
@@ -559,8 +1154,8 @@ mod tests {
             launch.provider_credential_env.is_empty(),
             "no Chariox-vault token is needed"
         );
-        // A setup token left in the vault from before is not read either, so
-        // the launch asks for no vault unlock; the native Claude TUI still may.
+        // MP-08 / MP-11: explicit token enrollment selects the Vault credential
+        // for every mode, even when a previous native login remains available.
         let credential_id = crate::provider::provider_account_credential_id(
             crate::session::DEFAULT_LOCAL_USER_ID,
             "claude",
@@ -578,23 +1173,12 @@ mod tests {
                 metadata: None,
             })
             .expect("vault credential should register");
-        let profiles = app.lock().await.provider_account_profile_registry();
-        let uses_vault = |client_interface| {
-            crate::provider::launch_uses_vault_credential(
-                &profiles,
-                crate::session::DEFAULT_LOCAL_USER_ID,
-                "claude",
-                &profile.profile_id,
-                client_interface,
-            )
-            .expect("vault use should resolve")
-        };
-        assert!(!uses_vault(
-            crate::provider::ProviderClientInterface::Chariox
-        ));
-        assert!(uses_vault(
-            crate::provider::ProviderClientInterface::NativeTui
-        ));
+        assert!(crate::provider::provider_account_credential_uses_vault(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        )
+        .expect("MP-08/MP-11: a registered credential requires Vault admission for every mode"));
         drop(app);
 
         std::env::remove_var("CHARIOX_HOME");
@@ -1002,6 +1586,14 @@ mod tests {
             false,
         )
         .expect("provider credential should store");
+        // This test covers unlock policy; the token was already verified.
+        crate::test_support::authenticate_provider_account(
+            &app.provider_account_profile_registry(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap();
         crate::secret::lock_chariox_encrypted_vault(&vault_path).expect("vault should lock");
         crate::secret::clear_vault_secret_process_cache().expect("secret cache should clear");
 

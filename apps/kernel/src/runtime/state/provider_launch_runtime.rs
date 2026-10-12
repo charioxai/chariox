@@ -378,7 +378,7 @@ impl KernelRuntimeState {
                     provider_session_id: request.provider_session_id.clone(),
                     required_mcps,
                     required_skills: Some(required_skills),
-                    remote_extension_manifest: manifest.without_mcp_tools(),
+                    remote_extension_manifest: manifest,
                     provider_launch_credential,
                 };
                 let relay_state = state.connected_relay_state_for_config(&relay_config).await;

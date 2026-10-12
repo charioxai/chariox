@@ -2,7 +2,7 @@
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -73,8 +73,18 @@ impl OpenCodeClient {
     ) -> Result<(u16, Vec<u8>), DaemonError> {
         let mut last_error = None;
         let retry_attempts = retry_attempts_for_request(method, path);
+        let deadline = is_instance_bootstrap_request(method, path)
+            .then(|| Instant::now() + read_timeout_for_request(method, path));
+        let mut attempts = 0;
         for attempt in 0..retry_attempts {
-            match self.send_request_once(method, path, body) {
+            let read_timeout = deadline
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(|| read_timeout_for_request(method, path));
+            if read_timeout.is_zero() {
+                break;
+            }
+            attempts += 1;
+            match self.send_request_once(method, path, body, read_timeout) {
                 Ok(response) => return Ok(response),
                 Err(error) if is_retryable_opencode_http_error(method, path, &error) => {
                     last_error = Some(error.into_daemon_error(self, method, path));
@@ -88,7 +98,7 @@ impl OpenCodeClient {
         let operation = method_to_operation(method, path);
         let message = last_error
             .map(|error| {
-                format!("OpenCode request failed after {retry_attempts} attempts: {error}")
+                format!("OpenCode request failed after {attempts} attempts: {error}")
             })
             .unwrap_or_else(|| "OpenCode request failed".to_string());
         Err(self.protocol_error(operation, message))
@@ -99,6 +109,7 @@ impl OpenCodeClient {
         method: &'static str,
         path: &str,
         body: Option<&serde_json::Value>,
+        read_timeout: Duration,
     ) -> Result<(u16, Vec<u8>), OpenCodeHttpFailure> {
         let address = self.base_url.strip_prefix("http://").ok_or_else(|| {
             OpenCodeHttpFailure::protocol(format!(
@@ -108,7 +119,7 @@ impl OpenCodeClient {
         })?;
         let mut stream = TcpStream::connect(address).map_err(OpenCodeHttpFailure::io)?;
         stream
-            .set_read_timeout(Some(read_timeout_for_request(method, path)))
+            .set_read_timeout(Some(read_timeout))
             .map_err(OpenCodeHttpFailure::io)?;
         stream
             .set_write_timeout(Some(Duration::from_secs(2)))
@@ -160,7 +171,18 @@ impl OpenCodeHttpFailure {
         method: &'static str,
         path: &str,
     ) -> DaemonError {
-        client.protocol_error(method_to_operation(method, path), self.message)
+        let operation = method_to_operation(method, path);
+        if matches!(
+            path,
+            "/config" | "/agent" | "/provider" | "/config/providers"
+        ) {
+            crate::logging::warn_with_fields(
+                "daemon.provider.opencode",
+                "MP-08 OpenCode catalog request failed",
+                serde_json::json!({"operation": operation, "endpoint": path, "io_kind": self.io_kind.map(|kind| format!("{kind:?}"))}),
+            );
+        }
+        client.protocol_error(operation, self.message)
     }
 }
 
@@ -250,9 +272,29 @@ fn retry_attempts_for_request(method: &'static str, path: &str) -> usize {
     OpenCodeClient::REQUEST_RETRY_ATTEMPTS
 }
 
+fn is_instance_bootstrap_request(method: &str, path: &str) -> bool {
+    method == "GET" && matches!(path, "/config" | "/agent" | "/provider")
+}
+
 fn read_timeout_for_request(method: &'static str, path: &str) -> Duration {
+    // MP-08 / MP-11: global health does not initialize the native directory Instance.
+    // Bound its cold config/plugin/catalog load across retries, keeping live reads fast.
+    if is_instance_bootstrap_request(method, path) {
+        return Duration::from_secs(30);
+    }
     if method == "POST" && is_mcp_connect_path(path) {
         return Duration::from_secs(12);
+    }
+    // MP-08/MP-11: the official server's global health is available before
+    // workspace config, agent defaults and the provider catalog finish loading.
+    // Keep health/status polls short; let a catalog read finish on one socket.
+    if method == "GET"
+        && matches!(
+            path,
+            "/config" | "/agent" | "/provider" | "/config/providers"
+        )
+    {
+        return Duration::from_secs(30);
     }
     Duration::from_secs(2)
 }
@@ -462,6 +504,128 @@ mod tests {
         is_retryable_opencode_http_error, method_to_operation, read_timeout_for_request,
         retry_attempts_for_request, OpenCodeHttpFailure,
     };
+
+    // MP-08/MP-10/MP-11: health can pass before an official catalog read is ready.
+    #[test]
+    fn catalog_read_waits_for_response_after_health_timeout() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Arc,
+        };
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let server_done = done.clone();
+        let server_requests = requests.clone();
+        let server = thread::spawn(move || {
+            while !server_done.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(1)))
+                            .unwrap();
+                        let mut request = [0; 1024];
+                        if let Ok(count) = stream.read(&mut request) {
+                            assert!(String::from_utf8_lossy(&request[..count])
+                                .starts_with("GET /provider "));
+                            server_requests.fetch_add(1, Ordering::SeqCst);
+                            thread::sleep(Duration::from_millis(2500));
+                            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("owned listener failed: {error}"),
+                }
+            }
+        });
+        let client = super::OpenCodeClient::new("run", format!("http://{address}")).unwrap();
+        let result = client.send_json_request::<serde_json::Value>("GET", "/provider", None);
+        done.store(true, Ordering::SeqCst);
+        server.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "healthy server catalog readiness must outlive the two-second health socket timeout"
+        );
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "wait for one response instead of duplicating a slow catalog read"
+        );
+    }
+
+    #[test]
+    fn instance_bootstrap_timeout_keeps_health_and_session_reads_fast() {
+        for path in ["/config", "/agent", "/provider"] {
+            assert_eq!(
+                read_timeout_for_request("GET", path),
+                Duration::from_secs(30)
+            );
+        }
+        for (method, path) in [
+            ("GET", "/global/health"),
+            ("GET", "/session/status"),
+            ("POST", "/session"),
+            ("POST", "/session/s1/prompt_async"),
+            ("POST", "/config"),
+        ] {
+            assert_eq!(
+                read_timeout_for_request(method, path),
+                Duration::from_secs(2)
+            );
+        }
+    }
+
+    #[test]
+    fn cold_instance_catalog_survives_fast_global_health() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for (path, body) in [
+                ("/global/health", r#"{"healthy":true}"#),
+                ("/provider", r#"{"all":[],"default":{},"connected":[]}"#),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    let size = stream.read(&mut chunk).unwrap();
+                    assert!(size > 0);
+                    request.extend_from_slice(&chunk[..size]);
+                }
+                assert!(String::from_utf8_lossy(&request).starts_with(&format!("GET {path} ")));
+                if path == "/provider" {
+                    // Native global health precedes per-directory Instance bootstrap.
+                    std::thread::sleep(Duration::from_millis(2_300));
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        let client = super::OpenCodeClient::new("cold-start", format!("http://{address}")).unwrap();
+        client.check_health().unwrap();
+        let catalog = client.provider_catalog();
+        server.join().unwrap();
+        assert!(catalog
+            .expect("healthy native server must finish its cold Instance bootstrap")
+            .all
+            .is_empty());
+    }
 
     #[test]
     fn retries_opencode_mcp_connect_startup_io_failures() {

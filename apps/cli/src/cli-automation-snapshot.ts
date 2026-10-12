@@ -59,7 +59,7 @@ export type CliAutomationSnapshotDeps = {
   externalProviderSessionsState: () => ExternalProviderSessionRecord[]
   externalProviderSessionsPageState: () => { hasMore: boolean; nextCursor: string | null }
   slicesState: () => SliceRecord[]
-  providerAccountsState: () => ProviderAccountProfile[]
+  providerAccountsState: () => ProviderAccountProfile[] | undefined
   waitingRoomTargets: () => WaitingRoomTargetState
   themeRegistryState: () => ThemeRegistry
   selectedWorkflowId: () => string | null
@@ -83,6 +83,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
   const managedEnvironmentCatalog = waitingRoomTargets.managedEnvironmentCatalog
   const selectedWorkflow = session.workflows?.find((workflow) => workflow.id === deps.selectedWorkflowId()) ?? null
   const waitingRoomState = deps.waitingRoomState()
+  const providerAccounts = deps.providerAccountsState()
   const shellEntries = deps.workspaceShellEntries()
   const agentRuntimeDisplayStates = sessionAgentRuntimeDisplayStateByAgent(session)
   const waitingRoomProjects = waitingRoomProjectsForNavigation(deps.waitingRoomProjects?.() ?? [])
@@ -188,7 +189,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
           externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
           slices: deps.slicesState(),
-          providerAccounts: deps.providerAccountsState(),
+          ...(providerAccounts === undefined ? {} : { providerAccounts }),
           projects: deps.waitingRoomProjects?.() ?? [],
           ...(managedEnvironmentCatalog
             ? {

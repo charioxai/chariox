@@ -72,7 +72,8 @@ async fn check() {
     home_config.relay_url = Some(format!("ws://{addr}"));
     home_config.relay_token = Some("peer-version-fixture".into());
     home_config.relay_request_timeout_ms = 2_000;
-    let version = Arc::new(AtomicU32::new(70));
+    let current = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
+    let version = Arc::new(AtomicU32::new(current - 1));
     let requests = Arc::new(Mutex::new(Vec::new()));
     let (stop_worker, mut stopped) = watch::channel(false);
     let target = {

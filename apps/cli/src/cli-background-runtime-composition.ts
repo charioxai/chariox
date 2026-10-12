@@ -129,6 +129,7 @@ export type CliBackgroundRuntimeCompositionDeps = {
   drainTerminalOutputRecords: AnyFn
   scheduleSharedPromptInputHistoryRefresh: AnyFn
   handleWaitingRoomRefresh: AnyFn
+  applyWaitingRoomTransportClosed: AnyFn
   applyWaitingRoomRowsChanged: AnyFn
   applyRelayStatusChanged: AnyFn
   applyRemoteMachinesChanged: AnyFn
@@ -136,6 +137,9 @@ export type CliBackgroundRuntimeCompositionDeps = {
   applySlicesChanged: AnyFn
   flashFooter: AnyFn
   recoverAttachedSessionAfterKernelRestart: AnyFn
+  sessionBindingRepairInFlight: () => boolean
+  currentSessionEventBindingReady: () => boolean
+  syncValidatedKernelEventSubscription: () => Promise<void>
   setFatalError: AnyFn
   pumpTerminalOutput: AnyFn
   pollRuntimeNotices: AnyFn
@@ -188,12 +192,9 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   const onResize = terminalResizeController.handleResize
 
   const pollerDegradationController = createPollerDegradationController({
-    connectedStatusLine: DEFAULT_CONNECTED_STATUS,
     logger: deps.appLogger,
-    setDaemonDisconnected: deps.setDaemonDisconnected,
-    setStatusLine: deps.setStatusLine,
-    updateSessionChrome: deps.updateSessionChrome,
-    appendNotice: deps.appendNotice,
+    onTransportClosed: (message) => kernelEventController.applyTransportClosed(message),
+    onTransportRecovered: () => kernelEventController.applyTransportResumed(),
   })
   const markPollerDegraded = pollerDegradationController.markDegraded
   const markPollerRecovered = pollerDegradationController.markRecovered
@@ -227,6 +228,8 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
 
   const daemonActivityController = createDaemonActivityController({
     recordConnectionActivity: () => connectionHealthWatchdogController.recordActivity(),
+    onRecovered: () => kernelEventController.applyTransportResumed(),
+    canRecoverConnection: () => !deps.sessionBindingRepairInFlight() && deps.currentSessionEventBindingReady(),
     daemonDisconnected: deps.daemonDisconnected,
     setDaemonDisconnected: deps.setDaemonDisconnected,
     updateSessionChrome: deps.updateSessionChrome,
@@ -267,6 +270,20 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   }
 
   const kernelEventController = createKernelEventController({
+    daemonDisconnected: deps.daemonDisconnected,
+    sessionBindingRepairInFlight: deps.sessionBindingRepairInFlight,
+    currentSessionEventBindingReady: deps.currentSessionEventBindingReady,
+    onAttachedTransportClosed: () => {
+      deps.kernelEventSubscriptionController.reset()
+      void deps.recoverAttachedSessionAfterKernelRestart()
+    },
+    isAttached: deps.isAttached,
+    restartWaitingRoomEventStream: () => {
+      void deps.client.restartKernelEventStream().catch((error: unknown) => {
+        deps.appLogger?.warn("waiting-room event rebind failed", {error: deps.formatError(error)})
+      })
+    },
+    onWaitingRoomTransportClosed: deps.applyWaitingRoomTransportClosed,
     recordDaemonActivity,
     recordTurnActivity: deps.recordTurnActivity,
     resolveTerminalRecordAgentId: deps.resolveTerminalRecordAgentId,
@@ -395,9 +412,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     },
     onResyncComplete: (reason) => {
       recordDaemonActivity(`kernel_resync_${reason}`)
-      deps.setDaemonDisconnected(false)
-      deps.setStatusLine(DEFAULT_CONNECTED_STATUS)
-      deps.updateSessionChrome()
+      kernelEventController.applyTransportResumed()
     },
     onResyncFailed: (reason, error) => {
       deps.appLogger?.warn?.("attached kernel resync failed", {
@@ -521,21 +536,24 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     projectSession: applyProviderRunProfileToSession,
     applySession: deps.applySessionState,
     resetKernelEventSubscription: deps.kernelEventSubscriptionController.reset,
-    syncKernelEventSubscription: deps.syncKernelEventSubscription,
+    syncKernelEventSubscription: deps.syncValidatedKernelEventSubscription,
     refreshAgentPanes: deps.refreshAgentPanes,
     clearLocalBusyStateForAuthoritativeIdle: deps.clearLocalBusyStateForAuthoritativeIdle,
     recordDaemonActivity,
     onRecovered: () => {
-      deps.setDaemonDisconnected(false)
-      deps.setStatusLine(DEFAULT_CONNECTED_STATUS)
-      deps.updateSessionChrome()
+      kernelEventController.applyTransportResumed()
     },
     onStateLookupFailed: (sessionId, message, error) => {
-      deps.appLogger?.debug?.("session unavailable confirmed by state lookup failure", {
+      deps.appLogger?.debug?.("session unavailable recovery lookup failed", {
         session_id: sessionId,
         message,
         error: deps.formatError(error),
       })
+    },
+    isSessionUnavailableError,
+    onTransientFailure: () => {
+      deps.setDaemonDisconnected(true)
+      deps.recoverAttachedSessionAfterKernelRestart()
     },
     transitionToNoSession: deps.transitionToNoSession,
   })
@@ -581,9 +599,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     formatError: deps.formatError,
     isSessionUnavailableError,
     getPollRecoveryDecision,
-    onSessionUnavailable: () => {
-      deps.transitionToNoSession("Current session is no longer available.")
-    },
+    onSessionUnavailable: () => handleKernelSessionUnavailable("Current session is no longer available."),
     onMarkRecovered: markPollerRecovered,
     onMarkDegraded: markPollerDegraded,
     onFatalError: (error) => {
@@ -692,6 +708,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
 
   onCleanup(() => {
     disposeKernelEventHandler()
+    kernelEventController.disposeConnectionDisplay()
     void deps.client.unsubscribeFromKernelEvents().catch(() => {
       // Ignore teardown errors while closing the TUI.
     })
@@ -759,13 +776,15 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   })
 
   onMount(() => {
+    void deps.handleWaitingRoomRefresh()
     if (deps.kernelConnected()) {
-      void deps.handleWaitingRoomRefresh()
       void deps.hydrateCurrentAttachedSession("mount")
     }
   })
 
   return {
+    applyKernelTransportClosed: kernelEventController.applyTransportClosed,
+    applyKernelTransportResumed: kernelEventController.applyTransportResumed,
     ensureBackgroundPollersStarted,
     processKernelTerminalOutputRecord: kernelEventController.processTerminalOutputRecord,
     recordDaemonActivity,

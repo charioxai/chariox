@@ -98,6 +98,7 @@ mod passkey_prompts;
 #[cfg(test)]
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
 mod native_catalog_refresh;
+mod owner_context_review;
 mod project_environment_export;
 mod project_environment_files;
 mod project_environment_manifest;
@@ -223,7 +224,7 @@ struct KernelRuntimeOwnedState {
     next_room_browser_health_at_ms: Arc<AtomicU64>,
     room_environment_health_probes: Arc<room_environment_health::RoomEnvironmentHealthProbes>,
     browser_controller_generations:
-        Arc<std::sync::Mutex<BTreeMap<String, (u64, bool)>>>,
+        Arc<std::sync::Mutex<BTreeMap<String, browser_controller_runtime_state::ControllerGenerationObservation>>>,
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
     agent_runtime_projection: crate::runtime::projection::AgentRuntimeProjectionStore,
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
@@ -253,6 +254,7 @@ struct KernelRuntimeOwnedState {
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     provider_login_processes: ProviderLoginProcessStore,
     provider_auth_recovery_runs: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    claude_token_checks: Arc<claude_token_checks::ClaudeTokenChecks>,
     event_connection_registry: crate::event_connection::EventConnectionRegistry,
     prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
     active_turns: ActiveTurnStore,
@@ -409,6 +411,7 @@ pub(crate) use managed_activity_persistence::ManagedActivityObservation;
 mod metaagent_event_owned_state;
 mod metaagent_task_runtime_state;
 pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
+mod active_prompt_steering;
 mod external_command_authority;
 mod project_runtime_state;
 mod prompt;
@@ -421,6 +424,7 @@ mod prompt_queue_owned_state;
 mod prompt_skill_context_state;
 mod prompt_transcript_owned_state;
 mod provider;
+mod provider_account_admission;
 mod provider_account_authority;
 mod provider_focus_owned_state;
 mod provider_launch_failure_runtime;
@@ -469,7 +473,11 @@ mod remote_queue_advance_tests;
 mod restart_recovery_runtime;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 mod agent_batch_runtime_state;
+mod claude_token_checks;
+mod claude_token_first_use;
+mod provider_login_workflow;
 mod runtime_interaction_owned_state;
+pub(crate) use runtime_interaction_owned_state::interaction_waits;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
 mod runtime_state_views;
@@ -521,6 +529,7 @@ mod workflow_queue_durable;
 mod workflow_source_request_runtime_state;
 use workflow_prompt_dispatches::*;
 pub(crate) mod notification_delivery;
+mod room_workflow_control_runtime_state;
 mod workflow_notification_grants;
 mod workflow_notification_peers;
 mod workflow_notification_router;
@@ -909,6 +918,7 @@ impl KernelRuntimeState {
                 provider_account_profiles,
                 provider_login_processes: ProviderLoginProcessStore::default(),
                 provider_auth_recovery_runs: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+                claude_token_checks: Arc::default(),
                 prompt_state_owner,
                 active_turns,
                 prompt_activity,
@@ -1052,6 +1062,10 @@ impl KernelRuntimeState {
             &self.owned.config_projection.snapshot(),
             runtime_owner_user_id,
         )
+    }
+
+    pub(in crate::runtime) fn provider_login_kernel_id(&self) -> String {
+        self.owned.config_projection.snapshot().daemon_id
     }
 
     pub(in crate::runtime) fn provider_login_process_store(&self) -> &ProviderLoginProcessStore {

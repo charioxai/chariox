@@ -2119,8 +2119,9 @@ mod tests {
         let started = dispatch_public(
             &home_router,
             LocalDaemonRequest::StartManagedContextTransfer(StartManagedContextTransferRequest {
+                owner_managed: None,
                 interactive: false,
-                ticket: ticket.clone(),
+                ticket: Some(ticket.clone()),
             }),
         )
         .await;
@@ -2836,6 +2837,9 @@ mod tests {
         realm_id: &str,
     ) -> PersistedCloudRelayProfile {
         PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url,
             email: "owner@example.test".to_string(),
             account_id: "account-1".to_string(),

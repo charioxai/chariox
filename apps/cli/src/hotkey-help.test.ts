@@ -30,3 +30,11 @@ test("session help lists approval opening keys and slash command", () => {
      else process.env.CHARIOX_USER_APP_VIEWS_PROTOTYPE=previous
    }
  })
+
+test("MP-08 / MP-10 copy help offers a legacy-terminal key distinct from Ctrl+C", () => {
+  for (const attached of [true, false]) {
+    const items = buildHotkeySections(attached).flatMap(section => section.items)
+    assert.ok(items.some(item => item.keys.includes("F6") && item.description.includes("Copy")))
+    assert.ok(!items.some(item => item.keys.includes("Ctrl+Shift+C")))
+  }
+})

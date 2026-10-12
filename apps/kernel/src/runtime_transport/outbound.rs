@@ -134,6 +134,10 @@ fn project_error(value: &Value) -> KernelTransportError {
             | "pty_resize_failed"
             | "kernel_request_failed"
             | "kernel_access_denied"
+            | "kernel_access_human_only"
+            | "kernel_access_not_covered"
+            | "kernel_access_ended"
+            | "kernel_access_already_granted"
             | "invalid_request"
             | "invalid_frame"
             | "kernel_request_overloaded"
@@ -189,6 +193,7 @@ public_events! {
     SlicesChanged => "slices_changed",
     WorkflowDesignOp => "workflow_design_op",
     WorkflowRunUpdated => "workflow_run_updated",
+    RoomWorkflowsChanged => "room_workflows_changed",
     Heartbeat => "heartbeat",
     TransportResumed => "transport_resumed",
     ReplayGap => "replay_gap",

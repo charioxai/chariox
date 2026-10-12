@@ -17,6 +17,41 @@ test("attachBinding is a no-op when already attached to the target session", asy
   assert.deepEqual(calls, [])
 })
 
+test("session switching clears an attachment the kernel already removed", async () => {
+  let attachment: { id: string; session_id: string } | null = { id: "att-stale", session_id: "session-1" }
+  const { deps } = createBaseDeps({
+    attachmentState: () => attachment,
+    detachAttachment: async () => { throw new Error("kernel transport failed: attachment `att-stale` was not found") },
+    setAttachmentState: (next: typeof attachment) => { attachment = next },
+  })
+  await createSessionLifecycleController(deps as never).detachCurrentAttachment()
+  assert.equal(attachment, null)
+})
+
+test("session switching preserves its attachment on other detach failures", async () => {
+  const attachment = { id: "att-live", session_id: "session-1" }
+  let cleared = false
+  const { deps } = createBaseDeps({
+    attachmentState: () => attachment,
+    detachAttachment: async () => { throw new Error("permission denied") },
+    setAttachmentState: () => { cleared = true },
+  })
+  await assert.rejects(createSessionLifecycleController(deps as never).detachCurrentAttachment(), /permission denied/)
+  assert.equal(cleared, false)
+})
+
+test("a completed detach cannot clear a newer attachment", async () => {
+  let attachment: { id: string; session_id: string } | null = { id: "att-old", session_id: "session-1" }
+  const newer = { id: "att-new", session_id: "session-2" }
+  const { deps } = createBaseDeps({
+    attachmentState: () => attachment,
+    detachAttachment: async () => { attachment = newer },
+    setAttachmentState: (next: typeof attachment) => { attachment = next },
+  })
+  await createSessionLifecycleController(deps as never).detachCurrentAttachment()
+  assert.equal(attachment, newer)
+})
+
 test("transitionToNoSession resets session-bound state and refreshes the waiting room", async () => {
   const { deps, calls } = createBaseDeps()
   const controller = createSessionLifecycleController(deps as never)

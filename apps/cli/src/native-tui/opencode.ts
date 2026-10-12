@@ -1,3 +1,5 @@
+import { localKernelConnectionLabel } from "../local-connection-indicator.js"
+import { signalNativeChild } from "./native-child-signals.js"
 import { appendFileSync } from "node:fs"
 import path from "node:path"
 import process from "node:process"
@@ -7,6 +9,7 @@ import {
   type RuntimeProviderRun,
 } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
+import { createCliRelayIdentityStore } from "../cli-relay-identity-store.js"
 import {
   promptAttachmentTransferIsForced,
 } from "../prompt-attachment-transfer.js"
@@ -15,6 +18,7 @@ import {
   defaultKernelEndpoint,
   inferWorkspaceTargetsFromLaunchDirectory,
   parseKernelPort,
+  relayTokenFromEnvironment,
   parseNativeMode as parseMode,
   parseNativePermissions as parsePermissions,
   reserveLocalPort as reservePort,
@@ -80,6 +84,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
   const client = new LocalIpcClient(kernelEndpoint, options.relayUrl
     ? {
       relayAuthToken: options.relayToken,
+      relayIdentity: createCliRelayIdentityStore().load() ?? undefined,
       relayAuthorizationIssuer: options.relayTokenIssuer,
       targetDaemonId: options.targetDaemonId,
       targetDaemonAlias: options.targetDaemonAlias,
@@ -170,6 +175,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
     process.stderr.write(formatNativeTuiRuntimeBanner({
+      connectionLabel: localKernelConnectionLabel(client, session.host_daemon_id),
       surface: "opencode native-tui",
       session,
       agent,
@@ -194,7 +200,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     await runOpenCodeAttach({
       proxyUrl,
       providerSessionId,
-      workingDirectory: worktree,
+      workingDirectory: run.working_directory?.trim() || worktree,
     })
   } finally {
     pump?.stop()
@@ -202,12 +208,12 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       await new Promise<void>((resolve) => proxy!.server.close(() => resolve()))
     }
     if (openCodeServer && openCodeServer.exitCode == null) {
-      openCodeServer.kill("SIGTERM")
+      signalNativeChild(openCodeServer, "SIGTERM")
       await Promise.race([
         new Promise((resolve) => openCodeServer?.once("exit", resolve)),
         sleep(2_000),
       ])
-      if (openCodeServer.exitCode == null) openCodeServer.kill("SIGKILL")
+      if (openCodeServer.exitCode == null) signalNativeChild(openCodeServer, "SIGKILL")
     }
     await endpointBridge?.close()
     await client.close()
@@ -224,6 +230,7 @@ export function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
     grantMcps: [],
     grantSkills: [],
   }
+  let relayTokenSource = false
   const positional: string[] = []
 
   for (let index = 0; index < args.length; index += 1) {
@@ -255,7 +262,14 @@ export function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
         options.relayTokenIssuer = { endpoint: next(), daemonId: next() }
         break
       case "--relay-token":
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
+        relayTokenSource = true
         options.relayToken = next()
+        break
+      case "--relay-token-env":
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
+        relayTokenSource = true
+        options.relayToken = relayTokenFromEnvironment(next())
         break
       case "--target-daemon-id":
         options.targetDaemonId = next()
@@ -355,7 +369,7 @@ export function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
 function printNativeOpenCodeUsage() {
   process.stdout.write([
     "usage: chariox opencode [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT] [--model MODEL] [--mode build|plan] [--permissions required|yolo]",
-    "       chariox opencode [session-ref] --relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)",
+    "       chariox opencode [session-ref] --relay-url URL (--relay-token TOKEN|--relay-token-env NAME) (--target-daemon-id ID|--target-daemon-alias NAME)",
     "",
     "placement:",
     "  --machine, --kernel-ref REF       Run the Chariox agent/provider on a remote worker kernel",

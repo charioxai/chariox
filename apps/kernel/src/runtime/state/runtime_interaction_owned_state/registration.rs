@@ -105,6 +105,23 @@ impl KernelRuntimeOwnedState {
                 ))
             }
         }
+        // MP-11: bind both review forms to the enrolled human, while leaving
+        // every other credential/operation owner and session membership intact.
+        let review_owner =
+            if super::super::owner_context_review::is_owner_context_review(&interaction) {
+                if kernel_operation_owner.or(terminal_credential_owner)
+                    != Some(session.owner_user_id())
+                {
+                    return Err(interaction_error("Copy review requires the session owner"));
+                }
+                Some(self.owner_context_review_owner(session.owner_user_id()))
+            } else {
+                None
+            };
+        let kernel_operation_owner =
+            kernel_operation_owner.map(|owner| review_owner.as_deref().unwrap_or(owner));
+        let terminal_credential_owner =
+            terminal_credential_owner.map(|owner| review_owner.as_deref().unwrap_or(owner));
         // A kernel decision nobody waits for any more does not block its
         // subject: the new request supersedes it. The pump's sweep times such
         // decisions out too, but a registration must not depend on it having
@@ -164,8 +181,24 @@ impl KernelRuntimeOwnedState {
                             .map(|remote| remote.execution_lease_id.clone())
                             .unwrap_or_default(),
                         provider_run_id: context.worker_provider_run_id.clone(),
+                        startup_permission: interaction.kind()
+                            == crate::session::RuntimeInteractionKind::Permission
+                            && matches!(origin, NativeInteractionOrigin::ProviderStartup { .. }),
                         binding_observed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                            false,
+                            // MP-08 / MP-10 / MP-11: Kernel choices raised by
+                            // an idle worker need an already live run. Active
+                            // dispatches and native startup permissions retain
+                            // the pre-ACK allowance.
+                            interaction.kind()
+                                != crate::session::RuntimeInteractionKind::Permission
+                                && matches!(
+                                    origin,
+                                    NativeInteractionOrigin::ProviderStartup { .. }
+                                )
+                                && self
+                                    .prompt_state_owner
+                                    .active_prompt_for_agent(&session, agent_id)
+                                    .is_none(),
                         )),
                     }
                 });

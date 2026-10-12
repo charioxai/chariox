@@ -7,8 +7,11 @@ import type {
 } from "@chariox/kernel-client"
 import {
   defaultProviderAccountProfileId,
+  normalizeProviderAccountProfileId,
   providerAccountFamily,
   providerAccountDisplayLabel,
+  providerAccountSignInCommand,
+  selectedProviderAccountStartBlockReason,
   providerAccountsForProvider,
   resolveProviderAccountSelection,
   selectedProviderAccount,
@@ -19,6 +22,14 @@ const profiles: ProviderAccountProfile[] = [
   account("claude", "claude-secondary"),
   account("codex", "codex-primary", true),
 ]
+
+test("MP-08/MP-10/MP-11 destination normalization preserves explicit choices and its own default", () => {
+  assert.equal(normalizeProviderAccountProfileId(profiles, "claude", "claude-secondary"), "claude-secondary")
+  assert.equal(normalizeProviderAccountProfileId(profiles, "claude", "home-only"), "claude-primary")
+  const signedOutDefault = profiles.map(profile => ({ ...profile, auth_state: "not_configured" as const }))
+  assert.equal(normalizeProviderAccountProfileId(signedOutDefault, "claude", "home-only"), "claude-primary")
+  assert.equal(normalizeProviderAccountProfileId([], "codex", "home-only"), "default")
+})
 
 test("Claude adapters share the Claude provider-account family", () => {
   assert.equal(providerAccountFamily("claude-headless"), "claude")
@@ -49,39 +60,40 @@ test("a missing default stays unavailable instead of silently selecting the firs
   assert.equal(selectedProviderAccount(accounts, "codex", "default"), null)
 })
 
-test("provider account display uses only the public alias", () => {
+test("provider account display uses the public alias and sign-in state", () => {
   const profile = account("codex", "internal-profile", true)
   profile.label = "codex-1"
   profile.identity_summary = "owner@example.com"
 
-  assert.equal(providerAccountDisplayLabel(profile), "codex-1")
+  assert.equal(providerAccountDisplayLabel(profile), "codex-1 · signed in")
 })
 
 test("TUI marks hard exhaustion without hiding Claude and Codex accounts backed by credits", () => {
   const resetsAtMs = Date.now() + 60_000
+  const resetLabel = "resets " + new Date(resetsAtMs).toISOString().slice(0, 16).replace("T", " ") + " UTC"
   const allowance = usageMeter("allowance", "rolling_limit", "exhausted", resetsAtMs)
   const credits = usageMeter("credits", "credit_balance", "exhausted")
 
   assert.equal(
     providerAccountDisplayLabel(accountWithUsage("opencode", [allowance])),
-    "Account",
+    "Account · signed in",
     "unscoped exhaustion must not mark every OpenCode service exhausted",
   )
   assert.equal(
     providerAccountDisplayLabel(accountWithUsage("opencode", [
       { ...allowance, service_id: "opencode-go" },
     ]), "opencode-go/test-model"),
-    "Account · OpenCode Go (exhausted)",
+    `Account · OpenCode Go (exhausted) · ${resetLabel} · signed in`,
   )
   for (const provider of ["claude", "claude-headless", "claude-p", "codex"]) {
     assert.equal(
       providerAccountDisplayLabel(accountWithUsage(provider, [allowance])),
-      "Account",
+      "Account · signed in",
       `${provider} allowance exhaustion alone must remain selectable in the TUI`,
     )
     assert.equal(
       providerAccountDisplayLabel(accountWithUsage(provider, [allowance, credits])),
-      "Account (exhausted)",
+      `Account (exhausted) · ${resetLabel} · signed in`,
       `${provider} must be marked exhausted when allowance and credits are exhausted`,
     )
     assert.equal(
@@ -92,7 +104,7 @@ test("TUI marks hard exhaustion without hiding Claude and Codex accounts backed 
         state: "healthy",
         observed_at_ms: Date.now() - 86_400_001,
       }])),
-      "Account",
+      "Account · signed in",
       `${provider} must not discard a stale credit meter to claim total exhaustion`,
     )
   }
@@ -182,3 +194,48 @@ function usageMeter(
     ...(resetsAtMs === undefined ? {} : { resets_at_ms: resetsAtMs }),
   }
 }
+
+test("MP-08 / MP-11 an unvalidated linked account asks for a check instead of another login", () => {
+  const profile = account("codex", "linked", true)
+  profile.auth_state = "unknown"
+  assert.match(providerAccountDisplayLabel(profile), /sign-in not checked$/)
+  assert.match(selectedProviderAccountStartBlockReason([profile], "codex", "default") ?? "", /Refresh its status/)
+  assert.equal(providerAccountSignInCommand(profile), "/provider accounts refresh codex linked")
+})
+
+test("MP-08 / MP-11 home inventory does not decide worker account authentication", () => {
+  const local = account("codex", "local", true)
+  local.auth_state = "not_configured"
+  assert.match(selectedProviderAccountStartBlockReason([local], "codex", "default", { kind: "local" }) ?? "", /needs sign-in/)
+  assert.equal(selectedProviderAccountStartBlockReason([local], "codex", "worker-account", { worker_kernel_id: "worker" }), null)
+})
+
+// MP-08 / MP-11 known exhausted quota must be visible before work starts.
+test("exhausted selected account exposes reset and a usable alternative", () => {
+  const reset = Date.now() + 3_600_000
+  const exhausted = accountWithUsage("codex", [usageMeter("rolling/300/codex", "rolling_limit", "exhausted", reset), usageMeter("credits", "credit_balance", "exhausted")])
+  const good = account("codex", "available")
+  assert.match(providerAccountDisplayLabel(exhausted, "codex/gpt-6.1-sol"), /exhausted.*resets.*UTC/)
+  assert.match(selectedProviderAccountStartBlockReason([exhausted, good], "codex", exhausted.profile_id, null, "codex/gpt-6.1-sol") ?? "", /exhausted.*resets.*available/)
+  assert.equal(selectedProviderAccountStartBlockReason([exhausted], "codex", exhausted.profile_id, null, "codex/gpt-5.3-codex-spark"), null)
+})
+
+// MP-08 / MP-11 OpenCode owns Go → Zen fallback: show exhaustion, never refuse before the harness runs.
+test("exhausted OpenCode service stays visible but does not block the start", () => {
+  const reset = Date.now() + 3_600_000
+  const go = { ...usageMeter("go/monthly", "rolling_limit", "exhausted", reset), service_id: "opencode-go" }
+  const zen = { ...usageMeter("zen/credits", "credit_balance", "exhausted"), service_id: "opencode" }
+  const openCode = accountWithUsage("opencode", [go, zen])
+  assert.match(providerAccountDisplayLabel(openCode, "opencode-go/glm-5.3-flash"), /OpenCode Go \(exhausted\).*resets.*UTC/)
+  for (const model of ["opencode-go/glm-5.3-flash", "opencode/deepseek-v4-flash"]) {
+    assert.equal(selectedProviderAccountStartBlockReason([openCode], "opencode", openCode.profile_id, null, model), null, model)
+  }
+})
+
+// MP-08 / MP-10 / MP-11: stale account references require an explicit local action.
+test("MP-08 / MP-10 / MP-11 missing target profile directs login or copy", () => {
+  for (const mode of ["claude", "claude-p", "claude-headless"]) {
+    assert.match(selectedProviderAccountStartBlockReason([], mode, "claude-miguel") ?? "",
+      /not available on this kernel.*[Cc]opy login/)
+  }
+})

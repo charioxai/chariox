@@ -359,6 +359,40 @@ Existing providers like OpenCode may continue to be adapted through their native
 
 ## 3.3.2 Native TUI Agents
 
+MP-08 / MP-10 / MP-11: local protocol 491 fences `CancelActivePrompt` with
+optional `expected_prompt_id`. Native Codex resolves both requested display
+thread and turn to the existing home-prompt binding. The kernel compares that
+identity atomically when admitting cancellation, including leased agents;
+stale and foreign controls return `NoActivePrompt` and leave the current prompt running.
+The active identity or its pending submission alias is compared under the same
+lock that marks cancellation. Legacy cancellation
+without this field keeps its existing behavior. The CLI requires protocol 491
+for the fenced request. Unix and relay attachments without a local advertisement
+must confirm `exact_prompt_cancellation_v499` in the attached kernel's existing
+`RelayStatus` capabilities; an unknown or older kernel is rejected before sending
+the cancellation. Peer 101 is the paired admission generation; worker aborts
+retain the existing lease, home-prompt and provider-run fences.
+
+MP-08 / MP-10: local protocol **491** adds `SteerActivePrompt` with session,
+attachment, agent, required `expected_active_prompt_id`, visible prompt and
+attachments. The home agent actor admits it only against that exact running
+Chariox prompt; stale, cancelled, external or settled targets fail without
+creating a turn or a backlog item. `ActivePromptSteered { prompt }` reports
+admission through shared prompt assembly/history and local or leased provider
+dispatch. Relay peer 101 carries the exact home target.
+Codex native `turn/steer` maps both reply and projected display turn IDs to
+home prompt IDs; its response retains the display turn ID. Utility threads
+keep their provider-native controls. `thread/compact/start` resolves the live
+managed provider conversation rather than the display thread.
+
+The MP-08 / MP-10 focused source drill consists of
+`mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt` in the kernel
+test binary plus the CLI `codex-managed-lifecycle.test` entry-point fixture:
+submit → steer → compact → follow-up, interrupt, cold launch and stale controls.
+Run alongside protocol shape/hash and native proxy utility/projection checks.
+These credential-free fixtures prove routing and admission; signed/live
+provider and ordinary-versus-Path-1 acceptance remain separate gates.
+
 MP-08 / MP-10 / MP-11 (owner decision 2026-10-02): credential copying remains
 unchanged across leased workers, managed-context imports and slices, including
 profile-scoped Claude Keychain export and the Vault setup-token remote path.
@@ -393,6 +427,7 @@ Semantics:
 - a native TUI launch never attaches to an existing provider run; every native TUI agent owns its own provider run
 - prompts from the provider TUI are intercepted and submitted through the same kernel prompt path as Chariox clients
 - prompts from Chariox clients are forwarded through the kernel-managed provider run so the provider TUI observes the same turns
+- MP-08 / MP-10 / MP-11: a queued prompt retains its kernel-owned identity when promoted to active work; promotion clears its pending marker without replacing its ID, so native display turns, permissions and exact-prompt controls keep one binding
 - native TUI provider runs are marked with `client_interface = native_tui`
 - Chariox clients must treat model/variant controls for those runs as provider-controlled; provider-native changes may be recorded when observable, but Chariox-side parameter mutation is disabled for the active native TUI run
 - daemon health reports `duplicate_chariox_agent_bindings` when more than one active Chariox provider run is bound to one session/agent, and `multi_interface_agent_bindings` when active Chariox and native TUI provider runs are bound to the same session/agent
@@ -460,7 +495,7 @@ Native TUI hidden context:
 
 Provider-specific transport:
 
-- Codex uses a native WebSocket proxy in front of a Codex app-server endpoint and binds the observed Codex thread to the Chariox provider run.
+- Codex uses a native WebSocket proxy in front of a kernel-managed Codex app-server launched through the normal provider adapter (MP-08 / MP-10). Local, remote-worker, and slice placement all materialize agent grants through that adapter before the provider TUI connects. The proxy routes native prompts into the home kernel and projects kernel-managed turns into the native TUI; the existing leased-agent path selects worker execution. `--server-in-kernel` remains accepted for compatibility.
 - OpenCode uses a native HTTP proxy in front of a launcher-managed `opencode serve` endpoint. The kernel binds its provider run to the proxy endpoint, while the provider TUI attaches to the same proxy/provider session.
 - Claude Code has no stable provider UI/server split. Local and remote native TUI mode therefore use a kernel-owned PTY: the provider process runs where execution belongs, and the launcher streams/render-controls that PTY while the kernel projects prompts, output, attachments, status, and supported interactions back into the Chariox session.
 
@@ -558,7 +593,9 @@ at local 491. The display history includes bounded stripes (447), binary frames
 with WebP tiles and scroll rectangles (466), and relay display push/ACKs (475).
 Binary transport downgrade does not admit an obsolete worker runtime: remote
 lease creation, restored bindings, Room browser forwarding, context transfer and
-hosted slice receipts require peer 114 or newer. Client feature floors depend on
+hosted slice receipts require peer 114 or newer. 506/114 also includes main's
+local 491 / relay peer 101 (#974) kernel ownership, waiting-room and Room
+workflow contracts. Client feature floors depend on
 the contracts they use; this entry allocates no new protocol version.
 
 MP-08 / MP-10 / MP-11 G08: legacy recall tools (`chariox.search_recall`,
@@ -802,6 +839,138 @@ Current implementation notes:
 - current replay is bounded by the daemon's retained recent-event window; if a resume cursor falls outside that window, the M4.5 contract requires an explicit replay-gap response plus a fresh projection snapshot
 - event ids should not be treated as daemon-restart durable until a persisted event log or equivalent projection checkpoint/tail-event store lands
 
+### Same-machine browser carrier (local protocol 520, MP-08/MP-11)
+
+MP-08 / MP-11: at protocol 520, relay-addressed detached/native TUI launches
+and waiting-room kernel switches automatically use the shared authenticated
+terminal direct lease described below when fresh same-machine discovery exists.
+Older and alias-only targets retain their authenticated relay transport. Terminal clients
+keep their bound relay identity fresh only through the hosted terminal renewal
+above. Renewal re-authenticates relay sockets only; a direct carrier is never
+sent `client_connect` and stays authorized by its lease, which is renewed over
+the relay with the current identity. The local lease remains capped at
+30 seconds; direct sockets cannot renew themselves.
+Local presence and a matching `RelayStatus.daemon_id` do not authenticate a
+loopback TCP listener or authorize disclosure of a local bearer credential.
+
+The kernel's CLI listener keeps refusing every request that carries an
+`Origin` header. A paired web terminal whose kernel runs on the same machine
+can instead use a dedicated loopback carrier that has no authority of its own:
+
+1. Over its existing encrypted relay lane, the browser sends the client request
+   plaintext `{"local_browser_connect":{}}`, encrypted with the browser key whose
+   SHA-256 thumbprint the relay-verified client identity carries. The kernel
+   requires a live `client` identity with a user, the kernel's own Cloud realm and
+   that sender key. Only the relay carrier mints grants. The response is
+   `{"LocalBrowserConnectIssued":{"endpoint","grant","kernel_id",
+   "endpoint_epoch","expires_at_ms"}}`; the grant is a random single-use value
+   that expires after 30 seconds or with the identity, whichever is first.
+2. The kernel lazily binds literal `127.0.0.1` only (an ephemeral port by
+   default so several kernels can share a machine; `CHARIOX_KERNEL_BROWSER_PORT`
+   pins one; `off` disables). The grant carries the bound endpoint. The upgrade to
+   `ws://127.0.0.1:<port>/v1/browser` must come from a loopback peer, carry exactly
+   that `Host`, no query and no proxy headers, and exactly one `Origin` equal to
+   the origin of the paired Cloud `api_url` (HTTPS, or HTTP on loopback for local
+   development). Anything else receives HTTP 403. At most eight connections
+   may be unauthenticated at once; a new one evicts the oldest, so idle local
+   connections cannot hold the endpoint.
+3. The kernel sends `{"kind":"local_challenge","kernel_id","endpoint_epoch",
+   "challenge"}`. Within five seconds and a 16 KiB frame the browser answers
+   `{"kind":"local_connect","proof":<encrypted payload>}`: `{"grant","challenge",
+   "origin","kernel_id","endpoint_epoch"}` encrypted from the identity-bound
+   browser key to the pinned kernel key. The kernel redeems the grant (removed
+   before checking), and requires the same key thumbprint, challenge, origin, kernel
+   and epoch. It replies `{"kind":"local_connected","daemon_public_key","proof"}`
+   where `proof` is `{"grant","challenge"}` encrypted from the kernel key to the
+   browser key. The browser accepts the socket only if that proof decrypts under
+   the pinned kernel key; an impostor listener cannot read the grant. Failures send
+   `{"kind":"close","reason"}`.
+4. After admission the socket carries the relay client frames unchanged:
+   `client_request`, `client_subscribe` and `client_unsubscribe` in;
+   `client_response`, `client_event` and `close` out. Requests and subscriptions run
+   through the relay dispatch, command-result cache and relay event log with the
+   admitting relay identity, so command ids, replay cursors and authorization are
+   identical on both carriers.
+5. MP-08/MP-11: admission starts a lease ending at the grant's expiry, at
+   most 30 seconds. Every 10 seconds per kernel the web client obtains one
+   30-second relay token from Cloud's lightweight
+   `POST /browser/relay-kernel/local-lease` (it also mints grants with it) and,
+   over one encrypted relay connection, requests `local_browser_renew` for each
+   grant of that kernel redeemed with the same browser key, with a strictly
+   increasing one-use `sequence` starting at 1. The kernel renews a grant only
+   for the browser key, user and realm that redeemed it, so a batch never mixes
+   grants of different keys; the Cloud web client uses one browser key per tab,
+   so one token and connection serve all of that tab's lanes and clients.
+   Every attempt, including each relay failover, spends its sequence; the
+   kernel accepts any sequence at or above the next expected one and returns
+   `LocalBrowserLeaseRenewed` with `expires_at_ms` and `next_sequence` (the
+   accepted sequence plus one), so a retry after a lost response recovers
+   while every used sequence stays refused.
+   Only a live relay-verified client with the original browser key, user and
+   realm can renew. The kernel refuses long-lived renewal identities, expired
+   leases, unredeemed/retired grants, replays and direct-carrier renewals.
+   Successful renewals remain quiet; refusals emit a warning at most once per
+   10 seconds per kernel process, with the reason and no grant or caller keys.
+   On an otherwise valid active lease, a live identity whose expiry is more
+   than 40 seconds ahead of the kernel clock returns
+   `local_browser_lease_clock_skew` with a system-clock synchronization hint,
+   without consuming the sequence. A kernel clock ahead of Cloud can instead
+   cause ordinary identity-expiry or lease-expiry refusals; this diagnostic
+   covers the future-expiry ceiling only.
+   Cloud stamps identity expiry on its clock and the kernel reads it on the
+   user's clock with a 10-second skew allowance: an identity counts as short
+   when it expires at most 40 seconds ahead of the kernel clock, so a machine
+   clock up to 10 seconds behind Cloud keeps direct mode. The lease ends at the
+   earlier of 30 seconds on the kernel clock and the identity's expiry, so it
+   never exceeds the identity's expiry; a kernel clock ahead of Cloud shortens
+   each lease by the same amount, and direct mode tolerates up to about 15
+   seconds of it (about 10 seconds when one renewal is also lost). The session
+   uses that freshly verified identity for subsequent dispatch, allowing
+   continuous renewal across identity expiry.
+   Thus even a cached authorization issued before Cloud revocation cannot
+   extend the session beyond its expiry. The browser
+   retries one failed renewal after one second, well inside the lease; a
+   second consecutive failure or a kernel-key or sequence mismatch retires the
+   local transport epoch before reconnecting through the relay. Socket
+   backpressure does not delay the kernel lease deadline.
+6. The session closes with `relay token expired` at the latest identity's
+   expiry, `local browser lease expired` at the lease deadline, and
+   `local browser authority revoked` within 250 ms when the kernel's Cloud
+   pairing, realm, account, user, Cloud origin or relay key changes (for example
+   `LogoutCloudRelay`). The kernel owns expiry even if the browser stops timers.
+
+MP-08 / MP-11: the paired Cloud browser tries the authenticated loopback
+carrier automatically from protocol 520 for its own kernels. Shared-session
+viewers retain the relay. There is no application consent step; Chromium may
+present its own Local Network Access prompt. A pending browser permission
+request is not a connection failure. Once connected, the kernel-key challenge
+and bound-client grant are required before any runtime request is sent.
+Reload restores the automatic preference. After an ordinary carrier loss,
+clients keep working over the relay and retry local admission after a bounded
+cooldown. A kernel-key mismatch blocks local attempts until an explicit retry.
+V1 uses literal `ws://127.0.0.1`; a publicly trusted TLS endpoint is a separate
+future contract.
+
+The web Local/Relay indicator is projected only for a target that has completed
+a local kernel-key proof, including a remembered proof on reload. Cloud
+ownership, an issued loopback URL, and an immediate browser error do not prove
+same-machine placement. When a previously proven local kernel is online but
+its socket is immediately refused before reaching the listener, the indicator
+can carry one profile-wide notice suggesting Chrome or Firefox. Browser family
+controls wording only. First-visit Safari locality requires a trusted
+browser-machine association; this protocol does not currently provide one.
+
+MP-08 / MP-11: from protocol 520, relay-addressed detached and native provider
+TUIs automatically attempt direct admission for fresh, id-addressed local
+targets through the short, key-bound terminal grant and renewal contract above.
+Older kernels, alias-only targets, and targets without fresh same-machine
+discovery retain the authenticated relay carrier. A long-lived terminal relay
+token cannot mint or renew a browser lease. Local presence and a matching
+`RelayStatus.daemon_id` over TCP must never substitute for kernel identity proof.
+The TUI Local/Relay projection uses fresh same-machine discovery metadata for
+display only; it does not authorize a transport change. There is no indicator
+or offer for a target absent from that machine's kernel discovery.
+
 Current pushed event contract:
 
 - all pushed events use the `KernelOutgoingFrame::Event` envelope with monotonic `event_id` plus an `event` payload tagged by its `event` string
@@ -843,6 +1012,73 @@ client surface includes:
 - direct managed-context transfer start and status requests plus an explicit
   launch-target request
 - multi-Workspace Project updates and exact slice repository selections
+
+MP-05 / MP-08 / MP-11 owner-managed admission (local 480, relay peer 88)
+adds `ownerManaged` to the same `StartManagedContextTransfer` request. Exactly one
+of `ticket` and `ownerManaged` is allowed; owner-managed requests require
+`interactive: true`. The client supplies only destination identity pins and
+inventory selections. The source kernel derives source identity, context ID and
+canonical plan digest, validates Project/Workspace/worktree ownership and obtains
+a Cloud ticket. A disconnected source refuses the request. The selected destination
+must be an enrolled ordinary kernel owned by the same account/user in the same realm.
+
+MP-08 / MP-11 owner destination bindings are
+`{kind:"owner_managed_machine", machineId, kernelId}`. Plans, import arms,
+persisted operations, authoritative receipts and launch targets retain this binding.
+`environmentId` / `target_environment_id` is absent only for this branch; mixed
+or missing bindings are rejected. The source issues owner tickets with
+`POST /v1/owner-managed-context-tickets` (peer directory at
+`GET /v1/owner-managed-context-tickets/peers`). Consumption, export and import checks
+share `POST /v1/managed-kernels/context/ticket`, discriminated by the
+`ownerManaged`, `ownerManagedExport` or `ownerManagedImport` body; they never use the
+managed-environment authority.
+The target independently validates a Cloud ticket against the encrypted source
+identity and its own enrollment; every arm/begin/chunk/finalize/status operation
+retains the existing capability, identity/key, realm/user, digest, TTL and size checks.
+Chunks remain encrypted kernel-to-kernel relay packets.
+
+MP-08 / MP-11 `source_kernel_without_credentials` is part of the canonical plan
+and package binding. Provider accounts and Git credentials are kernel-forced `none`.
+Its source exporter does not read the credential registry or Vault values. Native source
+confirmation gates packaging and transfer for every owner copy. A selected Project
+uses its native Project review; kernel-only copies use an idle source-owner session
+with an owner-bound, human-only kernel-operation RuntimeInteraction naming the destination
+Machine. Meta delegation, ordinary agents, Host clients and sudo agent turns cannot
+answer this review; the owner terminal can continue or cancel. Without such a session
+the copy is refused with retry guidance. Cancellation or expiry stops export. Environment
+values are omitted and Vault value access is denied for Project review. Kernel payload
+checks reject credential dependencies, Vault snapshots and credential-bearing extension
+files; Project checks reject sealed Project environment values.
+Project files and Git history with recognized secrets, or that the guard cannot
+classify, travel only as Vault-routed artifacts. A file copies as ordinary data only
+when it is strict UTF-8 text (optional BOM, no NUL or binary control) passing the text
+policy for its path, or an allow-listed asset whose extension and signature agree
+(common images, fonts, PDF, zip/gzip, wasm, audio/video) and whose printable runs carry
+no recognized secret. Declared UTF-16/32 text, malformed text, `.json`/`.jsonc` files
+that do not parse (comments and trailing commas are allowed) and other binary files are
+Vault-routed. The review lists their paths and kinds, never contents. The source records
+each artifact in the owner's encrypted Chariox Vault, verifies the read-back and seals it
+to the target, bound to context, source, target, Project and object path. The target
+authenticates that binding, records the artifact in its own encrypted Vault, verifies the
+read-back and only then materializes it in the isolated workspace. Such a copy requires an
+unlocked encrypted Chariox Vault on both kernels. Admission keeps the 16 MiB per-file,
+1 GiB scan and 120 second limits. A write that would exceed the Vault size limit fails
+before the owner's Vault is replaced. Every plaintext artifact is still checked for
+credentials. Only context transfers run this Vault/history review; ordinary Project
+environment adjustments do not. Target import uses an
+isolated target-owned workspace and the existing additive extension publication
+journal/collision checks. It does not replace runtime configuration or credentials.
+
+MP-08 / MP-11 progress and completion use the existing start/status responses.
+Completed owner-managed launch resolution uses the durable context ID/digest receipt
+and owner/realm/key binding; its response has `destination` and omits `environmentId`.
+Each owner copy publishes a fresh workspace and registers it as target Project
+`copy-<contextId>`, so copying an updated Project again adds a Project beside the earlier copy.
+It never reports completion to the managed-environment endpoint. Clients must check
+`owner_managed_context_transfer_v1` on both kernels and local >=480 / relay peer >=88.
+Cloud presence publishes `owner_managed_context_transfer_protocol_version: 1` plus
+the peer protocol version; the older managed-context source marker alone is insufficient.
+Web activation still requires end-to-end acceptance, including target first-login readiness.
 
 Every kernel that implements the direct source side of this contract advertises
 `managed_context_source_protocol_version: 1` in its Cloud relay-presence
@@ -969,7 +1205,7 @@ Current slice-management surface:
 - Protocol v293 and relay peer protocol v30 add kernel-owned Room viewer admission. A Selkies `slice.display_endpoint.get` request must carry `session_id`, `attachment_id`, and `viewer_public_key`; their optional wire representation preserves the legacy one-argument noVNC request. The home kernel accepts a local client or a remote client whose authenticated relay-key thumbprint matches `viewer_public_key`. It rejects service, metaagent, and kernel callers, and verifies attachment membership, attachment owner, persisted Room-to-slice placement, running slice state, and the Selkies backend before contacting the bound worker. The worker independently verifies the authenticated home kernel key plus exact Room and slice provisioner binding before registering a display target. A successful response adds `stream_protocol`, `stream_id`, and `peer_public_key` to the endpoint.
 - Protocol v294 and relay peer protocol v31 add the first human Computer Action, `pointer_click`. The local request derives the human Actor from the authenticated caller, requires that Actor's explicit desktop takeover, validates the current runtime generation and canonical viewport revision, checks coordinates and click count, and admits the mutation through the Room Action ledger. The Action snapshot and history retain typed redacted arguments containing the pointer coordinates, button, click count, and viewport revision. That same argument record and the authenticated Actor define the opaque idempotency key's operation identity. An exact retry returns the original Action state after viewport change or input release and never repeats physical input; a different Actor or payload conflicts. The home sends an accepted Action to the Room's bound worker over the existing authenticated controller route. The worker revalidates the authority envelope and coordinate bounds, then executes the pointer command against the headed desktop without forcing browser focus. Physical Computer input has no transport replay command. If delivery succeeds but its response is lost, the Action fails without automatically clicking again.
 - Each admitted target is an expiring 60-second, key-bound, single-use opening grant. Claiming it creates a separate short active-view lease that only the worker kernel renews while the admitted WebSocket remains attached. Viewer close, relay loss, stream failure, or kernel shutdown drops that lease and reaps the private adapter; reconnect obtains a fresh endpoint and stream identity. Remote display URLs require `wss://`; only an explicitly loopback relay may use `ws://` for local drills. Each encrypted direction has at most 16 queued fragments. Ingress saturation closes the channel instead of silently dropping a sequence number; downstream input waits at most two seconds under backpressure, and cleanup is bounded. The relay may route the outer tunnel and encrypted packet envelopes but cannot decode video or viewer controls. The display channel accepts only read-only video controls; keyboard, pointer, clipboard, settings, resize, and Environment authority remain on normal kernel operations. Released Web decoding and TUI viewer-launch UX remain separate client work and are not implied by this transport checkpoint.
-- Ordinary local Docker slices keep Docker's default container security profiles unless the home user explicitly opts into a narrower exception. `slices.linux.allow_unconfined_seccomp = true` disables only Docker's seccomp profile. `slices.linux.allow_provider_sandbox_compatibility = true` separately disables seccomp, unmasks Docker's system paths, and selects the host-installed AppArmor profile named by `CHARIOX_SLICE_APPARMOR_PROFILE`. Clients must describe the complete grant before enabling it. Hosts that restrict unprivileged user namespaces must load the shipped `chariox-slice-provider.apparmor` policy and select `chariox-slice-provider`; Docker's built-in `unconfined` profile does not override that Ubuntu restriction. Before starting the worker runtime, provider compatibility mode runs a real Bubblewrap namespace probe and fails if the selected Docker security boundary cannot create it. Broker-backed managed hosts may force compatibility mode inside their dedicated rootless Docker daemon for those Docker slices. Explicit local DEV enrollment enables compatibility in its rootful, unmapped Docker engine only when its root-owned enrollment records `providerSandboxCompatibility: true` after installer acknowledgement. Older enrollments without that field retain default security profiles. The complete grant adds SYS_ADMIN, NET_ADMIN and SYS_PTRACE, disables seccomp, unmasks system paths and uses the selected AppArmor profile (default unconfined); container uid 0 maps to host uid 0, including the setuid Bubblewrap helper. Ordinary local slices still require the user configuration opt-in. This slice-only inner boundary does not apply to a provider launched directly by a Path-1 disposable worker VM, which uses the ordinary kernel provider path with no Bubblewrap requirement. The managed broker joins only the rootless daemon's user and mount namespaces, pins each validated publication directory by device and inode, and publishes it as a stable broker-owned bind mount. Docker never receives the original publication path or a `/proc` magic link. Durable handle records let the broker reuse mounts after its own restart and recreate them after a daemon restart; slice destruction removes the records and mountpoints.
+- MP-01 / MP-08 / MP-10 / MP-11: ordinary local Docker slices enable `slices.linux.allow_provider_sandbox_compatibility` by default so official providers can create their inner namespaces; users may explicitly set it to `false` and recreate the slice to retain Docker's default container security profiles. `slices.linux.allow_unconfined_seccomp = true` disables only Docker's seccomp profile. `slices.linux.allow_provider_sandbox_compatibility = true` separately disables seccomp, unmasks Docker's system paths, and selects the host-installed AppArmor profile named by `CHARIOX_SLICE_APPARMOR_PROFILE`. The configuration schema describes the complete default grant. Hosts that restrict unprivileged user namespaces must load the shipped `chariox-slice-provider.apparmor` policy and select `chariox-slice-provider`; Docker's built-in `unconfined` profile does not override that Ubuntu restriction. Before starting the worker runtime, provider compatibility mode runs a real Bubblewrap namespace probe and fails if the selected Docker security boundary cannot create it. Broker-backed managed hosts may force compatibility mode inside their dedicated rootless Docker daemon for those Docker slices. Explicit local DEV enrollment enables compatibility in its rootful, unmapped Docker engine only when its root-owned enrollment records `providerSandboxCompatibility: true` after installer acknowledgement. Older enrollments without that field retain default security profiles. The complete grant adds SYS_ADMIN, NET_ADMIN and SYS_PTRACE, disables seccomp, unmasks system paths and uses the selected AppArmor profile (default unconfined); container uid 0 maps to host uid 0, including the setuid Bubblewrap helper. Fresh and omitted local settings use compatibility mode; an explicit `false` remains an opt-out. Managed hosts retain their dedicated rootless Docker boundary. This slice-only inner boundary does not apply to a provider launched directly by a Path-1 disposable worker VM, which uses the ordinary kernel provider path with no Bubblewrap requirement. The managed broker joins only the rootless daemon's user and mount namespaces, pins each validated publication directory by device and inode, and publishes it as a stable broker-owned bind mount. Docker never receives the original publication path or a `/proc` magic link. Durable handle records let the broker reuse mounts after its own restart and recreate them after a daemon restart; slice destruction removes the records and mountpoints.
 - Slice lifecycle status is `stopped`, `starting`, `stopping`, `running`, or `unhealthy`. Start must only report `running` after the worker kernel has been discovered; otherwise the slice remains `unhealthy` and diagnostics are available through `slice.logs.get`.
 - Slice records also carry display-only operation diagnostics: `last_operation`, `last_operation_status`, `last_error`, and `last_operation_at_ms`. The kernel updates these on lifecycle operations and restart reconciliation; clients may render them in status/doctor views, but must continue to treat `status` as the lifecycle state and audit/log records as the detailed diagnostic source.
 - Daemon health `slice_lifecycle.issues` identifies each unhealthy slice or failed slice operation by slice id/name, status, last operation/status/error, sessions, agents, and worktree so clients can point users directly to the affected slice before they open logs/audit or restart/delete it. `slice_lifecycle.provider_auth_issues` separately identifies attached-agent slices with no provider account summaries or with `unknown`/`not_configured` provider auth, including provider, alias/identity, sessions, agents, and worktree. Clients should surface this from kernel health and point users to `/slice doctor`, `/slice audit`, and slice auth login/import before they send more provider prompts.
@@ -1194,8 +1430,13 @@ value, so their minimum supported protocol version does not change.
 Local daemon protocol v308 adds `SetProviderAccountCredential`. An attached
 client sends a provider, stable account profile, hidden credential value, and
 an explicit overwrite flag. The kernel verifies account ownership, requests a
-Chariox Vault unlock through the existing runtime interaction when needed, and
-atomically writes the secret plus provider-only credential policy. Command
+Chariox Vault unlock through the existing runtime interaction when needed, verifies
+the supplied Claude token with one bounded official model turn and no tools, and atomically
+writes the secret plus provider-only credential policy. The successful verification records
+the account authentication observation, so both `claude` and `claude-p` can
+launch through the same stored credential. Subscription usage windows and native token-presence status are not authentication evidence. A failed check leaves the prior secret
+and account observation unchanged. Account status and refresh verify the current stored token through the live
+runtime Vault configuration; native-file login state cannot substitute for it. Command
 history and debug output redact the value. No client currently requires this
 operation during normal session attachment, so minimum supported protocol
 versions do not change.
@@ -2976,8 +3217,9 @@ Workflow trigger and deployment direction:
   `critical_approval.passkey` event names it as `connection_class` (null for
   the kernel's own callers). A `RespondToInteraction` `passkey` from a
   `kernel_agent`, `host`, `relay_peer` or `external_agent` connection is
-  refused with `PASSKEY_NOT_ACCEPTED` before verification: it is not audited
-  and does not count toward the owner's limit. Nothing else changes; which
+  refused with `PASSKEY_NOT_ACCEPTED` before verification (an `external_agent`
+  on the Unix socket gets `kernel_access_human_only`, EXT-UX-05): it is not
+  audited and does not count toward the owner's limit. Nothing else changes; which
   connections answer as terminals is unchanged until enforcement.
 - protocol 403: passkey popups (kernel access plan D1). Every passkey prompt
   is a kernel-owned pending interaction; today each critical approval is one.
@@ -3028,7 +3270,7 @@ Workflow trigger and deployment direction:
   An unapproved Unix peer can only send `RequestKernelAccess` with
   `holder_pid` and optional `lifetime_minutes` (protocol 451 removes `session_id`; old session-bearing requests are rejected). The holder
   must be the peer or an OS-verified ancestor. The kernel raises an owner-only
-  passkey popup naming its verified executable, pid, local-kernel authority, and lifetime. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
+  passkey popup. Its copy is one short kernel-written question (grant: "<name> (an external agent) wants access to Chariox. Allow?"; extension: "<name>'s access ends in N minutes. Extend?"); `<name>` is only a harness recognised by exact configured path, otherwise "An external agent". The popup shows no pid, path, process start, version or scope; those stay in `requester` and the audit stream. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
   `RespondToInteraction` on this routing id returns `KernelAccessDecisionResponded { interaction_id }`, with no session projection.
   Grant and extension prompts have kind `access_grant` or `access_extension`,
   `lifetime_minutes`, and `max_lifetime_minutes`. Protocol 470 adds an optional
@@ -3041,8 +3283,8 @@ Workflow trigger and deployment direction:
   executable (including Codex's official npm native package); unknown paths
   omit it. This field is attribution, not vendor/signature attestation or new
   authority. Text remains display-only, with quoted/escaped executable paths;
-  clients must never parse requester identity from it. TUI labels use the
-  structured object and show identity unavailable for old kernels. New access
+  clients must never parse requester identity from it. Clients do not render it
+  in the popup. New access
   requests and kernel-wide approval replies require protocol 470; refusals
   remain supported on protocol 451 and legacy session-scoped replies retain
   their existing route. Other client/relay/native minimums are unchanged.
@@ -3111,6 +3353,16 @@ Workflow trigger and deployment direction:
   Terminal controls are `chariox access list`,
   `chariox access revoke <id|--all>`, `/kernel access list`, and
   `/kernel access revoke <id|all>`.
+
+  EXT-UX-05: a Unix peer's refused request names its reason, in the error `code`
+  with one plain sentence as `message` (no PID, path or grant id; the
+  serialized error shape is unchanged): `kernel_access_human_only` (critical
+  approval, passkey, secret, authority or remote-kernel action: owner-only),
+  `kernel_access_not_covered` (the peer is not the approved holder or one of its
+  sub-processes, including a sibling that names the holder's PID),
+  `kernel_access_ended` (the grant expired or was revoked; the holder, or its
+  sub-process, asks again) and `kernel_access_already_granted` (a second access
+  request while covered).
 
   Kernel user config settings are live runtime policy. Set/unset is supported;
   unset restores the default. An extension popup is raised at the notice
@@ -3527,7 +3779,7 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
 
-### Workflow completion notifications — local 452 / relay peer 82 (MP-08 / MP-10 / MP-11)
+### Workflow completion notifications — local 452 / relay peer 82 (main: local 491 / relay peer 101; MP-08 / MP-10 / MP-11)
 
 Private same-user workflows are a second notification source kind beside Apps.
 The kernel emits successful final output or failure bare status once per run, with
@@ -3614,3 +3866,161 @@ existing terminal/passkey gate and shared pending-interaction authority;
 a detached passkey popup has an empty session routing field. Room App views
 retain their existing protocol. See [App views without a session](MULTIDOMAIN_APP_VIEWS.md)
 for host isolation, lifecycle and migration. No relay-peer shape changes.
+
+### Kernel Cloud ownership, protocol 491 (MP-08 / MP-10 / MP-11)
+
+Ordinary Cloud enrollment is kernel-scoped. `CloudRelayProfile` exposes `kernel_id` and `kernel_enrolled`, and omits credentials and human-session fields. `CloudRelayConnected` exposes status/profile, without the kernel relay token. `ResolveKernelClientConnectionRequest.public_key_thumbprint` binds an owner's exact-target terminal grant to the receiving CLI identity. Remote requests must prove the claimed encrypted sender key. Kernel owner checks apply below every client; shared-session membership does not confer directory or enrollment authority. See [kernel ownership auth](KERNEL_OWNERSHIP_AUTH.md) for persistence, migration and acknowledged unlink semantics. The embedded local response union is fenced by coordinator-allocated relay peer protocol 101.
+
+
+### Cloud-free terminal pairing, protocol 491 (MP-08 / MP-10 / MP-11)
+
+`TerminalPairingLinkJoined.kernel_pairing=true` confirms that this exact kernel admitted the terminal's encryption key. A self-hosted join returns no Cloud relay JWT; the operator token continues to admit relay transport. The encrypted request sender must match the requested SHA-256 key pin. The kernel redeems only a hash of a pairing link it issued, bound to its kernel ID, relay URL, terminal ID and expiry. The same key may retry; a different key cannot consume an already redeemed link. Grants live in kernel-private `terminal-grants.json` (0600), and have no fixed lifetime. The terminal's existing private encryption key is its proof; no Cloud session or refresh credential is involved.
+
+Every self-hosted terminal request, subscription, event emission and replay checks the current kernel grant. Revocation immediately denies new requests and stops forwarding events, including on existing subscriptions. The relay remains transport only; relay peer protocol 101 carries the numbered local response union. Unpaired transport clients may redeem a kernel-issued terminal link, but may not obtain runtime inventory or subscribe. Cloud terminals retain their existing scoped relay admission path. CLI profiles reuse their private key on restart.
+
+
+Scoped self-hosted relays require separate operator-issued KERNEL and CLIENT transport tokens. A terminal pairing link replaces a scoped kernel transport token with the noncredential marker `operator-client-token-required`. The terminal supplies its CLIENT token with `--relay-token-env`; explicit transport credentials take precedence in either flag order. The kernel-issued key grant provides runtime admission, without giving the terminal a scoped kernel credential or issuer secret.
+
+A local-dev browser terminal (`CHARIOX_RELAY_URL`/`CHARIOX_RELAY_TOKEN`, no Cloud profile) is paired by the trusted loopback local browser service (the `chariox-cloud` local-browser terminal server on `:44120`). On bootstrap it pairs the browser's persistent, non-extractable encryption key through the owner-authenticated loopback kernel socket (`CloudRelayStatus` → `ListPairedClients` → `CreateTerminalPairingLink` → `JoinTerminalPairingLink`), reusing an existing grant for the same key; pairing is serialized per kernel. A browser that cannot store its key pairs it as `Local browser session`, and the service revokes earlier `Local browser session` grants, so only the newest unstored key stays admitted. It skips pairing for non-loopback targets, Cloud-enrolled kernels, and kernels below protocol 491, which do not require grants. A revoked key is refused, not re-paired; revoke a browser with the normal paired-client revoke command (`client revoke <client-id>`).
+
+### Provider account portability preflight, protocol 491 (MP-08 / MP-10 / MP-11)
+
+`PreflightProviderAccountPortability` accepts only `providerAccounts` selection
+metadata. The ordinary kernel owner gate applies to local and relay callers;
+shared-session membership, another realm, and kernel peers cannot use it. The
+kernel checks the selected accounts through the existing provider-native managed
+context exporter and discards the exported bytes. Success is
+`ProviderAccountPortabilityPreflightPassed: {}`. Neither request nor response
+contains credential values or human Cloud authority.
+
+The signed-in terminal runs this preflight on its source kernel before selected
+provider-account creation or reimage spends human Cloud authority, including
+before the reimage STOP. Cloud HTTP still uses the terminal's private, renewable
+client session. Export, transfer, import and launch remain kernel-owned and
+revalidate the actual selected credentials; an acknowledgement is not a durable
+transfer capability. Unsupported kernels fail with the protocol-491 diagnostic
+before Cloud mutation. This addition uses the coordinator-allocated protocol
+491 with relay peer 101 for the embedded local response union.
+
+The focused boundary drill is the Rust test
+`provider_account_portability_websocket_drill`: it sends actual terminal
+WebSocket frames through the ordinary router and provider-native export paths
+with disposable synthetic Codex, Claude and OpenCode profiles. It establishes
+local protocol/portability behavior, not live provider login, provisioning or
+fresh-machine MP-10 acceptance.
+### MP-07 / MP-08 / MP-11 owner-managed SSH machines (local 479)
+
+`AddSshMachine { host, install_id?, port?, release? }` and
+`RemoveSshMachine { install_id }` use the owning kernel's normal admitted
+request transport. Only that kernel's owner may execute them; session guests,
+peers and external agents do not receive enrollment/install authority. The
+kernel selects an approved signed release from its local operator catalogue
+and invokes the user's SSH config/agent. Client requests contain no release
+paths, trust pins, SSH credentials, enrollment tickets or provider credentials.
+
+The source requests a user-bound single-use `owner_managed_machine` ticket
+from Cloud using its per-kernel credential. The separate owner-managed target
+bootstrap receives it solely on SSH stdin and shares device enrollment's
+kernel/machine/public-key admission and private credential storage. Managed VM
+bootstrap admission remains unchanged. The target installs a marked per-user
+root, starts only its own `systemd --user` unit, and must report authenticated
+local status with a relay connection before returning ready. The selected
+kernel port and its companion MCP port (`port+1`) must both be available.
+
+`SshMachine { machine: { install_id, status, kernel_id, machine_id,
+release_digest, state_retained } }` exposes only a deployment receipt. A repeat
+with the same ID/release/port reuses the enrolled identity; another release
+requires an explicit later upgrade. Remove stops/uninstalls the owned service
+and release tree while retaining private kernel state and directory identity.
+No VM provisioning/deletion or runtime proxy is involved. Relay peer protocol
+inherits 73 from the ownership base; native/web minimums are unchanged for existing behavior. The SSH
+commands themselves require a local-479-capable kernel/client pair.
+
+MP-07 / MP-08 / MP-11 self-setup reuses the owner-managed install core and
+existing device enrollment; local 479/relay 73 are retained. Generic Setup
+creates a separate user service/root/ports and invokes a pre-daemon stdin
+bootstrap. Kernel device flow uses the existing `KERNEL` start/poll exchange,
+public verification URL/code and #888 key/machine/owner profile admission.
+Browser codes use the same ticket poll variant on a fresh independent identity;
+no ticket travels in CLI argv/environment/files or terminal requests. The
+ambiguous browser-code case on an existing enrolled root fails closed. Human
+terminal login and kernel enrollment retain separate credentials. Cloud remains
+approval/ticket/directory control plane; authenticated local readiness and the
+ordinary encrypted relay/runtime paths remain kernel-owned. See
+[Setup implementation](../apps/setup/README.md) for lifecycle and evidence limits.
+
+### Encrypted subscription rebinding (local protocol 491; MP-08 / MP-11)
+
+A relay subscription ID identifies one encrypted event binding, not the logical
+session or attachment. Each fresh binding gets a distinct ID, even when the
+client retains its relay identity. Session reconnect retains the acknowledged
+event cursor and session/attachment IDs. Inventory reconnect requests a current
+baseline because its events are not replayable. Concurrent UI/recovery callers
+join one binding attempt; a live binding on the same socket is reused. Clients
+remove the previous ID from event lookup before publishing the new key. Late
+old-ID ciphertext cannot decrypt with, reject, or advance the replacement stream.
+The relay envelope and peer frames are unchanged.
+
+Focused regression drills: `node --test
+packages/kernel-client/dist/ipc-relay-sender-pinning.test.js` after building the
+kernel client, and Cloud's `browser-kernel-subscription-rebind.test.js` after
+compilation. The latter uses real WebCrypto to deliver old ciphertext during a
+replacement ACK and races two resume callers. Real acceptance additionally
+requires hosted WSS drop/blip/reconnect at DPR 1/2 and the built TUI, retained
+lists, cache reconciliation, unique bindings and zero decrypt failures.
+
+### Retired kernel human Cloud controls, protocol 491 (MP-08 / MP-11)
+
+Kernel enrollment stores a kernel credential and cannot authorize human account
+operations. The old pairing, session invite/member/collaborator, managed-machine
+control and disposable-worker Cloud control requests are retired at the allocated
+490-to-491 ownership boundary. Their wire variants remain recognizable for an
+existing `Error` response with `code=client_cloud_authority_required`, rather than
+a raw deserialization failure. No request/response shape or protocol number is
+added by this correction. Context transfer execution, portability preflight,
+enrollment, terminal key grants and runtime operations remain kernel-owned.
+
+Web uses its authenticated browser account for these Cloud controls. The shared
+shell accepts `ShellExecutorDeps.cloudAccountClient`; embedding clients supply
+their private authenticated Cloud adapter. The real TUI wires its terminal's
+`CloudClient` into that seam. With no client login, shared `cloud` commands report
+that login is required before creating any local invite. `/relay cloud pair` and
+`pair-machine` are retired; use `/client invite` for a terminal and independent
+`/cloud link` enrollment on the receiving kernel. Neither caller credentials nor
+human session tokens are sent to or persisted by the kernel.
+
+### BYOM C5 — local 520 / relay peer 128 (MP-05 / MP-08 / MP-10 / MP-11)
+
+Coordinator allocation for the main-merged owner-managed contract. Local 520
+binds SSH machine add/remove, interactive owner-managed context admission, and
+credential-free destination receipts together with main's local 491 contract.
+Peer 128 binds owner-managed context arming and the merged embedded local
+request/response unions. C4's experimental local 480 / peer 88 and the interim
+main-merged local 491 / peer 101 are historical candidates, not C5 identities.
+
+The owner-context request helpers require local >=520 / peer >=128 and the
+`owner_managed_context_transfer_v1` capability. The Copy flow rejects older or
+unknown versions before sending the request, with an upgrade diagnostic; general
+Web/native minimums remain unchanged. Local snapshots, relay snapshots and
+version assertions pin this allocated generation; payload-only hashes retain
+their values except snapshots that explicitly serialize a peer protocol number.
+The focused real Web/TUI Copy/restart drill must use the exact C5 kernel and
+client, through hosted WSS, and record receiving protocol and owner binding.
+Signing input checks do not establish installed-target or multi-hour acceptance.
+
+### MP-08 / MP-11 BY-05 owner-copy refusal projection
+
+Owner-context ticket consumption returns distinct Cloud error codes
+`owner_context_ticket_revoked`, `authorization_expired`, and
+`owner_context_ticket_already_used` after admitting the exact owner/source.
+The source kernel maps these to `owner_context_authorization_revoked`,
+`owner_context_authorization_expired`, and
+`owner_context_authorization_already_used` in the existing string-valued
+`failureCode`, with a bounded actionable `failureMessage` and no retry.
+Revoked or consumed status takes precedence over the original ticket TTL.
+Reauthorization of the consumed operation for transfer recovery remains distinct
+from replay of the one-use capability. Clients cannot supply that capability.
+Web Copy and TUI `/kernel copy-status <context-id>` project the same authoritative
+outcome. Refusals occur before packaging or publication; no bytes are copied.
+The existing C5 allocation remains local 520 / peer 128: this correction changes
+error strings and client rendering, with no new serialized fields or variants.

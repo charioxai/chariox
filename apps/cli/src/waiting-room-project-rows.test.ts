@@ -85,3 +85,17 @@ function projectSummary(): WaitingRoomProjectSummary {
     pending_collaboration_invite_count: 2,
   }
 }
+
+// MP-08 / MP-10 / MP-11: each project has an owning-kernel line.
+test("ENV-UX-03 TUI shows human kernel below each project",()=>{
+ const project=projectSummary();const rows=waitingRoomProjectRows({focus:"project-entry",projectIndex:0},[project],[],{inventoryLoading:false,loadingText:"loading",titleWidth:24,kernelLabel:"Laptop kernel"})
+ const index=rows.findIndex(r=>r.id===`project-entry:${project.id}`)
+ assert.equal(rows[index+1]?.title,"Kernel: Laptop kernel");assert.equal(rows[index+1]?.value,"");assert.equal(rows[index+1]?.selectable,false)
+})
+
+// MP-08 / MP-10 / MP-11: renderer must retain ownership despite wide inventory columns.
+test("ENV-UX-03 kernel alias stays on-screen with long inventory titles", async()=>{
+ const {formatWaitingRoomMenuRow}=await import("./waiting-room-menu-row.js")
+ const rows=waitingRoomProjectRows({focus:"project-entry",projectIndex:0},[projectSummary()],[],{inventoryLoading:false,loadingText:"loading",titleWidth:200,kernelLabel:"Laptop kernel"})
+ assert.match(formatWaitingRoomMenuRow(rows.find(r=>r.id.startsWith("project-kernel:"))!,80),/Kernel: Laptop kernel/)
+})

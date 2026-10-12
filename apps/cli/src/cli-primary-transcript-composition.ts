@@ -1,3 +1,4 @@
+import { createWaitingRoomBootstrapDefaultsController } from "./waiting-room-bootstrap-defaults.js"
 import { onMount } from "solid-js"
 
 import { createAttachedSessionPrimeController } from "./attached-session-prime-controller.js"
@@ -19,6 +20,8 @@ import {
   buildNoSessionRenderable,
   buildWorkflowOutlineRenderable,
 } from "./workspace-renderables.js"
+
+import { relayCloudProfile } from "./preferences.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -58,12 +61,15 @@ export type CliPrimaryTranscriptCompositionDeps = {
   workflowInspector: AnyFn
   workspaceShellEntries: AnyFn
   workspaceShellContext: AnyFn
+  waitingRoomLaunchOwnershipRevision?: AnyFn
+  applyWaitingRoomBootstrapDefaults?: AnyFn
   waitingRoomState: AnyFn
   availableSessions: AnyFn
   waitingRoomProjects: AnyFn
   providerCatalogState: AnyFn
   waitingRoomCloudNotice: AnyFn
   waitingRoomInventoryStatus: AnyFn
+  preferencesState: AnyFn
   relayStatusState: AnyFn
   remoteMachinesState: AnyFn
   remoteKernelsState: AnyFn
@@ -134,6 +140,12 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     }
   }
   const primaryTranscriptRenderController = createPrimaryTranscriptRenderController({
+    // A zero-length click selection holds nothing worth preserving.
+    preserveTextSelection: () => {
+      const selection = deps.renderer.getSelection()
+      return !deps.isAttached() && Boolean(selection && (selection.isDragging || selection.getSelectedText()))
+    },
+    textSelectionView: () => !deps.isAttached(),
     getScrollbox: deps.transcriptScrollboxRefController.current,
     getEmptyRenderable: deps.primaryTranscriptRuntimeStore.getEmptyRenderable,
     setEmptyRenderable: deps.primaryTranscriptRuntimeStore.setEmptyRenderable,
@@ -175,6 +187,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
           : buildEmptyTranscriptRenderable(deps.renderer))
       : buildNoSessionRenderable(deps.renderer, deps.waitingRoomState(), deps.availableSessions(), deps.providerCatalogState(), {
         ...waitingRoomRemoteTargets(),
+        collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
         cloudNotice: deps.waitingRoomCloudNotice(),
         inventoryStatus: deps.waitingRoomInventoryStatus(),
         loadingFrame: deps.waitingRoomState().introStep,
@@ -302,8 +315,15 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
   })
   const primeAttachedSessionBinding = attachedSessionPrimeController.prime
 
+  const bootstrapDefaultsController = createWaitingRoomBootstrapDefaultsController({
+    state: deps.waitingRoomState,
+    ownershipRevision: deps.waitingRoomLaunchOwnershipRevision ?? (() => 0),
+    isAttached: deps.isAttached,
+    apply: (state) => deps.applyWaitingRoomBootstrapDefaults?.(state),
+  })
   const deferredBootstrapController = createDeferredBootstrapController({
     getDeferred: () => deps.bootstrap.deferred,
+    applyWaitingRoomDefaults: bootstrapDefaultsController.apply,
     currentAttachmentSessionId: () => deps.attachmentState()?.session_id ?? null,
     currentTranscriptEntryCount: () => deps.transcriptEntryProjectionController.renderableEntries().length,
     entryCounter: deps.entryCounter,
@@ -353,6 +373,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     reconcileMountedTranscript,
     updateTranscriptEntry,
     rebuildTranscript,
+    flushDeferredRebuild: primaryTranscriptRenderController.flushDeferredRebuild,
     replaceTranscriptEntries,
     prependTranscriptEntries,
     primeAttachedSessionBinding,

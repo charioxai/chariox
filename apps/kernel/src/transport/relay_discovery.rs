@@ -20,22 +20,7 @@ use chariox_relay::protocol::{
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 
-/// Prepare a metadata-only admission using the existing paired Cloud path.
-/// Keep the kernel's runtime token and Cloud profile out of the returned
-/// temporary config so callers can reuse this admission for one inventory scan.
-pub(crate) async fn metadata_config(config: &DaemonConfig) -> Result<DaemonConfig, DaemonError> {
-    let mut discovery = config.clone();
-    if let Some(profile) = config.cloud_relay.as_ref() {
-        let issued = crate::runtime::cloud_api_client::issue_cloud_relay_inventory_discovery_token(
-            profile,
-            &config.daemon_id,
-        )
-        .await?;
-        discovery.relay_token = Some(issued.token);
-        discovery.cloud_relay = None;
-    }
-    Ok(discovery)
-}
+pub(crate) mod authorization;
 
 static RELAY_METADATA_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RELAY_METADATA_ATTEMPTS: usize = 3;
@@ -564,8 +549,6 @@ async fn query_relay_once_body(
     query: RelayMetadataQuery,
     #[cfg(test)] mut trace: Option<&mut TemporaryPeerTestTrace>,
 ) -> Result<RelayEnvelope, DaemonError> {
-    let discovery_config = metadata_config(config).await?;
-    let config = &discovery_config;
     let relay_url = config
         .relay_url
         .clone()
@@ -573,13 +556,7 @@ async fn query_relay_once_body(
             operation: "relay_metadata_query",
             message: "relay_url is not configured".to_string(),
         })?;
-    let relay_token = config
-        .relay_token
-        .clone()
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "relay_metadata_query",
-            message: "relay_token is not configured".to_string(),
-        })?;
+    let relay_token = authorization::metadata_token(config).await?;
     let request_timeout = Duration::from_millis(config.relay_request_timeout_ms);
     #[cfg(test)]
     if let Some(trace) = trace.as_deref_mut() {
@@ -789,35 +766,6 @@ mod tests {
     use tokio_tungstenite::accept_async;
 
     #[tokio::test]
-    async fn hosted_metadata_does_not_fall_back_to_runtime_admission() {
-        let mut config = DaemonConfig::for_tests();
-        config.relay_url = Some("wss://127.0.0.1:1".into());
-        config.relay_token = Some("synthetic-kernel-runtime-token".into());
-        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
-            machine_id: Some("paired-machine".into()),
-            ..Default::default()
-        });
-        let error = query_relay_once(&config, RelayMetadataQuery::ListLiveMachines)
-            .await
-            .expect_err("failed scoped discovery must reject before opening a relay socket");
-        assert!(matches!(
-            error,
-            DaemonError::LocalTransport {
-                operation: "issue cloud relay inventory discovery token",
-                ..
-            }
-        ));
-        assert_eq!(
-            config.relay_token.as_deref(),
-            Some("synthetic-kernel-runtime-token")
-        );
-        assert!(
-            config.cloud_relay.is_some(),
-            "runtime admission must remain intact"
-        );
-    }
-
-    #[tokio::test]
     async fn metadata_query_rejects_response_for_another_request() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -930,3 +878,6 @@ mod tests {
             .expect("metadata websocket server should finish");
     }
 }
+
+#[cfg(test)]
+mod authorization_tests;

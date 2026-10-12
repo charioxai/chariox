@@ -47,11 +47,7 @@ impl KernelRuntimeState {
         }
         if matches!(request, LocalDaemonRequest::RespondToInteraction(answer) if answer.passkey.is_some())
         {
-            return Err(DaemonError::LocalTransport {
-                operation: "critical approval",
-                message: "PASSKEY_NOT_ACCEPTED: only a Chariox terminal can submit the passkey"
-                    .into(),
-            });
+            return Err(Refusal::HumanOnly.error());
         }
         self.sweep_kernel_access();
         let grant = self
@@ -119,9 +115,7 @@ impl KernelRuntimeState {
             } else {
                 state.suppressed_denials += 1;
             }
-            return Err(error(
-                "external access cannot answer approvals, change authority, disclose secrets or reach a remote kernel",
-            ));
+            return Err(Refusal::HumanOnly.error());
         }
         Ok(())
     }

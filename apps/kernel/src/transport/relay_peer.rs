@@ -102,13 +102,19 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version70 combines Apps Phase1 and autonomous Room observation contracts (MP-08/MP-10).
 /// MP-08/MP-10/MP-11: version 90 negotiates bounded stripes over the multidomain and main worker shapes.
 /// Older worker contracts are rejected before dispatch.
+/// Version 101 (main) binds the embedded local response union to local protocol 491,
+/// restores owner-private workflow notifications to the Browser/Computer peer
+/// union and pairs exact home-prompt cancellation admission (MP-08/MP-10/MP-11).
 /// Version 102 reconciles the agent-model union and its leased watcher contract (MP-08/MP-09/MP-10/MP-11).
 /// Version 114 integrates the 102 agent-model/leased-watcher union, main's
 /// identity-preserving renewal and the native display binary-event transport
-/// (MP-08/MP-09/MP-10/MP-11). Generated consumers follow this allocated version.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 114;
-/// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
-/// independently of a relay's ability to downgrade its binary transport.
+/// (MP-08/MP-09/MP-10/MP-11), and includes main's 101 kernel ownership,
+/// waiting-room and Room workflow contracts (#974). Generated consumers follow
+/// this allocated version.
+/// Version 128 binds owner-managed destinations in context import arm/receipt
+/// shapes to local protocol 520 (landing 2026-10-14; branch-only 117 was never
+/// released; MP-08/MP-11).
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 128;
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
@@ -205,6 +211,8 @@ pub struct RelayManagedContextImportedRepository {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayManagedContextImportReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
     pub transfer_id: String,
     pub archive_sha256: String,
     pub plan_digest: String,
@@ -1024,7 +1032,10 @@ pub enum RelayPeerRequest {
     },
     ArmManagedContextImport {
         plan: crate::managed_context::package::ManagedContextPlanBinding,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         target_environment_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
         target_kernel_id: String,
         target_key_thumbprint: String,
         capability: RelayManagedContextCapability,
@@ -2156,7 +2167,25 @@ mod project_environment_export_shapes {
 }
 
 #[cfg(test)]
-mod workflow_notification_82_shapes {
+mod owner_managed_context_shapes {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    #[test]
+    fn mp08_mp11_owner_managed_arm_shape_requires_peer_117() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"arm_managed_context_import","plan":{"contextId":"context","planDigest":"digest","destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"kernelContext":"source_kernel_without_credentials","development":{"kind":"empty"},"providerAccounts":{"kind":"none"},"gitCredentials":{"kind":"none"}},"destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"target_kernel_id":"kernel","target_key_thumbprint":"thumbprint","capability":"capability","archive_sha256":"archive","archive_size_bytes":128}"#).unwrap();
+        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), value);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
+            "972bfa82e0e37d399f829a7cca14b7260100b207c610d86ccc2c0039eaab6bf4"
+        );
+        assert!(value.get("target_environment_id").is_none());
+    }
+}
+
+#[cfg(test)]
+mod workflow_notification_128_shapes {
     use super::*;
     use crate::local::*;
     use sha2::{Digest, Sha256};
@@ -2196,26 +2225,26 @@ mod workflow_notification_82_shapes {
         };
         let requests = vec![
             RelayPeerRequest::ListWorkflowNotificationSources {
-                protocol_version: 82,
+                protocol_version: 128,
             },
             RelayPeerRequest::SubscribeWorkflowNotifications {
-                protocol_version: 82,
+                protocol_version: 128,
                 source_workflow_ref: "source".into(),
                 target_ref: sub.clone(),
             },
             RelayPeerRequest::DeliverWorkflowNotification {
-                protocol_version: 82,
+                protocol_version: 128,
                 subscription_id: "sub".into(),
                 envelope: env,
             },
             RelayPeerRequest::UnsubscribeWorkflowNotifications {
-                protocol_version: 82,
+                protocol_version: 128,
                 subscription_id: "sub".into(),
             },
         ];
         let responses = vec![
             RelayPeerResponse::WorkflowNotificationSources {
-                protocol_version: 82,
+                protocol_version: 128,
                 sources: vec![WorkflowNotificationSourceSummary {
                     source_id: "source".into(),
                     kernel_id: "kernel".into(),
@@ -2236,7 +2265,7 @@ mod workflow_notification_82_shapes {
         let wire = serde_json::json!({"requests":requests,"responses":responses});
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-            "9851f534c590df1a98d61e1cd5090eab2f167e08da41ad42f37f14efd09a54ec"
+            "66d568554856f2038651d28e63ff0f35e1d10dc93831fdbca44fe46420a630c2"
         );
     }
 }

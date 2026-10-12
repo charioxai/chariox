@@ -8,6 +8,8 @@ export type PendingKernelRequest = {
   timeout: NodeJS.Timeout | null
   relayDecryptResponse: ((payload: EncryptedRelayPayload) => string) | null
   lane: KernelSocketLane
+  stallTimeoutMs: number
+  deadlineMs: number
 }
 
 export type RegisteredKernelRequest<TResponse> = {
@@ -25,25 +27,21 @@ export class KernelPendingRequestRegistry {
     requestId: string,
     lane: KernelSocketLane,
     timeoutMs = this.timeoutMs,
+    maximumWaitMs = timeoutMs,
   ): RegisteredKernelRequest<TResponse> {
     const promise = new Promise<TResponse>((resolve, reject) => {
       // Zero disables the response timer for kernel-owned authorization waits.
-      const timeout = timeoutMs === 0 ? null : setTimeout(() => {
-        const pending = this.pending.get(requestId)
-        if (!pending) {
-          return
-        }
-        this.pending.delete(requestId)
-        pending.reject(new LocalIpcError("handle kernel response", "timed out", "request_timeout", true))
-      }, timeoutMs)
-
-      this.pending.set(requestId, {
+      const pending: PendingKernelRequest = {
         resolve: resolve as (value: unknown) => void,
         reject,
-        timeout,
+        timeout: null,
         relayDecryptResponse: null,
         lane,
-      })
+        stallTimeoutMs: timeoutMs,
+        deadlineMs: Date.now() + Math.max(timeoutMs, maximumWaitMs),
+      }
+      this.pending.set(requestId, pending)
+      if (timeoutMs !== 0) this.armTimeout(requestId, pending)
     })
 
     return {
@@ -61,6 +59,27 @@ export class KernelPendingRequestRegistry {
         }
       },
     }
+  }
+
+  // MP-08 / MP-10 / MP-11: chunks precede encrypted request correlation.
+  // Validated progress refreshes only this socket lane's stall timers, never
+  // the absolute request deadline or kernel-owned authorization waits.
+  noteTransportProgress(lane: KernelSocketLane): void {
+    for (const [requestId, pending] of this.pending) {
+      if (pending.lane === lane && pending.stallTimeoutMs !== 0) {
+        if (pending.timeout) clearTimeout(pending.timeout)
+        this.armTimeout(requestId, pending)
+      }
+    }
+  }
+
+  private armTimeout(requestId: string, pending: PendingKernelRequest): void {
+    const remainingMs = Math.max(0, pending.deadlineMs - Date.now())
+    pending.timeout = setTimeout(() => {
+      if (this.pending.get(requestId) !== pending) return
+      this.pending.delete(requestId)
+      pending.reject(new LocalIpcError("handle kernel response", "timed out", "request_timeout", true))
+    }, Math.min(pending.stallTimeoutMs, remainingMs))
   }
 
   take(requestId: string): PendingKernelRequest | null {

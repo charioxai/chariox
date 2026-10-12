@@ -56,7 +56,7 @@ pub fn import_development_context(
     import_development_context_with_options(
         request,
         MAX_CHECKOUT_BYTES_PER_PROJECT,
-        MAX_MATERIALIZED_ENTRIES_PER_PROJECT,
+        u64::MAX,
         None,
         None,
     )
@@ -71,7 +71,7 @@ pub(crate) fn import_development_context_with_publication(
     let (_, receipt) = import_development_context_with_options(
         request,
         MAX_CHECKOUT_BYTES_PER_PROJECT,
-        MAX_MATERIALIZED_ENTRIES_PER_PROJECT,
+        u64::MAX,
         Some(publication_id),
         None,
     )?;
@@ -87,7 +87,7 @@ pub(crate) fn import_development_context_with_environment(
     let (_, receipt) = import_development_context_with_options(
         request,
         MAX_CHECKOUT_BYTES_PER_PROJECT,
-        MAX_MATERIALIZED_ENTRIES_PER_PROJECT,
+        u64::MAX,
         Some(publication_id),
         authority,
     )?;
@@ -483,7 +483,7 @@ pub(super) fn import_development_context_with_budgets(
     .map(|(result, _)| result)
 }
 
-fn import_development_context_with_options(
+pub(super) fn import_development_context_with_options(
     request: DevelopmentContextImportRequest,
     maximum_project_checkout_bytes: u64,
     maximum_project_materialized_entries: u64,
@@ -590,6 +590,12 @@ fn import_development_context_with_options(
             }
         }
     }
+    let materialization_artifacts = vault_artifacts::restore(
+        &manifest,
+        &artifacts_root,
+        &project_root,
+        environment_authority,
+    )?;
     let mut imported = Vec::with_capacity(manifest.repositories.len());
     let mut checkout_bytes = 0_u64;
     let mut materialized_entries = 0_u64;
@@ -600,7 +606,7 @@ fn import_development_context_with_options(
             maximum_project_materialized_entries.saturating_sub(materialized_entries);
         let estimate = prepare_repository(
             repository,
-            &artifacts_root,
+            &materialization_artifacts,
             &repository_root,
             remaining_bytes,
             remaining_entries,
@@ -619,9 +625,13 @@ fn import_development_context_with_options(
     for repository in &manifest.repositories {
         materialize_prepared_repository(
             repository,
-            &artifacts_root,
+            &materialization_artifacts,
             &project_root.join(&repository.target_directory),
         )?;
+    }
+    if materialization_artifacts != artifacts_root {
+        fs::remove_dir_all(&materialization_artifacts)
+            .map_err(|_| context_error("remove workspace Vault transfer artifacts"))?;
     }
     let prepared_environment = match &manifest.project_environment {
         Some(layer) => {

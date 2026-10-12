@@ -1,3 +1,4 @@
+import { OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION } from "@chariox/kernel-client/ipc-managed-context-requests"
 import { isProjectEnvironmentRequest, projectEnvironmentMinimumProtocolVersion } from "@chariox/kernel-client"
 import * as requests from "@chariox/kernel-client/ipc-requests"
 import { projectEnvironmentReviewMinimumProtocolVersion } from "@chariox/kernel-client/project-environment-review"
@@ -7,7 +8,19 @@ import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
 type FeatureMinimum = { feature: string; minimum: number }
 
 const features: Record<string, FeatureMinimum> = {
+  AddSshMachine: { feature: "SSH machine management", minimum: requests.sshMachineMinimumProtocolVersion },
+  RemoveSshMachine: { feature: "SSH machine management", minimum: requests.sshMachineMinimumProtocolVersion },
+  CloudRelayStatus: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  StartCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  PollCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  LogoutCloudRelay: { feature: "Kernel Cloud unlink", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  ConnectCloudRelay: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  ResolveKernelClientConnection: { feature: "Key-bound kernel pivot", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  IssueCloudRelayClientToken: { feature: "Kernel terminal delegation", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  PreflightProviderAccountPortability: { feature: "Provider account portability", minimum: requests.providerAccountPortabilityPreflightMinimumProtocolVersion },
   RequestKernelAccess: { feature: "Local-kernel access", minimum: 470 },
+  ControlRoomWorkflowRuns: { feature: "Room workflow run controls", minimum: 491 },
+  SteerActivePrompt: { feature: "Active prompt steering", minimum: requests.activePromptSteeringMinimumProtocolVersion },
   GetProjectEnvironment: { feature: "Project Environment", minimum: requests.projectEnvironmentMinimumProtocolVersion },
   ...Object.fromEntries(["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"].map(name => [name, { feature: "User-domain App views", minimum: requests.userAppViewsMinimumProtocolVersion }])),
   KernelBrowser: { feature: "Kernel browser", minimum: requests.kernelBrowserMinimumProtocolVersion },
@@ -47,19 +60,25 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     feature = name === "KeepManagedEnvironmentRunning"
       ? { feature: "Managed environment keep running", minimum: requests.managedEnvironmentKeepRunningMinimumProtocolVersion }
       : { feature: "Disposable worker control", minimum: requests.disposableWorkerControlMinimumProtocolVersion }
+  } else if (name === "ConfigureAppAutomation" && payload?.delivery_mode === "inject") {
+    feature = { feature: "App automation injection", minimum: 491 }
+  } else if (name === "CancelActivePrompt" && payload?.expected_prompt_id != null) {
+    feature = { feature: "Exact prompt cancellation", minimum: requests.exactPromptCancellationMinimumProtocolVersion }
   } else if (name === "SubmitRoomEnvironmentBrowserAction") {
     const tab = record(payload?.action)?.kind === "tab"
     feature = { feature: tab ? "Room browser tab lifecycle" : "Room browser history", minimum: tab
       ? requests.roomEnvironmentBrowserTabActionsMinimumProtocolVersion : requests.roomEnvironmentBrowserHistoryMinimumProtocolVersion }
   } else if (name === "CreateManagedEnvironment" && payload?.managedRepositoryRoot != null) {
     feature = { feature: "Custom managed repository root", minimum: requests.managedEnvironmentCreateMinimumProtocolVersion }
+  } else if (name === "StartManagedContextTransfer" && payload?.ownerManaged != null) {
+    feature = { feature: "Owner context copy", minimum: OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION }
   } else if ((name === "StartSlice" || name === "StartManagedContextTransfer") && payload?.interactive === true) {
     feature = { feature: "Project export review", minimum: projectEnvironmentReviewMinimumProtocolVersion }
   } else if (name === "RespondToInteraction" && payload?.session_id === "kernel-access") {
     feature = { feature: "Local-kernel access", minimum: payload?.choice_id === "refuse" ? 451 : 470 }
   } else if (name === "RequestNativeProviderTurnInteraction" && payload?.origin != null) {
     feature = { feature: "Native provider approval origin", minimum: requests.nativeProviderInteractionMinimumProtocolVersion }
-  } else if ((name === "IssueCloudRelayClientToken" || name === "JoinTerminalPairingLink") && payload?.public_key_thumbprint != null) {
+  } else if ((name === "JoinTerminalPairingLink") && payload?.public_key_thumbprint != null) {
     feature = { feature: "Key-bound terminal connection", minimum: requests.relayClientKeyBindingMinimumProtocolVersion }
   }
   return feature
@@ -67,8 +86,13 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
 
 /** Unknown versions retain existing transport compatibility diagnostics. */
 export function requireKernelFeatureProtocol(request: unknown, protocolVersion: number | undefined): void {
-  if (protocolVersion === undefined || !Number.isInteger(protocolVersion) || protocolVersion < 1) return
   const feature = kernelFeatureMinimum(request)
+  if (protocolVersion === undefined || !Number.isInteger(protocolVersion) || protocolVersion < 1) {
+    if (feature?.feature === "Exact prompt cancellation" || feature?.feature === "App automation injection") {
+      throw new KernelProtocolMinimumError(`kernel support unknown: ${feature.feature} needs protocol ≥${feature.minimum}; reconnect to an updated kernel`)
+    }
+    return
+  }
   if (feature && protocolVersion < feature.minimum) {
     throw new KernelProtocolMinimumError(`kernel too old: ${feature.feature} needs protocol ≥${feature.minimum}; this kernel is ${protocolVersion}; update the kernel`)
   }

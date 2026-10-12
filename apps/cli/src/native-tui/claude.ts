@@ -1,3 +1,4 @@
+import { localKernelConnectionLabel } from "../local-connection-indicator.js"
 import { appendFileSync } from "node:fs"
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
@@ -6,6 +7,7 @@ import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import { LocalIpcClient } from "../ipc.js"
+import { createCliRelayIdentityStore } from "../cli-relay-identity-store.js"
 import { promptAttachmentTransferIsForced } from "../prompt-attachment-transfer.js"
 import { grantNativeCapabilities } from "./capability-grants.js"
 import {
@@ -44,6 +46,7 @@ import {
   defaultKernelEndpoint,
   inferWorkspaceTargetsFromLaunchDirectory,
   parseKernelPort,
+  relayTokenFromEnvironment,
   parseNativeMode as parseMode,
   parseNativePermissions as parsePermissions,
 } from "./launch-environment.js"
@@ -92,6 +95,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
   const client = new LocalIpcClient(kernelEndpoint, options.relayUrl
     ? {
       relayAuthToken: options.relayToken,
+      relayIdentity: createCliRelayIdentityStore().load() ?? undefined,
       relayAuthorizationIssuer: options.relayTokenIssuer,
       targetDaemonId: options.targetDaemonId,
       targetDaemonAlias: options.targetDaemonAlias,
@@ -156,6 +160,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
     process.stderr.write(formatNativeTuiRuntimeBanner({
+      connectionLabel: localKernelConnectionLabel(client, session.host_daemon_id),
       surface: "claude native-tui",
       session,
       agent,
@@ -239,6 +244,7 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
     grantMcps: [],
     grantSkills: [],
   }
+  let relayTokenSource = false
   const positional: string[] = []
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? ""
@@ -266,7 +272,14 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
         options.relayTokenIssuer = { endpoint: next(), daemonId: next() }
         break
       case "--relay-token":
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
+        relayTokenSource = true
         options.relayToken = next()
+        break
+      case "--relay-token-env":
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
+        relayTokenSource = true
+        options.relayToken = relayTokenFromEnvironment(next())
         break
       case "--target-daemon-id":
         options.targetDaemonId = next()
@@ -356,6 +369,8 @@ function printNativeClaudeUsage() {
     "Options:",
     "  --kernel-port, --port <port>     Kernel websocket port (default 43119)",
     "  --kernel-url <url>               Kernel websocket URL",
+    "  --relay-url <url>                Hosted relay websocket URL",
+    "  --relay-token-env <name>         Read relay authorization from the named environment variable",
     "  --workspace <path>               Workspace root",
     "  --worktree <path>                Worktree root",
     "  --machine, --kernel-ref <ref>    Run the Chariox agent/provider on a remote worker kernel",
@@ -383,6 +398,7 @@ async function runClaudeRemoteRendered(
   let disposeEvents: (() => void) | null = null
   let restoreStdin: (() => void) | null = null
   let restoreResize: (() => void) | null = null
+  const exitController = new AbortController()
   try {
     const created = options.sessionRef
       ? null
@@ -402,11 +418,18 @@ async function runClaudeRemoteRendered(
     const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
     const run = await waitForClaudeProviderRunReady(client, launched.id)
     const readiness = createClaudeRemoteRenderedReadiness()
+    // MP-08/MP-11: trust/onboarding can end the official provider. Release the
+    // queued initial prompt wait and its timer instead of waiting sixty seconds.
+    const exited = waitForClaudeRemoteRenderedRunExit(client, run.id, exitController.signal)
+    void exited.then(() => readiness.fail(new Error(
+      "Claude native TUI ended before its input composer was ready. Complete onboarding and trust the workspace, then retry.",
+    )), (error: unknown) => readiness.fail(error instanceof Error ? error : new Error(String(error))))
 
     const sliceInventory = agent.remote_execution
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
     process.stderr.write(formatNativeTuiRuntimeBanner({
+      connectionLabel: localKernelConnectionLabel(client, session.host_daemon_id),
       surface: "claude remote-native-tui",
       session,
       agent,
@@ -454,8 +477,9 @@ async function runClaudeRemoteRendered(
         readiness,
       })
     }
-    await waitForClaudeRemoteRenderedRunExit(client, run.id)
+    await exited
   } finally {
+    exitController.abort()
     restoreResize?.()
     restoreStdin?.()
     disposeEvents?.()

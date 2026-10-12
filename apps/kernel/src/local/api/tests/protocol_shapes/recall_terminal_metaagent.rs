@@ -745,6 +745,7 @@ fn local_daemon_protocol_kernel_client_connection_shape_is_versioned() {
             machine_ref: Some("machine-1".to_string()),
             client_id: Some("cli-1".to_string()),
             session_id: None,
+            public_key_thumbprint: Some("cli-thumbprint".to_string()),
         }),
         LocalDaemonResponse::KernelClientConnectionResolved {
             connection: KernelClientConnection {
@@ -771,6 +772,6 @@ fn local_daemon_protocol_kernel_client_connection_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "623235862705f7aa8f85c6b29f98188caa2b75ac7acf0f8f72f63f822b888e9a"
+        "95694df43a9dddcbad7b1e27875327748492d034a0ed5b1eac292125115dff8f"
     );
 }

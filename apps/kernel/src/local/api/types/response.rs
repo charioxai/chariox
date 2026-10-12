@@ -3,6 +3,7 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    SshMachine { machine: SshMachineResult },
     EnvironmentUnsupportedFeature { feature: crate::project_environment::EnvironmentCapability, supported_schema: u32 },
     ProjectEnvironmentDiff { diff: crate::project_environment::EnvironmentRevisionDiff },
     ProjectEnvironmentSaved { environment: crate::project_environment::ProjectEnvironment, diff: crate::project_environment::EnvironmentRevisionDiff },
@@ -106,7 +107,12 @@ pub enum LocalDaemonResponse {
     SessionResolved { session: RuntimeSession, },
     /// MP-08 / MP-09 / MP-10 / MP-11 A12: compact, home-owned control confirmation.
     AgentTaskUpdated { session_id: String, task: Box<crate::durable_state::agent_lifecycle::AgentTaskExecution> },
+    RoomWorkflowRunsControlled {
+        results: Vec<RoomWorkflowRunControlResult>,
+        inventory: crate::runtime::projection::RoomWorkflowInventory,
+    },
     SessionState {
+        room_workflows: crate::runtime::projection::RoomWorkflowInventory,
         session: RuntimeSession,
         agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
         #[serde(default)]
@@ -199,7 +205,7 @@ pub enum LocalDaemonResponse {
     CloudRelayLoggedOut,
     CloudRelayClientPaired { profile: CloudRelayProfile, },
     CloudRelayMachinePaired { profile: CloudRelayProfile, },
-    CloudRelayConnected { status: RelayStatus, profile: CloudRelayProfile, token: CloudRelayRuntimeToken, },
+    CloudRelayConnected { status: RelayStatus, profile: CloudRelayProfile, },
     CloudRelayClientTokenIssued { profile: CloudRelayProfile, token: CloudRelayRuntimeToken, },
     KernelClientConnectionResolved { connection: KernelClientConnection, },
     CloudSessionInviteCreated { invite: CloudSessionInvite, },
@@ -221,6 +227,7 @@ pub enum LocalDaemonResponse {
     CredentialVaultStatus { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultManaged { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
+    ProviderAccountPortabilityPreflightPassed {},
     ManagedEnvironmentCatalog { catalog: ManagedEnvironmentCatalog, },
     DisposableWorker { allocation: DisposableWorkerAllocation, },
     DisposableWorkerContextTransferPrepared { ticket: crate::managed_context::outbound_service::ManagedContextTransferTicket, },
@@ -314,6 +321,8 @@ pub enum LocalDaemonResponse {
         pairing: PairingJoinRecord,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_token: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        kernel_pairing: bool,
     },
     TerminalsListed { terminals: Vec<TerminalRecord>, },
     PairedClientsListed { clients: Vec<PairedClientRecord>, },
@@ -384,6 +393,7 @@ pub enum LocalDaemonResponse {
     },
     PromptCompleted { completion: PromptCompletion, },
     PromptCancelled { cancellation: PromptCancellation, },
+    ActivePromptSteered { prompt: PromptQueueItem, },
     QueuedPromptSteered {
         prompt: PromptQueueItem,
         session: RuntimeSession,

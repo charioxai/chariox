@@ -5,7 +5,8 @@ use crate::error::DaemonError;
 #[path = "bounded_artifact.rs"]
 mod bounded_artifact;
 
-const CLOUD_API_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+pub(super) const CLOUD_API_REQUEST_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(20);
 
 pub(crate) fn normalize_cloud_api_url(api_url: &str) -> Result<String, DaemonError> {
     let normalized = api_url.trim().trim_end_matches('/').to_string();
@@ -96,6 +97,41 @@ where
     .await
     .map_err(|error| DaemonError::LocalTransport {
         operation: "get authenticated cloud json",
+        message: error.to_string(),
+    })?
+}
+
+pub(crate) async fn get_cloud_kernel_directory(
+    profile: &crate::config::PersistedCloudRelayProfile,
+) -> Result<serde_json::Value, DaemonError> {
+    let profile = profile.clone();
+    tokio::task::spawn_blocking(move || {
+        let url = format!(
+            "{}/relay/targets?accountId={}&realmId={}",
+            profile.api_url,
+            cloud_url_component(&profile.account_id),
+            cloud_url_component(&profile.realm_id)
+        );
+        let credential =
+            profile
+                .kernel_credential
+                .as_deref()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "read My kernels",
+                    message: "independent kernel enrollment is required".into(),
+                })?;
+        let response = ureq::AgentBuilder::new()
+            .timeout(CLOUD_API_REQUEST_TIMEOUT)
+            .build()
+            .get(&url)
+            .set("x-chariox-kernel-credential", credential)
+            .call()
+            .map_err(cloud_transport_error)?;
+        decode_cloud_response(response)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "read My kernels",
         message: error.to_string(),
     })?
 }
@@ -239,12 +275,26 @@ where
     T: serde::de::DeserializeOwned,
 {
     let url = format!("{api_url}{path}");
-    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    // Native Cloud calls must not follow browser login redirects.
+    let agent = ureq::AgentBuilder::new()
+        .timeout(timeout)
+        .redirects(0)
+        .build();
     let response = agent
         .post(&url)
         .set("content-type", "application/json")
         .send_string(&body.to_string())
         .map_err(cloud_transport_error)?;
+    let status = response.status();
+    if !(200..300).contains(&status) {
+        return Err(DaemonError::LocalTransport {
+            operation: "cloud relay request",
+            message: format!(
+                "cloud relay request failed with {status}: POST {} (redirects disabled)",
+                path.split('?').next().unwrap_or_default(),
+            ),
+        });
+    }
     let payload = response
         .into_string()
         .map_err(|error| DaemonError::LocalTransport {
@@ -320,7 +370,7 @@ where
     decode_cloud_response(response)
 }
 
-fn decode_cloud_response<T>(response: ureq::Response) -> Result<T, DaemonError>
+pub(super) fn decode_cloud_response<T>(response: ureq::Response) -> Result<T, DaemonError>
 where
     T: serde::de::DeserializeOwned,
 {
@@ -348,19 +398,33 @@ pub(crate) fn cloud_url_component(value: &str) -> String {
         .collect()
 }
 
-fn cloud_transport_error(error: ureq::Error) -> DaemonError {
+pub(super) fn cloud_transport_error(error: ureq::Error) -> DaemonError {
     let message = match error {
         ureq::Error::Status(status, response) => {
             let body = response.into_string().unwrap_or_default();
-            if body.is_empty() {
-                format!("cloud relay request failed with {status}")
-            } else if let Some(code) = cloud_api_error_code(&body) {
-                format!("cloud relay request failed with {status}: cloud_api_code={code}: {body}")
-            } else {
-                format!("cloud relay request failed with {status}: {body}")
-            }
+            return cloud_status_error(status, body);
         }
         ureq::Error::Transport(error) => error.to_string(),
+    };
+    DaemonError::LocalTransport {
+        operation: "cloud relay request",
+        message,
+    }
+}
+
+pub(super) fn cloud_status_error(status: u16, body: String) -> DaemonError {
+    let message = if body.is_empty() {
+        format!("cloud relay request failed with {status}")
+    } else if let Some(code) = cloud_api_error_code(&body) {
+        // A client-error denial names its Cloud reason, so a refused grant says which check refused it.
+        match cloud_api_error_message(&body).filter(|_| (400..500).contains(&status)) {
+            Some(reason) => {
+                format!("cloud relay request failed with {status}: cloud_api_code={code}: {reason}")
+            }
+            None => format!("cloud relay request failed with {status}: cloud_api_code={code}"),
+        }
+    } else {
+        format!("cloud relay request failed with {status}")
     };
     DaemonError::LocalTransport {
         operation: "cloud relay request",
@@ -378,6 +442,20 @@ fn cloud_api_error_code(body: &str) -> Option<String> {
                 .and_then(|code| code.as_str())
                 .map(str::to_string)
         })
+}
+
+/// Cloud's public error text, printable ASCII only and bounded.
+fn cloud_api_error_message(body: &str) -> Option<String> {
+    let payload = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let reason: String = payload
+        .get("error")?
+        .get("message")?
+        .as_str()?
+        .chars()
+        .filter(|c| c.is_ascii_graphic() || *c == ' ')
+        .take(120)
+        .collect();
+    (!reason.trim().is_empty()).then_some(reason)
 }
 
 pub(crate) fn cloud_error_code(error: &DaemonError) -> Option<&str> {
@@ -472,6 +550,46 @@ mod tests {
             Some("session_invalid".to_string())
         );
         assert_eq!(cloud_api_error_code(r#"{"error":{}}"#), None);
+    }
+
+    #[test]
+    fn cloud_status_error_names_the_client_error_reason_without_changing_the_code() {
+        let denied = cloud_status_error(
+            403,
+            r#"{"error":{"code":"authorization_denied","message":"Kernel target is not fresh and online"}}"#
+                .to_string(),
+        );
+        let DaemonError::LocalTransport { message, .. } = &denied else {
+            panic!("transport error")
+        };
+        assert_eq!(
+            message,
+            "cloud relay request failed with 403: cloud_api_code=authorization_denied: Kernel target is not fresh and online"
+        );
+        assert_eq!(cloud_error_code(&denied), Some("authorization_denied"));
+        assert!(!cloud_error_is_retryable(&denied));
+        // Server errors and control characters never add text.
+        let DaemonError::LocalTransport { message, .. } = cloud_status_error(
+            500,
+            r#"{"error":{"code":"internal_error","message":"database exploded"}}"#.to_string(),
+        ) else {
+            panic!("transport error")
+        };
+        assert_eq!(
+            message,
+            "cloud relay request failed with 500: cloud_api_code=internal_error"
+        );
+        let DaemonError::LocalTransport { message, .. } = cloud_status_error(
+            400,
+            "{\"error\":{\"code\":\"invalid_request\",\"message\":\"bad\\u0007\\nvalue\"}}"
+                .to_string(),
+        ) else {
+            panic!("transport error")
+        };
+        assert_eq!(
+            message,
+            "cloud relay request failed with 400: cloud_api_code=invalid_request: badvalue"
+        );
     }
 
     #[test]
@@ -686,5 +804,109 @@ mod tests {
         assert!(result.is_err());
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
         fixture.join().expect("stalled Cloud fixture");
+    }
+
+    #[tokio::test]
+    async fn cloud_json_post_reports_migration_redirect_without_following_it() {
+        for status in [301, 302, 303, 307, 308] {
+            assert_cloud_post_redirect(status).await;
+        }
+    }
+
+    async fn assert_cloud_post_redirect(status: u16) {
+        use std::io::Write;
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind migration redirect fixture");
+        let address = listener.local_addr().expect("migration fixture address");
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept migration request");
+            read_fixture_request(&mut stream);
+            write!(stream, "HTTP/1.1 {status} Found\r\nLocation: http://{address}/access-login?secret=synthetic-location-sentinel\r\nContent-Type: text/html\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .expect("send Access redirect");
+            drop(stream);
+            listener.set_nonblocking(true).expect("poll login listener");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+            while std::time::Instant::now() < deadline {
+                if let Ok((mut followed, _)) = listener.accept() {
+                    read_fixture_request(&mut followed);
+                    let body = "<html>synthetic-login-body-sentinel</html>";
+                    write!(followed, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                        .expect("send Access login page");
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            false
+        });
+        let result = post_cloud_json::<serde_json::Value>(
+            format!("http://{address}"),
+            "/auth/kernel/migrate",
+            serde_json::json!({"machineCredential": "synthetic-request-sentinel"}),
+        )
+        .await;
+        let followed = fixture.join().expect("migration redirect fixture");
+        let error = result.expect_err("migration redirect must remain a request failure");
+        assert!(matches!(
+            error,
+            DaemonError::LocalTransport {
+                operation: "cloud relay request",
+                ..
+            }
+        ));
+        let message = error.to_string();
+        assert!(
+            message.contains(&status.to_string()),
+            "report the original HTTP status"
+        );
+        assert!(
+            message.contains("/auth/kernel/migrate"),
+            "identify the failing Cloud call"
+        );
+        assert!(
+            !message.contains("sentinel"),
+            "do not expose request, Location or response material"
+        );
+        assert!(
+            cloud_error_is_retryable(&error),
+            "policy repairs must allow retry"
+        );
+        assert!(
+            !is_stale_cloud_link_error(&error),
+            "a redirect must not clear the profile"
+        );
+        assert!(
+            !followed,
+            "credential-bearing Cloud POST must not follow redirects"
+        );
+    }
+
+    #[tokio::test]
+    async fn cloud_json_post_preserves_created_runtime_token_response() {
+        use std::io::Write;
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind runtime token fixture");
+        let address = listener
+            .local_addr()
+            .expect("runtime token fixture address");
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept runtime token request");
+            read_fixture_request(&mut stream);
+            let body = r#"{"token":"synthetic-runtime-token","tokenId":"synthetic-token-id","expiresAt":"2026-10-12T20:20:00.000Z"}"#;
+            write!(stream, "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                .expect("send created runtime token");
+        });
+        let result =
+            post_cloud_json::<crate::runtime::cloud_api_client::CloudRuntimeTokenResponse>(
+                format!("http://{address}"),
+                "/relay/token",
+                serde_json::json!({"kernelCredential": "synthetic-kernel-credential"}),
+            )
+            .await;
+        fixture.join().expect("runtime token fixture");
+        let issued = result.expect("JSON 201 remains the runtime token contract");
+        assert_eq!(issued.token, "synthetic-runtime-token");
+        assert_eq!(issued.expires_at, "2026-10-12T20:20:00.000Z");
     }
 }

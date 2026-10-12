@@ -16,6 +16,25 @@ enum FailedPromptResumePreparation {
 }
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn cancelling_prompt_for_abort(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        prompt_id: &str,
+    ) -> Option<(String, crate::session::PromptQueueItem)> {
+        let provider_run = self.provider_store.get_run(provider_run_id).ok()?;
+        if provider_run.session_id() != session_id {
+            return None;
+        }
+        let agent_id = provider_run.agent_instance_id()?;
+        let session = self.session_store.get_session(session_id).ok()?;
+        let prompt = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)?;
+        (prompt.id() == prompt_id && prompt.status() == crate::session::PromptStatus::Cancelling)
+            .then(|| (agent_id.to_string(), prompt))
+    }
+
     pub(super) fn prompt_completion_recorded(&self, provider_run_id: &str) -> bool {
         self.prompt_activity
             .read()
@@ -314,8 +333,16 @@ impl KernelRuntimeOwnedState {
             .provider_store
             .drain_finished_structured_prompt_abort_jobs()
         {
-            let abort_error = finished.result.err().map(|error| error.to_string());
-            if let Some(error) = abort_error.as_deref() {
+            // A provider run can outlive several prompts. An old abort receipt
+            // must never settle a resumed prompt, including a newer cancellation.
+            let Some((agent_id, prompt)) = self.cancelling_prompt_for_abort(
+                &finished.session_id,
+                &finished.provider_run_id,
+                &finished.prompt_id,
+            ) else {
+                continue;
+            };
+            if let Err(error) = finished.result {
                 let recipients = self
                     .attachment_store
                     .list_session_attachment_ids(&finished.session_id);
@@ -325,52 +352,26 @@ impl KernelRuntimeOwnedState {
                     recipients,
                     format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
                 );
-                if let Ok(provider_run) = self.provider_store.get_run(&finished.provider_run_id) {
-                    if let Some(agent_id) = provider_run.agent_instance_id() {
-                        if let Ok(session) = self.session_store.get_session(&finished.session_id) {
-                            if let Some(prompt) = self
-                                .prompt_state_owner
-                                .active_prompt_for_agent(&session, agent_id)
-                                .filter(|prompt| {
-                                    prompt.status() == crate::session::PromptStatus::Cancelling
-                                })
-                            {
-                                let _ = self.settle_failed_local_prompt_without_advance(
-                                    &finished.session_id,
-                                    agent_id,
-                                    prompt.id(),
-                                    &finished.provider_run_id,
-                                    &format!("Provider prompt cancellation failed: {error}"),
-                                );
-                            }
-                        }
-                    }
-                }
-            } else if let Ok(provider_run) = self.provider_store.get_run(&finished.provider_run_id)
-            {
-                // A successful structured-provider abort RPC is the
-                // authoritative acknowledgement that the interrupted turn no
-                // longer owns the agent. Some providers do not emit a usable
-                // terminal event afterwards, so settle the cancelling prompt
-                // from this acknowledgement instead of leaving it WORKING.
-                if let Some(agent_id) = provider_run.agent_instance_id() {
-                    if let Ok(session) = self.session_store.get_session(&finished.session_id) {
-                        if let Some(prompt) = self
-                            .prompt_state_owner
-                            .active_prompt_for_agent(&session, agent_id)
-                        {
-                            let _ = self.workflow_cancel_prompt(&finished.session_id, &prompt);
-                        }
-                    }
-                    if let Ok(cancellation) = self
-                        .finalize_local_prompt_cancellation_with_queued_advance(
-                            &finished.session_id,
-                            agent_id,
-                            Some(&finished.provider_run_id),
-                        )
-                    {
-                        follow_ups.local.extend(cancellation.dispatch);
-                    }
+                let _ = self.settle_failed_local_prompt_without_advance(
+                    &finished.session_id,
+                    &agent_id,
+                    prompt.id(),
+                    &finished.provider_run_id,
+                    &format!("Provider prompt cancellation failed: {error}"),
+                );
+            } else {
+                // Some providers do not emit a terminal event after a successful
+                // abort; its acknowledgement settles only the interrupted prompt.
+                let _ = self.workflow_cancel_prompt(&finished.session_id, &prompt);
+                if let Ok(cancellation) = self
+                    .finalize_local_prompt_cancellation_with_queued_advance(
+                        &finished.session_id,
+                        &agent_id,
+                        &finished.prompt_id,
+                        Some(&finished.provider_run_id),
+                    )
+                {
+                    follow_ups.local.extend(cancellation.dispatch);
                 }
             }
         }
@@ -562,7 +563,19 @@ impl KernelRuntimeOwnedState {
         provider_run_id: &str,
         observed_at_ms: Option<u64>,
     ) -> bool {
-        let activity_mutation = self.begin_managed_activity_mutation();
+        self.clear_prompt_activity_at_with_activity_mutation(
+            provider_run_id,
+            observed_at_ms,
+            self.begin_managed_activity_mutation(),
+        )
+    }
+
+    pub(super) fn clear_prompt_activity_at_with_activity_mutation(
+        &self,
+        provider_run_id: &str,
+        observed_at_ms: Option<u64>,
+        activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
+    ) -> bool {
         self.provider_output_deadlines.clear(provider_run_id);
         let prompt_activity = self.prompt_activity.write().remove(provider_run_id);
         let active_turn = self.active_turns.get(provider_run_id);
@@ -583,6 +596,8 @@ impl KernelRuntimeOwnedState {
         if active_turn.is_some() {
             activity_mutation.record_prompt_finish_at(observed_at_ms);
             self.runtime_projection_changes.record_change();
+        } else {
+            activity_mutation.record();
         }
         released_claim
     }

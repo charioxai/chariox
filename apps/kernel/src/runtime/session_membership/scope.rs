@@ -22,6 +22,7 @@ pub(crate) fn request_session_scope(
     request: &LocalDaemonRequest,
 ) -> Option<SessionMembershipScope> {
     match request {
+        LocalDaemonRequest::AddSshMachine(_) | LocalDaemonRequest::RemoveSshMachine(_) => None,
         LocalDaemonRequest::PrepareBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),
         ),
@@ -139,6 +140,9 @@ pub(crate) fn request_session_scope(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::CancelActivePrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::SteerActivePrompt(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::SteerQueuedPrompt(request) => Some(SessionMembershipScope::SessionId(
@@ -507,6 +511,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CancelWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::ControlRoomWorkflowRuns(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::PauseWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -740,6 +747,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetCredentialVaultStatus(_)
         | LocalDaemonRequest::LockCredentialVault(_)
         | LocalDaemonRequest::ManageCredentialVault(_)
+        | LocalDaemonRequest::PreflightProviderAccountPortability(_)
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
         | LocalDaemonRequest::GetManagedEnvironment(_)
         | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)

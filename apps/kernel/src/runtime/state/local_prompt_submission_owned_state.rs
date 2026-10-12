@@ -62,11 +62,6 @@ impl KernelRuntimeOwnedState {
         if target_agent.remote_execution().is_some() {
             return Ok(None);
         }
-        self.provider_account_profiles.require_agent_authenticated(
-            &self.provider_account_authority_owner_for_agent(&target_agent)?,
-            &target_agent,
-            "submit prompt",
-        )?;
         let session = self.session_store.get_session(&session_id)?;
         let queued_while_active = self
             .prompt_state_owner
@@ -91,6 +86,15 @@ impl KernelRuntimeOwnedState {
                 .get_run_for_agent(&session_id, &target_agent_id)
                 .map(|run| run.id().to_string()),
         };
+        let selected_run = provider_run_id
+            .as_deref()
+            .map(|id| self.ensure_provider_run_in_session(&session_id, id))
+            .transpose()?;
+        self.require_agent_account_authenticated(
+            &target_agent,
+            selected_run.as_ref(),
+            "submit prompt",
+        )?;
         if !queued_while_active && provider_run_id.is_none() {
             return Ok(None);
         }
@@ -129,6 +133,24 @@ impl KernelRuntimeOwnedState {
             .prompt_state_owner
             .submit_prepared_prompt_with_queue_policy(&session, prompt, force_queue, allow_queue)?;
         self.note_sudo_deferred_prompt(sudo_deferred, &outcome, &session_id, &target_agent_id);
+        if let crate::session::PromptSubmissionOutcome::Queued { prompt } = &outcome {
+            let current_state = provider_run_id
+                .as_deref()
+                .and_then(|id| self.provider_store.get_run(id).ok())
+                .map(|run| format!("{:?}", run.state()));
+            crate::logging::debug_with_fields(
+                "daemon.prompt_queue",
+                "local prompt queued admission trace",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agent_id": target_agent_id,
+                    "prompt_id": prompt.id(),
+                    "provider_run_id": provider_run_id,
+                    "starting_observed": provider_run_is_starting,
+                    "current_provider_state": current_state,
+                }),
+            );
+        }
         self.agent_store
             .clear_local_prompt_error(&target_agent_id)?;
         let outcome_agent_id = match &outcome {

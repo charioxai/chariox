@@ -1,3 +1,4 @@
+import { createWaitingRoomRetainedRows } from "./waiting-room-retained-rows.js"
 import {
   externalProviderSessionPageSessions,
   externalProviderSessionPageState,
@@ -31,6 +32,7 @@ type WaitingRoomRowsChangedPatch = {
 }
 
 type WaitingRoomInventoryRefreshControllerOptions = {
+  nowMs?: () => number
   isKernelConnected: () => boolean
   getInventoryStatus: () => WaitingRoomInventoryStatus
   setInventoryStatus: (status: WaitingRoomInventoryStatus) => void
@@ -68,6 +70,7 @@ type WaitingRoomInventoryRefreshControllerOptions = {
 
 export type WaitingRoomInventoryRefreshController = {
   applyWorkspacePreview(inventory: WaitingRoomInventory, client: LocalIpcClient): Promise<void>
+  applyTransportClosed(): void
   applyRowsChanged(patch: WaitingRoomRowsChangedPatch): void
   applyRelayStatusChanged(status: RelayStatusView): void
   applyRemoteMachinesChanged(machines: RemoteMachineView[]): void
@@ -84,16 +87,32 @@ export function createWaitingRoomInventoryRefreshController(
   let activeKernelId: string | null = null
   let managedEnvironmentCatalogScope: string | null = null
   let inventoryInvalidated = false
+  let transportGeneration = 0
+  let rowsBaselinePending = false
   let cacheScopeKey = options.getCacheScopeKey?.() ?? null
   let directTargetKernelId = currentDirectTargetKernelId(options)
   const inventoriesByKernel = new Map(
     (options.cachedInventories ?? []).map((inventory) => [inventory.kernelId, inventory]),
   )
   let pendingRefresh: Promise<void> | null = null
+  const nowMs = options.nowMs ?? Date.now
+  const lastPresenceByKernel = new Map([...inventoriesByKernel.keys()].map(id => [id, nowMs()]))
 
-  if ((options.cachedInventories?.length ?? 0) > 0) {
+  const retainedMachines = createWaitingRoomRetainedRows<RemoteMachineView>(row => row.machine_id, options.nowMs ?? Date.now)
+  const retainedKernels = createWaitingRoomRetainedRows<RemoteKernelView>(row => row.kernel_id, options.nowMs ?? Date.now)
+  const restoreCachedInventory = () => {
     options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
+    const snapshots = [...inventoriesByKernel.values()].filter(snapshot => !directTargetKernelId || snapshot.kernelId === directTargetKernelId)
+    const machines = [...new Map(snapshots.flatMap(snapshot => snapshot.remoteMachines).map(row => [row.machine_id, row])).values()]
+    const kernels = [...new Map(snapshots.flatMap(snapshot => snapshot.remoteKernels).map(row => [row.kernel_id, row])).values()]
+    options.setRemoteMachines(retainedMachines.restore(machines).map(row => ({ ...row, online: false })))
+    options.setRemoteKernels(retainedKernels.restore(kernels).map(row => ({ ...row, accepting_remote_leases: false })))
+    const workspaceSnapshots = snapshots.filter(snapshot => options.shouldApplyWorkspaceInventory?.(snapshot) !== false)
+    if (workspaceSnapshots.length || !snapshots.length) {
+      options.setProjects?.([...new Map(workspaceSnapshots.flatMap(snapshot => snapshot.projects ?? []).map(row => [row.id, row])).values()])
+    }
   }
+  if ((options.cachedInventories?.length ?? 0) > 0) restoreCachedInventory()
 
   const rememberInventory = (inventory: WaitingRoomInventory) => {
     inventoriesByKernel.delete(inventory.kernelId)
@@ -113,8 +132,14 @@ export function createWaitingRoomInventoryRefreshController(
     }
   }
 
+  const retainDisconnectedRows = () => {
+    options.setRemoteMachines(retainedMachines.reconcile([], { authoritative: false }).map(row => ({ ...row, online: false })))
+    options.setRemoteKernels(retainedKernels.reconcile([], { authoritative: false }).map(row => ({ ...row, accepting_remote_leases: false })))
+  }
+
   const refreshNow = async () => {
     if (!options.isKernelConnected()) {
+      retainDisconnectedRows()
       return
     }
     if (options.getInventoryStatus() !== "ready") {
@@ -122,12 +147,14 @@ export function createWaitingRoomInventoryRefreshController(
     }
     for (let attempt = 0; attempt < 2; attempt += 1) {
       refreshProjectionScope()
+      const requestedTransportGeneration = transportGeneration
       const requestedCacheScopeKey = cacheScopeKey
       const requestedTargetKernelId = directTargetKernelId
       let snapshot: WaitingRoomInventory
       try {
         snapshot = await options.getInventory()
       } catch (error) {
+        if (requestedTransportGeneration !== transportGeneration) return
         refreshProjectionScope()
         if (
           requestedCacheScopeKey !== cacheScopeKey
@@ -138,8 +165,11 @@ export function createWaitingRoomInventoryRefreshController(
         }
         options.warn?.("waiting room inventory refresh failed", { error: formatError(error) })
         options.setInventoryStatus("error")
+        retainDisconnectedRows()
+        options.reconcileWaitingRoom(options.getWaitingRoomState())
         return
       }
+      if (requestedTransportGeneration !== transportGeneration) return
       refreshProjectionScope()
       if (
         requestedCacheScopeKey !== cacheScopeKey
@@ -149,6 +179,18 @@ export function createWaitingRoomInventoryRefreshController(
         continue
       }
       options.setInventoryStatus("ready")
+      const present = new Set([snapshot.kernelId, ...snapshot.remoteKernels.map(row => row.kernel_id), ...(options.getLocalKernelPresences?.() ?? []).map(row => row.kernelId)])
+      let pruned = false
+      for (const id of inventoriesByKernel.keys()) {
+        if (present.has(id)) lastPresenceByKernel.set(id, nowMs())
+        else if (nowMs() - (lastPresenceByKernel.get(id) ?? nowMs()) >= 30_000) {
+          inventoriesByKernel.delete(id)
+          lastPresenceByKernel.delete(id)
+          pruned = true
+        }
+      }
+      if (pruned) options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
+      lastPresenceByKernel.set(snapshot.kernelId, nowMs())
       const previousActiveKernelId = activeKernelId
       const previousInventoryVersion = inventoryVersion
       activeKernelId = snapshot.kernelId
@@ -186,9 +228,10 @@ export function createWaitingRoomInventoryRefreshController(
       inventoriesByKernel,
     )
     options.setRelayStatus(snapshot.relayStatus)
-    options.setRemoteMachines(localPresence.machines)
-    options.setRemoteKernels(localPresence.kernels.filter((kernel) => (
+    options.setRemoteMachines(retainedMachines.reconcile(localPresence.machines).map(row => row.displayFreshness ? { ...row, online: false } : row))
+    options.setRemoteKernels(retainedKernels.reconcile(localPresence.kernels).map(row => row.displayFreshness ? { ...row, accepting_remote_leases: false } : row).filter((kernel) => (
       !options.isKernelHidden(kernel.kernel_id)
+      || Boolean(kernel.displayFreshness)
       || !waitingRoomRemoteKernelCanDelete(kernel)
     )))
     options.setTerminals(snapshot.terminals)
@@ -232,18 +275,29 @@ export function createWaitingRoomInventoryRefreshController(
     if (cacheScopeChanged) {
       cacheScopeKey = nextScopeKey
       inventoriesByKernel.clear()
+      lastPresenceByKernel.clear()
       for (const inventory of options.loadCachedInventories?.() ?? []) {
         inventoriesByKernel.set(inventory.kernelId, inventory)
+        lastPresenceByKernel.set(inventory.kernelId, nowMs())
       }
     }
     directTargetKernelId = nextDirectTargetKernelId
     activeKernelId = null
     inventoryVersion = null
     inventoryInvalidated = true
-    options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
+    restoreCachedInventory()
   }
 
   return {
+    applyTransportClosed() {
+      transportGeneration += 1
+      rowsBaselinePending = true
+      inventoryVersion = null
+      inventoryInvalidated = true
+      options.setInventoryStatus("loading")
+      retainDisconnectedRows()
+      options.reconcileWaitingRoom(options.getWaitingRoomState())
+    },
     async applyWorkspacePreview(inventory, client) {
       rememberInventory(inventory)
       options.persistInventory?.(inventory)
@@ -258,59 +312,48 @@ export function createWaitingRoomInventoryRefreshController(
         return
       }
       refreshProjectionScope()
-      if (patch.inventoryVersion === inventoryVersion) {
+      const activeInventory = activeKernelId ? inventoriesByKernel.get(activeKernelId) : undefined
+      // A row patch cannot establish the initial snapshot. Publishing its
+      // sessions would also mistake them for cached display before cold load.
+      if (!activeInventory) return
+      if (!rowsBaselinePending && patch.inventoryVersion === inventoryVersion) {
         options.reconcileWaitingRoom(options.getWaitingRoomState())
         return
       }
-      const currentInventoryVersion = inventoryVersion
+      const currentInventoryVersion = rowsBaselinePending ? null : inventoryVersion
+      rowsBaselinePending = false
       inventoryVersion = patch.inventoryVersion
       options.setInventoryStatus("ready")
-      const activeInventory = activeKernelId ? inventoriesByKernel.get(activeKernelId) : undefined
-      if (activeInventory) {
-        const sessions = mergeWaitingRoomSessionRows(
-          currentInventoryVersion === null ? [] : activeInventory.sessions,
-          patch.sessions.map((session) => ({
-            ...session,
-            kernel_id: activeInventory.kernelId,
-            kernel_alias: activeInventory.kernelAlias ?? null,
-            machine_id: activeInventory.machineId,
-            machine_alias: activeInventory.machineAlias ?? null,
-          })),
-          patch.removedSessionIds,
-        )
-        const nextInventory = {
-          ...activeInventory,
-          inventoryVersion: patch.inventoryVersion,
-          structuralVersion: patch.structuralVersion,
-          activityRevision: patch.activityRevision,
-          sessions,
-          projects: patch.projects
-            ? mergeWaitingRoomProjectRows(
-                activeInventory.projects ?? [],
-                patch.projects,
-                patch.removedProjectIds ?? [],
-              )
-            : activeInventory.projects ?? [],
-        }
-        rememberInventory(nextInventory)
-        options.persistInventory?.(nextInventory)
-        options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
-        if (options.shouldApplyWorkspaceInventory?.(nextInventory) !== false) {
-          options.setProjects?.(nextInventory.projects)
-        }
-      } else {
-        options.setAvailableSessions(mergeWaitingRoomSessionRows(
-          currentInventoryVersion === null ? [] : options.getAvailableSessions(),
-          patch.sessions,
-          patch.removedSessionIds,
-        ))
-        if (patch.projects) {
-          options.setProjects?.(mergeWaitingRoomProjectRows(
-            options.getProjects?.() ?? [],
-            patch.projects,
-            patch.removedProjectIds ?? [],
-          ))
-        }
+      const sessions = mergeWaitingRoomSessionRows(
+        currentInventoryVersion === null ? [] : activeInventory.sessions,
+        patch.sessions.map((session) => ({
+          ...session,
+          kernel_id: activeInventory.kernelId,
+          kernel_alias: activeInventory.kernelAlias ?? null,
+          machine_id: activeInventory.machineId,
+          machine_alias: activeInventory.machineAlias ?? null,
+        })),
+        patch.removedSessionIds,
+      )
+      const nextInventory = {
+        ...activeInventory,
+        inventoryVersion: patch.inventoryVersion,
+        structuralVersion: patch.structuralVersion,
+        activityRevision: patch.activityRevision,
+        sessions,
+        projects: patch.projects
+          ? mergeWaitingRoomProjectRows(
+              currentInventoryVersion === null ? [] : activeInventory.projects ?? [],
+              patch.projects,
+              patch.removedProjectIds ?? [],
+            )
+          : activeInventory.projects ?? [],
+      }
+      rememberInventory(nextInventory)
+      options.persistInventory?.(nextInventory)
+      options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
+      if (options.shouldApplyWorkspaceInventory?.(nextInventory) !== false) {
+        options.setProjects?.(nextInventory.projects)
       }
       options.reconcileWaitingRoom(options.getWaitingRoomState())
     },
@@ -319,7 +362,6 @@ export function createWaitingRoomInventoryRefreshController(
         return
       }
       refreshProjectionScope()
-      options.setInventoryStatus("ready")
       options.setRelayStatus(status)
       options.reconcileWaitingRoom(options.getWaitingRoomState())
     },
@@ -328,7 +370,6 @@ export function createWaitingRoomInventoryRefreshController(
         return
       }
       refreshProjectionScope()
-      options.setInventoryStatus("ready")
       const localPresence = mergeLocalKernelPresence(
         machines,
         [],
@@ -336,7 +377,7 @@ export function createWaitingRoomInventoryRefreshController(
         activeKernelId,
         inventoriesByKernel,
       )
-      options.setRemoteMachines(localPresence.machines)
+      options.setRemoteMachines(retainedMachines.reconcile(localPresence.machines).map(row => row.displayFreshness ? { ...row, online: false } : row))
       options.reconcileWaitingRoom(options.getWaitingRoomState())
     },
     refreshNow,

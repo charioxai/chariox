@@ -1,10 +1,11 @@
 import {
-  providerAccountCapacity,
+  providerAccountAdmissionBlocked,
   providerAccountCapacityLabel,
+  providerAccountCapacityResetLabel,
   type ProviderAccountProfile,
 } from "@chariox/kernel-client"
 
-export { providerAccountCapacity }
+export { providerAccountAdmissionBlocked }
 
 export function providerAccountFamily(provider: string): string {
   return provider === "claude-headless" || provider === "claude-p" ? "claude" : provider
@@ -16,6 +17,19 @@ export function providerAccountsForProvider(
 ): readonly ProviderAccountProfile[] {
   const family = providerAccountFamily(provider)
   return (profiles ?? []).filter((profile) => profile.provider === family)
+}
+
+export function normalizeProviderAccountProfileId(
+  profiles: readonly ProviderAccountProfile[] | undefined,
+  provider: string,
+  profileId: string | null | undefined,
+): string {
+  const accounts = providerAccountsForProvider(profiles, provider)
+  return accounts.some((profile) => profile.profile_id === profileId)
+    ? profileId!
+    : accounts.find((profile) => profile.is_default)?.profile_id
+      ?? accounts[0]?.profile_id
+      ?? "default"
 }
 
 export function selectedProviderAccount(
@@ -68,5 +82,42 @@ export function defaultProviderAccountProfileId(
 }
 
 export function providerAccountDisplayLabel(profile: ProviderAccountProfile, model?: string | null): string {
-  return providerAccountCapacityLabel(profile, Date.now(), model)
+  const reset = providerAccountCapacityResetLabel(profile, Date.now(), model)
+  return `${providerAccountCapacityLabel(profile, Date.now(), model)}${reset ? ` · ${reset}` : ""} · ${profile.auth_state === "authenticated" ? "signed in" : profile.auth_state === "unknown" ? "sign-in not checked" : "needs sign-in"}`
+}
+
+export function selectedProviderAccountStartBlockReason(
+  profiles: readonly ProviderAccountProfile[] | undefined,
+  provider: string,
+  profileId: string | undefined,
+  remoteExecution?: Readonly<Record<string, unknown>> | null,
+  model?: string | null,
+): string | null {
+  // Worker credentials are resolved by the worker kernel, outside this inventory.
+  if (remoteExecution && remoteExecution.kind !== "local") return null
+  if (profiles === undefined) return null
+  const profile = selectedProviderAccount(profiles, provider, profileId)
+  if (!profile) {
+    return `${profileId ?? "default"} is not available on this kernel. Sign in on this machine, or copy login from the machine that owns the account.`
+  }
+  if (profile?.auth_state === "authenticated") {
+    if (!providerAccountAdmissionBlocked(profile, Date.now(), model)) return null
+    const reset = providerAccountCapacityResetLabel(profile, Date.now(), model)
+    const alternative = providerAccountsForProvider(profiles, provider).find(candidate => candidate.auth_state === "authenticated"
+      && !providerAccountAdmissionBlocked(candidate, Date.now(), model))
+    return `${profile.label} has exhausted its allowance${reset ? `; ${reset}` : ""}. Select ${alternative ? `another signed-in account ${alternative.label}` : "another account with quota, or wait for its allowance to reset"}.`
+  }
+  const label = profile?.label ?? profileId ?? "default"
+  const alternative = providerAccountsForProvider(profiles, provider)
+    .find((candidate) => candidate.auth_state === "authenticated")
+  const requirement = profile?.auth_state === "unknown"
+    ? "sign-in not checked. Refresh its status through Provider Accounts"
+    : "needs sign-in. Sign in through Provider Accounts"
+  return `${label} ${requirement}${alternative ? `, or select signed-in account ${alternative.label}` : ""}.`
+}
+
+export function providerAccountSignInCommand(profile: ProviderAccountProfile): string {
+  return profile.auth_state === "unknown"
+    ? `/provider accounts refresh ${profile.provider} ${profile.profile_id}`
+    : `/provider login ${profile.provider} ${profile.profile_id}`
 }

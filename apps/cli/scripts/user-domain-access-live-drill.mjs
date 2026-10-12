@@ -82,9 +82,14 @@ try {
   tui?.stop();
   if (control && sessionId) await control.send(request.teardownProviderProcessesRequest('dev-stub', true)).catch(() => {});
   for (const client of clients) client.destroy();
-  try { process.kill(-kernel.pid, 'SIGTERM'); } catch {}
+  // MP-11: signal only this drill's detached kernel group while it is still running.
+  const signalKernelGroup = signal => {
+    if (!Number.isSafeInteger(kernel.pid) || kernel.pid <= 1 || kernel.exitCode !== null || kernel.signalCode !== null) return;
+    try { process.kill(-kernel.pid, signal); } catch {}
+  };
+  signalKernelGroup('SIGTERM');
   await Promise.race([new Promise(r => kernel.once('exit', r)), sleep(2000)]);
-  try { process.kill(-kernel.pid, 'SIGKILL'); } catch {}
+  signalKernelGroup('SIGKILL');
   closeSync(log);
   await rm(root, { recursive: true, force: true });
 }

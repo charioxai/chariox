@@ -156,7 +156,7 @@ impl KernelRuntimeState {
             None => prompt,
         };
         let steer = if active.is_some() {
-            match self.prepare_local_active_agent_message_dispatch(room, &prompt) {
+            match self.prepare_local_active_prompt_steer_dispatch(room, &prompt) {
                 Ok(Some(dispatch)) => Some(dispatch),
                 Ok(None) | Err(_) => {
                     self.owned

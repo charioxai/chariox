@@ -1,15 +1,20 @@
+import { loadCodexPromptSettlements } from "./codex-prompt-settlement.js"
 import http from "node:http"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import WebSocket, { WebSocketServer } from "ws"
 
 import {
+  type AgentRuntimeActivity,
   type RuntimeProviderRun,
+  type RuntimeInteraction,
   type TerminalOutputRecord,
 } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
+import { createCodexKernelPermissionProjection, isCodexKernelPermissionResponse } from "./codex-kernel-permission-projection.js"
 import { createCodexKernelOutputProjection } from "./codex-kernel-output-projection.js"
+import { bindCodexDisplayTurn, handleCodexNativeTurnSteer, mapCodexNativeCompaction } from "./codex-conversation-controls.js"
 import {
   type CodexJsonRpcMessage,
   extractCodexThreadId,
@@ -19,6 +24,7 @@ import {
 import { resolveCodexNativePermissionResponse } from "./codex-permission.js"
 import {
   handleCodexNativeTurnStart,
+  handleCodexNativeTurnInterrupt,
   type CodexNativeBindingState,
 } from "./codex-turn-submission.js"
 import {
@@ -31,6 +37,8 @@ type CodexProxyDebug = (label: string, payload: unknown) => void
 type CodexDownstream = {
   socket: WebSocket
   kind: "unknown" | "tui" | "kernel"
+  compaction?: { managedThreadId: string; displayThreadId: string; turnId?: string }
+  compactionPreparing?: boolean
 }
 
 type CodexProxyOptions = {
@@ -48,6 +56,8 @@ type CodexProxyOptions = {
 
 export type CodexProxyServer = WebSocketServer & {
   projectKernelOutputToTui: (records: TerminalOutputRecord[]) => void
+  projectKernelActivityToTui: (activity: AgentRuntimeActivity | undefined) => Promise<void>
+  projectKernelInteractionsToTui: (interactions: RuntimeInteraction[]) => void
 }
 
 export function createCodexProjectionThreadTracker(options: {
@@ -74,6 +84,8 @@ export function createCodexProjectionThreadTracker(options: {
       setProjectedThreadId(threadId)
     },
     isEphemeralThread: (threadId: string) => ephemeralThreadIds.has(threadId),
+    isDisplayThread: (threadId: unknown) => typeof threadId === "string" && threadId === tuiThreadId,
+    isManagedThread: (threadId: string) => tuiThreadId !== null && threadId !== tuiThreadId && !ephemeralThreadIds.has(threadId),
     observeUpstreamThread: (threadId: string, ephemeral = false) => {
       if (ephemeral) ephemeralThreadIds.add(threadId)
       if (ephemeralThreadIds.has(threadId)) return
@@ -108,6 +120,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     ephemeral: boolean
   }>()
   let nextUpstreamRequestId = 1
+  const internalRequests = new Map<unknown, (message: CodexJsonRpcMessage) => void>()
   let upstreamSocket: WebSocket | null = null
 
   const downstreamCounts = () => {
@@ -139,6 +152,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     socket.on("message", (raw) => handleUpstreamMessage(raw))
     socket.on("close", () => {
       options.debug("upstream_closed", { upstreamEndpoint: options.upstreamEndpoint })
+      for (const resolve of internalRequests.values()) resolve({ error: { code: -32000 } })
       for (const downstream of downstreams) downstream.socket.close()
     })
     socket.on("error", (error) => {
@@ -185,6 +199,24 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     sendUpstream({ ...message, id: upstreamId })
   }
 
+  const subscribeManagedCompactionThread = async (threadId: string) => {
+    const id = `chariox-proxy-control-${nextUpstreamRequestId++}`
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const response = await new Promise<CodexJsonRpcMessage>((resolve, reject) => {
+        internalRequests.set(id, resolve)
+        timer = setTimeout(() => reject(new Error("managed Codex subscription timed out")), 15_000)
+        // Rejoin an already-running thread with no policy overrides. Never
+        // hydrate its hidden instructions/history into the display response.
+        sendUpstream({ id, method: "thread/resume", params: { threadId, excludeTurns: true } })
+      })
+      if (response.error || extractCodexThreadId(response) !== threadId) throw new Error("managed Codex subscription was rejected")
+    } finally {
+      clearTimeout(timer)
+      internalRequests.delete(id)
+    }
+  }
+
   const messageForDownstream = (downstream: CodexDownstream, message: unknown) =>
     downstream.kind === "kernel" ? message : redactHiddenInstructionsFromJson(message)
 
@@ -199,6 +231,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
   }
 
   const broadcastToNativeTuis = (message: unknown) => {
+    if (typeof message === "object" && message && "method" in message && message.method === "item/commandExecution/requestApproval") options.debug("native_kernel_permission_broadcast", { downstreams: downstreamCounts() })
     let sent = 0
     for (const downstream of downstreams) {
       if (downstream.kind === "tui") {
@@ -213,7 +246,10 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     agentId: options.agentId,
     broadcast: broadcastToNativeTuis,
     debug: options.debug,
+    resolveSettledPrompts: ids => loadCodexPromptSettlements(options.client, options.sessionId, options.agentId, ids),
+    onTurnMapped: (threadId, turnId, promptId) => bindCodexDisplayTurn(options.bindState, threadId, turnId, promptId),
   })
+  const kernelPermissionProjection = createCodexKernelPermissionProjection({ ...options, broadcast: broadcastToNativeTuis, beforeProjectPrompt: kernelOutputProjection.finishPromptItemsForInteraction })
   const projectionThreadTracker = createCodexProjectionThreadTracker({
     setThreadId: kernelOutputProjection.setThreadId,
     debug: options.debug,
@@ -225,14 +261,22 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       for (const downstream of downstreams) sendRaw(downstream.socket, raw)
       return
     }
+    if ([...downstreams].some(downstream => downstream.compaction)) options.debug("compaction_upstream_frame", { method: message.method, id: message.id, parameterKeys: Object.keys(message.params ?? {}), threadId: message.params?.threadId, conversationId: message.params?.conversationId, eventType: (message.params?.msg as { type?: unknown } | undefined)?.type, errorCode: (message.error as { code?: unknown } | undefined)?.code })
 
     if (message.id !== undefined && !message.method) {
+      const internal = internalRequests.get(message.id)
+      if (internal) {
+        internal(message)
+        return
+      }
+      if (typeof message.id === "string" && message.id.startsWith("chariox-proxy-control-")) return
       const pending = pendingRequests.get(message.id)
       if (!pending) {
         broadcast(message)
         return
       }
       pendingRequests.delete(message.id)
+      if (pending.method === "thread/compact/start" && message.error) delete pending.downstream.compaction
       const routedMessage = { ...message, id: pending.originalId }
       if (pending.method === "thread/start" && pending.downstream.kind !== "kernel" && message.result) {
         const threadId = extractCodexThreadId(message)
@@ -252,12 +296,38 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       }
     }
     const notificationThreadId = message.params?.threadId
+      ?? message.params?.conversationId
       ?? (message.params?.thread as { id?: unknown } | undefined)?.id
     if (typeof notificationThreadId === "string" && projectionThreadTracker.isEphemeralThread(notificationThreadId)) {
       // The kernel provider client consumes a run's output stream. Utility
       // output would otherwise settle or overwrite the visible Room turn.
       for (const downstream of downstreams) {
         if (downstream.kind !== "kernel") sendDownstream(downstream, message)
+      }
+      return
+    }
+    // MP-08 / MP-10 / MP-11: The home prompt projection owns the visible
+    // lifecycle. Execution-thread notifications must not overwrite its turn
+    // identity; server requests still reach the native approval UI.
+    if (message.id === undefined && typeof notificationThreadId === "string"
+      && projectionThreadTracker.isManagedThread(notificationThreadId)) {
+      for (const downstream of downstreams) {
+        if (downstream.kind === "kernel") sendDownstream(downstream, message)
+        // MP-08 / MP-10 / MP-11: An explicit native compaction controls the
+        // managed conversation, but its own lifecycle belongs in the requesting
+        // display. Keep this exception bounded to that control and its turn.
+        const control = downstream.compaction
+        if (!control || control.managedThreadId !== notificationThreadId) continue
+        options.debug("managed_compaction_notification", { method: message.method, turnId: message.params?.turnId, turnIdFromTurn: (message.params?.turn as {id?:unknown} | undefined)?.id, itemType: (message.params?.item as { type?: unknown } | undefined)?.type })
+        const turn = message.params?.turn as { id?: unknown } | undefined
+        const turnId = message.params?.turnId ?? turn?.id
+        const item = message.params?.item as { type?: unknown } | undefined
+        if (message.method === "turn/started" && typeof turnId === "string" && !control.turnId) control.turnId = turnId
+        if (typeof turnId !== "string" || turnId !== control.turnId) continue
+        if (!["turn/started", "turn/completed", "thread/compacted", "error"].includes(message.method ?? "")
+          && !(["item/started", "item/completed"].includes(message.method ?? "") && item?.type === "contextCompaction")) continue
+        sendDownstream(downstream, { ...message, params: { ...message.params, threadId: control.displayThreadId } })
+        if (message.method === "turn/completed") delete downstream.compaction
       }
       return
     }
@@ -295,6 +365,10 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       }
       if (message.id !== undefined && !message.method) {
         if (downstream.kind !== "kernel") {
+          if (isCodexKernelPermissionResponse(message)) {
+            void kernelPermissionProjection.respond(message).catch(error => options.debug("native_kernel_permission_response_failed", { error: formatError(error) }))
+            return
+          }
           void resolveCodexNativePermissionResponse(message, options).then((resolved) => {
             if (!resolved) sendUpstream(message)
           }).catch((error) => {
@@ -323,9 +397,40 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       if (message.method === "turn/start" && downstream.kind !== "kernel" && !ephemeral) {
         void handleCodexNativeTurnStart(
           message,
-          options,
+          { ...options, onPromptStarted: kernelOutputProjection.startPrompt },
           (response) => sendDownstream(downstream, response),
         )
+        return
+      }
+      if (message.method === "turn/interrupt" && downstream.kind !== "kernel" && !ephemeral) {
+        void handleCodexNativeTurnInterrupt(message, options,
+          (response) => sendDownstream(downstream, response))
+        return
+      }
+      if (message.method === "turn/steer" && downstream.kind !== "kernel" && !ephemeral) {
+        void handleCodexNativeTurnSteer(message, options, (response) => sendDownstream(downstream, response))
+        return
+      }
+      if (message.method === "thread/compact/start" && downstream.kind !== "kernel" && !ephemeral) {
+        if (!projectionThreadTracker.isDisplayThread(message.params?.threadId)) {
+          sendDownstream(downstream, { id: message.id, error: { code: -32000, message: "Codex compaction must target the bound display thread" } })
+          return
+        }
+        if (downstream.compaction || downstream.compactionPreparing) {
+          sendDownstream(downstream, { id: message.id, error: { code: -32000, message: "managed Codex compaction is already active" } })
+          return
+        }
+        downstream.compactionPreparing = true
+        void mapCodexNativeCompaction(message, options).then(async (mapped) => {
+          await subscribeManagedCompactionThread(mapped.params!.threadId as string)
+          const fresh = await mapCodexNativeCompaction(message, options)
+          if (fresh.params!.threadId !== mapped.params!.threadId) throw new Error("managed Codex conversation changed during subscription")
+          downstream.compaction = { managedThreadId: mapped.params!.threadId as string, displayThreadId: message.params!.threadId as string }
+          options.debug("managed_compaction_mapped", downstream.compaction)
+          forwardRequest(downstream, mapped)
+        }).catch((error) => {
+          sendDownstream(downstream, { id: message.id, error: { code: -32000, message: formatError(error) } })
+        }).finally(() => { delete downstream.compactionPreparing })
         return
       }
       forwardRequest(downstream, message)
@@ -362,7 +467,9 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       httpServer.close((httpError?: Error) => callback?.(error ?? httpError))
     })
   }) as WebSocketServer["close"]
-  return Object.assign(server, { projectKernelOutputToTui: kernelOutputProjection.project })
+  return Object.assign(server, { projectKernelOutputToTui: kernelOutputProjection.project,
+    projectKernelActivityToTui: kernelOutputProjection.projectAgentActivity,
+    projectKernelInteractionsToTui: kernelPermissionProjection.project })
 }
 
 function bindObservedThread(options: CodexProxyOptions, threadId: string) {

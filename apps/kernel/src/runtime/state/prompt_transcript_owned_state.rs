@@ -1139,6 +1139,20 @@ impl KernelRuntimeOwnedState {
                 .ok()
                 .and_then(|run| run.agent_instance_id().map(str::to_string))
         });
+        // Leased worker runs are projections, not home provider-store entries.
+        // Resolve the echo's scope from its exact kernel-owned home prompt.
+        let agent_id = agent_id.or_else(|| {
+            let session = self.session_store.get_session(session_id).ok()?;
+            self.agent_store
+                .get_session_agents(session_id)
+                .iter()
+                .find_map(|agent| {
+                    self.prompt_state_owner
+                        .active_prompt_for_agent(&session, agent.id())
+                        .filter(|active| active.id() == prompt_id)
+                        .map(|_| agent.id().to_string())
+                })
+        });
         let prompt_origin = prompt_origin_override.or_else(|| {
             agent_id.as_deref().and_then(|agent_id| {
                 self.session_store

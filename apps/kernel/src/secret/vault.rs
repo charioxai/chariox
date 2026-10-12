@@ -378,6 +378,17 @@ pub(crate) fn create_chariox_encrypted_vault_for_test(
     write_vault_file(path, key.as_ref(), &VaultPlaintext::default(), kdf)
 }
 
+// MP-11: deterministic expiry while a management interaction is pending.
+#[cfg(test)]
+pub(crate) fn expire_chariox_encrypted_vault_for_test(path: &Path) {
+    unlocked_vaults()
+        .lock()
+        .expect("unlock map")
+        .get_mut(&normalize_vault_path(path.to_path_buf()))
+        .expect("live test lease")
+        .expires_at_ms = Some(0);
+}
+
 pub fn lock_chariox_encrypted_vault(path: impl AsRef<Path>) -> Result<(), DaemonError> {
     let path = normalize_vault_path(path.as_ref().to_path_buf());
     unlocked_vaults()
@@ -484,10 +495,18 @@ pub fn extend_chariox_encrypted_vault(
     let mut unlocked = unlocked_vaults()
         .lock()
         .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
+    let now_ms = crate::session::unix_epoch_ms();
+    if unlocked
+        .get(&path)
+        .is_some_and(|vault| vault.is_expired(now_ms))
+    {
+        // MP-11 F1: removal drops/zeroizes the cached key under this same mutex.
+        unlocked.remove(&path);
+        return Err(vault_locked_error(&path));
+    }
     let vault = unlocked
         .get_mut(&path)
         .ok_or_else(|| vault_locked_error(&path))?;
-    let now_ms = crate::session::unix_epoch_ms();
     vault.expires_at_ms = match lease {
         VaultUnlockLease::Operation => Some(now_ms),
         VaultUnlockLease::TtlMinutes(minutes) => Some(now_ms + minutes.saturating_mul(60_000)),
@@ -957,6 +976,13 @@ fn write_vault_file(
             "failed to serialize Chariox vault plaintext: {error}"
         ))
     })?;
+    // MP-08/MP-11: refuse growth before replacing the owner's Vault; a file the
+    // readers reject cannot be recovered afterwards. Cheap early check first.
+    if plaintext_bytes.len() as u64 > MAX_TRANSFERRED_VAULT_BYTES - AUTH_TAG_LEN as u64 {
+        return Err(secret_error(
+            "Chariox Vault ciphertext exceeds its size limit".to_string(),
+        ));
+    }
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(&nonce), plaintext_bytes.as_slice())
         .map_err(|error| secret_error(format!("failed to encrypt Chariox vault: {error}")))?;
@@ -969,6 +995,12 @@ fn write_vault_file(
     };
     let serialized = serde_json::to_vec_pretty(&file)
         .map_err(|error| secret_error(format!("failed to serialize Chariox vault: {error}")))?;
+    // Same bound as Vault transfer reads, including JSON and base64 expansion.
+    if serialized.len() as u64 > MAX_TRANSFERRED_VAULT_BYTES {
+        return Err(secret_error(
+            "Chariox Vault file exceeds its size limit".to_string(),
+        ));
+    }
     let tmp_path = vault_temp_path(path);
     let mut tmp_file = OpenOptions::new()
         .write(true)
@@ -1826,6 +1858,59 @@ mod tests {
         );
         config.user_config.credential_vault.path = vault_path.display().to_string();
         config
+    }
+
+    // MP-11 F1: an expired cached key cannot acquire any new lease.
+    #[test]
+    fn expired_cached_vault_lease_cannot_be_extended() {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-expired-lease-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        for lease in [
+            VaultUnlockLease::Operation,
+            VaultUnlockLease::TtlMinutes(30),
+            VaultUnlockLease::KernelShutdown,
+        ] {
+            unlocked_vaults().lock().unwrap().insert(
+                path.clone(),
+                UnlockedVault {
+                    key: Zeroizing::new([42; KEY_LEN]),
+                    expires_at_ms: Some(0),
+                },
+            );
+            let result = extend_chariox_encrypted_vault(&path, lease);
+            // Clear even on the fail-first run; this fixture owns only its path.
+            let removed = unlocked_vaults().lock().unwrap().remove(&path);
+            assert!(
+                result.is_err(),
+                "expired key must require passphrase re-entry"
+            );
+            assert!(is_chariox_vault_locked_error(&result.unwrap_err()));
+            assert!(removed.is_none(), "expired Zeroizing key must be removed");
+        }
+    }
+
+    #[test]
+    fn live_cached_vault_lease_can_be_extended() {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-live-lease-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        unlocked_vaults().lock().unwrap().insert(
+            path.clone(),
+            UnlockedVault {
+                key: Zeroizing::new([42; KEY_LEN]),
+                expires_at_ms: None,
+            },
+        );
+        let result = extend_chariox_encrypted_vault(&path, VaultUnlockLease::TtlMinutes(30));
+        lock_chariox_encrypted_vault(&path).unwrap();
+        let status = result.unwrap();
+        assert!(status.unlocked);
+        assert!(status.expires_at_ms.unwrap() > crate::session::unix_epoch_ms());
     }
 
     #[test]

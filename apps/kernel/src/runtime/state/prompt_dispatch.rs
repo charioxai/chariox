@@ -364,9 +364,15 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         prompt: &crate::session::PromptQueueItem,
+        expected_active_prompt_id: Option<&str>,
     ) -> Result<Option<String>, DaemonError> {
-        self.steer_remote_agent_message_for_turn(session_id, prompt, None, None)
-            .await
+        self.steer_remote_agent_message_for_turn(
+            session_id,
+            prompt,
+            expected_active_prompt_id,
+            None,
+        )
+        .await
     }
 
     pub(in crate::runtime::state) async fn steer_remote_agent_message_for_turn(
@@ -562,19 +568,9 @@ impl KernelRuntimeState {
             &remote_execution.leased_agent_id,
             &provider_run_id,
         );
-        if expected_active_prompt.is_some() {
-            owned.append_steering_prompt_history(
-                session_id,
-                &provider_run_id,
-                &payload.target_home_prompt_id,
-                prompt.source_attachment_id(),
-                agent_id,
-                prompt.id(),
-                prompt.prompt(),
-                prompt.attachments(),
-            )?;
-            return Ok(Some(projected_provider_run_id));
-        }
+        // MP-08 / MP-10 / MP-11: Explicit user steering shares the same
+        // post-receipt home-turn/binding admission and echo as agent messages.
+        // A worker acknowledgement cannot revive a settled home prompt.
         self.with_app_side_effect(|_app| {
             let current_agent = owned.agent_store.get_agent(agent_id)?;
             if !remote_steer_binding_identity_matches(
@@ -850,14 +846,38 @@ impl KernelRuntimeState {
         attachment_id: &str,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
+        self.cancel_agent_prompt_if_matches_with_external_authority(
+            session_id,
+            target_agent_id,
+            attachment_id,
+            None,
+            authority,
+        )
+        .await
+    }
+
+    pub(crate) async fn cancel_agent_prompt_if_matches_with_external_authority(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        expected_prompt_id: Option<&str>,
+        authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
+    ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
         self.authorize_prompt_command(authority)?;
+        // An expected prompt narrows admission; it never bypasses attachment authority.
+        if !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id) {
+            self.owned
+                .ensure_attachment_in_session(session_id, attachment_id)?;
+        }
         {
             let owned = &self.owned;
             if let Some(cancellation) = self
-                .cancel_remote_agent_prompt_if_remote(
+                .cancel_remote_agent_prompt_if_matches(
                     session_id,
                     target_agent_id,
                     attachment_id,
+                    expected_prompt_id,
                     authority,
                 )
                 .await?
@@ -865,10 +885,18 @@ impl KernelRuntimeState {
                 return Ok(cancellation);
             }
             self.authorize_prompt_command(authority)?;
-            if let Some(cancellation) =
-                owned.cancel_local_prompt(session_id, target_agent_id, attachment_id)?
-            {
+            if let Some(cancellation) = owned.cancel_local_prompt_if_matches(
+                session_id,
+                target_agent_id,
+                attachment_id,
+                expected_prompt_id,
+            )? {
                 return Ok(cancellation);
+            }
+            if expected_prompt_id.is_some() {
+                return Err(DaemonError::NoActivePrompt {
+                    session_id: session_id.to_string(),
+                });
             }
             Err(DaemonError::LocalTransport {
                 operation: "cancel prompt",

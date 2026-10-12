@@ -31,4 +31,6 @@ test("MP-11 F7 protocol drill refuses missing/mismatched tests and suppresses pr
   const report = runPublicProviderRunProtocolDrill("/synthetic/test", () => ({ status: 0, stdout: "test result: ok. 1 passed; 0 failed;" }))
   assert.equal(report.passed, true)
   assert.equal(report.results.length, 3)
+  const runtime = readFileSync(new URL("../apps/kernel/src/local/api/types.rs", import.meta.url), "utf8")
+  assert.equal(report.localProtocol, Number(runtime.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1]))
 })

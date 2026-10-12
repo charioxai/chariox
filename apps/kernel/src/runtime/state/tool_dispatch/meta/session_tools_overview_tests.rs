@@ -393,11 +393,19 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
             session: retained_session.clone(),
             provider_run: None,
             agent_activity: Default::default(),
+            room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
+                &retained_session,
+                actor.owner_user_id(),
+            ),
         }
         .redacted_for_user(actor.owner_user_id(), &state.owned.durable_state_store)
         .unwrap();
         let response = crate::runtime::response_redaction::redact_response_for_user(
             crate::local::LocalDaemonResponse::SessionState {
+                room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
+                    &retained_session,
+                    actor.owner_user_id(),
+                ),
                 session: retained_session,
                 agent_activity: Default::default(),
                 agent_activity_revision: 0,

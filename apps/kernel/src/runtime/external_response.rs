@@ -4,6 +4,7 @@
 use crate::error::DaemonError;
 use crate::local::LocalDaemonResponse;
 use crate::runtime::command::KernelCommand;
+use crate::runtime::kernel_access::Refusal;
 
 pub(crate) fn finish_response(
     command: &KernelCommand,
@@ -44,10 +45,10 @@ pub(crate) fn public_error_message(message: &str) -> bool {
         "sudo request expired; answer the popup in a Chariox terminal",
         "queued sudo was revoked",
         "sudo authorization revoked before dispatch",
-        "Unix peer has no live authority for this request",
         "access request refused or expired; answer the popup in a Chariox terminal",
     ]
     .into_iter()
+    .chain(Refusal::ALL.map(Refusal::message))
     .any(|known| {
         message == known || message == crate::runtime::kernel_access::error(known).to_string()
     })
@@ -149,11 +150,15 @@ response_policies! {
         UserDomainInteractionAnswered,
     ],
     Public => [
+        // MP-07/MP-08/MP-11: receipt metadata only; SSH admission stays owner-scoped.
+        SshMachine,
         WorkflowNotificationSourceRegistered,
         WorkflowNotificationAttached,
         WorkflowNotificationDetached,
         WorkflowNotifications,
         HandoffResolved,
+        RoomWorkflowRunsControlled,
+        ActivePromptSteered,
         CloudRelayLoggedOut,
         KernelSudoRequested,
         KernelSudoExtended,
@@ -353,6 +358,7 @@ response_policies! {
         ProviderAccountProfileRemoved,
         ProviderAccountProfileDataDeleted,
         ProviderAccountCredentialStored,
+        ProviderAccountPortabilityPreflightPassed,
         ProviderProcessesListed,
         ProviderProcessesTornDown,
         SessionHistoryOutline,

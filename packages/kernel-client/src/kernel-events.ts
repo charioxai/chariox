@@ -28,6 +28,7 @@ export type KernelEvent =
   }
   | {
     event: "session_snapshot"
+    room_workflows?: import("./kernel-types.js").RoomWorkflowInventory
     session: Record<string, unknown>
     provider_run: Record<string, unknown> | null
     agent_activity: Record<string, unknown>
@@ -37,6 +38,10 @@ export type KernelEvent =
     event: "agent_task_updated"
     session_id: string
     task: AgentTaskExecution
+  }
+  | {
+    event: "room_workflows_changed"
+    inventory: import("./kernel-types.js").RoomWorkflowInventory
   }
   | {
     event: "agent_activity_changed"

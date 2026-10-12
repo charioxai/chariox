@@ -6,7 +6,7 @@ const sourceRoot=process.env.MP11_TEST_SOURCE??path.resolve(import.meta.dirname,
 function actualSetup(Client){
  const text=fs.readFileSync(path.join(sourceRoot,'apps/cli/scripts/live-remote-native-tui-drill.mjs'),'utf8')
  const a=text.indexOf('async function createHomeManagedLocalDockerSlice(');const b=text.indexOf('\nasync function deleteHomeManagedSlice(',a)
- return new Function('LocalIpcClient','unwrap','createSliceRequest','startSliceRequest','importSliceProviderAuthRequest','deleteSliceRequest',`${text.slice(a,b)};return createHomeManagedLocalDockerSlice`)(Client,response=>response,()=>({kind:'create'}),id=>({kind:'start',id}),(id,provider)=>({kind:'auth',id,provider}),id=>({kind:'delete',id}))
+ return new Function('LocalIpcClient','unwrap','createSliceRequest','startSliceRequest','importSliceProviderAuthRequest','deleteSliceRequest','linkManagedSliceProviderProfile',`${text.slice(a,b)};return createHomeManagedLocalDockerSlice`)(Client,response=>response,()=>({kind:'create'}),id=>({kind:'start',id}),(id,provider,profile)=>({kind:'auth',id,provider,profile}),id=>({kind:'delete',id}),async(_client,provider)=>({profile_id:`${provider}-scoped`}))
 }
 for(const fault of ['second-auth','missing-worker','cleanup'])test(`MP-11 F29 ${fault} retains owned slice cleanup`,async()=>{
  const calls=[]

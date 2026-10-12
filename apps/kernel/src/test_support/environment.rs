@@ -72,7 +72,16 @@ pub(crate) fn isolate_environment_test() -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        command.process_group(0);
+        // MP-11: retain an exclusive-session launch witness for safe timeout cleanup.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
     }
     let mut child = command
         .spawn()

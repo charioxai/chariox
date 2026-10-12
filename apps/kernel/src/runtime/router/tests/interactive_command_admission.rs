@@ -701,6 +701,7 @@ async fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog_inner(
         session_id: session_id.clone(),
         attachment_id: attachment.id().to_string(),
         target_agent_id: None,
+        expected_prompt_id: None,
     });
     let cancel_command =
         KernelCommand::from_local_request("cmd-cancel-during-catalog", None, None, &cancel_request);

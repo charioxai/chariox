@@ -28,12 +28,22 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .execution_leases
             .get(&leased_agent.lease_id)?
             .clone();
+        // Native input originates in the backing worker prompt owner. Its
+        // projection retains that ID on the home, while home-origin dispatches
+        // continue to use their explicit home/backing binding.
+        let home_prompt_id = leased_agent.active_home_prompt_id.clone().or_else(|| {
+            self.app
+                .prompt_owner_active_prompt_for_agent(backing_session_id, backing_agent_id)
+                .ok()
+                .flatten()
+                .map(|prompt| prompt.id().to_string())
+        });
         Some((
             lease.home_kernel_id,
             RemoteNativeInteractionContext {
                 home_session_id: lease.home_session_id,
                 home_agent_id: lease.home_agent_id,
-                home_prompt_id: leased_agent.active_home_prompt_id,
+                home_prompt_id,
                 leased_agent_id: leased_agent.id,
                 worker_provider_run_id: worker_provider_run_id.to_string(),
             },

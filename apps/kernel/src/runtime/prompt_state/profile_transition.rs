@@ -25,7 +25,6 @@ impl AgentProfileTransitionClaim {
         self,
         session: &RuntimeSession,
         agent_id: &str,
-        prompt_id: String,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         let mut owner = self
             .state
@@ -46,7 +45,6 @@ impl AgentProfileTransitionClaim {
             owner.ensure_agent_state(session, agent_id),
             agent_id,
             None,
-            prompt_id,
         );
         owner.profile_transitions.remove(&self.key);
         result
@@ -141,13 +139,17 @@ mod tests {
                 PromptSubmissionOutcome::Queued { .. }
             ));
         }
+        let queued_id = owner
+            .peek_next_queued_prompt(&session, "agent-1")
+            .unwrap()
+            .id()
+            .to_string();
         let started = claim
-            .finish_and_activate_next(&session, "agent-1", "started".into())
+            .finish_and_activate_next(&session, "agent-1")
             .unwrap()
             .unwrap();
         assert_eq!(started.prompt(), "first");
-        // MP-08/MP-10/MP-11: profile changes retain the durable admission ID.
-        assert_eq!(started.id(), "first");
+        assert_eq!(started.id(), queued_id);
         assert_eq!(started.workflow_run_id(), Some("run-first"));
         assert_eq!(started.workflow_node_run_id(), Some("node-first"));
         assert_eq!(started.source_client_id(), Some("caller-client"));
@@ -201,7 +203,7 @@ mod tests {
             .claim_idle_agent_profile_transition(&session, "agent-1")
             .unwrap();
         assert!(claim
-            .finish_and_activate_next(&session, "agent-1", "unused".into())
+            .finish_and_activate_next(&session, "agent-1")
             .unwrap()
             .is_none());
         assert!(matches!(
@@ -233,14 +235,12 @@ mod tests {
         let second = owner
             .claim_idle_agent_profile_transition(&session, "agent-2")
             .unwrap();
-        assert!(first
-            .finish_and_activate_next(&session, "agent-2", "wrong".into())
-            .is_err());
+        assert!(first.finish_and_activate_next(&session, "agent-2").is_err());
         assert!(owner
             .claim_idle_agent_profile_transition(&session, "agent-2")
             .is_err());
         assert!(second
-            .finish_and_activate_next(&session, "agent-2", "empty".into())
+            .finish_and_activate_next(&session, "agent-2")
             .unwrap()
             .is_none());
     }
@@ -267,12 +267,7 @@ mod tests {
             panic!("reserved agent must queue");
         };
         assert!(owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                "agent-1",
-                Some(prompt.id()),
-                "started".into()
-            )
+            .activate_next_queued_prompt_for_dispatch(&session, "agent-1", Some(prompt.id()))
             .unwrap()
             .is_none());
         assert!(matches!(
@@ -296,12 +291,7 @@ mod tests {
             .is_err());
         drop(claim);
         let started = owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                "agent-1",
-                Some(prompt.id()),
-                "started".into(),
-            )
+            .activate_next_queued_prompt_for_dispatch(&session, "agent-1", Some(prompt.id()))
             .unwrap()
             .unwrap();
         assert_eq!(started.prompt(), "first");

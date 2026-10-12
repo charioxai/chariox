@@ -231,6 +231,7 @@ function createHarness(options: {
       calls.push("syncCommandCenter")
     },
     deriveStateUpdate: ({ nextState }) => {
+      assert.ok(nextState, "inventory reconciliation requires the current state")
       options.inspectNextState?.(nextState)
       return options.update
     },
@@ -256,4 +257,15 @@ function waitingRoomState(overrides: Partial<WaitingRoomState>): WaitingRoomStat
     keyState: { up: false, down: false, left: false, right: false },
     ...overrides,
   } as WaitingRoomState
+}
+
+for (const method of ["reconcile", "reconcileProjection"] as const) {
+  test(`MP-08 / MP-10 / MP-11 machine inventory refresh ${method} uses current state without a launch override`, () => {
+    const current = waitingRoomState({ selectedMachineRef: "machine-local", selectedKernelRef: "kernel-local" })
+    const harness = createHarness({ currentState: current, update: { normalizedState: current, nextProvider: "codex", nextModel: "gpt-6.1-sol", nextEffort: "high", shouldPersistProviderPreferences: false }, attached: true })
+    // The real derivation consumes nextState before applying an inventory patch.
+    const derive = harness.controller[method]
+    const state = derive()
+    assert.equal(state, current)
+  })
 }

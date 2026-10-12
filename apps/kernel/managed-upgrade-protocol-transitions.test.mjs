@@ -12,6 +12,15 @@ const POLICY_PATH = join(REPOSITORY_ROOT, "apps/kernel/managed-upgrade-protocol-
 const POLICY_RELATIVE_PATH = "usr/lib/chariox/slice-build-context/apps/kernel/managed-upgrade-protocol-transitions.json"
 const UPGRADE_STATE_SCRIPT = join(REPOSITORY_ROOT, "deploy/managed-kernel/managed-kernel-upgrade-state.mjs")
 
+test("MP-07/MP-10/MP-11 every build admits its own runtime protocol in both transition directions", async () => {
+  const policy = JSON.parse(await readFile(POLICY_PATH, "utf8"))
+  const runtimeTypes = await readFile(join(REPOSITORY_ROOT, "apps/kernel/src/local/api/types.rs"), "utf8")
+  const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
+  assert.equal(policy.protocol, runtimeProtocol)
+  assert.ok(policy.upgradeFrom.includes(runtimeProtocol), "upgrade policy must admit the build's own protocol")
+  assert.ok(policy.rollbackTo.includes(runtimeProtocol), "rollback policy must admit the build's own protocol")
+})
+
 test("MP-07/MP-10/MP-11 the current protocol retains admitted predecessor contracts and rejects ambiguous branch protocols", async () => {
   const policy = JSON.parse(await readFile(POLICY_PATH, "utf8"))
   assert.deepEqual(Object.keys(policy).sort(), ["protocol", "rollbackTo", "schemaVersion", "upgradeFrom"])
@@ -20,6 +29,9 @@ test("MP-07/MP-10/MP-11 the current protocol retains admitted predecessor contra
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
   assert.equal(policy.protocol, runtimeProtocol)
   assert.equal(policy.protocol, localProtocolVersion)
+  const publication = await readFile(join(REPOSITORY_ROOT, "docker/publication/Dockerfile"), "utf8")
+  const publicationPins = [...publication.matchAll(/^ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=(\d+)$/gm)].map(match => Number(match[1]))
+  assert.deepEqual(publicationPins, [runtimeProtocol, runtimeProtocol], "builder and runtime publication pins must match the binary")
   for (const list of [policy.upgradeFrom, policy.rollbackTo]) {
     assert.ok(Array.isArray(list) && list.length > 0 && list.length <= 32)
     assert.ok(list.every((version, index) => Number.isSafeInteger(version)
@@ -58,10 +70,10 @@ test("MP-07/MP-10/MP-11 the current protocol retains admitted predecessor contra
       assert.equal(transition(newRoot, localProtocolVersion, oldRoot, version), "")
     }
     // Released G2 and Apps predecessors are reciprocal; other branch numbers stay refused.
-    for (const version of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index), 412, 413, 414, ...Array.from({ length: 18 }, (_, index) => 417 + index), ...Array.from({ length: 26 }, (_, index) => 436 + index), ...Array.from({ length: 14 }, (_, index) => 473 + index), 488, 489, 492]) {
+    for (const version of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index), 412, 413, 414, ...Array.from({ length: 18 }, (_, index) => 417 + index), ...Array.from({ length: 26 }, (_, index) => 436 + index), ...Array.from({ length: 14 }, (_, index) => 473 + index), 488, 489, 492, 495, 496, 499]) {
       const oldRoot = join(scratch, `protocol-${version}`)
-      assert.throws(() => transition(oldRoot, version, newRoot, localProtocolVersion), /not reciprocally authorized/)
-      assert.throws(() => transition(newRoot, localProtocolVersion, oldRoot, version), /not reciprocally authorized/)
+      assert.throws(() => transition(oldRoot, version, newRoot, localProtocolVersion), (version > policy.protocol ? /policy is missing or invalid/ : /not reciprocally authorized/))
+      assert.throws(() => transition(newRoot, localProtocolVersion, oldRoot, version), (version > policy.protocol ? /policy is missing or invalid/ : /not reciprocally authorized/))
     }
   } finally {
     await rm(scratch, { recursive: true, force: true })

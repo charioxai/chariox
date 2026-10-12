@@ -1,5 +1,6 @@
-import { createProjectEnvironmentReadController, projectEnvironmentPageSize } from "./project-environment-read-controller.js"
+import { createProjectEnvironmentReadController, projectEnvironmentPageSize, projectEnvironmentTextWidth } from "./project-environment-read-controller.js"
 import { MouseButton } from "@opentui/core"
+import { createEffect, on } from "solid-js"
 
 import { createCliDialogOverlayController } from "./cli-dialog-overlay-controller.js"
 import {
@@ -94,6 +95,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
   const environmentController = createProjectEnvironmentReadController({
     send: request => deps.client.send(request),
     pageSize: () => projectEnvironmentPageSize(deps.dimensions().height),
+    textWidth: () => projectEnvironmentTextWidth(deps.dimensions().width),
     render: () => dialogOverlayController.render(),
   })
   const dialogOverlayController = createCliDialogOverlayController<any, any>({
@@ -160,6 +162,11 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
   const renderHotkeysOverlay = dialogOverlayController.render
   const closeSessionBrowserDialog = dialogOverlayController.closeSessionBrowser
 
+  createEffect(on(
+    () => deps.sessionBrowserOpen() ? [sessionBrowserSessions(), deps.sessionBrowserIndex()] : null,
+    state => { if (state) renderHotkeysOverlay() },
+  ))
+
   const sessionBrowserController = createSessionBrowserController({
     isOpen: deps.sessionBrowserOpen,
     visibleSessions: sessionBrowserSessions,
@@ -225,7 +232,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     closeHotkeys: dialogOverlayController.closeHotkeys,
     closeSessionBrowserDialog,
     closeTerminalPairingDialog: dialogOverlayController.closeTerminalPairing,
-    copyPromptSelection: clipboardController.copyPromptSelection,
+    copyPromptSelection: () => clipboardController.copyPromptSelection() || clipboardController.copySelection(),
     dialogOverlayOpen: dialogOverlayController.isOpen,
     handleHotkeysToggleShortcut: hotkeysToggleController.handle,
     handlePromptSelectionSurfaceMouseUp: promptSurfaceMouseController.handleMouseUp,
