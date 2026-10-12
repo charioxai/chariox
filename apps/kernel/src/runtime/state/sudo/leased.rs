@@ -188,9 +188,15 @@ impl KernelRuntimeState {
                 "this leased turn has no live sudo window on this worker",
             ));
         }
-        self.forward_meta_runtime_tool(context, "chariox_kernel_request", arguments)
-            .await
-            .map(Some)
+        // Home may wait up to 300 s for the owner's per-operation scope approval.
+        self.forward_meta_runtime_tool(
+            context,
+            "chariox_kernel_request",
+            arguments,
+            std::time::Duration::from_secs(345),
+        )
+        .await
+        .map(Some)
     }
 
     /// Home: the leased agent whose current worker run is `run_id`.
