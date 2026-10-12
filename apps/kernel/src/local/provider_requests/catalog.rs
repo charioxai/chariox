@@ -265,6 +265,15 @@ pub(crate) fn observe_provider_auth_status(
         }
         Some("claude") => {
             let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
+            if status.auth_state != "authenticated" {
+                if let Some(status) =
+                    verified_claude_setup_token_status(owner_user_id, provider, &profile)?
+                {
+                    // Native auth status cannot observe the Vault-only token.
+                    // Preserve its verified observation and validation time.
+                    return Ok(status);
+                }
+            }
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             Ok(status)
         }
@@ -291,6 +300,22 @@ pub(crate) fn refresh_provider_account_profile_response(
     owner_user_id: &str,
     provider: &str,
     account_profile: &str,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    refresh_provider_account_profile_with_config(
+        registry,
+        owner_user_id,
+        provider,
+        account_profile,
+        &DaemonConfig::load_from_env(),
+    )
+}
+
+pub(crate) fn refresh_provider_account_profile_with_config(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    config: &DaemonConfig,
 ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
     let profile = registry.get(owner_user_id, provider, account_profile)?;
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
@@ -319,10 +344,44 @@ pub(crate) fn refresh_provider_account_profile_response(
                     &profile.profile_id,
                 )?
             {
-                // Launches use the profile's vault setup token, which was
-                // verified with Claude when it was stored. Reading it back
-                // needs the vault, so keep that observation and its time.
-                return Ok(profile);
+                if verified_claude_setup_token_status(owner_user_id, provider, &profile)?.is_some()
+                {
+                    return Ok(profile);
+                }
+                // Older direct imports stored without verification. Recover
+                // them through the same official turn, never token presence.
+                let secrets = crate::provider::resolve_provider_account_credentials(
+                    config,
+                    owner_user_id,
+                    provider,
+                    &profile.profile_id,
+                )?;
+                let mut environment = environment;
+                for (name, value) in secrets.iter() {
+                    environment.insert(name.to_string(), value.to_string());
+                }
+                let verified = resolve_claude_executable().and_then(|executable| {
+                    crate::provider::verify_claude_setup_token(&executable, &environment)
+                });
+                if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
+                    zeroize::Zeroize::zeroize(value);
+                }
+                verified?;
+                return registry.update_observation(
+                    owner_user_id,
+                    provider,
+                    &profile.profile_id,
+                    crate::account_profile::ProviderAccountAuthState::Authenticated,
+                    None,
+                    None,
+                    status.detected_version,
+                    Some(
+                        profile
+                            .usage
+                            .clone()
+                            .reconciled_freshness(crate::session::unix_epoch_ms()),
+                    ),
+                );
             }
             let usage = if status.auth_state == "authenticated" {
                 let executable = resolve_claude_executable()?;
@@ -365,6 +424,34 @@ pub(crate) fn refresh_provider_account_profile_response(
     } else {
         Ok(updated)
     }
+}
+
+// MP-08 / MP-11: only a verified, account-bound observation can supplement
+// native auth status; an unverified registry entry is never authentication.
+fn verified_claude_setup_token_status(
+    owner_user_id: &str,
+    provider: &str,
+    profile: &crate::account_profile::ProviderAccountProfile,
+) -> Result<Option<ProviderAuthStatus>, DaemonError> {
+    if profile.auth_state != crate::account_profile::ProviderAccountAuthState::Authenticated
+        || profile.last_validated_at_ms.is_none()
+        || !crate::provider::provider_account_credential_registered(
+            owner_user_id,
+            provider,
+            &profile.profile_id,
+        )?
+    {
+        return Ok(None);
+    }
+    Ok(Some(ProviderAuthStatus {
+        provider: provider.to_string(),
+        account_profile: profile.profile_id.clone(),
+        auth_state: "authenticated".into(),
+        identity_summary: profile.identity_summary.clone(),
+        plan: profile.plan.clone(),
+        detected_version: profile.detected_provider_version.clone(),
+        login_hint: None,
+    }))
 }
 
 fn claude_auth_status(
