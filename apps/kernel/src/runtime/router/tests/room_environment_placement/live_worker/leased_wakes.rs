@@ -1034,8 +1034,8 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         "{allowed:?}"
     );
     assert!(
-        !sibling_listed,
-        "the sibling leased agent never lists the tool"
+        sibling_listed,
+        "MP-08/MP-11: native catalog caching retains the interface without sudo authority"
     );
     assert!(
         sibling_call.as_ref().is_err_and(|error| error
@@ -1072,7 +1072,7 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         home_live_after.is_empty(),
         "home window ended: {home_live_after:?}"
     );
-    assert!(!listed_after, "the worker stops listing the tool at expiry");
+    assert!(listed_after, "MP-08/MP-11: the cached interface remains discoverable after expiry; invocation still denies");
     assert!(
         expired_call.as_ref().is_err_and(|error| error
             .to_string()
