@@ -95,7 +95,8 @@
     "./hidden-input": "./dist/hidden-input.js",
     "./project-environment-aggregate": "./dist/project-environment-aggregate.js",
     "./user-domain-access": "./dist/user-domain-access.js",
-    "./browser-mirror": "./dist/browser-mirror.js"
+    "./browser-mirror": "./dist/browser-mirror.js",
+    "./agent-task-state": "./dist/agent-task-state.js"
   },
   "types": "./dist/index.d.ts",
   "scripts": {

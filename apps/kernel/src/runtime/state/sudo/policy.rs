@@ -105,6 +105,14 @@ impl KernelRuntimeState {
             self.sweep_sudo();
         }
         let session = self.owned.session_store.get_session(&session_id)?;
+        if self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent)
+            .is_some_and(|p| p.prompt_origin() == crate::session::PromptOrigin::CompletionCheck)
+        {
+            return Err(denied());
+        }
         let (entry, prompt) = self
             .owned
             .prompt_state_owner

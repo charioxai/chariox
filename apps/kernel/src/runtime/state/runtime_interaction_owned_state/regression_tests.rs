@@ -655,3 +655,169 @@ async fn app_file_export_saved_from_another_session_closes_only_its_presented_pr
         Err(oneshot::error::TryRecvError::Empty)
     ));
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: owner pause keeps controls usable.
+#[tokio::test]
+async fn a12_owner_paused_goal_withdraws_decision_without_reopening_on_interval() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let f = Fixture::with_room_tools();
+    let store = &f.state.owned.durable_state_store;
+    let id = f.id("goal");
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "root".into(),
+            prompt: id.clone(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::StartGoal {
+            task: id.clone(),
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            objective: "Implement and verify the owner request".into(),
+            minutes: 1,
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Task(blocked) = store
+        .agent_lifecycle(Operation::Block {
+            task: id.clone(),
+            prompt: id.clone(),
+            reason: "Owner decision required".into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    f.state
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        f.active_ids().len(),
+        1,
+        "a real decision must request owner action"
+    );
+    let mut approval = f.register("unrelated-approval").unwrap();
+    let attachment = f
+        .state
+        .owned
+        .attachment_store
+        .attach(
+            &mut f.state.owned.session_store.write(),
+            crate::attachment::AttachRequest::new(
+                &f.session,
+                "owner-terminal",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ),
+        )
+        .unwrap();
+    let response = f
+        .state
+        .control_goal_prompt(
+            &crate::local::SubmitPromptRequest {
+                session_id: f.session.clone(),
+                attachment_id: attachment.id().into(),
+                target_agent_id: Some("root".into()),
+                prompt: format!(
+                    "/goal pause {} {}",
+                    blocked.goal.as_ref().unwrap().id,
+                    blocked.revision
+                ),
+                attachments: vec![],
+            },
+            DEFAULT_LOCAL_USER_ID,
+        )
+        .await
+        .unwrap();
+    let Some(LocalDaemonResponse::AgentTaskUpdated { task: paused, .. }) = response else {
+        panic!()
+    };
+    let paused = *paused;
+    assert_eq!(f.active_ids(), vec![f.id("unrelated-approval")], "normal owner Pause must withdraw the Goal decision immediately, preserving unrelated approval");
+    f.state
+        .ensure_task_owner_interaction(paused.clone())
+        .await
+        .unwrap();
+    assert!(
+        f.active_ids() == vec![f.id("unrelated-approval")],
+        "explicit owner pause must withdraw its old decision and not open another modal"
+    );
+    let mut current = paused;
+    for minutes in ["2", "1", "60"] {
+        let Outcome::Task(updated) = store
+            .agent_lifecycle(Operation::ControlGoal {
+                task: id.clone(),
+                owner: DEFAULT_LOCAL_USER_ID.into(),
+                revision: current.revision,
+                action: "interval".into(),
+                value: Some(minutes.into()),
+                now: 3,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        f.state
+            .ensure_task_owner_interaction(updated.clone())
+            .await
+            .unwrap();
+        f.state.sweep_agent_lifecycle().await.unwrap();
+        assert!(
+            f.active_ids() == vec![f.id("unrelated-approval")],
+            "interval edits and sweeps must not reopen an owner-paused Goal modal"
+        );
+        assert!(updated.goal.as_ref().unwrap().paused);
+        current = updated;
+    }
+    let Outcome::Task(resumed) = store
+        .agent_lifecycle(Operation::ControlGoal {
+            task: id.clone(),
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            revision: current.revision,
+            action: "resume".into(),
+            value: None,
+            now: 4,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let next_prompt = resumed.pending_prompt_id.unwrap();
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "root".into(),
+            prompt: next_prompt.clone(),
+            run: None,
+            now: 4,
+        })
+        .unwrap();
+    let Outcome::Task(decision) = store
+        .agent_lifecycle(Operation::Block {
+            task: id.clone(),
+            prompt: next_prompt,
+            reason: "New owner decision required".into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    f.state
+        .ensure_task_owner_interaction(decision)
+        .await
+        .unwrap();
+    assert_eq!(
+        f.active_ids().len(),
+        2,
+        "a new genuine decision after Resume must remain visible"
+    );
+    assert!(matches!(
+        approval.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+}

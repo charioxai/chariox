@@ -7,6 +7,8 @@ use crate::durable_state::agent_lifecycle::{
 fn agent_task_projection_shape_is_bound_to_protocol452() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 493);
     let task = AgentTaskExecution {
+        goal: None,
+        completion_check: None,
         task_id: "task".into(),
         room_id: "room".into(),
         owner_user_id: "owner".into(),
@@ -109,5 +111,88 @@ fn agent_wake_projection_shape_is_bound_to_protocol459() {
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
         "6c53bc5bc2450a64e83266d837cfc7a00ced03affeb07697841e1f220d067462"
+    );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12: coordinator-assigned union 493.
+#[test]
+fn goal_projection_shape_is_bound_to_assigned_protocol493() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION, 493,
+        "amint must fold the goal projection into the assigned union"
+    );
+    let expected = serde_json::json!({"schema_version":1,"id":"goal:p","owner_user_id":"owner","room_id":"room","agent_id":"agent","objective":"Verify artifacts","original_prompt_id":"p","objective_revision":1,"created_at_ms":1,"active_elapsed_ms":2,"waiting_elapsed_ms":3,"state_since_ms":4,"check_in_minutes":10,"next_check_in_ms":null,"paused":false,"continuation_sequence":1,"check_count":1,"evaluation":{"origin":"completion_check","prompt_id":"check","work_prompt_id":"p","work_provider_run_id":"run","objective_revision":1,"ledger_revision":3,"started_at_ms":4,"deadline_ms":60004,"result":{"status":"continue","reason":"independent work"}},"final_answer":null,"evidence":[]});
+    let goal: crate::durable_state::agent_lifecycle::goals::AgentGoal =
+        serde_json::from_value(expected.clone()).unwrap();
+    let value = serde_json::to_value(goal).unwrap();
+    assert_eq!(value, expected);
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
+        "d6e7a96c9b733533436b6434d32bb3036bc90cfef876c0f413b2cc8affb6a78b"
+    );
+    assert_eq!(
+        serde_json::to_value(crate::session::PromptOrigin::CompletionCheck).unwrap(),
+        serde_json::json!("completion_check")
+    );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12: plain checks join the same assigned union.
+#[test]
+fn plain_completion_projection_shape_is_bound_to_assigned_protocol493() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION, 493,
+        "amint must fold plain confirmation into the assigned union"
+    );
+    let expected = serde_json::json!({"check_count":1,"evaluation":{"deadline_ms":60004,"ledger_revision":3,"objective_revision":1,"origin":"completion_check","prompt_id":"check","result":{"evidence":["public:artifact"],"final_answer":"Verified request","status":"achieved"},"started_at_ms":4,"work_prompt_id":"p","work_provider_run_id":"run"},"evidence":["public:artifact"],"final_answer":"Verified request","original_prompt_id":"p","schema_version":1});
+    let check: crate::durable_state::agent_lifecycle::completion::AgentCompletionCheck =
+        serde_json::from_value(expected.clone()).unwrap();
+    let value = serde_json::to_value(check).unwrap();
+    assert_eq!(value, expected);
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
+        "341576d124cc87f6ab41d2ee32ebc7d1588133e35ea60b56d21753ab10cdc99c"
+    );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12: precise additions for coordinator union493/102.
+#[test]
+fn compact_task_wire_shapes_are_bound_to_assigned_protocol493() {
+    let raw = serde_json::json!({"task_id":"task","room_id":"room","owner_user_id":"owner","agent_id":"agent","prompt_id":"prompt","provider_run_id":null,"revision":2,"blocked_revision":0,"state":"working","reason":"work","obligations":[],"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":0,"correction_used":false,"pending_prompt_id":null});
+    let task = serde_json::from_value(raw.clone()).unwrap();
+    let response = serde_json::to_value(LocalDaemonResponse::AgentTaskUpdated {
+        session_id: "room".into(),
+        task: Box::new(task),
+    })
+    .unwrap();
+    let task = serde_json::from_value(raw.clone()).unwrap();
+    let event = serde_json::to_value(
+        crate::transport::kernel_protocol::KernelEvent::AgentTaskUpdated {
+            session_id: "room".into(),
+            task: Box::new(task),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        response,
+        serde_json::json!({"AgentTaskUpdated":{"session_id":"room","task":raw}})
+    );
+    assert_eq!(
+        event,
+        serde_json::json!({"event":"agent_task_updated","session_id":"room","task":raw})
+    );
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!("{:x}", Sha256::digest(response.to_string().as_bytes())),
+        "4c0a03a004a412d708a4d60c1475b4838001ee1a9437501f64605a4e9c939869"
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(event.to_string().as_bytes())),
+        "8a4f8a22a07cd18fe4ca79ce9277dc9dd44bb73330c2a3f85bf0b6102ba2d4e4"
+    );
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION, 493,
+        "amint must fold compact task frames into the assigned union"
     );
 }

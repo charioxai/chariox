@@ -1,3 +1,5 @@
+import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
+import type { AgentTaskExecution } from "@chariox/kernel-client/kernel-types"
 import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
 import { getAppInstallationRequest } from "@chariox/kernel-client/ipc-requests"
 import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types"
@@ -161,7 +163,7 @@ import {
   updateMetaagentTask,
 } from "./session-api.js"
 import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "@chariox/kernel-client/session-config-projection"
-import { createAgentPromptScheduleRequest } from "@chariox/kernel-client/ipc-requests"
+import { submitPromptRequest, createAgentPromptScheduleRequest } from "@chariox/kernel-client/ipc-requests"
 import { formatSessionList } from "./sessions.js"
 import {
   createSlice,
@@ -473,6 +475,24 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     currentAccountProfileId: () => currentAccountProfileId?.() || options.accountProfile || "default",
     currentExecutionMode,
     currentPermissionLevel,
+    submitGoalPrompt: async (text, targetAgentId) => {
+      const attachment = attachmentState()
+      if (!attachment) throw new Error("goal needs an attached terminal")
+      const response = await client.send<{ PromptSubmitted?: { session: RuntimeSession }; SessionState?: { session: RuntimeSession }; AgentTaskUpdated?: { session_id: string; task: AgentTaskExecution } }>(submitPromptRequest(sessionState().id, attachment.id, targetAgentId, text, []))
+      if (response.AgentTaskUpdated) {
+        const update = response.AgentTaskUpdated
+        if (update.session_id !== sessionState().id || update.task.agent_id !== targetAgentId) throw new Error("foreign goal control confirmation")
+        deps.applySessionState(withAgentTaskUpdate(sessionState(), update.session_id, update.task))
+        requestRootRender()
+        return
+      }
+      const payload = response.PromptSubmitted ?? response.SessionState
+      if (!payload?.session) throw new Error("goal admission did not return session state")
+      deps.applySessionState(payload.session)
+      await deps.refreshAgentPanes(payload.session)
+      deps.rebuildTranscript()
+      requestRootRender()
+    },
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,

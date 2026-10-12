@@ -13,6 +13,10 @@ pub enum ExecutionState {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTaskExecution {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<super::goals::AgentGoal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_check: Option<super::completion::AgentCompletionCheck>,
     pub task_id: String,
     pub room_id: String,
     #[serde(default)]
@@ -133,6 +137,44 @@ pub(crate) enum Operation {
         prompt: String,
         wake: AgentWake,
         binding: super::LeasedProcessBinding,
+    },
+    EnableCompletionCheck {
+        task: String,
+    },
+    AdoptGoal {
+        owner: String,
+        room: String,
+        agent: String,
+        run: String,
+        nodes: Vec<String>,
+        objective: String,
+        now: u64,
+    },
+    TimeoutGoal {
+        task: String,
+        prompt: String,
+        now: u64,
+    },
+    StartGoal {
+        task: String,
+        owner: String,
+        objective: String,
+        minutes: u32,
+        now: u64,
+    },
+    EvaluateGoal {
+        task: String,
+        prompt: String,
+        result: String,
+        now: u64,
+    },
+    ControlGoal {
+        task: String,
+        owner: String,
+        revision: u64,
+        action: String,
+        value: Option<String>,
+        now: u64,
     },
     Begin {
         owner: String,
@@ -356,6 +398,7 @@ pub(crate) enum Outcome {
     Saved,
 }
 pub(crate) struct Request {
+    pub(super) enqueued_at: std::time::Instant,
     pub(super) operation: Operation,
     pub(super) response: mpsc::Sender<Result<Outcome, DaemonError>>,
 }
@@ -364,4 +407,17 @@ impl std::fmt::Debug for Request {
         f.debug_struct("AgentLifecycleRequest")
             .finish_non_exhaustive()
     }
+}
+
+// An expired automatic wake may still carry an unresolved resource outcome.
+// Explicit ordinary handling can settle that exact source without replaying delivery.
+pub(crate) fn unresolved_source_outcome(task: &AgentTaskExecution, event: &InboxEvent) -> bool {
+    task.room_id == event.room_id
+        && task.agent_id == event.agent_id
+        && !matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
+        && matches!(event.kind.as_str(), "source_completed" | "source_lost")
+        && task.obligations.iter().any(|obligation| {
+            obligation.completion_source() == Some(event.source_id.as_str())
+                && matches!(obligation.status.as_str(), "settling" | "failed")
+        })
 }

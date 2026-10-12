@@ -474,7 +474,7 @@ impl KernelRuntimeState {
         {
             return Ok(None);
         }
-        let prepared = crate::app::KernelPreparedPromptSubmission {
+        let mut prepared = crate::app::KernelPreparedPromptSubmission {
             session_id: entry.session_id.clone(),
             prompt: PromptQueueItem::new(&entry.entry_id, &request.attachment_id, &entry.agent_id, text, PromptStatus::Queued)
                 .with_hidden_system_context("This is a human-authorized sudo window for this task only. Use chariox_kernel_request for kernel operations while it is live; it continues across your waits and correlated continuations of this task until it expires, the task ends or the owner revokes it. It never covers unrelated prompts or messages and cannot answer approvals. Never ask for or accept a passkey in agent output.")
@@ -482,6 +482,7 @@ impl KernelRuntimeState {
         };
         if durable_work {
             self.owned.admit_agent_task(&prepared)?;
+            self.owned.admit_goal_prompt(&mut prepared)?;
         }
         // Provider launch and concurrent ordinary submissions can leave the
         // target busy. Retry without ever admitting a durable queued prompt.

@@ -632,6 +632,58 @@ they are not selectors for regular `agent_tasks`. Process/timer watcher sources
 belong to PR3 and leased delivery reconciliation to PR10; unsupported leased
 paths fail visibly instead of fabricating acceptance.
 
+## 3.3.6 Hybrid Goals (MP-08 / MP-09 / MP-10 / MP-11, A12)
+
+With room agent tools enabled, owner terminal prompts `/goal [--interval N]
+<objective>` enter ordinary prompt admission on the focused ordinary agent.
+The interval defaults to 10 minutes and accepts 1–60. `/sudo /goal` uses the
+existing fresh elevation interaction; goal and elevation duration remain
+independent. Delegates inherit neither goal mode nor elevation.
+
+`agent_tasks[].goal` has schema version 1 and binds its immutable goal/task ID
+to owner, room, agent and original prompt. It persists the protected objective,
+objective revision, elapsed active/wait time, interval/next due, continuation
+sequence, evaluation intent/result, check count and verified final answer/evidence.
+Obligations, progress, blocked interactions and delivery receipts stay in the
+shared task ledger. No separate goal scheduler or relay/Cloud authority exists.
+
+Each work-turn end admits one same-provider `completion_check` turn, bounded
+by 60 seconds and an 8 KiB public assessment. Its bounded public context carries
+obligation and registration coverage. It runs through the same provider actor
+using a fresh tool-free official-provider conversation in a neutral directory;
+ordinary conversation/resume state and permissions remain available for later
+work. Native shell, file, network, configured MCP and runtime tools are disabled
+before dispatch. Unsupported unstructured assessment paths block explicitly.
+It cannot use sudo, recursively evaluate or count its assessment as progress. The home kernel
+validates achieved/continue/waiting/blocked against current objective and ledger
+bindings. Achieved requires no open, settling or failed obligations. Valid
+continue retains sources and admits one durable continuation; valid waiting
+requires coverage and a deadline no later than the goal interval. Both immediate
+continuations and periodic wakes share the no-progress guard. Malformed/timeout
+checks block once with explicit owner recovery. Plain tasks gain no goal loop.
+
+Owner controls use the existing `SubmitPrompt` frame:
+`/goal pause|resume|cancel|interval|edit <goal-id> <task-revision> [value]`.
+The TUI binds short commands to its displayed goal revision; web buttons send
+the same command. Stale/foreign controls fail. Pause/edit suspend looping while
+retaining obligations; edit fences prior evaluations. Resume revalidates retained
+resources and admits one continuation without renewing sudo. Source events and
+reconnect cannot resume a blocked goal. All clients read the same home goal row.
+
+New `/goal` no longer invokes `planner-worker-reviewer`. Existing templates,
+`/loop` and workflow history remain available. Legacy records without trustworthy
+command provenance continue draining and require explicit owner adoption:
+`/goal adopt <run-id> <owner-confirmed objective>` on the authoritative ordinary
+entry agent. Adoption atomically fences the run ID, records its original
+invocation reference, and tracks the existing run/nodes as covered obligations.
+It never replays a template launch. Completed/cancelled runs stay terminal;
+restart retains the migration receipt, source cursors and finite check-in.
+
+The goal shape, compact task acknowledgements and `completion_check` origin use
+the coordinator-assigned local protocol 493, published with matching snapshots
+and dependent Goal client gates. The integration lane still owns relay-peer 102;
+this change retains the current peer version and snapshots until that union lands.
+
 ## 3.4 Workflow Coordination Semantics
 
 Multi-agent workflow coordination is a daemon-owned structured protocol concern.

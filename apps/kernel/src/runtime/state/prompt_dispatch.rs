@@ -690,6 +690,7 @@ impl KernelRuntimeState {
                     remote_dispatch: None,
                 });
             }
+            owned.validate_goal_prompt(&prepared)?;
             self.with_external_command_authority(authority)
                 .refresh_project_prompt_provider(
                     &prepared.session_id,
@@ -698,6 +699,7 @@ impl KernelRuntimeState {
                 .await?;
             authorize()?;
             let admitted = self.owned.admit_agent_task(&prepared)?;
+            self.owned.admit_goal_prompt(&mut prepared)?;
             let delegated_parent = self.delegated_prompt_parent(&prepared.session_id)?;
             // Boxed: keeps the outer submission future small on deep call stacks.
             let submission = Box::pin(async {

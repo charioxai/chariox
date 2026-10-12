@@ -150,11 +150,22 @@ impl<'a> ProviderPromptDispatcher<'a> {
             return Ok(());
         }
 
-        if self
+        let origin = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
+            .unwrap()
+            .prompt_origin();
+        let structured = self
             .app
             .providers
-            .run_uses_structured_prompt_io(&provider_run)
-        {
+            .run_uses_structured_prompt_io(&provider_run);
+        if origin == crate::session::PromptOrigin::CompletionCheck && !structured {
+            return Err(DaemonError::LocalTransport {
+                operation: "completion assessment",
+                message: "provider has no tool-free structured assessment path".into(),
+            });
+        }
+        if structured {
             let (source_client_id, _source_user_id) = self
                 .app
                 .active_prompt_source_attribution(session_id, &agent_id)?;
@@ -174,7 +185,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 prompt,
                 hidden_system_context,
                 attachments,
-                mode,
+                mode.with_prompt_origin(origin),
                 false,
             )?;
             return Ok(());

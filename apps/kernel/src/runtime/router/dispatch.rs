@@ -160,6 +160,23 @@ impl CommandRouter {
                 .await;
         }
         if let LocalDaemonRequest::SubmitPrompt(prompt) = &request {
+            if prompt.prompt.trim() == "/goal" || prompt.prompt.trim_start().starts_with("/goal ") {
+                if command.caller.connection_class
+                    != Some(crate::local::KernelConnectionClass::Terminal)
+                {
+                    return Err(crate::runtime::kernel_access::error(
+                        "only the room owner terminal can start or control a goal",
+                    ));
+                }
+                if let Some(response) = Box::pin(self.runtime_state.control_goal_prompt(
+                    prompt,
+                    &crate::runtime::command::command_caller_user_id(&command),
+                ))
+                .await?
+                {
+                    return Ok(response);
+                }
+            }
             if crate::runtime::state::is_sudo_control(&prompt.prompt) {
                 return Err(crate::runtime::kernel_access::error(
                     "use the terminal's sudo controls for status, extend or revoke",

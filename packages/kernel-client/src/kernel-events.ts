@@ -1,4 +1,5 @@
 import type {
+  AgentTaskExecution,
   PasskeyPrompt,
   ProviderAccountSummary,
   SliceRecord,
@@ -31,6 +32,11 @@ export type KernelEvent =
     provider_run: Record<string, unknown> | null
     agent_activity: Record<string, unknown>
     agent_activity_revision: number
+  }
+  | {
+    event: "agent_task_updated"
+    session_id: string
+    task: AgentTaskExecution
   }
   | {
     event: "agent_activity_changed"

@@ -223,6 +223,7 @@ response_policies! {
         SessionsListed,
         SessionResolved,
         SessionState,
+        AgentTaskUpdated,
         RoomEnvironmentState,
         BrowserImportConsent,
         RoomEnvironmentSlice,

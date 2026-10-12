@@ -164,6 +164,7 @@ public_events! {
     RuntimeNotices => "runtime_notices",
     AssistantMessageCompleted => "assistant_message_completed",
     SessionSnapshot => "session_snapshot",
+    AgentTaskUpdated => "agent_task_updated",
     AgentActivityChanged => "agent_activity_changed",
     ProviderRunChanged => "provider_run_changed",
     SessionMetadataChanged => "session_metadata_changed",

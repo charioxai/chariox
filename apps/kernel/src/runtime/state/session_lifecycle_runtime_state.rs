@@ -896,6 +896,10 @@ impl KernelRuntimeState {
         self.remove_destroyed_agent_provider_processes(local_provider_run_ids);
         self.append_agent_durable_event("agent.deleted", &destroyed, None)
             .await?;
+        // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: a removed delegate is a
+        // terminal source now; wake its waiting parent through the shared
+        // reconciliation path rather than the next 30-second periodic sweep.
+        self.schedule_agent_lifecycle_sweep();
         Ok(destroyed)
     }
 

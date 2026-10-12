@@ -285,6 +285,16 @@ impl KernelRuntimeState {
                 operation: "submit prompt",
             });
         }
+        if dispatch.prompt_origin == crate::session::PromptOrigin::CompletionCheck
+            && !owned
+                .provider_store
+                .run_uses_structured_prompt_io(&provider_run)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "completion assessment",
+                message: "provider has no tool-free structured assessment path".into(),
+            });
+        }
         let mut hidden_system_context = owned.hidden_context_with_failed_requests(
             &dispatch.agent_id,
             &dispatch.hidden_system_context,
@@ -371,7 +381,7 @@ impl KernelRuntimeState {
                 &prompt_with_handoff,
                 &hidden_system_context,
                 &dispatch.attachments,
-                mode,
+                mode.with_prompt_origin(dispatch.prompt_origin),
                 dispatch.steering,
             );
             return result.map(|()| true);

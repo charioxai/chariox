@@ -1,10 +1,15 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: home-owned task/inbox transactions.
 //! No provider I/O occurs here. Intent commits precede every dispatch.
+pub(crate) mod completion;
 mod delegation;
 mod delivery;
 mod leased_processes;
 pub(crate) use leased_processes::LeasedProcessMutation;
 pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
+mod delivery_waits;
+#[cfg(test)]
+mod goal_tests;
+pub(crate) mod goals;
 mod migration;
 mod quarantine;
 mod replies;
@@ -26,7 +31,7 @@ use transitions::apply;
 pub(super) use types::Request;
 pub use types::{AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState};
 mod wake_receipts;
-pub(crate) use types::{InboxEvent, Operation, Outcome, Registration};
+pub(crate) use types::{unresolved_source_outcome, InboxEvent, Operation, Outcome, Registration};
 pub(crate) const SWEEP_MS: u64 = 30_000;
 pub(crate) const DELIVERY_TIMEOUT_MS: u64 = 120_000;
 pub(crate) const LONG_WAIT_MS: u64 = 900_000;
@@ -85,6 +90,7 @@ impl DurableKernelStateStore {
         let (response, receive) = mpsc::channel();
         self.writer
             .enqueue(DurableWriterRequest::AgentLifecycle(Box::new(Request {
+                enqueued_at: std::time::Instant::now(),
                 operation,
                 response,
             })))?;
@@ -213,13 +219,39 @@ impl DurableKernelStateStore {
     }
 }
 pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
+    // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: no objective or operation payload in diagnostics.
+    let trace = match &request.operation {
+        Operation::ControlGoal { task, action, .. } => match action.as_str() {
+            "pause" => Some((task.clone(), "pause")),
+            "resume" => Some((task.clone(), "resume")),
+            "cancel" => Some((task.clone(), "cancel")),
+            "interval" => Some((task.clone(), "interval")),
+            "edit" => Some((task.clone(), "edit")),
+            _ => None,
+        },
+        _ => None,
+    };
+    let started = std::time::Instant::now();
     let mut uncertain = false;
     let result = (|| {
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql)?;
+        let begun = std::time::Instant::now();
         let value = apply(&tx, request.operation)?;
-        if let Err(e) = tx.commit() {
+        let applied = std::time::Instant::now();
+        let committed = tx.commit();
+        if let Some((key, action)) = trace {
+            crate::runtime::command_latency::log_goal_writer_phases(
+                &key,
+                action,
+                started.duration_since(request.enqueued_at),
+                begun.duration_since(started),
+                applied.duration_since(begun),
+                applied.elapsed(),
+            );
+        }
+        if let Err(e) = committed {
             uncertain = !super::storage_full::observe(&e);
             return Err(error(if uncertain {
                 "commit uncertain; restart required".into()
@@ -264,6 +296,54 @@ fn decode_task(
     let t: AgentTaskExecution = decode(payload)?;
     if t.task_id != id || t.room_id != room || t.agent_id != agent || t.prompt_id != prompt {
         return Err(error("task identity corrupt; quarantine required"));
+    }
+    if let Some(c) = &t.completion_check {
+        if t.goal.is_some()
+            || c.schema_version != 1
+            || c.original_prompt_id != t.task_id
+            || c.evaluation.as_ref().is_some_and(|e| {
+                e.origin != "completion_check"
+                    || e.objective_revision != 1
+                    || e.prompt_id.is_empty()
+                    || e.work_prompt_id.is_empty()
+                    || e.ledger_revision == 0
+                    || e.deadline_ms != e.started_at_ms.saturating_add(goals::CHECK_BOUND_MS)
+            })
+            || (t.state == ExecutionState::Done
+                && (c.final_answer.as_ref().is_none_or(|s| s.trim().is_empty())
+                    || c.evidence.is_empty()))
+        {
+            return Err(error(
+                "plain completion binding/schema corrupt; quarantine required",
+            ));
+        }
+    }
+    if let Some(g) = &t.goal {
+        if g.schema_version != 1
+            || g.owner_user_id != t.owner_user_id
+            || g.room_id != room
+            || g.agent_id != agent
+            || g.original_prompt_id != id
+            || g.id != format!("goal:{id}")
+            || !(1..=60).contains(&g.check_in_minutes)
+            || g.objective_revision == 0
+            || g.objective.trim().is_empty()
+            || g.objective.len() > goals::RESULT_LIMIT
+            || g.evaluation.as_ref().is_some_and(|e| {
+                e.origin != "completion_check"
+                    || e.prompt_id.is_empty()
+                    || e.work_prompt_id.is_empty()
+                    || e.objective_revision == 0
+                    || e.objective_revision > g.objective_revision
+                    || e.ledger_revision == 0
+                    || e.deadline_ms != e.started_at_ms.saturating_add(goals::CHECK_BOUND_MS)
+            })
+            || (t.state == ExecutionState::Done
+                && (g.final_answer.as_ref().is_none_or(|s| s.trim().is_empty())
+                    || g.evidence.is_empty()))
+        {
+            return Err(error("goal binding/schema corrupt; quarantine required"));
+        }
     }
     if t.state == ExecutionState::Waiting
         && t.wait.as_ref().is_none_or(|w| {
@@ -352,6 +432,11 @@ fn registrations(tx: &Connection, task: &str) -> Result<Vec<Registration>, Daemo
     .collect()
 }
 fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
+    if goals::is_check(task, prompt)
+        && completion::evaluation(task).is_some_and(|e| e.result.is_none())
+    {
+        return Err(error("completion_check cannot mutate work or authority"));
+    }
     if task.prompt_id != prompt
         || task.state != ExecutionState::Working
         || task.pending_prompt_id.is_some()
@@ -388,6 +473,8 @@ fn new_task(
     now: u64,
 ) -> AgentTaskExecution {
     AgentTaskExecution {
+        goal: None,
+        completion_check: None,
         task_id: prompt.clone(),
         room_id: room,
         owner_user_id: String::new(),
@@ -591,17 +678,25 @@ pub(crate) fn delivery_attempt_receipt_state(
 }
 
 /// MP-08/MP-09/MP-10/MP-11: a Working task whose prompt is neither active
-/// nor queued blocks after the delivery timeout.
+/// nor queued blocks after the delivery timeout. A matching completion intent
+/// retains its own bounded admission window, independent of the work turn's age.
 pub(crate) fn lacks_live_executor(
     task: &AgentTaskExecution,
     now: u64,
     active: bool,
     queued: bool,
 ) -> bool {
+    let awaiting_completion = completion::evaluation(task).is_some_and(|check| {
+        check.result.is_none()
+            && check.prompt_id == task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id)
+            && check.started_at_ms <= now
+            && now < check.deadline_ms
+    });
     task.state == ExecutionState::Working
         && now.saturating_sub(task.last_progress_at_ms) >= DELIVERY_TIMEOUT_MS
         && !active
         && !queued
+        && !awaiting_completion
 }
 
 /// MP-08/MP-09/MP-10/MP-11: a failed provider turn blocks a Working task;

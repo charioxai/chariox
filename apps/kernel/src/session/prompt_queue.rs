@@ -20,6 +20,7 @@ pub enum PromptOrigin {
     #[default]
     #[serde(alias = "arroba")]
     Chariox,
+    CompletionCheck,
     External,
 }
 
@@ -902,7 +903,10 @@ impl PromptQueueItem {
     }
 
     pub fn is_chariox_owned(&self) -> bool {
-        self.prompt_origin == PromptOrigin::Chariox
+        matches!(
+            self.prompt_origin,
+            PromptOrigin::Chariox | PromptOrigin::CompletionCheck
+        )
     }
 
     pub fn external_observed_id(&self) -> Option<crate::history::ExternalProviderObservedId> {
@@ -1248,6 +1252,14 @@ mod tests {
             .clone()
             .with_prompt_origin(PromptOrigin::External);
 
+        let completion_check = chariox_prompt
+            .clone()
+            .with_prompt_origin(PromptOrigin::CompletionCheck);
+        assert!(
+            completion_check.is_chariox_owned(),
+            "MP-08/MP-09/MP-10/MP-11 A12: normal dispatch must admit the assessment turn"
+        );
+        assert!(!completion_check.is_external());
         assert!(chariox_prompt.is_chariox_owned());
         assert!(!chariox_prompt.is_external());
         assert!(external_prompt.is_external());

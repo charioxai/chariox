@@ -112,6 +112,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         }))
                 {
                     // Settle blocks at the limit, so a Waiting task is always below it.
+                    super::goals::clock(&mut t, now);
+                    if let Some(g) = &mut t.goal {
+                        g.continuation_sequence += 1;
+                        g.next_check_in_ms = None;
+                    }
                     t.no_progress_wakes += 1;
                     t.pending_prompt_id = Some(prompt);
                     t.state = ExecutionState::Working;
@@ -263,7 +268,33 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 ));
             }
             let already_handled = e.state == "handled";
-            if matches!(e.state.as_str(), "expired" | "failed") || (already_handled && !handled) {
+            // Reading a pending check-in during independent work is not admission
+            // of its goal continuation. Keep it deliverable through the shared owner.
+            if e.state == "pending"
+                && matches!(e.kind.as_str(), "deadline_reached" | "wait_recheck")
+                && tasks(tx)?.iter().any(|task| {
+                    task.goal.is_some()
+                        && task.state == ExecutionState::Waiting
+                        && task.room_id == room
+                        && task.agent_id == agent
+                        && (e.payload["task_id"].as_str() == Some(task.task_id.as_str())
+                            || e.payload["task_ids"].as_array().is_some_and(|ids| {
+                                ids.iter()
+                                    .any(|id| id.as_str() == Some(task.task_id.as_str()))
+                            }))
+                })
+            {
+                return Err(error(
+                    "goal check-in must be admitted to its task before acknowledgement",
+                ));
+            }
+            if (e.state == "failed" || (already_handled && !handled))
+                || (e.state == "expired"
+                    && (!handled
+                        || !tasks(tx)?
+                            .iter()
+                            .any(|task| unresolved_source_outcome(task, &e))))
+            {
                 return Ok(Outcome::Event(e));
             }
             if !already_handled {
@@ -280,7 +311,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 for mut t in tasks(tx)? {
                     if t.room_id != room
                         || t.agent_id != agent
-                        || t.state == ExecutionState::Blocked
+                        || matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
                     {
                         continue;
                     }
@@ -303,7 +334,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             || tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_wakes WHERE id=?1 AND json_extract(payload,'$.kind')='timer')", [&e.source_id], |r| r.get::<_,bool>(0)).map_err(sql)?;
                         // Closing a timer obligation is required bookkeeping,
                         // but even rearming one-shot timers cannot buy progress.
-                        if !timer_outcome {
+                        if !timer_outcome && t.state != ExecutionState::Blocked {
                             t.no_progress_wakes = 0;
                             t.progress_sequence += 1;
                             t.last_progress_at_ms = now;

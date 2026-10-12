@@ -17,9 +17,36 @@ pub(super) struct ProviderRunRuntimeRegistry {
     codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     cleared_runs: Arc<Mutex<BTreeSet<String>>>,
+    assessment_outputs: Arc<Mutex<BTreeMap<String, crate::provider::ProviderPromptSignalBatch>>>,
 }
 
 impl ProviderRunRuntimeRegistry {
+    pub(super) fn store_assessment_output(
+        &self,
+        run_id: &str,
+        output: crate::provider::ProviderPromptSignalBatch,
+    ) {
+        let cleared = self
+            .cleared_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !cleared.contains(run_id) {
+            self.assessment_outputs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(run_id.into(), output);
+        }
+    }
+
+    pub(super) fn take_assessment_output(
+        &self,
+        run_id: &str,
+    ) -> Option<crate::provider::ProviderPromptSignalBatch> {
+        self.assessment_outputs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(run_id)
+    }
     pub(super) fn insert_claude_runtime(&self, run_id: String, state: ClaudeRuntimeState) {
         self.clear_tombstone(&run_id);
         self.claude_processes
@@ -114,6 +141,7 @@ impl ProviderRunRuntimeRegistry {
     }
 
     pub(super) fn clear_runtime_state(&self, run_id: &str, stop_opencode: bool) {
+        self.take_assessment_output(run_id);
         self.claude_processes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -460,6 +488,30 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::{runtime_should_restore, ProviderRunRuntimeRegistry};
+
+    #[test]
+    fn review971_assessment_output_is_one_shot_and_cannot_resurrect_cleared_run() {
+        let registry = ProviderRunRuntimeRegistry::default();
+        registry.store_assessment_output(
+            "run",
+            crate::provider::ProviderPromptSignalBatch {
+                prompt_completed: true,
+                ..Default::default()
+            },
+        );
+        assert!(
+            registry
+                .take_assessment_output("run")
+                .unwrap()
+                .prompt_completed
+        );
+        assert!(registry.take_assessment_output("run").is_none());
+        registry.store_assessment_output("run", Default::default());
+        registry.clear_runtime("run", false);
+        assert!(registry.take_assessment_output("run").is_none());
+        registry.store_assessment_output("run", Default::default());
+        assert!(registry.take_assessment_output("run").is_none());
+    }
 
     #[test]
     fn state_bound_recovers_from_a_poisoned_map_lock() {

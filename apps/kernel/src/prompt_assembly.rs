@@ -102,6 +102,8 @@ pub(crate) struct PromptEnvelope {
     pub(crate) attachments: Vec<PromptAttachment>,
     pub(crate) manifest: PromptManifest,
     pub(crate) steering: bool,
+    #[serde(skip)]
+    pub(crate) assessment_only: bool,
 }
 
 impl PromptEnvelope {
@@ -117,6 +119,7 @@ impl PromptEnvelope {
             attachments,
             manifest,
             steering: false,
+            assessment_only: false,
         }
     }
 
@@ -172,8 +175,20 @@ pub(crate) enum PromptAssemblyMode {
     #[allow(dead_code)] // Existing prompt-template vocabulary retained for continuation callers.
     WorkflowNodeTurn,
     UtilityTurn,
+    AssessmentTurn,
     #[allow(dead_code)] // Existing prompt-template vocabulary retained for continuation callers.
     McpSkillContinuationTurn,
+}
+
+impl PromptAssemblyMode {
+    // MP-08 / MP-09 / MP-10 / MP-11: authority follows the admitted origin.
+    pub(crate) fn with_prompt_origin(self, origin: crate::session::PromptOrigin) -> Self {
+        if origin == crate::session::PromptOrigin::CompletionCheck {
+            Self::AssessmentTurn
+        } else {
+            self
+        }
+    }
 }
 
 pub(crate) fn provider_turn_mode_for_prompt(

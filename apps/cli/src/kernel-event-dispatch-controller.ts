@@ -40,6 +40,7 @@ type KernelEventDispatchControllerDeps = {
     session: RuntimeSession,
     providerRun: RuntimeProviderRun | null,
   ) => Promise<void> | void
+  applyAgentTaskUpdated?: (sessionId: string, task: Extract<KernelEvent, { event: "agent_task_updated" }>["task"]) => Promise<void> | void
   applyAgentActivityChanged: (
     sessionId: string,
     agentActivity: Record<string, unknown>,
@@ -130,6 +131,14 @@ export function createKernelEventDispatchController(
         return
       case "session_snapshot":
         await applySessionSnapshot(event)
+        return
+      case "agent_task_updated":
+        deps.recordDaemonActivity("kernel_agent_task_updated")
+        if (!event.session_id || !isRecord(event.task) || typeof event.task.task_id !== "string" || !Number.isSafeInteger(event.task.revision)) {
+          deps.appendNotice("Kernel sent malformed task update.", "warning")
+          return
+        }
+        await deps.applyAgentTaskUpdated?.(event.session_id, event.task)
         return
       case "agent_activity_changed":
         deps.recordDaemonActivity("kernel_agent_activity_changed")

@@ -91,6 +91,38 @@ fn load_wake(tx: &Transaction<'_>, id: &str) -> Result<AgentWake, DaemonError> {
     Ok(wake)
 }
 
+/// A goal check-in cannot extend a selected timer's earlier due time.
+pub(super) fn source_deadline(
+    tx: &Transaction<'_>,
+    task: &AgentTaskExecution,
+    registrations: &[String],
+) -> Result<Option<u64>, DaemonError> {
+    let mut query = tx.prepare("SELECT payload FROM agent_wakes WHERE task_id=?1 AND room_id=?2 AND agent_id=?3 AND json_extract(payload,'$.state')='scheduled' AND json_extract(payload,'$.kind')='timer'").map_err(sql)?;
+    let rows = query
+        .query_map(params![task.task_id, task.room_id, task.agent_id], |r| {
+            r.get::<_, String>(0)
+        })
+        .map_err(sql)?;
+    let mut deadline = None;
+    for row in rows {
+        let wake: AgentWake = decode(&row.map_err(sql)?)?;
+        if wake.task_id != task.task_id
+            || wake.room_id != task.room_id
+            || wake.agent_id != task.agent_id
+        {
+            return Err(error(
+                "registered timer binding corrupt; quarantine required",
+            ));
+        }
+        if registrations.contains(&wake.registration_id) {
+            if let Some(due) = wake.next_due_ms {
+                deadline = Some(deadline.map_or(due, |prior: u64| prior.min(due)));
+            }
+        }
+    }
+    Ok(deadline)
+}
+
 fn save_wake(tx: &Transaction<'_>, wake: &AgentWake) -> Result<(), DaemonError> {
     tx.execute("INSERT INTO agent_wakes VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",params![wake.id,wake.task_id,wake.room_id,wake.agent_id,encode(wake)?]).map_err(sql)?;
     Ok(())

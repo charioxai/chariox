@@ -27,7 +27,7 @@ export function createWorkingAnimationController<TimerHandle>(
     const countdownDue = Boolean(deps.hasWaitingDeadline?.()) && deadlineElapsedMs >= 1000
     if (countdownDue) deadlineElapsedMs = 0
     deps.incrementFrame()
-    if (deps.sessionStatusMode() === "working" || countdownDue) {
+    if (deps.sessionStatusMode() === "working" || countdownDue || deps.hasGoalClock?.()) {
       deps.updateSessionChrome()
     }
     if (deps.splitAgentResponseMode()) {

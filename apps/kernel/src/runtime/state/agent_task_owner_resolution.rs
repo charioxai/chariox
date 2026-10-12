@@ -8,6 +8,24 @@ impl KernelRuntimeState {
         task: &AgentTaskExecution,
         resume: bool,
     ) {
+        if resume && task.goal.is_some() {
+            if let Ok(session) = self.owned.session_store.get_session(&task.room_id) {
+                if self
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &task.agent_id)
+                    .is_some()
+                {
+                    self.record_agent_task_owner_failure(
+                        task,
+                        &crate::durable_state::agent_lifecycle::error(
+                            "wait for the stopped goal turn to settle before resuming",
+                        ),
+                    );
+                    return;
+                }
+            }
+        }
         let next = match self
             .owned
             .durable_state_store
@@ -29,8 +47,9 @@ impl KernelRuntimeState {
             async {
                 let agent = self.owned.agent_store.get_agent(&next.agent_id)?;
                 let attachment = self.ensure_agent_message_attachment(&next.room_id, &agent)?;
-                Box::pin(self.dispatch_task_continuation(&next, &attachment,
-                    "Owner explicitly resumed this task. Reconcile retained obligations before continuing.".into())).await
+                let context = self.owned.goal_continuation_context(&next)?.unwrap_or_else(||
+                    "Owner explicitly resumed this task. Reconcile retained obligations before continuing.".into());
+                Box::pin(self.dispatch_task_continuation(&next, &attachment, context)).await
             }.await
         } else {
             Box::pin(self.cancel_agent_task_resources(&next)).await

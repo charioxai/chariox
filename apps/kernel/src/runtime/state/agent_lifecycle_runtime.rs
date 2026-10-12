@@ -37,6 +37,14 @@ impl KernelRuntimeOwnedState {
         else {
             unreachable!()
         };
+        if !existed
+            && super::agent_goal_runtime::parse_goal_prompt(prepared.prompt.prompt())?.is_none()
+        {
+            self.durable_state_store
+                .agent_lifecycle(Operation::EnableCompletionCheck {
+                    task: task.task_id.clone(),
+                })?;
+        }
         self.bind_agent_workflow_task(&task, &prepared.prompt)?;
         Ok(!existed)
     }
@@ -59,7 +67,13 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(None);
         };
+        if ledger::goals::is_check(&task, prompt) {
+            return self.goal_continuation_context(&task);
+        }
         let mut context = format!("<chariox-task-context>For chariox.events tools use task_id `{}` and origin_prompt_id `{prompt}`. Final answers are done candidates; finish tracked obligations or yield on live sources with a future deadline. If owner action is required call chariox.events.blocked. Message events request no courtesy reply unless explicitly opted in.</chariox-task-context>", task.task_id);
+        if let Some(goal_context) = self.goal_continuation_context(&task)? {
+            context = format!("{context}\n{goal_context}");
+        }
         if task.task_id != prompt {
             // A cold provider run cannot recover the task from the untrusted
             // wake label. Read its original turn only from this agent's home
@@ -146,6 +160,39 @@ impl KernelRuntimeOwnedState {
         )
         .iter()
         .any(|text| !text.trim().is_empty());
+        if !cancelled {
+            if let Some(task) = self
+                .durable_state_store
+                .agent_tasks(Some(room), Some(agent))?
+                .into_iter()
+                .find(|t| ledger::goals::is_check(t, prompt.id()))
+            {
+                let entries = entries
+                    .into_iter()
+                    .map(|entry| {
+                        self.room_secret_observations
+                            .protect_transcript_entry(entry)
+                    })
+                    .collect::<Vec<_>>();
+                let result = super::agent_task_projection::task_public_outputs(
+                    &entries,
+                    prompt.id(),
+                    Some(answer_run),
+                )
+                .concat();
+                return match self
+                    .durable_state_store
+                    .agent_lifecycle(Operation::EvaluateGoal {
+                        task: task.task_id,
+                        prompt: prompt.id().into(),
+                        result,
+                        now: crate::session::unix_epoch_ms(),
+                    })? {
+                    Outcome::Settled { task, correction } => Ok(Some((task, correction))),
+                    _ => unreachable!(),
+                };
+            }
+        }
         match self
             .durable_state_store
             .agent_lifecycle(Operation::Settle {
@@ -330,6 +377,7 @@ impl KernelRuntimeState {
         let resources_unsettled = self.owned.agent_task_resources_unsettled(&task)?;
         if correction {
             let text=format!("The prior answer is progress, not completion. Finish or cancel these obligations, or call chariox.events.yield with admitted live sources and a future deadline. Otherwise call chariox.events.blocked with the exact owner action. One correction is allowed. Untrusted obligation data: {}",serde_json::to_string(&task.obligations).unwrap_or_default());
+            let text = self.owned.goal_continuation_context(&task)?.unwrap_or(text);
             if let Err(e) = Box::pin(self.dispatch_task_continuation(
                 &task,
                 source.source_attachment_id(),
@@ -430,6 +478,13 @@ impl KernelRuntimeState {
             Some((run, node)) => prompt.with_workflow_context(run, node),
             None => prompt,
         };
+        let prompt = if ledger::completion::evaluation(&task)
+            .is_some_and(|e| e.prompt_id == id && e.result.is_none())
+        {
+            prompt.with_prompt_origin(crate::session::PromptOrigin::CompletionCheck)
+        } else {
+            prompt
+        };
         let mut submission = self
             .submit_prepared_prompt_with_queue_policy(
                 crate::app::KernelPreparedPromptSubmission {
@@ -443,6 +498,7 @@ impl KernelRuntimeState {
                 true,
             )
             .await?;
+        self.arm_goal_check_deadline(task);
         if let Some(dispatch) = submission.dispatch.take() {
             self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
         }
@@ -456,6 +512,9 @@ impl KernelRuntimeState {
             return Ok(());
         }
         let now = crate::session::unix_epoch_ms();
+        if let Err(error) = self.offer_legacy_goal_adoption() {
+            tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A12: legacy adoption offer unavailable; other goals continue");
+        }
         if let Err(error) = self.sweep_agent_wakes(now).await {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake dead-man check retained");
         }
@@ -464,6 +523,26 @@ impl KernelRuntimeState {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
             };
+            if let Some(check) = ledger::completion::evaluation(&task).filter(|e| {
+                task.state == ExecutionState::Working
+                    && e.result.is_none()
+                    && e.prompt_id == task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id)
+                    && now >= e.deadline_ms
+            }) {
+                if let Outcome::Task(stopped) =
+                    self.owned
+                        .durable_state_store
+                        .agent_lifecycle(Operation::TimeoutGoal {
+                            task: task.task_id.clone(),
+                            prompt: check.prompt_id.clone(),
+                            now,
+                        })?
+                {
+                    let _ = self.stop_goal_turn(&stopped).await;
+                    blocked.push(stopped);
+                }
+                continue;
+            }
             if task.state == ExecutionState::Cancelled {
                 if let Err(error) = Box::pin(self.cancel_agent_task_resources(&task)).await {
                     tracing::warn!(%error,"MP-08/MP-09/MP-10/MP-11 A02: cancellation remains supervised");
@@ -715,84 +794,6 @@ impl KernelRuntimeState {
             }
             let _ = self.owned.session_snapshot(&room);
         }
-        Ok(())
-    }
-    /// A task that left Blocked (for example cancelled with its parent) or
-    /// re-blocked at a later revision withdraws its older owner decision.
-    async fn retract_stale_task_owner_interactions(
-        &self,
-        room: &str,
-        tasks: &[AgentTaskExecution],
-    ) {
-        let Ok(session) = self.owned.session_store.get_session(room) else {
-            return;
-        };
-        let stale = session
-            .active_interactions()
-            .iter()
-            .map(|i| i.id())
-            .filter(|id| {
-                let Some(rest) = id.strip_prefix("task-blocked-") else {
-                    return false;
-                };
-                tasks.iter().any(|t| {
-                    rest.strip_prefix(t.task_id.as_str())
-                        .and_then(|r| r.strip_prefix('-'))
-                        .and_then(|r| r.parse::<u64>().ok())
-                        .is_some_and(|revision| {
-                            t.state != ExecutionState::Blocked || revision != t.blocked_revision
-                        })
-                })
-            })
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        for id in stale {
-            let _ = self.timeout_runtime_interaction(room, &id).await;
-        }
-    }
-    pub(super) async fn ensure_task_owner_interaction(
-        &self,
-        task: AgentTaskExecution,
-    ) -> Result<(), DaemonError> {
-        let id = format!("task-blocked-{}-{}", task.task_id, task.blocked_revision);
-        let session = self.owned.session_store.get_session(&task.room_id)?;
-        if let Some(existing) = session.active_interactions().iter().find(|i| i.id() == id) {
-            let message=format!("Task {}: {}. {} obligations remain supervised. Progress does not resume this task; resolve the cause, then resume or cancel.",task.task_id,task.reason,task.obligations.iter().filter(|o|matches!(o.status.as_str(),"open"|"settling"|"failed")).count());
-            if existing.message() != message {
-                let mutation = self.owned.begin_managed_activity_mutation();
-                let mut sessions = self.owned.session_store.write();
-                let mut latest = sessions.get_session(&task.room_id)?;
-                if let Some(current) = latest.remove_active_interaction(&id) {
-                    latest.add_active_interaction(current.with_message(message));
-                    sessions.restore_session(latest);
-                    mutation.record();
-                }
-                drop(sessions);
-                self.owned.session_snapshot(&task.room_id)?;
-                self.owned
-                    .terminal_stream
-                    .notify_terminal_projection_change(&task.room_id);
-            }
-            return Ok(());
-        }
-        let interaction=crate::session::RuntimeInteraction::for_kernel_operation(&id,&id,"Agent needs your action",format!("Task {}: {}. {} obligations remain supervised. Resume after resolving the cause or cancel explicitly.",task.task_id,task.reason,task.obligations.iter().filter(|o|o.status!="satisfied"&&o.status!="cancelled").count()),vec![crate::session::RuntimeInteractionChoice::new("cancel","Cancel","cancel",None),crate::session::RuntimeInteractionChoice::new("resume","Resume","resume",None)]).with_timeout_sec(900);
-        let rx = self
-            .create_kernel_operation_interaction(
-                &task.room_id,
-                session.owner_user_id(),
-                interaction,
-            )
-            .await?;
-        let state = self.clone();
-        tokio::spawn(async move {
-            if let Ok(answer) = rx.await {
-                if answer.status == "timed_out" {
-                    return;
-                }
-                let resume = answer.choice_id.as_deref() == Some("resume");
-                state.resolve_agent_task_owner_action(&task, resume).await;
-            }
-        });
         Ok(())
     }
 }

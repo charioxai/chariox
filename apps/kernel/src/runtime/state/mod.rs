@@ -1256,6 +1256,9 @@ impl KernelRuntimeState {
 mod room_agent_admission;
 
 mod agent_delegation_runtime;
+mod agent_goal_context;
+mod agent_goal_migration;
+mod agent_goal_runtime;
 mod agent_inbox_delivery;
 mod agent_leased_process_home;
 mod agent_leased_process_receipts;
@@ -1265,6 +1268,7 @@ mod agent_process_group;
 mod agent_process_output;
 mod agent_process_watch;
 mod agent_task_cancellation;
+mod agent_task_owner_interactions;
 mod agent_task_owner_resolution;
 mod agent_task_projection;
 mod agent_wake_cancellation;
