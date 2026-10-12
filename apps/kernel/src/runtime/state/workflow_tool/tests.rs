@@ -671,6 +671,67 @@ fn agent_app_http_action_rejects_external_urls_by_default() {
 }
 
 #[test]
+fn agent_app_http_action_refuses_redirect_to_non_loopback_url() {
+    // A documentation-only address keeps this fail-first case off public services.
+    assert_agent_app_redirect_refused(302, "GET", false, "http://192.0.2.1:9/escape");
+}
+
+#[test]
+fn agent_app_http_action_refuses_all_redirect_statuses() {
+    for status in [300, 301, 302, 303, 304, 305, 307, 308, 399] {
+        for method in ["GET", "POST"] {
+            for allow_external in [false, true] {
+                assert_agent_app_redirect_refused(
+                    status,
+                    method,
+                    allow_external,
+                    "http://127.0.0.1:9/escape",
+                );
+            }
+        }
+    }
+}
+
+fn assert_agent_app_redirect_refused(
+    status: u16,
+    method: &str,
+    allow_external: bool,
+    location: &str,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind action server");
+    let address = listener.local_addr().expect("action server address");
+    let location = location.to_string();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept action request");
+        let _ = read_http_request(&mut stream);
+        stream
+            .write_all(format!(
+                "HTTP/1.1 {status} Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ).as_bytes())
+            .expect("write redirect");
+    });
+    let result = call_agent_app_http_action(
+        &format!("http://{address}/action"),
+        method,
+        &serde_json::json!({}),
+        &AgentAppHttpActionContext {
+            action_id: "redirect".to_string(),
+            session: None,
+            invocation_request_id: None,
+            audit: None,
+        },
+        AgentAppHttpActionOptions {
+            allow_external,
+            timeout_ms: 1_000,
+            max_response_bytes: 1_024,
+        },
+    );
+    handle.join().expect("action server thread");
+    let error = result.expect_err("action redirect must be refused");
+    assert_eq!(error, "agent app action redirects are forbidden");
+}
+
+#[test]
 fn agent_app_http_action_rejects_oversized_responses() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind action server");
     let address = listener.local_addr().expect("action server address");
