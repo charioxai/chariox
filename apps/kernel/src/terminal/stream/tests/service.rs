@@ -69,6 +69,7 @@ fn zero_recipient_outputs_and_completions_are_not_retained() {
         source_attachment_id: Some("attachment-detached".to_string()),
         kind: TerminalOutputKind::ProviderTool,
         merge_key: Some("tool-1".to_string()),
+        sequence: None,
         recipient_attachment_ids: Arc::from(Vec::<String>::new()),
         bytes: b"detached tool result".to_vec(),
     }]);
@@ -320,6 +321,7 @@ fn output_polling_drains_single_recipient_batch_records() {
             source_attachment_id: None,
             kind: TerminalOutputKind::ProviderOutput,
             merge_key: Some("chunk-1".to_string()),
+            sequence: None,
             recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
             bytes: b"one".to_vec(),
         },
@@ -331,6 +333,7 @@ fn output_polling_drains_single_recipient_batch_records() {
             source_attachment_id: None,
             kind: TerminalOutputKind::ProviderOutput,
             merge_key: Some("chunk-2".to_string()),
+            sequence: None,
             recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
             bytes: b"two".to_vec(),
         },
@@ -439,6 +442,7 @@ fn batch_fanout_deduplicates_repeated_single_recipient_changed_keys() {
                 source_attachment_id: None,
                 kind: TerminalOutputKind::ProviderTool,
                 merge_key: Some(format!("chunk-{index}")),
+                sequence: None,
                 recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
                 bytes: format!("chunk-{index}").into_bytes(),
             })
@@ -522,6 +526,7 @@ fn output_polling_keeps_large_drains_batched() {
 fn output_drain_size_estimator_bounds_scoped_json() {
     let record = TerminalOutputRecord {
         record_id: None,
+        sequence: None,
         timestamp_ms: 1_700,
         session_id: "session-\n1".to_string(),
         provider_run_id: "provider-run-1".to_string(),

@@ -76,6 +76,8 @@ export type SessionHistoryOutlineBlob = {
   entry_count: number
   total_chars: number
   timestamp_ms: number
+  /** Protocol ≥508: a tool call's snapshot without output, or a thought's first line. */
+  preview?: string | null
 }
 
 export type SessionHistoryBlobContent = {

@@ -277,6 +277,11 @@ function mergeProviderChunk(
   if (mergeKey) {
     for (let index = entries.length - 1; index >= 0; index -= 1) {
       const candidate = entries[index]
+      // Text never folds back above a later tool row: it continues as a new
+      // entry after the tool, in output order.
+      if (candidate?.role === "tool" && (role === "assistant" || role === "reasoning")) {
+        break
+      }
       if (
         candidate?.role !== role
         || candidate.mergeKey !== mergeKey

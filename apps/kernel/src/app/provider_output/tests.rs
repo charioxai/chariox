@@ -1104,6 +1104,7 @@ fn pending_structured_output_record(
 ) -> TerminalOutputRecord {
     TerminalOutputRecord {
         record_id: None,
+        sequence: None,
         timestamp_ms: 1_000,
         session_id: session_id.to_string(),
         provider_run_id: provider_run_id.to_string(),
@@ -1842,6 +1843,7 @@ fn structured_output_record_store_clear_removes_records_and_schedule() {
         "provider-run-1".to_string(),
         vec![TerminalOutputRecord {
             record_id: None,
+            sequence: None,
             timestamp_ms: 1_000,
             session_id: "session-1".to_string(),
             provider_run_id: "provider-run-1".to_string(),

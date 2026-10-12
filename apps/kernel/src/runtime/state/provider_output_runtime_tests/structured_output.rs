@@ -135,6 +135,7 @@ async fn assert_owned_output_pump_drains_pending_record_after_run_state_change(
     app.update_provider_run_projection(run.clone());
     let expected = crate::terminal::TerminalOutputRecord {
         record_id: None,
+        sequence: None,
         timestamp_ms: 1_000,
         session_id: session.id().to_string(),
         provider_run_id: run.id().to_string(),
@@ -646,6 +647,7 @@ async fn structured_output_and_completion_fanout_respect_collaborator_trace_visi
                 agent_id: Some(agent.id().to_string()),
                 kind: crate::terminal::TerminalOutputKind::ProviderTerminal,
                 merge_key: Some("collaborator-raw-terminal".to_string()),
+                sequence: None,
                 bytes: b"raw terminal paint".to_vec(),
             },
         ],
@@ -849,6 +851,44 @@ async fn structured_output_batch_persists_one_turn_id_for_all_chunks() {
             Some("trace-structured-history-turn".to_string()),
             Some("trace-structured-history-turn".to_string())
         ]
+    );
+    // MP-08 / MP-10 (panes R5): each live record carries the sequence of the
+    // history row it was stored as, so clients order live and hydrated rows by
+    // one key.
+    let history_sequences = ["structured-history-turn-1", "structured-history-turn-2"]
+        .into_iter()
+        .map(|merge_key| {
+            events
+                .iter()
+                .find(|event| {
+                    event
+                        .metadata
+                        .get("merge_key")
+                        .and_then(|value| value.as_str())
+                        == Some(merge_key)
+                })
+                .map(|event| event.sequence)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>(),
+        history_sequences
+    );
+    assert!(history_sequences[0] < history_sequences[1]);
+    // The per-attachment copies clients receive keep it too.
+    assert_eq!(
+        runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(session.id(), attachment.id())
+            .iter()
+            .filter(|record| record.kind != crate::terminal::TerminalOutputKind::PromptEcho)
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>(),
+        history_sequences
     );
 }
 

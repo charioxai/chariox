@@ -195,6 +195,7 @@ impl TerminalStreamService {
     ) -> TerminalOutputRecord {
         let record = TerminalOutputRecord {
             record_id: None,
+            sequence: None,
             timestamp_ms: unix_epoch_ms(),
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
@@ -240,6 +241,7 @@ impl TerminalStreamService {
             let recipient_attachment_ids = Vec::from(output.recipient_attachment_ids.as_ref());
             let record = TerminalOutputRecord {
                 record_id: None,
+                sequence: output.sequence,
                 timestamp_ms: unix_epoch_ms(),
                 session_id: output.session_id,
                 provider_run_id: output.provider_run_id,
@@ -299,6 +301,7 @@ impl TerminalStreamService {
     ) -> TerminalOutputRecord {
         let record = TerminalOutputRecord {
             record_id: None,
+            sequence: None,
             timestamp_ms: unix_epoch_ms(),
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
@@ -347,6 +350,7 @@ impl TerminalStreamService {
             prompt_origin,
             source_attachment_id,
             None,
+            None,
             recipient_attachment_ids,
             bytes,
         )
@@ -362,11 +366,13 @@ impl TerminalStreamService {
         prompt_origin: Option<PromptOrigin>,
         source_attachment_id: &str,
         merge_key: Option<String>,
+        sequence: Option<u64>,
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
         let record = TerminalOutputRecord {
             record_id: None,
+            sequence,
             timestamp_ms: unix_epoch_ms(),
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),

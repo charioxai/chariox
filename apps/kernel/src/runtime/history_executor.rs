@@ -12,6 +12,7 @@ use crate::runtime::history_requests::{
     execute_query_recall_request as execute_query_recall,
     execute_record_prompt_input_history_request as execute_record_prompt_input_history,
     execute_scoped_session_history_blob_content_request,
+    execute_scoped_session_history_blob_contents_request,
     execute_scoped_session_history_outline_request, knn_semantic_recall_search,
     recall_query_from_request, recall_query_from_search_request,
     semantic_recall_utility_input_from_search_request,
@@ -79,13 +80,21 @@ pub(crate) async fn execute_history_request(
             response
         }
         LocalDaemonRequest::GetSessionHistoryBlobContent(request) => {
-            let snapshot = runtime_state.session_snapshot(&request.session_id).await?;
-            let agent_import = snapshot
-                .agents()
-                .iter()
-                .find(|agent| agent.id() == request.agent_id)
-                .and_then(|agent| agent.external_provider_import().cloned());
+            let agent_import =
+                agent_external_import(runtime_state, &request.session_id, &request.agent_id)
+                    .await?;
             execute_scoped_session_history_blob_content_request(
+                operational_history_store,
+                request,
+                agent_import,
+            )
+            .await
+        }
+        LocalDaemonRequest::GetSessionHistoryBlobContents(request) => {
+            let agent_import =
+                agent_external_import(runtime_state, &request.session_id, &request.agent_id)
+                    .await?;
+            execute_scoped_session_history_blob_contents_request(
                 operational_history_store,
                 request,
                 agent_import,
@@ -165,6 +174,19 @@ fn ensure_operational_history_for_outline(
         );
     }
     Ok(())
+}
+
+async fn agent_external_import(
+    runtime_state: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+) -> Result<Option<crate::provider::ExternalProviderImportMetadata>, DaemonError> {
+    let snapshot = runtime_state.session_snapshot(session_id).await?;
+    Ok(snapshot
+        .agents()
+        .iter()
+        .find(|agent| agent.id() == agent_id)
+        .and_then(|agent| agent.external_provider_import().cloned()))
 }
 
 pub(crate) async fn execute_prompt_input_history_request(

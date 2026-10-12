@@ -683,43 +683,43 @@ impl KernelRuntimeState {
                 .record_terminal_diagnostic(provider_run_id, message.to_string())?;
             owned.provider_run_projection.update(run);
         }
-        let mut history_entries = Vec::with_capacity(poll_result.chunks.len());
         let prompt_metadata =
             owned.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
         let terminal_outputs = poll_result
             .chunks
             .into_iter()
             .map(|chunk| {
-                let history_text = String::from_utf8_lossy(&chunk.bytes).into_owned();
-                if chunk.kind != crate::terminal::TerminalOutputKind::PromptEcho {
-                    history_entries.push(
+                let history_entry = (chunk.kind != crate::terminal::TerminalOutputKind::PromptEcho)
+                    .then(|| {
                         crate::history::SessionHistoryEntry::provider_output(
                             session_id,
                             provider_run_id,
                             agent_id.as_deref(),
                             chunk.kind.clone(),
                             chunk.merge_key.clone(),
-                            history_text.clone(),
+                            String::from_utf8_lossy(&chunk.bytes).into_owned(),
                         )
                         .with_prompt_origin(prompt_metadata.prompt_origin)
-                        .with_source_attachment_id(prompt_metadata.source_attachment_id.clone()),
-                    );
-                }
-                super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
-                    provider_run_id: provider_run_id.to_string(),
-                    agent_id: agent_id.clone(),
-                    kind: chunk.kind,
-                    merge_key: chunk.merge_key,
-                    bytes: chunk.bytes,
-                }
+                        .with_source_attachment_id(prompt_metadata.source_attachment_id.clone())
+                    });
+                (
+                    super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+                        provider_run_id: provider_run_id.to_string(),
+                        agent_id: agent_id.clone(),
+                        kind: chunk.kind,
+                        merge_key: chunk.merge_key,
+                        sequence: None,
+                        bytes: chunk.bytes,
+                    },
+                    history_entry,
+                )
             })
             .collect::<Vec<_>>();
-        let records = owned.fan_out_terminal_outputs_to_recipients(
+        let records = owned.append_history_and_fan_out(
             session_id,
-            recipient_attachment_ids.clone(),
+            Some(recipient_attachment_ids.clone()),
             terminal_outputs,
         );
-        owned.append_history_entries(session_id, history_entries);
         for completion in &completions {
             owned.record_assistant_message_completion(
                 session_id,

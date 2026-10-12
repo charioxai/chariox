@@ -467,6 +467,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
+        LocalDaemonRequest::GetSessionHistoryBlobContents(request) => {
+            LocalRequestMetadata::new("session.history.blobs", Background)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::GetPromptInputHistory(request) => {
             LocalRequestMetadata::new("prompt_input_history.get", Background)
                 .session(&request.session_id)
@@ -1110,6 +1115,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::GetManagedContextLaunchTarget(_)
         | LocalDaemonRequest::GetSessionHistoryOutline(_)
         | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
+        | LocalDaemonRequest::GetSessionHistoryBlobContents(_)
         | LocalDaemonRequest::GetProviderRun(_) => unreachable!("handled by metadata matcher"),
     }
 }

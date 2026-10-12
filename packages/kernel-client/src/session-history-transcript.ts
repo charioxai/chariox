@@ -39,7 +39,10 @@ import {
 } from "./transcript-entry-state.js"
 import { applyTranscriptProviderChunk } from "./transcript-stream-state.js"
 import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
-import { sessionHistoryEntryKindTranscriptRole } from "./session-history-outline.js"
+import {
+  sessionHistoryEntryKindTranscriptRole,
+  sessionHistoryOutlineBlobDisplay,
+} from "./session-history-outline.js"
 import {
   orderedSessionHistoryOutlineItems,
   orderedSessionHistoryOutlineTurns,
@@ -543,6 +546,7 @@ function outlineBlobTranscriptEntry(
   promptId: string | null,
   id: number,
 ): SessionHistoryTranscriptEntry {
+  const display = sessionHistoryOutlineBlobDisplay(blob)
   return {
     id,
     role: sessionHistoryOutlineBlobTranscriptRole(blob.kind),
@@ -552,8 +556,8 @@ function outlineBlobTranscriptEntry(
     promptId,
     blobCollapsible: true,
     blobCollapsed: true,
-    blobTitle: blob.title,
-    blobSummary: blob.summary,
+    blobTitle: display.title,
+    blobSummary: display.summary,
     historyBlobId: blob.blob_id,
     historyBlobAgentId: agentId,
     historyBlobLoaded: false,

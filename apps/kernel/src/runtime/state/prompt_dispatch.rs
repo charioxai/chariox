@@ -602,7 +602,7 @@ impl KernelRuntimeState {
                             .to_string(),
                 });
             }
-            owned.append_steering_prompt_history(
+            let sequence = owned.append_steering_prompt_history(
                 session_id,
                 &provider_run_id,
                 &payload.target_home_prompt_id,
@@ -622,6 +622,7 @@ impl KernelRuntimeState {
                 prompt.prompt(),
                 prompt.attachments(),
                 prompt.prompt_origin(),
+                Some(sequence),
             );
             Ok(Some(projected_provider_run_id))
         })

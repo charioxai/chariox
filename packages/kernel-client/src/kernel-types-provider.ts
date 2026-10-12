@@ -302,6 +302,8 @@ export type RuntimeNoticeRecord = {
 
 export type TerminalOutputRecord = {
   record_id?: number | null
+  /** Protocol ≥508: history sequence of the row this output was stored as. */
+  sequence?: number | null
   timestamp_ms: number
   agent_id?: string | null
   prompt_id?: string | null

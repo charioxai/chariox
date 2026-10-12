@@ -12,6 +12,7 @@ import {
   presentTranscriptPromptMetadataFields,
 } from "./transcript-entry-state.js"
 import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
+import { formatToolDisplay } from "@chariox/tool-display"
 
 export type SessionHistoryCursorSelection = {
   readonly agentId: string
@@ -260,4 +261,28 @@ export function sessionHistoryEntryKindTranscriptRole(
     return "notice"
   }
   return providerTranscriptRoleForKind(kind)
+}
+
+// Title and summary of an unloaded outline blob. Protocol ≥508 kernels send a
+// preview (a tool call's snapshot without output, or a thought's first line)
+// so the row reads like the loaded one: "Ran ls -la · $ ls -la", "Thought".
+export function sessionHistoryOutlineBlobDisplay(
+  blob: Pick<SessionHistoryOutlineBlob, "kind" | "title" | "summary" | "preview">,
+): { readonly title: string; readonly summary: string } {
+  const preview = blob.preview?.trim()
+  if (preview && blob.kind === "provider_reasoning") {
+    return { title: "Thought", summary: preview }
+  }
+  if (preview && blob.kind === "provider_tool") {
+    try {
+      const snapshot = JSON.parse(preview) as Record<string, unknown>
+      if (snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)) {
+        const display = formatToolDisplay({ ...snapshot, id: String(snapshot.id ?? snapshot.call_id ?? "") })
+        return { title: display.title, summary: display.summary || blob.summary }
+      }
+    } catch {
+      // fall back to the kernel's generic labels
+    }
+  }
+  return { title: blob.title, summary: blob.summary }
 }

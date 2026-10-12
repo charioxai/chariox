@@ -14,6 +14,7 @@ pub(super) fn scoped_output_record(
 ) -> TerminalOutputRecord {
     TerminalOutputRecord {
         record_id: Some(record_id),
+        sequence: record.sequence,
         timestamp_ms: record.timestamp_ms,
         session_id: record.session_id.clone(),
         provider_run_id: record.provider_run_id.clone(),

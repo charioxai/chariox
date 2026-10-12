@@ -14,6 +14,7 @@ pub(super) struct TerminalOutputBatchAppend {
     pub(super) agent_id: Option<String>,
     pub(super) kind: crate::terminal::TerminalOutputKind,
     pub(super) merge_key: Option<String>,
+    pub(super) sequence: Option<u64>,
     pub(super) bytes: Vec<u8>,
 }
 
@@ -79,6 +80,7 @@ impl KernelRuntimeOwnedState {
                 source_attachment_id: Some(dispatch.source_attachment_id.clone()),
                 kind,
                 merge_key,
+                sequence: None,
                 recipient_attachment_ids: recipients.into(),
                 bytes,
             }]);
@@ -98,29 +100,61 @@ impl KernelRuntimeOwnedState {
         }
         let prompt_metadata =
             self.active_prompt_transcript_metadata_for_agent(session_id, Some(agent_id));
-        self.fan_out_terminal_outputs(
+        let history_entry = crate::history::SessionHistoryEntry::provider_output(
             session_id,
-            vec![TerminalOutputBatchAppend {
-                provider_run_id: provider_run_id.to_string(),
-                agent_id: Some(agent_id.to_string()),
-                kind: crate::terminal::TerminalOutputKind::ProviderError,
-                merge_key: None,
-                bytes: message.as_bytes().to_vec(),
-            }],
+            provider_run_id,
+            Some(agent_id),
+            crate::terminal::TerminalOutputKind::ProviderError,
+            None,
+            message.clone(),
+        )
+        .with_prompt_origin(prompt_metadata.prompt_origin)
+        .with_source_attachment_id(prompt_metadata.source_attachment_id);
+        self.append_history_and_fan_out(
+            session_id,
+            None,
+            vec![(
+                TerminalOutputBatchAppend {
+                    provider_run_id: provider_run_id.to_string(),
+                    agent_id: Some(agent_id.to_string()),
+                    kind: crate::terminal::TerminalOutputKind::ProviderError,
+                    merge_key: None,
+                    sequence: None,
+                    bytes: message.into_bytes(),
+                },
+                Some(history_entry),
+            )],
         );
-        self.append_history_entries(
-            session_id,
-            vec![crate::history::SessionHistoryEntry::provider_output(
+    }
+
+    /// Persists history rows before fan-out so every live record carries the
+    /// sequence of the row it was stored as; clients order live and hydrated
+    /// transcript entries by that one key.
+    pub(super) fn append_history_and_fan_out(
+        &self,
+        session_id: &str,
+        recipient_attachment_ids: Option<Vec<String>>,
+        outputs: Vec<(TerminalOutputBatchAppend, Option<SessionHistoryEntry>)>,
+    ) -> Vec<crate::terminal::TerminalOutputRecord> {
+        let (mut outputs, entries): (Vec<_>, Vec<_>) = outputs.into_iter().unzip();
+        let positions = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(position, entry)| entry.as_ref().map(|_| position))
+            .collect::<Vec<_>>();
+        let sequences =
+            self.append_history_entries(session_id, entries.into_iter().flatten().collect());
+        for (position, sequence) in positions.into_iter().zip(sequences) {
+            outputs[position].sequence = sequence;
+        }
+        match recipient_attachment_ids {
+            Some(recipient_attachment_ids) => self.fan_out_terminal_outputs_to_recipients(
                 session_id,
-                provider_run_id,
-                Some(agent_id),
-                crate::terminal::TerminalOutputKind::ProviderError,
-                None,
-                message,
-            )
-            .with_prompt_origin(prompt_metadata.prompt_origin)
-            .with_source_attachment_id(prompt_metadata.source_attachment_id)],
-        );
+                recipient_attachment_ids,
+                outputs,
+            ),
+            None => self.fan_out_terminal_outputs(session_id, outputs),
+        }
     }
 
     pub(super) fn other_attachment_ids(
@@ -279,6 +313,7 @@ impl KernelRuntimeOwnedState {
                 source_attachment_id: prompt_metadata.source_attachment_id,
                 kind: output.kind,
                 merge_key: output.merge_key,
+                sequence: output.sequence,
                 recipient_attachment_ids: scoped_recipient_attachment_ids,
                 bytes: bounded_bytes,
             });
@@ -330,6 +365,7 @@ impl KernelRuntimeOwnedState {
         if bounded_bytes.is_empty() {
             return crate::terminal::TerminalOutputRecord {
                 record_id: None,
+                sequence: None,
                 timestamp_ms: crate::session::unix_epoch_ms(),
                 session_id: session_id.to_string(),
                 provider_run_id: provider_run_id.to_string(),
@@ -529,21 +565,27 @@ impl KernelRuntimeOwnedState {
         self.append_operational_history_entry(&entry, None, None, None);
     }
 
+    /// Returns the history sequence of each entry, `None` for entries that
+    /// were not persisted.
     pub(super) fn append_history_entries(
         &self,
         session_id: &str,
         entries: Vec<SessionHistoryEntry>,
-    ) {
-        let entries = entries
+    ) -> Vec<Option<u64>> {
+        let mut sequences = vec![None; entries.len()];
+        let (positions, entries): (Vec<_>, Vec<_>) = entries
             .into_iter()
-            .map(|entry| {
-                self.room_secret_observations
-                    .protect_transcript_entry(entry)
+            .enumerate()
+            .filter_map(|(position, entry)| {
+                bounded_history_entry(
+                    self.room_secret_observations
+                        .protect_transcript_entry(entry),
+                )
+                .map(|entry| (position, entry))
             })
-            .filter_map(bounded_history_entry)
-            .collect::<Vec<_>>();
+            .unzip();
         if entries.is_empty() {
-            return;
+            return sequences;
         }
         if let Err(error) = self.session_store.get_session(session_id) {
             crate::logging::warn_with_fields(
@@ -555,9 +597,15 @@ impl KernelRuntimeOwnedState {
                     "error": error.to_string(),
                 }),
             );
-            return;
+            return sequences;
         }
-        self.append_operational_history_entries(&entries);
+        for (position, sequence) in positions
+            .into_iter()
+            .zip(self.append_operational_history_entries(&entries))
+        {
+            sequences[position] = Some(sequence);
+        }
+        sequences
     }
 
     pub(super) fn append_operational_history_entry(
@@ -714,9 +762,12 @@ impl KernelRuntimeOwnedState {
         }
     }
 
-    fn append_operational_history_entries(&self, entries: &[crate::history::SessionHistoryEntry]) {
+    fn append_operational_history_entries(
+        &self,
+        entries: &[crate::history::SessionHistoryEntry],
+    ) -> Vec<u64> {
         if entries.is_empty() {
-            return;
+            return Vec::new();
         }
         let scrubbed = entries
             .iter()
@@ -743,7 +794,7 @@ impl KernelRuntimeOwnedState {
             );
             prepared.push((entry, context));
         }
-        let updates = {
+        let (updates, sequences) = {
             let _append_guard = self.transcript_history_append_guard();
             match self.operational_history_store.append_transcripts(prepared) {
                 Ok(events) => {
@@ -775,7 +826,7 @@ impl KernelRuntimeOwnedState {
                             );
                         }
                     }
-                    updates
+                    (updates, events.iter().map(|event| event.sequence).collect())
                 }
                 Err(error) => {
                     crate::logging::warn_with_fields(
@@ -787,13 +838,14 @@ impl KernelRuntimeOwnedState {
                             "error": error.to_string(),
                         }),
                     );
-                    Vec::new()
+                    (Vec::new(), Vec::new())
                 }
             }
         };
         for update in updates {
             self.apply_agent_output_sequence_update(Some(update));
         }
+        sequences
     }
 
     pub(super) fn append_user_prompt_history(
@@ -880,7 +932,7 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
-    ) -> Result<(), DaemonError> {
+    ) -> Result<u64, DaemonError> {
         let _append_guard = self.transcript_history_append_guard();
         let agent = self.agent_store.get_agent(agent_id)?;
         let (history_provider_run_id, provider_run) =
@@ -985,7 +1037,7 @@ impl KernelRuntimeOwnedState {
         if self.history_archive_enabled() {
             self.enqueue_history_archive_event(&event);
         }
-        Ok(())
+        Ok(event.sequence)
     }
 
     fn transcript_history_append_guard(&self) -> std::sync::MutexGuard<'_, ()> {
@@ -1027,6 +1079,7 @@ impl KernelRuntimeOwnedState {
             recipient_attachment_ids,
             None,
             None,
+            None,
         );
     }
 
@@ -1053,6 +1106,7 @@ impl KernelRuntimeOwnedState {
             recipient_attachment_ids,
             None,
             None,
+            None,
         );
     }
 
@@ -1068,6 +1122,7 @@ impl KernelRuntimeOwnedState {
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
         prompt_origin: crate::session::PromptOrigin,
+        sequence: Option<u64>,
     ) {
         let recipient_attachment_ids = self
             .attachment_store
@@ -1086,6 +1141,7 @@ impl KernelRuntimeOwnedState {
             recipient_attachment_ids,
             Some(prompt_origin),
             Some(crate::history::steering_prompt_merge_key(prompt_id)),
+            sequence,
         );
     }
 
@@ -1102,6 +1158,7 @@ impl KernelRuntimeOwnedState {
         recipient_attachment_ids: Vec<String>,
         prompt_origin_override: Option<crate::session::PromptOrigin>,
         merge_key: Option<String>,
+        sequence: Option<u64>,
     ) {
         if recipient_attachment_ids.is_empty() {
             return;
@@ -1167,6 +1224,7 @@ impl KernelRuntimeOwnedState {
             prompt_origin,
             source_attachment_id,
             merge_key,
+            sequence,
             recipient_attachment_ids,
             &bytes,
         );

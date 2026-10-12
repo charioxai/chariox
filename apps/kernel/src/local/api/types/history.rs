@@ -18,6 +18,21 @@ pub struct GetSessionHistoryBlobContentRequest {
     pub blob_id: String,
 }
 
+/// Several blobs of one agent in one round trip (a pane opening fetches the
+/// details of its latest turn at once).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetSessionHistoryBlobContentsRequest {
+    pub session_id: String,
+    pub agent_id: String,
+    pub blob_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHistoryBlobContentPage {
+    pub blob_id: String,
+    pub entries: Vec<crate::session_history_page::SessionHistoryPageEntry>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionHistoryOutlineAgent {
     pub agent_id: String,
@@ -75,6 +90,10 @@ pub struct SessionHistoryOutlineBlob {
     pub entry_count: usize,
     pub total_chars: usize,
     pub timestamp_ms: u64,
+    /// Display metadata so a row renders before its content is fetched: a
+    /// tool call's snapshot without its output, or a thought's first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

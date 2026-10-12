@@ -327,6 +327,7 @@ pub enum LocalDaemonResponse {
     ProviderProcessesTornDown { processes: Vec<ProviderProcessInfo>, },
     SessionHistoryOutline { agents: Vec<SessionHistoryOutlineAgent>, },
     SessionHistoryBlobContent { blob_id: String, entries: Vec<SessionHistoryPageEntry>, },
+    SessionHistoryBlobContents { blobs: Vec<SessionHistoryBlobContentPage>, },
     PromptInputHistory { entries: Vec<PromptInputHistoryEntry>, },
     PromptInputHistoryRecorded { entry: PromptInputHistoryEntry, },
     PromptSettingsListed { settings: Vec<crate::prompt_assembly::PromptSettingRecord>, },

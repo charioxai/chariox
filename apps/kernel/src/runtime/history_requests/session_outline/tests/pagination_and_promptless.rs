@@ -785,13 +785,18 @@ fn agent_outline_groups_large_blob_metadata_sets() {
                 "session-1",
                 "run-1",
                 Some("agent-1"),
-                TerminalOutputKind::ProviderTool,
-                Some(format!("tool-{index}")),
-                format!(r#"{{"tool":"bash","index":{index}}}"#),
+                // One long thought: a blob covers at most
+                // MAX_OUTLINE_EVENTS_PER_BLOB of its rows (MP-08 / MP-10 panes R7
+                // gives each tool call its own blob).
+                TerminalOutputKind::ProviderReasoning,
+                Some("thought-1".to_string()),
+                format!("step {index} "),
             ),
             context.clone(),
         );
-        store.append(&event).expect("tool output should append");
+        store
+            .append(&event)
+            .expect("reasoning output should append");
     }
 
     let outline =

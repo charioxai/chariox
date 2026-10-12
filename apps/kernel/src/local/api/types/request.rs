@@ -297,6 +297,7 @@ pub enum LocalDaemonRequest {
     TeardownProviderProcesses(TeardownProviderProcessesRequest),
     GetSessionHistoryOutline(GetSessionHistoryOutlineRequest),
     GetSessionHistoryBlobContent(GetSessionHistoryBlobContentRequest),
+    GetSessionHistoryBlobContents(GetSessionHistoryBlobContentsRequest),
     GetPromptInputHistory(GetPromptInputHistoryRequest),
     ListPromptSettings(ListPromptSettingsRequest),
     GetPromptSetting(GetPromptSettingRequest),

@@ -345,6 +345,7 @@ response_policies! {
         ProviderProcessesTornDown,
         SessionHistoryOutline,
         SessionHistoryBlobContent,
+        SessionHistoryBlobContents,
         PromptInputHistory,
         PromptInputHistoryRecorded,
         PromptSettingsListed,

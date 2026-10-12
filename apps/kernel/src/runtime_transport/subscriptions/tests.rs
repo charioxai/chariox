@@ -309,6 +309,7 @@ fn terminal_output_event(session_id: &str, marker: &str) -> KernelEvent {
     KernelEvent::TerminalOutput {
         records: vec![TerminalOutputRecord {
             record_id: None,
+            sequence: None,
             timestamp_ms: 1_000,
             session_id: session_id.to_string(),
             provider_run_id: "provider-run-a".to_string(),

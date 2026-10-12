@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::error::DaemonError;
 use crate::history::{HistoryEvent, HistoryEventKind, OperationalHistoryStore};
 use crate::local::{
-    GetSessionHistoryBlobContentRequest, GetSessionHistoryOutlineRequest, LocalDaemonResponse,
+    GetSessionHistoryBlobContentRequest, GetSessionHistoryBlobContentsRequest,
+    GetSessionHistoryOutlineRequest, LocalDaemonResponse, SessionHistoryBlobContentPage,
     SessionHistoryOutlineAgent, SessionHistoryOutlineCursor, SessionHistoryOutlineTurn,
     SessionHistoryOutlineTurnLifecycle,
 };
@@ -29,6 +30,7 @@ use projection::{
 const DEFAULT_LATEST_PROMPT_COUNT: usize = 4;
 const MAX_LATEST_PROMPT_COUNT: usize = 20;
 const EXTERNAL_OPEN_OBSERVATION_GRACE_MS: u64 = 5 * 60 * 1_000;
+const MAX_BLOB_CONTENTS_PER_REQUEST: usize = 64;
 
 pub(crate) async fn execute_session_history_outline_request(
     operational_history: OperationalHistoryStore,
@@ -82,21 +84,16 @@ pub(crate) async fn execute_scoped_session_history_blob_content_request(
     agent_import: Option<ExternalProviderImportMetadata>,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     tokio::task::spawn_blocking(move || {
-        let (sequence_start, sequence_end) = parse_blob_id(&request.blob_id)?;
-        let events = operational_history.load_session_events_for_agent_sequence_range(
+        let page = load_blob_content_page(
+            &operational_history,
             &request.session_id,
             &request.agent_id,
-            sequence_start,
-            sequence_end,
+            request.blob_id,
+            agent_import.as_ref(),
         )?;
-        let entries = events
-            .into_iter()
-            .filter(|event| event_belongs_to_external_import(agent_import.as_ref(), event))
-            .filter_map(page_entry_from_event)
-            .collect::<Vec<_>>();
         Ok(LocalDaemonResponse::SessionHistoryBlobContent {
-            blob_id: request.blob_id,
-            entries,
+            blob_id: page.blob_id,
+            entries: page.entries,
         })
     })
     .await
@@ -104,6 +101,64 @@ pub(crate) async fn execute_scoped_session_history_blob_content_request(
         operation: "load session history blob content",
         message: error.to_string(),
     })?
+}
+
+pub(crate) async fn execute_scoped_session_history_blob_contents_request(
+    operational_history: OperationalHistoryStore,
+    request: GetSessionHistoryBlobContentsRequest,
+    agent_import: Option<ExternalProviderImportMetadata>,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    if request.blob_ids.len() > MAX_BLOB_CONTENTS_PER_REQUEST {
+        return Err(DaemonError::LocalTransport {
+            operation: "load session history blob contents",
+            message: format!(
+                "at most {MAX_BLOB_CONTENTS_PER_REQUEST} blobs can be loaded per request"
+            ),
+        });
+    }
+    tokio::task::spawn_blocking(move || {
+        let blobs = request
+            .blob_ids
+            .into_iter()
+            .map(|blob_id| {
+                load_blob_content_page(
+                    &operational_history,
+                    &request.session_id,
+                    &request.agent_id,
+                    blob_id,
+                    agent_import.as_ref(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(LocalDaemonResponse::SessionHistoryBlobContents { blobs })
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "load session history blob contents",
+        message: error.to_string(),
+    })?
+}
+
+fn load_blob_content_page(
+    operational_history: &OperationalHistoryStore,
+    session_id: &str,
+    agent_id: &str,
+    blob_id: String,
+    agent_import: Option<&ExternalProviderImportMetadata>,
+) -> Result<SessionHistoryBlobContentPage, DaemonError> {
+    let (sequence_start, sequence_end) = parse_blob_id(&blob_id)?;
+    let events = operational_history.load_session_events_for_agent_sequence_range(
+        session_id,
+        agent_id,
+        sequence_start,
+        sequence_end,
+    )?;
+    let entries = events
+        .into_iter()
+        .filter(|event| event_belongs_to_external_import(agent_import, event))
+        .filter_map(page_entry_from_event)
+        .collect::<Vec<_>>();
+    Ok(SessionHistoryBlobContentPage { blob_id, entries })
 }
 
 fn outline_agent_ids(

@@ -573,6 +573,7 @@ impl CommandRouter {
             }),
             request @ (LocalDaemonRequest::GetSessionHistoryOutline(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
+            | LocalDaemonRequest::GetSessionHistoryBlobContents(_)
             | LocalDaemonRequest::QueryRecall(_)
             | LocalDaemonRequest::SearchRecall(_)
             | LocalDaemonRequest::SemanticSearchRecall(_)) => Box::pin(async move {

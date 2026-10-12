@@ -34,6 +34,21 @@ export function getSessionHistoryBlobContentRequest(
   }
 }
 
+// Protocol ≥508: several blobs of one agent in one round trip.
+export function getSessionHistoryBlobContentsRequest(
+  sessionId: string,
+  agentId: string,
+  blobIds: readonly string[],
+) {
+  return {
+    GetSessionHistoryBlobContents: {
+      session_id: sessionId,
+      agent_id: agentId,
+      blob_ids: [...blobIds],
+    },
+  }
+}
+
 export function getPromptInputHistoryRequest(
   sessionId: string,
   afterSequence?: number | null,

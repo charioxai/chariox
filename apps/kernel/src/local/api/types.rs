@@ -272,4 +272,7 @@ pub use workspace::*;
 /// cursor. It also restores workflow notifications, Room workflow inventory and
 /// controls, opt-in Cloud device denial and exact home-prompt cancellation
 /// admission (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 491;
+/// Version 508 stamps terminal output records with their history sequence,
+/// adds display previews to history outline blobs (one blob per tool call and
+/// per thought) and batch blob loading (MP-08/MP-10).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 508;
