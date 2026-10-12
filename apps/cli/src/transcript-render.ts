@@ -17,10 +17,8 @@ import {
 import type { TranscriptEntry } from "./cli-types.js"
 import { transcriptEntryPadding } from "./transcript-entry-style.js"
 import { theme, TranscriptSeparatorBorder } from "./theme.js"
-import {
-  normalizeMarkdownFenceInfoStrings,
-  shouldRenderTranscriptAsMarkdown,
-} from "./transcript.js"
+import { shouldRenderTranscriptAsMarkdown } from "./transcript.js"
+import { prepareTranscriptMarkdown } from "./transcript-rich-markdown.js"
 import { buildApplyPatchTranscriptContent } from "./transcript-apply-patch-render.js"
 import {
   buildBlobToggleLabel,
@@ -142,7 +140,7 @@ export function buildTranscriptEntryRenderable(
     }
 
     if (currentMode === "markdown" && markdownRenderable) {
-      markdownRenderable.content = normalizeMarkdownFenceInfoStrings(nextEntry.text)
+      markdownRenderable.content = prepareTranscriptMarkdown(nextEntry.text)
       markdownRenderable.requestRender()
       wrapper.requestRender()
       return true
@@ -209,7 +207,7 @@ function buildExpandedTranscriptContent(
 
   if (shouldRenderTranscriptAsMarkdown(entry.role, entry.text)) {
     const markdown = new MarkdownRenderable(renderer, {
-      content: normalizeMarkdownFenceInfoStrings(entry.text),
+      content: prepareTranscriptMarkdown(entry.text),
       syntaxStyle: transcriptSyntax,
       conceal: true,
       concealCode: false,
