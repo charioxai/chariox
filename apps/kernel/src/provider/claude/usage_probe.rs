@@ -157,7 +157,16 @@ fn run_claude_print(
     timeout: Duration,
     label: &'static str,
 ) -> Result<(std::process::ExitStatus, Option<serde_json::Value>), DaemonError> {
-    let mut arguments = vec!["-p", args[0], "--output-format", "json", "--no-session-persistence", "--no-chrome", "--tools", ""];
+    let mut arguments = vec![
+        "-p",
+        args[0],
+        "--output-format",
+        "json",
+        "--no-session-persistence",
+        "--no-chrome",
+        "--tools",
+        "",
+    ];
     arguments.extend_from_slice(&args[1..]);
     run_claude_arguments(executable, environment, &arguments, timeout, label)
 }
@@ -168,9 +177,12 @@ pub(super) fn run_claude_probe(
     arguments: &[&str],
     timeout: Duration,
 ) -> Result<serde_json::Value, DaemonError> {
-    let (status, result) = run_claude_arguments(executable, environment, arguments, timeout, "Claude probe")?;
+    let (status, result) =
+        run_claude_arguments(executable, environment, arguments, timeout, "Claude probe")?;
     if !status.success() {
-        return Err(probe_error(format!("Claude probe exited unsuccessfully ({status})")));
+        return Err(probe_error(format!(
+            "Claude probe exited unsuccessfully ({status})"
+        )));
     }
     result.ok_or_else(|| probe_error("Claude returned invalid probe JSON".into()))
 }

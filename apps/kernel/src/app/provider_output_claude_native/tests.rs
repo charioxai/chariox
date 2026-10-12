@@ -1727,13 +1727,17 @@ fn workspace_trust_approval_fixture_mode(choices: &str, expected_input: &str, fr
                 run.id(),
                 &run,
                 Some(std::sync::Arc::new(bridge.clone())),
-                "\n❯ No, exit",
+                "Quick safety check\nDo you trust this folder?\nYes, I trust this folder\n❯ No, exit",
             )
             .unwrap();
     }
     if frame_mode == 2 {
         let path = super::claude_permission_recent_file(&context_file).unwrap();
-        fs::write(path, "Quick safety check\nDo you trust this folder?\nUnknown selector").unwrap();
+        fs::write(
+            path,
+            "Quick safety check\nDo you trust this folder?\nUnknown selector",
+        )
+        .unwrap();
     }
     bridge.resolve("allow_once", "allow");
     if frame_mode == 2 {

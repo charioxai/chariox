@@ -252,7 +252,14 @@ pub(crate) fn observe_provider_auth_status(
     account_profile: &str,
     config: &DaemonConfig,
 ) -> Result<ProviderAuthStatus, DaemonError> {
-    observe_provider_auth_status_until(registry, owner_user_id, provider, account_profile, None, config)
+    observe_provider_auth_status_until(
+        registry,
+        owner_user_id,
+        provider,
+        account_profile,
+        None,
+        config,
+    )
 }
 
 // MP-08 / MP-10 / MP-11: each native probe, including version, consumes one absolute budget.
@@ -321,18 +328,40 @@ pub(crate) fn observe_provider_auth_status_until(
         }
         Some("claude") => {
             let status = if deadline.is_some() {
-                if crate::provider::provider_account_credential_registered(owner_user_id, provider, &profile.profile_id)? {
+                if crate::provider::provider_account_credential_registered(
+                    owner_user_id,
+                    provider,
+                    &profile.profile_id,
+                )? {
                     return Err(DaemonError::LocalTransport {
                         operation: "get_provider_auth_status",
-                        message: "Vault-backed Claude authentication requires explicit account refresh".into(),
+                        message:
+                            "Vault-backed Claude authentication requires explicit account refresh"
+                                .into(),
                     });
                 }
-                let status = claude_auth_status_until(provider, &profile.profile_id, &environment, deadline)?;
+                let status = claude_auth_status_until(
+                    provider,
+                    &profile.profile_id,
+                    &environment,
+                    deadline,
+                )?;
                 ensure_status_budget(deadline)?;
-                registry.record_claude_native_login(owner_user_id, &profile.profile_id, status.auth_state == "authenticated")?;
+                registry.record_claude_native_login(
+                    owner_user_id,
+                    &profile.profile_id,
+                    status.auth_state == "authenticated",
+                )?;
                 status
             } else {
-                claude_profile_auth_status(registry, owner_user_id, provider, &profile, &environment, config)?
+                claude_profile_auth_status(
+                    registry,
+                    owner_user_id,
+                    provider,
+                    &profile,
+                    &environment,
+                    config,
+                )?
             };
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             Ok(status)
@@ -454,7 +483,11 @@ fn claude_profile_auth_status(
         &profile.profile_id,
     )? {
         let status = claude_auth_status(provider, &profile.profile_id, profile_environment)?;
-        registry.record_claude_native_login(owner_user_id, &profile.profile_id, status.auth_state == "authenticated")?;
+        registry.record_claude_native_login(
+            owner_user_id,
+            &profile.profile_id,
+            status.auth_state == "authenticated",
+        )?;
         return Ok(status);
     }
     let verified = (|| {
@@ -514,7 +547,7 @@ fn claude_profile_auth_status(
         auth_state: "authenticated".into(),
         identity_summary: None,
         plan: None,
-        detected_version: claude_version().ok(),
+        detected_version: claude_version_until(None).ok(),
         login_hint: None,
     })
 }

@@ -115,7 +115,13 @@ pub(crate) async fn execute_set_provider_account_credential_request(
         )
         .await?;
     let token = zeroize::Zeroizing::new(request.value.trim().to_string());
-    claude_setup_token_login::verify_account_token(runtime_state, &owner_user_id, &profile.profile_id, &token).await?;
+    claude_setup_token_login::verify_account_token(
+        runtime_state,
+        &owner_user_id,
+        &profile.profile_id,
+        &token,
+    )
+    .await?;
     let _vault_unlock = runtime_state
         .ensure_vault_unlocked_for_command_context(
             command,
