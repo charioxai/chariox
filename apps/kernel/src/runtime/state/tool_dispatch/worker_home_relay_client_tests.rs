@@ -92,7 +92,9 @@ async fn mp08_mp10_slice_home_request_uses_provisioned_pin_without_cloud_metadat
         let response = RelayPeerResponse::Pong {
             value: "public-pin".into(),
             daemon_id: home.daemon_id.clone(),
-            relay_peer_protocol_version: Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION),
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
         };
         let encrypted = relay_crypto::encrypt_payload_for_peer(
             &home.relay_private_key,

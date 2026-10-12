@@ -1100,8 +1100,14 @@ async fn leased_sudo_scope_approval_outlasts_the_relay_request_wait() {
     let attachment = owner_attachment(&fixture, &room).await;
     let agent =
         spawn_on_agent_worker_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
-    let (owner, _) =
-        open_leased_sudo(&fixture, &room, &attachment, &agent, Duration::from_secs(60)).await;
+    let (owner, _) = open_leased_sudo(
+        &fixture,
+        &room,
+        &attachment,
+        &agent,
+        Duration::from_secs(60),
+    )
+    .await;
     let home_prompt = fixture
         .home
         .runtime_state

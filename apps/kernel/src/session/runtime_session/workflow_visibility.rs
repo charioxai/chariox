@@ -16,7 +16,7 @@ impl RuntimeSession {
         if self.owner_user_id() == user_id
             || self
                 .collaboration_level_for_user(user_id)
-            .is_some_and(|level| level.can_view_agent_trace())
+                .is_some_and(|level| level.can_view_agent_trace())
         {
             return Ok(true);
         }
