@@ -442,6 +442,68 @@ mod tests {
     }
 
     #[test]
+    fn reconnect_before_the_first_delta_waits_for_the_authoritative_prefix() {
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".into(),
+            "session-1".into(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(
+                std::sync::mpsc::channel().1,
+            ),
+        );
+        state.note_prompt_submitted("msg_user".into());
+        state.live_text_from_start = true;
+        state
+            .message_roles
+            .insert("message-1".into(), "assistant".into());
+        let mut chunks = Vec::new();
+        let mut part = OpenCodePart {
+            id: "part-1".into(),
+            session_id: "session-1".into(),
+            message_id: "message-1".into(),
+            kind: "text".into(),
+            text: String::new(),
+            tool: String::new(),
+            state: None,
+            time: None,
+        };
+        handle_message_part_updated(
+            &mut state,
+            "run",
+            &RemoteExtensionManifest::default(),
+            part.clone(),
+            &mut chunks,
+        )
+        .unwrap();
+        state.live_text_from_start = false;
+        handle_message_part_delta(
+            &mut state,
+            "run",
+            "session-1".into(),
+            "message-1".into(),
+            "part-1".into(),
+            "text".into(),
+            " world".into(),
+            &mut chunks,
+        )
+        .unwrap();
+        assert!(
+            chunks.is_empty(),
+            "a reconnected suffix must not become a prefix"
+        );
+        part.text = "hello world".into();
+        handle_message_part_updated(
+            &mut state,
+            "run",
+            &RemoteExtensionManifest::default(),
+            part,
+            &mut chunks,
+        )
+        .unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].bytes, b"hello world");
+    }
+
+    #[test]
     fn late_attach_delta_waits_for_authoritative_part_prefix() {
         let mut state = OpenCodeRuntimeState::new(
             "http://localhost:1".to_string(),

@@ -151,15 +151,9 @@ fn provider_tool_delta_bytes(
                 trim_provider_tool_delta_gate(&mut gate);
                 return Some(Vec::new());
             }
-            if previous.byte_len < current_len {
-                output_text =
-                    Some(String::from_utf8_lossy(&current_bytes[previous.byte_len..]).into_owned());
-                object.insert("chariox_delta".to_string(), Value::Bool(true));
-                object.insert(
-                    "chariox_delta_offset_bytes".to_string(),
-                    Value::Number((previous.byte_len as u64).into()),
-                );
-            }
+            // MP-08 / MP-10: all clients merge this field as a snapshot.
+            // Retain duplicate suppression, but send the cumulative value so
+            // streaming never replaces an earlier prefix with a delta slice.
         } else {
             output_text = Some(bounded_text_tail_string(
                 current_bytes,
@@ -552,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_tool_output_uses_delta_for_cumulative_payloads() {
+    fn provider_tool_output_preserves_cumulative_snapshots() {
         let _guard = provider_tool_delta_test_lock()
             .lock()
             .expect("provider tool delta test lock should not be poisoned");
@@ -590,11 +584,11 @@ mod tests {
         let first: Value = serde_json::from_slice(&first).expect("first delta should be json");
         let second: Value = serde_json::from_slice(&second).expect("second delta should be json");
         assert_eq!(first.get("output").and_then(Value::as_str), Some("hello "));
-        assert_eq!(second.get("output").and_then(Value::as_str), Some("world"));
         assert_eq!(
-            second.get("chariox_delta").and_then(Value::as_bool),
-            Some(true)
+            second.get("output").and_then(Value::as_str),
+            Some("hello world")
         );
+        assert_eq!(second.get("chariox_delta").and_then(Value::as_bool), None);
     }
 
     #[test]

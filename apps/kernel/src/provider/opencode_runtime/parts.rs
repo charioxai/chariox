@@ -211,6 +211,16 @@ fn emit_part_delta(
             .push(delta);
         return;
     };
+    // MP-08 / MP-10: a gap invalidates even an empty baseline established
+    // before the disconnect. Wait for its authoritative prefix again.
+    if !state.live_text_from_start && emitted.is_empty() {
+        state
+            .buffered_text_deltas
+            .entry(part_id)
+            .or_default()
+            .push(delta);
+        return;
+    }
     emitted.push_str(&delta);
     chunks.push(OpenCodeOutputChunk {
         kind,
