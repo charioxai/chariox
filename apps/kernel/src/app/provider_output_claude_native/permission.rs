@@ -779,10 +779,7 @@ mod workspace_trust_selection_tests {
             ("❯ Yes, I trust this folder\n  No, exit", b"\r".as_slice()),
         ] {
             let frame = format!("Quick safety check\nDo you trust this folder?\n{choices}");
-            assert_eq!(
-                claude_workspace_trust_approval_input(&frame),
-                Some(input)
-            );
+            assert_eq!(claude_workspace_trust_approval_input(&frame), Some(input));
         }
     }
     #[test]
