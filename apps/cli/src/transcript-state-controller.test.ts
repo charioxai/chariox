@@ -54,14 +54,14 @@ test("transcript state controller toggles turns through shared display state", (
   const harness = transcriptHarness({
     entries: [
       entry(1, "user", "prompt", { turnId: 1 }),
-      entry(4, "turn_toggle", "click to expand", { turnId: 1, toggleMode: "expand" }),
+      entry(-1, "turn_toggle", "click to expand", { turnId: 1, toggleMode: "expand" }),
       entry(2, "reasoning", "thinking", { turnId: 1, hidden: true, blobCollapsible: true }),
       entry(3, "assistant", "summary", { turnId: 1 }),
     ],
     collapsedTurnIds: [1],
   })
 
-  harness.controller.toggleTurn(1, 4)
+  harness.controller.toggleTurn(1, -1)
 
   assert.deepEqual(harness.expandedTurnUpdates, [{
     agentId: "agent-1",
@@ -72,12 +72,12 @@ test("transcript state controller toggles turns through shared display state", (
     harness.entries.map((candidate) => [candidate.id, candidate.role, candidate.hidden ?? false, candidate.toggleMode ?? null]),
     [
       [1, "user", false, null],
-      [4, "turn_toggle", false, "collapse"],
+      [-1, "turn_toggle", false, "collapse"],
       [2, "reasoning", false, null],
       [3, "assistant", false, null],
     ],
   )
-  assert.equal(harness.entryCounter, 4)
+  assert.equal(harness.entryCounter, 3)
   assert.equal(harness.persisted.length, 1)
   assert.equal(harness.reconciled.length, 1)
   assert.equal(harness.focusRetained, 1)
@@ -87,14 +87,14 @@ test("transcript state controller toggles serialized zero turn ids", () => {
   const harness = transcriptHarness({
     entries: [
       entry(1, "user", "prompt", { turnId: 0 }),
-      entry(4, "turn_toggle", "click to expand", { turnId: 0, toggleMode: "expand" }),
+      entry(0, "turn_toggle", "click to expand", { turnId: 0, toggleMode: "expand" }),
       entry(2, "reasoning", "thinking", { turnId: 0, hidden: true, blobCollapsible: true }),
       entry(3, "assistant", "summary", { turnId: 0 }),
     ],
     collapsedTurnIds: [0],
   })
 
-  harness.controller.toggleTurn(0, 4)
+  harness.controller.toggleTurn(0, 0)
 
   assert.deepEqual(harness.expandedTurnUpdates, [{
     agentId: "agent-1",
