@@ -33,6 +33,7 @@ struct HostState {
     access: UserDomainAccess,
     actors: BTreeMap<String, Arc<Mutex<KernelBrowserActors>>>,
     loaded: BTreeSet<(String, String, KernelBrowserCapability)>,
+    expiry_wake: Option<Arc<tokio::sync::Notify>>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum KernelBrowserCapability {
@@ -46,10 +47,14 @@ pub(crate) enum KernelBrowserCapability {
 pub(crate) struct KernelBrowserAdmission {
     user: String,
     agent: Option<String>,
+    agent_label: Option<String>,
     epoch: Arc<BrowserCancellation>,
     cancellation: Arc<BrowserCancellation>,
     terminal_lifetime: Option<crate::runtime::command::TerminalLifetime>,
     capability: KernelBrowserCapability,
+    /// MP-08/MP-10/MP-11 A06: a live sudo window, re-evaluated by `cancellation`,
+    /// stands in for focus on sensitive actions within the retained grant.
+    elevated: bool,
 }
 
 impl KernelBrowserAdmission {
@@ -64,6 +69,11 @@ impl KernelBrowserAdmission {
                 .is_some_and(|lifetime| !lifetime.is_live())
     }
 
+    pub(crate) fn with_agent_label(mut self, label: &str) -> Self {
+        self.agent_label = Some(label.into());
+        self
+    }
+
     pub(crate) fn with_authority(
         mut self,
         authority: impl Fn() -> bool + Send + Sync + 'static,
@@ -72,6 +82,12 @@ impl KernelBrowserAdmission {
             self.epoch.clone(),
             authority,
         ));
+        self
+    }
+
+    /// Pair only with `with_authority` that checks the same sudo window.
+    pub(crate) fn elevated(mut self) -> Self {
+        self.elevated = true;
         self
     }
 }
@@ -248,10 +264,12 @@ impl KernelBrowserHost {
         Ok(KernelBrowserAdmission {
             user: user.into(),
             agent: Some(agent.into()),
+            agent_label: Some(agent.into()),
             capability,
             epoch: state.access.grant(user, agent)?.epoch.clone(),
             cancellation: state.access.grant(user, agent)?.epoch.clone(),
             terminal_lifetime: None,
+            elevated: false,
         })
     }
     pub(crate) fn admit_terminal(
@@ -263,9 +281,11 @@ impl KernelBrowserHost {
         KernelBrowserAdmission {
             user: user.into(),
             agent: None,
+            agent_label: None,
             epoch: epoch.clone(),
             capability: KernelBrowserCapability::Browser,
             terminal_lifetime: Some(lifetime.clone()),
+            elevated: false,
             cancellation: Arc::new(BrowserCancellation::for_authority(epoch, move || {
                 lifetime.is_live()
             })),
@@ -545,6 +565,12 @@ impl KernelBrowserHost {
         };
         // MP-11: focused and retained input share grant/run cancellation.
         // Vault requests also carry their live focus authority from admission.
+        // MP-08/MP-11: controller creation evidence names this kernel-admitted
+        // action. Never accept a caller's action identity at the private seam.
+        params["_action_id"] = action
+            .as_ref()
+            .map(|action| Value::String(action.id.clone()))
+            .unwrap_or(Value::Null);
         let request_params = params.clone();
         let display = method == "host.browser"
             && params["op"] == "screenshot"
@@ -586,11 +612,32 @@ impl KernelBrowserHost {
         // Reconcile authority with full controller state before applying a
         // retained agent's projection; scoped inventory cannot remove another
         // actor's tabs or input ownership from the shared ledger.
+        // Creation evidence belongs to the private controller seam. Never expose
+        // it in the serialized client result or use it to widen capability grants.
+        let tab_creation_actions = result
+            .as_mut()
+            .ok()
+            .and_then(|state| state.as_object_mut())
+            .and_then(|state| {
+                state.remove("_tab_openers");
+                state.remove("_tab_creation_actions")
+            })
+            .unwrap_or(Value::Null);
         if let Ok(state) = &result {
-            model
-                .lock()
-                .map_err(|_| "MD-3: actor lock poisoned")?
-                .reconcile(state)?;
+            let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+            ledger.reconcile_inventory(state, &tab_creation_actions)?;
+        }
+        if let Ok(payload) = &mut result {
+            let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+            if admission.is_some_and(|a| a.revoked_in_actor_lock()) {
+                return Err("MP-11: not_granted: browser authority revoked".into());
+            }
+            if request_params["op"] == "open" {
+                if let Some(tab) = payload["tab_id"].as_str() {
+                    ledger.opened_tab(browser_actor(admission, &request_params), tab);
+                }
+            }
+            ledger.project_tabs(payload);
         }
         if let (Some(admission), Ok(payload)) = (admission, &mut result) {
             if let Some(agent) = admission.agent.as_deref() {
@@ -622,6 +669,17 @@ impl KernelBrowserHost {
                                     .contains(&UserDomainResource::BrowserTab { tab_id: id.into() })
                             })
                         });
+                    }
+                }
+                if let Some(tab) = payload["agent_activity"]["tab_id"].as_str() {
+                    if state.access.focused(user) != Some(agent)
+                        && !state
+                            .access
+                            .grant(user, agent)?
+                            .resources
+                            .contains(&UserDomainResource::BrowserTab { tab_id: tab.into() })
+                    {
+                        payload["agent_activity"] = Value::Null;
                     }
                 }
                 let resource = request_params["tab_id"]
@@ -665,6 +723,7 @@ impl KernelBrowserHost {
                 }
             }
         }
+        self.arm_expiry();
         // No grant lock across authority callbacks: they can read kernel state.
         self.check_admission(admission)?;
         result
@@ -771,6 +830,9 @@ impl KernelBrowserHost {
                 .lock()
                 .map_err(|_| "MD-2: browser host lock poisoned")?;
             state.stopped = true;
+            if let Some(wake) = &state.expiry_wake {
+                wake.notify_one();
+            }
             let owners: BTreeSet<_> = state
                 .access
                 .holders()
@@ -800,7 +862,9 @@ fn browser_actor(admission: Option<&KernelBrowserAdmission>, params: &Value) -> 
         EnvironmentActor::new(
             format!("agent:{agent}"),
             EnvironmentActorKind::Agent,
-            "Agent",
+            admission
+                .and_then(|a| a.agent_label.as_deref())
+                .unwrap_or(agent),
         )
     } else {
         EnvironmentActor::new(
@@ -864,6 +928,90 @@ fn require_loaded(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// MP-08/MP-11 A05: absolute expiry is a live wake. With no further call,
+    /// the grant disappears, its epoch cancels in-flight work and clients see it.
+    #[tokio::test]
+    async fn capability_grant_expiry_is_a_live_wake() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/capability-expiry"));
+        host.request_grant(
+            "owner",
+            "agent",
+            "prompt",
+            Duration::from_millis(200),
+            None,
+            "session",
+        )
+        .unwrap();
+        host.set_focus("owner", Some("focused"));
+        let admission = host.admit("owner", "agent").unwrap();
+        let cursor = host.grant_snapshot("owner", "kernel")["cursor"].as_u64();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while host
+                .grant_holders()
+                .contains(&("owner".into(), "agent".into()))
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the expiry wake revokes without any later request");
+        assert!(admission.cancellation.requested());
+        assert!(host.grant_snapshot("owner", "kernel")["cursor"].as_u64() > cursor);
+        assert!(
+            host.has_grant("owner", "focused"),
+            "unexpired grants remain"
+        );
+        assert!(KernelBrowserHost::grant_lifetime(Some(25)).is_err());
+        assert!(KernelBrowserHost::grant_lifetime(Some(0)).is_err());
+        assert_eq!(
+            KernelBrowserHost::grant_lifetime(Some(24)).unwrap(),
+            Duration::from_secs(24 * 3600)
+        );
+    }
+    #[tokio::test]
+    async fn capability_empty_revoke_invalidates_a_pending_browser_acquisition() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/capability-revoke"));
+        let fence = host.acquisition_fence("owner", "agent");
+        host.revoke_grants("owner", None);
+        assert!(
+            host.request_grant(
+                "owner",
+                "agent",
+                "request",
+                Duration::from_secs(60),
+                Some(fence),
+                "room"
+            )
+            .is_err(),
+            "MP-11: a revoke must fence pending acquisition before any holder exists"
+        );
+        assert!(host.grant_holders().is_empty());
+    }
+    /// MP-11 (#922 review 1): only a revoke that reaches this agent fences
+    /// its pending acquisition; other holders' grant changes do not.
+    #[tokio::test]
+    async fn capability_unrelated_grant_changes_keep_a_pending_browser_acquisition() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/capability-fence"));
+        let lifetime = Duration::from_secs(60);
+        host.request_grant("owner", "busy", "prompt", lifetime, None, "room")
+            .unwrap();
+        let fence = host.acquisition_fence("owner", "agent");
+        host.set_focus("owner", Some("focused"));
+        host.load("owner", "focused").unwrap();
+        host.bind_activity("owner", "busy", "room", false);
+        host.bind_activity("owner", "busy", "room", true);
+        host.revoke_grants("owner", Some("focused"));
+        host.request_grant("other-owner", "agent", "prompt", lifetime, None, "room")
+            .unwrap();
+        assert!(host
+            .request_grant("owner", "agent", "request", lifetime, Some(fence), "room")
+            .unwrap());
+        let fence = host.acquisition_fence("owner", "child");
+        host.revoke_grants("owner", Some("child"));
+        assert!(host
+            .request_grant("owner", "child", "request", lifetime, Some(fence), "room")
+            .is_err());
+    }
     #[test]
     fn mp11_explicit_desktop_grant_preserves_focus_and_cancels_admissions() {
         let host = KernelBrowserHost::new(PathBuf::from("/unused/leased-computer"));
@@ -1028,6 +1176,8 @@ mod actor_tests;
 mod native_input_tests;
 
 mod access;
+#[cfg(test)]
+mod tabs_tests;
 
 #[cfg(test)]
 mod computer_tests;

@@ -5,7 +5,7 @@ import {WorkerVideoDecoder} from './decoder-worker.mjs';
 // admitted/encrypted kernel request and event adapter; never a Cloud media proxy.
 export const minimumProtocolVersion = 466;
 export const desktopMinimumProtocolVersion = 474;
-export const pushProtocolVersion = 475;
+export const pushProtocolVersion = 491;
 const VP9='vp09.00.10.08';
 const videoCodecs=['vp8','avc1.420033','vp09.00.50.08','vp09.00.40.08',VP9];
 // Empty credits must not saturate a narrow link with control traffic. Admitted
@@ -171,7 +171,8 @@ export class BrowserDisplayPresenter {
     }
     return { op: 'display_input', tab_id: this.binding.tab_id, generation: this.binding.generation, document_id: this.documentId, input };
   }
-  close() { if(this.closed)return;this.closed=true;this.stripeDecoder?.close();this.prediction?.close();for(const key of ['back','scratch'])if(this[key]){this[key].width=1;this[key].height=1;this[key]=null;} this.workerDecoder?.close();this.workerDecoder=null;if(this.decoder?.state!=='closed')this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; this.canvas.width = 1; this.canvas.height = 1; }
+  // Resources are released once; a preserved paint is cleared by a later close, a cleared canvas is never reset again.
+  close({preserveFrame=false}={}) { if(!this.closed){this.closed=true;this.stripeDecoder?.close();this.prediction?.close();for(const key of ['back','scratch'])if(this[key]){this[key].width=1;this[key].height=1;this[key]=null;} this.workerDecoder?.close();this.workerDecoder=null;if(this.decoder?.state!=='closed')this.decoder?.close(); this.decoder=null; this.documentId = null;} if(!preserveFrame&&!this.cleared){this.cleared=true;this.canvas.width = 1; this.canvas.height = 1;} }
 }
 // Bounded credit window; events and responses can arrive in either order.
 export async function attachBrowserDisplay(canvas, transport, tab, options = {}) {
@@ -192,13 +193,13 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     if (codecs.length === 8) codecs.splice(codecs.indexOf('png') - 1, 1);
     codecs.push('chariox-relay-binary-v96');
   }
-  // MP-08/MP-10: protocol 475 kernels push frames on a relay display
+  // MP-08/MP-10: protocol 491 kernels push frames on a relay display
   // subscription; older kernels and other transports keep credits.
   const pushMode = options.push !== false && transport.kernelProtocolVersion >= pushProtocolVersion && typeof transport.subscribeDisplay === 'function';
   const offer={codecs:options.stripes===false?codecs.filter(c=>c!=='chariox-stripes-v1'):codecs,bitrate:options.bitrate??2_000_000,device_scale_factor:options.deviceScaleFactor??1};
   const subscribed=await request(options.desktop?{op:'computer',command:{op:'display_subscribe',target:tab,...offer}}:{op:'display_subscribe',...tab,...offer});
   // The reply's generation wins: the kernel may restart its browser at the
-  // viewer's device scale (protocol 475), rotating the generation.
+  // viewer's device scale (protocol 491), rotating the generation.
   const binding=options.desktop?{...subscribed,tab_id:subscribed.source?.surface_id}:{...tab,...subscribed};
   if(options.desktop&&(binding.source?.kind!=='desktop'||binding.source.surface_id!==tab.surface_id||binding.source.generation!==tab.generation||![binding.source.width,binding.source.height].every(n=>Number.isSafeInteger(n)&&n>0&&n<=4096)||binding.device_scale_factor!==offer.device_scale_factor)){
     await request({op:'unsubscribe',subscription_id:binding.subscription_id,generation:binding.generation}).catch(()=>{});
@@ -247,7 +248,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   });
   try { await transport.subscribeDisplay?.(binding); }
   catch (error) {
-    off(); presenter.close();
+    off(); presenter.close({preserveFrame:true});
     await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }).catch(() => {});
     throw error;
   }
@@ -330,9 +331,9 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('takeover'));},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('release'));},
     actors: () => request(actorCommand('actors')),
-    async close() {
+    async close(options) {
       // MP-11: detach first; parked credits cannot hold teardown for their window timeout.
-      running = false; stopped = true; pending?.reject(new Error('MD-DISPLAY: closed')); pending = null; off(); presenter.close();
+      running = false; stopped = true; pending?.reject(new Error('MD-DISPLAY: closed')); pending = null; off(); presenter.close(options);
       for (const arrive of arrivals.splice(0)) arrive(closedItem);
       await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation });
       await stop().catch(() => {});
@@ -340,7 +341,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   };
 }
 
-// MP-08/MP-10: protocol 475 pushed display. The kernel pump sends frames as
+// MP-08/MP-10: protocol 491 pushed display. The kernel pump sends frames as
 // they are produced; the viewer acknowledges each presented sequence (plus a
 // heartbeat), which drives the kernel's ACK gate (after Selkies' frame ACK).
 function pushDisplay(presenter, transport, request, binding, actorCommand, options) {
@@ -349,12 +350,24 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
   let nextSequence = presenter.sequence + 1, heldBytes = 0, chain = Promise.resolve(), failure = null, running = false, closed = false, ackedAt = 0, predictionEpoch = 0;
   let recovering = false, keyRequestedAt = -Infinity, gapTimer = null, paused = false, resync = false;
   const fail = error => { failure ??= error; for (const wake of waiters) wake(); };
+  // MP-08/MP-10: heartbeat ownership is bounded even while hidden.
+  // Keep the relay lease alive, with one request and one latest queued ACK.
+  const document=presenter.canvas.ownerDocument;
+  let ackInFlight=false, queuedAck=null;
   const ack = (sequence, lost = false) => {
     if (closed) return;
-    ackedAt = performance.now();
-    request({ op: 'display_ack', subscription_id: binding.subscription_id, generation: binding.generation, sequence, lost })
-      .then(reply => { if (reply?.push !== 'running') fail(Error('MD-DISPLAY: push pump ' + (reply?.push ?? 'unavailable'))); }, fail);
+    const candidate={sequence,lost:lost||queuedAck?.lost||false};
+    if (ackInFlight) { queuedAck=candidate;return; }
+    queuedAck=null;ackInFlight=true;ackedAt=performance.now();
+    request({ op: 'display_ack', subscription_id: binding.subscription_id, generation: binding.generation, ...candidate })
+      .then(reply => { if (reply?.push !== 'running') fail(Error('MD-DISPLAY: push pump ' + (reply?.push ?? 'unavailable'))); }, fail)
+      .finally(()=>{
+        ackInFlight=false;
+        if(!closed&&!failure&&queuedAck){const latest=queuedAck;queuedAck=null;ack(latest.sequence,latest.lost);}
+      });
   };
+  const visibilityChanged=()=>{if(!document.hidden&&!paused)ack(presenter.sequence,queuedAck?.lost??false)};
+  document?.addEventListener('visibilitychange',visibilityChanged);
   // MP-08/MP-10 (1.5): a lost base, decode failure or receive gap keeps the
   // canvas, asks for an independent frame and drops dependent frames until
   // it arrives. Only a binding/geometry mismatch or a stopped pump is fatal.
@@ -428,6 +441,6 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('takeover'));},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('release'));},
     actors: () => request(actorCommand('actors')),
-    async close() { closed = true; running = false; clearInterval(heartbeat); clearTimeout(gapTimer); off(); await chain.catch(() => {}); presenter.close(); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
+    async close(options) { closed = true; running = false; queuedAck=null;document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat); clearTimeout(gapTimer); off(); await chain.catch(() => {}); presenter.close(options); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
   };
 }

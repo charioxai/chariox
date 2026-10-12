@@ -2,10 +2,10 @@
 use super::*;
 #[test]
 fn mp08_mp11_kernel_computer_461_92_shapes_are_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 500);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 507);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        109
+        115
     );
     let commands = serde_json::json!([
             {"op":"start"},{"op":"state"},{"op":"actors"},
@@ -65,7 +65,7 @@ fn mp08_mp11_kernel_computer_461_92_shapes_are_hashed() {
 // MP-08 / MP-10 / MP-11: PR5 adds only a terminal desktop source selection.
 #[test]
 fn mp08_mp11_desktop_display_474_shape_hash_and_actor_rejection() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 500);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 507);
     let wire = serde_json::json!({"KernelBrowser": {"command": {"op": "computer", "command": {"op": "display_subscribe", "target": {"surface_id": "desktop-one", "generation": "native-one"}, "codecs": ["avc1.420033", "chariox-relay-binary-v96"], "bitrate": 8000000, "device_scale_factor": 2}}}});
     let typed: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(typed).unwrap(), wire);
@@ -83,7 +83,7 @@ fn mp08_mp11_desktop_display_474_shape_hash_and_actor_rejection() {
 // MP-08/MP-11: protocol494 is allocated; installed entries are the only launch input.
 #[test]
 fn mp08_installed_application_494_wire_rejects_execution_authority() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 500);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 507);
     let commands = serde_json::json!([
         {"op":"installed_applications","target":{"surface_id":"s","generation":"g"}},
         {"op":"launch_application","target":{"surface_id":"s","generation":"g"},"application_id":"org.xfce.mousepad.desktop"}

@@ -14,9 +14,9 @@ use crate::session::{
 };
 use crate::workflow_code::{
     compile_workflow_code_source_with_schema_import_root, WorkflowCodeAgentBinding,
-    WorkflowCodeApplyReport, WorkflowCodeCompileAndApplyResult, WorkflowCodeCompileResult,
-    WorkflowCodeDefinition, WorkflowCodeLanguage, WorkflowCodeValidationDiagnostic,
-    WorkflowCodeValidationReport, WorkflowCodeValidationSeverity,
+    WorkflowCodeApplyReport, WorkflowCodeCompileAndApplyResult, WorkflowCodeDefinition,
+    WorkflowCodeLanguage, WorkflowCodeValidationDiagnostic, WorkflowCodeValidationReport,
+    WorkflowCodeValidationSeverity,
 };
 
 pub(crate) struct KernelSessionService<'a> {
@@ -280,37 +280,132 @@ impl<'a> KernelSessionService<'a> {
         authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
     ) -> Result<AgentInstance, DaemonError> {
         authorize()?;
+        let obligation = if self.app.config().room_agent_tools {
+            request
+                .spawned_by_agent_id
+                .as_deref()
+                .map(|id| {
+                    let actor = self.app.agents.get_agent(id)?;
+                    if actor.session_id() != request.session_id {
+                        return Err(crate::runtime::room_tool_admission::denied(
+                            "spawn actor left the room",
+                        ));
+                    }
+                    let run = self.app.providers.get_run_for_agent(actor.session_id(), id);
+                    let session = self.app.sessions().get_session(actor.session_id())?;
+                    crate::runtime::room_dispatch_registration::register(
+                        &self.app.durable_state_store(),
+                        &actor,
+                        run.as_ref().map(|r| r.id()),
+                        session.active_prompt_for_agent(id).map(|p| p.id()),
+                        "delegate",
+                        None,
+                    )
+                })
+                .transpose()?
+        } else {
+            None
+        };
         if let Some(kernel_ref) = request.kernel_ref.clone() {
             if self.app.kernel_ref_is_local(&kernel_ref) {
                 request.kernel_ref = None;
             } else {
                 let agent = self
                     .app
-                    .spawn_worker_agent(request, &kernel_ref, authorize)?;
-                self.app.durable_state_store().append_event(
-                    "agent.created",
-                    Some(agent.id().to_string()),
-                    serde_json::json!({
-                        "agent": &agent,
-                    }),
+                    .spawn_worker_agent(request, &kernel_ref, authorize)
+                    .map_err(|error| {
+                        crate::runtime::room_dispatch_registration::dispatch_error(
+                            obligation.as_deref(),
+                            None,
+                            Some(&kernel_ref),
+                            error,
+                        )
+                    })?;
+                self.app
+                    .durable_state_store()
+                    .append_event(
+                        "agent.created",
+                        Some(agent.id().to_string()),
+                        serde_json::json!({
+                            "agent": &agent,
+                        }),
+                    )
+                    .map_err(|error| {
+                        crate::runtime::room_dispatch_registration::dispatch_error(
+                            obligation.as_deref(),
+                            Some(true),
+                            Some(agent.id()),
+                            error,
+                        )
+                    })?;
+                let _ = KernelSessionReadService::new(self.app)
+                    .session_snapshot(agent.session_id())
+                    .map_err(|error| {
+                        crate::runtime::room_dispatch_registration::dispatch_error(
+                            obligation.as_deref(),
+                            Some(true),
+                            Some(agent.id()),
+                            error,
+                        )
+                    })?;
+                crate::runtime::room_dispatch_registration::receipt(
+                    &self.app.durable_state_store(),
+                    obligation.as_deref(),
+                    true,
+                    Some(agent.id()),
                 )?;
-                let _ =
-                    KernelSessionReadService::new(self.app).session_snapshot(agent.session_id())?;
                 return Ok(agent);
             }
         }
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();
-        let agent = self.app.agents.create_agent(request, &mut sessions)?;
+        let created = self.app.agents.create_agent(request, &mut sessions);
         drop(sessions);
-        self.app.durable_state_store().append_event(
-            "agent.created",
-            Some(agent.id().to_string()),
-            serde_json::json!({
-                "agent": &agent,
-            }),
+        let agent = match created {
+            Ok(agent) => agent,
+            Err(error) => {
+                crate::runtime::room_dispatch_registration::receipt(
+                    &self.app.durable_state_store(),
+                    obligation.as_deref(),
+                    false,
+                    None,
+                )?;
+                return Err(error);
+            }
+        };
+        self.app
+            .durable_state_store()
+            .append_event(
+                "agent.created",
+                Some(agent.id().to_string()),
+                serde_json::json!({
+                    "agent": &agent,
+                }),
+            )
+            .map_err(|error| {
+                crate::runtime::room_dispatch_registration::dispatch_error(
+                    obligation.as_deref(),
+                    Some(true),
+                    Some(agent.id()),
+                    error,
+                )
+            })?;
+        let _ = KernelSessionReadService::new(self.app)
+            .session_snapshot(agent.session_id())
+            .map_err(|error| {
+                crate::runtime::room_dispatch_registration::dispatch_error(
+                    obligation.as_deref(),
+                    Some(true),
+                    Some(agent.id()),
+                    error,
+                )
+            })?;
+        crate::runtime::room_dispatch_registration::receipt(
+            &self.app.durable_state_store(),
+            obligation.as_deref(),
+            true,
+            Some(agent.id()),
         )?;
-        let _ = KernelSessionReadService::new(self.app).session_snapshot(agent.session_id())?;
         Ok(agent)
     }
 

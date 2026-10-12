@@ -1,6 +1,7 @@
 import type { AgentInstance, RuntimeSession, SliceRecord } from "./kernel-types.js"
 import {
   sessionAgentRuntimeState,
+  sessionAgentTaskStatus,
 } from "./session-runtime-status.js"
 import { agentLegacyProcessingStateIsBusy } from "./agent-activity.js"
 import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "./shell-capability-format.js"
@@ -79,7 +80,7 @@ function formatAgentListEntry(
   providerRunContext: ShellAgentProviderRunContext,
   sessionContext: ShellAgentSessionContext,
 ): string {
-  const runtimeState = agentRuntimeStateForSessionContext(agent, sessionContext)
+  const runtimeState = sessionAgentTaskStatus(sessionContext.session, agent.id)?.label ?? agentRuntimeStateForSessionContext(agent, sessionContext)
   const parts = [
     runtimeState,
     formatAgentProvider(agent),
@@ -195,7 +196,7 @@ export function formatAgentInspectSummary(
   sessionContext: ShellAgentSessionContext = {},
 ): string {
   const slice = sliceForRemoteAgent(agent, slices)
-  const runtimeState = agentRuntimeStateForSessionContext(agent, sessionContext)
+  const runtimeState = sessionAgentTaskStatus(sessionContext.session, agent.id)?.label ?? agentRuntimeStateForSessionContext(agent, sessionContext)
   const lines = [
     `${formatAgentRef(agent)} [${runtimeState}]`,
     `id: ${agent.id}`,

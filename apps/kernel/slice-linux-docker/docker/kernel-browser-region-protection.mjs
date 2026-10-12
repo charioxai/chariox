@@ -1,12 +1,20 @@
-// MP-08/MP-11: only live Vault-filled plain fields enter native/CDP masks.
+// MP-08/MP-10/MP-11: only live Vault-filled plain fields from the shared
+// collector's recorded fill targets enter native/CDP masks.
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 import {maskPng,cropProtectedPng,displayMaskRegions,displayFullMaskRegions} from './kernel-browser-pixels.mjs';
 import {measurePageProtection,protectionDigest} from './browser-protection-regions.mjs';
-const retry = () => Object.assign(Error('MP-11: fill capture must retry'), {code:'fill_capture_retry'});
+import {locateBrowserRegions} from './browser-observation-regions.mjs';
+const retry = () => Object.assign(Error('MP-11: fill-target capture unavailable; retry'), {code:'fill_capture_retry'});
 
-export function regionProtectionChanged(message,sessionId) {
-  return message.sessionId===sessionId && (message.method==='DOM.documentUpdated'||message.method.startsWith('DOM.childNode')||
-    ['DOM.attributeModified','DOM.attributeRemoved'].includes(message.method)&&['type','style','class'].includes(message.params?.name));
+// MP-11: page protection can change without repainting any pixel. A native
+// tracker retires on navigation and on type changes of tracked Vault fields;
+// display callers pass whether their latest capture had protected regions.
+export function regionProtectionChanged(message,sessionId,scope) {
+  if(message.sessionId!==sessionId)return false;
+  if(message.method==='DOM.documentUpdated')return true;
+  const attribute=['DOM.attributeModified','DOM.attributeRemoved'].includes(message.method),name=message.params?.name;
+  if(typeof scope==='object'&&scope!==null)return message.method==='Page.frameNavigated'||attribute&&name==='type'&&Boolean(scope.targets);
+  return message.method.startsWith('DOM.childNode')||attribute&&(name==='type'||scope===true&&['style','class'].includes(name));
 }
 export const protectionDeclared = message => ['DOM.documentUpdated','DOM.childNodeInserted','DOM.attributeModified','DOM.attributeRemoved'].includes(message.method);
 
@@ -27,28 +35,42 @@ export async function captureProtectionFence(connection,sessionId,targetId,polic
     });
   }};
 }
-export const captureRegionMasks = (connection,sessionId,options={}) => captureProtectionFence(connection,sessionId,options.targetId,options.policy??{targets:[],values:[],unknown:false},options);
+// Mirror tiles fence their policy's fill targets. Without a policy there is
+// no fill target and no generic field, frame or shadow mask to measure.
+export async function captureRegionMasks(connection,sessionId,options={}) {
+  if(!options.policy)return {beforeAt:-Infinity,async afterCapture(){return [];}};
+  return captureProtectionFence(connection,sessionId,options.targetId,options.policy,options);
+}
 
 export class NativeRegionProtection {
   constructor(connection,sessionId,options={}) {Object.assign(this,{connection,sessionId,options});this.revision=0;}
-  tracker(){return {sessions:new Set([this.sessionId]),nodes:null};}
-  retire(){this.revision++;this.guard=null;}
-  get beforeAt(){return this.guard?.beforeAt??Infinity;}
-  async refresh(){
-    const revision=this.revision,guard=await captureRegionMasks(this.connection,this.sessionId,this.options);
-    if(revision!==this.revision)throw retry();
-    this.guard=guard;
+  retire() {this.revision++;this.guard=null;}
+  tracker() {return {targets:Boolean(this.options.policy?.targets?.length||this.options.browser?.fillTargets?.size)};}
+  get beforeAt() {return this.fencedAt??-Infinity;}
+  async measure() {
+    const {policy={targets:[],values:[]},browser,tab,scale=1}=this.options;
+    if(!policy.targets.length&&!browser?.fillTargets?.size)return [];
+    return locateBrowserRegions(policy.targets,browser,policy.values,{contentTarget:tab.target_id,contentScale:scale});
   }
-  async regions(raw){
-    const guard=this.guard;if(!guard)throw retry();
-    const regions=await guard.afterCapture(raw);if(this.guard!==guard)throw retry();return regions;
+  async refresh() {
+    const revision=this.revision,before=await this.measure();
+    if(revision!==this.revision)throw Error('MP-11: native region fence retired');
+    this.guard={before};this.fencedAt=performance.timeOrigin+performance.now();
+  }
+  async regions(raw) {
+    const guard=this.guard;
+    if(!guard||!Number.isFinite(raw.captured_ms)||raw.captured_ms<this.beforeAt){this.options.record?.('fill_unbound');throw retry();}
+    const after=await this.measure();
+    if(this.guard!==guard)throw Error('MP-11: native region fence retired');
+    if(JSON.stringify(guard.before)!==JSON.stringify(after)) {
+      this.guard=null;this.options.record?.('fill_changed');throw retry();
+    }
+    return after.map(([x,y,width,height])=>({x,y,width,height}));
   }
 }
 
-// MP-08/MP-11: bind masks to a full viewport before any encoder or crop sees
-// it. Keep this policy below clients and preserve the ordinary wire shape.
 export async function captureProtectedDisplay(host,tab,clip=null,optimizeForSpeed=true){
-  const scale=host.scales.get(tab.tab_id)??1;let frame;
+  const scale=host.scales.get(tab.tab_id)??host.viewport().device_scale_factor;let frame;
   {
     const {protected_regions,...captured}=await host.screenshot(tab,null,true,'png',optimizeForSpeed);
     frame={...captured,[displayMaskRegions]:protected_regions,data_base64:protected_regions.length?maskPng(captured.data_base64,protected_regions.map(r=>[r.x,r.y,r.width,r.height]),scale):captured.data_base64};

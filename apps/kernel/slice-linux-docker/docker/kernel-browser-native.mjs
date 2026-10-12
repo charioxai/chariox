@@ -45,8 +45,8 @@ export function attestationMask(regions,width,height){
  return mask;
 }
 export class LinuxCapture {
- constructor({display,pid,connection,sessionId,tab,scale,hostScale=1,policy,screenshot,allowed,frames,timing=()=>{}}){
-  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,screenshot,allowed,frames,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
+ constructor({display,pid,connection,sessionId,tab,scale,hostScale=1,policy,browser,screenshot,allowed,frames,timing=()=>{}}){
+  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
  valid(){return !this.closed&&ownsDisplay(this.display)&&this.allowed(this.policy)}
@@ -83,8 +83,8 @@ export class LinuxCapture {
    await this.screenshot();
    // A DOM mutation may retire the first fence while it is measured (busy
    // real pages); retry a bounded number of times instead of refusing.
-   this.regions=new NativeRegionProtection(this.connection,this.sessionId,{frames:this.frames,targetId:this.tab.target_id,policy:this.policy,record:reason=>this.timing('region_frame_masked '+reason,performance.timeOrigin+performance.now())});
-   for(let attempt=0;;attempt++){try{await this.regions.refresh();break}catch(error){if(attempt>=4||error.code!=='fill_capture_retry')throw error;}}
+   this.regions=new NativeRegionProtection(this.connection,this.sessionId,{policy:this.policy,browser:this.browser,tab:this.tab,scale:this.scale,record:reason=>this.timing('region_frame_masked '+reason,performance.timeOrigin+performance.now())});
+   for(let attempt=0;;attempt++){try{await this.regions.refresh();break}catch(error){if(attempt>=4||!/region fence retired/.test(error?.message??''))throw error;}}
    this.poolRoot=await mkdtemp(path.join(this.display.root,'raster-'));
    this.phase='readback';const executable=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER;
    const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...this.display.environment},stdio:['pipe','pipe','pipe']});this.child=child;if(executable)this.nativeWorker=new NativeWorkerControl(child,this.timing);
@@ -170,9 +170,7 @@ export class LinuxCapture {
     if(!this.regions.guard)await this.regions.refresh();
     if(raw.captured_ms>=this.regions.beforeAt)regions=await this.regions.regions(raw);
    }catch(error){
-    if(error.code==='fill_capture_retry') {
-     raw.release?.();this.publishingRaw=null;await this.regions.refresh();this.wake(true);continue;
-    }
+    if(error.code==='fill_capture_retry'){this.regions.retire();this.wake(true);raw.release?.();this.publishingRaw=null;continue;}
     if(revision===this.regionRevision)throw error;
    }
    this.timing('native_region_fence',at);

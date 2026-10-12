@@ -10,6 +10,10 @@ test('MP-11: protected crop over patch budget keeps all full-raster masks throug
  const tab={tab_id:'t',document_id:'d',input_epoch:0},policy={values:[]};
  const masks=[{x:900,y:200,width:24,height:24},{x:40,y:60,width:32,height:32}];
  const pixels=Buffer.alloc(1280*800*4,255);
+ // The product screenshot contract already masks these pixels before encode.
+ // Keep the mocked raster valid so this test reaches full-mask propagation.
+ const redact=()=>{for(const r of masks)for(let y=r.y;y<r.y+r.height;y++)pixels.fill(Buffer.from([0,0,0,255]),(y*1280+r.x)*4,(y*1280+r.x+r.width)*4)};
+ redact();
  const host={generation:1,scales:new Map([['t',1]]),screenshot:async()=>({...tab,generation:1,protected_regions:masks,data_base64:encodePng(1280,800,pixels)})};
  const capture=new DisplayCapture(clip=>captureProtectedDisplay(host,tab,clip),1);
  const encoder=new PortableEncoder();let encodedMasks;
@@ -21,6 +25,7 @@ test('MP-11: protected crop over patch budget keeps all full-raster masks throug
   await stream.frame(initial,'d',0);
   const noise=randomBytes(112*112*4);
   for(let row=0;row<112;row++)noise.copy(pixels,((184+row)*1280+880)*4,row*112*4,(row+1)*112*4);
+  redact();
   tab.input_epoch++;
   const merged=await capture.next(tab,policy,true);
   assert(merged.dirty_clip,'must exercise crop merge');

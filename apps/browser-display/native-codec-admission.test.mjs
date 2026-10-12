@@ -20,7 +20,7 @@ for(const seam of ['encoder','decoder'])test(`MP-08/MP-10/MP-11 missing ${seam} 
   const env={DISPLAY:':65530',CHARIOX_BROWSER_DISPLAY_SOFTWARE:'1',CHARIOX_BROWSER_DISPLAY_OPENH264:seam==='encoder'?'/nonexistent/openh264.so':process.env.CHARIOX_BROWSER_DISPLAY_OPENH264};
   if(seam==='decoder'){assert(process.env.MD_MISSING_DECODER_LIBS);env.LD_LIBRARY_PATH=process.env.MD_MISSING_DECODER_LIBS}
   const result=await run(['--display-native-worker'],env,JSON.stringify({pid:process.pid,width:1280,height:800,pool})+'\n');
-  assert.equal(result.code,1);assert.match(result.stderr,/native stage codec_unavailable/);
+  assert.equal(result.code,1);assert.match(result.stderr,/native stage native_codec_unavailable/);
  }finally{await rm(root,{recursive:true,force:true})}
 });
 test('MP-08/MP-10 codec probe opens the real default encoder and decoder',{skip:!binary},async()=>{

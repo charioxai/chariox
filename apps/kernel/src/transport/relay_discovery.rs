@@ -326,10 +326,15 @@ pub async fn list_live_kernels_for_machine(
 
 /// MP-08 / MP-10 / MP-11: metadata admission is separate from peer admission.
 /// Keep the caller's runtime credential intact for registration and encrypted requests.
+/// Unpaired (local/self-host) profiles keep discovering with that runtime token.
 pub(crate) async fn ordinary_hosted_discovery_config(
     mut config: DaemonConfig,
 ) -> Result<DaemonConfig, DaemonError> {
-    if let Some(profile) = config.cloud_relay.as_ref() {
+    if let Some(profile) = config
+        .cloud_relay
+        .as_ref()
+        .filter(|profile| profile.machine_id.is_some())
+    {
         let token = crate::runtime::cloud_api_client::issue_cloud_relay_inventory_discovery_token(
             profile,
             &config.daemon_id,

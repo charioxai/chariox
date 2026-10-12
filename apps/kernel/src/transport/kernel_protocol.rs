@@ -563,6 +563,21 @@ pub(crate) fn session_metadata_changed_event(
     })
 }
 
+/// MP-08/MP-10/MP-11: local and relay subscribers share the decision about
+/// replacing a full session snapshot with smaller projection events.
+pub(crate) fn can_skip_session_snapshot(
+    snapshot: &SessionSnapshotProjection,
+    previous_snapshot: Option<&SessionSnapshotProjection>,
+    emitted_projection_delta: bool,
+) -> bool {
+    // Smaller events do not carry window status. Keep the full snapshot when
+    // a window opens, warns, extends or ends alongside another projection delta.
+    emitted_projection_delta
+        && previous_snapshot.is_some_and(|previous| {
+            previous.session.sudo_windows() == snapshot.session.sudo_windows()
+        })
+}
+
 pub(crate) fn runtime_interactions_changed_event(
     snapshot: &SessionSnapshotProjection,
     previous_snapshot: Option<&SessionSnapshotProjection>,

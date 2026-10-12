@@ -62,6 +62,12 @@ export async function listKernelAccessGrants(client: LocalIpcClient) {
   return expectVariant<{ grants: import("@chariox/kernel-client/kernel-types").KernelAccessGrant[]; sudo_turns?: import("@chariox/kernel-client/kernel-types").KernelSudoTurn[] }>(response, "KernelAccessGrantsListed")
 }
 
+/** Protocol 460: opens the kernel's fresh-passkey popup; resolves once answered. */
+export async function extendKernelSudo(client: LocalIpcClient, request: import("@chariox/kernel-client/kernel-types").ExtendKernelSudoRequest) {
+  const response = await client.send<Record<string, unknown>>({ ExtendKernelSudo: request })
+  return expectVariant<{ turn: import("@chariox/kernel-client/kernel-types").KernelSudoTurn }>(response, "KernelSudoExtended").turn
+}
+
 export async function revokeKernelAccessGrant(client: LocalIpcClient, grantId: string | null) {
   const response = await client.send<Record<string, unknown>>({ RevokeKernelAccessGrant: { grant_id: grantId } })
   return expectVariant<{ revoked: number }>(response, "KernelAccessRevoked").revoked

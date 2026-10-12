@@ -177,7 +177,6 @@ impl KernelRuntimeOwnedState {
             caller_user_id,
             passkey_verified,
             None,
-            None,
             take_host,
         )
     }
@@ -191,7 +190,6 @@ impl KernelRuntimeOwnedState {
         custom_reply: Option<&str>,
         caller_user_id: Option<&str>,
         passkey_verified: bool,
-        sudo: Option<&crate::local::KernelSudoTurn>,
         authorizing_terminal: Option<&str>,
         take_host: bool,
     ) -> Result<(), DaemonError> {
@@ -221,16 +219,6 @@ impl KernelRuntimeOwnedState {
                 )
             })?
         };
-        if sudo.is_some()
-            && (pending.terminal_credential_owner.is_some()
-                || pending.passkey_prompt.as_ref().is_some_and(|prompt| {
-                    prompt.kind != crate::local::PasskeyPromptKind::CriticalApproval
-                }))
-        {
-            return Err(interaction_error(
-                "sudo cannot answer authority or credential prompts",
-            ));
-        }
         if pending.session_id != session_id || !pending.belongs_to(&self.session_store) {
             return Err(interaction_reference_error(
                 session_id,
@@ -263,7 +251,7 @@ impl KernelRuntimeOwnedState {
             return Err(interaction_error("Kernel operation decision expired"));
         }
         if let Some(interaction) = &pending.user_domain_interaction {
-            if custom_reply.is_some() || sudo.is_some() || authorizing_terminal.is_some() {
+            if custom_reply.is_some() || authorizing_terminal.is_some() {
                 return Err(interaction_error(
                     "Invalid unattached decision reply authority",
                 ));
@@ -331,6 +319,14 @@ impl KernelRuntimeOwnedState {
         } else if let Some(choice) = interaction.choice(choice_id) {
             if let Some(reply) = custom_reply {
                 if interaction
+                    .kernel_operation_id()
+                    .is_some_and(|id| id.starts_with("sudo:"))
+                    && choice.requires_passkey()
+                {
+                    super::sudo_window_minutes(Some(reply))
+                        .map_err(|error| interaction_error(&error.to_string()))?
+                        .to_string()
+                } else if interaction
                     .kernel_operation_id()
                     .is_some_and(|id| id.starts_with("access-"))
                     && choice.requires_passkey()
@@ -404,49 +400,38 @@ impl KernelRuntimeOwnedState {
             return Err(interaction_error("Kernel operation decision expired"));
         }
         let consume = || {
-            let mut access = (sudo.is_some() || authorizing_terminal.is_some())
-                .then(|| self.sudo_turns.lock().expect("access state poisoned"));
             if let Some(terminal) = authorizing_terminal {
-                let turn = access
-                    .as_mut()
-                    .and_then(|state| state.get_mut(interaction_id))
-                    .ok_or_else(|| interaction_error("sudo request revoked before the decision"))?;
-                turn.terminal_id = terminal.into();
-            }
-            if let Some(turn) = sudo {
-                if access.as_ref().and_then(|state| state.get(&turn.entry_id)) != Some(turn) {
-                    return Err(interaction_error(
-                        "sudo turn was revoked before the decision",
-                    ));
-                }
-                self.durable_state_store.append_event(
-                    "kernel_access.sudo_approval",
-                    Some(interaction_id.into()),
-                    super::sudo_approval_receipt(turn, session_id, interaction_id, choice_id),
-                )?;
+                self.sudo_turns
+                    .lock()
+                    .expect("access state poisoned")
+                    .get_mut(interaction_id)
+                    .ok_or_else(|| interaction_error("sudo request revoked before the decision"))?
+                    .terminal_id = terminal.into();
             }
             self.pending_interactions
                 .write()
                 .remove(interaction_id)
                 .ok_or_else(|| interaction_error("interaction is no longer pending"))
         };
-        let pending = if let Some(turn) = sudo {
-            let source = sessions.get_session(&turn.session_id)?;
-            if source.status() == crate::session::SessionStatus::Ended {
-                return Err(interaction_error("sudo session ended"));
-            }
-            self.prompt_state_owner.with_running_prompt(
-                &source,
-                &turn.agent_id,
-                turn.prompt_id
-                    .as_deref()
-                    .ok_or_else(|| interaction_error("sudo turn not started"))?,
-                &turn.entry_id,
-                consume,
-            )?
-        } else {
-            consume()?
-        };
+        let pending = consume()?;
+        // MP-08/MP-10/MP-11: pin time at the winning fresh decision, before
+        // waking its consumer. Scheduler delays cannot bank elevation time.
+        if passkey_verified
+            && interaction
+                .kernel_operation_id()
+                .is_some_and(|id| id.starts_with("sudo:") && !id.contains(":scope:"))
+            && interaction
+                .choice(choice_id)
+                .is_some_and(crate::session::RuntimeInteractionChoice::requires_passkey)
+        {
+            self.sudo_verified_at
+                .lock()
+                .expect("sudo verification clocks poisoned")
+                .insert(
+                    interaction_id.to_owned(),
+                    (std::time::Instant::now(), crate::session::unix_epoch_ms()),
+                );
+        }
         if pending.passkey_prompt.is_some() {
             // Every terminal closes the popup; a later answer is told why.
             self.passkey_prompts

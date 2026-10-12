@@ -16,7 +16,15 @@ impl Fixture {
         Self::with_session_id(format!("decision-cleanup-{:016x}", rand::random::<u64>()))
     }
     fn with_session_id(session_id: String) -> Self {
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        Self::with_session_config(session_id, false)
+    }
+    fn with_room_tools() -> Self {
+        Self::with_session_config(format!("am2-sweep-{:016x}", rand::random::<u64>()), true)
+    }
+    fn with_session_config(session_id: String, room_tools: bool) -> Self {
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = room_tools;
+        let mut app = DaemonApp::bootstrap(config).unwrap();
         let session = RuntimeSession::new(
             session_id,
             None,
@@ -270,6 +278,148 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.state.owned.sweep_kernel_operation_interactions(true);
+    }
+}
+
+#[tokio::test]
+async fn a02_unloaded_room_cannot_abort_live_room_supervision() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    let f = Fixture::with_room_tools();
+    let store = &f.state.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: "unloaded-room".into(),
+            agent: "old-agent".into(),
+            prompt: "a-old-blocked".into(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Block {
+            task: "a-old-blocked".into(),
+            prompt: "a-old-blocked".into(),
+            reason: "Original receipt requires owner reconciliation".into(),
+        })
+        .unwrap();
+    let before = store.agent_tasks(Some("unloaded-room"), None).unwrap();
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "idle-agent".into(),
+            prompt: "z-current-idle".into(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    f.state
+        .sweep_agent_lifecycle()
+        .await
+        .expect("old unloaded Room must not stop current Room sweep and owner visibility");
+    assert_eq!(
+        store.agent_tasks(Some("unloaded-room"), None).unwrap(),
+        before,
+        "unavailable Room obligations remain durable without guessed completion or replay"
+    );
+    let current = store.agent_tasks(Some(&f.session), None).unwrap().remove(0);
+    assert_eq!(current.state, ExecutionState::Blocked);
+    assert!(f.active_ids().contains(&format!(
+        "task-blocked-{}-{}",
+        current.task_id, current.blocked_revision
+    )));
+}
+
+#[tokio::test]
+async fn a02_owner_resume_failure_is_visible_and_cannot_leave_idle_working() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
+    for stale in [false, true] {
+        let f = Fixture::new();
+        let store = &f.state.owned.durable_state_store;
+        let task_id = f.id("task");
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: DEFAULT_LOCAL_USER_ID.into(),
+                room: f.session.clone(),
+                agent: "deleted-agent".into(),
+                prompt: task_id.clone(),
+                run: None,
+                now: 1,
+            })
+            .unwrap();
+        let Outcome::Task(blocked) = store
+            .agent_lifecycle(Operation::Block {
+                task: task_id.clone(),
+                prompt: task_id.clone(),
+                reason: "Owner clarification required".into(),
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        let interaction = format!("task-blocked-{}-{}", task_id, blocked.blocked_revision);
+        f.state
+            .ensure_task_owner_interaction(blocked.clone())
+            .await
+            .unwrap();
+        if stale {
+            store
+                .agent_lifecycle(Operation::OwnerResponse {
+                    task: task_id.clone(),
+                    revision: blocked.blocked_revision,
+                    resume: true,
+                    now: 2,
+                })
+                .unwrap();
+            store
+                .agent_lifecycle(Operation::Block {
+                    task: task_id.clone(),
+                    prompt: task_id.clone(),
+                    reason: "Newer owner decision required".into(),
+                })
+                .unwrap();
+        }
+        f.state
+            .owned
+            .resolve_runtime_interaction(
+                &f.session,
+                &interaction,
+                "resume",
+                None,
+                Some(DEFAULT_LOCAL_USER_ID),
+                false,
+            )
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let history = f
+                    .state
+                    .owned
+                    .operational_history_store
+                    .load_session_history_entries(&f.session, Some("deleted-agent"))
+                    .unwrap();
+                if history
+                    .iter()
+                    .any(|entry| entry.text.contains("Owner action failed"))
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("rejected owner disposition must be visible to every client");
+        let task = store
+            .agent_tasks(Some(&f.session), Some("deleted-agent"))
+            .unwrap()
+            .remove(0);
+        assert_eq!(task.state, ExecutionState::Blocked);
+        if stale {
+            assert_eq!(task.reason, "Newer owner decision required");
+        } else {
+            assert!(task.reason.contains("Owner action failed"));
+        }
     }
 }
 

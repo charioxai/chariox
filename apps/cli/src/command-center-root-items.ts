@@ -17,7 +17,7 @@ export function buildCommandCenterRootItems(
     id: "computer", label: "/computer", description: "Start or take over the owned desktop",
     kind: "command" as const, value: "/computer",
   }, {
-    id: "access", label: "/access", description: "List or revoke user-domain access",
+    id: "access", label: "/access", description: "List browser tabs or manage user-domain access",
     kind: "command" as const, value: "/access",
   }, {
     id: "approvals", label: "/approvals", description: "Open pending approvals (Ctrl+G or F8)",

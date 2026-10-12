@@ -3,7 +3,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MirrorService } from './kernel-browser-mirror.mjs';
 import { materializeMirrorResources,mirrorHash } from './kernel-browser-mirror-resources.mjs';
-import { encodePng } from './kernel-browser-pixels.mjs';
+import { encodePng,decodePng } from './kernel-browser-pixels.mjs';
+import { displayGeometry as geometry,hostViewport } from './kernel-browser-geometry.mjs';
+import { spawnSync } from 'node:child_process';
 function fixture() {
   const tab={tab_id:'t',target_id:'target',document_id:'d'},state={document:'d',snapshot:{root:'n1',nodes:[{id:'n1',parent:null,children:['n2'],kind:'element',tag:'div',box:{x:0,y:0,width:80,height:40}},{id:'n2',parent:'n1',children:[],kind:'text',text:'fixture'}],fonts:[],resources:[],scroll:{x:0,y:0},focused:null,selection:null}};
   const calls=[],connection={async send(method,params){
@@ -17,10 +19,10 @@ function fixture() {
     if(method==='Emulation.setDeviceMetricsOverride')return {};
     if(method==='Page.createIsolatedWorld')return {executionContextId:1};
     if(method==='Page.getLayoutMetrics')return {cssVisualViewport:{zoom:1}};
-    if(method==='Runtime.evaluate')return {result:{value:params.expression.includes('dpr:devicePixelRatio')?{dpr:1,width:1280,height:800,visible:true}:params.expression.includes('.read(')?structuredClone(state.snapshot):params.expression.includes('Object.fromEntries([...style]')?{}:true}};
+    if(method==='Runtime.evaluate')return {result:{value:params.expression.includes('dpr:devicePixelRatio')?{dpr:1,width:geometry.width,height:geometry.height,visible:true}:params.expression.includes('.read(')?structuredClone(state.snapshot):params.expression.includes('Object.fromEntries([...style]')?{}:true}};
     throw Error(`unexpected CDP method ${method}`);
   }};
-  const host={generation:1,scales:new Map(),protection:{values:[],targets:[],unknown:false},async target(){return {...tab,document_id:state.document};},async displayTarget(){return {...tab,document_id:state.document};},browser:{async resolvePageTarget(){return {connection,sessionId:'session'};},async ensureFocusWorld(){return {contextId:1};}},async screenshot(){return {data_base64:encodePng(1280,800,Buffer.alloc(1280*800*4,100)),protected_regions:[]};}};
+  const host={generation:1,scales:new Map(),viewport:()=>hostViewport(),protection:{values:[],targets:[],unknown:false},async target(){return {...tab,document_id:state.document};},async displayTarget(){return {...tab,document_id:state.document};},browser:{async resolvePageTarget(){return {connection,sessionId:'session'};},async ensureFocusWorld(){return {contextId:1};}},async screenshot(_tab,clip){const scale=hostViewport().device_scale_factor,width=(clip?.width??geometry.width)*scale,height=(clip?.height??geometry.height)*scale;return {data_base64:encodePng(width,height,Buffer.alloc(width*height*4,100)),protected_regions:[]};}};
   return {host,state,calls,service:new MirrorService(host)};
 }
 const next=(subscription_id,after_sequence=0,drift_nodes=[])=>({subscription_id,generation:1,after_sequence,drift_nodes});
@@ -93,7 +95,7 @@ test('MP-08/MP-11: layout drift falls back to protected tiles and drops the enti
 test('MP-11: stream count and canonical geometry stay bounded',async()=>{
  const {service}=fixture();for(let i=0;i<8;i++)await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
  await assert.rejects(service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),/bounds/);
- const f=fixture();await f.service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');await assert.rejects(f.service.subscribe({tab_id:'t',generation:1,device_scale_factor:2},'a'),/canonical/);
+ const f=fixture();await f.service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');assert.equal((await f.service.subscribe({tab_id:'t',generation:1,device_scale_factor:2},'a')).device_scale_factor,1);
 });
 test('MP-11: resource service reads only Chromium-loaded resources, strips URL, rejects SVG and policy-protected bytes',async()=>{
  let reads=0;const png=encodePng(20,20,Buffer.alloc(20*20*4,120));
@@ -275,10 +277,10 @@ test('MP-11: native keyboard unknown/protected focus refuses with no retry marke
  await assert.rejects(result.guard(),error=>!error.message.includes('stale mirror input epoch'));
 });
 
-// MP-08/MP-10/MP-11: both transports must size the actual compositor view.
-for(const dpr of [1,2])test(`MP-10 mirror negotiates native view image scale at DPR${dpr}`,async()=>{
+// MP-08/MP-10/MP-11: attaching an observer never selects shared geometry.
+for(const dpr of [1,2])test(`MP-10 mirror preserves canonical view at viewer DPR${dpr}`,async()=>{
  const {service,calls}=fixture();await service.subscribe({tab_id:'t',generation:1,device_scale_factor:dpr},'a');
- assert.deepEqual(calls.find(c=>c.method==='Emulation.setDeviceMetricsOverride').params,{width:1280,height:800,deviceScaleFactor:dpr,scale:1,mobile:false});
+ assert.equal(calls.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').length,0);
 });
 
 // MP-11: no new packet is produced after the live page/native focus moves.
@@ -304,11 +306,52 @@ test('MP-11: plain key refuses a display fallback without painted DOM focus',asy
  const packet=await service.next(next(s.subscription_id),'a');
  await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:packet.sequence,action:{kind:'key',key:'Backspace'}},'a'),/observed focus/);
 });
-test('MP-11 mirror refuses a canonical geometry it cannot render instead of overriding it',async()=>{
+test('MP-11 mirror attaches to another canonical geometry without overriding it',async()=>{
  const {execFileSync}=await import('node:child_process');
  const script=`import {MirrorService} from ${JSON.stringify(new URL('./kernel-browser-mirror.mjs',import.meta.url).href)};
- const calls=[];const host={generation:1,scales:new Map(),async target(){return {tab_id:'t',target_id:'x',document_id:'d'}},browser:{async resolvePageTarget(){return {connection:{send:async method=>{calls.push(method);return {}}},sessionId:'s'}}}};
+ const calls=[];const host={generation:1,scales:new Map(),viewport:()=>({device_scale_factor:1}),async target(){return {tab_id:'t',target_id:'x',document_id:'d'}},browser:{async resolvePageTarget(){return {connection:{send:async method=>{calls.push(method);return {}}},sessionId:'s'}}}};
  try{await new MirrorService(host).subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');console.log('subscribed:'+calls.join())}catch(error){console.log('refused:'+calls.join())}`;
  const output=execFileSync(process.execPath,['--input-type=module','-e',script],{env:{...process.env,CHARIOX_BROWSER_DISPLAY_GEOMETRY:'1920x1080'}}).toString().trim();
- assert.equal(output,'refused:','no device metrics override before refusal');
+ assert.equal(output,'subscribed:','an observer sends no device metrics override');
+});
+
+// MP-08/MP-10/MP-11: a viewer cannot resize a kernel-owned native browser.
+test('MP-10 DPR1 and DPR2 mirrors share native density with video and provider observations',async()=>{
+ const before=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try {
+  const {service,host,calls}=fixture();host.scales.set('t',2);
+  for(const viewerDpr of [1,2]){
+   const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:viewerDpr},'a');
+   assert.equal(sub.device_scale_factor,2);assert.equal(host.scales.get('t'),2);
+  }
+  assert.equal(calls.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').length,0);
+  service.clear();clearInterval(service.expiry);
+ }finally{if(before===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=before;}
+});
+
+// MP-08/MP-10/MP-11: observer fallback, crops and wire geometry share the host viewport.
+test('MP-10 canonical mirror geometry survives attachment and full fallback',async()=>{
+ const {service,host,calls}=fixture(),viewport=hostViewport();
+ host.scales.set('t',viewport.device_scale_factor);
+ const evaluate=service.evaluate.bind(service);
+ service.evaluate=async(world,expression)=>{if(expression.includes('.read('))throw Error('MP-10: observer unavailable');return evaluate(world,expression)};
+ try {
+  for(const viewerDpr of [1,2]) {
+   const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:viewerDpr},'a');
+   const packet=await service.next(next(sub.subscription_id),'a');
+   assert.equal(calls.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').length,0,'attaching and reading never resize the shared page');
+   assert.equal(packet.css_width,viewport.css_width);assert.equal(packet.css_height,viewport.css_height);
+   assert.equal(packet.device_scale_factor,viewport.device_scale_factor);
+   const tile=packet.nodes.find(n=>n.kind==='tile');
+   assert.deepEqual(tile.box,{x:0,y:0,width:viewport.css_width,height:viewport.css_height});
+   assert.equal(packet.tiles.length,1);
+   const pixels=decodePng(packet.tiles[0].data_base64,viewport.device_scale_factor);
+   assert.equal(pixels.width,viewport.desktop_pixel_width);assert.equal(pixels.height,viewport.desktop_pixel_height);
+  }
+ }finally{service.clear();clearInterval(service.expiry)}
+});
+test('MP-10 canonical mirror geometry at 1920x1080',()=>{
+ const run=spawnSync(process.execPath,['--test','--test-name-pattern=^MP-10 canonical mirror geometry survives',import.meta.filename],{env:{...process.env,NODE_TEST_CONTEXT:undefined,CHARIOX_BROWSER_DISPLAY_GEOMETRY:'1920x1080',CHARIOX_KERNEL_BROWSER_DISPLAY:'1'},encoding:'utf8'});
+ assert.match(run.stdout,/ok 1 - MP-10 canonical mirror geometry survives/);
+ assert.equal(run.status,0,run.stdout+run.stderr);
 });

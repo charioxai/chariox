@@ -1,3 +1,11 @@
+pub use api::{
+    AttachWorkflowNotificationRequest, DetachWorkflowNotificationRequest,
+    ListWorkflowNotificationsRequest, NotificationDeliveryMode,
+    RegisterWorkflowNotificationSourceRequest, WorkflowNotificationAck,
+    WorkflowNotificationDiagnostic, WorkflowNotificationEnvelope, WorkflowNotificationEvents,
+    WorkflowNotificationSource, WorkflowNotificationSourceSummary, WorkflowNotificationStatus,
+    WorkflowNotificationSubscription, WorkflowNotificationTargetKind,
+};
 mod api;
 pub use api::{
     CaptureVisibleRegionRequest, ScreenshotRegion, ScreenshotSurface, VisibleRegionCapture,
@@ -267,20 +275,22 @@ pub use api::{
     RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
 };
 pub use api::{
+    ExtendKernelSudoRequest, KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest,
+    RequestKernelAccessRequest, RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
+};
+pub use api::{
     GetKernelResourceTelemetryRequest, KernelResourceTelemetryDisk, KernelResourceTelemetryLogs,
     KernelResourceTelemetryMemory, KernelResourceTelemetryMetadata, KernelResourceTelemetryProcess,
     KernelResourceTelemetryRelease, KernelResourceTelemetrySnapshot,
     KERNEL_RESOURCE_TELEMETRY_SCHEMA,
 };
 pub use api::{
-    KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
-    RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
+    KernelAccessProviderHarness, KernelAccessRequester, KernelConnectionClass, PasskeyPrompt,
+    PasskeyPromptKind,
 };
 pub use api::{
-    KernelAccessProviderHarness, KernelAccessRequester, KernelBrowserCommand, KernelBrowserInput,
-    KernelBrowserMirrorAction, KernelBrowserRequest, KernelComputerCommand, KernelComputerInput,
-    KernelComputerKeyState, KernelConnectionClass, KernelDesktopTarget, PasskeyPrompt,
-    PasskeyPromptKind,
+    KernelBrowserCommand, KernelBrowserInput, KernelBrowserMirrorAction, KernelBrowserRequest,
+    KernelComputerCommand, KernelComputerInput, KernelComputerKeyState, KernelDesktopTarget,
 };
 pub use api::{
     NoteAnchor, NoteBox, NoteCommand, NoteRecord, NoteReply, NoteResult, NoteSelection,

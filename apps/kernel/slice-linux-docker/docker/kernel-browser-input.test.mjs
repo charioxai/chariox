@@ -128,7 +128,7 @@ test('MP-08/MP-10 asynchronous scroll returns after an ordered, fenced dispatch 
   let release;const acked=new Promise(r=>release=r);
   connection.send=async(method,params)=>{if(method==='Input.dispatchMouseEvent'){sent.push({method,params});await acked;return {}}return send(method,params)};
   let dispatched=0;
-  const result=await inputHostTab(browser,tab,{kind:'scroll',x:10,y:10,delta_x:0,delta_y:120},{asyncScroll:true,onDispatch:()=>dispatched++});
+  const result=await inputHostTab(browser,tab,{kind:'scroll',x:10,y:10,delta_x:0,delta_y:120},{asyncScroll:true,onDispatch:()=>{dispatched++;}});
   assert.ok(result.ack instanceof Promise,'lane work returns before the renderer ack');
   assert.equal(dispatched,1);
   const methods=sent.map(x=>x.method);assert.ok(methods.indexOf('Page.getFrameTree')<methods.indexOf('Input.dispatchMouseEvent'),'document fence precedes dispatch');
@@ -139,7 +139,7 @@ test('MP-08/MP-10 asynchronous scroll returns after an ordered, fenced dispatch 
 // precise deltas and unavailable native input keep CDP or fail closed.
 test('MP-08/MP-10 notch wheel input routes to the owned display after the document fence',async()=>{
   const {browser,sent}=fixture();const wheels=[];let dispatched=0;
-  await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:-240},{nativeWheel:(...a)=>{wheels.push(a);return true},onDispatch:()=>dispatched++});
+  await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:-240},{nativeWheel:(...a)=>{wheels.push(a);return true},onDispatch:()=>{dispatched++;}});
   assert.deepEqual(wheels,[[10,20,0,-2]]);assert.equal(dispatched,1);
   assert.ok(sent.some(x=>x.method==='Page.getFrameTree'),'document fence ran');assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,0);
   await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:37},{nativeWheel:()=>assert.fail('precise deltas stay on CDP')});
@@ -157,20 +157,20 @@ test('MP-08/MP-10 viewer wheel deltas map to native notches; fine trackpad delta
 // MP-08/MP-10: viewer clicks on the owned display use XTest after the fence.
 test('MP-08/MP-10 viewer click routes to the owned display after the document fence; refusal falls back to CDP',async()=>{
   const {browser,sent}=fixture();const clicks=[];let dispatched=0;
-  await inputHostTab(browser,tab,{kind:'click',x:10,y:20},{nativeClick:(...a)=>{clicks.push(a);return true},onDispatch:()=>dispatched++});
+  await inputHostTab(browser,tab,{kind:'click',x:10,y:20},{nativeClick:(...a)=>{clicks.push(a);return true},onDispatch:()=>{dispatched++;}});
   assert.deepEqual(clicks,[[10,20]]);assert.equal(dispatched,1);
   assert.ok(sent.some(x=>x.method==='Page.getFrameTree'),'document fence ran');assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,0);
   await inputHostTab(browser,tab,{kind:'click',x:10,y:20},{nativeClick:()=>false});
   assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,2,'MP-11: refused native click falls back to CDP press/release');
   // MP-11 (review #893 P2): the worker's asynchronous refusal also falls back.
-  await inputHostTab(browser,tab,{kind:'click',x:10,y:20},{nativeClick:async()=>false,onDispatch:()=>dispatched++});
+  await inputHostTab(browser,tab,{kind:'click',x:10,y:20},{nativeClick:async()=>false,onDispatch:()=>{dispatched++;}});
   assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,4,'MP-11: a covered owned window refuses; CDP reaches the renderer');
   // MP-11 (review #893 @8067044d1 P2): a native click/wheel whose reply was
   // lost may have been dispatched: it is never replayed via CDP.
   const uncertain=async()=>{throw Object.assign(Error('MP-11: native input outcome uncertain'),{code:'native_input_uncertain'})};
   const before=dispatched;
-  await inputHostTab(browser,tab,{kind:'click',x:10,y:20},{nativeClick:uncertain,onDispatch:()=>dispatched++});
-  await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120},{nativeWheel:uncertain,onDispatch:()=>dispatched++});
+  await inputHostTab(browser,tab,{kind:'click',x:10,y:20},{nativeClick:uncertain,onDispatch:()=>{dispatched++;}});
+  await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120},{nativeWheel:uncertain,onDispatch:()=>{dispatched++;}});
   assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,4,'MP-11: no CDP replay of an uncertain native action');
   assert.equal(dispatched,before+2,'the uncertain action counts as dispatched once');
 });
@@ -185,7 +185,7 @@ test('MP-08/MP-10 viewer keys route to the owned display only for a focused, non
       if(method==='Runtime.evaluate')return {result:{value:params.expression==='document.hasFocus()'?focused:params.expression.includes("? 'sensitive'")?(sensitive?'sensitive':focused):sensitive}};
       return {};}};
     const browser={resolvePageTarget:async()=>({connection,sessionId:'s'}),inputCapture:{run:async(_c,_s,fn)=>fn()}};
-    const result=await inputHostTab(browser,tab,{kind:'key',key},{nativeKey:(...a)=>{keys.push(a);return native(...a)},onDispatch:()=>dispatched++}).then(()=>'ok',e=>e.code??e.message);
+    const result=await inputHostTab(browser,tab,{kind:'key',key},{nativeKey:(...a)=>{keys.push(a);return native(...a)},onDispatch:()=>{dispatched++;}}).then(()=>'ok',e=>e.code??e.message);
     return {result,keys,dispatched,cdp:sent.filter(x=>x.method==='Input.dispatchKeyEvent').length};
   };
   assert.deepEqual(await run({}),{result:'ok',keys:[[97,false]],dispatched:1,cdp:0});

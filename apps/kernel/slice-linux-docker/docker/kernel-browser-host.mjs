@@ -1,6 +1,6 @@
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
-import {displayGeometry as geometry,displayDeviceMetrics} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry,hostViewport} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
 import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -17,6 +17,7 @@ import { NativeComputer } from './native-computer.mjs';
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
+import { BrowserPopupEvidence } from "./kernel-browser-popup-evidence.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
 import { captureProtectionFence, captureProtectedDisplay, protectionDeclared, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage } from "./kernel-browser-pixels.mjs";
@@ -50,8 +51,6 @@ function restorationUrl(url) {
   try { return navigationUrl(url); } catch { return "about:blank"; }
 }
 
-const viewport = { css_width: geometry.width, css_height: geometry.height, device_scale_factor: 1,
-  desktop_pixel_width: geometry.width, desktop_pixel_height: geometry.height };
 export function navigationUrl(raw) {
   if (typeof raw !== "string" || raw.length > 8192) throw new Error("invalid browser URL");
   const url = new URL(raw);
@@ -69,6 +68,7 @@ export class KernelBrowserHost {
     this.browser = null;
     this.generation = 0;
     this.tabs = new Map();
+    this.popupEvidence = new BrowserPopupEvidence(TAB_LIMIT);
     this.streams = new Map();
     this.displays = new Map();
     this.scales = new Map();
@@ -147,6 +147,7 @@ export class KernelBrowserHost {
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
     this.streams.clear();
     this.tabs.clear();
+    this.popupEvidence.clear();
     this.observedDocuments.clear();
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     let saved = { generation: 0, tabs: [] };
@@ -187,6 +188,9 @@ export class KernelBrowserHost {
     } catch (error) { await this.stop(); throw error; }
     finally { this.restoring = false; }
   }
+  // MP-08/MP-10/MP-11: native page density applies to the private display
+  // only; the owned Computer desktop stays at its 1x X11 density.
+  viewport() { return hostViewport(process.env.CHARIOX_KERNEL_BROWSER_DISPLAY === '1' && !this.chromium.desktop); }
   // MP-08/MP-11: on the owned Computer desktop the Browser window is the
   // visible one, and an emulated density leaves it unbindable (withheld):
   // drop a tab's viewer emulation with its last Browser viewer or mirror.
@@ -205,7 +209,7 @@ export class KernelBrowserHost {
   // MP-08/MP-10: one fixed-label diagnostic per change of native refusal scope.
   nativeScope(reason){if(this.nativeScopeReason!==reason){this.nativeScopeReason=reason;if(reason)this.timing('native_unavailable_scope '+reason,timestamp());}}
   async compositorFor(tab,stream) {
-    const scope=stream.codec==='png'?'png_codec':this.protection.unknown||this.protection.values.length||this.protection.targets.length?'protection_policy':
+    const scope=stream.codec==='png'?'png_codec':this.protection.unknown?'protection_policy':
       [...this.streams.values()].some(s=>s.tabId===tab.tab_id)?'legacy_stream':null;
     if(scope){this.nativeScope(scope);return null;}
     let entry=this.compositors.get(tab.tab_id);
@@ -231,7 +235,7 @@ export class KernelBrowserHost {
         for(const id of [...this.compositors.keys()])if(id!==tab.tab_id&&this.compositors.get(id)?.source instanceof LinuxCapture)await this.closeCompositors(id);
         const claim=this.foreground.claim(tab.tab_id);
         this.nativeScope(null);
-        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation,timing:this.timing});
+        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,browser:this.browser,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&this.generation===generation,timing:this.timing});
         try{return await source.start();}
         catch(error){
           const attempts=retryAt?.document===tab.document_id?retryAt.attempts+1:1;
@@ -252,6 +256,7 @@ export class KernelBrowserHost {
     this.sampleLanes.clear();
 
     this.nativeAccessibility.clear();
+    this.popupEvidence.clear();
     // A dead X server can make release fail; retirement still destroys the
     // owned desktop before acknowledging stop.
     await this.nativeComputer.close().catch(() => {});
@@ -271,7 +276,7 @@ export class KernelBrowserHost {
     // Restored pages can finish navigation between CDP document reads. Retry
     // only this observation, never the mutation that led to reconciliation.
     for (let attempt = 0; attempt < 3; attempt++) {
-      try { state = await this.browser.reconcile(viewport, { browserBarVisible: false }); break; }
+      try { state = await this.browser.reconcile(this.viewport(), { browserBarVisible: false }); break; }
       catch (error) {
         if (error.code !== "stale_document_reference" || attempt === 2) throw error;
         await delay(25);
@@ -303,8 +308,10 @@ export class KernelBrowserHost {
     for (const [id, tab] of this.tabs) tab.tab_id = id;
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
     if (!this.restoring) await this.save();
-    return redactObservation({ state: "ready", generation: this.generation,
-      tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport }, this.protection.values);
+    // MP-08: private creation evidence for the kernel, stripped before client projection.
+    const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
+    return redactObservation({ state: "ready", generation: this.generation, _tab_creation_actions,
+      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:this.viewport() }, this.protection.values);
   }
   async open(url, tabId = `host-tab-${randomUUID()}`, { signal } = {}) {
     await this.closeCompositors();this.foreground.reset();
@@ -353,10 +360,12 @@ export class KernelBrowserHost {
   }
   async screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true) {
     const started = timestamp();
-    const scale = this.scales.get(tab.tab_id) ?? 1;
+    const scale = this.scales.get(tab.tab_id) ?? this.viewport().device_scale_factor;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-    const regionMasks = protectedCapture ? await captureProtectionFence(connection, sessionId, tab.target_id, this.protection, { record: reason => this.timing('region_frame_masked ' + reason, timestamp()) }) : null;
+    const regionMasks = protectedCapture ? this.protection.targets.length || this.browser.fillTargets?.size
+      ? await captureProtectionFence(connection,sessionId,tab.target_id,{...this.protection,targets:[...this.protection.targets,...(this.browser.fillTargets?.values()??[])]},{ record: reason => this.timing('region_frame_masked ' + reason, timestamp()) })
+      : {async afterCapture(){return [];}} : null;
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
         const at = timestamp();
@@ -386,7 +395,6 @@ export class KernelBrowserHost {
     const id = `host-stream-${randomUUID()}`;
     const stream = { sessionId, tabId: tab.tab_id, boundFrames, owner, latest: null, sequence: 0, expires: Date.now() + 60_000 };
     const captureProtected = () => {
-
       if (stream.capturing || this.protection.unknown || Date.now() < (stream.nextCapture ?? 0)) return;
       stream.capturing = true;
       stream.nextCapture = Date.now() + 200;
@@ -510,18 +518,16 @@ export class KernelBrowserHost {
       if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
       if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
-        ![1, 2].includes(command.device_scale_factor) || (geometry.width===1920&&command.device_scale_factor!==1) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
-      const scale = this.scales.get(tab.tab_id);
-      if (scale && scale !== command.device_scale_factor) throw new Error("MD-DISPLAY: canonical tab geometry is already selected");
-      const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-      await connection.send("Emulation.setDeviceMetricsOverride", displayDeviceMetrics(geometry.width,geometry.height,command.device_scale_factor), sessionId);
-      this.scales.set(tab.tab_id, command.device_scale_factor);
+        ![1, 2].includes(command.device_scale_factor) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
+      // MP-08/MP-10/MP-11: observation never changes the native page density.
+      const scale = this.viewport().device_scale_factor;
+      this.scales.set(tab.tab_id, scale);
       const id = `host-display-${randomUUID()}`;
       const codec=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER&&command.codecs.includes('avc1.420033')?'avc1.420033':command.codecs.find(c=>['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(c))??'png';
-      const stream = new DisplayStream({ relay_binary:command.codecs.includes('chariox-relay-binary-v96'), subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor, codec, css_width:geometry.width, css_height:geometry.height, dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec) }, { timing:this.timing,encoder:new BrowserEncoder(this.browser,tab.target_id) });
+      const stream = new DisplayStream({ relay_binary:command.codecs.includes('chariox-relay-binary-v96'), subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: scale, codec, css_width:geometry.width, css_height:geometry.height, dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec) }, { timing:this.timing,encoder:new BrowserEncoder(this.browser,tab.target_id) });
       this.displays.set(id, stream);
       this.armDisplayExpiry(stream);
-      return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor };
+      return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: scale };
     }
     if (command.op === "close") {
       this.mirror.removeTab(tab.tab_id);
@@ -578,7 +584,7 @@ export class KernelBrowserHost {
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
         const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>viewerActive()&&owned.click(x,y):null;
         const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;
-        const deferred=await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+        const deferred=await this.sampleLane(tab).run("input", () => this.popupEvidence.capture(this.browser, tab, command._action_id, beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) })));
         // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
         // fenced, ledgered dispatch is ordered by CDP; the renderer's
         // frame-aligned ack would otherwise serialize kernel input admission.

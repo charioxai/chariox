@@ -205,7 +205,7 @@ export class BrowserCdpClient {
         }
       }))).filter(Boolean);
       await Promise.all(
-        writerTargets.map((target) => this.ensureWriterTargetSession(connection, target.targetId)),
+        writerTargets.map((target) => this.reconcileWriterTarget(connection, target.targetId)),
       );
       // A home kernel before protocol 379 sends no flag; a 379 worker behind it
       // defaults it to hidden (fullscreen), the new default.
@@ -479,6 +479,7 @@ export class BrowserCdpClient {
     await registerBrowserFrameTargets(connection, sessionId, target.targetId, documentId, this.targetsByFrame);
     return {
       target_id: target.targetId,
+      ...(typeof target.openerId === "string" ? { opener_target_id: target.openerId } : {}),
       document_id: documentId,
       url: typeof target.url === "string" ? target.url : "",
       title: typeof target.title === "string" ? target.title : "",
@@ -708,8 +709,13 @@ export class BrowserCdpClient {
         if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
           const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
           this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
-          const result=await performBrowserAction(options);
-          await finishBrowserFill(connection,target);
+          // MP-11: bind the completed value before releasing in-flight coverage.
+          // A failed action still fingerprints whatever it inserted; an
+          // unprovable completion keeps the fill pending (covered).
+          let result;
+          try { result = await performBrowserAction(options); }
+          catch (error) { await finishBrowserFill(connection, target).catch(() => {}); throw error; }
+          await finishBrowserFill(connection, target);
           return result;
         }
         return performBrowserAction(options);
@@ -1097,6 +1103,21 @@ export class BrowserCdpClient {
       throw error;
     }
     return sessionId;
+  }
+
+  // MP-08/MP-10/MP-11: short-lived workers can exit after Target.getTargets.
+  // This observation never substitutes for the cookie import's writer fence.
+  async reconcileWriterTarget(connection, targetId) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try { return await this.ensureWriterTargetSession(connection, targetId); }
+      catch (error) {
+        if (!targetGone(error)) throw error;
+        await this.forgetTarget(targetId);
+        const { targetInfos = [] } = await connection.send("Target.getTargets");
+        if (!targetInfos.some(target => target.targetId === targetId)) return null;
+        if (attempt === 1) throw error;
+      }
+    }
   }
 
   async ensureWriterTargetSession(connection, targetId) {

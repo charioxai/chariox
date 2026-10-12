@@ -339,6 +339,9 @@ impl KernelRuntimeOwnedState {
         } else {
             None
         };
+        if self.workflow_expire_pending_entry(&prepared.session_id, _workflow_run_id)? {
+            return Ok(dispatches);
+        }
         let mut submission = match self.submit_local_prepared_prompt_for_provider_run(
             &prepared,
             workflow_provider_run_id.as_deref(),

@@ -381,6 +381,8 @@ impl KernelRuntimeState {
 
     pub(crate) fn pump_kernel_access(&self) {
         self.sweep_kernel_access();
+        // Dead-man for sudo window timers: the kernel pump enforces and alerts too.
+        self.pump_sudo_windows(None);
         let notices = {
             let mut state = self
                 .owned

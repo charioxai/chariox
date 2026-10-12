@@ -7,3 +7,11 @@ export const displayGeometry=Object.freeze(selected==='1920x1080'?{width:1920,he
 // view-image scale is a page transform on the native window; keep it at unity
 // while screenshot density remains a separate value.
 export const displayDeviceMetrics=(width,height,scale)=>({width,height,deviceScaleFactor:scale,scale:1,mobile:false});
+
+// MP-08/MP-10/MP-11: the kernel selects native page density before any
+// observation/input. Viewer DPR never changes the shared browser viewport.
+export function hostViewport(native = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY === '1') {
+ const g=displayGeometry,scale=native?g.dpr:1;
+ return {css_width:g.width,css_height:g.height,device_scale_factor:scale,
+  desktop_pixel_width:g.width*scale,desktop_pixel_height:g.height*scale};
+}

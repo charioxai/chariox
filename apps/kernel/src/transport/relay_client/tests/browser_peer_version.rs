@@ -1,5 +1,5 @@
 //! MP-08/MP-10/MP-11: a controlled advertisement over the real encrypted relay.
-//! Both workers use the current kernel dispatcher; v70 changes only the lease
+//! Both workers use the current kernel dispatcher; an obsolete peer changes only the lease
 //! advertisement, avoiding any artifact/upload dispatch to an obsolete worker.
 use super::support::*;
 use futures_util::FutureExt;
@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 const FLOOR: u32 = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_73_encrypted_lease_admission() {
+fn mp08_mp10_mp11_browser_artifact_peer_minimum_encrypted_lease_admission() {
     crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("browser-artifact-peer-version", check);
 }
@@ -155,7 +155,12 @@ async fn check() {
     };
     wait_for_daemon_registration(registry, &worker_config.daemon_id).await;
     let assertions = std::panic::AssertUnwindSafe(async {
-        for advertised in [FLOOR - 1, FLOOR] {
+        let minimum = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
+        for advertised in [
+            minimum - 1,
+            minimum,
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ] {
             version.store(advertised, Ordering::SeqCst);
             requests.lock().await.clear();
             let config = home_config.clone();
@@ -178,8 +183,8 @@ async fn check() {
                     let binding = agent.remote_execution().unwrap();
                     app.destroy_remote_execution_binding(binding, &|| Ok(()))
                         .unwrap();
-                    if advertised == FLOOR {
-                        assert_eq!(binding.relay_peer_protocol_version, Some(FLOOR));
+                    if advertised >= minimum {
+                        assert_eq!(binding.relay_peer_protocol_version, Some(advertised));
                         app.ensure_remote_agent_binding_protocol(binding).unwrap();
                     }
                 }
@@ -187,17 +192,17 @@ async fn check() {
             })
             .await
             .unwrap();
-            if advertised < FLOOR {
-                let error =
-                    result.expect_err("v70 must be rejected before spawn or artifact dispatch");
+            if advertised < minimum {
+                let error = result
+                    .expect_err("obsolete peer must be rejected before spawn or artifact dispatch");
                 assert!(
                     error
                         .to_string()
-                        .contains(&format!("protocol {}", FLOOR - 1)),
+                        .contains(&format!("protocol {advertised}")),
                     "{error}; request kinds: {:?}",
                     *requests.lock().await
                 );
-                assert!(error.to_string().contains(&format!("requires {FLOOR}")));
+                assert!(error.to_string().contains(&format!("requires {minimum}")));
                 assert_eq!(
                     *requests.lock().await,
                     ["create_execution_lease", "destroy_execution_lease"]
@@ -205,7 +210,7 @@ async fn check() {
             } else {
                 assert!(
                     result.is_ok(),
-                    "v73 must bind: {}",
+                    "compatible peer {advertised} must bind: {}",
                     result
                         .as_ref()
                         .err()

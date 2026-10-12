@@ -1,6 +1,7 @@
 //! MD-5: user-domain scope over the Room Vault/observation implementation.
 use super::kernel_browser_runtime::{host_error, PASTE};
 use super::*;
+use crate::local::KernelSudoTurn;
 use crate::runtime::browser_controller_action::BrowserLocatorAction;
 use crate::runtime::kernel_browser_host::{KernelBrowserAdmission, KernelBrowserHost};
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
@@ -143,47 +144,76 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         arguments: Value,
         admission: KernelBrowserAdmission,
+        sudo_turn: Option<&KernelSudoTurn>,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let args: PasteArgs = serde_json::from_value(arguments)
             .map_err(|_| host_error("MD-5: invalid Vault input arguments".into()))?;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         let user = user.as_str();
         require_vault_owner(user)?;
-        self.owned
-            .kernel_browser_host
-            .check_admission(Some(&admission))
-            .map_err(host_error)?;
+        let check_authority = || {
+            self.owned
+                .kernel_browser_host
+                .check_admission(Some(&admission))
+                .map_err(host_error)
+        };
+        check_authority()?;
         // Validate the observed document before prompting for unlock. Recheck
         // metadata, focus and target afterward, under the actual input barrier.
         let url = self
             .kernel_browser_secret_target_url(user, &admission, &args)
             .await?;
-        self.home_runtime_secret_service()?
-            .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?;
+        check_authority()?;
+        crate::runtime::state::sudo::require_login_handle_scope(
+            self.home_runtime_secret_service()?
+                .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
+            session,
+            sudo_turn.is_some(),
+        )?;
+        let protection = &self.owned.kernel_browser_secret_observations;
+        let scope = KernelBrowserHost::profile_key(user);
+        // MP-11 A06: discovery fixes the protection epoch the fill relies on.
+        let epoch = protection.revision(&scope)?;
         let _unlock = self
             .ensure_vault_unlocked_for_agent(session, agent.id(), "kernel_browser_paste_secret")
             .await?;
-        let protection = &self.owned.kernel_browser_secret_observations;
-        let scope = KernelBrowserHost::profile_key(user);
+        check_authority()?;
         let (service, _vault_guard) = self
             .scoped_secret_input_service(protection, &scope, &args.credential_id)
             .await?;
+        check_authority()?;
         let _barrier = protection.barrier(&scope)?.write_owned().await;
+        check_authority()?;
         let current = self.owned.agent_store.get_agent(agent.id())?;
+        let authorized = match sudo_turn {
+            Some(turn) => self.sudo_turn_live(turn),
+            None => self.owned.session_snapshot(session)?.focused_agent_id() == Some(agent.id()),
+        };
         if current.session_id() != session
             || current.owner_user_id() != agent.owner_user_id()
-            || self.owned.session_snapshot(session)?.focused_agent_id() != Some(agent.id())
+            || !authorized
         {
             return Err(host_error(
-                "MD-3: current local focus required after Vault wait".into(),
+                "MD-3: current local focus or sudo window required after Vault wait".into(),
             ));
         }
         require_vault_owner(
             &self.provider_account_authority_owner_user_id(current.owner_user_id()),
         )?;
+        if protection.revision(&scope)? != epoch {
+            return Err(host_error(
+                "MP-11: observation protection changed during the Vault wait; observe the page again".into(),
+            ));
+        }
         let url = self
             .kernel_browser_secret_target_url_bound(user, &admission, &args)
             .await?;
+        check_authority()?;
+        crate::runtime::state::sudo::require_login_handle_scope(
+            service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
+            session,
+            sudo_turn.is_some(),
+        )?;
         let secret = zeroize::Zeroizing::new(
             service.browser_secret_input_for_target_url(&args.credential_id, &url)?,
         );
@@ -197,6 +227,7 @@ impl KernelRuntimeState {
                 true,
             )
             .await?;
+        check_authority()?;
         let target = snapshot["snapshot"]["target_id"]
             .as_str()
             .ok_or_else(|| host_error("MD-5: missing target identity".into()))?;
@@ -216,6 +247,7 @@ impl KernelRuntimeState {
                 timeout_ms: 10_000,
             };
         protection.register_command(&scope, &command)?;
+        check_authority()?;
         self.kernel_browser_bound_operation(user, Some(&admission), "host.secret", json!({"tab_id":args.tab_id,"generation":args.generation,"document_id":args.document_id,"node_ref":args.node_ref,"action":action}), true).await?;
         Ok(RuntimeToolResult {
             ok: true,
@@ -406,6 +438,55 @@ fn require_vault_owner(user: &str) -> Result<(), DaemonError> {
 mod tests {
     use super::*;
     #[test]
+    fn mp08_mp11_mirror_wire_tree_survives_kernel_scrub_boundary() {
+        use super::super::room_secret_observation::RoomSecretObservations;
+        let root = crate::test_support::TestWorktree::new("mirror-wire-boundary");
+        let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+        let scope = "mirror-wire";
+        // Short credentials must not corrupt protocol keys, node IDs or hashes.
+        store.register(scope, "a").unwrap();
+        let packet = json!({"hash":"a".repeat(64),"root":"n1","nodes":[{"id":"n1","parent":null,"children":[],"kind":"tile","tag":"div","reason":"protected_text"}],"resources":[],"tiles":[]});
+        let wire = scrub_browser_result(&store, scope, packet.clone(), false, false, true).unwrap();
+        assert!(
+            wire == packet,
+            "MP-11: the final host mirror tree/hash must reach the client unchanged"
+        );
+        let ordinary =
+            scrub_browser_result(&store, scope, json!({"text":"a"}), false, false, false).unwrap();
+        assert!(
+            ordinary["text"] != "a",
+            "MP-11: ordinary observations must still pass through the kernel scrubber"
+        );
+        // Optional actual Chromium packets are produced by the companion browser
+        // regression. Replay the same production boundary before client.apply.
+        if let Ok(path) = std::env::var("CHARIOX_MIRROR_WIRE_FIXTURE") {
+            let fixture: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            store
+                .register(scope, fixture["value"].as_str().unwrap())
+                .unwrap();
+            let packets = fixture["packets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|packet| {
+                    scrub_browser_result(&store, scope, packet.clone(), false, false, true).unwrap()
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                packets
+                    .iter()
+                    .zip(fixture["packets"].as_array().unwrap())
+                    .all(|(wire, host)| wire == host),
+                "MP-11: registration/fill and incremental packets changed at the kernel boundary"
+            );
+            std::fs::write(
+                format!("{path}.wire.json"),
+                serde_json::to_vec(&packets).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+    #[test]
     fn mp08_mp11_hydrated_stripes_survive_short_secret_scrubbing() {
         use super::super::room_secret_observation::RoomSecretObservations;
         use crate::transport::kernel_browser_display::encode_display_event;
@@ -489,55 +570,6 @@ mod tests {
         .is_err());
     }
 
-    #[test]
-    fn mp08_mp11_mirror_wire_tree_survives_kernel_scrub_boundary() {
-        use super::super::room_secret_observation::RoomSecretObservations;
-        let root = crate::test_support::TestWorktree::new("mirror-wire-boundary");
-        let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
-        let scope = "mirror-wire";
-        // Short credentials must not corrupt protocol keys, node IDs or hashes.
-        store.register(scope, "a").unwrap();
-        let packet = json!({"hash":"a".repeat(64),"root":"n1","nodes":[{"id":"n1","parent":null,"children":[],"kind":"tile","tag":"div","reason":"protected_text"}],"resources":[],"tiles":[]});
-        let wire = scrub_browser_result(&store, scope, packet.clone(), false, false, true).unwrap();
-        assert!(
-            wire == packet,
-            "MP-11: the final host mirror tree/hash must reach the client unchanged"
-        );
-        let ordinary =
-            scrub_browser_result(&store, scope, json!({"text":"a"}), false, false, false).unwrap();
-        assert!(
-            ordinary["text"] != "a",
-            "MP-11: ordinary observations must still pass through the kernel scrubber"
-        );
-        // Optional actual Chromium packets are produced by the companion browser
-        // regression. Replay the same production boundary before client.apply.
-        if let Ok(path) = std::env::var("CHARIOX_MIRROR_WIRE_FIXTURE") {
-            let fixture: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-            store
-                .register(scope, fixture["value"].as_str().unwrap())
-                .unwrap();
-            let packets = fixture["packets"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|packet| {
-                    scrub_browser_result(&store, scope, packet.clone(), false, false, true).unwrap()
-                })
-                .collect::<Vec<_>>();
-            assert!(
-                packets
-                    .iter()
-                    .zip(fixture["packets"].as_array().unwrap())
-                    .all(|(wire, host)| wire == host),
-                "MP-11: registration/fill and incremental packets changed at the kernel boundary"
-            );
-            std::fs::write(
-                format!("{path}.wire.json"),
-                serde_json::to_vec(&packets).unwrap(),
-            )
-            .unwrap();
-        }
-    }
     #[test]
     fn host_vault_is_owner_only_and_tool_never_accepts_secret_bytes() {
         assert!(require_vault_owner(crate::session::DEFAULT_LOCAL_USER_ID).is_ok());

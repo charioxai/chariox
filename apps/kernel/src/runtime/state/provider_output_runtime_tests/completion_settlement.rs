@@ -1,6 +1,342 @@
 use super::*;
 
+mod inbox_recovery;
 mod workflow_claim_release;
+
+#[tokio::test]
+async fn a02_native_settlement_never_reacquires_held_provider_lane() {
+    use crate::durable_state::agent_lifecycle::{InboxEvent, Operation, Outcome};
+    let worktree = crate::test_support::TestWorktree::new("am2-held-settlement-lane");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "am2-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "read actual source",
+            Vec::new(),
+        )
+        .unwrap()
+    else {
+        panic!()
+    };
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: prompt.id().into(),
+            run: Some(run.id().into()),
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Settled { task, correction } = store
+        .agent_lifecycle(Operation::Settle {
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: prompt.id().into(),
+            run: run.id().into(),
+            has_answer: true,
+            cancelled: false,
+            now: 2,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    runtime
+        .owned
+        .complete_local_prompt_without_advance(session.id(), agent.id(), Some(run.id()))
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Occur(InboxEvent {
+            sequence: 0,
+            room_id: session.id().into(),
+            agent_id: agent.id().into(),
+            source_id: "peer".into(),
+            occurrence_id: "next-turn".into(),
+            kind: "message".into(),
+            payload: serde_json::json!({"text":"Review the completed source finding"}),
+            urgent: false,
+            reply_requested: false,
+            state: "pending".into(),
+            prompt_id: None,
+            target_prompt_id: None,
+            provider_run_id: None,
+            attempted_at_ms: None,
+            submit_epoch: None,
+        }))
+        .unwrap();
+    let held = runtime.provider_runtime_lanes.acquire(run.id()).await;
+    // Output pumping holds this permit until native settlement returns. Its
+    // completion wake must not wait for the same permit on the same stack.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        runtime.finish_agent_task_settlement(Some((task, correction)), &prompt),
+    )
+    .await
+    .expect("native settlement must release its caller's provider lane before wake dispatch")
+    .unwrap();
+    drop(held);
+}
+
+#[tokio::test]
+async fn a02_review_non_structured_delivery_is_accepted_not_escalated() {
+    use crate::durable_state::agent_lifecycle::{occurrence, Operation, Outcome};
+    let worktree = crate::test_support::TestWorktree::new("am2-non-structured-receipt");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    assert!(!crate::provider::provider_run_uses_structured_prompt_io(
+        &run
+    ));
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    let Outcome::Event(event) = store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            session.id(),
+            agent.id(),
+            "peer",
+            "plain-message",
+            "message",
+            serde_json::json!({"message":"Review the PTY finding"}),
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    runtime
+        .deliver_agent_inbox(session.id(), agent.id())
+        .await
+        .unwrap();
+    let delivered = store
+        .agent_event_for_prompt(
+            session.id(),
+            agent.id(),
+            &format!("agent-event-{}-{}", agent.id(), event.sequence),
+        )
+        .unwrap()
+        .expect("delivery attempt must be recorded");
+    // The PTY write is the only receipt this adapter has; an `uncertain`
+    // receipt would block every task of the recipient after two minutes.
+    assert_eq!(delivered.state, "accepted");
+}
+
+// MP-08/MP-10/MP-11 #914 round 3: exercise admission, withdrawal and periodic retry.
+#[tokio::test]
+async fn a02_r3_pre_io_rejection_retries_without_tasks_or_client_notice() {
+    use crate::durable_state::agent_lifecycle::{occurrence, Operation, Outcome};
+    let worktree = crate::test_support::TestWorktree::new("am2-r3-rejected-message");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            worktree.session_request().with_agent_defaults(
+                crate::session::SessionAgentDefaults::new("codex")
+                    .with_account_profile("am2-r3-unlinked"),
+            ),
+        )
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "am2-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    let Outcome::Event(e) = store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            session.id(),
+            agent.id(),
+            "peer",
+            "first-message",
+            "message",
+            serde_json::json!({"message":"Review the rejected launch"}),
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    // This official Codex profile is unauthenticated in the isolated test home.
+    assert!(runtime
+        .deliver_agent_inbox(session.id(), agent.id())
+        .await
+        .is_err());
+    assert!(store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap()
+        .is_empty());
+    let rejected = store
+        .agent_delivery_front(session.id(), agent.id())
+        .unwrap()
+        .unwrap();
+    assert_eq!(rejected.state, "pending");
+    assert_eq!(rejected.sequence, e.sequence);
+    let quiet = runtime
+        .owned
+        .terminal_stream
+        .drain_notice_records(session.id(), attachment.id())
+        .iter()
+        .all(|r| !r.message.contains("not accepted now"));
+    // Make provider availability change, with no task rows to drive the retry.
+    app.lock()
+        .await
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    let retried = store
+        .agent_inbox(session.id(), agent.id(), 0)
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        (retried.state.as_str(), quiet),
+        ("accepted", true),
+        "periodic sweep must retry taskless recipients without a rejection notice"
+    );
+}
+
+// MP-08/MP-10/MP-11: a refused, taskless delivery reaches an attached owner's interaction.
+#[tokio::test]
+async fn a02_r3_taskless_rejection_timeout_projects_owner_action() {
+    use crate::durable_state::agent_lifecycle::{
+        occurrence, ExecutionState, Operation, Outcome, DELIVERY_TIMEOUT_MS,
+    };
+    let worktree = crate::test_support::TestWorktree::new("am2-r3-rejected-timeout");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "am2-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    let Outcome::Event(e) = store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            session.id(),
+            agent.id(),
+            "peer",
+            "timed-out-message",
+            "message",
+            serde_json::json!({"message":"Review the rejected launch"}),
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    store
+        .agent_lifecycle(Operation::Attempt {
+            room: session.id().into(),
+            agent: agent.id().into(),
+            sequence: e.sequence,
+            prompt: "refused-prompt".into(),
+            target: None,
+            run: None,
+            now: crate::session::unix_epoch_ms() - DELIVERY_TIMEOUT_MS,
+            work: None,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Receipt {
+            room: session.id().into(),
+            agent: agent.id().into(),
+            sequence: e.sequence,
+            state: "rejected".into(),
+            now: crate::session::unix_epoch_ms() - DELIVERY_TIMEOUT_MS,
+        })
+        .unwrap();
+    assert!(store.agent_tasks(None, None).unwrap().is_empty());
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    let tasks = store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap();
+    assert_eq!(tasks.len(), 1, "taskless failure must become supervised");
+    assert_eq!(tasks[0].state, ExecutionState::Blocked);
+    let interaction = format!(
+        "task-blocked-{}-{}",
+        tasks[0].task_id, tasks[0].blocked_revision
+    );
+    assert!(runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .any(|i| i.id() == interaction));
+    assert!(
+        runtime
+            .owned
+            .terminal_stream
+            .drain_notice_records(session.id(), attachment.id())
+            .iter()
+            .any(|r| r.message.contains("Blocked:")),
+        "the timeout must emit a notice to the attached client"
+    );
+}
 
 #[tokio::test]
 async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable() {
@@ -2661,4 +2997,269 @@ async fn blocked_claim_retry_queued_behind_work_advances_in_fifo_order() {
         .prompt_state_owner
         .state_parts(&final_session, &worker);
     assert!(final_queue.is_empty());
+}
+
+// MP-08/MP-10/MP-11: refused steering waits through long busy turns and wakes afterward.
+#[tokio::test]
+async fn a02_r4_busy_refused_message_survives_timeout() {
+    a02_r4_busy_message_survives_timeout(false).await;
+}
+#[tokio::test]
+async fn a02_r4_busy_deferred_message_survives_timeout() {
+    a02_r4_busy_message_survives_timeout(true).await;
+}
+async fn a02_r4_busy_message_survives_timeout(deferred: bool) {
+    use crate::durable_state::agent_lifecycle::{
+        occurrence, Operation, Outcome, DELIVERY_TIMEOUT_MS,
+    };
+    let worktree = crate::test_support::TestWorktree::new("am2-r4-busy-refusal");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "am2-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "Continue the existing turn",
+        Vec::new(),
+    )
+    .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    let mut message = occurrence(
+        session.id(),
+        agent.id(),
+        "peer",
+        "busy-message",
+        "message",
+        serde_json::json!({"message":"Review after the current turn"}),
+    );
+    message.urgent = true;
+    let Outcome::Event(e) = store.agent_lifecycle(Operation::Occur(message)).unwrap() else {
+        panic!()
+    };
+    let now = crate::session::unix_epoch_ms() - 3 * DELIVERY_TIMEOUT_MS;
+    if deferred {
+        store
+            .agent_lifecycle(Operation::Defer {
+                room: session.id().into(),
+                agent: agent.id().into(),
+                sequence: e.sequence,
+                now,
+            })
+            .unwrap();
+    } else {
+        store
+            .agent_lifecycle(Operation::Attempt {
+                room: session.id().into(),
+                agent: agent.id().into(),
+                sequence: e.sequence,
+                prompt: "refused-steer".into(),
+                target: Some("old-active-prompt".into()),
+                run: Some(run.id().into()),
+                now,
+                work: None,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Receipt {
+                room: session.id().into(),
+                agent: agent.id().into(),
+                sequence: e.sequence,
+                state: "rejected".into(),
+                now,
+            })
+            .unwrap();
+    }
+    store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            session.id(),
+            agent.id(),
+            "peer",
+            "normal-message",
+            "message",
+            serde_json::json!({"message":"Queued nonurgent work"}),
+        )))
+        .unwrap();
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    assert_eq!(
+        store
+            .agent_delivery_front(session.id(), agent.id())
+            .unwrap()
+            .unwrap()
+            .state,
+        "pending",
+        "busy refusal must remain queued, never become cancel-only"
+    );
+    assert!(store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap()
+        .iter()
+        .all(|t| t.state != crate::durable_state::agent_lifecycle::ExecutionState::Blocked));
+    assert!(runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    let mut urgent = occurrence(
+        session.id(),
+        agent.id(),
+        "peer",
+        "new-urgent-message",
+        "message",
+        serde_json::json!({"message":"Urgent work for the existing turn"}),
+    );
+    urgent.urgent = true;
+    store.agent_lifecycle(Operation::Occur(urgent)).unwrap();
+    runtime
+        .deliver_agent_inbox(session.id(), agent.id())
+        .await
+        .unwrap();
+    let inbox = store.agent_inbox(session.id(), agent.id(), 0).unwrap();
+    assert_eq!(
+        inbox[2].state, "accepted",
+        "later urgent work must still steer the active turn"
+    );
+    assert_eq!(inbox[0].state, "pending");
+    assert_eq!(inbox[1].state, "pending");
+    runtime
+        .owned
+        .complete_local_prompt_without_advance(session.id(), agent.id(), Some(run.id()))
+        .unwrap();
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    assert_eq!(
+        store.agent_inbox(session.id(), agent.id(), 0).unwrap()[0].state,
+        "accepted",
+        "the refused message must wake when the existing turn ends"
+    );
+    assert_eq!(
+        store.agent_inbox(session.id(), agent.id(), 0).unwrap()[1].state,
+        "pending"
+    );
+    runtime
+        .owned
+        .complete_local_prompt_without_advance(session.id(), agent.id(), Some(run.id()))
+        .unwrap();
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    assert_eq!(
+        store.agent_inbox(session.id(), agent.id(), 0).unwrap()[1].state,
+        "accepted"
+    );
+}
+
+// MP-08/MP-10/MP-11: closing a synthetic delivery task retracts its owner prompt.
+#[tokio::test]
+async fn a02_r6_late_receipt_retracts_delivery_owner_interaction() {
+    use crate::durable_state::agent_lifecycle::{
+        occurrence, Operation, Outcome, DELIVERY_TIMEOUT_MS,
+    };
+    let worktree = crate::test_support::TestWorktree::new("am2-r6-late-receipt");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    let Outcome::Event(e) = store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            session.id(),
+            agent.id(),
+            "peer",
+            "late-accepted",
+            "message",
+            serde_json::json!({}),
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    store
+        .agent_lifecycle(Operation::Attempt {
+            room: session.id().into(),
+            agent: agent.id().into(),
+            sequence: e.sequence,
+            prompt: "late-prompt".into(),
+            target: Some("old-turn".into()),
+            run: Some("old-run".into()),
+            now: crate::session::unix_epoch_ms() - DELIVERY_TIMEOUT_MS,
+            work: None,
+        })
+        .unwrap();
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    let blocked = store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap()
+        .remove(0);
+    let id = format!(
+        "task-blocked-{}-{}",
+        blocked.task_id, blocked.blocked_revision
+    );
+    assert!(runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .any(|i| i.id() == id));
+    store
+        .agent_lifecycle(Operation::Receipt {
+            room: session.id().into(),
+            agent: agent.id().into(),
+            sequence: e.sequence,
+            state: "accepted".into(),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    assert!(
+        runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .all(|i| i.id() != id),
+        "exact reconciliation must retract the stale owner choice"
+    );
+    assert!(
+        store
+            .agent_lifecycle(Operation::OwnerResponse {
+                task: blocked.task_id,
+                revision: blocked.blocked_revision,
+                resume: true,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .is_err(),
+        "the old Resume cannot dispatch synthetic work"
+    );
 }

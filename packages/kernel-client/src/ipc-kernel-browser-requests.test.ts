@@ -1,11 +1,11 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { kernelBrowserMinimumProtocolVersion, kernelBrowserRequest, userDomainAccessMinimumProtocolVersion } from "./ipc-kernel-browser-requests.js"
+import { kernelBrowserAgentTabsMinimumProtocolVersion, kernelBrowserMinimumProtocolVersion, kernelBrowserRequest, userDomainAccessMinimumProtocolVersion } from "./ipc-kernel-browser-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { userDomainWindowBadge } from "./index.js"
 
 test("MD-2: MP-08 / MP-10 / MP-11 protocol 494 browser requests carry no session or claimed user", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 500)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 507)
   assert.equal(kernelBrowserMinimumProtocolVersion, 494)
   assert.deepEqual(kernelBrowserRequest({ op: "open", url: "https://example.com" }), {
     KernelBrowser: { command: { op: "open", url: "https://example.com" } },
@@ -22,4 +22,10 @@ test("MP-08/MP-11: grant requests and cross-kernel badge share protocol 494", ()
   const access = { kernel_id: "home", kernel_name: "home", focused_agent_kernel_id: "worker", reachable_by_focused_agent: false }
   assert.equal(userDomainWindowBadge(access), "Your focused agent can't control this window — focus an agent on kernel home")
   assert.equal(userDomainWindowBadge({ ...access, focused_agent_kernel_id: "home", reachable_by_focused_agent: true }), null)
+})
+
+// MP-08/MP-11: the agent tab projection reaches the merged line at 507.
+test("MP-08 agent tab projection pins merged protocol 507", () => {
+  assert.equal(kernelBrowserAgentTabsMinimumProtocolVersion, 507)
+  assert(LOCAL_DAEMON_PROTOCOL_VERSION >= kernelBrowserAgentTabsMinimumProtocolVersion)
 })

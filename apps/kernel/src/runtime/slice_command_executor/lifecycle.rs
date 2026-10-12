@@ -1657,13 +1657,15 @@ mod tests {
     }
 
     #[test]
-    fn mp08_mp10_mp11_browser_artifact_peer_71_hosted_install_gate() {
+    fn mp08_mp10_mp11_browser_artifact_peer_minimum_hosted_install_gate() {
         // Test real encrypted peer receipts; all keys are disposable product identities.
         let home = crate::config::DaemonConfig::for_tests();
         let worker = crate::config::DaemonConfig::for_tests();
+        let minimum = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
         for version in [
-            crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION - 1,
-            crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION,
+            minimum - 1,
+            minimum,
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         ] {
             for (slice_id, nonce) in [
                 ("slice-1", "nonce-1"),
@@ -1696,9 +1698,7 @@ mod tests {
                         "slice-1",
                         "nonce-1",
                     ),
-                    version == crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION
-                        && slice_id == "slice-1"
-                        && activation_nonce == "nonce-1"
+                    version >= minimum && slice_id == "slice-1" && activation_nonce == "nonce-1"
                 );
             }
         }

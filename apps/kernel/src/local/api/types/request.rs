@@ -2,8 +2,13 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
+    RegisterWorkflowNotificationSource(RegisterWorkflowNotificationSourceRequest),
+    AttachWorkflowNotification(AttachWorkflowNotificationRequest),
+    ListWorkflowNotifications(ListWorkflowNotificationsRequest),
+    DetachWorkflowNotification(DetachWorkflowNotificationRequest),
     RequestKernelAccess(RequestKernelAccessRequest),
     RequestKernelSudo(RequestKernelSudoRequest),
+    ExtendKernelSudo(ExtendKernelSudoRequest),
     ListKernelAccessGrants(ListKernelAccessGrantsRequest),
     RevokeKernelAccessGrant(RevokeKernelAccessGrantRequest),
     KernelBrowser(KernelBrowserRequest),

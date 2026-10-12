@@ -149,6 +149,10 @@ response_policies! {
         UserDomainInteractionAnswered,
     ],
     Public => [
+        WorkflowNotificationSourceRegistered,
+        WorkflowNotificationAttached,
+        WorkflowNotificationDetached,
+        WorkflowNotifications,
         CloudRelayLoggedOut,
         // MP-08 / MP-11: protection-filtered like ScreenshotCaptured and RoomBrowserArtifact.
         KernelBrowser,
@@ -156,6 +160,7 @@ response_policies! {
         Notes,
         UserDomainInteractionAnswered,
         KernelSudoRequested,
+        KernelSudoExtended,
         KernelAccessGranted,
         KernelAccessGrantsListed,
         KernelAccessRevoked,

@@ -156,6 +156,53 @@ test("a Tab that closes while it is inspected drops out instead of failing the r
   assert.equal(reconciled.focused_target_id, "target-b");
 });
 
+// MP-08/MP-10/MP-11: BBC workers can end between discovery and attachment.
+for (const type of ["worker", "shared_worker"]) {
+ test(`MP-10 an exited ${type} cannot fail ordinary page reconciliation`, async()=>{
+  const connection=new FakeConnection();connection.includeWorker=false;
+  connection.extraTargets=[{targetId:'transient-writer',type}];
+  const send=connection.send.bind(connection);
+  connection.send=async(method,params,session)=>{
+   if(method==='Target.attachToTarget'&&params.targetId==='transient-writer'){
+    connection.closedTargetIds.add('transient-writer');
+    throw new Error('Target.attachToTarget: No target with given id found');
+   }
+   return send(method,params,session);
+  };
+  const browser=new BrowserCdpClient({connectionFactory:async()=>connection});
+  const result=await browser.reconcile(viewport);
+  assert.deepEqual(result.tabs.map(t=>t.target_id),['target-a','target-b']);
+  assert.equal(browser.sessionsByTarget.has('transient-writer'),false);
+  // Security-critical import still independently fences all live writers.
+  connection.includeWorker=true;await browser.withCookieWritersQuiesced(async()=>{});
+  assert(connection.calls.some(c=>c.method==='Runtime.evaluate'&&c.params.expression==='self.close()'&&c.sessionId==='worker-session-a'));
+ });
+}
+for (const persistent of [false, true]) {
+ test(`MP-11 a still-listed writer ${persistent ? 'keeps its failure' : 'reattaches its stale session'}`,async()=>{
+  const connection=new FakeConnection(),send=connection.send.bind(connection);let attempts=0;
+  connection.send=async(method,params,session)=>{
+   if(method==='Target.attachToTarget'&&params.targetId==='worker-a'){
+    attempts++;if(persistent||attempts===1)throw new Error('Target.attachToTarget: No target with given id found');
+   }
+   return send(method,params,session);
+  };
+  const browser=new BrowserCdpClient({connectionFactory:async()=>connection});
+  if(persistent)await assert.rejects(browser.reconcile(viewport),/No target with given id found/);
+  else {await browser.reconcile(viewport);assert.equal(browser.sessionsByTarget.get('worker-a'),'worker-session-a');}
+  assert.equal(attempts,2);
+ });
+}
+test('MP-11 live writer attachment failures remain fail closed',async()=>{
+ const connection=new FakeConnection(),send=connection.send.bind(connection);
+ connection.send=async(method,params,session)=>{
+  if(method==='Target.attachToTarget'&&params.targetId==='worker-a')throw new Error('Target.attachToTarget: permission denied');
+  return send(method,params,session);
+ };
+ const browser=new BrowserCdpClient({connectionFactory:async()=>connection});
+ await assert.rejects(browser.reconcile(viewport),/permission denied/);
+});
+
 test("viewport validation happens before opening a browser connection", async () => {
   let connected = false;
   const browser = new BrowserCdpClient({
@@ -1624,3 +1671,16 @@ test("MP-08/MP-10 a focus poll racing a navigation reports a stale document", as
   await assert.rejects(browser.readFocus(connection, "s", "t", { id: "f", loaderId: "d" }), error => error.code === "stale_document_reference");
   assert.equal(browser.focusWorldsByTarget.has("t"), false);
 });
+
+test("MP-08 CDP reconciliation retains Chromium popup creation origins", async () => {
+  const connection = new FakeConnection(), send = connection.send.bind(connection)
+  connection.send = async (method, ...args) => {
+    const result = await send(method, ...args)
+    if (method === "Target.getTargets") result.targetInfos.find(target => target.targetId === "target-b").openerId = "target-a"
+    return result
+  }
+  const browser = new BrowserCdpClient({connectionFactory: async () => connection})
+  const state = await browser.reconcile(viewport)
+  assert.equal(state.tabs.find(tab => tab.target_id === "target-b").opener_target_id, "target-a")
+  assert(!Object.hasOwn(state.tabs.find(tab => tab.target_id === "target-a"), "opener_target_id"))
+})

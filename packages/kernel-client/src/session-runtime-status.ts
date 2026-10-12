@@ -174,6 +174,8 @@ export function sessionAgentPaneStatusBadgeForSession(options: {
   if (!agent) {
     return sessionAgentPaneStatusBadge({ agent: null, activeLabel: options.activeLabel })
   }
+  const taskStatus = sessionAgentTaskStatus(options.session, agent.id)
+  if (taskStatus) return taskStatus
   const runtimeState = sessionAgentRuntimeState(options.session, agent)
   return sessionAgentPaneStatusBadge({
     agent: { state: runtimeState, is_processing: false },
@@ -326,4 +328,23 @@ function formatSessionWorkingStatusLabel(activity: string | null): string {
 
 function promptStateHasActivePrompt(state: SessionAgentPromptStateLike | null | undefined): boolean {
   return Boolean(state?.active_prompt)
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A02: older unfinished tasks survive newer answers.
+export function sessionAgentTaskStatus(session: RuntimeSession | null | undefined, agentId: string): SessionAgentPaneStatusBadge | null {
+  const tasks = (session?.agent_tasks ?? []).filter((task) => task.agent_id === agentId)
+  if (!tasks.length) return null
+  const unfinished = tasks.filter((task) => task.state !== "done" && task.state !== "cancelled")
+  const task = unfinished.find((task) => task.state === "blocked")
+    ?? unfinished.find((task) => task.state === "working")
+    ?? unfinished[0] ?? tasks[tasks.length - 1]!
+  const open = tasks.flatMap((task) => task.obligations).filter((item) => ["open", "settling", "failed"].includes(item.status)).length
+  const suffix = open ? ` (${open} obligations)` : ""
+  if (task.state === "waiting") {
+    const deadline = task.wait?.deadline_ms
+    if (!deadline || !Number.isFinite(deadline) || deadline > 8.64e15) return { label: `BLOCKED: Invalid wait deadline${suffix}`, tone: "error" }
+    return { label: `WAITING ON ${task.reason} UNTIL ${new Date(deadline).toISOString()}${suffix}`, tone: "idle" }
+  }
+  if (task.state === "blocked") return { label: `BLOCKED: ${task.reason}${suffix}`, tone: "error" }
+  return { label: `${task.state.toUpperCase()}${suffix}`, tone: task.state === "working" ? "working" : "idle" }
 }

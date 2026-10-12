@@ -32,11 +32,23 @@ impl CommandRouter {
                 reason: crate::error::UserDomainRefusalReason::NotGranted,
             });
         }
+        if self.runtime_state.room_agent_tools_enabled()
+            && !command.is_terminal_caller()
+            && (matches!(
+                request,
+                LocalDaemonRequest::FocusAgent(_) | LocalDaemonRequest::CycleAgentFocus(_)
+            ) || matches!(request, LocalDaemonRequest::GrantAgentExtension(grant) if grant.kind == crate::local::ExtensionKind::App))
+        {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "owner focus and App acquisition require a terminal decision; agents use approved resource tools",
+            ));
+        }
         if let Some(authority) = command.external_grant_id() {
             self.runtime_state
                 .authorize_external_request(&authority, request)?;
         }
-        Ok(())
+        self.runtime_state
+            .authorize_prompt_attachment_role(command, request)
     }
 
     pub(crate) fn kernel_local_socket_path(&self) -> std::path::PathBuf {
@@ -153,7 +165,7 @@ mod user_domain_admission_tests {
                     command.caller.connection_class = Some(class);
                     command.caller.caller_id = "revoked-grant".into();
                     let error = router
-                        .authorize_external_request(&command, &mut request.clone())
+                        .authorize_external_request(&command, &request)
                         .unwrap_err();
                     assert!(matches!(
                         error,

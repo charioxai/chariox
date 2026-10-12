@@ -334,23 +334,15 @@ fn compiles_typescript_builder_source() {
         eprintln!("skipping workflow-code TS compiler test because node is not available");
         return;
     };
-    if !Command::new(&node)
-        .arg("--no-warnings")
-        .arg("--input-type=module")
-        .arg("-e")
-        .arg("const mod = await import('node:module'); if (typeof mod.stripTypeScriptTypes !== 'function') process.exit(1)")
-        .status()
-        .is_ok_and(|status| status.success())
-    {
-        eprintln!("skipping workflow-code TS compiler test because Node.js cannot strip TypeScript");
-        return;
-    }
 
+    // MP-08/MP-11: no skip for Node builds without native type stripping; an
+    // enum also requires transform mode, as official Node's transform.
     let source = r#"
 type ProviderName = "dev-stub";
 interface FinalAnswer {
   answer: string;
 }
+enum Concurrency { One = 1, Two }
 const provider: ProviderName = "dev-stub";
 const finalSchema = workflow.schema({
   handle: "final",
@@ -361,7 +353,7 @@ properties: { answer: { type: "string" } },
 additionalProperties: false
   }
 })
-workflow.define({ alias: "compiled_ts", maxConcurrent: 2, runOutputSchema: finalSchema })
+workflow.define({ alias: "compiled_ts", maxConcurrent: Concurrency.Two, runOutputSchema: finalSchema })
 const worker = workflow.node({
   handle: "worker",
   agent: workflow.newAgent({ alias: "ts-worker", provider, model: "default" }),
@@ -385,6 +377,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
         result.definition.workflow.alias.as_deref(),
         Some("compiled_ts")
     );
+    assert_eq!(result.definition.workflow.max_concurrent, Some(2));
     assert_eq!(
         result.definition.workflow.run_output_schema.as_deref(),
         Some("final")
@@ -398,6 +391,15 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
             effort: None,
             account_profile: None,
         })
+    );
+}
+
+#[test]
+fn typescript_stripper_is_pinned_to_official_node_amaro() {
+    // amaro 1.1.5 dist/index.js, as embedded by official Node.js 22.22.1.
+    assert_eq!(
+        sha256_hex(TYPESCRIPT_STRIPPER.as_bytes()),
+        "5e05805ae1fa4461b5346c3aa7d8b4690b085e139ffc9fb3c97ae2e1b2219581"
     );
 }
 
@@ -714,4 +716,110 @@ workflow.schemaFromFile({ handle: "final", path: "schemas/final.txt" })
 
     assert!(format!("{error}").contains("must end in .json"));
     let _ = fs::remove_dir_all(root);
+}
+
+// MP-08 / MP-11: declarative source receives only its own realm's values.
+#[test]
+fn compiler_isolation_has_no_host_objects_or_ambient_authority() {
+    let node = find_node().expect("real Node is required for compiler isolation");
+    let source = r#"
+if (typeof process !== "undefined" || typeof require !== "undefined" ||
+    typeof fetch !== "undefined" || typeof Buffer !== "undefined") {
+  throw new Error("ambient host capability is visible")
+}
+if (Object.getPrototypeOf(workflow.define) !== Function.prototype ||
+    Object.getPrototypeOf(console.log) !== Function.prototype) {
+  throw new Error("builder received a host function")
+}
+if (globalThis.workflow !== workflow || globalThis.console !== console ||
+    Object.getPrototypeOf(globalThis.console.log) !== Function.prototype) throw new Error("global builder received host values")
+if (Object.getPrototypeOf(workflow) !== Object.prototype) throw new Error("builder received a host object")
+let disabled = false
+try { workflow.define.constructor("return 1")() } catch (error) { disabled = error instanceof EvalError }
+if (!disabled) throw new Error("dynamic host functions are available")
+const worker = workflow.node({agent: workflow.newAgent({provider: "dev-stub"})})
+workflow.endpoint(worker)
+"#;
+    let result =
+        compile_workflow_code_javascript(node, source, &WorkflowCodeLimitsConfig::default())
+            .expect("compiler must isolate source from host objects");
+    assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+}
+
+#[test]
+fn compiler_isolation_ignores_caller_selected_executable() {
+    let source = "const n = workflow.node({agent: workflow.newAgent({provider: 'dev-stub'})}); workflow.endpoint(n)";
+    let result = compile_workflow_code_javascript(
+        "/caller-selected-executable-must-not-run",
+        source,
+        &WorkflowCodeLimitsConfig::default(),
+    )
+    .expect("compiler uses the kernel-selected Node");
+    assert!(result.validation.ok);
+}
+
+#[test]
+fn compiler_isolation_keeps_promise_callbacks_in_the_source_realm() {
+    let source = r#"
+const originalThen = Promise.prototype.then
+Promise.prototype.then = function (fulfilled, rejected) {
+  for (const callback of [fulfilled, rejected]) {
+    if (callback && Object.getPrototypeOf(callback) !== Function.prototype) {
+      throw new Error("promise received a host callback")
+    }
+  }
+  return originalThen.call(this, fulfilled, rejected)
+}
+await Promise.resolve()
+const n = workflow.node({agent: workflow.newAgent({provider: "dev-stub"})})
+workflow.endpoint(n)
+"#;
+    let result =
+        compile_workflow_code_javascript("ignored", source, &WorkflowCodeLimitsConfig::default())
+            .expect("promise settlement must not inject host callbacks");
+    assert!(result.validation.ok);
+}
+
+// MP-08 / MP-11: a real workspace contains unrelated large JSON files.
+#[test]
+fn compiler_isolation_serializes_only_requested_schema_data() {
+    let root = crate::test_support::TestWorktree::new("compiler-requested-schema");
+    let limits = WorkflowCodeLimitsConfig::default();
+    fs::write(
+        root.path().join("unrelated.json"),
+        vec![b'x'; limits.max_schema_bytes as usize + 1],
+    )
+    .unwrap();
+    let source = "const n = workflow.node({agent: workflow.newAgent({provider: 'dev-stub'})}); workflow.endpoint(n)";
+    let result = compile_workflow_code_javascript_with_schema_import_root(
+        "ignored",
+        source,
+        &limits,
+        Some(root.path()),
+    )
+    .unwrap();
+    assert!(result.validation.ok);
+    fs::create_dir(root.path().join("schemas")).unwrap();
+    fs::write(root.path().join("schemas/final.json"), r#"{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}"#).unwrap();
+    let source = r#"
+try { workflow.schemaFromFile("absent.json") } catch (error) {}
+const path = ["schemas", "final.json"].join("/")
+const final = workflow.schemaFromFile({path, alias: "Final"})
+workflow.define({runOutputSchema: final})
+const n = workflow.node({agent: workflow.newAgent({provider: "dev-stub"}), canCompleteWorkflowRun: true})
+workflow.endpoint(n)
+"#;
+    let result = compile_workflow_code_javascript_with_schema_import_root(
+        "ignored",
+        source,
+        &limits,
+        Some(root.path()),
+    )
+    .unwrap();
+    assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+    assert_eq!(result.definition.schemas.len(), 1);
+    assert_eq!(
+        result.definition.schemas[0].schema["required"],
+        serde_json::json!(["answer"])
+    );
 }

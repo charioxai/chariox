@@ -48,6 +48,7 @@ mod terminal_interaction;
 mod user_domain_access;
 mod waiting_room;
 mod workflow;
+mod workflow_notification;
 mod workspace;
 
 pub use agent_lifecycle::*;
@@ -88,6 +89,7 @@ pub use terminal_interaction::*;
 pub use user_domain_access::*;
 pub use waiting_room::*;
 pub use workflow::*;
+pub use workflow_notification::*;
 pub use workspace::*;
 
 /// Version 319 adds Git credential enrollment for an existing managed environment.
@@ -274,10 +276,25 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: version 474 adds the protected desktop display subscription.
 /// MP-08/MP-10: version 475 adds pushed display (`display_ack` drives the
 /// kernel push pump of a relay display subscription; `display_next` remains).
+/// Version 450 adds immutable room spawn/object creators and regular room tools
+/// behind the transitional room-agent-tools flag (MP-08/MP-10/MP-11 A01).
+/// Version 452 adds durable agent events, enforced turn dispositions and
+/// kernel-emitted workflow notifications (MP-08/09/10/11 A02).
+/// Version 460 replaces one-turn sudo with hour-scale windows bound to owner
+/// work, fresh-passkey extension, session status and no agent approvals
+/// (MP-08/MP-10/MP-11 A04).
+/// Version 462 adds user-requested capability grant causes, absolute grant
+/// expiry and the `not_requested` refusal (MP-08/MP-10/MP-11 A05).
+/// Version 469 combines 460 and 462; A06 Vault generation and login add no
+/// wire shape (MP-08/MP-10/MP-11).
 /// Version 451 grants the whole local kernel and routes access popups without sessions.
 /// Version 470 adds structured OS requester identity to access decisions.
 /// Version 472 advertises identity-preserving terminal relay renewal with
 /// explicit capability negotiation and recoverable target-offline handshakes.
 /// MP-08 / MP-10 / MP-11: PR5 carries the #904/main 472 union with 474/475 at 475.
 /// MP-08/MP-11: allocated494 adds bounded installed desktop discovery/launch.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 500;
+/// MP-08/MP-10/MP-11: allocated491 combines native display and agent-tab
+/// provenance/activity with the shared agent-model protocol union.
+/// MP-08/MP-10/MP-11: allocated507 merges the Computer Use line (500, peer109)
+/// with native display and agent tabs (491, peer101).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 507;

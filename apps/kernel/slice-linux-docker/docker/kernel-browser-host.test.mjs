@@ -43,7 +43,7 @@ function fixture(root) {
       }
       if (method === 'DOM.getDocument') return {root:{nodeId:1}};
       if (method === 'DOM.querySelectorAll') return {nodeIds:[]};
-      if (method === "Page.captureScreenshot") return { data: encodePng(1280,800,Buffer.alloc(1280*800*4,255)) };
+      if (method === "Page.captureScreenshot") return { data: encodePng(1280*(connection.density??1),800*(connection.density??1),Buffer.alloc(1280*800*4*(connection.density??1)**2,255)) };
       const target = session?.replace("session-", "");
       if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame", url: "about:blank", loaderId: pages.get(target)?.document_id ?? `doc-${target}` } } };
       if (method === "Page.createIsolatedWorld") return { executionContextId: 42 };
@@ -57,8 +57,8 @@ function fixture(root) {
     },
   };
   const chromium = { child: null, start: async () => { chromium.child = { exitCode: null, signalCode: null }; return "http://127.0.0.1:1"; }, stop: async () => { chromium.child = null; } };
-  const browserFactory = () => ({ connection, ensureConnection: async () => connection, close: async () => {},
-    reconcile: async () => ({ tabs: [...pages].map(([target_id, tab]) => ({ target_id, document_id: `doc-${target_id}`, title: "fixture", ...tab })) }),
+  const browserFactory = () => ({ connection, ensureConnection: async () => connection,ensureTargetSession:async (_connection,target)=>`session-${target}`, close: async () => {},
+    reconcile: async viewport => { connection.density=viewport.device_scale_factor; return { tabs: [...pages].map(([target_id, tab]) => ({ target_id, document_id: `doc-${target_id}`, title: "fixture", ...tab })) }; },
     manageTab: async ({ target_id }) => pages.delete(target_id),
     navigate: async ({ target_id, url }) => { pages.set(target_id, { url }); },
     snapshot: async () => ({ text: "fixture" }),
@@ -114,7 +114,7 @@ test('MP-08/MP-10/MP-11 an unchanged admitted native credit performs no CDP obse
  }finally{if(old===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=old}
 }));
 
-// MP-08/MP-10: protocol 475 push credits wait on readiness and return a
+// MP-08/MP-10: protocol 491 push credits wait on readiness and return a
 // frame, or nothing after a bounded budget; reset retires the stream base.
 test('MP-08/MP-10 push credit waits on encoder readiness and retires the base on reset',()=>using(async({host,sent})=>{
  const old=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
@@ -353,6 +353,30 @@ test("MP-08/MP-11 policy updates retire cached observations without a broad mask
  assert.equal(decodePng((await waitFrame()).data_base64).pixels[0],255,'registration without a fill leaves ordinary pixels visible');
 }));
 
+test("MP-08/MP-11: policy flushes old frames without masks for registration alone across recovery", () => using(async ({ host, handlers, chromium, sent }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  const subscription = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
+  const session = sent.find(call => call.method === "Page.startScreencast").session;
+  const emit = () => { for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: session, params: { data: "unsafe-raw-pixels", sessionId: 1 } }); };
+  emit();
+  assert.notEqual((await host.request({ op: "poll", ...subscription })).frame?.data_base64, "unsafe-raw-pixels");
+  const policy = { unknown: false, values: ["synthetic-only"], targets: [] };
+  await host.protect(policy);
+  assert.equal((await host.request({ op: "poll", ...subscription })).frame, null);
+  emit();
+  await host.protect(policy); // An unchanged policy must not erase every poll.
+  const protectedFrame = (await host.request({ op: "poll", ...subscription })).frame;
+  assert.notEqual(protectedFrame?.data_base64, "unsafe-raw-pixels");
+  const capture = await host.request({ op: "screenshot", tab_id: opened.tab_id, generation: opened.generation });
+  assert.equal(decodePng(capture.data_base64).pixels[0],255); // MP-11 registration alone leaves source pixels intact
+  const second = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
+  assert.equal((await host.request({ op: "poll", ...second })).frame, null); // capture is asynchronous
+  chromium.child.exitCode = 1;
+  await host.request({ op: "start" });
+  assert(host.browser.protectedValues.has("synthetic-only"));
+  await assert.rejects(host.request({ op: "poll", ...subscription }), error => ["user_domain_stale_epoch","user_domain_stale_reference"].includes(error.code));
+}));
+
 test("MD-5: unavailable observation policy fences captures and leaves shutdown available", () => using(async ({ host }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   await host.protect({ unknown: true, values: [], targets: [] });
@@ -360,6 +384,16 @@ test("MD-5: unavailable observation policy fences captures and leaves shutdown a
   assert.equal((await host.request({ op: "stop" })).state, "stopped");
 }));
 
+test('MP-11 legacy observation retires an in-flight frame after document changes',()=>using(async({host,connection,handlers,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'});let entered,release;
+ const waiting=new Promise(resolve=>entered=resolve),held=new Promise(resolve=>release=resolve);
+ connection.beforeSend=async method=>{if(method==='Page.captureScreenshot'){entered();await held;}};
+ const subscription=await host.request({op:'subscribe',tab_id:opened.tab_id,generation:opened.generation});await waiting;
+ const session=sent.find(call=>call.method==='Page.startScreencast').session;
+ for(const handler of handlers)handler({sessionId:session,method:'DOM.documentUpdated',params:{}});
+ release();for(let n=0;n<50&&host.streams.get(subscription.subscription_id).capturing;n++)await new Promise(resolve=>setTimeout(resolve,5));
+ assert.equal((await host.request({op:'poll',...subscription})).frame,null,'retired capture cannot overwrite the observation');
+}));
 test('MP-11 legacy observation retires an in-flight frame after attribute-only protection changes',()=>using(async({host,connection,handlers,sent})=>{
  const opened=await host.request({op:'open',url:'about:blank'});let entered,release;
  const waiting=new Promise(resolve=>entered=resolve),held=new Promise(resolve=>release=resolve);
@@ -684,8 +718,8 @@ test("display subscription captures the current document after navigation", () =
   const send = connection.send;
   connection.send = async (method,params,session) => {
     if(method === "Page.captureScreenshot") {
-      const width=Math.round((params.clip?.width??1280)*(params.clip?.scale??1));
-      const height=Math.round((params.clip?.height??800)*(params.clip?.scale??1));
+      const width=Math.round((params.clip?.width??1280)*(params.clip?.scale??1)*(connection.density??1));
+      const height=Math.round((params.clip?.height??800)*(params.clip?.scale??1)*(connection.density??1));
       return {data:encodePng(width,height,Buffer.alloc(width*height*4,255))};
     }
     if(method === "Target.getTargetInfo") return {targetInfo:pages.get(params.targetId)};
@@ -838,12 +872,11 @@ test('MP-08/MP-11 protected full captures cannot interrupt an in-flight pointer 
 
 // MP-08/MP-10: run this bound admission check under both supported host geometries.
 test('MP-08/MP-10 #893 unsupported DPR fails before emulation/subscription mutation',()=>using(async({host,sent})=>{
- const {displayGeometry}=await import('./kernel-browser-geometry.mjs');
  const old=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
  try{
   const opened=await host.request({op:'open',url:'about:blank'});
   const before=sent.filter(x=>x.method==='Emulation.setDeviceMetricsOverride').length;
-  const dpr=displayGeometry.width===1920?2:3;
+  const dpr=3;
   await assert.rejects(host.request({op:'display_subscribe',tab_id:opened.tab_id,generation:opened.generation,codecs:['png'],bitrate:8000000,device_scale_factor:dpr}),/negotiation/);
   assert.equal(host.displays.size,0);assert.equal(host.scales.size,0);
   assert.equal(sent.filter(x=>x.method==='Emulation.setDeviceMetricsOverride').length,before);
@@ -871,7 +904,7 @@ for(const dpr of [1,2])test(`MP-11 a DPR${dpr} viewer subscribe never relaunches
  const subscribed=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:dpr});
  assert.equal(stopped,0,'no stop/relaunch from an observation');assert.equal(chromium.child,launched);
  assert.equal(subscribed.generation,tab.generation);assert.equal(host.generation,tab.generation);assert.equal(chromium.scale,2);
- assert.deepEqual(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').at(-1).params,{width:1280,height:800,deviceScaleFactor:dpr,scale:1,mobile:false});
+ assert.equal(subscribed.device_scale_factor,2);assert.equal(tab.viewport.device_scale_factor,2);assert.equal(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').length,0,'viewer subscription never changes the viewport');
  }finally{if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
 }));
 
@@ -882,7 +915,7 @@ test('MP-08 a desktop tab drops the Browser panel DPR emulation with its last vi
  try{const tab=await host.request({op:'open',url:'about:blank'});host.chromium.desktop={binding:()=>null};
  const subscribed=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:2});
  assert.equal(subscribed.generation,tab.generation,'the shared desktop never restarts Chromium');
- assert.deepEqual(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').at(-1).params,{width:1280,height:800,deviceScaleFactor:2,scale:1,mobile:false});
+ assert.equal(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').length,0,'a Browser viewer never emulates density on the desktop');
  await host.request({op:'unsubscribe',subscription_id:subscribed.subscription_id,generation:subscribed.generation});
  assert.equal(sent.filter(c=>c.method==='Emulation.clearDeviceMetricsOverride').length,1);assert.equal(host.scales.has(tab.tab_id),false);
  }finally{delete host.chromium.desktop;if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
@@ -936,3 +969,91 @@ for (const flags of [{_agent_input:true},{focused_agent:'agent-a'}]) test('MP-08
  await host.request({op:'navigate',tab_id:opened.tab_id,generation:opened.generation,url:'https://www.wikipedia.org/',...flags});
  host.chromium.desktop=null;
 }));
+
+test("MP-08 popup origins stay internal and distinguish unrelated native tabs", () => using(async ({host,pages}) => {
+  const opened = await host.request({op:"open",url:"https://en.wikipedia.org"})
+  const opener = host.tabs.get(opened.tab_id).target_id
+  pages.set("native-human", {url:"https://github.com"})
+  pages.set("popup", {url:"https://www.wikipedia.org",opener_target_id:opener})
+  const state = await host.request({op:"state"})
+  const popup = state.tabs.find(tab => tab.url === "https://www.wikipedia.org")
+  const native = state.tabs.find(tab => tab.url === "https://github.com")
+  assert.equal(state._tab_creation_actions[popup.tab_id], undefined)
+  assert.equal(state._tab_creation_actions[native.tab_id], undefined)
+  assert(!JSON.stringify(state.tabs).includes("opener_target_id"))
+}))
+
+test("MP-08 completed agent input cannot attribute a later native popup on the same document", () => using(async ({host, pages, connection, handlers}) => {
+  const opened = await host.request({op:"open", url:"https://www.wikipedia.org"});
+  const source = host.tabs.get(opened.tab_id);
+  const input = {op:"input", tab_id:source.tab_id, generation:opened.generation,
+    document_id:source.document_id, _action_id:"action-agent", input:{kind:"click", x:10, y:10}};
+  connection.beforeSend = async (method, params) => {
+    if (method !== "Input.dispatchMouseEvent" || params.type !== "mouseReleased") return;
+    // CDP creation arrives during the actual dispatch. Inventory is delayed.
+    for (const handler of handlers) handler({method:"Target.targetCreated", params:{targetInfo:{type:"page", targetId:"agent-popup", openerId:source.target_id}}});
+  };
+  await host.request(input);
+  connection.beforeSend = null;
+  pages.set("agent-popup", {url:"https://en.wikipedia.org", opener_target_id:source.target_id});
+  // Native click after completion bypasses kernel begin/takeover.
+  for (const handler of handlers) handler({method:"Target.targetCreated", params:{targetInfo:{type:"page", targetId:"human-popup", openerId:source.target_id}}});
+  pages.set("human-popup", {url:"https://github.com", opener_target_id:source.target_id});
+  const state = await host.request({op:"state"});
+  const agent = state.tabs.find(tab => tab.url === "https://en.wikipedia.org");
+  const human = state.tabs.find(tab => tab.url === "https://github.com");
+  assert.equal(state._tab_openers?.[human.tab_id], undefined, "opener alone carries no actor evidence");
+  assert.equal(state._tab_creation_actions?.[agent.tab_id], "action-agent");
+  assert.equal(state._tab_creation_actions?.[human.tab_id], undefined);
+  assert.equal(handlers.size, 1, "activation observer remains until host shutdown");
+}));
+
+// MP-08/MP-10/MP-11: shared viewers observe one canonical tab, never change
+// its pixel density or disturb an already attached native capture.
+for (const first of [1,2]) test(`MP-08 mixed-DPR viewers keep native geometry when DPR${first} subscribes first`,()=>using(async({host,sent,chromium})=>{
+ const before=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try {
+  chromium.scale=2;const tab=await host.request({op:'open',url:'about:blank'});
+  const command={op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000};
+  const owner=await host.request({...command,device_scale_factor:first});
+  const metrics=sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride');
+  const watcher=await host.request({...command,device_scale_factor:3-first});
+  assert.equal(watcher.device_scale_factor,2,'actual canonical density is returned to the second viewer');
+  assert.equal(host.displays.get(watcher.subscription_id).device_scale_factor,2);
+  assert.notEqual(owner.subscription_id,watcher.subscription_id,'credits stay independent');
+  assert.equal(host.generation,tab.generation,'observation preserves the document generation');
+  assert.deepEqual(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride'),metrics,'a watcher never changes the live viewport');
+ } finally {if(before===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=before;}
+}));
+
+// MP-08/MP-10/MP-11: requested viewer DPR never selects native capture geometry.
+test('MP-08/MP-10/MP-11 canonical native display accepts a DPR2 viewer',()=>using(async({host,sent})=>{
+ const previous=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try {
+  const {hostViewport}=await import('./kernel-browser-geometry.mjs'),viewport=hostViewport();
+  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+  const subscribed=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:opened.generation,codecs:['png'],bitrate:8000000,device_scale_factor:2});
+  const stream=host.displays.get(subscribed.subscription_id);
+  assert.equal(subscribed.device_scale_factor,viewport.device_scale_factor);assert.equal(stream.device_scale_factor,viewport.device_scale_factor);
+  assert.equal(stream.css_width,viewport.css_width);assert.equal(stream.css_height,viewport.css_height);
+  assert.equal(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').length,0);
+ } finally {if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous}
+}));
+test('MP-08/MP-10/MP-11 canonical native 1920 display accepts a DPR2 viewer',async()=>{
+ const {spawnSync}=await import('node:child_process');
+ const run=spawnSync(process.execPath,['--test','--test-name-pattern=^MP-08/MP-10/MP-11 canonical native display accepts',import.meta.filename],{env:{...process.env,NODE_TEST_CONTEXT:undefined,CHARIOX_BROWSER_DISPLAY_GEOMETRY:'1920x1080'},encoding:'utf8'});
+ assert.match(run.stdout,/ok 1 - MP-08\/MP-10\/MP-11 canonical native display accepts/);assert.equal(run.status,0,run.stdout+run.stderr);
+});
+
+// MP-08/MP-10/MP-11: native display density never applies to the owned 1x Computer desktop.
+test('MP-08 Browser display keeps the owned Computer desktop page at desktop density', () => {
+  const before = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+  process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
+  try {
+    const host = chromium => new KernelBrowserHost('/nonexistent', { chromium, browserFactory: () => null });
+    assert.equal(host({}).viewport().device_scale_factor, 2);
+    assert.equal(host({ desktop: { binding() {} } }).viewport().device_scale_factor, 1);
+  } finally {
+    if (before === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY; else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = before;
+  }
+});

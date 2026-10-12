@@ -53,3 +53,18 @@ test('MP-08/MP-10/MP-11 no filled browser field needs no renderer geometry or pr
  await assert.rejects(measureBrowserProtection(browser,policy),/no filled field requires CDP work/,'pending fills retain the capture proof');
  await assert.rejects(measureBrowserProtection(browser,{...policy,unknown:true}),/fill policy unavailable/);
 });
+
+// MP-11: generic password/search policies no longer inspect page fields.
+test('MP-11 no recorded fill targets means no generic password or echo scan', async () => {
+  const {measurePageProtection}=await import('./browser-protection-regions.mjs');
+  const calls=[];const connection={async send(method) {
+    calls.push(method);
+    if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f',loaderId:'l',url:'https://example.test/'}}};
+    if(method==='Page.createIsolatedWorld')return {executionContextId:1};
+    if(method==='Runtime.evaluate')return {result:{value:{visible:true,dpr:1,width:1280,height:800}}};
+    if(method==='Page.getLayoutMetrics')return {cssVisualViewport:{zoom:1}};
+    assert.fail('unregistered fields cannot trigger an inspection');
+  }};
+  assert.deepEqual((await measurePageProtection(connection,'s','t',{targets:[],values:['registered']})).regions,[]);
+  assert(calls.every(m=>!m.startsWith('DOM.')));
+});

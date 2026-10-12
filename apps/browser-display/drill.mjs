@@ -290,7 +290,7 @@ try {
   receipt.unsupported_dpr_rejected=await page.evaluate(async ready=>{try{const reply=await mdTransport.request({KernelBrowser:{command:{op:'display_subscribe',tab_id:ready.tab_id,generation:ready.generation,codecs:['avc1.420033','png','chariox-video-dependencies-v1','chariox-stripes-v1'],bitrate:8000000,device_scale_factor:2}}});return Boolean(reply.Error)}catch{return true}},ready);
   if(!receipt.unsupported_dpr_rejected)throw Error('MP-08: #893 admitted unsupported 1080p DPR2');
  }
- receipt.codec=await page.evaluate(()=>mdStream.binding.codec);receipt.delivery=await page.evaluate(()=>mdStream.push?'push-ack-475':'credit');receipt.codec_provenance='kernel negotiated binding; delivered video codecs retained in frame metadata';
+ receipt.codec=await page.evaluate(()=>mdStream.binding.codec);receipt.delivery=await page.evaluate(()=>mdStream.push?'push-ack-491':'credit');receipt.codec_provenance='kernel negotiated binding; delivered video codecs retained in frame metadata';
  const bootstrapStarted=performance.now();
  const first=await until(()=>page.evaluate(()=>mdStream.next()),'first asynchronous display frame');receipt.bootstrap={kind:first.kind,sequence:first.sequence,duration_ms:performance.now()-bootstrapStarted};
  const reference=async()=>Buffer.from((await page.evaluate(async()=>{const r=await mdTransport.request({KernelBrowser:{command:{op:'display_capture',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation}}});return r.KernelBrowser.result.data_base64})),'base64');
@@ -422,7 +422,7 @@ try {
   if(process.env.MD_PROTECTION_REPETITIONS)receipt.protection_stress=await stressProtection({page,pair,pause,resource,repetitions:Number(process.env.MD_PROTECTION_REPETITIONS)});
   receipt.protected_reference_recovery=await page.evaluate(async()=>{
    const previous=mdStream.presenter.sequence,independent=frame=>frame.kind==='png'||frame.kind==='video'&&frame.key||frame.kind==='stripes'&&frame.stripes.length===8&&frame.stripes.every(row=>row.key);let frame;const deadline=performance.now()+10000;
-   // MP-08/MP-10: protocol 475 push asks the pump for a key; credits rewind.
+   // MP-08/MP-10: protocol 491 push asks the pump for a key; credits rewind.
    if(mdStream.push)mdStream.requestKey();else mdStream.presenter.sequence=0;
    while(!(frame=await mdStream.next())||mdStream.push&&!independent(frame)){if(performance.now()>deadline)throw Error('MP-11: protected reference recovery timeout');await new Promise(r=>setTimeout(r,4));}
    return {previous,sequence:frame.sequence,kind:frame.kind,independent:independent(frame),push:mdStream.push===true};

@@ -1,4 +1,4 @@
-//! MP-08/MP-10: protocol 475 pushed display. One kernel-resident pump per
+//! MP-08/MP-10: protocol 491 pushed display. One kernel-resident pump per
 //! relay display subscription takes frames through the ordinary admitted
 //! display path (terminal admission, Vault barrier, host policy, scrub) and
 //! pushes them as relay events. The relay RTT leaves the frame loop; the

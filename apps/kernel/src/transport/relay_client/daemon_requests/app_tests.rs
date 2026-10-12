@@ -387,6 +387,7 @@ async fn app_worker_and_automation_requests_are_owner_scoped_and_need_no_worker(
         failed(AppRequestErrorCode::InvalidRequest)
     );
     let configure = LocalDaemonRequest::ConfigureAppAutomation(ConfigureAppAutomationRequest {
+        delivery_mode: crate::local::NotificationDeliveryMode::Queue,
         installation_id: "installed".into(),
         automation_id: "reminders".into(),
         expected_revision: 0,

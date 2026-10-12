@@ -57,22 +57,22 @@ async fn revoked_workflow(run: bool, compiler_wait: bool) {
         state.owned.agent_runtime_projection.clone(),
     );
     let grant = state.insert_access_grant_for_test(session.id());
-    let source = r#"
+    // Unique per test: concurrent tests compile the same workflow.
+    let gate_marker = format!("// compiler gate {}", root.path().display());
+    let source = gate_marker.clone()
+        + r#"
 workflow.define({ alias: "external-authority" })
 const worker = workflow.node({ handle: "worker", agent: workflow.newAgent({ alias: "generated", provider: "dev-stub", model: "default" }), instructions: "Finish.", canCompleteWorkflowRun: true })
 workflow.endpoint(worker, { handle: "entry", alias: "entry" })
-"#.to_string();
-    let started = root.path().join("compile-started");
-    let release = root.path().join("compile-release");
-    let node_path = if compiler_wait {
-        use std::os::unix::fs::PermissionsExt;
-        let wrapper = root.path().join("node-gate");
-        std::fs::write(&wrapper, format!("#!/bin/sh\nprintf started > '{}'\nwhile [ ! -f '{}' ]; do sleep 0.02; done\nexec node \"$@\"\n", started.display(), release.display())).unwrap();
-        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
-        wrapper.display().to_string()
+"#;
+    // The kernel ignores caller node paths, so hold the compilation in-process.
+    let (compile_started, compile_release) = if compiler_wait {
+        let (started, release) = crate::workflow_code::compile_gate_for_test::install(&gate_marker);
+        (Some(started), Some(release))
     } else {
-        "node".into()
+        (None, None)
     };
+    let node_path = "node".to_string();
     let request = if run {
         LocalDaemonRequest::RunWorkflowCode(crate::local::RunWorkflowCodeRequest {
             session_id: session.id().into(),
@@ -109,14 +109,11 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
         let command = external_command(&request, &grant);
         async move { runtime.dispatch_workflow_command(command, request).await }
     });
-    if compiler_wait {
-        timeout(Duration::from_secs(5), async {
-            while !started.exists() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+    if let Some(started) = compile_started {
+        timeout(Duration::from_secs(5), started)
+            .await
+            .unwrap()
+            .unwrap();
     } else {
         timeout(Duration::from_secs(3), probe.notified())
             .await
@@ -126,8 +123,8 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
         .revoke_kernel_access(None, Some(&grant), "explicit_revoke")
         .unwrap();
     drop(guard);
-    if compiler_wait {
-        std::fs::write(&release, "release").unwrap();
+    if let Some(release) = compile_release {
+        release.send(()).unwrap();
     }
     let result = timeout(Duration::from_secs(5), pending)
         .await

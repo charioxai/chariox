@@ -76,10 +76,12 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       }
       // MP-11: live mirror focus is the final fence, after every text preflight.
       await mirrorGuard?.();
-      onDispatch?.();
-      const result = await connection.send(method, params, sessionId);
-      assertNotCancelled(signal);
-      return result;
+      const endDispatch = onDispatch?.();
+      try {
+        const result = await connection.send(method, params, sessionId);
+        assertNotCancelled(signal);
+        return result;
+      } finally { endDispatch?.(); }
     };
     // MP-11: sequence-only refusals precede even focus emulation. No page
     // focus/selection/physical input may run before mirror epoch admission.

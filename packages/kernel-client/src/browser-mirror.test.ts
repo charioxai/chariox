@@ -109,3 +109,29 @@ test('MP-08/MP-11: Shift+Tab keeps its backward direction in ordinary and native
  event('keydown',{key:'Tab',shiftKey:true});event('keydown',{key:'Tab'});event('keydown',{key:'ArrowLeft',shiftKey:true});await renderer.inputChain;
  assert.deepEqual(actions,[{kind:'key',key:'Shift+Tab'},{kind:'coordinate',input:{kind:'key',key:'Shift+Tab'}},{kind:'coordinate',input:{kind:'key',key:'Tab'}},{kind:'coordinate',input:{kind:'key',key:'ArrowLeft'}}]);
 });
+
+test('MP-08/MP-10: mirror wheel retains fractions and normalizes line/page units per document',async()=>{
+ const actions:any[]=[],node={} as Node,listeners=new Map<string,EventListener>();
+ const doc={defaultView:{innerHeight:800,getComputedStyle:()=>({lineHeight:'20px'})},addEventListener(kind:string,fn:EventListener){listeners.set(kind,fn)},removeEventListener(){}};
+ const renderer=Object.create(BrowserMirrorRenderer.prototype) as any;
+ Object.assign(renderer,{documentBindings:new Map(),disposed:false,applying:false,sequence:1,documentId:'d',inputChain:Promise.resolve(),pendingInputs:0,localFocus:null,nativeFocus:null,ids:new WeakMap([[node,'n1']]),records:new Map([['n1',{id:'n1',kind:'element'}]]),input:async(action:unknown)=>actions.push(action),failure:(error:unknown)=>{throw error}});
+ renderer.bindEvents(doc);
+ const wheel=(deltaY:number,deltaMode=0)=>{const event=new Event('wheel');Object.assign(event,{deltaX:0,deltaY,deltaMode});Object.defineProperty(event,'composedPath',{value:()=>[node]});listeners.get('wheel')!(event)};
+ for(let i=0;i<10;i++)wheel(.4);await renderer.inputChain;
+ assert.equal(actions.reduce((sum,action)=>sum+action.delta_y,0),4,'fractional pixel motion accumulates');
+ actions.length=0;wheel(.5,1);wheel(.5,2);await renderer.inputChain;
+ assert.deepEqual(actions.map(action=>action.delta_y),[10,400]);
+ actions.length=0;wheel(-.4);wheel(-.4);wheel(-.4);await renderer.inputChain;assert.equal(actions.reduce((sum,action)=>sum+action.delta_y,0),-1);
+ actions.length=0;wheel(.6);await renderer.inputChain;renderer.documentId='next';wheel(.6);await renderer.inputChain;assert.equal(actions.length,0,'source navigation drops the old fractional remainder');wheel(.4);await renderer.inputChain;assert.equal(actions.reduce((sum,action)=>sum+(action.input?.delta_y??action.delta_y),0),1);
+ renderer.releaseDocuments(new Set());renderer.bindEvents(doc);actions.length=0;wheel(.4);await renderer.inputChain;assert.equal(actions.length,0,'released document drops its old remainder');
+});
+
+// MP-08/MP-10/MP-11: canonical host geometry is independent of viewer DPR.
+test('MP-08/MP-10/MP-11: admit canonical native viewports and reject unsupported bounds',()=>{
+ for(const [css_width,css_height,device_scale_factor] of [[1280,800,1],[1280,800,2],[1920,1080,1]] as const) {
+  assert.equal(validateMirrorPacket({...packet(),css_width,css_height,device_scale_factor},new Map()).size,1)
+ }
+ for(const [css_width,css_height,device_scale_factor] of [[1920,1080,2],[1920,800,1],[1280,1080,1],[2560,1600,1],[NaN,800,1],[1280,800,3]] as const) {
+  assert.throws(()=>validateMirrorPacket({...packet(),css_width,css_height,device_scale_factor} as MirrorPacket,new Map()),/mirror packet bounds/)
+ }
+})

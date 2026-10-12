@@ -3,6 +3,7 @@ use super::*;
 use crate::local::{KernelBrowserCommand, KernelBrowserInput, KernelBrowserRequest};
 use serde_json::{json, Value};
 mod access;
+mod capability_grants;
 mod computer;
 mod focus_authority;
 

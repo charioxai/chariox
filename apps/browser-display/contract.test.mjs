@@ -17,14 +17,14 @@ export async function contract() {
 }
 test('MD-DISPLAY actual video/PNG/tile packet contract at protocol 466', async()=>{
  const version=await readFile(new URL('../../packages/kernel-client/src/kernel-types.ts',import.meta.url),'utf8');
- assert.match(version,/LOCAL_DAEMON_PROTOCOL_VERSION = 475\b/);
+ assert.match(version,/LOCAL_DAEMON_PROTOCOL_VERSION = 491\b/);
  const frames=await contract();
  assert.equal(createHash('sha256').update(JSON.stringify(frames)).digest('hex'),'ad69928619a971cc480d4eb2767432a3cbcb8d320469c0de5eca1c39bd1493d3');
 });
 
 test('MD-DISPLAY443 pins explicit dependency admission and key/delta/IDR contract',async()=>{
  const {minimumProtocolVersion,pushProtocolVersion,supportedCodecs}=await import('./presenter.mjs');
- assert.equal(minimumProtocolVersion,466);assert.equal(pushProtocolVersion,475);
+ assert.equal(minimumProtocolVersion,466);assert.equal(pushProtocolVersion,491);
  assert.ok((await supportedCodecs()).includes('chariox-video-dependencies-v1'));
  const binding={subscription_id:'s',tab_id:'t',device_scale_factor:1,bitrate:2000000,codec:'vp09.00.10.08',dependencies:true};
  const resets=[];const stream=new DisplayStream(binding,{encoder:{encode:async(p,b,key)=>{resets.push(key);return{key,data_base64:'opaque'}},close:async()=>{}},now:()=>0,wait:async()=>{}});
@@ -34,7 +34,7 @@ test('MD-DISPLAY443 pins explicit dependency admission and key/delta/IDR contrac
 test('MP-08/MP-10/MP-11 protocol466/peer96 pins stripe offer and atomic row packet',async()=>{
  const local=await readFile(new URL('../../packages/kernel-client/src/kernel-types.ts',import.meta.url),'utf8');
  const peer=await readFile(new URL('../kernel/src/transport/relay_peer.rs',import.meta.url),'utf8');
- assert.match(local,/LOCAL_DAEMON_PROTOCOL_VERSION = 475\b/);assert.match(peer,/RELAY_PEER_PROTOCOL_VERSION: u32 = 96\b/);
+ assert.match(local,/LOCAL_DAEMON_PROTOCOL_VERSION = 491\b/);assert.match(peer,/RELAY_PEER_PROTOCOL_VERSION: u32 = 101\b/);
  const stream=new DisplayStream({subscription_id:'s',tab_id:'t',device_scale_factor:1,bitrate:8000000,codec:'avc1.420033',dependencies:true,stripes:true,css_width:1920,css_height:1080},{encoder:{close:async()=>{}},now:()=>0,wait:async()=>{}});
  const stripes=Array.from({length:8},(_,row)=>({row,y:2*Math.floor(540*row/8),height:2*(Math.floor(540*(row+1)/8)-Math.floor(540*row/8)),codec:'avc1.420033',key:true,sequence:1,reference_sequence:null,data_base64:'opaque'}));
  try{

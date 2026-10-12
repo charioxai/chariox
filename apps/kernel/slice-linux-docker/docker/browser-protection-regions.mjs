@@ -5,16 +5,24 @@ import { createHash } from 'node:crypto';
 import { withBrowserFrames, assertBrowserFramesUnchanged } from './browser-controller-frames.mjs';
 const FRAME_TIMEOUT_MS = 500;
 const retired = new WeakMap();
-// Fills between recording and completion: covered while plain, never retired.
+// Keep the completed lifecycle until its target is pruned: a measurement may
+// still hold a field read from before completion across a CDP release await.
 const filling = new WeakMap();
 const fillBindings = new WeakMap();
 const fillKey = target => JSON.stringify([target.target_id,target.document_id,target.node_ref]);
 export function pruneBrowserFillTargets(browser,connection) {
   const dead=retired.get(connection);
-  for(const [key,target] of browser.fillTargets??[])if(dead?.has(fillKey(target))||target.browser_generation!==browser.browserGeneration)browser.fillTargets.delete(key);
+  for(const [key,target] of browser.fillTargets??[])if(dead?.has(fillKey(target))||target.browser_generation!==browser.browserGeneration){browser.fillTargets.delete(key);if(filling.get(connection)?.get(fillKey(target))?.target===target)filling.get(connection).delete(fillKey(target));}
 }
 const digest = value => createHash('sha256').update(value).digest('hex');
 const frameTree = async (connection, sessionId) => (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree;
+// CDP sends have the connection's request bound. Always release our temporary
+// page session, including a failed/expired presentation promise.
+async function withSession(connection, targetId, run) {
+  const {sessionId}=await connection.send('Target.attachToTarget',{targetId,flatten:true});
+  try {return await run(sessionId);}
+  finally {await connection.send('Target.detachFromTarget',{sessionId}).catch(()=>{});}
+}
 const visit = (tree, id) => tree.frame.id === id ? tree.frame : (tree.childFrames ?? []).map(child => visit(child,id)).find(Boolean);
 const rect = quad => {
   if (!Array.isArray(quad) || quad.length !== 8 || !quad.every(Number.isFinite)) throw Error('MP-11: fill geometry unavailable');
@@ -47,9 +55,9 @@ export async function recordBrowserFill(connection, options, value, revision) {
     frame_id:frame.id,frame_document_id:frame.loaderId,browser_generation:browserGeneration,
     value_hash:digest(options.action?.append ? previous.value+value : value),fill_revision:revision};
   retired.get(connection)?.delete(fillKey(target));
-  if(!filling.has(connection))filling.set(connection,new Set());
+  if(!filling.has(connection))filling.set(connection,new Map());
   fillBindings.set(target,{connection,sessionId,backendNodeId});
-  filling.get(connection).add(fillKey(target));return target;
+  filling.get(connection).set(fillKey(target),{target,pending:true});return target;
 }
 export async function finishBrowserFill(connection,target) {
   const binding=fillBindings.get(target);
@@ -61,8 +69,20 @@ export async function finishBrowserFill(connection,target) {
   // HTML input setters strip newlines; textarea setters normalize CRLF.
   // Bind the actual result before releasing the in-flight capture protection.
   target.value_hash=digest(state.value);
-  filling.get(connection)?.delete(fillKey(target));
+  const lifecycle=filling.get(connection)?.get(fillKey(target));
+  if(lifecycle?.target===target)lifecycle.pending=false;
   fillBindings.delete(target);
+}
+async function stableFieldState(connection,entry,document,backendNodeId,target,lifecycle) {
+  const key=fillKey(target),check=()=>{
+    if(lifecycle!==filling.get(connection)?.get(key)||lifecycle&&((target.fill_revision!==undefined&&target.fill_revision!==lifecycle.target.fill_revision)||target.value_hash&&target.value_hash!==lifecycle.target.value_hash))throw Error('MP-11: fill changed during protection measurement');
+  };
+  for(let attempt=0;attempt<2;attempt++) {
+    check();const pending=lifecycle?.pending;
+    const state=await fieldState(connection,entry,document,backendNodeId);
+    check();if(pending===lifecycle?.pending)return {state,inFlight:pending===true};
+  }
+  throw Error('MP-11: fill changed during protection measurement');
 }
 async function fieldState(connection,entry,document,backendNodeId) {
   const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:document.frameId,worldName:'chariox-fill-target'},entry.sessionId);
@@ -71,10 +91,12 @@ async function fieldState(connection,entry,document,backendNodeId) {
   try {
     const {result,exceptionDetails}=await connection.send('Runtime.callFunctionOn',{objectId:object.objectId,returnByValue:true,
       functionDeclaration:`function(){ const editable=this.localName==='input'||this.localName==='textarea'||this.isContentEditable;
-        let filtered=false;
-        for(let element=this;element;element=element.parentElement??element.getRootNode().host)
-          filtered ||= element.ownerDocument.defaultView.getComputedStyle(element).filter!=='none';
-        return {exists:this.isConnected,editable,filtered,contenteditable:this.isContentEditable,changed:globalThis.__charioxFilledFields?.get(this)?.changed===true,password:this.localName==='input'&&this.type==='password',
+        let unprovedPaint=false;
+        for(let element=this;element;element=element.parentElement??element.getRootNode().host) {
+          const style=element.ownerDocument.defaultView.getComputedStyle(element);
+          unprovedPaint ||= style.filter!=='none'||style.webkitBoxReflect!=='none';
+        }
+        return {exists:this.isConnected,editable,unprovedPaint,contenteditable:this.isContentEditable,changed:globalThis.__charioxFilledFields?.get(this)?.changed===true,password:this.localName==='input'&&this.type==='password',
           textShadow:this.ownerDocument.defaultView.getComputedStyle(this).textShadow,value:editable?String(this.isContentEditable?this.textContent:this.value):''}; }`},entry.sessionId);
     if(exceptionDetails||!result?.value)throw Error('MP-11: fill state unavailable');
     return result.value;
@@ -116,10 +138,12 @@ function contenteditableTextGeometry() {
     if(style.textShadow!=='none')throw Error('unproved filled text shadow');
     range.selectNodeContents(text.currentNode);
     for(const box of range.getClientRects()) {
-      // Filter ink is absent from Range bounds. Check the rendered text's
-      // entire descendant path; filter is composited, not inherited CSS.
-      for(let element=text.currentNode.parentElement;element!==this;element=element.parentElement)
-        if(this.ownerDocument.defaultView.getComputedStyle(element).filter!=='none')throw Error('unproved filled text filter');
+      // Filters and reflections paint outside Range bounds. Check the rendered
+      // text's entire descendant path; these effects are not inherited CSS.
+      for(let element=text.currentNode.parentElement;element!==this;element=element.parentElement) {
+        const paint=this.ownerDocument.defaultView.getComputedStyle(element);
+        if(paint.filter!=='none'||paint.webkitBoxReflect!=='none')throw Error('unproved filled text paint');
+      }
       const left=Math.max(clips[0],box.left),top=Math.max(clips[1],box.top),right=Math.min(clips[2],box.right),bottom=Math.min(clips[3],box.bottom);
       if(right>left&&bottom>top)rects.push([left,top,right-left,bottom-top]);
     }
@@ -148,7 +172,13 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
   const {cssVisualViewport:visual}=await connection.send('Page.getLayoutMetrics',{},sessionId);
   const page={url:top.frame.url,document_id:top.frame.loaderId,dpr:metrics.dpr,zoom:visual?.zoom??1,viewport:[Math.round(metrics.width*metrics.dpr),Math.round(metrics.height*metrics.dpr)],regions:[],withheld:[]};
   const dead=retired.get(connection)??new Set();retired.set(connection,dead);
-  const targets=(policy.targets??[]).filter(t=>t.target_id===targetId&&typeof t.value_hash==='string'&&!t.echo_only&&!dead.has(fillKey(t)));
+  // A supplied copy of a tracked fill measures its live lifecycle target, whose
+  // fingerprint binds the completed (possibly normalized) field value.
+  const live=t=>filling.get(connection)?.get(fillKey(t))?.target??t;
+  const targets=[...new Set((policy.targets??[]).filter(t=>!t.echo_only).map(live))].filter(t=>t.target_id===targetId&&typeof t.value_hash==='string'&&!dead.has(fillKey(t)));
+  const lifecycles=new Map(targets.map(target=>[fillKey(target),filling.get(connection)?.get(fillKey(target))]));
+  // MP-11: preserve the pending state observed before awaiting the snapshot.
+  const pendingAtSnapshot=new Map([...lifecycles].map(([key,lifecycle])=>[key,lifecycle?.pending]));
   if(!targets.length)return page;
   await withBrowserFrames(connection,sessionId,targetId,top.frame.loaderId,async frames=>{
     const seen=new Set(),transforms=new Map([[frames[0],point=>point]]);
@@ -174,7 +204,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
       if(!parentFrame)throw Error('MP-11: fill frame paint unavailable');
       const owner=await connection.send('DOM.getFrameOwner',{frameId:frame.id},parent.sessionId);
       const state=await fieldState(connection,parent,{frameId:parentFrame.id},owner.backendNodeId);
-      if(!state.exists||state.filtered)throw Error('MP-11: fill frame filter coverage unavailable');
+      if(!state.exists||state.unprovedPaint)throw Error('MP-11: fill frame paint coverage unavailable');
       await assertFramePaint(parent,parentFrame);
       checkedFramePaint.add(frame.id);
     };
@@ -189,8 +219,10 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         const frameId=snapshot.strings[raw.frameId],frame=visit(entry.tree,frameId);
         if(!frame || target.frame_id&&target.frame_id!==frameId || target.frame_document_id&&target.frame_document_id!==frame.loaderId)continue;
         seen.add(key);
-        const state=await fieldState(connection,entry,{frameId},backendNodeId);
-        const inFlight=filling.get(connection)?.has(key)&&state.exists&&state.editable;
+        const {state,inFlight}=await stableFieldState(connection,entry,{frameId},backendNodeId,target,lifecycles.get(key));
+        // Actionability may wait while an editor is temporarily disabled. Its
+        // pending fill still owns protection; refuse pixels until it is measurable.
+        if(inFlight&&(!state.exists||!state.editable))throw Error('MP-11: pending fill target unavailable');
         if(!inFlight&&(!state.exists||state.changed||!state.editable||!state.value || digest(state.value)!==target.value_hash)) {dead.add(key);continue;}
         if(state.password)continue; // Rechecked even for a previously plain field.
         // MP-08/MP-11: DOMSnapshot includes retained non-rendered fields. Only
@@ -203,9 +235,9 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
           return false;
         });
         if(!rendered)continue;
-        // Box and Range geometry cannot prove any non-none filter's ink.
+        // Box and Range geometry cannot prove filter or reflection ink.
         // Include composed ancestors and frame owners, for both field kinds.
-        if(state.filtered)throw Error('MP-11: fill filter coverage unavailable');
+        if(state.unprovedPaint)throw Error('MP-11: fill paint coverage unavailable');
         await assertFramePaint(entry,frame);
         // Native text controls have the same layout/paint distinction. Password
         // dots bypass this check; hidden controls retain tracking until reveal.
@@ -243,7 +275,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         }
       }
     }
-    for(const target of targets)if(!seen.has(fillKey(target)))dead.add(fillKey(target));
+    for(const target of targets)if(!seen.has(fillKey(target))){const key=fillKey(target);if(lifecycles.get(key)!==filling.get(connection)?.get(key))throw Error('MP-11: fill changed during protection measurement');if(pendingAtSnapshot.get(key)||lifecycles.get(key)?.pending)throw Error('MP-11: pending fill target unavailable');dead.add(key);}
     await assertBrowserFramesUnchanged(connection,frames);
   });
   return page;
@@ -271,12 +303,6 @@ export async function measureBrowserProtection(browser,policy) {
     } finally {await connection.send('Target.detachFromTarget',{sessionId}).catch(()=>{});}
   }
   pruneBrowserFillTargets(browser,connection);return {pages};
-}
-
-async function withSession(connection, targetId, run) {
-  const { sessionId } = await connection.send('Target.attachToTarget', { targetId, flatten: true });
-  try { return await run(sessionId); }
-  finally { await connection.send('Target.detachFromTarget', { sessionId }).catch(() => {}); }
 }
 
 export const protectionDigest = measurement => createHash('sha256').update(JSON.stringify(measurement)).digest('hex');

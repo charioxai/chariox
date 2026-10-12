@@ -1,4 +1,4 @@
-import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client"
+import { kernelBrowserAgentTabsMinimumProtocolVersion, LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client"
 import { leasedComputerMinimumProtocolVersion } from "@chariox/kernel-client/ipc-requests"
 import { UserDomainAccessController, roomComputerAccessMinimumProtocol, roomComputerBulkGrantMinimumProtocol, userDomainAccessMinimumProtocol, userDomainGrantExpiry, userDomainResourceLabel, userDomainUseNotice, type UserDomainAccessClient } from "@chariox/kernel-client/user-domain-access"
 
@@ -52,13 +52,22 @@ export function createAccessCommandController(deps: { client: AccessTransport; a
         deps.appendNotice(`${granting ? "Granted" : "Revoked"} leased desktop Computer access for ${args[1]}.`)
         return
       }
-      if (args.length && !(args.length === 1 && args[0] === "list") && !(args.length === 2 && ["revoke", "grant"].includes(args[0]!) && args[1])) {
-        throw new Error("Usage: /access [list | revoke <agent-id>|all | grant <agent-id>|all]")
+      if (args.length && !(args.length === 1 && ["list", "tabs"].includes(args[0]!)) && !(args.length === 2 && ["revoke", "grant"].includes(args[0]!) && args[1])) {
+        throw new Error("Usage: /access [list | tabs | revoke <agent-id>|all | grant <agent-id>|all]")
       }
       if ((selectedClient().localDaemonProtocolVersion ?? LOCAL_DAEMON_PROTOCOL_VERSION) < userDomainAccessMinimumProtocol) throw new Error(`Access grants require kernel protocol ${userDomainAccessMinimumProtocol}.`)
       access.sync()
       // A command must get fresh authority, including when an earlier feed failed.
       const client = selectedClient()
+      if (args[0] === "tabs") {
+        if ((client.localDaemonProtocolVersion ?? LOCAL_DAEMON_PROTOCOL_VERSION) < kernelBrowserAgentTabsMinimumProtocolVersion) throw new Error(`Agent browser tabs require kernel protocol ${kernelBrowserAgentTabsMinimumProtocolVersion} or newer.`)
+        const response = await client.send<{KernelBrowser?: {result?: {tabs?: import("@chariox/kernel-client/kernel-types").KernelBrowserTab[]}}; Error?: {message?: string}}>({KernelBrowser: {command: {op: "state"}}})
+        if (client !== selectedClient()) throw new Error("Kernel changed during tab command; refresh tabs.")
+        const tabs = response.KernelBrowser?.result?.tabs
+        if (!Array.isArray(tabs)) throw new Error(response.Error?.message ?? "Kernel browser tab inventory unavailable.")
+        deps.appendNotice(["Kernel browser tabs:", ...tabs.map(tab => `${tab.tab_id} · ${tab.title || "Untitled"} · ${tab.url} · opened by ${tab.opened_by?.display_label ?? "unknown"}`), ...(tabs.length ? [] : ["No current tabs."])].join("\n"))
+        return
+      }
       const agentId = args[1] === "all" ? null : args[1]
       const minimum = agentId === null ? roomComputerBulkGrantMinimumProtocol : roomComputerAccessMinimumProtocol
       if (args[0] === "grant" && (client.localDaemonProtocolVersion ?? LOCAL_DAEMON_PROTOCOL_VERSION) < minimum) throw new Error(`Room Computer grants require kernel protocol ${minimum}.`)

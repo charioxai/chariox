@@ -323,7 +323,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_WORKFLOW_CODE_CREATE_TOOL.to_string(),
-            description: "Create a saved workflow-code artifact in this session from JS/TS source after kernel compilation and validation. node_path is optional; the kernel discovers Node.js when omitted.".to_string(),
+            description: "Create a saved workflow-code artifact in this session from JS/TS source after kernel compilation and validation. The kernel selects the isolated compiler runtime; caller node_path values are ignored.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["name", "source"],
@@ -382,7 +382,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_WORKFLOW_CODE_VALIDATE_TOOL.to_string(),
-            description: "Validate workflow-code without mutating session workflow state. Pass either saved artifact name or inline source; node_path is optional for inline source.".to_string(),
+            description: "Validate workflow-code without mutating session workflow state. Pass either saved artifact name or inline source. The kernel selects the isolated compiler runtime; caller node_path values are ignored.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -775,20 +775,6 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                             "additionalProperties": false
                         }
                     }
-                },
-                "additionalProperties": false
-            }),
-        },
-        RuntimeToolSpec {
-            name: META_RESOLVE_RUNTIME_INTERACTION_TOOL.to_string(),
-            description: "Resolve a kernel-owned runtime interaction for one of this user's regular agents. An agent in Meta mode can never resolve its own interactions.".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "required": ["interaction_id"],
-                "properties": {
-                    "interaction_id": {"type": "string"},
-                    "choice_id": {"type": "string"},
-                    "input": {"type": "string"}
                 },
                 "additionalProperties": false
             }),

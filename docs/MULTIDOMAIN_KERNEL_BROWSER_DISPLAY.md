@@ -1,8 +1,8 @@
 # MD-DISPLAY-02/04: kernel browser display implementation and history
 
-MD-DISPLAY-02/04: the current kernel speaks local protocol 475 (pushed display)
-and relay peer protocol 96. The presenter requires local protocol 466 with CXD1
-binary display events (474 for desktop display, 475 for push); relay peer 96
+MD-DISPLAY-02/04: the current kernel speaks local protocol 507 and relay peer
+protocol 115. The presenter requires local protocol 466 with CXD1
+binary display events (474 for desktop display, 491 for push); relay peer 96
 additionally enables binary relay
 frames (`chariox-relay-binary-v96`). Dependent video requires the explicit
 `chariox-video-dependencies-v1` codec capability; legacy offers retain
@@ -579,3 +579,16 @@ admitted typing actions and measures their presented-pixel echoes under
 `motion.typing`. This extra input changes the workload, so its CPU/fps results
 must be labelled separately from the unchanged phase29 matrix. Both are
 supplementary fixture checks, not real live acceptance.
+
+## MP-08/MP-10/MP-11 field-only display protection (2026-10-09)
+
+The video and screenshot paths consume the shared recorded Vault fill targets
+from the Room collector. Generic password, marker, iframe, shadow-host, media,
+and page-text masks are removed. Password fields retain their native dots;
+the collector checks the current type, value and document on each capture.
+Changing or unavailable field geometry refuses that capture for retry rather
+than replacing the page with a whole-frame mask. Native motion remains eligible
+with fill targets and applies only their measured boxes before encoding.
+Legacy subscriptions clear stale frames and await a fresh protected capture.
+These source regressions do not establish hosted Vault/provider/Web/TUI
+acceptance; the live conjunction remains a separate MP-10 gate.

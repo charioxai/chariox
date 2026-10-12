@@ -28,11 +28,27 @@ pub(crate) struct SessionRuntimeStore {
 }
 
 impl SessionRuntimeStore {
+    /// The submitting turn of a sudo command, captured when it is enqueued.
+    pub(super) fn sudo_binding(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        request: &LocalDaemonRequest,
+    ) -> Option<(String, String)> {
+        self.state
+            .with_kernel_command_authority(command, request)
+            .sudo_binding()
+    }
+
     pub(super) fn with_external_command_authority(
         &self,
         authority: Option<(&str, &LocalDaemonRequest)>,
+        sudo_binding: Option<(String, String)>,
     ) -> Self {
-        Self::new(self.state.with_external_command_authority(authority))
+        Self::new(
+            self.state
+                .with_external_command_authority(authority)
+                .with_sudo_binding(sudo_binding),
+        )
     }
 
     pub(super) fn authorize_external_access(
@@ -62,6 +78,26 @@ impl SessionRuntimeStore {
             None,
         )
     }
+    pub(super) fn authorize_room_provider_epoch(
+        &self,
+        actor: Option<&str>,
+        run: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        self.state.authorize_room_provider_epoch(actor, run)
+    }
+
+    pub(super) fn with_room_request_origin(
+        &self,
+        actor: Option<&str>,
+        request: &LocalDaemonRequest,
+    ) -> Self {
+        Self::new(self.state.with_room_request_origin(actor, request))
+    }
+
+    pub(super) fn with_room_provider_origin(&self, actor: Option<&str>, run: Option<&str>) -> Self {
+        Self::new(self.state.with_room_provider_origin(actor, run))
+    }
+
     pub(crate) fn new(state: KernelRuntimeState) -> Self {
         Self { state }
     }
@@ -505,6 +541,14 @@ impl SessionRuntimeStore {
         (result, None)
     }
 
+    pub(super) fn authorize_room_agent_request(
+        &self,
+        actor_id: &str,
+        request: &LocalDaemonRequest,
+    ) -> Result<(), DaemonError> {
+        self.state.authorize_room_agent_request(actor_id, request)
+    }
+
     pub(super) async fn verify_metaagent_caller(
         &self,
         session_id: &str,
@@ -515,7 +559,7 @@ impl SessionRuntimeStore {
             agent.id() == metaagent_id
                 && agent.session_id() == session_id
                 && agent.owner_user_id() == caller_user_id
-                && agent.is_metaagent()
+                && (agent.is_metaagent() || self.state.room_agent_tools_enabled())
         }) else {
             return Err(DaemonError::LocalTransport {
                 operation: "dispatch session metaagent command",
@@ -677,7 +721,11 @@ impl SessionRuntimeStore {
             request.capability_level,
             caller_user_id,
         );
-        let result = match self.state.attach(attach_request, terminal_caller).await {
+        let result = match self
+            .state
+            .attach_for_caller(attach_request, terminal_caller)
+            .await
+        {
             Ok(attachment) => self
                 .reconcile_room_environment_actors_if_started(attachment.session_id())
                 .map(|()| LocalDaemonResponse::SessionAttached { attachment }),

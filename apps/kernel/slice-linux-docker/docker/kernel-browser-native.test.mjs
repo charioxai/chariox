@@ -50,11 +50,11 @@ test('MP-10 input wake never writes to a fenced capture or destroyed pipe',async
  assert.deepEqual(writes,[{wake:true}]);
 });
 
-// MP-11: live plain-field metadata changes retire pixels before/after attestation.
-test('MP-11 plain-field changes retire native pixels even while attestation is pending',async()=>{
+// MP-11: an empty DOM admission is event-bound before/after native attestation.
+test('MP-11 field type changes retire native pixels even while attestation is pending',async()=>{
  const {LinuxCapture}=await import('./kernel-browser-native.mjs');const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
  for(const phase of ['refreshing','attesting']){
-  const source=new LinuxCapture({sessionId:'session'});source.regions=new NativeRegionProtection({},'session',{measure:async()=>({viewport:[1280,800],regions:[]})});
+  const source=new LinuxCapture({sessionId:'session'});source.regions=new NativeRegionProtection({},'session',{policy:{targets:[{}],values:[]}});source.regions.measure=async()=>[];
   if(phase!=='refreshing')await source.regions.refresh();source.attested=phase==='streaming';let released=0;
   source.latest={raw:{release:()=>released++}};source.pending={release:()=>released++};
   source.onCdp({sessionId:'foreign',method:'DOM.attributeModified',params:{name:'type'}});assert.equal(source.closed,false);
@@ -71,12 +71,12 @@ test('MP-08/MP-10/MP-11 protection changes retire pixels without re-attesting th
  const connection={send:async method=>assert.fail('metadata refresh must not re-attest the window: '+method)};
  const source=new LinuxCapture({connection,sessionId:'s',tab:{target_id:'t',tab_id:'tab',document_id:'d'},policy:{},allowed:()=>true});
  source.valid=()=>!source.closed;source.attested=true;source.contextId=1;
- source.regions=new NativeRegionProtection(connection,'s',{measure:async()=>{refreshes++;return {viewport:[1280,800],regions:[[maskX,0,4,4]]}}});await source.regions.refresh();
+ source.regions=new NativeRegionProtection(connection,'s',{policy:{targets:[{}],values:[]}});source.regions.measure=async()=>{refreshes++;return [[maskX,0,4,4]];};await source.regions.refresh();
  source.latest={raw:{release:()=>released++}};
  maskX=8;source.onCdp({sessionId:'s',method:'DOM.attributeModified',params:{name:'type'}});
  assert.equal(source.closed,false);assert.equal(source.sample(),null);assert.equal(released,1);assert.equal(source.regionRevision,1);
  source.pending={width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4,255),serial:2,format:'bgr0',captured_ms:performance.timeOrigin+performance.now()};
- await source.publish();assert.equal(refreshes,2,'old readback is discarded after metadata refresh; no surface attestation');
+ await source.publish();assert.equal(refreshes,2,'old readback is refused after refresh; no surface attestation');
  // This raw precedes the new metadata fence and must never be published.
  assert.equal(source.sample(),null);
  source.pending={width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4,255),serial:3,format:'bgr0',captured_ms:performance.timeOrigin+performance.now()};
@@ -214,7 +214,7 @@ test('MP-08/MP-10/MP-11 native readbacks refence metadata without re-attesting t
  const connection={send:async method=>assert.fail('readback must not re-attest the window: '+method)};let measurements=0;
  const source=new LinuxCapture({connection,sessionId:'s',tab:{target_id:'t',tab_id:'tab',document_id:'d'},policy:{},allowed:()=>true});
  source.valid=()=>!source.closed;source.attested=true;
- source.regions=new NativeRegionProtection(connection,'s',{measure:async()=>{measurements++;return {viewport:[1280,800],regions:[]}}});await source.regions.refresh();
+ source.regions=new NativeRegionProtection(connection,'s',{policy:{targets:[{}],values:[]}});source.regions.measure=async()=>{measurements++;return [];};await source.regions.refresh();
  const published=[];source.subscribe(sample=>published.push(sample.serial));
  for(let serial=1;serial<=5;serial++){source.pending={width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4,255),serial,format:'bgr0',captured_ms:performance.timeOrigin+performance.now()};await source.publish();}
  assert.deepEqual(published,[1,2,3,4,5]);assert.equal(measurements,6,'every readback rechecks the live fill metadata');
