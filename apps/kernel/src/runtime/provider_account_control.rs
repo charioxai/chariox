@@ -163,14 +163,14 @@ pub(crate) async fn execute_provider_account_request(
     .map_err(|error| DaemonError::LocalTransport {
         operation: "provider account request",
         message: error.to_string(),
-    })??;
+    })?;
     if invalidates_catalog {
         runtime_state
             .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
             .await;
         runtime_state.record_waiting_room_change();
     }
-    Ok(response)
+    response
 }
 
 fn invalidate_profile_endpoint(owner_user_id: &str, provider: &str, account_profile: &str) {
