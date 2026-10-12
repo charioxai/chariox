@@ -1,4 +1,4 @@
-// MP-08/MP-11 protocol 473: a carrier of the existing encrypted terminal
+// MP-08/MP-11 protocol 502: a carrier of the existing encrypted terminal
 // protocol. Discovery permits attempts; relay-bound grants and key proofs admit.
 import WebSocket from "ws"
 import type { EncryptedRelayPayload, RelayTarget } from "./kernel-transport-frames.js"

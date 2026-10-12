@@ -20,7 +20,7 @@ type Fixture = { client: LocalIpcClient; origins: string[]; grants: number; admi
 
 // Mirrors the kernel and relay seams: the direct session closes on any frame
 // that is not a client request, and the relay refuses an expired bearer.
-async function fixture(t: TestContext, token: (thumbprint: string) => string): Promise<Fixture> {
+async function fixture(t: TestContext, token: (thumbprint: string) => string, protocolVersion = 502): Promise<Fixture> {
   const root = mkdtempSync(join(tmpdir(), "chariox-terminal-direct-"))
   const previous = process.env.CHARIOX_HOME
   process.env.CHARIOX_HOME = root
@@ -33,7 +33,7 @@ async function fixture(t: TestContext, token: (thumbprint: string) => string): P
   const relayUrl = `ws://127.0.0.1:${relayAddress.port}`
   const registry = join(root, "kernels", "active"); mkdirSync(registry, { recursive: true })
   writeFileSync(join(registry, "kernel.json"), JSON.stringify({ schema_version: 1, kernel_id: "home-1",
-    machine_id: "machine-1", host: "127.0.0.1", port: address.port, heartbeat_at_ms: Date.now(), local_daemon_protocol_version: 473 }))
+    machine_id: "machine-1", host: "127.0.0.1", port: address.port, heartbeat_at_ms: Date.now(), local_daemon_protocol_version: protocolVersion }))
   const state = { origins: [] as string[], grants: 0, admitted: 0, directCloses: 0, directForeignFrames: 0,
     renewals: 0, leaseRenewals: 0, expiredRelayConnects: 0 }
   const answer = (socket: WebSocket, frame: { request_id: string; encrypted_request: never }) => {
@@ -94,6 +94,14 @@ test("MP-08 detached and native clients send the paired Origin in Node and compi
   assert.equal(state.grants, 1, "must request the explicit short terminal lease")
   assert.equal(state.admitted, 1, "must use authenticated direct transport automatically")
   assert.deepEqual(state.origins, ["https://cloud.example.test"])
+})
+
+test("MP-08/MP-10/MP-11 main 491 without terminal direct support stays on relay", async (t) => {
+  const state = await fixture(t, () => "fixture", 491)
+  assert.deepEqual(await state.client.send({ ListSessions: {} }), { Sessions: [] })
+  assert.equal(state.grants, 0, "older main must not receive branch-only direct requests")
+  assert.equal(state.admitted, 0)
+  assert.equal(state.client.isLocalDirectTransport(), false)
 })
 
 test("MP-08/MP-11 relay authorization renewal keeps the direct carrier and its relay-renewed lease", async (t) => {

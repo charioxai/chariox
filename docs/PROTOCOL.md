@@ -556,7 +556,7 @@ Current implementation notes:
 
 ### Same-machine browser carrier (local protocol 464, MP-08/MP-11)
 
-MP-08 / MP-11: at protocol 473, relay-addressed detached/native TUI launches
+MP-08 / MP-11: at protocol 502, relay-addressed detached/native TUI launches
 and waiting-room kernel switches automatically use the shared authenticated
 terminal direct lease described below when fresh same-machine discovery exists.
 Older and alias-only targets retain their authenticated relay transport. Terminal clients
@@ -675,7 +675,7 @@ can carry one profile-wide notice suggesting Chrome or Firefox. Browser family
 controls wording only. First-visit Safari locality requires a trusted
 browser-machine association; this protocol does not currently provide one.
 
-MP-08 / MP-11: from protocol 473, relay-addressed detached and native provider
+MP-08 / MP-11: from protocol 502, relay-addressed detached and native provider
 TUIs automatically attempt direct admission for fresh, id-addressed local
 targets through the short, key-bound terminal grant and renewal contract above.
 Older kernels, alias-only targets, and targets without fresh same-machine
