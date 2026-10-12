@@ -134,6 +134,13 @@ def main():
         listener.bind(('127.0.0.1', 0))
         env['CHARIOX_MCP_PORT'] = str(listener.getsockname()[1])
     def start(label, path):
+        def socket_identity():
+            try:
+                info = path.lstat()
+                return (info.st_dev, info.st_ino, os.readlink(path) if path.is_symlink() else None)
+            except FileNotFoundError:
+                return None
+        previous_socket = socket_identity()
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 35, 120, 0, 0))
         def setup():
@@ -161,7 +168,7 @@ def main():
         reader = threading.Thread(target=drain, daemon=True)
         readers.append(reader)
         reader.start()
-        if not wait_for(lambda: ready(path)):
+        if not wait_for(lambda: socket_identity() is not None and socket_identity() != previous_socket and ready(path)):
             raise RuntimeError(f'{label}: TUI automation did not start')
         def connected():
             if kernel.poll() is not None:
@@ -233,9 +240,9 @@ def main():
         first, tui = start('sigkill-old', path)
         send(first.pid, signal.SIGKILL, owned, pid_signals)
         first.wait(timeout=2)
+        replacement, new_tui = start('sigkill-replacement', path)
         parent_death_settled = wait_for(lambda: not alive(tui), 2)
         check('launcher-SIGKILL-parent-death', parent_death_settled, childPid=tui)
-        replacement, new_tui = start('sigkill-replacement', path)
         if alive(tui):
             # Drive the orphan's real quit flow after replacement has bound.
             os.write(terminals[-2][0], b'\x03')  # Ctrl-C
