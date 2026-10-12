@@ -591,3 +591,25 @@ test('MP-08: review #320@4f8b54237-1 a paste longer than one text action reaches
     }
   } finally { await page.close(); }
 });
+
+// b3 r13 hosted A/B (GitHub search): the faster echo overtook the click's reply. The packet naming the search
+// dialog's input applied while the click was pending (focus withheld), and the hold then took that new focus for the
+// old one: the viewer kept the header button focused and the typed text never reached an editable control.
+test('MP-08: an echo that names a new focus before its click\'s reply arrives focuses that control once the reply lands', async () => {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  try {
+    await page.goto(url);
+    // Replies are held until the test releases them, like a slow input round trip.
+    await page.evaluate(async () => { window.sent = []; window.release = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), action => { window.sent.push(action); return new Promise(resolve => window.release.push(resolve)); }); await window.r.ready(); });
+    await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'button', attrs: { style: 'width:200px;height:30px;display:block' } }, { id: 'n5', parent: 'n4', kind: 'text', text: 'Search' },
+      { id: 'n6', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'width:300px;display:block' }, form: textForm('', 0) }])), focused: null });
+    const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelector('button').getBoundingClientRect(); return { x: f.x + t.x + 20, y: f.y + t.y + 10 }; });
+    await page.mouse.click(box.x, box.y); await frames();
+    assert.deepEqual(await page.evaluate(() => window.sent.map(a => a.kind)), ['click']);
+    await apply(page, delta(2, [], { focused: 'n6' })); await frames(); // the echo, before the reply
+    await page.evaluate(() => window.release.shift()()); await frames();
+    assert.equal(await page.evaluate(() => window.r.frame.contentDocument.activeElement?.localName), 'input', 'MP-08: the kernel\'s new focus is taken once the input settles');
+    await page.keyboard.type('c'); await frames();
+    assert.deepEqual(await page.evaluate(() => window.sent.slice(1).map(a => [a.kind, a.text])), [['text', 'c']], 'MP-08: typing reaches the kernel');
+  } finally { await page.close(); }
+});

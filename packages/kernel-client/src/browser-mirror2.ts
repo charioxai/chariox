@@ -56,6 +56,7 @@ export class BrowserMirror2Renderer {
   // before it applied: those still naming the old kernel focus leave the viewer's alone (until the window passes).
   private focusHold: { id: string, previous: string | null, until: number } | null = null
   private kernelFocus: string | null = null // the latest packet's focus
+  private focusWithheld: string | null | undefined // a packet's focus not taken while inputs were pending
   private queue: Array<{ action: Mirror2Action; epoch: { sequence: number; document_id: string } }> = []
   private sending = false
   // Viewer-owned scroll (plan 4.1): kernel echoes wait until the viewer settles.
@@ -109,14 +110,29 @@ export class BrowserMirror2Renderer {
       for (let next = this.queue.shift(); next; next = this.queue.shift()) {
         // A refused input (stale epoch, changed or protected target) is dropped:
         // the kernel stays authoritative and packets keep flowing (plan 4.3).
-        try { if (!this.disposed) { await this.send(next.action, next.epoch); this.holdFocus(next.action) } } catch { this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) } finally { this.pendingInputs-- }
+        const before = this.kernelFocus
+        try { if (!this.disposed) { await this.send(next.action, next.epoch); this.holdFocus(next.action, before) } } catch { this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) } finally { this.pendingInputs-- }
       }
     } finally { this.sending = false }
+    // A focus that packets moved while inputs were pending (an echo can overtake its input's reply) is taken now.
+    const withheld = this.focusWithheld; this.focusWithheld = undefined
+    if (withheld !== undefined && !this.pendingInputs && !this.pointerFocus && !this.focusHold && !this.disposed) this.takeFocus(withheld)
   }
-  private holdFocus(action: Mirror2Action): void {
-    if (!['focus', 'click', 'selection'].includes(action.kind)) return
+  private holdFocus(action: Mirror2Action, before: string | null): void {
+    // A packet since the input was sent already moved the kernel's focus: it reflects the input, nothing to hold.
+    if (!['focus', 'click', 'selection'].includes(action.kind) || this.kernelFocus !== before) return
     const active = this.active(), id = active && active !== active.ownerDocument.body && active !== active.ownerDocument.documentElement ? this.ids.get(active) : undefined
     if (id && id !== this.kernelFocus && this.records.get(id)?.kind === 'element') this.focusHold = { id, previous: this.kernelFocus, until: this.sequence + CREDIT_WINDOW }
+  }
+  // The kernel's focus in the viewer: the viewer page's own control outside the mirror keeps its focus.
+  private takeFocus(id: string | null): void {
+    const outside = this.frame.ownerDocument.activeElement, elsewhere = !!outside && outside !== this.frame && outside !== this.frame.ownerDocument.body
+    const focused = id && !elsewhere ? this.dom.get(id) as HTMLElement | undefined : undefined, active = this.active() as HTMLElement | null
+    this.focusSent = id
+    // A control built while detached could not take its caret: restore it once focused.
+    if (focused && active !== focused) { focused.focus?.({ preventScroll: true }); const form = this.records.get(id!)?.form; if (form) this.caret(focused as HTMLInputElement, form) }
+    // The kernel's focus left (blur, a protected field): the viewer's control blurs too.
+    else if (!id && !elsewhere && active && this.ids.has(active) && active !== active.ownerDocument.body && active !== active.ownerDocument.documentElement) active.blur()
   }
   // A text control's own range (select-all, a drag inside it) reaches the kernel
   // before the key or text that replaces it; ranges it already has are not resent.
@@ -500,15 +516,9 @@ export class BrowserMirror2Renderer {
       this.kernelFocus = packet.focused
       const hold = this.focusHold
       if (hold && (packet.focused !== hold.previous || packet.sequence > hold.until)) this.focusHold = null
+      this.focusWithheld = this.pendingInputs && !this.pointerFocus && !this.focusHold ? packet.focused : undefined
       if (!this.pendingInputs && !this.pointerFocus && !this.focusHold) {
-        // The viewer page's own control outside the mirror keeps its focus (the kernel's is not pulled in).
-        const outside = this.frame.ownerDocument.activeElement, elsewhere = !!outside && outside !== this.frame && outside !== this.frame.ownerDocument.body
-        const focused = packet.focused && !elsewhere ? this.dom.get(packet.focused) as HTMLElement | undefined : undefined, active = this.active() as HTMLElement | null
-        this.focusSent = packet.focused
-        // A control built while detached could not take its caret: restore it once focused.
-        if (focused && active !== focused) { focused.focus?.({ preventScroll: true }); const form = this.records.get(packet.focused!)?.form; if (form) this.caret(focused as HTMLInputElement, form) }
-        // The kernel's focus left (blur, a protected field): the viewer's control blurs too.
-        else if (!packet.focused && !elsewhere && active && this.ids.has(active) && active !== active.ownerDocument.body && active !== active.ownerDocument.documentElement) active.blur()
+        this.takeFocus(packet.focused)
         // Once the kernel's selection clears (or moves to another document) its old range goes too.
         // Only there: a viewer's own range the kernel never had stays, and so does a focused text
         // control's range (removeAllRanges would collapse it).
