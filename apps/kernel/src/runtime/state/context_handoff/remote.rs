@@ -60,9 +60,9 @@ impl super::super::KernelRuntimeOwnedState {
             .scrub_runtime_result(agent.session_id(), hidden_context.to_string())
         {
             Ok(context) => context,
-            // Unknown protection cannot authorize any cached background. The
-            // active user prompt and mandatory worker instructions still run.
-            Err(_) => return Ok(String::new()),
+            // Unknown protection withholds optional history replay, while the
+            // current turn keeps its workflow, failure and steer instructions.
+            Err(_) => return Ok(hidden_context.to_string()),
         };
         let existing = || Ok(hidden_context.clone());
         if fresh_workflow {

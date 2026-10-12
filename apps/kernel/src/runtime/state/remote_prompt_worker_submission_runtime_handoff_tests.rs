@@ -222,9 +222,20 @@ async fn assert_home_handoff_scenario(
             delivery_token: "test-workflow-delivery".into(),
         });
     }
-    if protect || protection_unavailable {
+    if protect {
         // Cached background was prepared before the Room became protected.
         dispatch.hidden_system_context = "cached setting: private-room-fixture".to_string();
+    }
+    let required_context = if workflow_ids.is_some() {
+        let (_, hidden) = crate::prompt_transcript::split_workflow_prompt_for_hidden_context(
+            "handoff payload\n<node-level-prompt>Read only; never edit source.</node-level-prompt>\n<workflow-runtime-instructions>Delivery: test-workflow-delivery; acknowledge and submit output.</workflow-runtime-instructions>\n<system-node-level-prompt>Preserve node constraints.</system-node-level-prompt>".to_string(),
+        );
+        hidden
+    } else {
+        "Failed request: retry the audit. Steer: preserve native sessions.".to_string()
+    };
+    if protection_unavailable {
+        dispatch.hidden_system_context = required_context.clone();
     }
     let settlement_dispatch = dispatch.clone();
     let submitted_prompt = PromptQueueItem::new(
@@ -270,7 +281,10 @@ async fn assert_home_handoff_scenario(
         panic!("expected the worker prompt envelope")
     };
     assert_eq!(prompt, "hold the worker response while manifest sync runs");
-    if protect || protection_unavailable {
+    if protection_unavailable {
+        assert_eq!(hidden_system_context, required_context, "current turn instructions must reach the worker unchanged when optional replay is withheld");
+    }
+    if protect {
         assert!(
             !hidden_system_context.contains("private-room-fixture"),
             "cached context must obey current Room protection even without history replay"
@@ -713,6 +727,12 @@ async fn review976r2_fresh_workflow_ack_preserves_pending_replay() {
     assert_home_handoff_scenario(false, false, false, false, Some(true), false).await;
 }
 #[tokio::test]
-async fn review976r2_unavailable_room_withholds_context_without_blocking_prompt() {
+async fn review976r3_unavailable_room_preserves_current_context_without_replay() {
     assert_home_handoff_scenario(false, false, false, false, None, true).await;
+}
+
+// MP-08 / MP-10 / MP-11: workflow instructions survive the actual worker envelope.
+#[tokio::test]
+async fn review976r3_unavailable_room_preserves_workflow_instructions_without_replay() {
+    assert_home_handoff_scenario(false, false, false, false, Some(false), true).await;
 }
