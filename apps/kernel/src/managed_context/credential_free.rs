@@ -196,17 +196,16 @@ fn git(root: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>, DaemonError> {
     #[cfg(test)]
     tests::interrupt_scan_child(&mut child, args);
     let mut bytes = Vec::new();
-    let read = child
-        .stdout
-        .take()
-        .ok_or_else(refused)?
-        .take(limit + 1)
-        .read_to_end(&mut bytes);
+    // Keep the pipe open until the policy kill, so an over-limit scan ends by
+    // our SIGKILL rather than a SIGPIPE that would look like an interruption.
+    let mut stdout = child.stdout.take().ok_or_else(refused)?;
+    let read = (&mut stdout).take(limit + 1).read_to_end(&mut bytes);
     let refused_output = read.is_err() || bytes.len() as u64 > limit;
     // MP-11: signal only this scan's child; distinguish our policy kill
     // from a target shutdown interrupting an otherwise retryable import.
     let killed_for_refusal = refused_output && child.id() > 1 && child.kill().is_ok();
     let status = child.wait().map_err(|_| scan_unavailable())?;
+    drop(stdout);
     scan_git_status(status, killed_for_refusal)?;
     if refused_output {
         return Err(refused());
