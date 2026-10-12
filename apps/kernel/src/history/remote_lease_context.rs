@@ -11,20 +11,10 @@ pub(super) fn migrate(connection: &rusqlite::Connection) -> Result<(), DaemonErr
             "CREATE TABLE IF NOT EXISTS remote_lease_context_pending (
         session_id TEXT NOT NULL, agent_id TEXT NOT NULL,
         worker_kernel_id TEXT NOT NULL, execution_lease_id TEXT NOT NULL,
-        leased_agent_id TEXT NOT NULL, PRIMARY KEY (session_id, agent_id)
+        leased_agent_id TEXT NOT NULL, replay_prompt_id TEXT, PRIMARY KEY (session_id, agent_id)
     )",
         )
         .map_err(|error| history_error("migrate remote lease context", error))?;
-    let has_replay_prompt: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('remote_lease_context_pending') WHERE name = 'replay_prompt_id')", [], |row| row.get(0),
-    ).map_err(|error| history_error("migrate remote lease replay prompt", error))?;
-    if !has_replay_prompt {
-        connection
-            .execute_batch(
-                "ALTER TABLE remote_lease_context_pending ADD COLUMN replay_prompt_id TEXT",
-            )
-            .map_err(|error| history_error("migrate remote lease replay prompt", error))?;
-    }
     Ok(())
 }
 
@@ -163,13 +153,6 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("history.db");
-        // Upgrade the exact five-column schema shipped by the reviewed base.
-        let connection = rusqlite::Connection::open(&path).unwrap();
-        migrate(&connection).unwrap();
-        connection
-            .execute_batch("ALTER TABLE remote_lease_context_pending DROP COLUMN replay_prompt_id")
-            .unwrap();
-        drop(connection);
         let store = OperationalHistoryStore::open(path.clone()).unwrap();
         let binding = RemoteAgentBinding {
             worker_kernel_id: "worker".into(),
