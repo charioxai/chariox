@@ -63,7 +63,8 @@ test('MP-11 protection retirement keeps the renderer lease and rejects a late ol
  const black=encodePng(8,8,Buffer.alloc(8*8*4,0));
  f.source.protect=async()=>{if(++captures===1){enter();return held;}return {data_base64:black};};
  f.emit('Page.screencastFrame',{data:encodePng(8,8,Buffer.alloc(8*8*4,255)),sessionId:2});await entered;
- f.emit('DOM.attributeModified',{name:'data-chariox-observation-protected'});
+ // MP-11: generic observation markers were retired; a document update still fences captures.
+ f.emit('DOM.documentUpdated',{});
  assert.equal(f.source.sample(),null);assert.equal(f.source.closed,false);assert.equal(f.source.regionRevision,1);
  assert(!f.calls.includes('Page.stopScreencast'),'retirement cannot interrupt mouse press/release');
  release({data_base64:encodePng(8,8,Buffer.alloc(8*8*4,255))});await new Promise(r=>setTimeout(r,0));
