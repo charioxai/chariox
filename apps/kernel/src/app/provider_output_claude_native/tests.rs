@@ -1537,7 +1537,7 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
     };
     let bridge = StartupTrustBridge::default();
     let trust_frame =
-        "Quick safety check\nDo you trust this folder?\n1. No, exit\n2. Yes, I trust this folder";
+        "Quick safety check\nDo you trust this folder?\n❯ No, exit\n  Yes, I trust this folder";
     ProviderOutputClaudeNativeBridge::new(&mut app)
         .process_terminal_output(
             session.id(),
@@ -1654,6 +1654,10 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let captured = fs::read_to_string(&capture_file).expect("PTY should capture dispatched task");
+    assert!(
+        captured.contains("\u{1b}[B"),
+        "MP-08/MP-10/MP-11: user approval must select Yes; Enter on default No exits Claude"
+    );
     assert_eq!(
         captured.matches("startup-gated-task-unique").count(),
         1,
@@ -1756,11 +1760,9 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
             crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
         .expect("attachment should attach");
+    let other_worktree = crate::test_support::TestWorktree::new("claude-trust-unrelated-agent");
     let (other_session, _other_default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-unrelated-agent",
-            root.display().to_string(),
-        ))
+        .create_session(other_worktree.session_request())
         .expect("unrelated session should be created");
     let other_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
