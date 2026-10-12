@@ -25,11 +25,7 @@ impl KernelRuntimeState {
         let response = tokio::task::spawn_blocking(move || {
             let queued_us = began.elapsed().as_micros() as u64;
             let started = std::time::Instant::now();
-            let mut environment = if request.view.is_some() {
-                store.cached_read_snapshot(&project)?
-            } else {
-                store.snapshot(&project)?
-            };
+            let mut environment = store.cached_read_snapshot(&project)?;
             let specification_us = started.elapsed().as_micros() as u64;
             let checks_started = std::time::Instant::now();
             store.attach_checks(
