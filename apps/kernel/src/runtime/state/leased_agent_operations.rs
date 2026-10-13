@@ -3,7 +3,8 @@ use std::sync::{Arc, Mutex, Weak};
 
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
-/// Serialize remote lease updates with prompt admission, without blocking other leases.
+/// Serialize remote lease updates, prompt admission, and owner-scoped account
+/// provisioning without blocking unrelated leases or account families.
 #[derive(Clone, Default)]
 pub(super) struct LeasedAgentOperations {
     lanes: Arc<Mutex<BTreeMap<String, Weak<AsyncMutex<()>>>>>,
