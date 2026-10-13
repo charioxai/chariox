@@ -1,6 +1,6 @@
 import type { BoxRenderable, CliRenderer } from "@opentui/core"
 import { providerLoginInteractionReplyRequest } from "@chariox/kernel-client/provider-login-projection"
-import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
+import { createFocusedInteractionChoiceController, type FocusedInteractionChoicePasteEvent } from "./focused-interaction-choice-controller.js"
 import type { createInteractionChoiceStoreController } from "./interaction-choice-store-controller.js"
 import { renderInteractionStrip } from "./interaction-strip-renderer.js"
 import type { ProviderLoginInteractionController } from "./provider-login-interaction-controller.js"
@@ -61,7 +61,16 @@ export function createProviderLoginPopupComposition(deps: {
   return {
     active: () => interaction() !== null,
     handleKey: input.handleKey,
-    handlePaste: input.handlePaste,
+    handlePaste(event: FocusedInteractionChoicePasteEvent) {
+      if (!interaction()) return false
+      if (input.handlePaste(event)) return true
+      // The waiting-room prompt remains focused behind this modal. Even when
+      // Cancel is selected or the phase has no input, pastes belong to it.
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      deps.flashFooter("paste not added: select the sign-in input first", "info")
+      return true
+    },
     render(panel: BoxRenderable) {
       const current = interaction()
       if (!current) return
