@@ -282,3 +282,42 @@ test('MP-08/MP-10/MP-11: mirror input reuses the snapshot world and keeps the fi
   }
 });
 
+// MP-08/MP-10/MP-11: the next credit re-arms its long poll without renderer round trips while the page
+// session's navigation events show the same document; any other answer resolves the target and world afresh.
+test('MP-08/MP-10/MP-11: a packet on an unchanged document reuses its world; a navigated, re-attached or closed session resolves afresh', async () => {
+  const run = async ({ document = 'D1', session = 'S', open = true, generation = 1 } = {}) => {
+    const calls = [], tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+    const connection = { isOpen: () => open, send: async method => { calls.push(method); return { frameTree: { frame: { loaderId: 'D1' } } }; } };
+    const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+    const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy: 'p', fallback: null, header: {}, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '' };
+    const host = { protection: 'p', generation: 1, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => { calls.push('displayTarget'); return tab; },
+      browser: { connection, documentIdsByTarget: new Map([['T', document]]), sessionsByTarget: new Map([['T', session]]) } };
+    const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
+    mirror.world = async () => { calls.push('world'); return world; };
+    mirror.evaluate = async (_world, expression) => { calls.push(expression); return { ops: [{ op: 'text', id: 'n5', text: 'menu' }], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0 }; };
+    mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
+    await mirror.packet(stream, { subscription_id: 's', generation, after_sequence: 1 }, 'scope').catch(() => {});
+    return calls.slice(0, calls.indexOf('m.drain()'));
+  };
+  assert.deepEqual(await run(), [], 'MP-08: no target or frame round trip before the drain');
+  for (const changed of [{ document: 'D2' }, { document: null }, { session: 'S2' }, { open: false }, { generation: 2 }])
+    assert.deepEqual(await run(changed), ['displayTarget', 'world'], `MP-11: ${JSON.stringify(changed)} resolves afresh`);
+});
+
+// MP-08/MP-10: an echo right after viewer input does not wait for the page to measure opaque regions; the next
+// quiet packet measures them (and the 25% budget), even on a page that had none.
+test('MP-08/MP-10: opaque regions are measured by the next quiet packet, not by an echo after input', async () => {
+  const mirror = new Mirror2({ host: { scales: new Map() } }), calls = [];
+  mirror.evaluate = async (_world, expression) => { calls.push(expression); return []; };
+  mirror.frames = { opaqueBoxes: async () => [] };
+  const stream = { frames: new Map(), tileKeys: '', tilesAt: 0, inputAt: Date.now() }, world = { ref: 'm' };
+  assert.deepEqual(await mirror.tiles(world, { tab_id: 't' }, stream, false, false, false), []);
+  assert.deepEqual(calls, [], 'MP-08: the echo leaves without an evaluation in the page');
+  stream.inputAt = Date.now() - 2000;
+  assert.equal(mirror.tilesDue(stream), true, 'MP-10: the skipped measurement is due once input is quiet');
+  await mirror.tiles(world, { tab_id: 't' }, stream, false, true, false);
+  assert.deepEqual([calls, mirror.tilesDue(stream)], [['m.opaqueBoxes()'], false]);
+  stream.inputAt = Date.now(); calls.length = 0;
+  await mirror.tiles(world, { tab_id: 't' }, stream, true, true, false);
+  assert.deepEqual(calls, ['m.opaqueBoxes()'], 'MP-10: a reset always measures');
+});

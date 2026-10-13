@@ -253,15 +253,25 @@ export class Mirror2 {
     if (replayKey) { const entry = { run, done: false }; run.finally(() => { entry.done = true; }).catch(() => {}); (stream.replies ??= new Map()).set(replayKey, entry); if (stream.replies.size > 8) stream.replies.delete(stream.replies.keys().next().value); }
     return run;
   }
+  kept(stream, generation) {
+    const stored = this.host.tabs?.get(stream.tab_id), world = stream.world, browser = this.host.browser;
+    if (!stored || !world || generation !== this.host.generation || world.connection !== browser.connection || !world.connection.isOpen()) return null;
+    const document = browser.documentIdsByTarget?.get(stored.target_id);
+    return document === stored.document_id && world.frame?.loaderId === document && browser.sessionsByTarget?.get(stored.target_id) === world.sessionId ? { tab: { ...stored }, world } : null;
+  }
   // Credits that arrived before this point stop waiting (their hurry count is older).
   hurry(stream) { stream.hurry = (stream.hurry ?? 0) + 1; if (stream.world) this.evaluate(stream.world, `${stream.world.ref}.wake()`).catch(() => {}); }
   async packet(stream, command, scope, signal, deadline = Date.now(), hurry = stream.hurry) {
     const started = timestamp(); let stage = started;
     const mark = name => { this.host.timing?.(`mirror2_${name}`, stage); stage = timestamp(); };
     this.service.require(command.subscription_id, scope, command.generation);
-    const tab = await this.host.displayTarget({ tab_id: stream.tab_id, generation: command.generation });
+    // MP-08/MP-10: between packets the page session's navigation events keep the document current, so an
+    // unchanged document reuses its world without renderer round trips (a busy page answers those only after
+    // its task, holding the next long poll and its echo behind it). Anything else resolves afresh.
+    const kept = this.kept(stream, command.generation);
+    const tab = kept?.tab ?? await this.host.displayTarget({ tab_id: stream.tab_id, generation: command.generation });
     this.service.assertWebTab(tab); assertNotCancelled(signal);
-    const world = await this.world(tab, stream), policy = this.host.protection;
+    const world = kept?.world ?? await this.world(tab, stream), policy = this.host.protection;
     stream.world = world;
     mark('world');
     const after = command.after_sequence;
@@ -445,7 +455,7 @@ export class Mirror2 {
   register(stream, source) {
     for (const descriptor of source?.resources ?? []) if (!stream.resources.has(descriptor.key)) stream.resources.set(descriptor.key, { ...descriptor, state: 'new', tries: 0, sent: false });
   }
-  tilesDue(stream) { return stream.tileKeys !== '' && Date.now() - stream.tilesAt >= TILE_REFRESH_MS && !this.recentInput(stream); }
+  tilesDue(stream) { return (stream.tileKeys !== '' || stream.tilesPending) && Date.now() - stream.tilesAt >= TILE_REFRESH_MS && !this.recentInput(stream); }
   // Bytes the page itself loaded: data URLs, the inspector's resource tree, or
   // Chrome's cache (credential-free) for URLs in the page's Resource Timing.
   // A URL a stylesheet merely mentions waits until the page loads it.
@@ -578,7 +588,11 @@ export class Mirror2 {
   async tiles(world, tab, stream, reset, still, none = false) {
     // No opaque region in the page and no attached frame: nothing to place or capture. A DOM echo does not wait
     // for an evaluation in the page's next task (MP-08 click path, 8-12 ms behind a busy source page).
-    if (none && !stream.frames.size) { stream.tileKeys = ''; return []; }
+    if (none && !stream.frames.size) { stream.tileKeys = ''; stream.tilesPending = false; return []; }
+    // MP-08/MP-10: a DOM packet right after viewer input carries no still; its regions (and the 25% budget)
+    // are measured by the next quiet packet, so an echo does not wait for an evaluation in a busy page.
+    if (!reset && !still && this.recentInput(stream)) { stream.tilesPending = true; return []; }
+    stream.tilesPending = false;
     let boxes = [...(await this.evaluate(world, `${world.ref}.opaqueBoxes()`)).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)];
     stream.tileKeys = boxes.map(b => b.id).join(',');
     // Plan 3.2 handoff: opaque regions over a quarter of the viewport hand the
