@@ -403,3 +403,134 @@ async fn leased_account_authority_survives_launch_reload_and_worker_recovery() {
     crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
     crate::secret::clear_vault_secret_process_cache().unwrap();
 }
+
+// MP-08/MP-10/MP-11: exact replicated IDs use the same account at every seam.
+#[tokio::test]
+async fn mp11_amfix_exact_profile_launch_matches_admission_and_home_alias() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let root = crate::test_support::TestWorktree::new("exact-account-launch");
+    std::env::set_var("CHARIOX_HOME", root.path().join("state"));
+    let mut config = crate::config::DaemonConfig::load_from_env();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "cloud-owner".into(),
+        ..Default::default()
+    });
+    let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+    let registry = app.provider_account_profile_registry();
+    let profile = registry
+        .create_managed("local", "opencode", "selected")
+        .unwrap();
+    registry
+        .set_default("local", "opencode", &profile.profile_id)
+        .unwrap();
+    let materialization = crate::account_profile::ProviderAccountMaterialization {
+        profile: crate::account_profile::ProviderAccountReplicaMetadata {
+            owner_user_id: "cloud-owner".into(),
+            provider: "opencode".into(),
+            profile_id: profile.profile_id.clone(),
+            label: "selected".into(),
+            origin: profile.origin,
+            is_default: true,
+        },
+        files: vec![crate::account_profile::ProviderAccountMaterializationFile {
+            relative_path: "data/opencode/auth.json".into(),
+            contents_base64: base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                b"{}",
+            ),
+        }],
+        generated_at_ms: crate::session::unix_epoch_ms(),
+    };
+    registry
+        .materialize_replica("cloud-owner", &materialization)
+        .unwrap();
+    for owner in ["local", "cloud-owner"] {
+        registry
+            .update_observation(
+                owner,
+                "opencode",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let mut usage = crate::account_profile::ProviderAccountUsageSnapshot::unavailable(
+            &profile.profile_id,
+            "opencode",
+        );
+        usage.observed_at_ms = Some(crate::session::unix_epoch_ms());
+        registry
+            .update_usage(owner, "opencode", &profile.profile_id, usage)
+            .unwrap();
+    }
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(root.session_request().with_owner_user_id("cloud-owner"))
+        .unwrap();
+    let agent = app
+        .agents_mut()
+        .set_agent_runtime_profile_with_account_profile(
+            agent.id(),
+            "opencode",
+            Some("model".into()),
+            None,
+            Some(profile.profile_id.clone()),
+            Default::default(),
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    for (selection, expected) in [
+        (profile.profile_id.as_str(), "cloud-owner"),
+        ("default", "local"),
+    ] {
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            selection,
+            "model",
+        )
+        .with_agent_id(agent.id());
+        let prepared = runtime
+            .prepare_provider_launch_request_with_vault(
+                request.clone(),
+                "MP-11 exact account launch",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            prepared.provider_account_env,
+            registry
+                .resolve_environment(expected, "opencode", &profile.profile_id)
+                .unwrap(),
+            "launch must match profile-aware admission"
+        );
+        let app_prepared = app
+            .lock()
+            .await
+            .prepare_app_provider_launch_request(request, "MP-11 app launch control")
+            .unwrap();
+        assert_eq!(
+            app_prepared.provider_account_env,
+            prepared.provider_account_env
+        );
+    }
+    assert_eq!(
+        runtime
+            .owned
+            .provider_account_authority_owner_for_agent(&agent)
+            .unwrap(),
+        "cloud-owner"
+    );
+    assert_eq!(
+        app.lock()
+            .await
+            .provider_account_authority_owner_for_agent(&agent)
+            .unwrap(),
+        "cloud-owner"
+    );
+}
