@@ -115,3 +115,18 @@ test("alias-scoped and ambiguous client tokens preserve the requested alias", as
     assert.equal(issued.targetDaemonId, undefined)
   }
 })
+
+test("client token reports only the session scope its grant carries", async () => {
+  const unscoped = await issueKernelCloudRelayClientToken(
+    fakeClient(async () => tokenResponse()), "home", "cli-1", "local-room", "bootstrap-thumbprint",
+  )
+  assert.equal(unscoped.sessionId, undefined)
+  const response = tokenResponse()
+  const claims = { public_key_thumbprint: "bootstrap-thumbprint", session_id: "shared-session" }
+  response.CloudRelayClientTokenIssued.token.relay_token =
+    `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`
+  const scoped = await issueKernelCloudRelayClientToken(
+    fakeClient(async () => response), "host", "cli-1", "shared-session", "bootstrap-thumbprint",
+  )
+  assert.equal(scoped.sessionId, "shared-session")
+})

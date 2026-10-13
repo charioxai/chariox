@@ -25,7 +25,7 @@ export type RelayCloudCommandHandlerDeps = CloudCommandLifecycleDeps & {
     profile: RelayCloudProfile,
     targetDaemonAlias: string,
     options?: { sessionId?: string | null },
-  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; targetDaemonId?: string; profile?: RelayCloudProfile; issuer?: { endpoint: string; daemonId: string } }>
+  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; targetDaemonId?: string; sessionId?: string; profile?: RelayCloudProfile; issuer?: { endpoint: string; daemonId: string } }>
   logoutCloudRelay?: (profile: RelayCloudProfile, options?: { revokeClient?: boolean; revokeMachine?: boolean }) => Promise<void>
 }
 
@@ -224,7 +224,7 @@ async function issueRelayCloudClientToken(deps: RelayCloudCommandHandlerDeps, cl
       "cloud client token",
       `transport=${issued.relayUrl}`,
       `expires_at_ms=${issued.tokenExpiresAtMs}`,
-      ...(sessionId ? [`session_id=${sessionId}`] : []),
+      ...(issued.sessionId ? [`session_id=${issued.sessionId}`] : []),
       `command=chariox --relay-url ${issued.relayUrl} --relay-token ${issued.relayToken} ${targetOption}${issuerOption}`,
     ].join("\n"),
   )

@@ -237,11 +237,14 @@ export async function issueKernelCloudRelayClientToken(
     requireRelayTokenKeyBinding(payload.token.relay_token, publicKeyThumbprint, "CLI key-bound relay token")
   }
   const targetDaemonId = relayTokenCanonicalTarget(payload.token.relay_token, targetDaemonAlias)
+  // The kernel omits a session for its own account's kernels; report the grant's scope.
+  const grantSessionId = relayTokenPayload(payload.token.relay_token)?.session_id
   return {
     relayUrl: payload.token.relay_url,
     relayToken: payload.token.relay_token,
     tokenExpiresAtMs: parseAbsoluteInstantMs(payload.token.token_expires_at),
     ...(targetDaemonId ? { targetDaemonId } : {}),
+    ...(typeof grantSessionId === "string" && grantSessionId ? { sessionId: grantSessionId } : {}),
     profile: relayCloudProfileFromKernel(payload.profile),
   }
 }
