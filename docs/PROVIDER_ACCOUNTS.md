@@ -93,17 +93,15 @@ Logout, deregistration, and deletion reject profiles with active runs. Removing 
 
 `apps/cli/scripts/live-multi-account-drill.mjs` is opt-in and accepts existing profile IDs. It never copies or prints credentials. OpenCode remaining-balance validation is intentionally pending until suitable accounts/upstreams are available; unsupported sources remain visible as unavailable capability states.
 
-MP-08 / MP-11: `claude`, `claude-p`, and `claude-headless` share one account credential identity. Direct token import records authenticated state only after verification and successful Vault storage. Explicit Status and Refresh requests verify the currently stored token with a bounded official model turn. Only a successful check records authentication; the validation timestamp records the latest attempted observation, including a failed check. Prior native-login observations never stand in for token verification. Failed checks record an error state and close launch admission; a transient transport failure does not imply token revocation. Enrolled Vault tokens are injected for every Claude launch mode on Linux and macOS, even when a previous native login exists. A stored handle alone never proves authentication, and setup-token authentication does not fabricate subscription usage.
+MP-08 / MP-11: `claude`, `claude-p`, and `claude-headless` share one account credential identity. Direct token import records authenticated state only after verification and successful Vault storage. Explicit Status and Refresh requests verify the currently stored token with a bounded official model turn. Only a successful check records a new authentication observation and validation timestamp. Prior native-login observations never stand in for token verification. Failed status checks return a bounded error without replacing the last verified observation; a locked Vault, transport failure or concurrently replaced credential does not prove revocation. Enrolled Vault tokens are injected for every Claude launch mode on Linux and macOS, even when a previous native login exists. A stored handle alone never proves authentication, and setup-token authentication does not fabricate subscription usage.
 
 ### MP-08 / MP-10 / MP-11: explicit Claude credential selection
 
 A manually registered Claude setup token is a user-selected Vault credential.
-The coordinator's 2026-10-12 #978 correction keeps that selection from being
-suppressed by a generic authenticated native observation. Chariox does not
+Registration selects that credential; a generic authenticated native
+observation does not change the selection. Chariox does not
 copy or rewrite Claude's native login state. Native CLI/Keychain login and
-the explicit Vault registration have separate ownership. The Native TUI
-precedence case with both present remains an owner question in the lane
-review; this clarification does not change that policy.
+the explicit Vault registration have separate ownership. The registration and provider-native login remain separate account inputs.
 
 Enrollment, explicit token status and token refresh use the official CLI's
 small authentication-marker turn. The usage/first-use probe has a separate
