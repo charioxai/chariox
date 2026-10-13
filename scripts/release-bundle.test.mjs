@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, createPrivateKey, generateKeyPairSync, sign } from 'node:crypto';
-import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { runtimeReleaseFixture } from './app-runtime-release-fixture.mjs';
 import { SLICE_CONTEXT, SLICE_PROVISIONER, assemble, exportSliceBuildContext, parseArgs, signBundle, verifyBundle } from './release-bundle.mjs';
 import { signRuntimeRelease } from './sign-app-runtime-release.mjs';
+import { SLICE_DOCKERFILE } from './slice-build-context.mjs';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const commit = 'a'.repeat(40);
@@ -39,6 +40,8 @@ async function bundleInputs(root, target) {
   const sliceBuildContext = join(root, 'slice-build-context');
   await put(join(sliceBuildContext, 'apps/kernel/slice-linux-docker/runtime-source-roots.txt'), 'apps/kernel\n');
   await put(join(sliceBuildContext, 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'), '#!/bin/sh\n', 0o755);
+  await put(join(sliceBuildContext, SLICE_DOCKERFILE), 'FROM scratch\nCOPY deploy/managed-kernel/provider-versions.env /pins/\n');
+  await put(join(sliceBuildContext, 'deploy/managed-kernel/provider-versions.env'), '# public version pins\n');
   const releaseKey = generateKeyPairSync('ed25519').privateKey;
   const releaseKeyPath = join(root, 'bundle-release.pem');
   await put(releaseKeyPath, releaseKey.export({ type: 'pkcs8', format: 'pem' }), 0o600);
@@ -84,8 +87,10 @@ test('a Linux bundle is assembled, signed and verified, and any change is refuse
     'install.sh', 'libexec/chariox-app-runtime-install', 'libexec/chariox-app-storage',
     'runtime/.runtime-lease', 'runtime/chariox-app-worker', 'runtime/libnode.so.137', 'runtime/runtime-inventory.json',
     'runtime/runtime-inventory.sig', 'runtime/sdk/src/index.js',
+    'share/chariox/slice-build-context/apps/kernel/slice-linux-docker/docker/Dockerfile',
     'share/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh',
     'share/chariox/slice-build-context/apps/kernel/slice-linux-docker/runtime-source-roots.txt',
+    'share/chariox/slice-build-context/deploy/managed-kernel/provider-versions.env',
   ]);
   const mode = path => manifest.files.find(file => file.path === path).mode;
   assert.deepEqual(['bin/chariox', 'install.sh', 'runtime/chariox-app-worker', 'runtime/libnode.so.137', 'LICENSE',
@@ -206,7 +211,7 @@ test('a bundle carries the runtime that the production signer released outside t
     sourceRoot: inputs.sourceRoot, output: `${output}-other` }), /runtime source/);
 });
 
-test('the slice build context is exactly the committed runtime source roots and the Dockerfile input', async (context) => {
+test('the slice build context exports committed roots and every Dockerfile input', async (context) => {
   const root = await mkdtemp(join(await realpath(tmpdir()), 'chariox-slice-context-'));
   context.after(() => rm(root, { recursive: true, force: true }));
   const source = join(root, 'source');
@@ -214,6 +219,8 @@ test('the slice build context is exactly the committed runtime source roots and 
   await put(join(source, 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'), '#!/bin/sh\n', 0o755);
   await put(join(source, 'apps/kernel/src/lib.rs'), '// kernel\n');
   await put(join(source, 'apps/browser-session-import/chrome-cookie-batch.mjs'), 'export {}\n');
+  await put(join(source, SLICE_DOCKERFILE), 'FROM scratch\nCOPY Cargo.toml /\nCOPY apps/kernel /kernel\nCOPY apps/browser-session-import /import\nADD deploy/managed-kernel/provider-versions.env /pins\n');
+  await put(join(source, 'deploy/managed-kernel/provider-versions.env'), '# public version pins\n');
   await put(join(source, 'Cargo.toml'), '[workspace]\n');
   await put(join(source, 'docs/unrelated.md'), 'not in the context\n');
   const run = args => execFileSync('git', ['-C', source, ...args], { encoding: 'utf8' }).trim();
@@ -222,12 +229,14 @@ test('the slice build context is exactly the committed runtime source roots and 
   run(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture']);
   const head = run(['rev-parse', 'HEAD']);
   await put(join(source, 'apps/kernel/src/uncommitted.rs'), 'not committed\n');
+  await writeFile(join(source, SLICE_DOCKERFILE), 'FROM scratch\nCOPY uncommitted-input /\n');
 
   const exported = await exportSliceBuildContext(source, head, join(root, 'context'));
-  assert.equal(exported.files, 5);
+  assert.equal(exported.files, 7);
   const listing = execFileSync('find', ['.', '-type', 'f'], { cwd: join(root, 'context'), encoding: 'utf8' }).trim().split('\n').sort();
-  assert.deepEqual(listing, ['./Cargo.toml', './apps/browser-session-import/chrome-cookie-batch.mjs', './apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh',
-    './apps/kernel/slice-linux-docker/runtime-source-roots.txt', './apps/kernel/src/lib.rs']);
+  assert.deepEqual(listing, ['./Cargo.toml', './apps/browser-session-import/chrome-cookie-batch.mjs', './apps/kernel/slice-linux-docker/docker/Dockerfile',
+    './apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh', './apps/kernel/slice-linux-docker/runtime-source-roots.txt',
+    './apps/kernel/src/lib.rs', './deploy/managed-kernel/provider-versions.env']);
   const { stat: statFile } = await import('node:fs/promises');
   assert.ok((await statFile(join(root, 'context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'))).mode & 0o100);
   await assert.rejects(exportSliceBuildContext(source, head, join(root, 'context')), /EEXIST/);
@@ -276,4 +285,51 @@ test('install.sh --check accepts only the bundle and runtime signed by their key
   await writeFile(sdkSource, 'changed');
   assert.match(check(releasePublic).stderr, /runtime\/sdk\/src\/index\.js does not match the signed manifest/);
   assert.match(execFileSync(join(options.output, 'install.sh'), ['--help'], { encoding: 'utf8' }), /usage: sudo \.\/install\.sh/);
+});
+
+// MP-07 / MP-08 / MP-10 / MP-11: resolve inputs from the exported artifact,
+// rather than trusting the exporter's source-root allowlist.
+test('the committed slice Dockerfile resolves every COPY and ADD source in the exported distribution context', async (context) => {
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'chariox-release-context-preflight-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const sourceCommit = process.env.CHARIOX_TEST_SOURCE_COMMIT
+    ?? execFileSync('git', ['-C', repository, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const output = join(root, 'context');
+  await exportSliceBuildContext(repository, sourceCommit, output);
+  const dockerfile = await readFile(join(output, 'apps/kernel/slice-linux-docker/docker/Dockerfile'), 'utf8');
+  const missing = [];
+  for (const line of dockerfile.replace(/\\\r?\n\s*/g, ' ').split(/\r?\n/)) {
+    if (!/^\s*(COPY|ADD)\s/i.test(line) || /--from(?:=|\s)/.test(line)) continue;
+    const args = line.trim().split(/\s+/).slice(1).filter(arg => !arg.startsWith('--'));
+    for (const source of args.slice(0, -1)) {
+      if (!await lstat(join(output, source)).then(() => true, () => false)) missing.push(source);
+    }
+  }
+  assert.deepEqual(missing, [], 'packaged distribution context must resolve every local Dockerfile input');
+  const pinPath = 'deploy/managed-kernel/provider-versions.env';
+  const committedPin = execFileSync('git', ['-C', repository, 'show', `${sourceCommit}:${pinPath}`]);
+  assert.equal(sha256(await readFile(join(output, pinPath))), sha256(committedPin));
+});
+
+test('assembly and signing reject an incomplete context even when its manifest checksums agree', async (context) => {
+  const { options, releaseKeyPath, releasePublic } = await fixture(context);
+  const pinPath = 'deploy/managed-kernel/provider-versions.env';
+  const input = join(options.sliceBuildContext, pinPath);
+  const pin = await readFile(input);
+  await rm(input);
+  await assert.rejects(assemble(options), /missing Dockerfile input deploy\/managed-kernel\/provider-versions\.env/);
+  await assert.rejects(lstat(options.output), /ENOENT/);
+  await put(input, pin);
+  await assemble(options);
+  // Model the r3 defect: a consistent manifest that never listed the dependency.
+  await rm(join(options.output, SLICE_CONTEXT, pinPath));
+  const manifestPath = join(options.output, 'manifest.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.files = manifest.files.filter(file => file.path !== `${SLICE_CONTEXT}/${pinPath}`);
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  await assert.rejects(signBundle(options.output, releaseKeyPath), /missing Dockerfile input/);
+  // A previously signed, incomplete artifact must also fail verification.
+  const key = createPrivateKey(await readFile(releaseKeyPath));
+  await writeFile(join(options.output, 'manifest.sig'), sign(null, await readFile(manifestPath), key).toString('hex'));
+  await assert.rejects(verifyBundle(options.output, releasePublic), /missing Dockerfile input/);
 });
