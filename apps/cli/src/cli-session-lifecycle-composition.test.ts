@@ -56,6 +56,7 @@ test("waiting-room subscription failure retains rows and marks them reconnecting
     setStatusLine: (value: string) => calls.push(`status:${value}`),
     appendNotice: () => calls.push("notice-replaces-list"),
     applyWaitingRoomTransportClosed: () => calls.push("retain-offline-rows"),
+    onKernelTransportClosed: undefined,
     updateSessionChrome: () => calls.push("chrome"),
   }
   // The other lifecycle operations are outside this subscription scenario.
@@ -64,4 +65,49 @@ test("waiting-room subscription failure retains rows and marks them reconnecting
   assert(calls.includes("disconnected:true"))
   assert(calls.includes("retain-offline-rows"))
   assert(!calls.includes("notice-replaces-list"))
+})
+
+// MP-08/MP-10: restart recovery must settle the same health timer as socket recovery.
+test("attached restart recovery uses shared connection chrome without agent notices", async () => {
+  const notices: string[] = []
+  let recovered = 0
+  let disconnected = true
+  const values = {
+    client: { send: async (request: Record<string, unknown>) => "GetSessionState" in request
+      ? { SessionState: { session: { id: "session", agents: [] } } }
+      : { SessionAttached: { attachment: { attachment_id: "attachment" } } }, subscribeToKernelEvents: async () => {} },
+    options: { clientId: "client" }, renderer: {}, appLogger: { debug: () => {}, error: () => {} }, supportsKernelEventStream: true,
+    sleep: async () => { throw Error("unexpected recovery retry") },
+    closingStateController: { isClosing: () => false, setClosing: () => {} },
+    kernelConnected: () => true, isAttached: () => true,
+    daemonDisconnected: () => disconnected,
+    sessionState: () => ({ id: "session" }), attachmentState: () => ({ id: "attachment", session_id: "session" }),
+    providerRunState: () => null,
+    setDaemonDisconnected: (value: boolean) => { disconnected = value },
+    onKernelTransportRecovered: () => { recovered++; disconnected = false },
+    appendNotice: (text: string) => notices.push(text),
+  }
+  const deps = new Proxy(values, { get: (target, key) => key in target ? target[key as keyof typeof target] : () => {} }) as unknown as CliSessionLifecycleCompositionDeps
+  await createCliSessionLifecycleComposition(deps).recoverAttachedSessionAfterKernelRestart()
+  assert.equal(recovered, 1)
+  assert.deepEqual(notices, [])
+})
+
+test("MP-08/MP-10 attached subscription failures stay in shared chrome", async () => {
+  const notices: string[] = []
+  let closed = 0
+  const values = {
+    client: { subscribeToKernelEvents: async () => { throw Error("transport closed") } },
+    options: {}, renderer: {}, appLogger: { debug: () => {}, error: () => {} }, supportsKernelEventStream: true,
+    closingStateController: { isClosing: () => false, setClosing: () => {} },
+    kernelConnected: () => true, isAttached: () => true,
+    sessionState: () => ({ id: "session" }), attachmentState: () => ({ id: "attachment", session_id: "session" }),
+    formatError: (error: Error) => error.message,
+    onKernelTransportClosed: () => { closed++ },
+    appendNotice: (text: string) => notices.push(text),
+  }
+  const deps = new Proxy(values, { get: (target, key) => key in target ? target[key as keyof typeof target] : () => {} }) as unknown as CliSessionLifecycleCompositionDeps
+  await createCliSessionLifecycleComposition(deps).syncKernelEventSubscription()
+  assert.equal(closed, 1)
+  assert.deepEqual(notices, [])
 })

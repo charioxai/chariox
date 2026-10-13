@@ -773,6 +773,8 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   })
 
   return {
+    applyKernelTransportClosed: kernelEventController.applyTransportClosed,
+    applyKernelTransportResumed: kernelEventController.applyTransportResumed,
     ensureBackgroundPollersStarted,
     processKernelTerminalOutputRecord: kernelEventController.processTerminalOutputRecord,
     recordDaemonActivity,

@@ -87,6 +87,8 @@ export type CliSessionLifecycleCompositionDeps = {
   reconcileWaitingRoom: AnyFn
   refreshWaitingRoomData: AnyFn
   applyWaitingRoomTransportClosed: AnyFn
+  onKernelTransportClosed?: (message: string) => void
+  onKernelTransportRecovered?: () => void
   requestRootRender: AnyFn
   clearPromptInput: AnyFn
   blurPromptInput: AnyFn
@@ -173,14 +175,14 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
       deps.appLogger?.error("waiting room inventory subscription failed", {
         error: deps.formatError(error),
       })
-      deps.setDaemonDisconnected(true)
-      deps.setStatusLine("Waiting to reconnect to the Chariox kernel.")
-      if (deps.isAttached()) {
-        deps.appendNotice(`Waiting room inventory subscription failed: ${deps.formatError(error)}`, "warning")
+      if (deps.onKernelTransportClosed) {
+        deps.onKernelTransportClosed("Waiting room inventory subscription failed")
       } else {
-        deps.applyWaitingRoomTransportClosed()
+        deps.setDaemonDisconnected(true)
+        deps.setStatusLine("Waiting to reconnect to the Chariox kernel.")
+        if (!deps.isAttached()) deps.applyWaitingRoomTransportClosed()
+        deps.updateSessionChrome()
       }
-      deps.updateSessionChrome()
     },
     onSessionSubscriptionFailed: (sessionId, attachmentId, error) => {
       deps.appLogger?.error("kernel event subscription failed", {
@@ -188,10 +190,13 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
         attachment_id: attachmentId,
         error: deps.formatError(error),
       })
-      deps.setDaemonDisconnected(true)
-      deps.setStatusLine("Waiting to reconnect to the Chariox kernel.")
-      deps.appendNotice(`Kernel event subscription failed: ${deps.formatError(error)}`, "warning")
-      deps.updateSessionChrome()
+      if (deps.onKernelTransportClosed) {
+        deps.onKernelTransportClosed("Kernel event subscription failed")
+      } else {
+        deps.setDaemonDisconnected(true)
+        deps.setStatusLine("Waiting to reconnect to the Chariox kernel.")
+        deps.updateSessionChrome()
+      }
     },
   })
   const syncKernelEventSubscription = () => kernelEventSubscriptionController.sync()
@@ -217,7 +222,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
       deps.setDaemonDisconnected(false)
       deps.setStatusLine(DEFAULT_CONNECTED_STATUS)
       deps.updateSessionChrome()
-      deps.appendNotice("Reconnected to the Chariox kernel.")
+      deps.onKernelTransportRecovered?.()
     },
     onAttemptFailed: (sessionId, error) => {
       deps.appLogger?.debug("kernel restart recovery attempt failed", {

@@ -923,12 +923,16 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentSession: () => isAttached() ? sessionState().id : undefined,
   })
   let recordDaemonActivity: (activityType: string) => void = () => {}
+  let settleKernelConnectionDisplay: () => void = () => {}
+  let markKernelConnectionClosed: (message: string) => void = () => {}
   const {
     hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart,
     transitionToNoSession, detachCurrentAttachment, rollbackAttachedSession, attachBinding, recoverProviderRun,
     requestExit, requestWaitingRoom,
   } = createCliSessionLifecycleComposition({
     client, options, appLogger, renderer,
+    onKernelTransportRecovered: () => settleKernelConnectionDisplay(),
+    onKernelTransportClosed: (message) => markKernelConnectionClosed(message),
     drainAppInstall: async () => { await Promise.all([appDevLoop.dispose(), appFileInstaller.dispose(), appPublisherEnrollment.dispose()]) },
     sleep, formatError, supportsKernelEventStream, kernelConnected, closingStateController,
     isAttached, daemonDisconnected, attachmentState, sessionState,
@@ -1055,6 +1059,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
 
   const {
     recordDaemonActivity: runtimeRecordDaemonActivity,
+    applyKernelTransportClosed: runtimeApplyKernelTransportClosed,
+    applyKernelTransportResumed: runtimeApplyKernelTransportResumed,
     ensureBackgroundPollersStarted,
     processKernelTerminalOutputRecord: runtimeProcessKernelTerminalOutputRecord,
   } = createCliAppProcessRuntimeComposition({
@@ -1124,6 +1130,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     sessionChromeUpdateController, promptInputHistoryRefreshController, transcriptHistoryAutoloadController, setWorkingAnimationFrame,
     sessionStatusMode, workspaceLiveSyncStatus, renderSplitPaneFooters, hydrateCurrentAttachedSession,
   })
+  settleKernelConnectionDisplay = runtimeApplyKernelTransportResumed
+  markKernelConnectionClosed = runtimeApplyKernelTransportClosed
   recordDaemonActivity = runtimeRecordDaemonActivity
   setKernelTerminalOutputRecordProcessor(runtimeProcessKernelTerminalOutputRecord)
 
