@@ -124,12 +124,6 @@ are then available without a Room. Once projected, Tab/type/Enter sends real
 keyboard actions; Ctrl+W closes the view, Escape returns to the command input.
 The flag-off waiting room retains its existing navigation.
 
-The Cloud `user-app-view-browser-drill.mjs` now drives the full standalone CLI
-in an owned tmux pane against the same disposable production kernel used by
-native web and shared Chromium tests. It checks open/list, real accessibility
-text, keyboard App channel execution and rendered backend reply, close, and no
-session creation. The old terminal component drill remains a focused synthetic
-regression. Live display acceptance still uses a temporary signed test runtime
-on this builder until its installed runtime group-mapping ABI is updated; see
-Cloud's USER_APP_VIEWS_PROTOTYPE.md for that trust boundary. Hosted/account
-bootstrap and approved release-artifact acceptance remain separate.
+The Cloud `user-app-view-browser-drill.mjs` that drove this TUI beside the web
+native App host is retired with that host; the old terminal component drill
+remains a focused synthetic regression.
