@@ -9,12 +9,13 @@ use std::sync::{Arc, Condvar, Mutex};
 struct WatchState {
     stopped: bool,
     polled: u64,
+    #[cfg(test)]
+    entered_poll: bool,
 }
 
 #[cfg(unix)]
 pub(super) struct CodexOutputReadiness {
     shared: Arc<(Mutex<WatchState>, Condvar)>,
-    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 #[cfg(unix)]
@@ -32,7 +33,7 @@ impl CodexOutputReadiness {
         let stream = stream.try_clone().ok()?;
         let shared = Arc::new((Mutex::new(WatchState::default()), Condvar::new()));
         let worker = shared.clone();
-        let thread = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("chariox-codex-ready".into())
             .spawn(move || {
                 loop {
@@ -50,6 +51,11 @@ impl CodexOutputReadiness {
                     };
                     // The clone keeps the fd alive. This only observes readiness;
                     // socket reads/writes and their timeout flags remain actor-owned.
+                    #[cfg(test)]
+                    {
+                        worker.0.lock().unwrap().entered_poll = true;
+                        worker.1.notify_all();
+                    }
                     let ready = unsafe { libc::poll(&mut fd, 1, 500) };
                     if ready < 0 {
                         if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
@@ -72,10 +78,9 @@ impl CodexOutputReadiness {
                 }
             })
             .ok()?;
-        Some(Self {
-            shared,
-            thread: Some(thread),
-        })
+        // Detach: runtime removal can hold the provider-service lock. The
+        // stop flag/condvar still bound this thread's lifetime to one poll.
+        Some(Self { shared })
     }
     pub(super) fn polled(&self) {
         let mut state = self.shared.0.lock().expect("codex readiness poisoned");
@@ -92,8 +97,46 @@ impl Drop for CodexOutputReadiness {
             .expect("codex readiness poisoned")
             .stopped = true;
         self.shared.1.notify_all();
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::net::{TcpListener, TcpStream};
+    use std::time::{Duration, Instant};
+    use tokio_tungstenite::tungstenite::{protocol::Role, stream::MaybeTlsStream, WebSocket};
+
+    // MP-08 / MP-10: reviewer #985 finding 3. An actual idle socket
+    // puts the watcher in poll before Drop is measured.
+    #[test]
+    fn panes_stream_review_watcher_drop_does_not_wait_on_socket() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        let socket = WebSocket::from_raw_socket(MaybeTlsStream::Plain(stream), Role::Client, None);
+        let watcher = CodexOutputReadiness::start(&socket, Default::default()).unwrap();
+        let shared = watcher.shared.clone();
+        {
+            let state = shared.0.lock().unwrap();
+            let (state, timeout) = shared
+                .1
+                .wait_timeout_while(state, Duration::from_secs(2), |s| !s.entered_poll)
+                .unwrap();
+            assert!(!timeout.timed_out() && state.entered_poll);
         }
+        let started = Instant::now();
+        drop(watcher);
+        let elapsed = started.elapsed();
+        drop(peer);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Arc::strong_count(&shared) != 1 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(Arc::strong_count(&shared), 1, "stopped watcher must exit");
+        assert!(
+            elapsed < Duration::from_millis(50),
+            "drop blocked for {elapsed:?}"
+        );
     }
 }

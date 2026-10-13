@@ -154,6 +154,18 @@ fn provider_tool_delta_bytes(
             // MP-08 / MP-10: all clients merge this field as a snapshot.
             // Retain duplicate suppression, but send the cumulative value so
             // streaming never replaces an earlier prefix with a delta slice.
+            if current_len > MAX_PROVIDER_TOOL_STRING_BYTES {
+                output_text = Some(bounded_text_tail_string(
+                    current_bytes,
+                    MAX_PROVIDER_TOOL_STRING_BYTES,
+                    current_len,
+                ));
+                object.insert("chariox_truncated".to_string(), Value::Bool(true));
+                object.insert(
+                    "chariox_original_bytes".to_string(),
+                    Value::Number((current_len as u64).into()),
+                );
+            }
         } else {
             output_text = Some(bounded_text_tail_string(
                 current_bytes,
@@ -589,6 +601,38 @@ mod tests {
             Some("hello world")
         );
         assert_eq!(second.get("chariox_delta").and_then(Value::as_bool), None);
+    }
+
+    // MP-08 / MP-10: reviewer #985 finding 1, exercise both streaming and
+    // the final record-size guard rather than just the intermediate JSON.
+    #[test]
+    fn panes_stream_review_large_append_keeps_latest_output() {
+        let _guard = provider_tool_delta_test_lock().lock().unwrap();
+        reset_provider_tool_delta_gate_for_tests();
+        let mut output = "initial\n".repeat(2_000);
+        for marker in ["latest-one", "latest-two", "latest-three"] {
+            output.push_str(marker);
+            output.push('\n');
+            let bytes =
+                serde_json::json!({"id":"review-large", "status":"running", "output":output})
+                    .to_string();
+            let streamed = terminal_output_delta_bytes(
+                "review-session",
+                "review-run",
+                None,
+                &TerminalOutputKind::ProviderTool,
+                &Some("review-large".into()),
+                bytes.as_bytes(),
+            );
+            let bounded =
+                bounded_terminal_output_bytes(&TerminalOutputKind::ProviderTool, &streamed);
+            assert!(bounded.len() <= MAX_PROVIDER_OUTPUT_RECORD_BYTES);
+            let value: Value = serde_json::from_slice(&bounded).unwrap();
+            assert!(
+                value["output"].as_str().unwrap().contains(marker),
+                "newest streaming output must survive both caps"
+            );
+        }
     }
 
     #[test]

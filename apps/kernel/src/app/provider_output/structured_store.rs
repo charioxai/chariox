@@ -57,12 +57,14 @@ impl StructuredOutputRecordStore {
     }
 
     pub(crate) fn poll_due(&self, provider_run_id: &str, now_ms: u64) -> bool {
-        if self
+        let failed_attempts = self
             .consecutive_poll_failures
             .lock()
             .expect("structured output poll failure map poisoned")
             .get(provider_run_id)
-            .is_some_and(|state| state.attempts >= STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT)
+            .map(|state| state.attempts);
+        if failed_attempts
+            .is_some_and(|attempts| attempts >= STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT)
         {
             return false;
         }
@@ -73,6 +75,16 @@ impl StructuredOutputRecordStore {
             .contains_key(provider_run_id)
         {
             return false;
+        }
+        // Readiness is only a hint. A failed drain retains its retry delay
+        // even if the peer keeps the socket readable (including EOF).
+        if failed_attempts.is_some() {
+            return self
+                .next_poll_due_at_ms
+                .lock()
+                .expect("structured output poll schedule poisoned")
+                .get(provider_run_id)
+                .is_none_or(|due_at_ms| *due_at_ms <= now_ms);
         }
         self.output_ready
             .lock()
@@ -317,6 +329,26 @@ pub(crate) fn structured_output_batch_should_poll_immediately(
 #[cfg(test)]
 mod tests {
     use super::{StructuredOutputRecordStore, STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT};
+
+    // MP-08 / MP-10: reviewer #985 finding 4. A readable failed socket
+    // must not consume its complete retry budget in one pump wake.
+    #[test]
+    fn panes_stream_review_readiness_respects_failure_backoff() {
+        let store = StructuredOutputRecordStore::default();
+        assert_eq!(
+            store.schedule_after_poll_failure_for_prompt("run", Some("prompt"), 1_000),
+            Some(1)
+        );
+        store.mark_output_ready("run".into());
+        assert!(!store.poll_due("run", 1_001));
+        assert!(!store.poll_due("run", 1_499));
+        assert!(store.poll_due("run", 1_500));
+        // The shared pump consumes the due entry before invoking the actor.
+        assert!(store.take_due_provider_run_ids(1_500).contains("run"));
+        assert!(store.poll_due("run", 1_500));
+        store.mark_poll_succeeded("run");
+        assert!(store.poll_due("run", 1_501));
+    }
 
     #[test]
     fn mp10_poll_publication_keeps_prompt_fence_for_immediate_completion() {

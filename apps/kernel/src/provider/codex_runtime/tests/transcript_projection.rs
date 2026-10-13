@@ -543,6 +543,7 @@ fn mcp_tool_progress_is_projected_into_tool_text() {
                 "durationMs": null
             }),
             streamed_output: String::new(),
+            pending_output_bytes: Vec::new(),
             output_stream: None,
             progress_messages: vec!["checking schema".to_string()],
             last_emitted: None,
@@ -587,6 +588,7 @@ fn home_proxy_mcp_tool_is_projected_into_tool_placement() {
                 "result": { "ok": true }
             }),
             streamed_output: String::new(),
+            pending_output_bytes: Vec::new(),
             output_stream: None,
             progress_messages: Vec::new(),
             last_emitted: None,
