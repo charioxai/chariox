@@ -703,9 +703,9 @@ impl CommandRouter {
             return Err(commit_error);
         }
 
-        // Imported profiles start `unknown`, which admits no new work. Refresh each
-        // as a user's Refresh would, independently, and announce it once settled;
-        // provider status probes are bounded, so every refresh settles.
+        // Imported profiles start `unknown`, which admits no new work. Refresh
+        // native observations independently. Setup-token profiles require an
+        // explicit user Refresh; importing must not start a paid model turn.
         if let crate::managed_context::package::ManagedContextImportedProviderAccounts::Selected {
             accounts,
         } = &receipt.provider_accounts

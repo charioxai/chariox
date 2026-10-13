@@ -355,12 +355,10 @@ impl KernelRuntimeOwnedState {
             &self.provider_account_profiles,
             request,
         )?;
-        crate::provider::launch_uses_vault_credential(
-            &self.provider_account_profiles,
+        crate::provider::provider_account_credential_uses_vault(
             &account_owner_user_id,
             &request.provider,
             &request.account_profile,
-            request.client_interface,
         )
     }
 }
@@ -1167,23 +1165,12 @@ mod tests {
                 metadata: None,
             })
             .expect("vault credential should register");
-        let profiles = app.lock().await.provider_account_profile_registry();
-        let uses_vault = |client_interface| {
-            crate::provider::launch_uses_vault_credential(
-                &profiles,
-                crate::session::DEFAULT_LOCAL_USER_ID,
-                "claude",
-                &profile.profile_id,
-                client_interface,
-            )
-            .expect("vault use should resolve")
-        };
-        assert!(uses_vault(
-            crate::provider::ProviderClientInterface::Chariox
-        ));
-        assert!(uses_vault(
-            crate::provider::ProviderClientInterface::NativeTui
-        ));
+        assert!(crate::provider::provider_account_credential_uses_vault(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        )
+        .expect("MP-08/MP-11: a registered credential requires Vault admission for every mode"));
         drop(app);
 
         std::env::remove_var("CHARIOX_HOME");

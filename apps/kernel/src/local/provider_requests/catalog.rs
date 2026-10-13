@@ -385,7 +385,66 @@ pub(crate) fn observe_provider_auth_status_until(
     }
 }
 
+/// Automatic refreshes cannot fetch setup-token usage and must not turn an
+/// already enrolled account into Error because an optional probe failed.
 pub(crate) fn refresh_provider_account_profile_with_config(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    config: &DaemonConfig,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    if let Some(profile) =
+        saved_claude_token_observation(registry, owner_user_id, provider, account_profile)?
+    {
+        return Ok(profile);
+    }
+    refresh_provider_account_profile_explicitly(
+        registry,
+        owner_user_id,
+        provider,
+        account_profile,
+        config,
+    )
+}
+
+fn saved_claude_token_observation(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+) -> Result<Option<crate::account_profile::ProviderAccountProfile>, DaemonError> {
+    let profile = registry.get(owner_user_id, provider, account_profile)?;
+    if crate::provider::canonical_provider_family(provider) == Some("claude")
+        && crate::provider::provider_account_credential_registered(
+            owner_user_id,
+            provider,
+            &profile.profile_id,
+        )?
+    {
+        return Ok(Some(profile));
+    }
+    Ok(None)
+}
+
+/// MP-08 / MP-11: publication startup observes native auth without an optional
+/// usage probe. Enrolled tokens share the automatic refresh's saved-state gate.
+pub(crate) fn refresh_provider_account_auth_with_config(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    config: &DaemonConfig,
+) -> Result<(), DaemonError> {
+    if saved_claude_token_observation(registry, owner_user_id, provider, account_profile)?.is_some()
+    {
+        return Ok(());
+    }
+    observe_provider_auth_status(registry, owner_user_id, provider, account_profile, config)
+        .map(|_| ())
+}
+
+pub(crate) fn refresh_provider_account_profile_explicitly(
     registry: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
     provider: &str,
@@ -490,46 +549,64 @@ fn claude_profile_auth_status(
         )?;
         return Ok(status);
     }
-    let verified = (|| {
-        let secrets = crate::provider::resolve_provider_account_credentials(
-            config,
+    // Local availability says nothing about the enrolled token. In particular,
+    // an idle locked Vault must not erase the previous authentication proof.
+    let secrets = crate::provider::resolve_provider_account_credentials(
+        config,
+        owner_user_id,
+        provider,
+        &profile.profile_id,
+    )?;
+    let executable = resolve_claude_executable()?;
+    let mut environment = profile_environment.clone();
+    for (name, value) in secrets.iter() {
+        environment.insert(name.to_string(), value.to_string());
+    }
+    let checked = crate::provider::verify_claude_setup_token(&executable, &environment);
+    if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
+        zeroize::Zeroize::zeroize(value);
+    }
+    let verified = match checked {
+        Err(error @ crate::provider::ClaudeCredentialCheckError::Inconclusive(_)) => {
+            return Err(error.into_daemon_error())
+        }
+        checked => {
+            // Local unavailability on reread still says nothing about the token.
+            let current = crate::provider::resolve_provider_account_credentials(
+                config,
+                owner_user_id,
+                provider,
+                &profile.profile_id,
+            )?;
+            if current.iter().eq(secrets.iter()) {
+                checked.map_err(|error| error.into_daemon_error())
+            } else {
+                // MP-08 / MP-10 / MP-11: the replacement's verified observation
+                // belongs to its enrollment; this older check cannot downgrade it.
+                return Err(DaemonError::LocalTransport {
+                    operation: "verify Claude setup token",
+                    message:
+                        "Claude setup token changed during verification; refresh the account again"
+                            .into(),
+                });
+            }
+        }
+    };
+    if let Err(error) = verified {
+        // Definitive rejection skips another check of the same credential.
+        // Local and transient failures above preserve the saved observation.
+        registry.update_observation(
             owner_user_id,
             provider,
             &profile.profile_id,
+            crate::account_profile::ProviderAccountAuthState::Expired,
+            None,
+            None,
+            None,
+            None,
         )?;
-        let mut environment = profile_environment.clone();
-        for (name, value) in secrets.iter() {
-            environment.insert(name.to_string(), value.to_string());
-        }
-        let result = resolve_claude_executable().and_then(|executable| {
-            crate::provider::verify_claude_setup_token(&executable, &environment)
-        });
-        if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
-            zeroize::Zeroize::zeroize(value);
-        }
-        result?;
-        // A replacement while the official turn was running must not inherit
-        // the old token's successful observation.
-        let current = crate::provider::resolve_provider_account_credentials(
-            config,
-            owner_user_id,
-            provider,
-            &profile.profile_id,
-        )?;
-        if !current.iter().eq(secrets.iter()) {
-            return Err(DaemonError::LocalTransport {
-                operation: "verify Claude setup token",
-                message:
-                    "Claude setup token changed during verification; refresh the account again"
-                        .into(),
-            });
-        }
-        Ok(())
-    })();
-    // MP-08 / MP-10 / MP-11: locked Vaults, interrupted probes and credential
-    // replacement are not authentication observations. The caller receives
-    // the bounded failure; retain the last verified profile observation.
-    verified?;
+        return Err(error);
+    }
     Ok(ProviderAuthStatus {
         provider: provider.to_string(),
         account_profile: profile.profile_id.clone(),

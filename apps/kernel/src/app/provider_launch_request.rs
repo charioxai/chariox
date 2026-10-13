@@ -314,6 +314,55 @@ mod tests {
     }
 
     #[test]
+    fn token_launch_automatic_refresh_preserves_observation() {
+        crate::test_support::isolated_env_test!();
+        let root =
+            std::env::temp_dir().join(format!("claudesetup-usage-{:016x}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var("CHARIOX_HOME", root.join("home"));
+        let registry = ProviderAccountProfileRegistry::open(root.join("profiles.json")).unwrap();
+        let profile = registry
+            .create_managed("local", "claude", "MP-08-token")
+            .unwrap();
+        let credential_id =
+            crate::provider::provider_account_credential_id("local", "claude", &profile.profile_id);
+        crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .upsert(crate::config::UserCredentialConfig {
+                id: credential_id.clone(),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Vault { key: credential_id },
+                allowed_hosts: vec![],
+                allowed_uses: vec![crate::config::UserCredentialUse::Provider],
+                injection: crate::config::UserCredentialInjectionConfig::Provider,
+                metadata: None,
+            })
+            .unwrap();
+        for alias in ["claude", "claude-p", "claude-headless"] {
+            refresh_provider_usage_before_launch(
+                &registry,
+                "local",
+                alias,
+                &profile.profile_id,
+                crate::session::unix_epoch_ms(),
+                || {
+                    crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                        &registry,
+                        "local",
+                        alias,
+                        &profile.profile_id,
+                        &crate::config::DaemonConfig::for_tests(),
+                    )
+                },
+            )
+            .unwrap();
+            assert_eq!(registry.get("local", alias, &profile.profile_id).unwrap(), profile,
+                "MP-08/MP-11: the shared automatic refresh must preserve token state without a Vault read");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn launch_refreshes_unobserved_usage_before_applying_the_capacity_gate() {
         let root = std::env::temp_dir().join(format!(
             "chariox-provider-launch-usage-refresh-{}-{}",

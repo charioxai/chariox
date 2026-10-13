@@ -14,7 +14,9 @@ case "$1" in
 --version) printf '%s\n' 'Claude test fixture';;
 auth) printf '%s\n' '{"loggedIn":false}'; exit 1;;
 -p)
-  [ "$CLAUDE_CODE_OAUTH_TOKEN" = 'synthetic-accepted' ] || exit 1
+  [ "$CLAUDE_CODE_OAUTH_TOKEN" = 'synthetic-accepted' ] || {
+    printf '%s\n' '{"type":"result","is_error":true,"api_error_status":401}'; exit 1;
+  }
   printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"CHARIOX_AUTH_OK","usage":{"output_tokens":7}}';;
 *) exit 2;;
 esac
@@ -30,6 +32,18 @@ esac
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.credential_vault.backend =
         crate::config::CredentialVaultBackend::ProcessMemory;
+    if recheck == Some("locked-vault") {
+        let path = root.join("vault.json");
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = path.display().to_string();
+        crate::secret::unlock_chariox_encrypted_vault(
+            &path,
+            "synthetic-passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+    }
     let app = crate::DaemonApp::bootstrap(config).unwrap();
     let projection = app.config_projection_store();
     let runtime = runtime(app);
@@ -67,11 +81,194 @@ esac
             ProviderAccountAuthState::Authenticated,
             "MP-08/MP-10/MP-11: stored-token receipt must establish verified authentication"
         );
+        if recheck == Some("concurrent-rejection") {
+            let ready = root.join("check-ready");
+            let release = root.join("check-release");
+            std::fs::write(&executable, format!("#!/bin/sh\ncase \"$1\" in\n--version) echo fixture;;\n*) touch '{}'\nwhile [ ! -f '{}' ]; do sleep 0.02; done\nprintf '%s\\n' '{{\"type\":\"result\",\"is_error\":true,\"api_error_status\":401}}'\nexit 1;;\nesac\n", ready.display(), release.display())).unwrap();
+            let writer_registry = registry.clone();
+            let writer_profile = profile.profile_id.clone();
+            let writer_alias = alias.to_string();
+            let writer_config = projection.snapshot();
+            let writer = std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while !ready.exists() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "MP-08/MP-11: check must begin before replacement"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                crate::provider::store_provider_account_credential(
+                    &writer_config,
+                    "local",
+                    &writer_alias,
+                    &writer_profile,
+                    "synthetic-replacement",
+                    true,
+                )
+                .unwrap();
+                writer_registry
+                    .update_observation(
+                        "local",
+                        &writer_alias,
+                        &writer_profile,
+                        ProviderAccountAuthState::Authenticated,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                std::fs::write(release, "release").unwrap();
+            });
+            let refreshed =
+                crate::local::provider_requests::refresh_provider_account_profile_explicitly(
+                    registry,
+                    "local",
+                    alias,
+                    &profile.profile_id,
+                    &projection.snapshot(),
+                );
+            writer.join().unwrap();
+            assert!(refreshed.is_err());
+            assert_eq!(
+                registry
+                    .get("local", alias, &profile.profile_id)
+                    .unwrap()
+                    .auth_state,
+                ProviderAccountAuthState::Authenticated,
+                "MP-08/MP-11: an old check must preserve the replacement's verified observation"
+            );
+            drop(runtime);
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        if matches!(recheck, Some("transient" | "unexpected-result")) {
+            let before = registry.get("local", alias, &profile.profile_id).unwrap();
+            let response = if recheck == Some("transient") {
+                serde_json::json!({"type":"result", "is_error":true, "api_error_status":503, "num_turns":0,
+                    "result":"synthetic-private-provider-detail"})
+            } else {
+                serde_json::json!({"type":"result", "subtype":"success", "is_error":false, "num_turns":0,
+                    "result":"synthetic-private-provider-detail", "usage":{"output_tokens":0}})
+            };
+            std::fs::write(
+                &executable,
+                format!("#!/bin/sh\nprintf '%s\\n' '{response}'\n"),
+            )
+            .unwrap();
+            let config = projection.snapshot();
+            let error = crate::local::provider_requests::observe_provider_auth_status(
+                registry,
+                "local",
+                alias,
+                &profile.profile_id,
+                &config,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains("inconclusive")
+                    && error.contains("turns=0; valid_single_turn=false"),
+                "MP-08/MP-11: classify unverifiable turns: {error}"
+            );
+            assert!(!error.contains("synthetic-private-provider-detail"));
+            assert_eq!(
+                registry.get("local", alias, &profile.profile_id).unwrap(),
+                before
+            );
+            let error =
+                crate::local::provider_requests::refresh_provider_account_profile_explicitly(
+                    registry,
+                    "local",
+                    alias,
+                    &profile.profile_id,
+                    &config,
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("inconclusive"));
+            assert_eq!(
+                registry.get("local", alias, &profile.profile_id).unwrap(),
+                before
+            );
+            drop(runtime);
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        if recheck == Some("automatic") {
+            let before = registry.get("local", alias, &profile.profile_id).unwrap();
+            // If an automatic call attempts another paid turn, this unavailable
+            // executable makes the regression fail without waiting for timeout.
+            std::fs::remove_file(&executable).unwrap();
+            for _ in 0..3 {
+                let refreshed =
+                    crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                        registry,
+                        "local",
+                        alias,
+                        &profile.profile_id,
+                        &projection.snapshot(),
+                    )
+                    .expect("MP-08/MP-11: automatic refresh must not run token verification");
+                assert_eq!(refreshed, before);
+            }
+            drop(runtime);
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        if matches!(recheck, Some("locked-vault" | "missing-executable")) {
+            let before = registry.get("local", alias, &profile.profile_id).unwrap();
+            if recheck == Some("locked-vault") {
+                crate::secret::lock_chariox_encrypted_vault(root.join("vault.json")).unwrap();
+            } else {
+                std::fs::remove_file(&executable).unwrap();
+            }
+            let config = projection.snapshot();
+            assert!(
+                crate::local::provider_requests::observe_provider_auth_status(
+                    registry,
+                    "local",
+                    alias,
+                    &profile.profile_id,
+                    &config
+                )
+                .is_err()
+            );
+            assert_eq!(registry.get("local", alias, &profile.profile_id).unwrap(), before,
+                "MP-08/MP-11: unavailable local verification must preserve the enrolled observation");
+            assert!(
+                crate::local::provider_requests::refresh_provider_account_profile_explicitly(
+                    registry,
+                    "local",
+                    alias,
+                    &profile.profile_id,
+                    &config
+                )
+                .is_err()
+            );
+            assert_eq!(
+                registry.get("local", alias, &profile.profile_id).unwrap(),
+                before
+            );
+            registry
+                .require_authenticated(
+                    "local",
+                    alias,
+                    &profile.profile_id,
+                    Some("haiku"),
+                    "MP-08 locked-vault regression",
+                )
+                .unwrap();
+            drop(runtime);
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
         if let Some(case) = recheck {
             if case == "revoked" {
                 // A definitive provider refusal after enrollment, without
                 // changing the stored token or touching a real login.
-                std::fs::write(&source, "#!/bin/sh\ncase \"$1\" in\n--version) echo fixture;;\nauth) echo '{\"loggedIn\":false}'; exit 1;;\n*) exit 1;;\nesac\n").unwrap();
+                std::fs::write(&source, "#!/bin/sh\ncase \"$1\" in\n--version) echo fixture;;\nauth) echo '{\"loggedIn\":false}'; exit 1;;\n*) echo '{\"type\":\"result\",\"is_error\":true,\"api_error_status\":401}'; exit 1;;\nesac\n").unwrap();
                 assert!(std::process::Command::new("install")
                     .args(["-m", "700"])
                     .arg(&source)
@@ -105,7 +302,7 @@ esac
                 }
             }
             let refresh =
-                crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                crate::local::provider_requests::refresh_provider_account_profile_explicitly(
                     registry,
                     "local",
                     alias,
@@ -116,13 +313,13 @@ esac
                 refresh.is_err(),
                 "MP-08/MP-11: Refresh must verify the current token ({case})"
             );
-            assert_ne!(
+            assert_eq!(
                 registry
                     .get("local", alias, &profile.profile_id)
                     .unwrap()
                     .auth_state,
-                ProviderAccountAuthState::Authenticated,
-                "MP-08/MP-11: failed verification must close launch admission"
+                ProviderAccountAuthState::Expired,
+                "MP-08/MP-11: definitive rejection must skip a second paid first-use check"
             );
             registry
                 .update_observation(
@@ -147,12 +344,13 @@ esac
                 status.is_err(),
                 "MP-08/MP-11: Status must verify the current token ({case})"
             );
-            assert_ne!(
+            assert_eq!(
                 registry
                     .get("local", alias, &profile.profile_id)
                     .unwrap()
                     .auth_state,
-                ProviderAccountAuthState::Authenticated
+                ProviderAccountAuthState::Expired,
+                "MP-08/MP-11: rejected Status must agree with first-use recovery"
             );
             drop(runtime);
             std::fs::remove_dir_all(root).unwrap();
@@ -164,7 +362,7 @@ esac
             .last_validated_at_ms;
         for provider in ["claude", "claude-p", "claude-headless"] {
             let refreshed =
-                crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                crate::local::provider_requests::refresh_provider_account_profile_explicitly(
                     registry,
                     "local",
                     provider,
@@ -208,7 +406,7 @@ esac
             )
             .unwrap();
         let recovered =
-            crate::local::provider_requests::refresh_provider_account_profile_with_config(
+            crate::local::provider_requests::refresh_provider_account_profile_explicitly(
                 registry,
                 "local",
                 alias,
@@ -271,6 +469,11 @@ async fn refresh_rechecks_revoked_setup_token() {
     enrollment("claude-p", true, Some("revoked")).await;
 }
 #[tokio::test]
+async fn rejected_check_does_not_expire_a_concurrent_replacement() {
+    crate::test_support::isolated_env_test!();
+    enrollment("claude-p", true, Some("concurrent-rejection")).await;
+}
+#[tokio::test]
 async fn refresh_rechecks_replaced_setup_token() {
     crate::test_support::isolated_env_test!();
     enrollment("claude-headless", true, Some("replaced")).await;
@@ -279,6 +482,36 @@ async fn refresh_rechecks_replaced_setup_token() {
 async fn refresh_rechecks_token_after_native_observation() {
     crate::test_support::isolated_env_test!();
     enrollment("claude", true, Some("native-observation")).await;
+}
+
+#[tokio::test]
+async fn status_and_refresh_preserve_authentication_with_locked_vault() {
+    crate::test_support::isolated_env_test!();
+    enrollment("claude-p", true, Some("locked-vault")).await;
+}
+
+#[tokio::test]
+async fn status_and_refresh_preserve_authentication_without_executable() {
+    crate::test_support::isolated_env_test!();
+    enrollment("claude-headless", true, Some("missing-executable")).await;
+}
+
+#[tokio::test]
+async fn automatic_refresh_does_not_verify_setup_token_or_change_observation() {
+    crate::test_support::isolated_env_test!();
+    enrollment("claude-p", true, Some("automatic")).await;
+}
+
+#[tokio::test]
+async fn explicit_status_preserves_authentication_on_transient_provider_failure() {
+    crate::test_support::isolated_env_test!();
+    enrollment("claude-p", true, Some("transient")).await;
+}
+
+#[tokio::test]
+async fn explicit_status_preserves_authentication_on_unexpected_verification_result() {
+    crate::test_support::isolated_env_test!();
+    enrollment("claude-headless", true, Some("unexpected-result")).await;
 }
 
 fn runtime(app: crate::DaemonApp) -> KernelRuntimeState {
