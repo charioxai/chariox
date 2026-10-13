@@ -436,6 +436,7 @@ export type SessionBinding = {
 }
 
 export type BootstrapDeferredState = {
+  waitingRoomDefaults?: Promise<{ provider?: string; model?: string; effort?: string }>
   providerCatalog?: Promise<ProviderCatalog>
   providerCommandCatalogs?: Promise<ProviderCommandCatalogs>
   terminalCommandCatalog?: Promise<TerminalCommandCatalog>

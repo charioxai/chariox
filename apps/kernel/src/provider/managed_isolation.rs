@@ -144,7 +144,7 @@ const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
     "CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY",
 ];
 
-#[cfg(target_os = "linux")]
+// MP-08 / MP-11: also read on every platform by provider_account_environment_on_kernel.
 const PROVIDER_ACCOUNT_PATH_ENVIRONMENT: &[&str] = &[
     "CODEX_HOME",
     "CLAUDE_CONFIG_DIR",
@@ -455,6 +455,40 @@ fn validate_preparation_home_directory(
     let _ = (metadata, label, private);
 
     Ok(())
+}
+
+/// MP-08 / MP-10 / MP-11: recover host account roots from the existing
+/// managed launch record, whose parent environment intentionally scrubs them.
+pub(crate) fn provider_account_environment_on_kernel(
+    run: &RuntimeProviderRun,
+) -> BTreeMap<String, String> {
+    let mut environment = run
+        .pty_env()
+        .iter()
+        .filter(|(name, _)| PROVIDER_ACCOUNT_PATH_ENVIRONMENT.contains(&name.as_str()))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let args = run.pty_args();
+    let separator = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    let options = &args[..separator];
+    if !options
+        .windows(3)
+        .any(|args| args == ["--setenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV, "1"])
+    {
+        return environment;
+    }
+    for setting in options.windows(3).filter(|args| {
+        args[0] == "--setenv" && PROVIDER_ACCOUNT_PATH_ENVIRONMENT.contains(&args[1].as_str())
+    }) {
+        let value = provider_reported_path_binding(run, &setting[2])
+            .map(|(path, _)| path.display().to_string())
+            .unwrap_or_else(|| setting[2].clone());
+        environment.insert(setting[1].clone(), value);
+    }
+    environment
 }
 
 pub(crate) fn provider_reported_transcript_on_kernel(

@@ -7,6 +7,12 @@ import { join } from 'node:path'
 import { signalViolations, lintProcessSignals, repositorySignalLint } from './lint-process-signals.mjs'
 
 for (const [kind, source] of [
+  ['node-group', 'process.kill(0, "SIGTERM")'],
+  ['node-group', 'process.kill(-x, "SIGTERM")'],
+  ['python-group', 'os.kill(-pgid, signal.SIGTERM)'],
+  ['python-group', 'os.kill(0, signal.SIGTERM)'],
+  ['shell-group', 'kill -- -"$pgid"'],
+  ['shell-group', 'kill -TERM 0'],
   ['node-group', 'process.kill(-child.pid, "SIGTERM")'],
   ['node-group', 'process . kill ( -(pid), "SIGKILL")'],
   ['node-group', 'process["kill"](-pgid, "SIGTERM")'],
@@ -53,4 +59,12 @@ test('MP-11 explicit allowlist requires exact site, reason and occurrence count'
 test('MP-11 repository signal lint is enforced in the CI Node test entry', () => {
   const result = repositorySignalLint()
   assert.deepEqual(result.failures, [])
+})
+
+test('MP-11 signal lint inspects extensionless executable scripts', () => {
+  const root = mkdtempSync(join(tmpdir(), 'chariox-signal-extensionless-'))
+  try {
+    writeFileSync(join(root, 'fixture'), '#!/bin/sh\nkill -TERM 0\n')
+    assert.equal(lintProcessSignals({root, files:['fixture']}).violationCount, 1)
+  } finally { rmSync(root, {recursive:true}) }
 })

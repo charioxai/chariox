@@ -422,7 +422,7 @@ impl KernelRuntimeState {
                         }
                     }
                     _ => Err(store::error(
-                        "workflow notification requires peer protocol 98",
+                        "workflow notification requires peer protocol 101",
                     )),
                 }
             })

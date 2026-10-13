@@ -93,7 +93,8 @@ impl CodexClient {
             self.log_thread_config_overrides("thread/start", &config_overrides);
             params["config"] = json!(config_overrides);
         }
-        if self.metadata_only_discovery {
+        // MP-08 / MP-11: Isolated discovery settles native notifications; no rollout is required.
+        if self.read_only_discovery_permissions {
             params["ephemeral"] = json!(true);
             params["persistExtendedHistory"] = json!(false);
         }

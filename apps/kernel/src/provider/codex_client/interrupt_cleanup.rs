@@ -21,7 +21,8 @@ impl CodexClient {
         let cleanup_id = interrupt_id + 1;
         *next_request_id += 2;
         // Two documented requests, in wire order, on the existing connection.
-        // JSON-RPC replies can arrive in either order; neither ACK is optional.
+        // JSON-RPC replies can arrive in either order. Cleanup is best effort;
+        // an acknowledged interrupt remains authoritative if cleanup is refused.
         for (id, method, params) in [
             (
                 interrupt_id,
@@ -55,12 +56,19 @@ impl CodexClient {
         while interrupt_result.is_none() || cleanup_result.is_none() {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
+                if interrupt_result.as_ref().is_some_and(Result::is_ok) {
+                    return Ok(());
+                }
                 return Err(self.protocol_error(
                     "codex_read",
                     "timed out awaiting interrupt/terminal cleanup replies".into(),
                 ));
             }
-            let raw = self.read_next_message(socket, remaining)?;
+            let raw = match self.read_next_message(socket, remaining) {
+                Ok(raw) => raw,
+                Err(_) if interrupt_result.as_ref().is_some_and(Result::is_ok) => return Ok(()),
+                Err(error) => return Err(error),
+            };
             let message: JsonRpcMessage = serde_json::from_str(&raw)
                 .map_err(|error| self.protocol_error("codex_read_parse", error.to_string()))?;
             if self.respond_to_server_request(socket, &message)? {
@@ -91,12 +99,14 @@ impl CodexClient {
                 buffered_notifications.push(notification);
             }
         }
-        cleanup_result.unwrap()?;
-        crate::logging::debug_with_fields(
-            "daemon.provider.codex",
-            "codex thread terminals cleaned trace",
-            json!({"provider_run_id":self.provider_run_id}),
-        );
-        interrupt_result.unwrap()
+        interrupt_result.unwrap()?;
+        if let Err(error) = cleanup_result.unwrap() {
+            crate::logging::warn_with_fields(
+                "daemon.provider.codex",
+                "codex thread terminal cleanup failed after acknowledged interrupt",
+                json!({"provider_run_id":self.provider_run_id,"error":error.to_string()}),
+            );
+        }
+        Ok(())
     }
 }

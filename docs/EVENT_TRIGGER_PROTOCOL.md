@@ -1,6 +1,6 @@
 # Event trigger protocol
 
-Status: implementation contract; local daemon protocol 437 (MP-08 / MP-10).
+Status: implementation contract; local daemon protocol 491 (MP-08 / MP-10).
 
 ## Boundaries
 
@@ -12,7 +12,7 @@ Agents never own subscriptions or emit workflow notifications.
 
 Protocol 365 retired direct AEGS-to-workflow bindings and their create/list/status/
 transfer/test requests, exported binding templates, `event_context`, `event_action`
-and reply tools. Protocol 437 explicitly amends the Apps-only rule to admit private
+and reply tools. Protocol 491 explicitly amends the Apps-only rule to admit private
 workflow sources. It does not restore direct AEGS bindings. AEGS implementations
 normalize provider events; AEDS routes these to App inboxes only. The kernel owns
 all inbox acceptance, queue admission, dispatch and run state.
@@ -93,7 +93,7 @@ App adapter has narrower 64 KiB payload/prompt ceilings; it does not silently
 truncate. Artifact references are metadata and confer no file, URL or credential
 access.
 
-## Private workflow notifications (local 483 / peer 82; MP-08 / MP-10 / MP-11)
+## Private workflow notifications (local 491 / peer 101, developed as 483 / 82; MP-08 / MP-10 / MP-11)
 
 Workflows are a second source kind beside Apps. `RegisterWorkflowNotificationSource
 {session_id, workflow_ref, enabled, output_fields?}` controls **Send notifications
@@ -145,10 +145,10 @@ A 256-entry bound drops with its own diagnostic. These rules apply across kernel
 and arbitrary local graph changes, including A→B→A and A→B→C→A.
 
 The named notification router uses direct delivery locally and the existing E2EE
-relay peer channel remotely. Peer 82 adds `ListWorkflowNotificationSources`,
+relay peer channel remotely. Peer 101 (developed as 82) adds `ListWorkflowNotificationSources`,
 `SubscribeWorkflowNotifications {source_workflow_ref, target_ref}`,
 `UnsubscribeWorkflowNotifications` and `DeliverWorkflowNotification`. Each request
-carries `protocol_version:82`; incompatible peers fail before activation. Remote
+carries the current peer `protocol_version` (101); incompatible peers fail before activation. Remote
 requests require an unexpired sender-key-bound kernel or machine identity, matching
 realm and owner. The relay authenticates the registered sender kernel; Kernel claims
 also require an exact canonical sender subject. Existing home-kernel peer requests
@@ -210,7 +210,7 @@ Refusal leaves no delivery receipt; completion retains a visible
 `workflow_notification_prompt_limit` diagnostic. At most 32 artifacts remain metadata only: no fetch,
 host-file read or provider attachment promotion. There are at most 1,024 local sources
 and active subscriptions per owner, 32 subscribers per source, 1,024 pending receipts
-and 16 MiB pending payload per kernel, measured as UTF-8 bytes for both new and
+and 16 MiB pending payload per subscription, measured as UTF-8 bytes for both new and
 already retained envelopes. Oversize/backpressure is diagnostic and cannot
 roll back successful workflow completion. Legacy accepted bytes retain their original
 TTL; editing a binding's TTL affects new occurrences only, and admission of older
@@ -333,3 +333,8 @@ exclude prompts, artifacts, and credentials.
 Errors have stable codes and a `retryable` flag. Version negotiation rejects a peer
 whose major protocol version is unsupported. Readiness means durable storage is
 writable; liveness only means the process event loop is responsive.
+
+MP-08 / MP-11: completion-occurrence diagnostics retain the most recent 4,096
+rows across the kernel. Upgrade, capture and sweep bound this window; durable
+terminal run state retains completion deduplication, and pending App receipts
+are independent of diagnostic retention.

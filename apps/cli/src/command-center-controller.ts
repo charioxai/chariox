@@ -128,20 +128,13 @@ export function createCommandCenterController<TBox = unknown>(
       return
     }
 
-    const clearsBeforeExecution = item.kind === "command" || item.kind === "group"
+    // Consume this choice before awaiting transport so later typing remains a new draft.
+    clear()
+    replacePromptText("")
     try {
-      if (clearsBeforeExecution) {
-        clear()
-        replacePromptText("")
-      }
       await options.executeCommand(command)
     } catch (error) {
       options.onCommandError(error)
-    } finally {
-      if (!clearsBeforeExecution) {
-        replacePromptText("")
-        sync("")
-      }
     }
   }
 

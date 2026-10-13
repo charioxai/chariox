@@ -102,11 +102,7 @@ impl KernelRuntimeOwnedState {
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
     ) -> bool {
-        let error = self.provider_account_profiles.require_agent_authenticated(
-            &self.config_projection.snapshot(),
-            agent,
-            operation,
-        );
+        let error = self.require_agent_account_authenticated(agent, None, operation);
         let Err(error) = error else {
             return true;
         };

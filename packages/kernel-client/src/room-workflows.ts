@@ -1,6 +1,6 @@
 import type { RoomWorkflowInventory, RoomWorkflowSummary, RoomWorkflowRunAction } from "./kernel-types.js"
 
-export const ROOM_WORKFLOWS_MIN_PROTOCOL = 495
+export const ROOM_WORKFLOWS_MIN_PROTOCOL = 491
 
 export function roomWorkflowRows(inventory: RoomWorkflowInventory) {
   return inventory.workflows.flatMap(workflow => workflow.endpoints.map(endpoint => ({

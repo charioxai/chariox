@@ -4,9 +4,9 @@ import test from "node:test"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { activePromptSteeringMinimumProtocolVersion, respondToInteractionRequest, steerActivePromptRequest } from "./ipc-terminal-runtime-requests.js"
 
-test("MP-08 MP-10 protocol 495 atomically admits steering against a home prompt", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 499)
-  assert.equal(activePromptSteeringMinimumProtocolVersion, 495)
+test("MP-08 MP-10 protocol 491 atomically admits steering against a home prompt", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 491)
+  assert.equal(activePromptSteeringMinimumProtocolVersion, 491)
   assert.deepEqual(steerActivePromptRequest("s", "a", "agent", "home-prompt", "new direction", []), {
     SteerActivePrompt: { session_id: "s", attachment_id: "a", target_agent_id: "agent",
       expected_active_prompt_id: "home-prompt", prompt: "new direction", attachments: [] },
@@ -14,7 +14,7 @@ test("MP-08 MP-10 protocol 495 atomically admits steering against a home prompt"
 })
 
 test("protocol 392: a critical approval carries the passkey and an optional remember window", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 499)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 491)
   assert.deepEqual(respondToInteractionRequest("s", "i", "deny"), {
     RespondToInteraction: { session_id: "s", interaction_id: "i", choice_id: "deny", custom_reply: null },
   })
@@ -30,7 +30,7 @@ test("protocol 392: a critical approval carries the passkey and an optional reme
 // MP-08 / MP-10 / MP-11: preserve legacy cancellation, pin the new optional field.
 test("MP-08 MP-10 exact cancellation forwards the home prompt with protocol499", async () => {
   const r = await import("./ipc-terminal-runtime-requests.js")
-  assert.equal(r.exactPromptCancellationMinimumProtocolVersion, 499)
+  assert.equal(r.exactPromptCancellationMinimumProtocolVersion, 491)
   assert.equal(r.cancelActivePromptRequest("s", "a", "agent", "").CancelActivePrompt.expected_prompt_id, "")
   assert.deepEqual(r.cancelActivePromptRequest("s", "a", "agent", "prompt"), {
     CancelActivePrompt: { session_id: "s", attachment_id: "a", target_agent_id: "agent", expected_prompt_id: "prompt" },

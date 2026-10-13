@@ -10,13 +10,13 @@ export function signalViolations(source) {
   const sites = []
   const rules = [
     ['node-group', /process\s*(?:\.\s*kill|\[\s*['"]kill['"]\s*\])\s*\(\s*([^,)]+)(?:,\s*([^)]*))?\)/g,
-      match => /-|\b(?:group\w*|\w*(?:[Gg]roup|[Pp]gid)\w*)\b/.test(match[1])],
+      match => /^[01]$/.test(match[1].trim()) || /-|\b(?:group\w*|\w*(?:[Gg]roup|[Pp]gid)\w*)\b/.test(match[1])],
     ['node-alias', /\b(?:\w+\s*=\s*process\s*\.\s*kill|process\s*\.\s*kill\s*[,}])/g],
     ['node-owned-numeric', /\b(?:signalOwnedProcess(?:Group)?|ownedProcessGroupExists)\s*\(\s*((?:[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*\s*\.\s*pid)\b|(?:pid|pgid|groupId|processGroupId|group)\b|[-+]?\d+\b)/g],
     ['python-owned-numeric', /\b(?:owned_signals|owned)\s*\.\s*(?:group|pid)\s*\(\s*(?:[\w.]+\.pid\b|(?:pid|pgid|browser_pid)\b|os\.(?:getpid|getpgrp)\s*\(|[-+]?\d+\b)/g],
-    ['python-group', /\bos\s*\.\s*killpg\b/g],
+    ['python-group', /\bos\s*\.\s*(?:killpg\b|kill\s*\(\s*(?:-[^,]+|[01])\s*,)/g],
     ['name-signal', /\b(?:pkill|killall)\b/g],
-    ['shell-group', /\bkill\s+(?:-s\s+\S+|-(?:SIG)?[A-Z0-9]+)\s+(?:--\s+)?["'\\]*-(?:\$|[0-9])/g],
+    ['shell-group', /\bkill\s+(?:(?:-s\s+\S+|-(?:SIG)?[A-Z0-9]+)\s+(?:--\s+)?(?:["'\\]*-["'\\]*(?:\$|[0-9])|[01](?=\s|$|[;'")]))|--\s+["'\\]*-["'\\]*(?:\$|[0-9]))/g],
   ]
   for (const [kind, pattern, predicate] of rules) {
     for (const match of source.matchAll(pattern)) {
@@ -33,7 +33,7 @@ export function lintProcessSignals({ root, files, allowlist = { sites: [], guard
   const failures = [], allowed = [], used = new Map(), guardsUsed = new Set()
   let count = 0
   for (const path of files) {
-    if (!/\.(?:[cm]?js|tsx?|py|sh|bash)$/.test(path)) continue
+    if (/\.[^/]+$/.test(path) && !/\.(?:[cm]?js|tsx?|py|sh|bash)$/.test(path)) continue
     const source = readFileSync(resolve(root, path), 'utf8')
     const sites = signalViolations(source)
     count += sites.length

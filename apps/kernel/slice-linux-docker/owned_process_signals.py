@@ -16,7 +16,6 @@ from dataclasses import dataclass
 class _Launch:
     pid: int
     start: str
-    session: str = None
 
 
 def valid_id(pid):
@@ -35,18 +34,18 @@ def process_snapshot():
                 text = (entry / "stat").read_text()
                 fields = text[text.rindex(")") + 2:].split()
                 rows.append(dict(pid=int(entry.name), ppid=int(fields[1]),
-                                 pgid=int(fields[2]), sid=int(fields[3]), start=fields[19]))
+                                 pgid=int(fields[2]), sid=int(fields[3]), start=fields[19], state=fields[0]))
             except (FileNotFoundError, ProcessLookupError):
                 pass
         return rows
     if sys.platform != "darwin":
         raise ValueError("owned group inspection is unsupported on this platform")
-    text = subprocess.check_output(["/bin/ps", "-axo", "pid=,ppid=,pgid=,sess=,lstart="],
+    text = subprocess.check_output(["/bin/ps", "-axo", "pid=,ppid=,pgid=,lstart="],
                                    text=True, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"})
     rows = []
     for line in text.splitlines():
-        pid, ppid, pgid, session, start = line.split(maxsplit=4)
-        rows.append(dict(pid=int(pid), ppid=int(ppid), pgid=int(pgid), session=session, start=start))
+        pid, ppid, pgid, start = line.split(maxsplit=3)
+        rows.append(dict(pid=int(pid), ppid=int(ppid), pgid=int(pgid), start=start))
     return rows
 
 
@@ -89,8 +88,7 @@ class OwnedProcesses:
                             leader = live.get(root.pid)
                             if not self.matches(leader) or leader["start"] != root.start:
                                 continue
-                            if (leader.get("sid") == root.pid and row.get("sid") == root.pid
-                                    or root.session and row.get("session") == root.session):
+                            if leader.get("sid") == root.pid and row.get("sid") == root.pid:
                                 launch = root
                                 break
                     if launch is not None:
@@ -112,8 +110,7 @@ class OwnedProcesses:
                 raise ValueError("unowned reused process identity")
             self.refresh(rows)
             launch = previous if previous is not None and previous.start == row["start"] else _Launch(
-                pid, row["start"], row.get("session") if row.get("session")
-                and row["pgid"] == pid and os.getsid(pid) == pid else None)
+                pid, row["start"])
             self.handles.add(launch)
             self.roots[pid] = launch
             self.owned[pid] = (row["start"], launch)

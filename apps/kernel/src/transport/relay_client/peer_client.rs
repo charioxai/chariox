@@ -231,8 +231,9 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
     let expected_kernel_id = if let Some(id) = target.daemon_id.as_deref() {
         canonical_peer_daemon_id(id).unwrap_or(id).to_string()
     } else if let Some(alias) = target.daemon_alias.as_deref() {
-        let discovery_config = super::remote_inventory::metadata_discovery_config(config).await?;
-        let peer = relay_discovery::get_live_kernel(&discovery_config, alias).await?;
+        let discovery =
+            crate::runtime::cloud_api_client::relay_metadata_discovery_config(config).await?;
+        let peer = relay_discovery::get_live_kernel(&discovery, alias).await?;
         authorize()?;
         if peer.public_key != target_public_key {
             return Err(DaemonError::LocalTransport {
@@ -515,9 +516,9 @@ pub(crate) async fn enqueue_peer_request_via_connected_relay_authorized(
             if stale_public_key.is_some() {
                 state.write().await.forget_peer_public_key(&target_ref);
             }
-            let discovery_config =
-                super::remote_inventory::metadata_discovery_config(config).await?;
-            let kernel = relay_discovery::get_live_kernel(&discovery_config, &target_ref).await?;
+            let discovery =
+                crate::runtime::cloud_api_client::relay_metadata_discovery_config(config).await?;
+            let kernel = relay_discovery::get_live_kernel(&discovery, &target_ref).await?;
             authorize()?;
             let public_key = kernel.public_key;
             relay_crypto::decode_public_key(&public_key)?;
@@ -805,7 +806,10 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
             operation: "send relay peer request",
             message: "relay_token is not configured".to_string(),
         })?;
-    let discovery_config = super::remote_inventory::metadata_discovery_config(config).await?;
+    // MP-08 / MP-10 / MP-11: temporary peer discovery must use a metadata
+    // grant, while registration below retains the original kernel grant.
+    let discovery_config =
+        crate::runtime::cloud_api_client::relay_metadata_discovery_config(config).await?;
     #[cfg(test)]
     let kernel = {
         let peer_call_id = test_trace.peer_call_id();
@@ -845,16 +849,20 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     let connect_timeout = response_timeout
         .map(|deadline| deadline.min(transport_timeout))
         .unwrap_or(transport_timeout);
-    let (mut socket, _) = timeout(connect_timeout, connect_async(&relay_url))
-        .await
-        .map_err(|_| DaemonError::LocalTransport {
-            operation: "connect temporary relay peer socket",
-            message: format!("timed out after {}ms", connect_timeout.as_millis()),
-        })?
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "connect temporary relay peer socket",
-            message: error.to_string(),
-        })?;
+    let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
+    let (mut socket, _) = timeout(
+        connect_timeout,
+        connect_async(chariox_relay::frame_transport::transport_url(&relay_url)),
+    )
+    .await
+    .map_err(|_| DaemonError::LocalTransport {
+        operation: "connect temporary relay peer socket",
+        message: format!("timed out after {}ms", connect_timeout.as_millis()),
+    })?
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "connect temporary relay peer socket",
+        message: error.to_string(),
+    })?;
     #[cfg(test)]
     test_trace.record(
         "registered_peer_socket_connected",
@@ -935,7 +943,8 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
         })?;
     let read_response = async {
         loop {
-            match socket.next().await {
+            match chariox_relay::frame_transport::read_message(&mut socket, &mut relay_frames).await
+            {
                 Some(Ok(Message::Text(text))) => {
                     let envelope =
                         serde_json::from_str::<RelayEnvelope>(&text).map_err(|error| {

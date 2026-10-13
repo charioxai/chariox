@@ -198,7 +198,7 @@ impl KernelRuntimeOwnedState {
         Ok(run)
     }
 
-    fn provider_run_for_activation(
+    pub(super) fn provider_run_for_activation(
         &self,
         session_id: &str,
         provider_run_id: &str,
@@ -269,7 +269,7 @@ impl KernelRuntimeOwnedState {
                 run.provider(),
                 Some(run.model().to_string()),
                 run.variant().map(str::to_string),
-                Some(run.account_profile().to_string()),
+                Some(crate::account_profile::provider_account_selection_for_run(&run).to_string()),
                 run.resume_state().clone(),
                 Some(run.id()),
                 None,

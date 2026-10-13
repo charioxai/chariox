@@ -164,7 +164,6 @@ fn generated_interrupt_fixture(case: RaceCase) {
             }
             socket.flush().unwrap();
         }
-        drop(emit);
         if actual_interrupts > 0 {
             active_actual = false;
         }

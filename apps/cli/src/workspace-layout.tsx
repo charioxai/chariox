@@ -1,5 +1,6 @@
 import type { KeyBinding, RGBA } from "@opentui/core"
 import { For, Show, type JSX } from "solid-js"
+import { TUI_MOUSE_ENABLED } from "./terminal-mouse-policy.js"
 
 import { PaneGridBorderChars, theme } from "./theme.js"
 
@@ -65,6 +66,7 @@ export type WorkspaceLayoutProps = {
   onKernelApprovalBannerRef: RefHandler
   onKernelApprovalBoxRef: RefHandler
   onPasskeyPopupBoxRef: RefHandler
+  onProviderAccountRecoveryBoxRef?: RefHandler | undefined
 }
 
 export function WorkspaceLayout(props: WorkspaceLayoutProps) {
@@ -103,7 +105,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                 paddingRight: 0,
               }}
               verticalScrollbarOptions={{
-                visible: true,
+                visible: TUI_MOUSE_ENABLED,
                 paddingLeft: 0,
                 trackOptions: {
                   backgroundColor: palette().backgroundElement,
@@ -157,7 +159,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                 paddingRight: 0,
               }}
               verticalScrollbarOptions={{
-                visible: true,
+                visible: TUI_MOUSE_ENABLED,
                 paddingLeft: 0,
                 trackOptions: {
                   backgroundColor: palette().backgroundElement,
@@ -377,6 +379,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
         left={0}
         top={0}
       />
+      <box {...(props.onProviderAccountRecoveryBoxRef ? { ref: props.onProviderAccountRecoveryBoxRef } : {})} position="absolute" left={0} top={0} />
       <box ref={props.onKernelApprovalBoxRef} position="absolute" left={0} top={0} />
       <box ref={props.onPasskeyPopupBoxRef} position="absolute" left={0} top={0} />
     </box>

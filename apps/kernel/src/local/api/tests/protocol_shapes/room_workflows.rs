@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn room_workflows_protocol_439_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 499);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
     let room = crate::session::RuntimeSession::new(
         "room",
         None,
@@ -60,5 +60,48 @@ fn room_workflows_protocol_439_shapes_are_versioned() {
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())),
         "70e713e4004e92d4c741af4a4da84a07697841138c68fab3f1d1b1d0f42c5e7c"
+    );
+}
+
+#[test]
+fn mp08_mp11_session_state_and_snapshot_hash_required_room_workflows() {
+    let room = crate::session::RuntimeSession::new(
+        "room",
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "home",
+    );
+    let inventory = crate::runtime::projection::RoomWorkflowInventory::project(&room, "local");
+    let state = LocalDaemonResponse::SessionState {
+        room_workflows: inventory.clone(),
+        session: room.clone(),
+        agent_activity: std::collections::BTreeMap::new(),
+        agent_activity_revision: 0,
+    };
+    let event = crate::transport::kernel_protocol::KernelEvent::SessionSnapshot {
+        room_workflows: inventory,
+        session: Box::new(room),
+        provider_run: Box::new(None),
+        agent_activity: Box::new(std::collections::BTreeMap::new()),
+        agent_activity_revision: 0,
+    };
+    let mut state = serde_json::to_value(state).unwrap();
+    let mut event = serde_json::to_value(event).unwrap();
+    // Session timestamps and nested session fields have independent contracts;
+    // this hash fences the required outer snapshot projection at protocol 491.
+    state["SessionState"]["session"] = serde_json::Value::Null;
+    event["session"] = serde_json::Value::Null;
+    assert!(state["SessionState"]
+        .as_object()
+        .unwrap()
+        .contains_key("room_workflows"));
+    assert!(event.as_object().unwrap().contains_key("room_workflows"));
+    let shape = serde_json::json!({"state":state,"event":event});
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())),
+        "503a28a5f32edec28c1939c6f58934567598b16936b8c56bd16099930d6fb1ae"
     );
 }

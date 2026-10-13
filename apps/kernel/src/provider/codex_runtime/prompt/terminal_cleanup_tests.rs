@@ -53,8 +53,11 @@ fn mp08_terminal_cleanup_retains_cancellation_on_error_and_cleans_idle_thread() 
             let result = abort_codex_turn("owned-run", &mut state);
             close.shutdown(Shutdown::Both).unwrap();
             server.join().unwrap();
-            assert_eq!(result.is_err(), failed);
-            assert_eq!(state.active_turn_id.is_some(), active && failed);
+            assert!(
+                result.is_ok(),
+                "cleanup refusal cannot undo an interrupt ACK: {result:?}"
+            );
+            assert!(state.active_turn_id.is_none());
         }
     }
 }

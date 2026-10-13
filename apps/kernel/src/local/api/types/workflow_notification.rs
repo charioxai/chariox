@@ -1,4 +1,4 @@
-//! Protocol 495: workflow notifications are private kernel completion notifications.
+//! Protocol 491: workflow notifications are private kernel completion notifications.
 use super::*;
 pub use chariox_app_runtime::app_outbox::NotificationDeliveryMode;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

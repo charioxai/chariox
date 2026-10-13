@@ -1,3 +1,6 @@
+// MP-08 / MP-10 / MP-11: credential-free ownership and receiving CLIENT authority.
+export const kernelOwnershipMinimumProtocolVersion = 491
+
 export const relayClientKeyBindingMinimumProtocolVersion = 349
 
 export function relayStatusRequest() {
@@ -96,6 +99,7 @@ export function resolveKernelClientConnectionRequest(input: {
   machineRef?: string | null
   clientId?: string | null
   sessionId?: string | null
+  publicKeyThumbprint?: string | null
 }) {
   return {
     ResolveKernelClientConnection: {
@@ -103,6 +107,7 @@ export function resolveKernelClientConnectionRequest(input: {
       machine_ref: input.machineRef ?? null,
       client_id: input.clientId ?? null,
       session_id: input.sessionId ?? null,
+      public_key_thumbprint: input.publicKeyThumbprint ?? null,
     },
   }
 }

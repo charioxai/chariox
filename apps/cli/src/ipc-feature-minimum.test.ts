@@ -169,7 +169,7 @@ test("MP-08 MP-10 exact cancellation checks attached kernel capability on Unix a
     context.after(() => client.close())
     capabilities = []
     requests.length = 0
-    await assert.rejects(client.send(request), /Exact prompt cancellation needs protocol ≥499/)
+    await assert.rejects(client.send(request), /Exact prompt cancellation needs protocol ≥491/)
     assert.deepEqual(requests, [{ RelayStatus: null }])
     capabilities = ["exact_prompt_cancellation_v499"]
     await client.send(request)

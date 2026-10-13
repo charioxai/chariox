@@ -223,7 +223,7 @@ export function completePromptRequest(sessionId: string) {
 }
 
 // MP-08 / MP-10 / MP-11: old kernels can ignore the optional prompt fence.
-export const exactPromptCancellationMinimumProtocolVersion = 499
+export const exactPromptCancellationMinimumProtocolVersion = 491
 export const exactPromptCancellationCapability = "exact_prompt_cancellation_v499"
 
 export function cancelActivePromptRequest(sessionId: string, attachmentId: string, targetAgentId?: string | null, expectedPromptId?: string | null) {
@@ -255,7 +255,7 @@ export function steerQueuedPromptRequest(
 
 // MP-08 / MP-10: Admission targets one home turn and never queues or starts
 // a replacement turn if it has already settled.
-export const activePromptSteeringMinimumProtocolVersion = 495
+export const activePromptSteeringMinimumProtocolVersion = 491
 
 export function steerActivePromptRequest(
   sessionId: string,

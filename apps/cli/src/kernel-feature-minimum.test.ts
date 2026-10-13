@@ -3,10 +3,10 @@ import test from "node:test"
 import { acceptAppHostActionRequest, appHostActionMinimumProtocolVersion, restoreAppDataSnapshotRequest, startSliceRequest, submitRoomEnvironmentBrowserActionRequest } from "@chariox/kernel-client/ipc-requests"
 import { requireKernelFeatureProtocol } from "./kernel-feature-minimum.js"
 
-test("MP-08 MP-10 native active steering requires allocated protocol 495", () => {
+test("MP-08 MP-10 native active steering requires allocated protocol 491", () => {
   const request = { SteerActivePrompt: {} }
-  assert.throws(() => requireKernelFeatureProtocol(request, 482), /Active prompt steering needs protocol ≥495/)
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 495))
+  assert.throws(() => requireKernelFeatureProtocol(request, 482), /Active prompt steering needs protocol ≥491/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 491))
 })
 
 test("protocol-388 kernel gets actionable App host refusal before a request is sent", () => {
@@ -51,6 +51,14 @@ test("unknown versions and unrelated requests retain existing transport behavior
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ ListSessions: null }, 388))
 })
 
+test("Cloud owner control and terminal pivots require allocated protocol 491", () => {
+  for (const name of ["CloudRelayStatus", "StartCloudRelayLogin", "PollCloudRelayLogin", "LogoutCloudRelay", "ConnectCloudRelay", "IssueCloudRelayClientToken", "ResolveKernelClientConnection", "PreflightProviderAccountPortability"]) {
+    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 472), /491/)
+    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 490), /491/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 491))
+  }
+})
+
 test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated protocol 470", () => {
   for (const request of [{ RequestKernelAccess: { holder_pid: 42 } },
     { RespondToInteraction: { session_id: "kernel-access", interaction_id: "grant", choice_id: "approve" } }]) {
@@ -73,10 +81,20 @@ test("standalone and reserved Project Environment operations require protocol 48
 // MP-08 / MP-10 / MP-11: old decoders may ignore an optional cancellation fence.
 test("MP-08 MP-10 exact prompt cancellation rejects old and unknown kernels", () => {
   const request = { CancelActivePrompt: { expected_prompt_id: "home-prompt" } }
-  for (const version of [undefined, 0, NaN, -1, 498.5, 495, 498]) {
-    assert.throws(() => requireKernelFeatureProtocol(request, version), /Exact prompt cancellation needs protocol ≥499/)
+  for (const version of [undefined, 0, NaN, -1, 490.5, 490, 489]) {
+    assert.throws(() => requireKernelFeatureProtocol(request, version), /Exact prompt cancellation needs protocol ≥491/)
   }
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 499))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 491))
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: {} }, undefined))
-  assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: {} }, 495))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: {} }, 490))
+})
+
+test("MP-08 / MP-11 automation inject refuses 490 before transport", () => {
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{}}, 490))
+  assert.throws(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, 490), /needs protocol ≥491/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, 491))
+})
+
+test("MP-08 / MP-11 automation injection requires a confirmed kernel generation", () => {
+  for (const version of [undefined, 0, NaN]) assert.throws(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, version), /kernel support unknown.*491/)
 })

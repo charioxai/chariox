@@ -40,6 +40,7 @@ mod pre_lane_dispatch;
 mod priority_dispatch;
 mod refresh_dispatch;
 mod relay_peer_bridge;
+mod retired_cloud_controls;
 mod runtime_tool_bridge;
 mod slice_relay_token_bridge;
 pub(crate) use slice_relay_token_bridge::ManagedSliceRelayTokenInstallRequest;

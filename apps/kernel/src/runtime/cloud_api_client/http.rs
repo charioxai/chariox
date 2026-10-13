@@ -101,6 +101,41 @@ where
     })?
 }
 
+pub(crate) async fn get_cloud_kernel_directory(
+    profile: &crate::config::PersistedCloudRelayProfile,
+) -> Result<serde_json::Value, DaemonError> {
+    let profile = profile.clone();
+    tokio::task::spawn_blocking(move || {
+        let url = format!(
+            "{}/relay/targets?accountId={}&realmId={}",
+            profile.api_url,
+            cloud_url_component(&profile.account_id),
+            cloud_url_component(&profile.realm_id)
+        );
+        let credential =
+            profile
+                .kernel_credential
+                .as_deref()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "read My kernels",
+                    message: "independent kernel enrollment is required".into(),
+                })?;
+        let response = ureq::AgentBuilder::new()
+            .timeout(CLOUD_API_REQUEST_TIMEOUT)
+            .build()
+            .get(&url)
+            .set("x-chariox-kernel-credential", credential)
+            .call()
+            .map_err(cloud_transport_error)?;
+        decode_cloud_response(response)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "read My kernels",
+        message: error.to_string(),
+    })?
+}
+
 pub(crate) async fn delete_cloud_json_authenticated<T>(
     api_url: String,
     path: String,

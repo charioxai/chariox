@@ -9,6 +9,15 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: &str,
     ) -> Result<crate::session::PromptQueueItem, DaemonError> {
+        self.cancel_active_prompt_only_for_provider_run(session_id, agent_id, None)
+    }
+
+    pub(super) fn cancel_active_prompt_only_for_provider_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<crate::session::PromptQueueItem, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -23,10 +32,11 @@ impl KernelRuntimeOwnedState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
-        let provider_run_id = self
-            .provider_store
-            .get_run_for_agent(session_id, agent_id)
-            .map(|run| run.id().to_string());
+        let provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
+            self.provider_store
+                .get_run_for_agent(session_id, agent_id)
+                .map(|run| run.id().to_string())
+        });
         self.record_cancelled_prompt_settlement(
             session_id,
             agent_id,
@@ -365,7 +375,9 @@ impl KernelRuntimeOwnedState {
         provider_run_id: Option<&str>,
     ) {
         let settled_at_ms = crate::session::unix_epoch_ms();
-        if let Some(provider_run_id) = provider_run_id {
+        if let Some(provider_run_id) =
+            provider_run_id.filter(|run_id| !self.prompt_completion_recorded(run_id))
+        {
             // An acknowledged abort need not produce provider output. Publish
             // settlement through the same completion stream drained by home.
             self.record_assistant_message_completion(
@@ -376,6 +388,7 @@ impl KernelRuntimeOwnedState {
                 &format!("prompt-complete:{}", prompt.id()),
                 settled_at_ms,
             );
+            self.mark_prompt_completion_recorded(provider_run_id);
         }
         let archive_enabled = self
             .config_projection
@@ -405,6 +418,7 @@ impl KernelRuntimeOwnedState {
         );
     }
 
+    #[cfg(test)]
     pub(super) fn cancel_local_prompt(
         &self,
         session_id: &str,

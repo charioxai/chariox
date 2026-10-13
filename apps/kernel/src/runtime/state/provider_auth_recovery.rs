@@ -1,6 +1,6 @@
 //! MP-08/MP-10/MP-11: receiving-kernel login; no credential synchronization.
 use super::*;
-use crate::local::LocalDaemonResponse;
+use crate::local::{LocalDaemonResponse, ProviderLoginProcessState};
 use crate::session::{
     RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
     RuntimeInteractionKind, RuntimeInteractionLevel,
@@ -29,7 +29,15 @@ impl KernelRuntimeState {
             .into_iter()
             .filter(|agent| agent.session_id() == session_id && agent.remote_execution().is_none())
         {
-            let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+            let Ok(owner) = crate::account_profile::provider_account_authority_owner_for_profile(
+                &config,
+                &self.owned.provider_account_profiles,
+                agent.owner_user_id(),
+                agent.provider(),
+                agent.provider_account_profile(),
+            ) else {
+                continue;
+            };
             if let Ok(Some(message)) = self
                 .owned
                 .provider_account_profiles
@@ -87,7 +95,11 @@ impl KernelRuntimeState {
             let Some(agent_id) = run.agent_instance_id() else {
                 return Ok(false);
             };
-            let owner = self.provider_account_authority_owner_user_id(run.owner_user_id());
+            let owner = crate::account_profile::provider_account_authority_for_run(
+                &self.owned.config_projection.snapshot(),
+                &self.owned.provider_account_profiles,
+                run,
+            )?;
             let setup_token = run.adapter_key() == "claude"
                 && crate::provider::provider_account_credential_registered(
                     &owner,
@@ -403,7 +415,11 @@ impl KernelRuntimeState {
                 return Ok(false);
             }
         }
-        let owner = self.provider_account_authority_owner_user_id(run.owner_user_id());
+        let owner = crate::account_profile::provider_account_authority_for_run(
+            &self.owned.config_projection.snapshot(),
+            &self.owned.provider_account_profiles,
+            run,
+        )?;
         let response = crate::runtime::provider_auth_control::execute_start_provider_login_request(
             self,
             &owner,
@@ -425,15 +441,56 @@ impl KernelRuntimeState {
         } else {
             format!("{id}:login")
         };
-        self.wait_for_account_login(
-            run.session_id(),
-            agent_id_for(run),
-            &owner,
-            &progress_id,
+        let result = self
+            .wait_for_account_login_state(
+                run.session_id(),
+                agent_id_for(run),
+                &owner,
+                &progress_id,
+                &login,
+            )
+            .await;
+        // MP-08/MP-11: only the execution kernel can read this login store.
+        // Public outcome notices use the existing leased-runtime projection,
+        // reaching home-attached Web/TUI clients without forwarding challenges
+        // or polling worker login IDs against the home's provider state.
+        let state = result
+            .as_ref()
+            .copied()
+            .unwrap_or(ProviderLoginProcessState::Failed);
+        if let Some(message) = provider_login_outcome_notice(
+            &self.owned.config_projection.snapshot().daemon_id,
             &login,
-        )
-        .await
+            state,
+        ) {
+            self.owned.record_notice_for_agent(
+                run.session_id(),
+                Some(run.id()),
+                Some(agent_id_for(run)),
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(run.session_id()),
+                message,
+            );
+        }
+        result.map(|state| state == ProviderLoginProcessState::Succeeded)
     }
+}
+
+fn provider_login_outcome_notice(
+    kernel_id: &str,
+    login: &crate::provider::ProviderLoginStart,
+    state: ProviderLoginProcessState,
+) -> Option<String> {
+    let provider = provider_label(&login.provider);
+    let account = &login.account_profile;
+    let outcome = match state {
+        ProviderLoginProcessState::Succeeded => format!("Signed in to {provider} on {kernel_id} · saved to {account}"),
+        ProviderLoginProcessState::Failed => format!("{provider} · {account} on {kernel_id}: sign-in failed. Check provider status and retry login on this machine."),
+        ProviderLoginProcessState::Cancelled => format!("{provider} · {account} on {kernel_id}: sign-in cancelled"),
+        ProviderLoginProcessState::Running => return None,
+    };
+    Some(outcome)
 }
 
 fn agent_id_for(run: &crate::provider::RuntimeProviderRun) -> &str {
@@ -449,4 +506,45 @@ fn provider_label(provider: &str) -> &str {
 }
 fn choice(id: &str, label: &str, style: RuntimeInteractionChoiceStyle) -> RuntimeInteractionChoice {
     RuntimeInteractionChoice::new(id, label, id, Some(style))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_notices_expose_public_outcomes_without_login_challenges() {
+        let login = crate::provider::ProviderLoginStart {
+            provider: "codex".into(),
+            account_profile: "worker-profile".into(),
+            login_kind: "chatgptDeviceCode".into(),
+            login_id: Some("private-login-id".into()),
+            auth_url: Some("https://provider.test/authorize".into()),
+            verification_url: Some("https://provider.test/verify".into()),
+            user_code: Some("private-device-code".into()),
+        };
+        for (state, outcome) in [
+            (ProviderLoginProcessState::Succeeded, "Signed in to Codex"),
+            (ProviderLoginProcessState::Failed, "sign-in failed"),
+            (ProviderLoginProcessState::Cancelled, "sign-in cancelled"),
+        ] {
+            let notice = provider_login_outcome_notice("worker-kernel", &login, state).unwrap();
+            assert!(notice.contains(outcome));
+            assert!(notice.contains("worker-profile"));
+            assert!(notice.contains("worker-kernel"));
+            for challenge in [
+                "private-login-id",
+                "https://provider.test/authorize",
+                "https://provider.test/verify",
+                "private-device-code",
+            ] {
+                assert!(!notice.contains(challenge));
+            }
+        }
+        assert!(provider_login_outcome_notice(
+            "worker-kernel",
+            &login,
+            ProviderLoginProcessState::Running
+        )
+        .is_none());
+    }
 }

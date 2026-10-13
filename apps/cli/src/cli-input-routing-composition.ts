@@ -1,4 +1,5 @@
-import { parseKeypress } from "@opentui/core"
+import { cloudShellClient } from "./cloud-shell-client.js"
+import { StdinParser } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
 
@@ -7,6 +8,7 @@ import { createFocusedInteractionChoiceController } from "./focused-interaction-
 import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
 import { routeInteractionPastes } from "./interaction-paste-routing.js"
 import { createNormalPromptSubmitController } from "./normal-prompt-submit-controller.js"
+import { selectedProviderAccountStartBlockReason } from "./waiting-room-provider-accounts.js"
 import { createPromptKeyDownController } from "./prompt-keydown-controller.js"
 import { createPromptSubmitCoordinator } from "./prompt-submit-coordinator.js"
 import { createPromptTurnNavigationController } from "./prompt-turn-navigation-controller.js"
@@ -32,6 +34,8 @@ import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-c
 type AnyFn = (...args: any[]) => any
 
 export type CliInputRoutingCompositionDeps = {
+  cloudClient?: import("./cloud-client.js").CloudClient
+
   roomWorkflowsOwnsInput?: () => boolean
   handleRoomWorkflowsKey?: (event: import("./global-keyboard-shortcut-controller.js").GlobalKeyboardShortcutEvent) => boolean
   handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
@@ -53,8 +57,10 @@ export type CliInputRoutingCompositionDeps = {
   setPromptHistoryIndex: AnyFn
   setPromptHistoryDraft: AnyFn
   clearCommandCenter: AnyFn
+  onProviderAccountPromptBlocked?: (target: {sessionId: string; agentId: string}) => void
   flashFooter: AnyFn
   appendNotice: AnyFn
+  providerLoginInteractions: import("./provider-login-interaction-controller.js").ProviderLoginInteractionController
   requestExit: AnyFn
   requestWaitingRoom: AnyFn
   promptStopController: {
@@ -165,6 +171,8 @@ export type CliInputRoutingCompositionDeps = {
   applyResponseLayout: AnyFn
   handleHotkeysToggleShortcut: AnyFn
   dialogOverlayOpen: AnyFn
+  providerAccountRecoveryOwnsInput?: () => boolean
+  handleProviderAccountRecoveryKey?: (event: import("./cli-stdin-key-controller.js").CliStdinKeyEvent) => boolean
   closeActiveDialogOverlay: AnyFn
   hasActiveTurnWork: AnyFn
   handleCommandCenterKey: AnyFn
@@ -211,6 +219,7 @@ export type CliInputRoutingCompositionDeps = {
   cycleWorkflowCanvasNode: AnyFn
   handleCycleAgentFocus: AnyFn
   copyPromptSelection: AnyFn
+  clearTextSelection?: () => void
   removePromptAttachmentsForEdit: AnyFn
   removeLastPendingPromptAttachment: AnyFn
 }
@@ -290,6 +299,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const workspaceShellSubmitController = createWorkspaceShellSubmitController({
     client: deps.client,
     clientId: deps.options.clientId,
+    cloudAccountClient: cloudShellClient(deps.cloudClient),
     ...(deps.openRoomViewer ? { openRoomViewer: deps.openRoomViewer } : {}),
     ...(deps.readSecret ? { readSecret: deps.readSecret } : {}),
     workspaceShellContext: deps.workspaceShellContext,
@@ -391,6 +401,15 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   })
 
   const normalPromptSubmitController = createNormalPromptSubmitController({
+    ...(deps.onProviderAccountPromptBlocked ? {onPromptRejected: deps.onProviderAccountPromptBlocked} : {}),
+    promptBlockReason: (agentId, alias) => {
+      const agent = deps.sessionState().agents.find((candidate: { id: string; alias?: string | null }) =>
+        alias ? candidate.alias?.toLowerCase() === alias.toLowerCase() : candidate.id === agentId,
+      )
+      const reason = agent ? selectedProviderAccountStartBlockReason(deps.providerAccountsState(), agent.provider, agent.account_profile ?? undefined, agent.remote_execution, agent.model) : null
+      if (reason && agent) deps.onProviderAccountPromptBlocked?.({sessionId: deps.sessionState().id, agentId: agent.id})
+      return reason
+    },
     getPendingAttachments: deps.pendingAttachments,
     waitForPendingAgentFocusTransition: deps.waitForPendingAgentFocusTransition,
     getFocusedAgentId: deps.focusedAgentId,
@@ -505,6 +524,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     applySessionState: deps.applySessionState,
     flashFooter: deps.flashFooter,
     formatError: deps.formatError,
+    providerLogin: deps.providerLoginInteractions,
   })
   const submitFocusedInteractionChoice = focusedInteractionChoiceController.submitChoice
   const cycleFocusedInteractionChoice = focusedInteractionChoiceController.cycleChoice
@@ -517,6 +537,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
 
   const globalKeyboardShortcutController = createGlobalKeyboardShortcutController({
     handleKernelApprovalKey: (event) => deps.handleKernelApprovalKey?.(event) ?? false,
+    handleProviderAccountRecoveryKey: (event) => deps.handleProviderAccountRecoveryKey?.(event) ?? false,
     handleHotkeysToggleShortcut: deps.handleHotkeysToggleShortcut,
     dialogOverlayOpen: deps.dialogOverlayOpen,
     requestExit: () => {
@@ -679,9 +700,11 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   }
 
   const stdinKeyController = createCliStdinKeyController({
+    providerAccountRecoveryOwnsInput: deps.providerAccountRecoveryOwnsInput,
     roomWorkflowsOwnsInput: () => deps.roomWorkflowsOwnsInput?.() ?? false,
     kernelApprovalOwnsInput: () => deps.kernelApprovalOwnsInput?.() ?? false,
-    parseKeypress: (chunk, options) => parseKeypress(chunk, options),
+    // Same settings as the renderer's own parser, so both agree on every chunk.
+    createStdinParser: (onTimeoutFlush) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
     handleProjectEnvironmentKey: deps.handleProjectEnvironmentKey,
@@ -706,6 +729,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       void deps.handleCycleAgentFocus()
     },
     copyPromptSelection: deps.copyPromptSelection,
+    ...(deps.clearTextSelection ? { clearTextSelection: deps.clearTextSelection } : {}),
     hasActiveTurnWork: deps.hasActiveTurnWork,
     requestPromptStop: () => {
       void requestPromptStop()

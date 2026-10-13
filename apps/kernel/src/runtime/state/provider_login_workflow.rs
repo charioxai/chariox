@@ -35,13 +35,31 @@ impl KernelRuntimeState {
         id: &str,
         login: &crate::provider::ProviderLoginStart,
     ) -> Result<bool, DaemonError> {
+        self.wait_for_account_login_state(session_id, agent_id, owner, id, login)
+            .await
+            .map(|state| state == ProviderLoginProcessState::Succeeded)
+    }
+
+    /// MP-08/MP-11: the terminal login state lets recovery publish a public
+    /// succeeded/failed/cancelled outcome notice.
+    pub(super) async fn wait_for_account_login_state(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        owner: &str,
+        id: &str,
+        login: &crate::provider::ProviderLoginStart,
+    ) -> Result<ProviderLoginProcessState, DaemonError> {
         let result = self
             .drive_account_login(session_id, agent_id, owner, id, login)
             .await;
         let _ = self
             .update_provider_login_interaction(session_id, agent_id, id, None)
             .await;
-        if !result.as_ref().is_ok_and(|succeeded| *succeeded) {
+        if !result
+            .as_ref()
+            .is_ok_and(|state| *state == ProviderLoginProcessState::Succeeded)
+        {
             if let Some(login_id) = login.login_id.clone() {
                 let _ =
                     crate::runtime::provider_auth_control::execute_cancel_provider_login_request(
@@ -62,9 +80,9 @@ impl KernelRuntimeState {
         owner: &str,
         id: &str,
         login: &crate::provider::ProviderLoginStart,
-    ) -> Result<bool, DaemonError> {
+    ) -> Result<ProviderLoginProcessState, DaemonError> {
         let Some(login_id) = login.login_id.as_deref() else {
-            return Ok(false);
+            return Ok(ProviderLoginProcessState::Failed);
         };
         let mut receiver = None;
         let mut phase = None;
@@ -79,17 +97,16 @@ impl KernelRuntimeState {
                 )
                 .await?;
             let LocalDaemonResponse::ProviderLoginStatus { login: status } = response else {
-                return Ok(false);
+                return Ok(ProviderLoginProcessState::Failed);
             };
             match status.state {
-                ProviderLoginProcessState::Succeeded => return Ok(true),
-                ProviderLoginProcessState::Failed | ProviderLoginProcessState::Cancelled => {
-                    return Ok(false)
-                }
+                ProviderLoginProcessState::Succeeded
+                | ProviderLoginProcessState::Failed
+                | ProviderLoginProcessState::Cancelled => return Ok(status.state),
                 ProviderLoginProcessState::Running => {}
             }
             let Some(template) = status.interaction else {
-                return Ok(false);
+                return Ok(ProviderLoginProcessState::Failed);
             };
             let mut projection =
                 template
@@ -134,9 +151,9 @@ impl KernelRuntimeState {
             tokio::select! {
                 reply = receiver.as_mut().expect("login interaction registered") => {
                     receiver = None;
-                    let Ok(reply) = reply else { return Ok(false) };
-                    if reply.choice_id.as_deref() == Some("cancel") { return Ok(false) }
-                    let Some(mut input) = reply.reply else { return Ok(false) };
+                    let Ok(reply) = reply else { return Ok(ProviderLoginProcessState::Failed) };
+                    if reply.choice_id.as_deref() == Some("cancel") { return Ok(ProviderLoginProcessState::Cancelled) }
+                    let Some(mut input) = reply.reply else { return Ok(ProviderLoginProcessState::Failed) };
                     input.push('\r');
                     let data_base64 = base64::engine::general_purpose::STANDARD.encode(input.as_bytes());
                     use zeroize::Zeroize;

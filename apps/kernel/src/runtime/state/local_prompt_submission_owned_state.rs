@@ -62,11 +62,6 @@ impl KernelRuntimeOwnedState {
         if target_agent.remote_execution().is_some() {
             return Ok(None);
         }
-        self.provider_account_profiles.require_agent_authenticated(
-            &self.config_projection.snapshot(),
-            &target_agent,
-            "submit prompt",
-        )?;
         let session = self.session_store.get_session(&session_id)?;
         let queued_while_active = self
             .prompt_state_owner
@@ -91,6 +86,15 @@ impl KernelRuntimeOwnedState {
                 .get_run_for_agent(&session_id, &target_agent_id)
                 .map(|run| run.id().to_string()),
         };
+        let selected_run = provider_run_id
+            .as_deref()
+            .map(|id| self.ensure_provider_run_in_session(&session_id, id))
+            .transpose()?;
+        self.require_agent_account_authenticated(
+            &target_agent,
+            selected_run.as_ref(),
+            "submit prompt",
+        )?;
         if !queued_while_active && provider_run_id.is_none() {
             return Ok(None);
         }

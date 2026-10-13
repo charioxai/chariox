@@ -165,10 +165,10 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
                 .next_queued_prompt(&fixture.session_id, &fixture.agent_id),
         )
     };
-    assert_ne!(
+    assert_eq!(
         active.id(),
         pending_prompt_id,
-        "promotion allocates a fresh prompt ID"
+        "promotion retains the admitted prompt ID"
     );
     assert_eq!(active.status(), crate::session::PromptStatus::Dispatching);
     assert_eq!(active.prompt(), "queued prompt");

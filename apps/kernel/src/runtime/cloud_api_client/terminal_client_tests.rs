@@ -94,6 +94,9 @@ fn server(paths: &[&str]) -> (String, thread::JoinHandle<Vec<Request>>) {
 
 fn profile(url: String) -> PersistedCloudRelayProfile {
     PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         api_url: url,
         account_id: "account-fixture".into(),
         user_id: "user-fixture".into(),
@@ -172,7 +175,7 @@ async fn machine_terminal_create_and_key_bound_join_use_only_scoped_runtime_toke
         );
     }
     assert_eq!(requests[1].body["publicKeyThumbprint"], "a".repeat(64));
-    assert_eq!(requests[1].body["ttlMs"], 30 * 60_000);
+    assert_eq!(requests[1].body["ttlMs"], 300_000);
 }
 
 #[tokio::test]
@@ -259,4 +262,107 @@ async fn account_auto_pair_omits_absent_alias_from_redemption() {
     .unwrap();
     let requests = fixture.join().unwrap();
     assert!(!requests[1].body.as_object().unwrap().contains_key("alias"));
+}
+
+#[tokio::test]
+async fn kernel_terminal_pivot_is_exact_target_key_bound_and_uses_no_human_or_machine_secret() {
+    let (url, fixture) = server(&["/relay/token"]);
+    let mut profile = profile(url);
+    profile.kernel_id = Some("kernel-home".into());
+    profile.kernel_credential = Some("synthetic-kernel-grant".into());
+    // Even a stale predecessor in memory must never be selected.
+    profile.cloud_session_token = Some("synthetic-predecessor-session".into());
+    let (subject, _) = issue_cloud_terminal_client_token(
+        &profile,
+        "terminal-profile",
+        "kernel-other",
+        CloudTerminalClientOptions {
+            pair_account_client: true,
+            ttl_ms: Some(30 * 60_000),
+            public_key_thumbprint: Some("a".repeat(64)),
+            session_id: Some("old-session".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let requests = fixture.join().unwrap();
+    let body = &requests[0].body;
+    assert!(subject.starts_with("kernel-client:"));
+    assert_eq!(body["kernelCredential"], "synthetic-kernel-grant");
+    assert!(body.get("machineCredential").is_none());
+    assert!(body.get("sessionToken").is_none());
+    assert!(body.get("sessionId").is_none());
+    assert_eq!(body["allowedTargets"], serde_json::json!(["kernel-other"]));
+    assert_eq!(body["publicKeyThumbprint"], "a".repeat(64));
+    assert_eq!(body["ttlMs"], 300_000);
+    assert_eq!(profile.client_id, None);
+    assert!(issue_cloud_terminal_client_token(
+        &profile,
+        "terminal-profile",
+        "kernel-other",
+        Default::default()
+    )
+    .await
+    .is_err());
+}
+
+// MP-08 / MP-10 / MP-11: default SDK renewal submits the previous subject.
+#[tokio::test]
+async fn enrolled_kernel_client_renewal_retains_returned_subject() {
+    let (url, fixture) = server(&["/relay/token", "/relay/token"]);
+    let mut profile = profile(url);
+    profile.kernel_id = Some("kernel-home".into());
+    profile.kernel_credential = Some("synthetic-kernel-grant".into());
+    let options = || CloudTerminalClientOptions {
+        public_key_thumbprint: Some("a".repeat(64)),
+        ..Default::default()
+    };
+    let (subject, _) =
+        issue_cloud_terminal_client_token(&profile, "terminal-profile", "kernel-other", options())
+            .await
+            .unwrap();
+    let (renewed, _) =
+        issue_cloud_terminal_client_token(&profile, &subject, "kernel-other", options())
+            .await
+            .unwrap();
+    let requests = fixture.join().unwrap();
+    assert_eq!(
+        renewed, subject,
+        "default SDK renewal must preserve the admitted subject"
+    );
+    assert_eq!(requests[0].body["subject"], requests[1].body["subject"]);
+    assert_eq!(requests[0].body["clientId"], requests[1].body["clientId"]);
+}
+
+#[tokio::test]
+async fn enrolled_kernel_rejects_foreign_and_malformed_subjects_without_network() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut profile = profile(format!("http://{}", listener.local_addr().unwrap()));
+    profile.kernel_id = Some("kernel-home".into());
+    profile.kernel_credential = Some("synthetic-kernel-grant".into());
+    let own = kernel_client_subject("kernel-home", "terminal").unwrap();
+    for subject in [
+        kernel_client_subject("kernel-other", "terminal").unwrap(),
+        "kernel-client:malformed".into(),
+        format!("{}{}", &own[..own.len() - 64], "A".repeat(64)),
+    ] {
+        assert!(issue_cloud_terminal_client_token(
+            &profile,
+            &subject,
+            "kernel-target",
+            CloudTerminalClientOptions {
+                public_key_thumbprint: Some("a".repeat(64)),
+                ..Default::default()
+            },
+        )
+        .await
+        .is_err());
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert_eq!(profile.client_id, None);
 }

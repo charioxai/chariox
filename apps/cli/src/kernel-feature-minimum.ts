@@ -7,8 +7,16 @@ import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
 type FeatureMinimum = { feature: string; minimum: number }
 
 const features: Record<string, FeatureMinimum> = {
+  CloudRelayStatus: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  StartCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  PollCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  LogoutCloudRelay: { feature: "Kernel Cloud unlink", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  ConnectCloudRelay: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  ResolveKernelClientConnection: { feature: "Key-bound kernel pivot", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  IssueCloudRelayClientToken: { feature: "Kernel terminal delegation", minimum: requests.kernelOwnershipMinimumProtocolVersion },
+  PreflightProviderAccountPortability: { feature: "Provider account portability", minimum: requests.providerAccountPortabilityPreflightMinimumProtocolVersion },
   RequestKernelAccess: { feature: "Local-kernel access", minimum: 470 },
-  ControlRoomWorkflowRuns: { feature: "Room workflow run controls", minimum: 495 },
+  ControlRoomWorkflowRuns: { feature: "Room workflow run controls", minimum: 491 },
   SteerActivePrompt: { feature: "Active prompt steering", minimum: requests.activePromptSteeringMinimumProtocolVersion },
   GetProjectEnvironment: { feature: "Project Environment", minimum: requests.projectEnvironmentMinimumProtocolVersion },
   AcceptAppHostAction: { feature: "App host actions", minimum: requests.appHostActionMinimumProtocolVersion },
@@ -47,6 +55,8 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     feature = name === "KeepManagedEnvironmentRunning"
       ? { feature: "Managed environment keep running", minimum: requests.managedEnvironmentKeepRunningMinimumProtocolVersion }
       : { feature: "Disposable worker control", minimum: requests.disposableWorkerControlMinimumProtocolVersion }
+  } else if (name === "ConfigureAppAutomation" && payload?.delivery_mode === "inject") {
+    feature = { feature: "App automation injection", minimum: 491 }
   } else if (name === "CancelActivePrompt" && payload?.expected_prompt_id != null) {
     feature = { feature: "Exact prompt cancellation", minimum: requests.exactPromptCancellationMinimumProtocolVersion }
   } else if (name === "SubmitRoomEnvironmentBrowserAction") {
@@ -61,7 +71,7 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     feature = { feature: "Local-kernel access", minimum: payload?.choice_id === "refuse" ? 451 : 470 }
   } else if (name === "RequestNativeProviderTurnInteraction" && payload?.origin != null) {
     feature = { feature: "Native provider approval origin", minimum: requests.nativeProviderInteractionMinimumProtocolVersion }
-  } else if ((name === "IssueCloudRelayClientToken" || name === "JoinTerminalPairingLink") && payload?.public_key_thumbprint != null) {
+  } else if ((name === "JoinTerminalPairingLink") && payload?.public_key_thumbprint != null) {
     feature = { feature: "Key-bound terminal connection", minimum: requests.relayClientKeyBindingMinimumProtocolVersion }
   }
   return feature
@@ -71,7 +81,7 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
 export function requireKernelFeatureProtocol(request: unknown, protocolVersion: number | undefined): void {
   const feature = kernelFeatureMinimum(request)
   if (protocolVersion === undefined || !Number.isInteger(protocolVersion) || protocolVersion < 1) {
-    if (feature?.feature === "Exact prompt cancellation") {
+    if (feature?.feature === "Exact prompt cancellation" || feature?.feature === "App automation injection") {
       throw new KernelProtocolMinimumError(`kernel support unknown: ${feature.feature} needs protocol ≥${feature.minimum}; reconnect to an updated kernel`)
     }
     return

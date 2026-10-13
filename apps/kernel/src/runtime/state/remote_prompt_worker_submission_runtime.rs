@@ -291,6 +291,8 @@ pub(super) async fn query_remote_queued_steer_receipt(
     .await
 }
 
+// Keep the same explicit lease/run/target identity parameters as the production wrapper.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn query_remote_queued_steer_receipt_with_transport<F, Fut>(
     state: &KernelRuntimeState,
     agent_id: &str,

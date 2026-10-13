@@ -802,7 +802,8 @@ mod tests {
             )
             .expect("queued remote prompt should finish activation");
 
-        assert_ne!(queued.id(), active.id());
+        assert_eq!(queued.id(), active.id());
+        assert_eq!(active.pending_prompt_id(), None);
         assert_eq!(context.home_prompt_id, active.id());
         assert_eq!(context.home_turn_id, active.id());
         assert_eq!(active.status(), PromptStatus::Running);

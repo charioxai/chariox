@@ -56,12 +56,14 @@ pub fn run_codex_utility_prompt(
     let (write_access_mode, execution_mode, permission_level) = if policy.is_read_only_discovery() {
         // Plan plus the tracked live-sync mode is Codex's enforced
         // read-only sandbox on every host platform, including macOS. Do
-        // not inherit a provider run's ordinary build/yolo capability for
-        // discovery.
+        // not inherit a provider run's ordinary build capability for discovery.
+        // Native reads run without an approval round trip inside this sandbox;
+        // the discovery client still declines command escalation, writes,
+        // network grants, and MCP calls.
         (
             ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
             AgentExecutionMode::Plan,
-            AgentPermissionLevel::Required,
+            AgentPermissionLevel::Yolo,
         )
     } else {
         (
@@ -84,7 +86,8 @@ pub fn run_codex_utility_prompt(
     if policy.is_read_only_discovery() {
         state.set_read_only_discovery_permissions(true);
     }
-    state.ephemeral = policy.is_metadata_only();
+    state.ephemeral = policy.is_read_only_discovery();
+    state.metadata_only_discovery = policy.is_metadata_only();
     // MP-08 / MP-10 / MP-11: A fresh utility thread settles through its own
     // notifications; it never needs durable history reconciliation.
     state.notification_only = true;
@@ -142,11 +145,7 @@ pub fn run_codex_utility_prompt(
             ),
         });
     }
-    let output = if policy.is_read_only_discovery() {
-        output.trim().to_string()
-    } else {
-        clean_codex_utility_output(&output)
-    };
+    let output = codex_utility_output(&output, policy);
     if output.is_empty() {
         return Err(DaemonError::ProviderProtocol {
             provider_run_id: run.id().to_string(),
@@ -174,6 +173,14 @@ fn clean_codex_utility_output(output: &str) -> String {
         .to_string()
 }
 
+fn codex_utility_output(output: &str, policy: ProviderUtilityExecutionPolicy) -> String {
+    if policy.is_read_only_discovery() {
+        output.trim().to_string()
+    } else {
+        clean_codex_utility_output(output)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +188,33 @@ mod tests {
     use serde_json::{json, Value};
     use std::{collections::BTreeMap, net::TcpListener, thread};
     use tokio_tungstenite::tungstenite::{accept, Message};
+
+    #[test]
+    fn mp08_mp11_discovery_preserves_multiline_json() {
+        let output = "\n{\n  \"definition\": null,\n  \"missing_user_inputs\": []\n}\n";
+        assert_eq!(
+            codex_utility_output(output, ProviderUtilityExecutionPolicy::ReadOnlyDiscovery),
+            output.trim()
+        );
+        assert_eq!(
+            codex_utility_output(
+                output,
+                ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery
+            ),
+            output.trim()
+        );
+    }
+
+    #[test]
+    fn mp08_mp11_existing_title_utility_keeps_single_line_cleanup() {
+        assert_eq!(
+            codex_utility_output(
+                "\n\"Short title\"\nExtra explanation",
+                ProviderUtilityExecutionPolicy::ExistingRun
+            ),
+            "Short title"
+        );
+    }
 
     #[test]
     fn mp08_mp10_mp11_fresh_read_only_utility_uses_notifications_and_preserves_json() {

@@ -78,6 +78,8 @@ pub struct ResolveKernelClientConnectionRequest {
     pub client_id: Option<String>,
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub public_key_thumbprint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,11 +154,9 @@ pub struct CloudRelayProfile {
     #[serde(default)]
     pub machine_alias: Option<String>,
     #[serde(default)]
-    pub machine_credential: Option<String>,
+    pub kernel_id: Option<String>,
     #[serde(default)]
-    pub cloud_session_token: Option<String>,
-    #[serde(default)]
-    pub cloud_session_expires_at_ms: Option<u64>,
+    pub kernel_enrolled: bool,
     #[serde(default)]
     pub token_expires_at_ms: Option<u64>,
 }

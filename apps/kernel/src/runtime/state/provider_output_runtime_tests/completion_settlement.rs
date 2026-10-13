@@ -1657,7 +1657,8 @@ async fn failed_prompt_dispatch_advances_the_next_queued_prompt() {
     let active = projected
         .active_prompt_for_agent(agent.id())
         .expect("queued prompt should become active");
-    assert_ne!(active.id(), queued_prompt_id);
+    assert_eq!(active.id(), queued_prompt_id);
+    assert_eq!(active.pending_prompt_id(), None);
     assert_eq!(active.prompt(), "second prompt should advance\n");
     assert!(projected
         .queued_prompts_for_agent(agent.id())

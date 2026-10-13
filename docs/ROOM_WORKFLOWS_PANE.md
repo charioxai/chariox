@@ -1,7 +1,8 @@
 # Room workflows pane
 
-Local daemon protocol 483 adds a kernel-owned room workflow inventory. Relay peer
-protocol is unchanged: this uses the existing home-session attachment stream.
+Local daemon protocol 491 (developed as 483) adds a kernel-owned room workflow
+inventory. It uses the existing home-session attachment stream; no relay peer
+frame is added for the pane.
 
 `GetSessionState` returns `SessionState.room_workflows`; `session_snapshot` carries
 the same `room_workflows` field. `room_workflows_changed` carries a full inventory
@@ -32,7 +33,7 @@ finished since capture is unchanged. Runs admitted later are never added to the
 selection. Schedules, notifications, HTTP and queued admission remain active;
 these controls do not suspend the workflow or promise atomic rollback.
 
-The pane feature minimum is 483. Older kernels retain existing terminal
+The pane feature minimum is 491. Older kernels retain existing terminal
 functionality. Client dismissal, selection and drafts are presentation state,
 keyed by client plus home kernel and room. A nonempty authoritative inventory
 opens the pane unless dismissed; authoritative empty clears dismissal and hides

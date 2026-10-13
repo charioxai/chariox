@@ -1255,6 +1255,32 @@ mod tests {
 mod metadata_discovery_tests {
     use super::*;
     #[test]
+    fn mp08_mp11_source_discovery_does_not_require_a_durable_rollout() {
+        let client = CodexClient::new("discovery", "ws://127.0.0.1:1")
+            .unwrap()
+            .with_provider_config_overrides(&BTreeMap::from([(
+                "features.shell_tool".into(),
+                serde_json::json!(true),
+            )]))
+            .with_read_only_discovery_permissions();
+        let params = client
+            .thread_start_params(
+                Some("/workspace"),
+                None,
+                crate::provider::ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+                crate::provider::AgentExecutionMode::Plan,
+                crate::provider::AgentPermissionLevel::Required,
+                None,
+            )
+            .unwrap();
+        assert_eq!(params["ephemeral"], true);
+        assert_eq!(params["persistExtendedHistory"], false);
+        assert_eq!(params["sandbox"], "read-only");
+        assert_eq!(params["config"]["mcp_servers"], serde_json::json!({}));
+        assert_eq!(params["config"]["features.shell_tool"], true);
+    }
+
+    #[test]
     fn mp08_metadata_discovery_disables_host_context_tools_and_permissions() {
         let client = CodexClient::new("metadata", "ws://127.0.0.1:1")
             .unwrap()

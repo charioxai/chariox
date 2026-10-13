@@ -264,7 +264,12 @@ pub use workspace::*;
 /// Version 487 adds value-free Project Environment aggregates and reserves the
 /// complete Environment operation contract on top of 472 (developed as 471;
 /// MP-02/MP-03/MP-08/MP-10/MP-11).
-/// Version 495 restores workflow notifications, Room workflow inventory/controls,
-/// and opt-in Cloud device denial on the consolidated main contract (MP-08/MP-10/MP-11).
-/// Version 495 consolidates the main Environment and integration2 contracts (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 499;
+/// Version 490 requires bounded relay response framing and socket-local receipts.
+/// Version 491 adds credential-free Cloud kernel ownership projections, receiving
+/// CLIENT key-bound pivots, Cloud-free terminal pairing and provider account
+/// portability preflight, and requires a distinct relay subscription identity for
+/// every fresh encrypted binding while retaining the logical session replay
+/// cursor. It also restores workflow notifications, Room workflow inventory and
+/// controls, opt-in Cloud device denial and exact home-prompt cancellation
+/// admission (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 491;

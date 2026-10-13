@@ -277,5 +277,4 @@ async fn home_owner_controls_extension_grants_for_collaborator_remote_agent_inne
             .and_then(serde_json::Value::as_str),
         Some("user-2")
     );
-
 }

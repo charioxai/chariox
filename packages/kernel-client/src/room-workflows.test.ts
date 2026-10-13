@@ -17,7 +17,7 @@ const inventory = {
 } satisfies RoomWorkflowInventory
 
 test("every endpoint is one manual row, including several endpoints per workflow", () => {
-  assert.equal(ROOM_WORKFLOWS_MIN_PROTOCOL, 495)
+  assert.equal(ROOM_WORKFLOWS_MIN_PROTOCOL, 491)
   const rows = roomWorkflowRows(inventory)
   assert.equal(rows.length, 2)
   assert.deepEqual(rows.map(row => row.endpoint.endpoint_id), ["a", "b"])

@@ -46,7 +46,7 @@ export type CliAppWorkspaceViewProps = {
   promptPlaceholder: string
   promptInputMaxHeight: number
   promptAreaBackground: WorkspaceLayoutProps["promptAreaBackground"]
-  retainPromptFocus: () => void
+  handleRootMouseUp: () => void
   handlePromptSelectionSurfaceMouseUp: WorkspaceLayoutProps["onResponseSurfaceMouseUp"]
   responsePaneRenderRefStore: MutableRefStore
   historyLoadingRenderController: {
@@ -68,6 +68,7 @@ export type CliAppWorkspaceViewProps = {
   assignKernelApprovalBanner: (value: any) => void
   assignKernelApprovalBox: (value: any) => void
   assignPasskeyPopupBox: (value: any) => void
+  assignProviderAccountRecoveryBox?: (value: any) => void
   kernelApprovalOwnsInput: () => boolean
   handlePromptKeyDown: WorkspaceLayoutProps["onPromptKeyDown"]
   handlePromptContentChange: () => void
@@ -114,10 +115,11 @@ export function CliAppWorkspaceView(props: CliAppWorkspaceViewProps) {
       promptInputMaxHeight={props.promptInputMaxHeight}
       promptAreaBackground={props.promptAreaBackground}
       promptKeyBindings={PROMPT_KEYBINDINGS}
-      onRootMouseUp={props.retainPromptFocus}
+      onRootMouseUp={props.handleRootMouseUp}
       onKernelApprovalBoxRef={props.assignKernelApprovalBox}
       onKernelApprovalBannerRef={props.assignKernelApprovalBanner}
       onPasskeyPopupBoxRef={props.assignPasskeyPopupBox}
+      onProviderAccountRecoveryBoxRef={props.assignProviderAccountRecoveryBox}
       onResponseSurfaceMouseUp={props.handlePromptSelectionSurfaceMouseUp}
       onFooterMouseUp={props.handlePromptSelectionSurfaceMouseUp}
       onResponseLayoutBoxRef={(value) => {
