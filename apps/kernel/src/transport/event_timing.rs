@@ -3,7 +3,13 @@ use std::sync::OnceLock;
 
 use super::kernel_protocol::{event_session_id, kernel_event_name, KernelEvent};
 
-pub(crate) fn record_relay_event(subscription_id: &str, event_id: u64, event: &KernelEvent) {
+pub(crate) fn record_relay_event(
+    subscription_id: &str,
+    event_id: u64,
+    event: &KernelEvent,
+    prepared_at_ms: u64,
+    append_ms: u128,
+) {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     if !*ENABLED.get_or_init(|| {
         std::env::var("CHARIOX_PERF_DIAGNOSTICS")
@@ -16,6 +22,7 @@ pub(crate) fn record_relay_event(subscription_id: &str, event_id: u64, event: &K
         "relay event ready for transport",
         serde_json::json!({"subscription_id":subscription_id, "event_id":event_id,
             "event":kernel_event_name(event), "session_id":event_session_id(event),
+            "prepared_at_ms":prepared_at_ms, "append_ms":append_ms,
             "queued_at_ms":crate::session::unix_epoch_ms()}),
     );
 }

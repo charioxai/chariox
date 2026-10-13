@@ -50,6 +50,7 @@ pub(super) async fn emit_relay_event(
     event_stream_id: &str,
     event: KernelEvent,
 ) -> Result<(), DaemonError> {
+    let prepared_at_ms = crate::session::unix_epoch_ms();
     router.admit_self_host_terminal(client_public_key)?;
     let daemon_private_key = router.relay_private_key();
     let plaintext = serde_json::to_vec(&event).map_err(|error| DaemonError::LocalTransport {
@@ -58,6 +59,7 @@ pub(super) async fn emit_relay_event(
     })?;
     let encrypted_event =
         relay_crypto::encrypt_payload_for_peer(&daemon_private_key, client_public_key, &plaintext)?;
+    let append_started = std::time::Instant::now();
     let event_id = event_runtime
         .event_log
         .append(event_stream_id.to_string(), event.clone())
@@ -67,7 +69,13 @@ pub(super) async fn emit_relay_event(
             message: error.to_string(),
         })?
         .event_id;
-    crate::transport::event_timing::record_relay_event(subscription_id, event_id, &event);
+    crate::transport::event_timing::record_relay_event(
+        subscription_id,
+        event_id,
+        &event,
+        prepared_at_ms,
+        append_started.elapsed().as_millis(),
+    );
     send_relay_event_frame(outgoing_tx, subscription_id, event_id, encrypted_event).await
 }
 

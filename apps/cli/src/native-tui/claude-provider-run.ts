@@ -70,6 +70,7 @@ export async function waitForClaudeRemoteRenderedRunExit(
   context?: { sessionId: string, agentId: string },
 ): Promise<void> {
   let sawProviderRun = false
+  let endedAt: number | undefined
   while (true) {
     const run = await getProviderRunIfAvailable(client, providerRunId).catch((error) => {
       if (sawProviderRun) throw error
@@ -85,10 +86,19 @@ export async function waitForClaudeRemoteRenderedRunExit(
       // error outcome. A native PTY exit alone cannot manufacture Cancelled.
       if (context) {
         const state = await client.send<{ SessionState?: { session?: { agents?: AgentInstance[] }, agent_activity?: Record<string, AgentRuntimeActivity> } }>(getSessionStateRequest(context.sessionId))
-        const turn = state.SessionState?.agent_activity?.[context.agentId]?.last_completed_turn
+        const activity = state.SessionState?.agent_activity?.[context.agentId]
+        const turn = activity?.last_completed_turn
         const lease = state.SessionState?.session?.agents?.find(agent => agent.id === context.agentId)?.remote_execution?.leased_agent_id
-        const exactRun = turn?.provider_run_id === providerRunId
-          || Boolean(lease && turn?.provider_run_id && providerRunId === `leased:${lease}:${turn.provider_run_id}`)
+        const sameRun = (id?: string | null) => id === providerRunId
+          || Boolean(lease && id && providerRunId === `leased:${lease}:${id}`)
+        if ((activity?.active_prompt_count ?? 0) > 0
+          && (!activity?.active_turn?.provider_run_id || sameRun(activity.active_turn.provider_run_id))) {
+          endedAt ??= Date.now()
+          if (Date.now() - endedAt >= 20_000) throw new Error("Claude provider run ended before its active turn settled.")
+          await sleep(25)
+          continue
+        }
+        const exactRun = sameRun(turn?.provider_run_id)
         if (exactRun && turn?.settlement_status === "failed"
           && turn.provider_termination?.category === "runtime_failure") {
           throw new Error(turn.provider_termination?.reason ?? "Claude provider run failed.")

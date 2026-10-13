@@ -1288,7 +1288,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         session_id,
                         agent_id,
                         &active_prompt,
-                        provider_run_id,
+                        &projected_provider_run_id,
                         projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                         projected_termination.clone(),
                         settlement_status,
@@ -1328,7 +1328,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 session_id,
                 agent_id,
                 &completed,
-                provider_run_id,
+                &projected_provider_run_id,
                 projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                 projected_termination.clone(),
                 settlement_status,
@@ -3509,6 +3509,14 @@ mod mp11_projection_admission_tests {
                     .unwrap()
                     .settlement_status,
                 status.unwrap_or(Status::Cancelled)
+            );
+            assert_eq!(
+                app.completed_git_turn_snapshot_store()
+                    .latest_projection_for_agent(session.id(), agent.id())
+                    .unwrap()
+                    .provider_run_id,
+                crate::provider::projected_leased_provider_run_id("leased", "run"),
+                "MP-08 home settlement must retain its lease-qualified run identity",
             );
         }
     }

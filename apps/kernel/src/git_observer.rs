@@ -326,6 +326,7 @@ impl CompletedGitTurnSnapshotStore {
         match (observed, settled) {
             (Some(observed), Some(settled)) if observed.prompt_id == settled.prompt_id => {
                 Some(CompletedGitTurnActionProjection {
+                    provider_run_id: settled.provider_run_id,
                     settlement_status: settled.settlement_status,
                     provider_termination: settled.provider_termination,
                     ..observed

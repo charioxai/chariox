@@ -36,3 +36,17 @@ test("leased native exit reports the exact lease and worker run Error", async ()
 test("leased native exit rejects another lease's otherwise identical worker run", async () => {
   await waitForClaudeRemoteRenderedRunExit(fixture("worker-run", "failed", "runtime_failure", "lease-other"), "leased:lease-current:worker-run", context)
 })
+
+test("native exit waits for the ended run's still-active turn to settle", async () => {
+  let snapshots = 0
+  const client = { send: async (request: Record<string, unknown>) => {
+    if ("GetProviderRun" in request) return { ProviderRun: { provider_run: { id: "current-run", state: "Ended" } } }
+    snapshots++
+    return { SessionState: { agent_activity: { agent: snapshots === 1
+      ? { active_prompt_count: 1, active_turn: { provider_run_id: "current-run" } }
+      : { active_prompt_count: 0, last_completed_turn: { provider_run_id: "current-run", settlement_status: "failed", provider_termination: { category: "runtime_failure", reason: "definitive cancel failure" } } },
+    } } }
+  } } as unknown as LocalIpcClient
+  await assert.rejects(waitForClaudeRemoteRenderedRunExit(client, "current-run", context), /definitive cancel failure/)
+  assert.equal(snapshots, 2)
+})
