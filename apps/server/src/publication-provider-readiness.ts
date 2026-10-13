@@ -210,7 +210,7 @@ async function providerAuthStatus(
         account_profile: typeof status?.profile_id === "string" ? status.profile_id : null,
       }
     }
-    if (authState === "not_logged_in" || authState === "expired") {
+    if (authState === "not_configured" || authState === "error" || authState === "expired") {
       return { status: "provider_auth_expired" }
     }
     return { status: "provider_auth_unknown" }

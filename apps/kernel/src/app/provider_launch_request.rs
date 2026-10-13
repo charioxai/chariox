@@ -42,15 +42,6 @@ fn refresh_provider_usage_before_launch(
     refresh: impl FnOnce() -> Result<ProviderAccountProfile, DaemonError>,
 ) -> Result<(), DaemonError> {
     let profile = registry.get(owner_user_id, provider, account_profile)?;
-    if crate::provider::canonical_provider_family(provider) == Some("claude")
-        && crate::provider::provider_account_credential_registered(
-            owner_user_id,
-            provider,
-            &profile.profile_id,
-        )?
-    {
-        return Ok(());
-    }
     if provider_usage_refresh_due_for_launch(&profile.usage, now_ms) {
         if let Some(_refresh_lease) = registry.acquire_usage_refresh_attempt(
             owner_user_id,
@@ -323,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn token_launch_skips_automatic_usage_refresh() {
+    fn token_launch_automatic_refresh_preserves_observation() {
         crate::test_support::isolated_env_test!();
         let root =
             std::env::temp_dir().join(format!("claudesetup-usage-{:016x}", rand::random::<u64>()));
@@ -355,12 +346,18 @@ mod tests {
                 &profile.profile_id,
                 crate::session::unix_epoch_ms(),
                 || {
-                    panic!(
-                        "MP-08/MP-11: token profiles have no usage API; do not probe before launch"
+                    crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                        &registry,
+                        "local",
+                        alias,
+                        &profile.profile_id,
+                        &crate::config::DaemonConfig::for_tests(),
                     )
                 },
             )
             .unwrap();
+            assert_eq!(registry.get("local", alias, &profile.profile_id).unwrap(), profile,
+                "MP-08/MP-11: the shared automatic refresh must preserve token state without a Vault read");
         }
         std::fs::remove_dir_all(root).unwrap();
     }
