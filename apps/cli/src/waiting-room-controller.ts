@@ -294,6 +294,8 @@ export function deriveWaitingRoomActivationDecision(options: {
   currentProvider: BackendProviderId
   currentModel: string
   remote?: WaitingRoomRemoteState
+  /** MP-08/MP-11: the selected target survives an owner pivot before worktree options hydrate. */
+  worktreePath?: string
 }): WaitingRoomActivationDecision {
   const choice = waitingRoomChoice(options.state, options.sessions, options.catalog, options.remote)
   const launch: WaitingRoomLaunchConfig = {
@@ -335,7 +337,7 @@ export function deriveWaitingRoomActivationDecision(options: {
       options.remote?.providerAccounts, launch.provider, launch.accountProfile, null, launch.model,
     )
     if (accountBlock) return { action: "error", message: accountBlock }
-    const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
+    const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId, options.worktreePath)
     if (!worktreeSelection.ok) {
       return { action: "error", message: worktreeSelection.message }
     }
@@ -371,6 +373,8 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
   currentProvider: BackendProviderId
   currentModel: string
   remote?: WaitingRoomRemoteState
+  /** MP-08/MP-11: the selected target survives an owner pivot before worktree options hydrate. */
+  worktreePath?: string
 }): WaitingRoomCreateSessionDecision {
   const choice = waitingRoomChoice(options.state, [], options.catalog, options.remote)
   const managedEnvironment = waitingRoomManagedLaunchSelection(options.state, options.remote ?? {})
@@ -381,7 +385,7 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
     options.remote?.providerAccounts, choice.providerId, options.state.accountProfileId, null, choice.model?.id,
   )
   if (accountBlock) return { action: "error", message: accountBlock }
-  const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
+  const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId, options.worktreePath)
   if (!worktreeSelection.ok) {
     return { action: "error", message: worktreeSelection.message }
   }

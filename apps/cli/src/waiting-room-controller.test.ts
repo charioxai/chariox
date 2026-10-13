@@ -1236,3 +1236,19 @@ function catalog(): ProviderCatalog {
     connected: ["codex", "opencode", "anthropic"],
   }
 }
+
+test("MP-08/MP-11 owner-pivot launch stages the selected worktree when its options are pending", async () => {
+  __setWaitingRoomWorktreeInventoryForTest(null)
+  const options = {
+    state: waitingRoomState({ focus: "new", worktreeSelectionId: "" }),
+    catalog: fallbackProviderCatalog(), currentProvider: "opencode" as const, currentModel: "opencode/gpt-5.4",
+    worktreePath: "/workspace/selected-worker-tree",
+  }
+  try {
+    for (const decide of [deriveWaitingRoomCreateSessionDecision, (input: typeof options) => deriveWaitingRoomActivationDecision({ ...input, sessions: [] })]) {
+      assert.equal(decide(options).action, "create")
+      assert.equal(await resolvePendingWaitingRoomWorktreePath("/workspace", "/wrong-fallback"), options.worktreePath)
+    }
+    assert.equal(deriveWaitingRoomCreateSessionDecision({ ...options, worktreePath: "" }).action, "error", "an unknown target still cannot start")
+  } finally { __setWaitingRoomWorktreeInventoryForTest(null) }
+})

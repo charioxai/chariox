@@ -138,6 +138,7 @@ export function createWaitingRoomActivationController(
       }
 
       const decision = deriveActivationDecision({
+        worktreePath: deps.getWorktreeTarget(),
         state: deps.getWaitingRoomState(),
         sessions: deps.getAvailableSessions(),
         catalog: deps.getProviderCatalog(),
@@ -163,6 +164,7 @@ export function createWaitingRoomActivationController(
       }
 
       const decision = deriveCreateSessionDecision({
+        worktreePath: deps.getWorktreeTarget(),
         state: deps.getWaitingRoomState(),
         catalog: deps.getProviderCatalog(),
         currentProvider: deps.getCurrentProvider(),
