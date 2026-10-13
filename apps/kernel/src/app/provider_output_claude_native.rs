@@ -374,12 +374,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let events_path = std::path::Path::new(events_file);
         let raw = fs::read_to_string(events_path).unwrap_or_default();
         if raw.trim().is_empty() {
-            interruption::retry_closed_hook_interruption_after_observation(
-                self.app,
-                session_id,
-                provider_run_id,
-                context_file,
-            )?;
             return Ok(outcome);
         }
         let _ = fs::write(events_path, "");
@@ -596,12 +590,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
         outcome.terminal_failure =
             self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
-        interruption::retry_closed_hook_interruption_after_observation(
-            self.app,
-            session_id,
-            provider_run_id,
-            context_file,
-        )?;
         Ok(outcome)
     }
 
