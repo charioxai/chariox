@@ -189,6 +189,7 @@ impl KernelRuntimeOwnedState {
         caller_user_id: &str,
         selections: AgentProfileSelections,
     ) -> Result<owned::OwnedAgentProfileUpdate, DaemonError> {
+        let account_requested = selections.account_profile.is_some();
         let validated =
             self.validate_agent_profile_update(session_id, agent_id, caller_user_id, selections)?;
         let agent = validated.agent;
@@ -200,7 +201,12 @@ impl KernelRuntimeOwnedState {
         let provider_model_or_account_changed = target_provider != agent.provider()
             || target_model.as_deref() != agent.model()
             || target_account_profile != source_account;
-        if !provider_model_or_account_changed && target_effort == agent.effort() {
+        let selection_changed =
+            account_requested && target_account_profile != agent.provider_account_profile();
+        if !provider_model_or_account_changed
+            && target_effort == agent.effort()
+            && !selection_changed
+        {
             return Ok(owned::OwnedAgentProfileUpdate {
                 agent,
                 terminated_run_ids: Vec::new(),
@@ -222,7 +228,9 @@ impl KernelRuntimeOwnedState {
                     effort: target_effort.map(str::to_string),
                 });
         let mut terminated_run_ids = Vec::new();
-        if remote_update.is_none() {
+        if remote_update.is_none()
+            && (provider_model_or_account_changed || target_effort != agent.effort())
+        {
             if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
                 match run.state() {
                     crate::provider::ProviderRunState::Starting

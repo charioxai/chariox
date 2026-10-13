@@ -1394,3 +1394,104 @@ async fn r5_review_cold_default_without_a_source_binding_does_not_assume_resume_
         "the current default is not evidence of an unbound native session's source account"
     );
 }
+
+#[tokio::test]
+async fn explicit_account_pin_keeps_the_authority_bound_run_when_default_moves() {
+    let (_root, _app, runtime, session, agent, mut run) = compact_fixture().await;
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let account = run.account_profile().to_string();
+    let mut request =
+        LaunchProviderRequest::new(&session, "claude", "claude", &account, run.model())
+            .with_agent_id(&agent)
+            .with_owner_user_id(owner);
+    crate::account_profile::bind_provider_account_authority(
+        &mut request,
+        owner.into(),
+        "default".into(),
+    );
+    run.resolved_provider_account = request.resolved_provider_account;
+    run.set_provider_session_id(None);
+    assert!(
+        run.resume_state().provider_session_id("claude").is_none(),
+        "exercise bound selection without matching native-session metadata"
+    );
+    runtime
+        .owned
+        .provider_store
+        .write()
+        .insert_run_for_test(run.clone());
+    runtime
+        .owned
+        .agent_store
+        .set_agent_runtime_profile_with_account_profile(
+            &agent,
+            "claude",
+            Some(run.model().into()),
+            None,
+            Some("default".into()),
+            ProviderResumeState::from_claude_session_id("bound-default-pin-native"),
+        )
+        .unwrap();
+    let unchanged = runtime
+        .update_agent_profile(&session, &agent, owner, None, None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        unchanged.provider_account_profile(),
+        "default",
+        "an omitted account must not pin a true no-op"
+    );
+    let updated = runtime
+        .update_agent_profile(
+            &session,
+            &agent,
+            owner,
+            None,
+            Some(account.clone()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        updated.provider_account_profile(),
+        account,
+        "explicit account pin was treated as a no-op"
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session, &agent)
+            .unwrap()
+            .id(),
+        run.id(),
+        "a selection-only pin ended the same-account provider run"
+    );
+    assert_eq!(
+        updated
+            .provider_resume_state()
+            .provider_session_id("claude"),
+        Some("bound-default-pin-native")
+    );
+    let other = runtime
+        .owned
+        .provider_account_profiles
+        .create_managed(owner, "claude", "new-default")
+        .unwrap();
+    runtime
+        .owned
+        .provider_account_profiles
+        .set_default(owner, "claude", &other.profile_id)
+        .unwrap();
+    let persisted = runtime.owned.agent_store.get_agent(&agent).unwrap();
+    assert_eq!(
+        runtime
+            .owned
+            .provider_account_profiles
+            .get(owner, "claude", persisted.provider_account_profile())
+            .unwrap()
+            .profile_id,
+        account
+    );
+}
