@@ -5,7 +5,7 @@ See `MULTIDOMAIN_ROUND2_ON_MAIN.md` for the exact imported source heads and
 validation limits; earlier allocations below describe their branch history.
 
 The user-domain browser now has a DOM transport and a shared reference renderer.
-The screen tiers are native App views, mirrored web pages, then protected video.
+Kernel browser pages and App Tabs use the shared DOM mirror; unsupported page regions use protected video.
 This implementation targets host Chromium on Linux. It does not introduce a
 browser inside a slice, a Cloud runtime proxy, or a second input authority.
 
@@ -232,7 +232,7 @@ on the kernel. The shared client requires 433 only when attaching this feature;
 older unrelated feature minima remain unchanged. Commands are terminal-only:
 `mirror_subscribe`, `mirror_next`, `mirror_close`, and `mirror_input`.
 The kernel derives the user and terminal actor; the caller cannot supply either.
-Native App targets are refused and keep their native capability frontend.
+App Tabs use the same caller-bound mirror subscription and kernel input path as ordinary browser Tabs. App calls, grants and actor attribution remain in the kernel App host.
 
 Subscribe selects the existing canonical 1280×800 CSS viewport at DPR 1 or 2.
 There are at most eight subscriptions; idle subscriptions expire after 60 seconds.
@@ -412,7 +412,7 @@ Rust tests cross two authenticated local transport connections through productio
 terminal routing and the JS host adapter over synthetic CDP. They test stream
 privacy, transient receipts and the shared takeover ledger. Node/shared-client
 tests cover sanitization, decoded-resource bounds, protection resets, generation,
-stale input, drift, App exclusion and unknown-outcome replay. These complement
+stale input, drift, App Tab caller isolation and unknown-outcome replay. These complement
 rather than replace real Chromium, relay and independent semantic review.
 
 Round 2/3 fix the known fractional tiles, mask edges, native controls and
@@ -548,3 +548,27 @@ protocol minimum or push event is added (local433/relay79 retained). Cloud must
 copy the full renderer and repin matching kernel observer/service/input assets.
 Component evidence does not close ordinary/managed behavioural, hosted relay,
 Room/macOS/physical IME or current security-anchor review acceptance.
+
+## MP-08 / MP-10 / MP-11 App Tab v2 acceptance
+
+App Tabs (#992) are ordinary kernel browser Tabs at the installation's isolated
+App origin. The renderer carries author CSS, text nodes and live form controls
+through the existing v2 snapshot/delta contract. Notes selection uses the same
+kernel capture path; its public `observation` result remains distinct from the
+controller's private `_observation` ordering field. The client exposes the
+packet's CSS viewport and native pixel size to Notes and screenshot registries.
+
+Required real hosted drills, driven through the built web client's `/app open`
+flow with an installed signed or unsigned Todo or Docs App:
+
+- `MIRROR-APP-TEXT`: at DPR 1 and 2, App heading/status text is selectable text;
+  select it, save a Note, Ask with its quoted text, and resolve it. App page
+  content never receives trusted Notes chrome or the comment.
+- `MIRROR-APP-ECHO`: at DPR 1 and 2, click the author-styled field and type through
+  the normal kernel input path. Measure actual presented glyph changes over
+  hosted WSS with an approximately 8 Mbit/s client uplink and at least 60 ms
+  RTT; P95 must be at most 150 ms. The caret and source field value agree.
+
+Retain fail-first baseline and final-head screenshots, console/log captures,
+per-key timings, exact source/binary identities, shaping calibration and cleanup.
+Controller fixtures supplement these drills and do not close their acceptance.
