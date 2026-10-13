@@ -1506,6 +1506,111 @@ mod tests {
     }
 
     #[test]
+    fn registered_claude_token_decides_status_over_a_native_login() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-token-over-native-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir(&root).expect("fixture root should create");
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                std::env::remove_var("CHARIOX_CLAUDE_BIN");
+                std::env::remove_var("CHARIOX_HOME");
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        std::env::set_var("CHARIOX_HOME", root.join("chariox-home"));
+        // The native login is valid and names a different Claude account.
+        let executable = root.join("claude");
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '%s\\n' '{\"loggedIn\":true,\"email\":\"native@example.test\",\"subscriptionType\":\"native-plan\"}'\nexit 0\n",
+        )
+        .expect("native login fixture should write");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
+            .expect("native login fixture should be executable");
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &executable);
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .expect("fixture registry should open");
+        registry
+            .migrate_effective_defaults("local", &root.join("home"))
+            .expect("fixture profiles should create");
+        let profile = registry
+            .get("local", "claude", "default")
+            .expect("default Claude profile should exist");
+        // The enrolled token launches every mode; its last verification failed.
+        let credential_id =
+            crate::provider::provider_account_credential_id("local", "claude", &profile.profile_id);
+        crate::credential::CharioxCredentialRegistry::user()
+            .expect("credential registry should resolve")
+            .upsert(crate::config::UserCredentialConfig {
+                id: credential_id.clone(),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Vault { key: credential_id },
+                allowed_hosts: Vec::new(),
+                allowed_uses: vec![crate::config::UserCredentialUse::Provider],
+                injection: crate::config::UserCredentialInjectionConfig::Provider,
+                metadata: None,
+            })
+            .expect("token credential should register");
+        registry
+            .update_observation(
+                "local",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Expired,
+                Some("token@example.test".to_string()),
+                Some("token-plan".to_string()),
+                None,
+                None,
+            )
+            .expect("token observation should record");
+
+        let response = provider_auth_status_response(
+            &registry,
+            "local",
+            GetProviderAuthStatusRequest {
+                provider: "claude".to_string(),
+                account_profile: profile.profile_id.clone(),
+            },
+        )
+        .expect("status should resolve");
+        let LocalDaemonResponse::ProviderAuthStatus { status } = response else {
+            panic!("unexpected response: {response:?}");
+        };
+        assert_eq!(status.auth_state, "expired", "the token launches agents");
+        assert_eq!(
+            status.identity_summary.as_deref(),
+            Some("token@example.test")
+        );
+        assert_eq!(status.plan.as_deref(), Some("token-plan"));
+        assert!(status
+            .login_hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("setup-token")));
+
+        let refreshed =
+            refresh_provider_account_profile_response(&registry, "local", "claude", "default")
+                .expect("refresh should describe the token without probing the native login");
+        assert_eq!(
+            refreshed.auth_state,
+            crate::account_profile::ProviderAccountAuthState::Expired
+        );
+        assert_eq!(
+            refreshed.identity_summary.as_deref(),
+            Some("token@example.test")
+        );
+        assert_eq!(refreshed.plan.as_deref(), Some("token-plan"));
+    }
+
+    #[test]
     fn provider_auth_status_accepts_claude_provider_modes() {
         crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();

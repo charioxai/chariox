@@ -150,6 +150,8 @@ test("restarted TUI client-token command issues for its saved paired login ident
   assert.equal(notices.at(-1), "cloud client token minted for builder-kernel")
   assert.match(notices[0]!, /--target-daemon-id kernel-1/)
   assert.match(notices[0]!, /--relay-token-issuer/)
+  // The notice reports the grant's session scope; this grant carries none.
+  assert.doesNotMatch(notices[0]!, /session_id=/)
   const commandOptions = parseArgs(["--relay-url", "wss://relay.example", "--relay-token", "synthetic", "--target-daemon-id", "kernel-1", "--relay-token-issuer", "ws://127.0.0.1:49911/kernel", "issuing-kernel"])
   assert.deepEqual(commandOptions.relayTokenIssuer, {endpoint: "ws://127.0.0.1:49911/kernel", daemonId: "issuing-kernel"})
 })

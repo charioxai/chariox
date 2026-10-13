@@ -487,6 +487,25 @@ mod tests {
         assert_eq!(options.session_id, None);
     }
 
+    #[test]
+    fn machine_credentialed_guest_keeps_shared_session_scope_for_a_foreign_target() {
+        // Cloud admits a session grant to a kernel the guest does not own only
+        // through shared-session membership.
+        let profile = crate::config::PersistedCloudRelayProfile {
+            machine_credential: Some("synthetic-machine-credential".into()),
+            cloud_session_token: Some("synthetic-account-session".into()),
+            ..Default::default()
+        };
+        let request = IssueCloudRelayClientTokenRequest {
+            target_daemon_alias: "host-kernel-of-another-account".into(),
+            client_id: "paired-terminal".into(),
+            session_id: Some("cloud-shared-session".into()),
+            public_key_thumbprint: Some("a".repeat(64)),
+        };
+        let (_, options) = terminal_client_issuance(&profile, &request);
+        assert_eq!(options.session_id.as_deref(), Some("cloud-shared-session"));
+    }
+
     fn relay_token_with_thumbprint(thumbprint: Option<&str>) -> String {
         use base64::Engine;
 
