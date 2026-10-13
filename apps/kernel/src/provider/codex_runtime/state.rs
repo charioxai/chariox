@@ -53,6 +53,8 @@ pub struct CodexRuntimeState {
     pub(super) authoritative_backfill_gate: CodexAuthoritativeBackfillGate,
     pub(super) text_items: BTreeMap<String, CodexTextTranscriptState>,
     pub(super) tool_items: BTreeMap<String, CodexToolTranscriptState>,
+    pub(super) tool_snapshots: super::tool_snapshots::ToolSnapshots,
+    pub(super) output_notifier: crate::provider::output_ready::ProviderEventNotifier,
 }
 
 impl std::fmt::Debug for CodexRuntimeState {
@@ -121,6 +123,8 @@ impl CodexRuntimeState {
             authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),
             text_items: BTreeMap::new(),
             tool_items: BTreeMap::new(),
+            tool_snapshots: Default::default(),
+            output_notifier: Default::default(),
         }
     }
 
@@ -149,6 +153,8 @@ impl CodexRuntimeState {
             authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),
             text_items: BTreeMap::new(),
             tool_items: BTreeMap::new(),
+            tool_snapshots: Default::default(),
+            output_notifier: Default::default(),
         }
     }
 
@@ -157,12 +163,13 @@ impl CodexRuntimeState {
         run_id: String,
         signal: crate::provider::output_ready::ProviderOutputReadySignal,
     ) {
-        let notifier = crate::provider::output_ready::ProviderEventNotifier::default();
-        notifier.bind(run_id, signal);
+        self.output_notifier.bind(run_id, signal);
         #[cfg(unix)]
         {
-            self.output_readiness =
-                super::output_ready::CodexOutputReadiness::start(&self.socket, notifier);
+            self.output_readiness = super::output_ready::CodexOutputReadiness::start(
+                &self.socket,
+                self.output_notifier.clone(),
+            );
         }
     }
     pub(crate) fn acknowledge_output_poll(&self) {

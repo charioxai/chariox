@@ -8,6 +8,7 @@ mod output_ready;
 mod prompt;
 mod run_config;
 mod state;
+mod tool_snapshots;
 mod transcript;
 mod turn;
 mod utility;
