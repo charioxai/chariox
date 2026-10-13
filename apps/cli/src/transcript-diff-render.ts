@@ -67,7 +67,9 @@ export class TranscriptDiffRenderable extends BoxRenderable {
 export function applyPatchDiffFiles(files: TranscriptApplyPatchFiles): DiffFileView[] {
   return files.map((file) => {
     const parsed = parseUnifiedDiff(file.diff ?? "")
-    const rows = parsed.flatMap((part) => part.rows)
+    const rows: DiffRow[] = parsed.flatMap((part) => part.rows)
+    const commonTitles = ["Patched", "Created", "Deleted", "Edited", "Wrote"].map(verb => `${verb} ${file.filePath}`)
+    if (file.title && !commonTitles.includes(file.title)) rows.unshift({ kind: "meta", text: file.title })
     return {
       path: file.filePath,
       previousPath: parsed[0]?.previousPath ?? null,

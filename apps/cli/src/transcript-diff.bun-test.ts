@@ -66,3 +66,14 @@ test("apply_patch text retains hunk gaps without invented gutter numbers", async
     assert.equal(await frame(harness), ["• Edited a.py (+2 −2)", "   keep", " - old", " + new", " ⋮", "   other", " - x", " + y"].join("\n"))
   } finally { harness.renderer.destroy() }
 })
+
+// MP-08 / MP-10: mirror Cloud348 review's missing truncation notice.
+test("a truncated tool diff keeps its warning in the TUI", async () => {
+  const harness = await createTestRenderer({ width: 70, height: 10, useThread: false })
+  const body = new BoxRenderable(harness.renderer, { width: "100%" })
+  harness.renderer.root.add(body)
+  try {
+    buildApplyPatchDiffContent(harness.renderer, body, [{ kind: "update", filePath: "a.py", title: "Patched a.py (diff truncated)", diff: "--- a/a.py\n+++ b/a.py\n@@\n-old\n+new" }])
+    assert.match(await frame(harness), /Patched a.py \(diff truncated\)/)
+  } finally { harness.renderer.destroy() }
+})
