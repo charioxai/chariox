@@ -42,6 +42,9 @@ importers:
       '@opentui/solid':
         specifier: 0.1.87
         version: 0.1.87(solid-js@1.9.11)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10)
+      marked:
+        specifier: 17.0.1
+        version: 17.0.1
       qrcode-terminal:
         specifier: ^0.12.0
         version: 0.12.0
