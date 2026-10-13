@@ -23,3 +23,14 @@ test('MP-08/MP-10 one observation pass returns both process sets while legacy bi
  await source.scope();assert.equal(calls,1);
  const legacy=new DesktopSource({ownedProcesses:async()=>[],browserProcesses:async()=>[]},{unknown:false,values:[]},{native:null});assert.deepEqual((await legacy.scope()).processes,[]);
 });
+
+test('MP-08/MP-10 stable protected input wake reaches the native worker before ownership discovery',async()=>{
+ const {source,state,notifications}=fixture();source.gate.current={serial:1,measurement:{pages:[]}};Object.assign(state,{serial:1,browser_protection:source.gate.protection});
+ let release;const hold=new Promise(r=>release=r);source.scope=async()=>{await hold;return state};const pending=source.wake();
+ const early=notifications.length;release();await pending;assert.equal(early,1,'stable input wake waited for process discovery');
+});
+test('MP-11 a changed protection serial cannot issue the immediate native wake',async()=>{
+ const {source,state,notifications}=fixture();source.gate.current={serial:2,measurement:{pages:[]}};Object.assign(state,{serial:1,browser_protection:{pages:[]}});
+ let release;const hold=new Promise(r=>release=r);source.scope=async()=>{await hold;return state};const pending=source.wake();
+ const early=notifications.length;release();await pending;assert.equal(early,0);
+});
