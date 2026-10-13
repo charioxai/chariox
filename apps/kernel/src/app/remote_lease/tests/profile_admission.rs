@@ -518,18 +518,16 @@ async fn assert_leased_claude_home_credential(environment_changed: bool) {
         .provider_run_projection
         .mark_leased_provider_run(run.id());
     if environment_changed {
-        let error = worker
-            .ensure_prompt_provider_run_for_agent(
-                &lease.backing_session_id,
-                &lease.backing_agent_id,
-            )
-            .expect_err("HOME must replace a credentialed Claude run");
-        assert!(error.to_string().contains(
-            crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
-        ));
+        // MP-08/MP-10/MP-11: a prompt admitted before the Project change keeps
+        // the live run that holds HOME's credential; nothing is deferred.
         assert_eq!(
-            worker.providers.get_run(run.id()).unwrap().state(),
-            crate::provider::ProviderRunState::Running
+            worker
+                .ensure_prompt_provider_run_for_agent(
+                    &lease.backing_session_id,
+                    &lease.backing_agent_id,
+                )
+                .expect("the admitted prompt keeps the HOME-credentialed run"),
+            run.id()
         );
         worker
             .prompt_owner_submit_prepared_prompt(
@@ -544,10 +542,27 @@ async fn assert_leased_claude_home_credential(environment_changed: bool) {
                 true,
             )
             .unwrap();
-        assert!(crate::app::KernelAgentService::new(&mut worker)
-            .advance_next_queued_prompt(&lease.backing_session_id, &lease.backing_agent_id, None)
+        let mut deferrals = 0;
+        for _ in 0..2 {
+            for (_, event) in RemoteLeaseRuntime::new(&mut worker)
+                .pump_leased_runtime_projections()
+                .unwrap()
+            {
+                let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    notices,
+                    ..
+                } = event;
+                deferrals += notices
+                    .iter()
+                    .filter(|notice| notice.contains("Deferred queued prompt"))
+                    .count();
+            }
+        }
+        assert_eq!(deferrals, 0, "the pump must not re-defer the queued prompt");
+        assert!(worker
+            .prompt_owner_active_prompt_for_agent(&lease.backing_session_id, &lease.backing_agent_id)
             .unwrap()
-            .is_none());
+            .is_some());
         assert_eq!(
             worker
                 .providers
@@ -556,13 +571,14 @@ async fn assert_leased_claude_home_credential(environment_changed: bool) {
                 .id(),
             run.id()
         );
-        assert!(worker
-            .prompt_owner_peek_next_queued_prompt(
-                &lease.backing_session_id,
-                &lease.backing_agent_id
-            )
-            .unwrap()
-            .is_some());
+        drop(worker);
+        // A new prompt for the changed inputs is refused while that run is busy,
+        // so it never queues behind a run the worker cannot relaunch.
+        let busy = submit().await.unwrap_err().to_string();
+        assert!(
+            busy.contains("retry after the active turn completes"),
+            "{busy}"
+        );
         return;
     }
     drop(worker);
