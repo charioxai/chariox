@@ -305,13 +305,8 @@ pub(crate) fn refresh_provider_account_profile_with_config(
     account_profile: &str,
     config: &DaemonConfig,
 ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
-    let profile = registry.get(owner_user_id, provider, account_profile)?;
-    if crate::provider::canonical_provider_family(provider) == Some("claude")
-        && crate::provider::provider_account_credential_registered(
-            owner_user_id,
-            provider,
-            &profile.profile_id,
-        )?
+    if let Some(profile) =
+        saved_claude_token_observation(registry, owner_user_id, provider, account_profile)?
     {
         return Ok(profile);
     }
@@ -322,6 +317,42 @@ pub(crate) fn refresh_provider_account_profile_with_config(
         account_profile,
         config,
     )
+}
+
+fn saved_claude_token_observation(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+) -> Result<Option<crate::account_profile::ProviderAccountProfile>, DaemonError> {
+    let profile = registry.get(owner_user_id, provider, account_profile)?;
+    if crate::provider::canonical_provider_family(provider) == Some("claude")
+        && crate::provider::provider_account_credential_registered(
+            owner_user_id,
+            provider,
+            &profile.profile_id,
+        )?
+    {
+        return Ok(Some(profile));
+    }
+    Ok(None)
+}
+
+/// MP-08 / MP-11: publication startup observes native auth without an optional
+/// usage probe. Enrolled tokens share the automatic refresh's saved-state gate.
+pub(crate) fn refresh_provider_account_auth_with_config(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    config: &DaemonConfig,
+) -> Result<(), DaemonError> {
+    if saved_claude_token_observation(registry, owner_user_id, provider, account_profile)?.is_some()
+    {
+        return Ok(());
+    }
+    observe_provider_auth_status(registry, owner_user_id, provider, account_profile, config)
+        .map(|_| ())
 }
 
 pub(crate) fn refresh_provider_account_profile_explicitly(
