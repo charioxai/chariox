@@ -230,6 +230,12 @@ export class DesktopSource {
     // MP-08/MP-10/MP-11: coalesce capture hints while one ownership refresh
     // is running; the final hint still obtains a fresh scope.
     if(this.closed)return Promise.resolve();
+    // MP-08/MP-10/MP-11: wake the existing protected producer immediately.
+    // This grants no new PID or mask; changed/unadopted protection waits for
+    // the refreshed scope, and every raster keeps its ordinary fences.
+    if(this.worker && !this.current?.mask && this.current?.serial>0 &&
+       this.current.serial===this.gate.protectionSerial && this.current.browser_protection===this.gate.protection)
+      this.worker.notify({refresh:true},true);
     this.wakePending=true;
     if(this.waking)return this.waking;
     this.waking=(async()=>{
