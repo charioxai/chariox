@@ -75,6 +75,9 @@ test("tool icons follow the tool kind for each provider's tool shapes", () => {
     [{ id: "13", tool: "Task", input: { description: "Audit" } }, "agent"],
     [{ id: "14", tool: "todowrite", input: { todos: [] } }, "plan"],
     [{ id: "15", tool: "mystery" }, "tool"],
+    [{ id: "16", tool: "chariox_chariox_list_extensions", input: {} }, "mcp"],
+    [{ id: "17", tool: "chariox.chariox.list_extensions", input: {} }, "mcp"],
+    [{ id: "18", tool: "charioxify" }, "tool"],
   ]
   for (const [update, icon] of cases) {
     assert.equal(toolDisplayIcon(update), icon, `${update.tool}`)

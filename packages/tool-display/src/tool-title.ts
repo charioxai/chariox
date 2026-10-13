@@ -145,7 +145,9 @@ export function toolDisplayIcon(update: ToolTranscriptUpdate, patchFiles: readon
   if (browser(server)) {
     return "browser"
   }
-  return raw.startsWith("mcp__") || server ? "mcp" : "tool"
+  // OpenCode exposes the Chariox runtime MCP namespace as an ordinary tool name.
+  const charioxRuntimeTool = /^chariox[_.:]/i.test(raw)
+  return raw.startsWith("mcp__") || charioxRuntimeTool || server ? "mcp" : "tool"
 }
 
 // The program of a one-line command without pipes or substitutions.
