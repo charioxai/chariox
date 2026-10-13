@@ -981,10 +981,18 @@ async fn check_agent_app_input(
     })
     .await
     .expect("owner keyboard App call");
-    let last = observed.tool_requests().unwrap().last().unwrap().clone();
+    let recorded = observed.tool_requests().unwrap();
+    let last = recorded.last().unwrap().clone();
     assert_eq!(
         last["context"]["actor"],
-        serde_json::json!({"kind":"human","id":"alice"})
+        serde_json::json!({"kind":"human","id":"alice"}),
+        "owner call after the agent window: {:?}",
+        recorded
+            .iter()
+            .rev()
+            .take(3)
+            .map(|r| (r["params"]["input"]["text"].clone(), r["context"]["actor"].clone()))
+            .collect::<Vec<_>>()
     );
     assert!(last["context"].get("agent_id").is_none());
     request(
