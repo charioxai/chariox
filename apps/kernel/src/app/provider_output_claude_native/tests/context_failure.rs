@@ -3,21 +3,35 @@ use super::*;
 
 #[test]
 fn expired_native_context_request_never_starts_a_prompt() {
-    context_failure_case(true);
+    context_failure_case(ContextFailureScenario::ExpiredNative);
 }
 
 #[test]
 fn failed_native_context_delivery_settles_only_its_bound_prompt() {
-    context_failure_case(false);
+    context_failure_case(ContextFailureScenario::FailedNative);
 }
 
-fn context_failure_case(expired: bool) {
+#[test]
+fn expired_managed_context_request_keeps_a_matching_failure_binding() {
+    context_failure_case(ContextFailureScenario::ExpiredManaged);
+}
+
+#[derive(Clone, Copy)]
+enum ContextFailureScenario {
+    ExpiredNative,
+    FailedNative,
+    ExpiredManaged,
+}
+
+fn context_failure_case(scenario: ContextFailureScenario) {
+    let expired = !matches!(scenario, ContextFailureScenario::FailedNative);
+    let managed = matches!(scenario, ContextFailureScenario::ExpiredManaged);
     let worktree = crate::test_support::TestWorktree::new("native-context-failure");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .unwrap();
-    crate::app::KernelSessionService::new(&mut app)
+    let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
             "context-client",
@@ -64,6 +78,28 @@ fn context_failure_case(expired: bool) {
     );
     run.mark_running();
     app.providers_mut().insert_run_for_test(run.clone());
+    if managed {
+        let active = match app
+            .record_native_prompt_started_with_attachments(
+                session.id(),
+                attachment.id(),
+                agent.id(),
+                "retry audit",
+                "retry audit",
+                Vec::new(),
+            )
+            .unwrap()
+        {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+            other => panic!("unexpected managed admission: {other:?}"),
+        };
+        let path = context.display().to_string();
+        write_claude_native_marker(
+            &path,
+            &format!("submit-wait:{}:{}", active.id(), unix_epoch_ms()),
+        );
+        write_claude_headless_submit_retry(&path, active.id(), 0, unix_epoch_ms(), "retry audit");
+    }
     let submit = serde_json::json!({"hook_event_name":"UserPromptSubmit", "prompt":"retry audit",
         "hook_context_request_id":"failed-request", "hook_context_deadline_ms":
             if expired { unix_epoch_ms().saturating_sub(1) } else { unix_epoch_ms() + 5000 }});
@@ -74,11 +110,15 @@ fn context_failure_case(expired: bool) {
     let active = app
         .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
         .unwrap();
-    if expired {
+    if expired && !managed {
         assert!(active.is_none(), "expired hook manufactured a WORKING turn");
         return;
     }
     assert!(active.is_some());
+    assert!(
+        context.with_extension("txt.context-delivery").exists(),
+        "expired managed hook lost the binding needed to settle its already admitted prompt"
+    );
     // A stale failure must not fail this current native turn.
     fs::write(
         &events,
