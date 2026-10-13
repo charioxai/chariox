@@ -311,3 +311,21 @@ fn review1301_partial_check_dependency_expires_on_snapshot() {
         "dependent and transitive evidence must expire with their prerequisite"
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn named_host_probe_keeps_its_symlink_invocation_name() {
+    let root = crate::test_support::TestWorktree::new("named-shim");
+    let alias = root.path().join("named-tool");
+    std::os::unix::fs::symlink("/bin/sh", &alias).unwrap();
+    let output = super::check_executable::command(&alias, &[])
+        .unwrap()
+        .args(["-c", "printf '%s' \"$0\""])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        alias.to_string_lossy()
+    );
+}

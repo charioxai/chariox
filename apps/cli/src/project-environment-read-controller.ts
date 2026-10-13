@@ -14,6 +14,7 @@ export function createProjectEnvironmentReadController(deps: {
   copyLink?: (link: string) => void
 }) {
   const cache = createEnvironmentViewCache()
+  let previousProposalOffsets: number[] = []
   const readEnvironment = createEnvironmentReader(deps.send)
   const scope = Symbol("kernel-client-view")
   let refreshing = false
@@ -36,6 +37,7 @@ export function createProjectEnvironmentReadController(deps: {
     visibleLines: () => lines.slice(offset, offset + Math.max(1, deps.pageSize())),
     close() { clearTimeout(expiryTimer); open = false; generation++; deps.render() },
     async open(projectId: string) {
+      previousProposalOffsets = []
       const requestGeneration = ++generation
       const prior = cache.peek(scope, projectId)
       if (current?.local_project_id !== projectId) diff = null
@@ -103,7 +105,7 @@ export function createProjectEnvironmentReadController(deps: {
         const environment = response.ProjectEnvironment?.environment
         if (!environment || environment.local_project_id !== projectId) throw new Error("Detect unavailable for this Project")
         if (requestGeneration !== generation) return
-        cache.remember(scope, environment); current = environment; lines = viewLines(environment); offset = 0
+        cache.remember(scope, environment); current = environment; previousProposalOffsets = []; proposalIndex = 0; lines = viewLines(environment); offset = 0
       } catch (error) {
         if (requestGeneration !== generation) return
         lines = [error instanceof Error ? error.message : "Detect unavailable", ...viewLines(current!)]
@@ -133,6 +135,7 @@ export function createProjectEnvironmentReadController(deps: {
       const proposal = current.proposals[proposalIndex]
       if (!proposal) return
       const requestGeneration = generation
+      previousProposalOffsets = []
       savingGeneration = requestGeneration
       try {
         const response = await deps.send(saveEnvironmentRevisionRequest(current, environmentRevisionDraft(current), decision === "accept" ? [proposal.proposal_id] : [], decision === "exclude" ? [proposal.proposal_id] : [])) as { ProjectEnvironmentSaved?: { environment: ProjectEnvironment; diff?: EnvironmentRevisionDiff } }
@@ -147,12 +150,14 @@ export function createProjectEnvironmentReadController(deps: {
     async proposalPage(proposalOffset:number, selectLast=false) {
       if(!current?.read_view || refreshing || savingGeneration===generation || detectionGeneration===generation || checkingGeneration===generation)return
       const baseline=current, g=generation
+      const oldOffset=baseline.read_view!.proposal_offset
       refreshing=true
       try {
         const response=await deps.send(getEnvironmentProposalPageRequest(baseline.local_project_id,baseline.read_view!.snapshot_digest,proposalOffset)) as {ProjectEnvironmentView?:{view:EnvironmentReadView}}
         if(g!==generation)return
         const view=response.ProjectEnvironmentView?.view
         if(!view || view.snapshot_digest!==baseline.read_view!.snapshot_digest || view.environment || view.proposal_offset!==proposalOffset)throw new Error("Environment changed · r Refresh to review")
+        if(selectLast)previousProposalOffsets.pop();else if(proposalOffset>oldOffset)previousProposalOffsets.push(oldOffset)
         current={...baseline,proposals:view.proposals,read_view:{...baseline.read_view!,proposal_offset:proposalOffset,next_proposal_offset:view.next_proposal_offset}}
         proposalIndex=selectLast ? Math.max(0,current.proposals.length-1) : 0
         lines=viewLines(current);offset=0
@@ -178,7 +183,7 @@ export function createProjectEnvironmentReadController(deps: {
         if(refreshing)return true
         if(!current.proposals.length && current.read_view?.next_proposal_offset!=null){void controller.proposalPage(current.read_view.next_proposal_offset);return true}
         if(current.read_view && event.name==="n" && proposalIndex===current.proposals.length-1 && current.read_view.next_proposal_offset!=null){void controller.proposalPage(current.read_view.next_proposal_offset);return true}
-        if(current.read_view && event.name==="p" && proposalIndex===0 && current.read_view.proposal_offset>0){void controller.proposalPage(Math.max(0,current.read_view.proposal_offset-20),true);return true}
+        if(current.read_view && event.name==="p" && proposalIndex===0 && current.read_view.proposal_offset>0){void controller.proposalPage(previousProposalOffsets.at(-1) ?? 0,true);return true}
         proposalIndex = Math.max(0, Math.min(current.proposals.length - 1, proposalIndex + (event.name === "n" ? 1 : -1)))
         lines = viewLines(current); offset = 0; deps.render(); return true
       }

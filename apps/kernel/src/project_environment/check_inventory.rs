@@ -95,7 +95,7 @@ pub(super) fn executable(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .filter(|p| p.is_absolute())
         .find_map(|p| {
-            let p = p.join(name).canonicalize().ok()?;
+            let p = p.join(name);
             let m = p.metadata().ok()?;
             #[cfg(unix)]
             {

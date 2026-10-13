@@ -211,3 +211,23 @@ test("TUI next proposal crosses a snapshot-bound page and reports the total coun
  assert(controller.visibleLines().some(l=>l.includes("Review 2/2 · Two")))
  controller.close()
 })
+
+// MP-08 / MP-10 / MP-11: byte-bounded pages can contain fewer than twenty proposals.
+test("TUI previous page returns to the actual prior byte-bounded offset", async () => {
+  const offsets: number[] = []
+  const proposals = Array.from({length:7},(_,i)=>({proposal_id:`p-${i}`,requirement:{requirement_id:`r-${i}`,title:`Requirement ${i}`,scope:{kind:"project"},origins:[],spec:{kind:"software",identity:"node",detect_only:true}}}))
+  const environment: any = {schema_version:1,local_project_id:"project",revision:0,content_digest:"revision",lineage:{project_id:"lineage",environment_id:"env"},folders:[],project_requirements:[],proposals:proposals.slice(0,3),operations:[],observations:[],delivered_capabilities:{enabled_environment_operations:["get","save"],supported_schema:1},read_view:{snapshot_digest:"snapshot",proposal_count:7,proposal_offset:0,next_proposal_offset:3}}
+  const controller = createProjectEnvironmentReadController({send:async (request:any)=>{
+    const page=request.GetProjectEnvironment.view.proposals
+    if(!page)return {ProjectEnvironment:{environment}}
+    offsets.push(page.offset)
+    return {ProjectEnvironmentView:{view:{environment:null,snapshot_digest:"snapshot",proposal_count:7,proposal_offset:page.offset,next_proposal_offset:page.offset===3?5:null,proposals:proposals.slice(page.offset,page.offset+2),operation_item_counts:[]}}}
+  },render(){},pageSize:()=>100})
+  await controller.open("project")
+  await controller.proposalPage(3)
+  await controller.proposalPage(5)
+  controller.handleKey({name:"p"})
+  await new Promise(resolve=>setTimeout(resolve,0))
+  assert.deepEqual(offsets,[3,5,3])
+  controller.close()
+})
