@@ -241,3 +241,16 @@ test("Linux wrapped children retain the parent watch", async () => {
     assert.equal(exits, 1)
   } finally { stop() }
 })
+
+// MP-08/MP-11: OpenTUI handles SIGTERM by destroying the renderer, but other
+// runtime timers can keep Bun alive. The native parent-death signal must exit.
+test("a direct Linux child exits on launcher SIGTERM without inspecting processes", () => {
+  let exits = 0
+  const stop = watchCliLauncherParent(String(process.ppid), {
+    platform: "linux", inspect: () => assert.fail("Linux signal path inspected processes"), exit: () => { exits += 1 },
+  })
+  try {
+    process.emit("SIGTERM")
+    assert.equal(exits, 1)
+  } finally { stop() }
+})

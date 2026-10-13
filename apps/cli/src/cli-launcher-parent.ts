@@ -18,8 +18,8 @@ export function registerCliLauncherParentExit(exit: () => void): () => void {
   }
 }
 
-function exitLauncherChild() {
-  process.stderr.write("chariox: launcher parent exited; closing TUI\n")
+function exitLauncherChild(reason: string) {
+  process.stderr.write(`chariox: ${reason}; closing TUI\n`)
   launcherParentExit()
 }
 
@@ -27,7 +27,7 @@ function exitLauncherChild() {
 // asynchronous fallback, including while the renderer/runtime are loading.
 export function watchCliLauncherParent(
   launcherPid: string | undefined,
-  { exit = exitLauncherChild, inspect = launcherExists, platform = process.platform }: LauncherParentWatchOptions = {},
+  { exit, inspect = launcherExists, platform = process.platform }: LauncherParentWatchOptions = {},
 ): () => void {
   if (!launcherPid) return () => {}
   const expected = Number(launcherPid)
@@ -36,7 +36,13 @@ export function watchCliLauncherParent(
   }
   // A spawning BUN_BIN wrapper forks a grandchild without PR_SET_PDEATHSIG.
   // Only a direct Linux child can rely exclusively on the launcher's signal.
-  if (platform === "linux" && process.ppid === expected) return () => {}
+  if (platform === "linux" && process.ppid === expected) {
+    // OpenTUI's SIGTERM handler destroys its renderer but leaves runtime timers
+    // active. Finish exiting after restoration when PR_SET_PDEATHSIG fires.
+    const terminate = exit ?? (() => exitLauncherChild("launcher termination received"))
+    process.once("SIGTERM", terminate)
+    return () => { process.off("SIGTERM", terminate) }
+  }
   let stopped = false
   let pending = false
   const check = async () => {
@@ -47,7 +53,8 @@ export function watchCliLauncherParent(
       if (!stopped && alive === false) {
         stopped = true
         clearInterval(timer)
-        exit()
+        if (exit) exit()
+        else exitLauncherChild("launcher parent exited")
       }
     } catch {
       // A spawn failure or incomplete inspection is unknown, never parent death.
