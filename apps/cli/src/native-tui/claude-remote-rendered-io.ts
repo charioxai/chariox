@@ -28,6 +28,7 @@ export function forwardClaudeRemoteRenderedStdin(options: {
   debug: (label: string, payload: unknown) => void
 }): () => void {
   const wasRaw = Boolean(process.stdin.isTTY && process.stdin.isRaw)
+  const wasFlowing = process.stdin.readableFlowing === true
   const composer = createClaudeRemoteRenderedComposerState()
   let pending = Promise.resolve()
   let inputGeneration = 0
@@ -59,6 +60,9 @@ export function forwardClaudeRemoteRenderedStdin(options: {
   return () => {
     process.stdin.off("data", onData)
     if (process.stdin.isTTY) process.stdin.setRawMode?.(wasRaw)
+    // MP-08 / MP-10 / MP-11: a resumed terminal keeps the wrapper alive after
+    // the official provider exits. Restore input ownership with terminal mode.
+    if (!wasFlowing) process.stdin.pause()
   }
 }
 
