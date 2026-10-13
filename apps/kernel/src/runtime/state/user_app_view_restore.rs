@@ -33,8 +33,31 @@ impl KernelRuntimeState {
             .unwrap_or_default()
     }
 
+    /// Load intent saved by an earlier kernel once, minus Apps already open.
+    fn seed_user_app_tabs(&self, owner: &str) {
+        let views = self.app_control().user_views();
+        if views.has_restore(owner).is_some() {
+            return;
+        }
+        let mut hosted = views.restore_intent(owner);
+        let mut pending = Vec::new();
+        for app in self.saved_app_tabs(owner).apps {
+            if app.owner != owner {
+                continue;
+            }
+            match hosted.iter().position(|open| *open == app.installation_id) {
+                Some(index) => {
+                    hosted.swap_remove(index);
+                }
+                None => pending.push(app.installation_id),
+            }
+        }
+        views.seed_restore(owner, pending);
+    }
+
     /// Record which Apps the owner keeps open, beside its browser profile.
     pub(super) fn remember_user_app_tabs(&self, owner: &str) {
+        self.seed_user_app_tabs(owner);
         let path = self.app_tabs_path(owner);
         let mut saved = self.saved_app_tabs(owner);
         saved.apps.retain(|app| app.owner != owner);
@@ -64,16 +87,7 @@ impl KernelRuntimeState {
     pub(super) fn restore_user_app_tabs(&self, user: &str) {
         let views = self.app_control().user_views();
         for owner in self.user_domain_owner_aliases(user) {
-            if views.has_restore(&owner).is_none() {
-                let saved = self.saved_app_tabs(&owner).apps.into_iter();
-                views.seed_restore(
-                    &owner,
-                    saved
-                        .filter(|app| app.owner == owner)
-                        .map(|app| app.installation_id)
-                        .collect(),
-                );
-            }
+            self.seed_user_app_tabs(&owner);
             if views.has_restore(&owner) != Some(true) || !views.begin_restore(&owner) {
                 continue;
             }
