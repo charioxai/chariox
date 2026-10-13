@@ -3248,6 +3248,40 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
 
+### MP-08 / MP-10 / MP-11: ordered relay receipt credit (local 505, peer 113)
+
+The coordinator-allocated Environment versions 505 / 113 also bind the
+connection-wide receipt scheduling contract. With `chariox_transport=chunks-v1`,
+complete framed envelopes remain sequential. A subsequent envelope may start
+before the preceding envelope's final receipt, provided all outstanding encoded
+chunks together fit the existing 64 KiB window. Only the exact next ordered
+transfer ID and offset release credit; duplicate, mismatched and reordered
+receipts close the connection. Independent small frames retain their separate
+16 KiB credit bound and request FIFO remains enforced. Receipts establish
+transport delivery only, never kernel operation completion or authorization.
+
+Frame syntax, maximum envelope size and the strict single-active-transfer
+receiver are unchanged. Existing chunk receivers remain compatible because a
+new transfer starts only after the preceding envelope is completely sent.
+Clients do not require a higher minimum solely for this scheduling behavior.
+Unframed connections retain their existing behavior.
+
+Focused boundary drill (from the exact checkout, under the builder cargo slot):
+
+```sh
+cargo test -p chariox-relay sequential_responses_do_not_wait_for_the_previous_final_receipt
+cargo test -p chariox-relay server::connection::writer
+cargo test -p chariox-kernel --lib environment_relay_receipt_transport_snapshot_is_versioned
+```
+
+The first drill withholds receipts over a real WebSocket, verifies both complete
+responses arrive within one shared window, reconstructs them through the existing
+strict receiver, and then releases ordered receipts. The writer suite covers
+window saturation, request/event ordering, control delivery and invalid receipts.
+The versioned kernel snapshot pins the allocated versions, frame shapes and
+bounds. These focused checks supplement real hosted Web/TUI Environment drills;
+they do not establish MP-10 acceptance on their own.
+
 ### MP-08 / MP-10 / MP-11: Environment compact reads (local 505, peer 113)
 
 `GetProjectEnvironment { projectId }` retains the complete aggregate. Optional

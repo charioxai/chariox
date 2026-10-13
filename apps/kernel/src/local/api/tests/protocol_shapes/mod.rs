@@ -37,6 +37,7 @@ mod provider_usage_activity;
 mod publication;
 mod recall_terminal_metaagent;
 mod released_provider_run;
+mod relay_receipt_transport;
 mod resource_telemetry;
 mod room_controller;
 mod room_environment;

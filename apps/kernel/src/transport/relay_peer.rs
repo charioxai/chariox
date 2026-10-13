@@ -102,6 +102,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version70 combines Apps Phase1 and autonomous Room observation contracts (MP-08/MP-10).
 /// Version73 adds bounded Browser artifacts, opaque upload bytes and bounded Computer holds (MP-08/MP-10/MP-11).
 /// A v70 worker cannot decode these controller variants; reject it before dispatch.
+/// Version 113 pairs with local 505 for Environment compact reads and shared
+/// relay receipt credit (MP-08 / MP-10 / MP-11); no second transport authority.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 113;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
@@ -2076,7 +2078,7 @@ mod workflow_notification_101_shapes {
     use sha2::{Digest, Sha256};
     #[test]
     fn mp08_mp10_completion_peer_101_snapshot() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 113);
         let sub = WorkflowNotificationSubscription {
             delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             subscription_id: "sub".into(),

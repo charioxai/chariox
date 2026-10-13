@@ -262,4 +262,7 @@ pub use workspace::*;
 /// Version 471 defines value-free Project Environment aggregates and reserves the complete Environment operation contract (MP-02/MP-03/MP-08/MP-10/MP-11).
 /// Version 472 advertises identity-preserving terminal relay renewal with
 /// explicit capability negotiation and recoverable target-offline handshakes.
+/// Version 505 (allocated to Environments) adds compact Environment/catalog reads
+/// and connection-wide ordered relay receipt credit across complete envelopes
+/// (MP-08 / MP-10 / MP-11). The chunks-v1 frame syntax remains compatible.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 505;
