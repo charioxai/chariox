@@ -78,7 +78,11 @@ export async function submitWorkspaceShellCommand(
     deps.flashFooter("usage: @ <chariox-shell command>", "error")
     return { ok: false, output: "usage: @ <chariox-shell command>", context: deps.workspaceShellContext() }
   }
-  const context = deps.workspaceShellContext()
+  const previousContext = deps.workspaceShellContext()
+  const workflowId = deps.selectedWorkflowId() ?? undefined
+  const context = workflowId === previousContext.workflowId
+    ? previousContext
+    : { ...previousContext, workflowId }
   const output: string[] = []
   const runShellLine = deps.executeShellLine ?? executeShellLine
   const result = await runShellLine(command, context, {
