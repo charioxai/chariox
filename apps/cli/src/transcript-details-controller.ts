@@ -1,5 +1,5 @@
 import type { SessionHistoryBlobContent, TranscriptEntry } from "./cli-types.js"
-import { compactTranscriptDisplayEntries, projectCompactTranscriptDisplayState } from "@chariox/kernel-client/transcript-display-state"
+import { cloneCompactTranscriptDisplayEntries, projectCompactTranscriptDisplayState } from "@chariox/kernel-client/transcript-display-state"
 import { replaceSessionHistoryBlobPlaceholders, resolveSessionHistoryBlobLoadTarget } from "@chariox/kernel-client/session-history-transcript"
 
 // MP-08 / MP-10: both primary and auxiliary Ctrl+O use one projection per
@@ -11,7 +11,7 @@ export function toggleTranscriptDetails(deps: {
   load?: ((agentId: string, blobIds: readonly string[]) => Promise<SessionHistoryBlobContent[]>) | undefined
   formatError?: ((error: unknown) => string) | undefined
 }): void {
-  const current = compactTranscriptDisplayEntries(deps.entries())
+  const current = cloneCompactTranscriptDisplayEntries(deps.entries())
   const blobs = current.filter((entry) => entry.blobCollapsible && entry.role !== "turn_toggle" && !entry.hidden)
   if (!blobs.length) return
   const expand = blobs.some((entry) => entry.blobCollapsed !== false)
@@ -34,10 +34,10 @@ export function toggleTranscriptDetails(deps: {
     const contents: { agentId: string; content: SessionHistoryBlobContent }[] = []
     try {
       for (const [agentId, ids] of targets) contents.push(...(await deps.load!(agentId, [...ids])).map(content => ({ agentId, content })))
-      const latest = compactTranscriptDisplayEntries(deps.entries())
+      const latest = cloneCompactTranscriptDisplayEntries(deps.entries())
       deps.commit(latest, replaceSessionHistoryBlobPlaceholders(latest, contents, deps.collapsedTurns()) as TranscriptEntry[])
     } catch (error) {
-      const latest = compactTranscriptDisplayEntries(deps.entries())
+      const latest = cloneCompactTranscriptDisplayEntries(deps.entries())
       deps.commit(latest, latest.map((entry) => targets.get(entry.historyBlobAgentId ?? "")?.has(entry.historyBlobId ?? "")
         ? { ...entry, historyBlobLoading: false, historyBlobError: deps.formatError?.(error) ?? String(error), blobSummary: "failed to load" }
         : entry))

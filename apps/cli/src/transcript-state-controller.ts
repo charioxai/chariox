@@ -7,7 +7,7 @@ import {
   resolveSessionHistoryBlobLoadTarget,
 } from "@chariox/kernel-client/session-history-transcript"
 import {
-  compactTranscriptDisplayEntries,
+  cloneCompactTranscriptDisplayEntries,
   projectCompactTranscriptDisplayState,
   projectTranscriptBlobToggleDisplayState,
   projectTranscriptTurnToggleDisplayState,
@@ -53,7 +53,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
     if (turnId === null || turnId === undefined) {
       return
     }
-    const currentEntries = compactTranscriptDisplayEntries(deps.entries())
+    const currentEntries = cloneCompactTranscriptDisplayEntries(deps.entries())
     const agentId = deps.visibleTranscriptAgentId()
     const projection = projectTranscriptTurnToggleDisplayState(
       currentEntries,
@@ -73,7 +73,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
   }
 
   const toggleBlob = (entryId: number, collapsed: boolean) => {
-    const currentEntries = compactTranscriptDisplayEntries(deps.entries())
+    const currentEntries = cloneCompactTranscriptDisplayEntries(deps.entries())
     const agentId = deps.visibleTranscriptAgentId()
     const target = currentEntries.find((entry) => entry.id === entryId)
     const loadTarget = resolveSessionHistoryBlobLoadTarget(target, collapsed)
@@ -85,7 +85,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
       deps.retainPromptFocus()
       void deps.loadHistoryBlobContent(loadTarget.agentId, loadTarget.blobId)
         .then((content) => {
-          const latestEntries = compactTranscriptDisplayEntries(deps.entries())
+          const latestEntries = cloneCompactTranscriptDisplayEntries(deps.entries())
           const nextEntries = replaceSessionHistoryBlobPlaceholder(
             latestEntries,
             entryId,
@@ -99,7 +99,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
           deps.retainPromptFocus()
         })
         .catch((error) => {
-          const latestEntries = compactTranscriptDisplayEntries(deps.entries())
+          const latestEntries = cloneCompactTranscriptDisplayEntries(deps.entries())
           const nextEntries = markSessionHistoryBlobLoading(
             latestEntries,
             entryId,
@@ -137,7 +137,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
     if (shouldSkipConsecutiveTranscriptEntry(previousEntry, entry)) {
       return null
     }
-    const currentEntries = compactTranscriptDisplayEntries(deps.entries())
+    const currentEntries = cloneCompactTranscriptDisplayEntries(deps.entries())
     const runtimeOptions = transcriptEntryRuntimeOptions({
       entryCounter: deps.entryCounter(),
       currentTurnId: deps.currentTurnId(),

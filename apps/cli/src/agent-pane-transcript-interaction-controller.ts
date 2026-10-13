@@ -9,6 +9,7 @@ import {
   resolveSessionHistoryBlobLoadTarget,
 } from "@chariox/kernel-client/session-history-transcript"
 import {
+  cloneCompactTranscriptDisplayEntries,
   projectTranscriptBlobToggleDisplayState,
   projectTranscriptTurnToggleDisplayState,
 } from "@chariox/kernel-client/transcript-display-state"
@@ -44,7 +45,7 @@ export function createAgentPaneTranscriptInteractionController(
     if (turnId === null || turnId === undefined) {
       return
     }
-    const currentEntries = deps.currentAgentPaneEntries(agentId)
+    const currentEntries = cloneCompactTranscriptDisplayEntries(deps.currentAgentPaneEntries(agentId))
     const projection = projectTranscriptTurnToggleDisplayState(
       currentEntries,
       turnId,
@@ -60,7 +61,7 @@ export function createAgentPaneTranscriptInteractionController(
   }
 
   const toggleBlob = (agentId: string, entryId: number, collapsed: boolean) => {
-    const currentEntries = deps.currentAgentPaneEntries(agentId)
+    const currentEntries = cloneCompactTranscriptDisplayEntries(deps.currentAgentPaneEntries(agentId))
     const target = currentEntries.find((entry) => entry.id === entryId)
     const loadTarget = resolveSessionHistoryBlobLoadTarget(target, collapsed)
     if (loadTarget && deps.loadHistoryBlobContent) {
@@ -68,7 +69,7 @@ export function createAgentPaneTranscriptInteractionController(
       commitAndRefocus(deps, agentId, currentEntries, loadingEntries)
       void deps.loadHistoryBlobContent(loadTarget.agentId, loadTarget.blobId)
         .then((content) => {
-          const latestEntries = deps.currentAgentPaneEntries(agentId)
+          const latestEntries = cloneCompactTranscriptDisplayEntries(deps.currentAgentPaneEntries(agentId))
           const nextEntries = replaceSessionHistoryBlobPlaceholder(
             latestEntries,
             entryId,
@@ -78,7 +79,7 @@ export function createAgentPaneTranscriptInteractionController(
           commitAndRefocus(deps, agentId, latestEntries, nextEntries)
         })
         .catch((error) => {
-          const latestEntries = deps.currentAgentPaneEntries(agentId)
+          const latestEntries = cloneCompactTranscriptDisplayEntries(deps.currentAgentPaneEntries(agentId))
           const nextEntries = markSessionHistoryBlobLoading(
             latestEntries,
             entryId,

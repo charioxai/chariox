@@ -169,6 +169,7 @@ function transcriptHarness(options: {
   entryCounter?: number
   currentTurnId?: number | null
   collapsedTurnIds?: number[]
+  reconcileInPlace?: boolean
 }) {
   const harness = {
     entries: options.entries ?? [],
@@ -189,7 +190,14 @@ function transcriptHarness(options: {
   harness.controller = createTranscriptStateController({
     entries: () => harness.entries,
     setEntries: (nextEntries) => {
-      harness.entries = nextEntries
+      if (options.reconcileInPlace) {
+        for (const next of nextEntries) {
+          const current = harness.entries.find((item) => item.id === next.id)
+          if (current) Object.assign(current, next)
+        }
+      } else {
+        harness.entries = nextEntries
+      }
     },
     entryCounter: () => harness.entryCounter,
     setEntryCounter: (value) => {
@@ -239,4 +247,20 @@ test("Ctrl+O projects all loaded rows once", () => {
   ] })
   harness.controller.toggleAllBlobs()
   assert.equal(harness.reconciled.length, 1)
+})
+
+// MP-08 / MP-10: Solid reconcile updates existing rows in place. The mounted
+// comparison must retain the state that was visible before that write.
+test("disclosure retains the pre-update render snapshot with in-place stores", () => {
+  const harness = transcriptHarness({
+    entries: [entry(1, "tool", "actual file output", { blobCollapsible: true, blobCollapsed: true })],
+    reconcileInPlace: true,
+  })
+  harness.controller.toggleBlob(1, false)
+  assert.equal(harness.entries[0]?.blobCollapsed, false)
+  assert.equal(harness.reconciled[0]?.current[0]?.blobCollapsed, true)
+  assert.equal(harness.reconciled[0]?.next[0]?.blobCollapsed, false)
+  harness.controller.toggleBlob(1, true)
+  assert.equal(harness.reconciled[1]?.current[0]?.blobCollapsed, false)
+  assert.equal(harness.reconciled[1]?.next[0]?.blobCollapsed, true)
 })
