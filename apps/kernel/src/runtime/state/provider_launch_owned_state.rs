@@ -2260,9 +2260,8 @@ mod tests {
             )
             .unwrap();
         let backing_agent = app.agents().get_agent(&backing.backing_agent_id).unwrap();
-        app.provider_account_profile_registry().require_agent_authenticated(
-            app.config(), &backing_agent, "leased prompt admission",
-        )
+        app.provider_account_profile_registry()
+            .require_agent_authenticated(app.config(), &backing_agent, "leased prompt admission")
             .expect(
                 "leased prompt admission must validate the home replica, not the worker account",
             );
