@@ -8,7 +8,7 @@ import readline from "node:readline";
 import { BrowserControllerStdioServer } from "./browser-controller.mjs";
 import path from "node:path";
 import { encodePng, decodePng, maskPng } from "./kernel-browser-pixels.mjs";
-import { KernelBrowserHost, navigationUrl } from "./kernel-browser-host.mjs";
+import { KernelBrowserHost, navigationUrl, scheduleHostRequest } from "./kernel-browser-host.mjs";
 import { candidates as macCandidates, launchEnvironment as macEnvironment } from "./kernel-browser-macos.mjs";
 import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
 import { launchArguments, HostChromium } from "./kernel-browser-process.mjs";
@@ -821,3 +821,65 @@ test("MP-08/MP-10 a refused native start retries after one second, backing off t
   const { nativeRetryDelayMs } = await import("./kernel-browser-host.mjs");
   assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 12].map(nativeRetryDelayMs), [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000]);
 });
+
+// MP-08/MP-10/MP-11: a client's state poll waits for every page's reconcile
+// (~40 ms on a busy page); a keystroke arriving meanwhile must not queue behind it.
+test("MP-08/MP-10/MP-11 a state poll in flight does not hold input", { timeout: 5000 }, () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  host.browser.canReconcileConcurrently = () => true;
+  const input = new PassThrough(), output = new PassThrough();
+  const lines = readline.createInterface({ input: output }), waiters = new Map();
+  lines.on("line", line => { const reply = JSON.parse(line); waiters.get(reply.id)?.resolve(reply); });
+  const server = new BrowserControllerStdioServer({ input, output, scheduleRequest: request => scheduleHostRequest(request, host.browser),
+    handleRequest: (request, options) => host.handle(request, options) });
+  const running = server.run();
+  const rpc = (id, method, params) => {
+    const result = Promise.withResolvers(); waiters.set(id, result);
+    input.write(`${JSON.stringify({ id, method, params })}\n`);
+    return result.promise;
+  };
+  const reconcile = host.browser.reconcile, entered = Promise.withResolvers(), release = Promise.withResolvers();
+  let held = true;
+  host.browser.reconcile = async (...args) => {
+    const observed = await reconcile(...args);
+    if (held) { held = false; entered.resolve(); await release.promise; }
+    return observed;
+  };
+  try {
+    const state = rpc(1, "host.browser", { op: "state" });
+    await entered.promise;
+    const typed = await Promise.race([
+      rpc(2, "host.browser", { op: "input", tab_id: opened.tab_id, generation: opened.generation,
+        document_id: opened.tabs[0].document_id, input: { kind: "text", text: "a" } }),
+      new Promise(resolve => setTimeout(() => resolve(null), 1000)),
+    ]);
+    assert.ok(typed?.ok, "input waited behind the state poll");
+    assert.equal(sent.filter(call => call.method === "Input.insertText").length, 1);
+    release.resolve();
+    const polled = await state;
+    assert.equal(polled.ok, true);
+    assert.ok(polled.result.observation <= typed.result.observation, "the later input observation stays the newest");
+  } finally { release.resolve(); input.end(); await running; lines.close(); output.end(); }
+}));
+
+test("MP-11 an older tab observation never replaces a newer one", () => using(async ({ host, pages }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  const reconcile = host.browser.reconcile, release = Promise.withResolvers();
+  let first = true;
+  host.browser.reconcile = async (...args) => {
+    const observed = await reconcile(...args);
+    if (first) { first = false; await release.promise; }
+    return observed;
+  };
+  const older = host.reconcile();
+  await new Promise(resolve => setImmediate(resolve));
+  pages.set("target-new", { url: "about:blank" });
+  const newer = await host.reconcile();
+  release.resolve();
+  const stale = await older;
+  assert.equal(newer.tabs.length, 2);
+  assert.equal(stale.observation, newer.observation, "a stale observation reports the current tabs");
+  assert.equal(stale.tabs.length, 2);
+  assert.equal(host.tabs.size, 2);
+  assert.ok(host.tabs.has(opened.tab_id));
+}));

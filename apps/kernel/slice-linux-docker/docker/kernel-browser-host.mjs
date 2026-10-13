@@ -33,10 +33,13 @@ import { displayCredit, displayPushCredit } from './kernel-browser-display-credi
 // to one attempt a minute.
 export const nativeRetryDelayMs = attempts => Math.min(60_000, 1_000 * 2 ** (attempts - 1));
 
-export function scheduleHostRequest(request) {
-  // MP-08/MP-10: mirror v2 credits long-poll; they never hold the barrier.
+export function scheduleHostRequest(request, browser) {
+  // MP-08/MP-10: mirror v2 credits long-poll; they never hold the barrier. A state
+  // poll waits for every page's reconcile: once the viewport is applied it only
+  // observes, so input does not queue behind it.
   return request.method === 'host.browser' && (request.params?.op === 'screenshot' &&
-    typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && Number.isInteger(request.params.wait_ms))
+    typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && Number.isInteger(request.params.wait_ms)
+    || request.params?.op === 'state' && browser?.canReconcileConcurrently?.(viewport, { browserBarVisible: false }) === true)
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
@@ -63,6 +66,7 @@ export class KernelBrowserHost {
     this.browserFactory = browserFactory;
     this.browser = null;
     this.generation = 0;
+    this.observations = 0; this.observed = 0;
     this.tabs = new Map();
     this.streams = new Map();
     this.displays = new Map();
@@ -123,6 +127,7 @@ export class KernelBrowserHost {
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
     this.streams.clear();
     this.tabs.clear();
+    this.observed = ++this.observations;
     this.observedDocuments.clear();
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     let saved = { generation: 0, tabs: [] };
@@ -219,7 +224,14 @@ export class KernelBrowserHost {
     this.timing.flush?.();
     return { state: "stopped", generation: this.generation, tabs: [] };
   }
+  // MP-08/MP-10/MP-11: reconciles can overlap (a state poll beside input). They
+  // apply in start order: an older observation reports the newer current tabs.
+  tabState() {
+    return redactObservation({ state: "ready", generation: this.generation, observation: this.observed,
+      tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport }, this.protection.values);
+  }
   async reconcile() {
+    const observation = ++this.observations;
     let state;
     // Restored pages can finish navigation between CDP document reads. Retry
     // only this observation, never the mutation that led to reconciliation.
@@ -230,6 +242,8 @@ export class KernelBrowserHost {
         await delay(25);
       }
     }
+    if (observation < this.observed) return this.tabState();
+    this.observed = observation;
     const byTarget = new Map([...this.tabs.values()].map(tab => [tab.target_id, tab]));
     this.tabs.clear();
     const discovered = state.tabs.filter(tab => tab.target_id !== this.keepaliveTarget);
@@ -245,10 +259,10 @@ export class KernelBrowserHost {
       this.tabs.set(old?.tab_id ?? `host-tab-${randomUUID()}`, { ...tab, tab_id: old?.tab_id ?? null });
     }
     for (const [id, tab] of this.tabs) tab.tab_id = id;
+    const result = this.tabState();
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
     if (!this.restoring) await this.save();
-    return redactObservation({ state: "ready", generation: this.generation,
-      tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport }, this.protection.values);
+    return result;
   }
   async open(url, tabId = `host-tab-${randomUUID()}`, { signal } = {}) {
     await this.closeCompositors();this.foreground.reset();
@@ -257,6 +271,7 @@ export class KernelBrowserHost {
     assertNotCancelled(signal);
     const { targetId } = await connection.send("Target.createTarget", { url: navigationUrl(url) });
     this.tabs.set(tabId, { tab_id: tabId, target_id: targetId, url, title: "", document_id: "" });
+    this.observed = ++this.observations;
     const state = await this.reconcile();
     return { ...state, tab_id: tabId };
   }
@@ -619,5 +634,5 @@ if (process.argv[2] === "stdio" && process.argv[1] && import.meta.url === pathTo
   const stop = async () => { if (closing) return; closing = true; await host.stop(); process.exit(0); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
-  await new BrowserControllerStdioServer({ scheduleRequest: scheduleHostRequest, handleRequest: (request, options) => host.handle(request, options) }).run().finally(() => host.stop());
+  await new BrowserControllerStdioServer({ scheduleRequest: request => scheduleHostRequest(request, host.browser), handleRequest: (request, options) => host.handle(request, options) }).run().finally(() => host.stop());
 }
