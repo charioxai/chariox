@@ -1,7 +1,7 @@
 import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import type { RuntimeProviderRun } from "../cli-types.js"
+import type { AgentInstance, RuntimeProviderRun } from "../cli-types.js"
 import type { AgentRuntimeActivity } from "../cli-types.js"
 import { getSessionStateRequest } from "../ipc-requests.js"
 import { LocalIpcClient } from "../ipc.js"
@@ -84,9 +84,12 @@ export async function waitForClaudeRemoteRenderedRunExit(
       // MP-08 / MP-10 / MP-11: the kernel's exact turn record supplies the
       // error outcome. A native PTY exit alone cannot manufacture Cancelled.
       if (context) {
-        const state = await client.send<{ SessionState?: { agent_activity?: Record<string, AgentRuntimeActivity> } }>(getSessionStateRequest(context.sessionId))
+        const state = await client.send<{ SessionState?: { session?: { agents?: AgentInstance[] }, agent_activity?: Record<string, AgentRuntimeActivity> } }>(getSessionStateRequest(context.sessionId))
         const turn = state.SessionState?.agent_activity?.[context.agentId]?.last_completed_turn
-        if (turn?.provider_run_id === providerRunId && turn.settlement_status === "failed"
+        const lease = state.SessionState?.session?.agents?.find(agent => agent.id === context.agentId)?.remote_execution?.leased_agent_id
+        const exactRun = turn?.provider_run_id === providerRunId
+          || Boolean(lease && turn?.provider_run_id && providerRunId === `leased:${lease}:${turn.provider_run_id}`)
+        if (exactRun && turn?.settlement_status === "failed"
           && turn.provider_termination?.category === "runtime_failure") {
           throw new Error(turn.provider_termination?.reason ?? "Claude provider run failed.")
         }
