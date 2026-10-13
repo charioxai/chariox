@@ -12,6 +12,12 @@ export function createProviderAccountRecoveryController(options: {
   renderer: ConstructorParameters<typeof BoxRenderable>[0]
   dimensions(): { width: number; height: number }
   actions(target?: ProviderAccountRecoveryTarget): RecoveryAction[]
+  /** Kernel-owned login template over the waiting room, in this same popup. */
+  loginSurface?: {
+    active(): boolean
+    render(panel: BoxRenderable): void
+    handleKey(event: CliStdinKeyEvent): boolean
+  }
 }) {
   let box: BoxRenderable | undefined
   let message: string | null = null
@@ -45,7 +51,7 @@ export function createProviderAccountRecoveryController(options: {
   }
   const render = () => {
     clear()
-    if (!box || !message) return
+    if (!box || (!message && !options.loginSurface?.active())) return
     const size = options.dimensions()
     const width = Math.max(20, Math.min(92, size.width - 4))
     const panel = new BoxRenderable(options.renderer, {
@@ -53,6 +59,13 @@ export function createProviderAccountRecoveryController(options: {
       top: Math.max(0, Math.floor(size.height / 5)), width,
       border: true, padding: 1, flexDirection: "column", backgroundColor: theme.background,
     })
+    if (options.loginSurface?.active()) {
+      options.loginSurface.render(panel)
+      box.add(panel)
+      box.requestRender()
+      return
+    }
+    if (!message) return
     panel.add(new TextRenderable(options.renderer, { content: customTitle ?? (message.includes("sign-in not checked") ? "Check provider account sign-in" : quotaRefusal.test(message) ? "Choose provider account with quota" : "Provider account needs sign-in"), fg: theme.text }))
     panel.add(new TextRenderable(options.renderer, { content: message, fg: theme.text, wrapMode: "word" }))
     actions().forEach((action, index) => {
@@ -68,7 +81,7 @@ export function createProviderAccountRecoveryController(options: {
   }
   return {
     assignBox(value: BoxRenderable | undefined) { box = value; render() },
-    ownsInput: () => message !== null || closing,
+    ownsInput: () => Boolean(options.loginSurface?.active()) || message !== null || closing,
     showLaunchRefusal(messageText: string, retry: () => void) {
       message = messageText
       target = undefined
@@ -96,6 +109,7 @@ export function createProviderAccountRecoveryController(options: {
       render()
     },
     handleKey(event: CliStdinKeyEvent): boolean {
+      if (options.loginSurface?.active()) { options.loginSurface.handleKey(event); return true }
       if (closing) return true
       if (!message) return closing
       if (event.eventType === "release") return true

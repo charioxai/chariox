@@ -3,9 +3,10 @@ import {
   providerLoginName,
   providerLoginProblem,
   providerLoginView,
+  providerLoginStatusInteraction,
   type ProviderLoginView,
 } from "@chariox/kernel-client/provider-login-projection"
-import type { ProviderAuthStatus, ProviderLoginStatus, RuntimeInteraction } from "./cli-types.js"
+import type { ProviderAccountProfile, ProviderLoginStatus, RuntimeInteraction } from "./cli-types.js"
 
 /** The kernel ends a provider login 10 minutes after it starts. */
 const PROVIDER_LOGIN_TIMEOUT_MS = 10 * 60_000
@@ -14,7 +15,16 @@ const POLL_MS = 1_000
 type FooterTone = "info" | "error"
 type NoticeTone = "muted" | "warning"
 
-export type ProviderLoginRef = { login_id: string; provider: string; account_profile: string; kernel_id?: string }
+export type ProviderLoginRef = {
+  login_id: string
+  provider: string
+  account_profile: string
+  kernel_id?: string
+  login_kind?: string
+  auth_url?: string | null
+  verification_url?: string | null
+  user_code?: string | null
+}
 
 export type ProviderLoginStripState = {
   view: ProviderLoginView
@@ -29,7 +39,7 @@ export type ProviderLoginStripState = {
 export type ProviderLoginInteractionControllerDeps = {
   getKernelId: () => Promise<string>
   getLoginStatus: (loginId: string) => Promise<ProviderLoginStatus>
-  getAuthStatus: (provider: string, accountProfile: string, mode: "saved") => Promise<ProviderAuthStatus>
+  getAccountProfile: (provider: string, accountProfile: string) => Promise<ProviderAccountProfile>
   accountLabel: (provider: string, accountProfile: string) => string
   localDesktop: () => boolean
   openUrl: (url: string) => Promise<boolean>
@@ -51,6 +61,7 @@ type TrackedLogin = {
   sentProblem: string | null
   problem: string | null
   projectionOnly: boolean
+  kernelId: string | null
 }
 
 /** MP-08/MP-11: the TUI side of a kernel-owned provider login. It follows the
@@ -74,7 +85,7 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
     clearTimer(login.timer)
     const label = deps.accountLabel(ref.provider, ref.account_profile)
     if (status.state === "succeeded") {
-      const auth = await deps.getAuthStatus(ref.provider, ref.account_profile, "saved").catch(() => null)
+      const auth = await deps.getAccountProfile(ref.provider, ref.account_profile).catch(() => null)
       const message = `Signed in to ${providerLoginName(ref.provider)}${auth?.identity_summary ? ` as ${auth.identity_summary}` : ""} · saved to ${label}`
       deps.appendNotice(message)
       deps.flashFooter(message, "info")
@@ -104,7 +115,8 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
     if (tracked.get(keyOf(login.ref)) !== login) return
     let status: ProviderLoginStatus
     try {
-      if (login.ref.kernel_id && login.ref.kernel_id !== await deps.getKernelId()) {
+      login.kernelId = await deps.getKernelId()
+      if (login.ref.kernel_id && login.ref.kernel_id !== login.kernelId) {
         login.projectionOnly = true
         login.timer = null
         return
@@ -140,11 +152,11 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
     const started = ref.kernel_id ? tracked.get(unscopedKey) : undefined
     if (started && started.ref.provider === ref.provider && started.ref.account_profile === ref.account_profile) {
       tracked.delete(unscopedKey)
-      started.ref = ref
+      started.ref = { ...started.ref, ...ref }
       tracked.set(key, started)
       return
     }
-    const login: TrackedLogin = { ref, status: null, timer: null, sentOutput: null, sentProblem: null, problem: null, projectionOnly: false }
+    const login: TrackedLogin = { ref, status: null, timer: null, sentOutput: null, sentProblem: null, problem: null, projectionOnly: false, kernelId: null }
     tracked.set(key, login)
     login.timer = setTimer(() => { void poll(login) }, 0)
   }
@@ -191,6 +203,20 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
   return {
     track,
     stripState,
+
+    /** The waiting room renders the kernel's status template in Provider Accounts. */
+    sessionlessInteraction(): RuntimeInteraction | null {
+      for (const login of tracked.values()) {
+        if (login.projectionOnly || !login.status || !login.kernelId) continue
+        const interaction = providerLoginStatusInteraction(login.status, {
+          kernel_id: login.kernelId,
+          login: { ...login.ref, login_kind: login.ref.login_kind ?? "terminal" },
+          terminal_output_base64: login.status.terminal_output_base64,
+        })
+        if (interaction) return interaction
+      }
+      return null
+    },
 
     /** Records that this TUI sent the code; the kernel's status answers it. */
     codeSent(interaction: RuntimeInteraction) {

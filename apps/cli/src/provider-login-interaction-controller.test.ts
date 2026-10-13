@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { getProviderAuthStatus } from "./provider-api.js"
+import { getProviderAccountProfile } from "./provider-api.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type { ProviderLoginStatus, RuntimeInteraction } from "./cli-types.js"
 import { createProviderLoginInteractionController, type ProviderLoginInteractionControllerDeps } from "./provider-login-interaction-controller.js"
@@ -30,7 +30,7 @@ function harness(statuses: Array<ProviderLoginStatus | Error>, overrides: Partia
       if (next instanceof Error) throw next
       return next
     },
-    getAuthStatus: async () => ({ provider: "claude", auth_state: "authenticated", account_profile: "disposable-claude-ggpinwmx", identity_summary: "miguel@example.org", login_hint: null, detected_version: null }),
+    getAccountProfile: async () => ({ provider: "claude", profile_id: "disposable-claude-ggpinwmx", auth_state: "authenticated", identity_summary: "miguel@example.org" } as never),
     accountLabel: () => "disposable-claude",
     localDesktop: () => false,
     openUrl: async () => true,
@@ -184,7 +184,7 @@ test("MP-08/MP-11 a home-attached TUI leaves worker login status and completion 
   const reads: unknown[][] = []
   const h = harness([], {
     getLoginStatus: async (...args) => { reads.push(args); throw Error("provider login was not found") },
-    getAuthStatus: async () => { throw Error("home must not query worker auth") },
+    getAccountProfile: async () => { throw Error("home must not query worker auth") },
   })
   const forwarded: RuntimeInteraction = {
     ...interaction,
@@ -234,7 +234,7 @@ for (const kernelId of ["fleet", "worker"]) {
 
 test("MP-08/MP-10/MP-11 post-login CLI status reads the kernel's saved observation without verification", async () => {
   const requests: unknown[] = []
-  const profile = { provider: "claude", profile_id: status("succeeded").account_profile, auth_state: "authenticated", identity_summary: "miguel@example.org", detected_version: "2.1.296" }
+  const profile = { provider: "claude", profile_id: status("succeeded").account_profile, auth_state: "authenticated", identity_summary: "miguel@example.org", detected_provider_version: "2.1.296" }
   const client = {
     send: async (request: unknown) => {
       requests.push(request)
@@ -242,7 +242,7 @@ test("MP-08/MP-10/MP-11 post-login CLI status reads the kernel's saved observati
     },
   } as unknown as LocalIpcClient
   const h = harness([status("succeeded")], {
-    getAuthStatus: (...args) => getProviderAuthStatus(client, ...args),
+    getAccountProfile: (...args) => getProviderAccountProfile(client, ...args),
   })
   try {
     h.controller.stripState(interaction)
@@ -261,7 +261,7 @@ test("MP-08/MP-10/MP-11 unavailable saved login observation never falls back to 
     send: async (request: unknown) => { requests.push(request); throw new Error("kernel disconnected") },
   } as unknown as LocalIpcClient
   const h = harness([status("succeeded")], {
-    getAuthStatus: (...args) => getProviderAuthStatus(client, ...args),
+    getAccountProfile: (...args) => getProviderAccountProfile(client, ...args),
   })
   try {
     h.controller.stripState(interaction)
@@ -269,5 +269,49 @@ test("MP-08/MP-10/MP-11 unavailable saved login observation never falls back to 
     for (let i = 0; i < 10; i++) await Promise.resolve()
     assert.deepEqual(requests, [{ GetProviderAccountProfile: { provider: "claude", account_profile: status("succeeded").account_profile } }])
     assert.deepEqual(h.notices, ["Signed in to Claude · saved to disposable-claude"])
+  } finally { h.controller.dispose() }
+})
+
+
+test("MP-08/MP-10/MP-11 waiting-room login follows the kernel's link, masked code, and Vault phases", async () => {
+  const vault = { ...interaction, id: "login-1", title: "Unlock Chariox Vault", provider_login: null,
+    message: "Enter the Chariox Vault passphrase.", custom_choice: { id: "passphrase", label: "Vault passphrase", input_kind: "secret" as const } }
+  const h = harness([
+    { ...status("running"), interaction: { ...interaction, id: "login-1" } },
+    { ...status("running"), interaction: vault },
+    status("cancelled"),
+  ])
+  try {
+    h.controller.track({ login_id: "login-1", provider: "claude", account_profile: status("running").account_profile })
+    await h.tick()
+    const code = h.controller.sessionlessInteraction()!
+    assert.equal(code.provider_login?.login.auth_url, url)
+    assert.equal(code.custom_choice?.input_kind, "secret")
+    assert.equal(h.controller.stripState(code)?.view.takesCode, true)
+    await h.tick()
+    const prompt = h.controller.sessionlessInteraction()!
+    assert.equal(prompt.title, vault.title)
+    assert.equal(prompt.custom_choice?.id, "passphrase")
+    assert.equal(prompt.custom_choice?.input_kind, "secret")
+    assert.equal(h.controller.stripState(prompt), null, "an old link must not hide the kernel's Vault phase")
+    await h.tick()
+    assert.equal(h.controller.sessionlessInteraction(), null)
+  } finally { h.controller.dispose() }
+})
+
+
+test("MP-08/MP-11 waiting-room Codex device link survives adoption of the kernel projection", async () => {
+  const h = harness([{ ...status("running"), provider: "codex", interaction: {
+    ...interaction, provider_login: null, custom_choice: null,
+  } }])
+  try {
+    h.controller.track({ login_id: "login-1", provider: "codex", account_profile: status("running").account_profile,
+      login_kind: "chatgptDeviceCode", verification_url: "https://auth.openai.com/device", user_code: "PUBLIC-CODE" })
+    await h.tick()
+    for (let i = 0; i < 2; i++) {
+      const current = h.controller.sessionlessInteraction()!
+      assert.equal(h.controller.stripState(current)?.view.url, "https://auth.openai.com/device")
+      assert.equal(current.provider_login?.login.user_code, "PUBLIC-CODE")
+    }
   } finally { h.controller.dispose() }
 })

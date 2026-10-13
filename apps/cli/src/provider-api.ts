@@ -216,23 +216,7 @@ export async function getProviderAuthStatus(
   client: LocalIpcClient,
   provider: string,
   accountProfile = "default",
-  mode: "verify" | "saved" = "verify",
 ): Promise<ProviderAuthStatus> {
-  // MP-08/MP-11: automatic login completion reads the observation saved by
-  // enrollment. Only explicit Status/Refresh should start verification turns.
-  if (mode === "saved") {
-    const response = await client.send<Record<string, unknown>>(getProviderAccountProfileRequest(provider, accountProfile))
-    const { profile } = expectVariant<{ profile: ProviderAccountProfile }>(response, "ProviderAccountProfile")
-    return {
-      provider: profile.provider,
-      account_profile: profile.profile_id,
-      auth_state: profile.auth_state,
-      identity_summary: profile.identity_summary ?? null,
-      plan: profile.plan ?? null,
-      detected_version: profile.detected_provider_version ?? null,
-      login_hint: null,
-    }
-  }
   const response = await client.send<Record<string, unknown>>(getProviderAuthStatusRequest(provider, accountProfile))
   const payload = expectVariant<{ status: ProviderAuthStatus }>(response, "ProviderAuthStatus")
   return payload.status
@@ -322,6 +306,12 @@ export async function logoutProvider(
 export async function listProviderAccountProfiles(client: LocalIpcClient, provider?: string | null): Promise<ProviderAccountProfile[]> {
   const response = await client.send<Record<string, unknown>>(listProviderAccountProfilesRequest(provider))
   return expectVariant<{ profiles: ProviderAccountProfile[] }>(response, "ProviderAccountProfilesListed").profiles
+}
+
+/** MP-08/MP-11: saved enrollment observation; never starts a paid verification turn. */
+export async function getProviderAccountProfile(client: LocalIpcClient, provider: string, accountProfile = "default"): Promise<ProviderAccountProfile> {
+  const response = await client.send<Record<string, unknown>>(getProviderAccountProfileRequest(provider, accountProfile))
+  return expectVariant<{ profile: ProviderAccountProfile }>(response, "ProviderAccountProfile").profile
 }
 
 export async function createProviderAccountProfile(client: LocalIpcClient, provider: string, label: string): Promise<ProviderAccountProfile> {

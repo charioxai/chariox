@@ -59,6 +59,8 @@ export type FocusedInteractionChoiceControllerDeps = {
     codeSent: (interaction: RuntimeInteraction) => boolean
     openLink: (interaction: RuntimeInteraction) => Promise<void>
     copyLink: (interaction: RuntimeInteraction) => Promise<void>
+    /** Uses the existing login input/cancel endpoint when no session is attached. */
+    respondSessionless?: (interaction: RuntimeInteraction, choiceId: string, reply: string | null) => Promise<void>
   }
 }
 
@@ -81,7 +83,7 @@ export function createFocusedInteractionChoiceController(
 
   const submitChoice = async (choiceIndex?: number) => {
     const interaction = deps.getFocusedInteraction()
-    if (!interaction || !deps.isAttached()) {
+    if (!interaction || (!deps.isAttached() && !(interaction.provider_login && deps.providerLogin?.respondSessionless))) {
       return false
     }
     const submitDecision = resolveInteractionChoiceSubmission({
@@ -112,13 +114,14 @@ export function createFocusedInteractionChoiceController(
       repaintInteractions()
     }
     try {
-      const session = await deps.respondToInteraction(
-        deps.getSessionId(),
-        interaction.id,
-        submitDecision.choiceId,
-        submitDecision.customReply,
-      )
-      deps.applySessionState(session)
+      if (!deps.isAttached() && deps.providerLogin?.respondSessionless) {
+        await deps.providerLogin.respondSessionless(interaction, submitDecision.choiceId, submitDecision.customReply)
+      } else {
+        const session = await deps.respondToInteraction(
+          deps.getSessionId(), interaction.id, submitDecision.choiceId, submitDecision.customReply,
+        )
+        deps.applySessionState(session)
+      }
       if (!submittedSecret) {
         deps.clearCustomReply(interaction.id)
         deps.setCustomEditing(interaction.id, false)
