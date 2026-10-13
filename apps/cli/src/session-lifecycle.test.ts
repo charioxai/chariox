@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { RuntimeAttachment, RuntimeProviderRun, RuntimeSession } from "./cli-types.js"
+import type { RuntimeAttachment, RuntimeProviderRun, RuntimeSession, SessionHistoryCursorState } from "./cli-types.js"
 import { LocalIpcError } from "./ipc.js"
 import { createSessionLifecycleController } from "./session-lifecycle.js"
 import { createBaseDeps } from "./session-lifecycle.test-support.js"
@@ -1193,4 +1193,19 @@ test("attachment completes while provider and command catalogs are still pending
     releaseCommands({} as never)
     await attaching
   }
+})
+
+// MP-08 / MP-10: the previous agent's paging cursor cannot follow a new Room binding.
+test("reattach invalidates the previous agent cursor before publishing the new session", async () => {
+  let cursor: SessionHistoryCursorState = { agentId: "old-agent", cursor: { before_sequence: 12 } }
+  const { deps } = createBaseDeps({
+    attachmentState: () => null,
+    setNextHistoryCursor: (value: SessionHistoryCursorState) => { cursor = value },
+    attachToSession: async () => {
+      assert.equal(cursor, null)
+      return { id: "new-attachment", session_id: "new-room" }
+    },
+    getSessionState: async () => ({ ...createBaseDeps().deps.sessionState(), id: "new-room" }),
+  })
+  await createSessionLifecycleController(deps as never).attachBinding({ id: "new-room" }, false)
 })

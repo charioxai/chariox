@@ -246,6 +246,9 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     }
     deps.clearPendingPromptAttachments()
     deps.bumpHistoryLoadGeneration()
+    // The mounted transcript still belongs to the previous Room until prime
+    // completes. Its cursor must not page that agent through the new binding.
+    deps.setNextHistoryCursor(null)
     let sessionHydratingCleared = false
     const clearSessionHydrating = () => {
       if (sessionHydratingCleared) {
