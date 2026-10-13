@@ -114,63 +114,72 @@ impl KernelRuntimeState {
         previous_snapshot: Option<SessionSnapshotProjection>,
         last_workflow_design_sequence: u64,
     ) -> WatchResult {
-        let session_id = session_id.to_string();
-        let attachment_id = attachment_id.to_string();
         let previous_snapshot_for_compare = previous_snapshot.clone();
-        let mut result = self
-            .with_app_side_effect({
-                let session_id = session_id.clone();
-                let attachment_id = attachment_id.clone();
-                move |app| {
-                    crate::runtime_transport::watch_subscription_state(
-                        app,
-                        &session_id,
-                        &attachment_id,
-                        false,
-                        None,
-                        last_workflow_design_sequence,
+        if self
+            .owned
+            .ensure_attachment_in_session(session_id, attachment_id)
+            .is_err()
+        {
+            return WatchResult::Unavailable("Current session is no longer available.".to_string());
+        }
+        // MP-08 / MP-10 / MP-11: provider output has one kernel runtime pump.
+        // Clients drain its committed stream and published state without
+        // acquiring the provider coordinator lock or running its adapters.
+        // Final output is committed before settlement publication, preserving
+        // the existing completion/output watermark barrier for every client.
+        // Capture state before the bounded drain. Output is emitted before its
+        // snapshot; queued pages wake this attachment, and native completion
+        // keeps its existing fixed output-watermark barrier.
+        let projected_snapshot = if !should_check_snapshot {
+            Box::new(None)
+        } else {
+            match self.session_snapshot_projection_for_attachment(
+                &session_id,
+                &attachment_id,
+                self.session_projection_change_sequence(),
+            ) {
+                Ok(mut snapshot) => {
+                    snapshot.metadata.last_event_id = self.session_projection_change_sequence();
+                    Box::new(
+                        (previous_snapshot_for_compare.as_ref() != Some(&snapshot))
+                            .then_some(snapshot),
                     )
                 }
-            })
-            .await;
-        if !should_check_snapshot {
-            return result;
-        }
-        let projected_snapshot = match self.session_snapshot_projection_for_attachment(
-            &session_id,
-            &attachment_id,
-            self.session_projection_change_sequence(),
-        ) {
-            Ok(mut snapshot) => {
-                snapshot.metadata.last_event_id = self.session_projection_change_sequence();
-                Box::new(
-                    (previous_snapshot_for_compare.as_ref() != Some(&snapshot)).then_some(snapshot),
-                )
-            }
-            Err(DaemonError::SessionNotFound { .. })
-            | Err(DaemonError::AttachmentNotFound { .. })
-            | Err(DaemonError::AttachmentNotInSession { .. }) => {
-                return WatchResult::Unavailable(
-                    "Current session is no longer available.".to_string(),
-                );
-            }
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.runtime_transport",
-                    "kernel event loop failed to build owned session snapshot",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "attachment_id": attachment_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                Box::new(None)
+                Err(DaemonError::SessionNotFound { .. })
+                | Err(DaemonError::AttachmentNotFound { .. })
+                | Err(DaemonError::AttachmentNotInSession { .. }) => {
+                    return WatchResult::Unavailable(
+                        "Current session is no longer available.".to_string(),
+                    );
+                }
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.runtime_transport",
+                        "kernel event loop failed to build owned session snapshot",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "attachment_id": attachment_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    Box::new(None)
+                }
             }
         };
-        if let WatchResult::Ok { snapshot, .. } = &mut result {
-            *snapshot = projected_snapshot;
+        self.publish_credential_copy_notices(session_id);
+        let terminal = &self.owned.terminal_stream;
+        WatchResult::Ok {
+            records: terminal.drain_output_records(session_id, attachment_id),
+            notices: terminal.drain_notice_records(session_id, attachment_id),
+            completions: terminal.drain_completion_records(session_id, attachment_id),
+            workflow_run_updates: terminal.drain_workflow_run_updates(session_id, attachment_id),
+            workflow_design_events: self.owned.workflow_design_events.events_since(
+                session_id,
+                last_workflow_design_sequence,
+                attachment_id,
+            ),
+            snapshot: projected_snapshot,
         }
-        result
     }
 
     pub(crate) async fn create_relay_execution_lease(

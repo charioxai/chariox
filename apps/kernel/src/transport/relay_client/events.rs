@@ -67,6 +67,7 @@ pub(super) async fn emit_relay_event(
             message: error.to_string(),
         })?
         .event_id;
+    crate::transport::event_timing::record_relay_event(subscription_id, event_id, &event);
     send_relay_event_frame(outgoing_tx, subscription_id, event_id, encrypted_event).await
 }
 

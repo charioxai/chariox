@@ -12,6 +12,27 @@ struct Fixture {
     attachment: String,
     _worktree: crate::test_support::TestWorktree,
 }
+
+// MP-08 / MP-10 / MP-11: a slow provider adapter must not hold another
+// terminal's already-published state behind the coordinator mutex.
+#[tokio::test]
+async fn relay_activity_projection_does_not_wait_for_the_provider_app_lock() {
+    let f = Fixture::new().await;
+    let app = f.runtime.app.clone();
+    let _hold = app.lock().await;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        f.runtime
+            .watch_relay_subscription_state(&f.session, &f.attachment, true, None, 0),
+    )
+    .await;
+    let crate::runtime_transport::WatchResult::Ok { snapshot, .. } =
+        result.expect("published relay activity waited behind unrelated provider work")
+    else {
+        panic!("published session unavailable")
+    };
+    assert_eq!(snapshot.as_ref().as_ref().unwrap().session.id(), f.session);
+}
 impl Fixture {
     async fn new() -> Self {
         let worktree = crate::test_support::TestWorktree::new("approval-lifetime");
