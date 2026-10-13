@@ -307,7 +307,7 @@ test('MP-10: review #941-2 a viewer scroll inside a rendered open shadow root re
 
 // A small fake DOM for apply(): text controls take Chrome's rules (assigning a value puts the caret at its end; focus keeps it).
 type FakeNode = { nodeType: number; localName: string; childNodes: FakeNode[]; parentNode: FakeNode | null; [key: string]: unknown }
-function fakeDocument(): { doc: FakeNode; container: unknown } {
+function fakeDocument(host: Record<string, unknown> = { getAnimations: () => [], addEventListener: () => {}, removeEventListener: () => {} }): { doc: FakeNode; container: unknown } {
   const doc = { nodeType: 9, localName: '#document', childNodes: [], parentNode: null, activeElement: null, adoptedStyleSheets: [], addEventListener: () => {}, getSelection: () => null } as unknown as FakeNode & { activeElement: FakeNode | null }
   const make = (tag: string, nodeType = 1): FakeNode => {
     let value = ''
@@ -326,9 +326,26 @@ function fakeDocument(): { doc: FakeNode; container: unknown } {
   }
   Object.assign(doc, { createElement: make, createElementNS: (_: string, tag: string) => make(tag), createTextNode: (text: string) => Object.assign(make('#text', 3), { data: text, textContent: text }), createDocumentFragment: () => make('#fragment', 11) })
   const html = make('html'), head = make('head'); html.childNodes.push(head); Object.assign(doc, { documentElement: html, head })
-  const iframe = Object.assign(make('iframe'), { ownerDocument: { activeElement: null }, contentDocument: doc, contentWindow: { scrollTo: () => {}, scrollX: 0, scrollY: 0 } })
-  return { doc, container: { ownerDocument: { createElement: () => iframe }, append: () => {} } }
+  const iframe = Object.assign(make('iframe'), { ownerDocument: { activeElement: null }, contentDocument: doc, contentWindow: { scrollTo: () => {}, scrollX: 0, scrollY: 0 }, remove: () => {} })
+  return { doc, container: { ownerDocument: Object.assign(host, { createElement: () => iframe }), append: () => {} } } // the page hosting the mirror
 }
+
+test('MP-08/MP-10: an attached mirror pauses its host page\'s endless animations until the last mirror there closes', async () => {
+  // Chromium presents a page's DOM update one frame later while a compositor animation runs in that renderer.
+  type Fake = { playState: string; effect: { getTiming(): { iterations: number } }; pause(): void; play(): void }
+  const animation = (iterations: number): Fake => { const a: Fake = { playState: 'running', effect: { getTiming: () => ({ iterations }) }, pause: () => { a.playState = 'paused' }, play: () => { a.playState = 'running' } }; return a }
+  const pulse = animation(Infinity), toast = animation(1), spinner = animation(Infinity), running = [pulse, toast], listeners = new Map<string, () => void>()
+  const host = { getAnimations: () => running, addEventListener: (type: string, fn: () => void) => listeners.set(type, fn), removeEventListener: (type: string) => listeners.delete(type) }
+  const first = new BrowserMirror2Renderer(fakeDocument(host).container as HTMLElement, async () => {}), second = new BrowserMirror2Renderer(fakeDocument(host).container as HTMLElement, async () => {})
+  await first.ready(); await second.ready()
+  assert.deepEqual([pulse.playState, toast.playState], ['paused', 'running'], 'MP-10: an endless host animation is paused, a finite one plays out')
+  running.push(spinner); listeners.get('animationstart')?.()
+  assert.equal(spinner.playState, 'paused', 'MP-10: an endless animation that starts later is paused too')
+  first.close()
+  assert.equal(pulse.playState, 'paused', 'MP-10: paused while another mirror is attached to the page')
+  second.close()
+  assert.deepEqual([pulse.playState, spinner.playState, listeners.size], ['running', 'running', 0], 'MP-10: resumed when the last mirror closes')
+})
 
 test('MP-08: review #320-1 a focused text control shows the kernel caret/range after focus (snapshot and a newly introduced field)', async () => {
   const { doc, container } = fakeDocument()

@@ -631,3 +631,25 @@ test('MP-08: an echo that names a new focus before its click\'s reply arrives fo
     assert.deepEqual(await page.evaluate(() => window.sent.slice(1).map(a => [a.kind, a.text])), [['text', 'c']], 'MP-08: typing reaches the kernel');
   } finally { await page.close(); }
 });
+
+test('MP-08/MP-10: an attached renderer pauses its host page\'s endless animations (Chromium otherwise presents every echo a frame later) and resumes them on close; the mirrored page keeps its own', async () => {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  try {
+    await page.goto(url);
+    const states = () => page.evaluate(() => Object.fromEntries(document.getAnimations().map(a => [a.animationName ?? a.id, a.playState])));
+    await page.evaluate(() => {
+      const style = document.createElement('style');
+      style.textContent = '@keyframes pulse{50%{opacity:.4}} .status::before{content:"";display:inline-block;width:8px;height:8px;background:#0a0;animation:pulse 1.8s ease-in-out infinite} @keyframes toast{from{opacity:0}} .toast{animation:toast 30s}';
+      document.head.append(style); document.body.insertAdjacentHTML('beforeend', '<span class="status">pending</span><div class="toast">saved</div>');
+    });
+    assert.deepEqual(await states(), { pulse: 'running', toast: 'running' });
+    await page.evaluate(async () => { window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), async () => {}); await window.r.ready(); window.r.frame.contentDocument.documentElement.animate([{ opacity: 1 }, { opacity: 0.9 }], { duration: 1000, iterations: Infinity, id: 'mirrored' }); });
+    assert.deepEqual(await states(), { pulse: 'paused', toast: 'running' }, 'MP-10: the host page\'s endless animation is paused, a finite one plays out');
+    await page.evaluate(() => document.body.insertAdjacentHTML('beforeend', '<span class="status">later</span>'));
+    await frames();
+    assert.deepEqual((await page.evaluate(() => document.getAnimations().filter(a => a.animationName === 'pulse').map(a => a.playState))), ['paused', 'paused'], 'MP-10: one that starts later is paused too');
+    assert.equal(await page.evaluate(() => window.r.frame.contentDocument.getAnimations()[0].playState), 'running', 'MP-10: the mirrored page keeps its own animations');
+    await page.evaluate(() => window.r.close());
+    assert.deepEqual((await page.evaluate(() => document.getAnimations().filter(a => a.animationName === 'pulse').map(a => a.playState))), ['running', 'running'], 'MP-10: resumed once the mirror closes');
+  } finally { await page.close(); }
+});

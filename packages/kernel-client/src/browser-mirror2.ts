@@ -25,6 +25,27 @@ async function digest(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>)), b => b.toString(16).padStart(2, '0')).join('')
 }
 
+// MP-08/MP-10: while any compositor animation runs in a renderer, Chromium shows that page's next DOM update one
+// frame later (the display draws each vsync with the frame submitted before it). An endless animation of the page
+// hosting a mirror (a status pulse, a spinner) would delay every echo by a frame: it stays paused while a mirror is
+// attached to that page. The mirrored page's own animations are untouched.
+const hostHolds = new WeakMap<Document, { mirrors: number; held: Set<Animation>; hold(): void }>()
+function holdHostAnimations(doc: Document): () => void {
+  let entry = hostHolds.get(doc)
+  if (!entry) {
+    const held = new Set<Animation>()
+    const hold = (): void => { for (const animation of doc.getAnimations()) if (animation.playState === 'running' && animation.effect?.getTiming().iterations === Infinity) { animation.pause(); held.add(animation) } }
+    entry = { mirrors: 0, held, hold }; hostHolds.set(doc, entry); doc.addEventListener('animationstart', hold, true)
+  }
+  const own = entry; own.mirrors++; own.hold()
+  let released = false
+  return () => {
+    if (released || --own.mirrors > 0) { released = true; return }
+    released = true; hostHolds.delete(doc); doc.removeEventListener('animationstart', own.hold, true)
+    for (const animation of own.held) if (animation.playState === 'paused') animation.play()
+  }
+}
+
 export class BrowserMirror2Renderer {
   readonly frame: HTMLIFrameElement
   readonly timings: Array<{ stage: string; duration_ms: number; ended_ms: number }> = []
@@ -63,6 +84,7 @@ export class BrowserMirror2Renderer {
   private localScrollAt = -Infinity
   private applied = new WeakMap<Node, [number, number]>() // kernel-applied positions (their scroll events are not viewer input)
   private deferred = new Map<Node, [number, number]>() // latest kernel position per scroller that arrived while the viewer scrolled
+  private releaseHost = (): void => {}
   private wheel = new Mirror2Wheel(fn => requestAnimationFrame(fn), handle => cancelAnimationFrame(handle))
   constructor(private container: HTMLElement, private send: (action: Mirror2Action, epoch: { sequence: number; document_id: string }) => Promise<unknown>, _failure?: (error: unknown) => void) {
     const owner = container.ownerDocument
@@ -82,6 +104,7 @@ export class BrowserMirror2Renderer {
     this.doc = this.frame.contentDocument
     if (!this.doc) throw Error('MP-11: mirror sandbox unavailable')
     this.bind(this.doc)
+    this.releaseHost = holdHostAnimations(this.container.ownerDocument)
   }
   private timed(stage: string, at: number): void { this.timings.push({ stage, duration_ms: performance.now() - at, ended_ms: performance.timeOrigin + performance.now() }); if (this.timings.length > 2048) this.timings.splice(0, 1024) }
   // ---- input: node-addressed, the kernel re-validates everything live.
@@ -614,7 +637,7 @@ export class BrowserMirror2Renderer {
     style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
   }
   close(): void {
-    this.disposed = true; this.doc = null
+    this.disposed = true; this.doc = null; this.releaseHost()
     for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
     URL.revokeObjectURL(this.empty); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frame.remove()
