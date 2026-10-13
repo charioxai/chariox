@@ -203,11 +203,7 @@ mod tests {
         );
         assert_eq!(
             owner
-                .activate_next_queued_prompt(
-                    &session,
-                    "agent-1",
-                    None,
-                )
+                .activate_next_queued_prompt(&session, "agent-1", None,)
                 .unwrap()
                 .unwrap()
                 .prompt(),
