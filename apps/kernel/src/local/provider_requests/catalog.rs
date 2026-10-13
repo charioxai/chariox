@@ -37,7 +37,12 @@ pub(crate) fn load_provider_catalog(
         thread::sleep(Duration::from_millis(config.provider_catalog_read_delay_ms));
     }
 
-    let mut catalogs = vec![claude_provider_catalog()];
+    // MP-08/MP-11: every local catalog source requires its own installed harness.
+    let installed = crate::provider::installed_provider_harnesses();
+    let mut catalogs = Vec::new();
+    if installed.iter().any(|family| family == "claude") {
+        catalogs.push(claude_provider_catalog());
+    }
     if crate::provider::dev_stub_public_inventory_enabled() {
         catalogs.push(dev_stub_provider_catalog());
     }
@@ -45,13 +50,15 @@ pub(crate) fn load_provider_catalog(
 
     let selected_profiles = resolve_catalog_profiles(&registry, &owner_user_id, &request)?;
     // MP-08: an uninstalled harness is not a catalog source, not a failure.
-    let installed = crate::provider::installed_provider_harnesses();
     if installed.iter().any(|family| family == "opencode") {
         let opencode_profile = selected_profiles
             .get("opencode")
             .expect("OpenCode default profile is migrated");
-        let opencode_environment =
-            registry.resolve_environment(&owner_user_id, "opencode", &opencode_profile.profile_id)?;
+        let opencode_environment = registry.resolve_environment(
+            &owner_user_id,
+            "opencode",
+            &opencode_profile.profile_id,
+        )?;
         match crate::provider::ensure_opencode_account_endpoint(
             &owner_user_id,
             &opencode_profile.profile_id,
@@ -1326,6 +1333,46 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn mp08_mp11_catalog_has_no_claude_source_without_its_harness() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-catalog-missing-cli-{}",
+            rand::random::<u64>()
+        ));
+        fs::create_dir_all(&root).expect("fixture root");
+        for name in [
+            "CHARIOX_CLAUDE_BIN",
+            "CHARIOX_CODEX_BIN",
+            "CHARIOX_OPENCODE_BIN",
+        ] {
+            std::env::set_var(name, root.join("missing-harness"));
+        }
+        std::env::remove_var("CHARIOX_PROVIDER_DEV_STUB");
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .expect("registry");
+        registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .expect("defaults");
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = None;
+        config.relay_token = None;
+        let result = load_provider_catalog(
+            config,
+            registry,
+            "owner-a".to_string(),
+            GetProviderCatalogRequest::default(),
+        );
+        fs::remove_dir_all(&root).expect("cleanup");
+        assert!(
+            result.is_err(),
+            "missing official harnesses must not provide a Claude catalog: {result:?}"
+        );
+    }
 
     #[test]
     fn drill_provider_catalog_exposes_dev_stub_without_restricting_fixture_models() {
