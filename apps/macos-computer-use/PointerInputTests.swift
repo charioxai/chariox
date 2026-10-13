@@ -28,6 +28,22 @@ func testPointerInput() throws {
         }
     }
     try checkWindowStack([target, cover], request: scope, point: point, windowBounds: rect)
+    // WindowServer may list non-input system windows ahead of ordinary windows.
+    let lowerSystem = WindowOwnership(id: 10, pid: 673, bounds: rect, alpha: 1, layer: -1, systemUI: true)
+    try checkWindowStack([lowerSystem, target], request: scope, point: point, windowBounds: rect)
+    let dock = WindowOwnership(id: 13, pid: 673, bounds: rect, alpha: 1, layer: 20, systemUI: true)
+    try checkWindowStack([dock, target], request: scope, point: point, windowBounds: rect,
+                         inputPassesThrough: { $0.id == dock.id })
+    try checkWindowStack([WindowOwnership(id: 14, pid: 673, bounds: rect, alpha: 0, layer: 20), target],
+                         request: scope, point: point, windowBounds: rect)
+    for candidate in [dock, cover, WindowOwnership(id: 15, pid: 42, bounds: rect, alpha: 1, layer: 20)] {
+        do {
+            try checkWindowStack([candidate, target], request: scope, point: point, windowBounds: rect,
+                                 inputPassesThrough: { _ in !candidate.systemUI })
+            preconditionFailure("unproven system or foreign cover admitted")
+        } catch { precondition(refusalMessage(error) == "refused: target (foreign-window-cover)") }
+    }
+    print("PASS lower layers and proven input-transparent system windows allowed; actual covers refuse")
     var coveredMutations = 0
     do {
         try checkWindowStack([WindowOwnership(id: 9, pid: 42, bounds: rect, alpha: 1), target],
