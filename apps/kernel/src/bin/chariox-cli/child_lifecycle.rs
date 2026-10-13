@@ -39,26 +39,40 @@ async fn run_unix(mut command: Command) -> std::io::Result<ExitStatus> {
     let mut child = tokio::process::Command::from(command)
         .kill_on_drop(true)
         .spawn()?;
-    let received = tokio::select! {
+    let mut received = tokio::select! {
         status = child.wait() => return status,
         _ = terminate.recv() => libc::SIGTERM,
         _ = hangup.recv() => libc::SIGHUP,
         _ = interrupt.recv() => libc::SIGINT,
     };
-    // Signal only this retained, unreaped child, never a process group.
-    // wait() cannot reap concurrently with this synchronous section.
-    if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) {
-        if pid > 1 && unsafe { libc::kill(pid, received) } != 0 {
-            let error = std::io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                kill_and_reap(&mut child).await?;
-                return Err(error);
+    loop {
+        // Signal only this retained, unreaped child, never a process group.
+        // wait() cannot reap concurrently with this synchronous section.
+        if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) {
+            if pid > 1 && unsafe { libc::kill(pid, received) } != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    kill_and_reap(&mut child).await?;
+                    return Err(error);
+                }
             }
         }
-    }
-    match tokio::time::timeout(std::time::Duration::from_millis(1500), child.wait()).await {
-        Ok(status) => status,
-        Err(_) => kill_and_reap(&mut child).await,
+        if received != libc::SIGINT {
+            return match tokio::time::timeout(std::time::Duration::from_millis(1500), child.wait())
+                .await
+            {
+                Ok(status) => status,
+                Err(_) => kill_and_reap(&mut child).await,
+            };
+        }
+        // SIGINT runs draft/archive/detach RPC cleanup under the client's own
+        // deadlines. TERM/HUP still provide bounded settlement if it stalls.
+        received = tokio::select! {
+            status = child.wait() => return status,
+            _ = terminate.recv() => libc::SIGTERM,
+            _ = hangup.recv() => libc::SIGHUP,
+            _ = interrupt.recv() => libc::SIGINT,
+        };
     }
 }
 
@@ -102,6 +116,34 @@ mod tests {
             &parent.to_string(),
         ]);
         assert_eq!(run(command).unwrap().code(), Some(42));
+    }
+
+    #[test]
+    fn interrupt_allows_cleanup_beyond_the_termination_deadline() {
+        let parent = std::process::id();
+        assert!(parent > 1);
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "trap 'sleep 2; exit 42' INT; test \"$PPID\" -eq \"$1\" && test \"$1\" -gt 1 || exit 43; kill -s INT \"$1\"; sleep 1; exit 44",
+            "owned-signal-child",
+            &parent.to_string(),
+        ]);
+        assert_eq!(run(command).unwrap().code(), Some(42));
+    }
+
+    #[test]
+    fn termination_can_still_stop_interrupt_cleanup() {
+        let parent = std::process::id();
+        assert!(parent > 1);
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "trap '' INT; trap 'exit 43' TERM; test \"$PPID\" -eq \"$1\" && test \"$1\" -gt 1 || exit 44; kill -s INT \"$1\"; sleep 1; kill -s TERM \"$1\"; sleep 1; exit 45",
+            "owned-signal-child",
+            &parent.to_string(),
+        ]);
+        assert_eq!(run(command).unwrap().code(), Some(43));
     }
 
     #[test]
