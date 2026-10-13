@@ -232,6 +232,9 @@ mod tests {
     // policy and auth-recovery replacement launches for every provider.
     #[tokio::test]
     async fn mp08_mp10_mp11_relaunch_delivers_credentials_to_spawn_and_binding() {
+        // Separate stores reuse run ids; the delivery probe must not intercept
+        // concurrent fixtures in the parent test process.
+        crate::test_support::isolated_env_test!();
         for provider in ["claude", "codex", "opencode"] {
             let worktree = crate::test_support::TestWorktree::new(provider);
             let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
