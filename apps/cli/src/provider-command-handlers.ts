@@ -12,6 +12,7 @@ import { isBackendProviderId } from "./provider-catalog.js"
 import {
   providerAccountDisplayLabel,
   providerAccountsForProvider,
+  resolveProviderAccountSelection,
   selectedProviderAccount,
 } from "./waiting-room-provider-accounts.js"
 
@@ -582,14 +583,8 @@ function findProviderAccountByAlias(
   provider: string,
   alias: string,
 ) {
-  const normalizedAlias = alias.trim()
-  const candidates = providerAccountsForProvider(profiles, provider)
-  const exactMatch = candidates.find((candidate) => candidate.label === normalizedAlias)
-  if (exactMatch) return exactMatch
-  const foldedMatches = candidates.filter(
-    (candidate) => candidate.label.localeCompare(normalizedAlias, undefined, { sensitivity: "accent" }) === 0,
-  )
-  return foldedMatches.length === 1 ? foldedMatches[0] : undefined
+  const selection = resolveProviderAccountSelection(profiles, provider, alias)
+  return selection.kind === "resolved" ? selection.profile : undefined
 }
 
 async function resolveProviderAccountReference(
