@@ -34,6 +34,18 @@ pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
     resolve_opencode_executable_unlocked()
 }
 
+/// MP-08: whether the official OpenCode CLI resolves on this host now,
+/// without the transient-replacement retry used by launches.
+pub(crate) fn opencode_harness_installed() -> bool {
+    let _guard = crate::env_lock::lock();
+    match env::var_os(OPENCODE_ENV_OVERRIDE) {
+        Some(path) => resolve_candidate(PathBuf::from(path), true),
+        None => resolve_candidate(PathBuf::from("opencode"), false)
+            .or_else(resolve_standard_install_candidate),
+    }
+    .is_some()
+}
+
 fn resolve_opencode_executable_unlocked() -> Result<PathBuf, DaemonError> {
     if let Some(path) = env::var_os(OPENCODE_ENV_OVERRIDE).map(PathBuf::from) {
         return OPENCODE_EXECUTABLE_RESOLUTION

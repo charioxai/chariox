@@ -44,43 +44,49 @@ pub(crate) fn load_provider_catalog(
     let mut source_errors = Vec::new();
 
     let selected_profiles = resolve_catalog_profiles(&registry, &owner_user_id, &request)?;
-    let opencode_profile = selected_profiles
-        .get("opencode")
-        .expect("OpenCode default profile is migrated");
-    let opencode_environment =
-        registry.resolve_environment(&owner_user_id, "opencode", &opencode_profile.profile_id)?;
-    match crate::provider::ensure_opencode_account_endpoint(
-        &owner_user_id,
-        &opencode_profile.profile_id,
-        opencode_environment,
-    ) {
-        Ok(endpoint) => match OpenCodeClient::new("catalog", endpoint.as_str()) {
-            Ok(client) => match client.provider_catalog() {
-                Ok(catalog) => catalogs.push(opencode_backend_catalog(catalog)),
-                Err(error) => source_errors.push(format!("opencode catalog request: {error}")),
+    // MP-08: an uninstalled harness is not a catalog source, not a failure.
+    let installed = crate::provider::installed_provider_harnesses();
+    if installed.iter().any(|family| family == "opencode") {
+        let opencode_profile = selected_profiles
+            .get("opencode")
+            .expect("OpenCode default profile is migrated");
+        let opencode_environment =
+            registry.resolve_environment(&owner_user_id, "opencode", &opencode_profile.profile_id)?;
+        match crate::provider::ensure_opencode_account_endpoint(
+            &owner_user_id,
+            &opencode_profile.profile_id,
+            opencode_environment,
+        ) {
+            Ok(endpoint) => match OpenCodeClient::new("catalog", endpoint.as_str()) {
+                Ok(client) => match client.provider_catalog() {
+                    Ok(catalog) => catalogs.push(opencode_backend_catalog(catalog)),
+                    Err(error) => source_errors.push(format!("opencode catalog request: {error}")),
+                },
+                Err(error) => source_errors.push(format!("opencode client: {error}")),
             },
-            Err(error) => source_errors.push(format!("opencode client: {error}")),
-        },
-        Err(error) => source_errors.push(format!("opencode endpoint: {error}")),
+            Err(error) => source_errors.push(format!("opencode endpoint: {error}")),
+        }
     }
-    let codex_profile = selected_profiles
-        .get("codex")
-        .expect("Codex default profile is migrated");
-    let codex_environment =
-        registry.resolve_environment(&owner_user_id, "codex", &codex_profile.profile_id)?;
-    match crate::provider::ensure_codex_account_endpoint(
-        &owner_user_id,
-        &codex_profile.profile_id,
-        codex_environment,
-    ) {
-        Ok(endpoint) => match CodexClient::new("catalog", endpoint.as_str()) {
-            Ok(client) => match client.provider_catalog() {
-                Ok(catalog) => catalogs.push(catalog),
-                Err(error) => source_errors.push(format!("codex catalog request: {error}")),
+    if installed.iter().any(|family| family == "codex") {
+        let codex_profile = selected_profiles
+            .get("codex")
+            .expect("Codex default profile is migrated");
+        let codex_environment =
+            registry.resolve_environment(&owner_user_id, "codex", &codex_profile.profile_id)?;
+        match crate::provider::ensure_codex_account_endpoint(
+            &owner_user_id,
+            &codex_profile.profile_id,
+            codex_environment,
+        ) {
+            Ok(endpoint) => match CodexClient::new("catalog", endpoint.as_str()) {
+                Ok(client) => match client.provider_catalog() {
+                    Ok(catalog) => catalogs.push(catalog),
+                    Err(error) => source_errors.push(format!("codex catalog request: {error}")),
+                },
+                Err(error) => source_errors.push(format!("codex client: {error}")),
             },
-            Err(error) => source_errors.push(format!("codex client: {error}")),
-        },
-        Err(error) => source_errors.push(format!("codex endpoint: {error}")),
+            Err(error) => source_errors.push(format!("codex endpoint: {error}")),
+        }
     }
 
     let remote_machines = if config.relay_url.is_some() && config.relay_token.is_some() {

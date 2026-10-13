@@ -480,6 +480,7 @@ pub(crate) fn waiting_room_inventory_changed_event(
             || previous.remote_kernels != snapshot.remote_kernels
             || previous.terminals != snapshot.terminals
             || previous.provider_accounts != snapshot.provider_accounts
+            || previous.installed_providers != snapshot.installed_providers
             || previous.git_credentials != snapshot.git_credentials
     });
     requires_full_refresh.then(|| KernelEvent::WaitingRoomInventoryChanged {

@@ -222,6 +222,20 @@ fn waiting_room_inventory_changed_event_refreshes_for_provider_accounts() {
 }
 
 #[test]
+fn mp08_waiting_room_inventory_changed_event_refreshes_for_installed_providers() {
+    let previous = waiting_room_snapshot("inventory-a", Vec::new());
+    let mut current = previous.clone();
+    current.inventory_version = "inventory-b".to_string();
+    current.installed_providers.push("opencode".to_string());
+
+    assert!(matches!(
+        waiting_room_inventory_changed_event(&current, Some(&previous)),
+        Some(KernelEvent::WaitingRoomInventoryChanged { inventory_version })
+            if inventory_version == "inventory-b"
+    ));
+}
+
+#[test]
 fn waiting_room_inventory_event_projection_tracks_full_and_row_refreshes_once() {
     let mut projection = WaitingRoomInventoryEventProjection::default();
     let initial = waiting_room_snapshot("inventory-a", Vec::new());
@@ -674,6 +688,7 @@ fn waiting_room_snapshot(
 ) -> WaitingRoomPublicSnapshot {
     WaitingRoomPublicSnapshot {
         provider_accounts: Vec::new(),
+        installed_providers: Vec::new(),
         git_credentials: Vec::new(),
         schema_version: 11,
         inventory_version: inventory_version.to_string(),
