@@ -1,11 +1,9 @@
-use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use chariox_relay::protocol::RelayEnvelope;
 use futures_util::{Sink, SinkExt};
 use tokio_tungstenite::tungstenite::Message;
 
-pub(super) const RELAY_EVENT_WRITE_COALESCE_MS: u64 = 33;
 const RELAY_LARGE_FRAME_LOG_BYTES: usize = 256 * 1024;
 const RELAY_SLOW_WRITE_LOG_MS: u128 = 500;
 
@@ -60,57 +58,5 @@ fn relay_envelope_kind(envelope: &RelayEnvelope) -> &'static str {
         }
         RelayEnvelope::Close { .. } => "close",
         _ => "other",
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct RelayEventWriteCoalescer<T> {
-    delay_ms: u64,
-    envelopes: VecDeque<T>,
-    ready_at: Option<tokio::time::Instant>,
-}
-
-impl<T> RelayEventWriteCoalescer<T> {
-    const MAX_PENDING_EVENTS: usize = 32;
-
-    pub(super) fn new(delay_ms: u64) -> Self {
-        Self {
-            delay_ms,
-            envelopes: VecDeque::new(),
-            ready_at: None,
-        }
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.envelopes.is_empty()
-    }
-
-    pub(super) fn ready_at(&self) -> Option<tokio::time::Instant> {
-        self.ready_at
-    }
-
-    pub(super) fn push_event(&mut self, envelope: T, now: tokio::time::Instant) -> Option<T> {
-        if self.delay_ms == 0 {
-            return Some(envelope);
-        }
-        self.envelopes.push_back(envelope);
-        if self.ready_at.is_none() {
-            self.ready_at = Some(now + Duration::from_millis(self.delay_ms));
-        }
-        // A continuously ready receiver can win over the write timer. Flush
-        // the oldest event at capacity so batching cannot bypass backpressure.
-        if self.envelopes.len() > Self::MAX_PENDING_EVENTS {
-            return self.envelopes.pop_front();
-        }
-        None
-    }
-
-    pub(super) fn pop_ready(&mut self, now: tokio::time::Instant) -> Option<T> {
-        self.ready_at = None;
-        let envelope = self.envelopes.pop_front();
-        if !self.envelopes.is_empty() {
-            self.ready_at = Some(now);
-        }
-        envelope
     }
 }

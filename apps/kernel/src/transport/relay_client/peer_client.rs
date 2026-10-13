@@ -852,7 +852,11 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
     let (mut socket, _) = timeout(
         connect_timeout,
-        connect_async(chariox_relay::frame_transport::transport_url(&relay_url)),
+        tokio_tungstenite::connect_async_with_config(
+            chariox_relay::frame_transport::transport_url(&relay_url),
+            None,
+            true, // MP-08 / MP-10 / MP-11: interactive home-worker delivery.
+        ),
     )
     .await
     .map_err(|_| DaemonError::LocalTransport {

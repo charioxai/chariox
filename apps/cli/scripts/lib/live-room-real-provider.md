@@ -255,3 +255,23 @@ MP-11: while a real local provider turn remains active, complete a leased native
 turn whose worker run number matches the local run number. The local turn must
 retain its activity and controls; only the projected leased turn settles. Record
 both actual run identities and client views. Repeat with native cancellation.
+
+### MP-08 / MP-10 / MP-11: exact leased outcomes and native exit
+
+Run an ordinary home kernel and a rented worker with real Claude, the built
+native wrapper, and two hosted web panes at DPR 1 and 2 over the shaped WAN.
+Cancel during the native prompt hook/first-response window and require the exact
+worker and home prompt to settle Cancelled. Let another real source-comparison
+turn complete on the worker before a queued native Esc reaches home; require
+Completed on home, including the no-active-prompt response race. Stop only the
+exact owned provider generation during another real research turn, press Esc,
+and require Failed with runtime_failure, a nonzero wrapper exit, and the next
+actual web composer prompt completing on a fresh worker run.
+
+For normal native user exit, send real Ctrl-C through the PTY and require wrapper
+exit within five seconds plus Ended on the provider. Record PID/start-generation
+process trees before and after, including worker children. Record input, kernel
+admission, encrypted event queue, receiver arrival/decryption and browser paint
+timestamps for cross-client visibility; require P95 at most 150 ms. Keep every
+run's source and binary hashes separate. Source checks and successful setup
+never substitute for these live verdicts.
