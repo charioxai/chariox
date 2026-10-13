@@ -35,14 +35,28 @@ export class Mirror2Wheel {
     const el = this.scroller(target, dx, dy)
     if (!el) return false
     let glide = this.glides.get(el)
+    if (glide) { const [x, y] = position(el); if (Math.abs(x - glide.x) >= 1 || Math.abs(y - glide.y) >= 1) { this.glides.delete(el); glide = undefined } }
     if (!glide) { const [x, y] = position(el); glide = { el, x, y, rx: 0, ry: 0, tau: 0, last: now - 16 }; this.glides.set(el, glide) }
-    // The ease spans the interval since the previous step: none at frame rate (a trackpad), at most MAX_EASE_MS.
-    glide.tau = notch(dx) || notch(dy) ? NOTCH_EASE_MS : Math.min(MAX_EASE_MS, Math.max(0, now - (this.steps.get(el) ?? -Infinity) - 16)); this.steps.set(el, now)
+    // Spacing distinguishes a notch from a large frame-rate trackpad delta.
+    const interval = now - (this.steps.get(el) ?? -Infinity)
+    const tau = interval <= 32 ? 0 : notch(dx) || notch(dy) ? NOTCH_EASE_MS : Math.min(MAX_EASE_MS, Math.max(0, interval - 16))
+    this.steps.set(el, now)
     const [mx, my] = limit(el)
-    glide.rx = Math.min(mx, Math.max(0, glide.x + glide.rx + dx)) - glide.x
-    glide.ry = Math.min(my, Math.max(0, glide.y + glide.ry + dy)) - glide.y
-    if (!glide.tau) this.step(glide, now)
-    else this.frame ||= this.request(() => this.tick())
+    if (!tau && (glide.rx || glide.ry)) {
+      // Follow new precise input immediately; let the old tail finish on its existing curve.
+      glide.x = Math.min(mx, Math.max(0, glide.x + dx)); glide.y = Math.min(my, Math.max(0, glide.y + dy))
+      const options = { left: glide.x, top: glide.y, behavior: 'instant' as ScrollBehavior }
+      if (root(el)) view(el).scrollTo(options); else el.scrollTo(options)
+      const [x, y] = position(el); glide.x = x; glide.y = y
+      glide.rx = Math.min(mx, Math.max(0, x + glide.rx)) - x; glide.ry = Math.min(my, Math.max(0, y + glide.ry)) - y
+      this.frame ||= this.request(() => this.tick())
+    } else {
+      glide.tau = tau
+      glide.rx = Math.min(mx, Math.max(0, glide.x + glide.rx + dx)) - glide.x
+      glide.ry = Math.min(my, Math.max(0, glide.y + glide.ry + dy)) - glide.y
+      if (!glide.tau) this.step(glide, now)
+      else this.frame ||= this.request(() => this.tick())
+    }
     return true
   }
   // A position the kernel set (or a reset) ends that scroller's glide.
@@ -56,6 +70,9 @@ export class Mirror2Wheel {
   private step(glide: Glide, now: number): void {
     const { el } = glide
     if (!el.isConnected) { this.glides.delete(el); return }
+    // A native keyboard/scrollbar/layout move owns the position before our write.
+    const [liveX, liveY] = position(el)
+    if (Math.abs(liveX - glide.x) >= 1 || Math.abs(liveY - glide.y) >= 1) { this.glides.delete(el); return }
     const k = glide.tau ? 1 - Math.exp(-Math.max(0, now - glide.last) / glide.tau) : 1
     glide.last = now
     const mx = Math.abs(glide.rx * (1 - k)) < 0.5 ? glide.rx : glide.rx * k, my = Math.abs(glide.ry * (1 - k)) < 0.5 ? glide.ry : glide.ry * k
@@ -78,6 +95,8 @@ export class Mirror2Wheel {
     for (let el: Element | null = target; el; el = el.parentElement ?? ((el.getRootNode() as ShadowRoot).host ?? null)) {
       if (root(el)) continue
       const style = view(el).getComputedStyle(el)
+      // Native scrolling owns signed or reversed ranges (RTL, vertical writing, reversed flex).
+      if (style.direction === 'rtl' || style.writingMode !== 'horizontal-tb' || style.flexDirection.endsWith('reverse')) { this.cancel(el); return null }
       const sx = scrollable(style.overflowX) && el.scrollWidth > el.clientWidth, sy = scrollable(style.overflowY) && el.scrollHeight > el.clientHeight
       if (!sx && !sy) continue
       if (style.scrollSnapType !== 'none' || style.overscrollBehavior !== 'auto auto' && style.overscrollBehavior !== 'auto') return null
@@ -86,6 +105,7 @@ export class Mirror2Wheel {
     const doc = target.ownerDocument, top = doc.scrollingElement
     if (!top) return null
     const html = view(top).getComputedStyle(doc.documentElement), body = doc.body ? view(top).getComputedStyle(doc.body) : null
+    if (html.direction === 'rtl' || html.writingMode !== 'horizontal-tb') { this.cancel(top); return null }
     const overflow = (axis: 'overflowX' | 'overflowY'): string => html[axis] !== 'visible' || !body ? html[axis] : body[axis]
     if (html.scrollSnapType !== 'none' || ['hidden', 'clip'].includes(overflow('overflowX')) && dx || ['hidden', 'clip'].includes(overflow('overflowY')) && dy) return null
     return can(top, 'x', dx) || can(top, 'y', dy) ? top : null

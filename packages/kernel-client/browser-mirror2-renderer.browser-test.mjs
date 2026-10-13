@@ -576,7 +576,8 @@ test('MP-10: spaced precise wheel steps scroll the viewer every frame (document,
     // Steps at frame rate (a trackpad) are not delayed: each one is where native scrolling would put it at once.
     await page.mouse.move(900, 600);
     const immediate = await page.evaluate(async () => { const doc = window.r.frame.contentDocument, at = []; for (let n = 0; n < 8; n++) { doc.querySelector('body').dispatchEvent(new WheelEvent('wheel', { deltaY: 10, bubbles: true, cancelable: true, composed: true })); at.push(doc.defaultView.scrollY); await new Promise(r => setTimeout(r, 8)); } return at; });
-    assert.deepEqual(immediate.slice(1), [180, 190, 200, 210, 220, 230, 240], 'MP-10: frame-rate steps apply immediately');
+    assert(immediate.slice(1).every((v,i)=>v-immediate[i]>=9), 'MP-10: every frame-rate step applies immediately, while a previous eased tail finishes smoothly');
+    await page.waitForTimeout(350);assert.equal(await page.evaluate(()=>window.r.frame.contentWindow.scrollY),240,'MP-10: exact final position without flushing the old tail');
     // A mouse wheel's notches ease continuously: a reversal presents a change every frame (no stall at the turn).
     const before = await page.evaluate(() => window.r.frame.contentWindow.scrollY);
     const turn = await run(900, 600, [120, 120, -120, -120], 50, 'window');
@@ -594,7 +595,7 @@ test('MP-08: review #320@4f8b54237-1 a paste longer than one text action reaches
   const page = await viewer();
   try {
     await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'textarea', form: textForm('', 0) }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'div', attrs: { contenteditable: 'true' } }, { id: 'n6', parent: 'n5', kind: 'text', text: 'rich' }])), focused: 'n4' });
-    const text = 'a'.repeat(16383) + '😀' + 'b'.repeat(20000);
+    const text = '漢'.repeat(6000) + '😀'.repeat(6000);
     for (const selector of ['textarea', 'div']) {
       const actions = await page.evaluate(async ({ selector, text }) => {
         const doc = window.r.frame.contentDocument, el = doc.querySelector(selector); el.focus(); window.sent.splice(0);
@@ -603,8 +604,8 @@ test('MP-08: review #320@4f8b54237-1 a paste longer than one text action reaches
         await new Promise(resolve => setTimeout(resolve, 50));
         return window.sent.splice(0).filter(action => action.kind === 'text').map(action => action.text);
       }, { selector, text });
-      assert(actions.length === 3 && actions.every(slice => slice.length <= 16384), `MP-08: ${selector} slices ${actions.map(slice => slice.length)}`);
-      assert.equal(actions[0].length, 16383, 'MP-08: the slice ends before a surrogate pair it would split');
+      assert(actions.length === 3 && actions.every(slice => Buffer.byteLength(slice, 'utf8') <= 16384), `MP-08: ${selector} slices ${actions.map(slice => slice.length)}`);
+      assert(actions.every(slice=>!/[\uD800-\uDBFF]$/.test(slice)&&! /^[\uDC00-\uDFFF]/.test(slice)), 'MP-08: UTF-8 slices never split a surrogate pair');
       assert.equal(actions.join(''), text, `MP-08: the ${selector} paste arrives whole and in order`);
     }
   } finally { await page.close(); }
@@ -632,24 +633,58 @@ test('MP-08: an echo that names a new focus before its click\'s reply arrives fo
   } finally { await page.close(); }
 });
 
-test('MP-08/MP-10: an attached renderer pauses its host page\'s endless animations (Chromium otherwise presents every echo a frame later) and resumes them on close; the mirrored page keeps its own', async () => {
+test('MP-08/MP-10: review r19 an attached renderer preserves its host page\'s endless animations (Chromium otherwise presents every echo a frame later) and resumes them on close; the mirrored page keeps its own', async () => {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   try {
     await page.goto(url);
     const states = () => page.evaluate(() => Object.fromEntries(document.getAnimations().map(a => [a.animationName ?? a.id, a.playState])));
     await page.evaluate(() => {
       const style = document.createElement('style');
-      style.textContent = '@keyframes pulse{50%{opacity:.4}} .status::before{content:"";display:inline-block;width:8px;height:8px;background:#0a0;animation:pulse 1.8s ease-in-out infinite} @keyframes toast{from{opacity:0}} .toast{animation:toast 30s}';
+      style.textContent = '@keyframes pulse{50%{opacity:.4}} .status::before{content:"";display:inline-block;width:8px;height:8px;background:#0a0;animation:pulse 1.8s ease-in-out infinite} @keyframes toast{from{opacity:0}} .toast{animation:toast 30s} .status.app-paused::before{animation-play-state:paused}';
       document.head.append(style); document.body.insertAdjacentHTML('beforeend', '<span class="status">pending</span><div class="toast">saved</div>');
     });
     assert.deepEqual(await states(), { pulse: 'running', toast: 'running' });
     await page.evaluate(async () => { window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), async () => {}); await window.r.ready(); window.r.frame.contentDocument.documentElement.animate([{ opacity: 1 }, { opacity: 0.9 }], { duration: 1000, iterations: Infinity, id: 'mirrored' }); });
-    assert.deepEqual(await states(), { pulse: 'paused', toast: 'running' }, 'MP-10: the host page\'s endless animation is paused, a finite one plays out');
+    assert.deepEqual(await states(), { pulse: 'running', toast: 'running' }, 'MP-10: the host page\'s endless animation is paused, a finite one plays out');
     await page.evaluate(() => document.body.insertAdjacentHTML('beforeend', '<span class="status">later</span>'));
     await frames();
-    assert.deepEqual((await page.evaluate(() => document.getAnimations().filter(a => a.animationName === 'pulse').map(a => a.playState))), ['paused', 'paused'], 'MP-10: one that starts later is paused too');
+    assert.deepEqual((await page.evaluate(() => document.getAnimations().filter(a => a.animationName === 'pulse').map(a => a.playState))), ['running', 'running'], 'MP-10: late host animations remain under host control');
     assert.equal(await page.evaluate(() => window.r.frame.contentDocument.getAnimations()[0].playState), 'running', 'MP-10: the mirrored page keeps its own animations');
+    await page.evaluate(() => { document.querySelector('.status').classList.add('app-paused'); const el=document.body.appendChild(document.createElement('span')); window.late=el.animate([{opacity:1},{opacity:.5}],{duration:1000,iterations:Infinity}); });
+    await frames(); assert.equal(await page.evaluate(()=>window.late.playState),'running','MP-10: late WAAPI animation remains owned by the host');
     await page.evaluate(() => window.r.close());
-    assert.deepEqual((await page.evaluate(() => document.getAnimations().filter(a => a.animationName === 'pulse').map(a => a.playState))), ['running', 'running'], 'MP-10: resumed once the mirror closes');
+    assert.deepEqual((await page.evaluate(() => document.getAnimations().filter(a => a.animationName === 'pulse').map(a => a.playState))), ['paused', 'running'], 'MP-10: closing a mirror respects an app-paused host animation');
+    await page.evaluate(()=>document.querySelector('.status').classList.remove('app-paused'));await frames();
+    assert.deepEqual(await page.evaluate(()=>document.getAnimations().filter(a=>a.animationName==='pulse').map(a=>a.playState)),['running','running'],'MP-10: CSS play-state control still works after the mirror closes');
   } finally { await page.close(); }
+});
+
+// MP-08/MP-10: review #320 RTL and native-scroll ownership; review #941 fast trackpad tail.
+test('MP-10: review r19 RTL wheel keeps signed offsets and an unrelated axis', async () => {
+  const page=await viewer();
+  try{
+    await apply(page,snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'},
+      {id:'n4',parent:'n3',kind:'element',tag:'div',attrs:{id:'rtl',style:'width:300px;height:200px;overflow:auto;direction:rtl'}},{id:'n5',parent:'n4',kind:'element',tag:'div',attrs:{style:'width:1200px;height:1200px'}}]));
+    await page.evaluate(()=>window.r.frame.contentDocument.getElementById('rtl').scrollTo({left:-200,top:100,behavior:'instant'}));await frames();
+    const box=await page.locator('iframe').boundingBox();await page.mouse.move(box.x+150,box.y+100);await page.mouse.wheel(0,16);await page.waitForTimeout(350);
+    assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('rtl').scrollLeft),-200,'vertical wheel leaves negative horizontal position unchanged');
+    await page.mouse.wheel(16,0);await page.waitForTimeout(350);assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('rtl').scrollLeft),-184,'positive horizontal step moves within signed bounds');
+    await page.mouse.wheel(-16,0);await page.waitForTimeout(350);assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('rtl').scrollLeft),-200,'negative horizontal step is admitted');
+  }finally{await page.close();}
+});
+test('MP-10: review r19 a native scroll takes ownership during a viewport or inner glide', async()=>{
+ const page=await viewer();try{
+  await apply(page,snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body',attrs:{style:'height:4000px'}},{id:'n4',parent:'n3',kind:'element',tag:'div',attrs:{id:'inner',style:'width:300px;height:200px;overflow:auto'}},{id:'n5',parent:'n4',kind:'element',tag:'div',attrs:{style:'height:3000px'}}]));
+  for(const inner of [false,true]){
+   const result=await page.evaluate(inner=>{const d=window.r.frame.contentDocument,e=inner?d.getElementById('inner'):d.scrollingElement,w=window.r.wheel;w.close();e.scrollTo({top:100,behavior:'instant'});w.take(new WheelEvent('wheel',{deltaY:120}),e,100);w.step(w.glides.get(e),116);e.scrollTo({top:700,behavior:'instant'});w.step(w.glides.get(e),132);return{position:inner?e.scrollTop:d.defaultView.scrollY,glides:w.glides.size}},inner);
+   assert.equal(result.position,700,'native movement survives the next animation frame');assert.equal(result.glides,0,'the old glide relinquishes ownership');
+  }
+ }finally{await page.close();}
+});
+test('MP-10: review r19 large frame-rate deltas apply immediately while an existing eased tail stays smooth',async()=>{
+ const page=await viewer();try{
+  await apply(page,snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body',attrs:{style:'height:6000px'}}]));
+  const result=await page.evaluate(()=>{const d=window.r.frame.contentDocument,e=d.scrollingElement,w=window.r.wheel;w.close();e.scrollTo({top:100,behavior:'instant'});w.take(new WheelEvent('wheel',{deltaY:120}),e,100);w.step(w.glides.get(e),116);const before=d.defaultView.scrollY;w.take(new WheelEvent('wheel',{deltaY:120}),e,116);const fast=d.defaultView.scrollY;w.take(new WheelEvent('wheel',{deltaY:10}),e,132);const tail=d.defaultView.scrollY;w.step(w.glides.get(e),148);return{before,fast,tail,frame:d.defaultView.scrollY}});
+  assert(result.fast-result.before>=119,'large trackpad step follows its frame, rather than being classified as a notch');assert(result.tail-result.fast<=11,'falling below 50px does not flush the previous backlog');assert(result.frame-result.tail<50,'the retained tail remains eased');
+ }finally{await page.close();}
 });

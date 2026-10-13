@@ -10,7 +10,7 @@ export const browserMirror2MinimumProtocolVersion = 503
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 const CREDIT_WINDOW = 4 // credits in flight at most (attachBrowserMirror2)
-const TEXT_LIMIT = 16384 // UTF-16 units per text action (the kernel refuses more)
+const TEXT_LIMIT = 16384 // UTF-8 bytes per text action, matching the Rust boundary
 const DELETIONS: Record<string, string[]> = {
   deleteContentBackward: ['Backspace'], deleteContentForward: ['Delete'], deleteWordBackward: ['Ctrl+Backspace'], deleteWordForward: ['Ctrl+Delete'],
   deleteSoftLineBackward: ['Shift+Home', 'Backspace'], deleteHardLineBackward: ['Shift+Home', 'Backspace'], deleteSoftLineForward: ['Shift+End', 'Delete'], deleteHardLineForward: ['Shift+End', 'Delete'],
@@ -23,27 +23,6 @@ type Styled = { kind: 'css' | 'attr'; raw: string; node: Element; keys: string[]
 function bytesOf(data: string): Uint8Array { return Uint8Array.from(atob(data), c => c.charCodeAt(0)) }
 async function digest(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>)), b => b.toString(16).padStart(2, '0')).join('')
-}
-
-// MP-08/MP-10: while any compositor animation runs in a renderer, Chromium shows that page's next DOM update one
-// frame later (the display draws each vsync with the frame submitted before it). An endless animation of the page
-// hosting a mirror (a status pulse, a spinner) would delay every echo by a frame: it stays paused while a mirror is
-// attached to that page. The mirrored page's own animations are untouched.
-const hostHolds = new WeakMap<Document, { mirrors: number; held: Set<Animation>; hold(): void }>()
-function holdHostAnimations(doc: Document): () => void {
-  let entry = hostHolds.get(doc)
-  if (!entry) {
-    const held = new Set<Animation>()
-    const hold = (): void => { for (const animation of doc.getAnimations()) if (animation.playState === 'running' && animation.effect?.getTiming().iterations === Infinity) { animation.pause(); held.add(animation) } }
-    entry = { mirrors: 0, held, hold }; hostHolds.set(doc, entry); doc.addEventListener('animationstart', hold, true)
-  }
-  const own = entry; own.mirrors++; own.hold()
-  let released = false
-  return () => {
-    if (released || --own.mirrors > 0) { released = true; return }
-    released = true; hostHolds.delete(doc); doc.removeEventListener('animationstart', own.hold, true)
-    for (const animation of own.held) if (animation.playState === 'paused') animation.play()
-  }
 }
 
 export class BrowserMirror2Renderer {
@@ -84,7 +63,6 @@ export class BrowserMirror2Renderer {
   private localScrollAt = -Infinity
   private applied = new WeakMap<Node, [number, number]>() // kernel-applied positions (their scroll events are not viewer input)
   private deferred = new Map<Node, [number, number]>() // latest kernel position per scroller that arrived while the viewer scrolled
-  private releaseHost = (): void => {}
   private wheel = new Mirror2Wheel(fn => requestAnimationFrame(fn), handle => cancelAnimationFrame(handle))
   constructor(private container: HTMLElement, private send: (action: Mirror2Action, epoch: { sequence: number; document_id: string }) => Promise<unknown>, _failure?: (error: unknown) => void) {
     const owner = container.ownerDocument
@@ -104,7 +82,6 @@ export class BrowserMirror2Renderer {
     this.doc = this.frame.contentDocument
     if (!this.doc) throw Error('MP-11: mirror sandbox unavailable')
     this.bind(this.doc)
-    this.releaseHost = holdHostAnimations(this.container.ownerDocument)
   }
   private timed(stage: string, at: number): void { this.timings.push({ stage, duration_ms: performance.now() - at, ended_ms: performance.timeOrigin + performance.now() }); if (this.timings.length > 2048) this.timings.splice(0, 1024) }
   // ---- input: node-addressed, the kernel re-validates everything live.
@@ -117,14 +94,16 @@ export class BrowserMirror2Renderer {
     this.queue.push({ action, epoch }); this.pendingInputs++
     void this.pump()
   }
-  // The kernel admits at most TEXT_LIMIT UTF-16 units per text action: a longer paste goes in order, in slices that
-  // never split a surrogate pair.
+  // Rust bounds UTF-8 bytes; never split a code point across ordered actions.
   private enqueueText(text: string): void {
-    for (let at = 0; at < text.length;) {
-      let end = Math.min(text.length, at + TEXT_LIMIT)
-      if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]!)) end--
-      this.enqueue({ kind: 'text', text: text.slice(at, end) }); at = end
+    let at = 0, end = 0, bytes = 0
+    for (const point of text) {
+      const code = point.codePointAt(0)!
+      const size = code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4
+      if (bytes + size > TEXT_LIMIT) { this.enqueue({ kind: 'text', text: text.slice(at, end) }); at = end; bytes = 0 }
+      end += point.length; bytes += size
     }
+    if (end > at) this.enqueue({ kind: 'text', text: text.slice(at, end) })
   }
   private async pump(): Promise<void> {
     if (this.sending) return
@@ -637,7 +616,7 @@ export class BrowserMirror2Renderer {
     style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
   }
   close(): void {
-    this.disposed = true; this.doc = null; this.releaseHost()
+    this.disposed = true; this.doc = null
     for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
     URL.revokeObjectURL(this.empty); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frame.remove()
