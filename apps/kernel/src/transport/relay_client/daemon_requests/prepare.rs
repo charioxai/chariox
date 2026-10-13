@@ -188,6 +188,55 @@ mod tests {
         assert_eq!(read("mirror"), (input.0.clone(), true));
         assert_ne!(read("other").0, input.0);
     }
+    /// #992 review F4 (protocol 511): through the envelope's turn rule, a viewer's
+    /// read runs after its earlier key and never holds the viewer's next key.
+    #[tokio::test]
+    async fn mp08_a_mirror_read_enters_after_its_key_and_never_holds_the_next_key() {
+        use crate::local::{KernelBrowserCommand as C, KernelBrowserMirrorAction as A};
+        use crate::transport::relay_client::browser_input_order::BrowserInputOrder;
+        use std::time::Duration;
+        let key = |sequence| {
+            prepared(C::MirrorInput {
+                tab_id: "tab".into(),
+                generation: 1,
+                document_id: "doc".into(),
+                subscription_id: "mirror".into(),
+                sequence,
+                action: A::Text {
+                    node_id: "n1".into(),
+                    text: "a".into(),
+                },
+            })
+            .browser_input_key()
+            .unwrap()
+        };
+        let read = prepared(C::MirrorNext {
+            subscription_id: "mirror".into(),
+            generation: 1,
+            after_sequence: 3,
+            drift_nodes: vec![],
+        })
+        .browser_input_key()
+        .unwrap();
+        let order = BrowserInputOrder::default();
+        let (first, second) = (key(3), key(4));
+        let running = order.reserve(first.0).unwrap().enter(first.1).await.unwrap();
+        let pending_read = order.reserve(read.0).unwrap();
+        let next = order.reserve(second.0).unwrap();
+        let reading = tokio::spawn(pending_read.enter(read.1));
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(!reading.is_finished(), "the read waits for the key before it");
+        drop(running);
+        assert!(
+            reading.await.unwrap().is_none(),
+            "the read gives its turn back before it runs"
+        );
+        // The read's reply may still be pending; the next key does not wait for it.
+        tokio::time::timeout(Duration::from_millis(50), next.enter(second.1))
+            .await
+            .unwrap()
+            .unwrap();
+    }
     #[test]
     fn mp08_display_credits_and_unidentified_requests_do_not_take_input_turns() {
         use crate::local::KernelBrowserCommand as C;

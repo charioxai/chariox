@@ -49,6 +49,12 @@ impl BrowserInputOrder {
     }
 }
 impl Turn {
+    /// Wait for earlier input on this key. A mirror read then gives its turn back
+    /// before it runs, so later input never waits for it (protocol 511).
+    pub(super) async fn enter(mut self, read: bool) -> Option<Self> {
+        self.ready().await;
+        (!read).then_some(self)
+    }
     pub(super) async fn ready(&mut self) {
         if let Some(previous) = self.previous.as_mut() {
             let _ = previous.await;

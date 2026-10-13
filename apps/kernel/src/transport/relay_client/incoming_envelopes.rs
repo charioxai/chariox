@@ -149,13 +149,10 @@ pub(super) async fn handle_incoming_envelope(
                 }
             }
             tokio::spawn(async move {
-                if let Some(turn) = turn.as_mut() {
-                    turn.ready().await;
-                }
-                // A mirror read waits for earlier input only; later input never waits for it.
-                if read {
-                    turn = None;
-                }
+                let turn = match turn {
+                    Some(turn) => turn.enter(read).await,
+                    None => None,
+                };
                 let mut relay_response = match prepared {
                     Ok(prepared) => {
                         handle_prepared_daemon_request(
