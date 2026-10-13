@@ -32,11 +32,11 @@ test("Claude Edit keeps shared lines as context; MultiEdit makes one hunk per ed
   assert.deepEqual(rows(multi!.diff), ["ra", "ab", "gap", "rx"])
 })
 
-test("write tools show the whole file as added", () => {
+test("write tools show content without claiming the file was created", () => {
   const [file] = readApplyPatchFiles({ id: "t", tool: "write", status: "completed", input: { filePath: "/w/new.md", content: "# t\n\nbody\n" } })
-  assert.equal(file!.kind, "add")
+  assert.equal(file!.kind, "update")
   assert.deepEqual(rows(file!.diff), ["a# t", "a", "abody"])
-  assert.equal(diffView(parseUnifiedDiff(file!.diff!)).verb, "Added")
+  assert.equal(diffView(parseUnifiedDiff(file!.diff!)).verb, "Edited")
 })
 
 test("edit tools without a path or strings are not patches", () => {

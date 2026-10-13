@@ -22,10 +22,11 @@ export function readEditToolFiles(update: ToolTranscriptUpdate): ApplyPatchFile[
     if (content === null) return []
     const lines = splitLines(content)
     return [{
-      kind: "add",
+      // Write may overwrite an existing file; the input has no old snapshot.
+      kind: "update",
       filePath,
       title: `Wrote ${filePath}`,
-      diff: [`--- /dev/null`, `+++ b/${filePath}`, `@@ -0,0 +1,${lines.length} @@`, ...lines.map((line) => `+${line}`)].join("\n"),
+      diff: [`--- a/${filePath}`, `+++ b/${filePath}`, "@@", ...lines.map((line) => `+${line}`)].join("\n"),
     }]
   }
   const replacements = tool === "multiedit"
