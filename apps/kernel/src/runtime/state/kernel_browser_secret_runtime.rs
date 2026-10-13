@@ -62,8 +62,8 @@ impl KernelRuntimeState {
         }
         let gate = self.owned.kernel_browser_host.display_gate(user);
         let _input = (method == "host.secret" || params["op"] == "input").then(|| gate.input());
-        let _capture = if params["display_subscription_id"].is_string() {
-            Some(gate.capture().await.map_err(host_error)?)
+        let _capture = if let Some(subscription) = params["display_subscription_id"].as_str() {
+            Some(gate.capture(subscription).await.map_err(host_error)?)
         } else {
             None
         };

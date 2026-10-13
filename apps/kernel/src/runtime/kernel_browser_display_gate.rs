@@ -24,7 +24,7 @@ impl DisplayGate {
         self.input.fetch_add(1, Ordering::AcqRel);
         InputAdmission(self.clone())
     }
-    pub(crate) async fn capture(&self) -> Result<OwnedSemaphorePermit, String> {
+    pub(crate) async fn capture(&self, _subscription: &str) -> Result<OwnedSemaphorePermit, String> {
         let at = std::time::Instant::now();
         let permit = self
             .capture
@@ -57,12 +57,22 @@ impl Drop for InputAdmission {
 mod tests {
     use super::*;
     use std::time::Duration;
+    // MP-08/MP-10/MP-11: idle Browser credits must not park Computer delivery.
+    #[tokio::test]
+    async fn mp10_independent_subscriptions_do_not_share_parked_capture_credit() {
+        let gate = Arc::new(DisplayGate::default());
+        let browser = gate.capture("browser").await.unwrap();
+        let computer = tokio::time::timeout(Duration::from_millis(30), gate.capture("computer"))
+            .await.expect("idle Browser credit blocked independent Computer capture").unwrap();
+        drop(computer);
+        drop(browser);
+    }
     #[tokio::test]
     async fn md_display_continuous_input_cannot_starve_independent_capture() {
         let gate = Arc::new(DisplayGate::default());
         let first = gate.input();
         let second = gate.input();
-        let admitted = tokio::time::timeout(Duration::from_millis(30), gate.capture()).await;
+        let admitted = tokio::time::timeout(Duration::from_millis(30), gate.capture("browser")).await;
         drop(first);
         drop(second);
         let permit = admitted
@@ -73,25 +83,25 @@ mod tests {
     #[tokio::test]
     async fn md_display_input_is_independent_of_the_serial_capture_slot() {
         let gate = Arc::new(DisplayGate::default());
-        let first = gate.capture().await.unwrap();
+        let first = gate.capture("browser").await.unwrap();
         let input = gate.input();
         assert_eq!(gate.input.load(Ordering::Acquire), 1);
         assert!(
-            tokio::time::timeout(Duration::from_millis(5), gate.capture())
+            tokio::time::timeout(Duration::from_millis(5), gate.capture("browser"))
                 .await
                 .is_err()
         );
         drop(input);
         drop(first);
-        assert!(gate.capture().await.is_ok());
+        assert!(gate.capture("browser").await.is_ok());
     }
     #[tokio::test]
     async fn md_display_cancelling_a_waiting_credit_retains_input_and_capture_ownership() {
         let gate = Arc::new(DisplayGate::default());
-        let first = gate.capture().await.unwrap();
+        let first = gate.capture("browser").await.unwrap();
         let input = gate.input();
         assert!(
-            tokio::time::timeout(Duration::from_millis(5), gate.capture())
+            tokio::time::timeout(Duration::from_millis(5), gate.capture("browser"))
                 .await
                 .is_err()
         );
@@ -99,6 +109,6 @@ mod tests {
         assert_eq!(gate.input.load(Ordering::Acquire), 1);
         drop(first);
         drop(input);
-        assert!(gate.capture().await.is_ok());
+        assert!(gate.capture("browser").await.is_ok());
     }
 }
