@@ -3,17 +3,22 @@ use super::*;
 use crate::mcp::{CharioxMcpServerConfig, CharioxMcpTransportConfig};
 use std::sync::{Arc, Mutex, OnceLock};
 
-#[derive(Default)]
+#[derive(Default, Clone, PartialEq, Eq)]
 pub(super) struct HttpState {
     pub session_id: Option<zeroize::Zeroizing<String>>,
     pub protocol_version: Option<String>,
 }
 struct HttpSession {
     backing: CharioxMcpServerConfig,
-    state: HttpState,
+    state: Mutex<SessionState>,
+}
+#[derive(Default)]
+struct SessionState {
+    headers: HttpState,
+    generation: u64,
 }
 impl HttpSession {
-    fn dispatch(&mut self, payload: serde_json::Value) -> Result<serde_json::Value, DaemonError> {
+    fn dispatch(&self, payload: serde_json::Value) -> Result<serde_json::Value, DaemonError> {
         let CharioxMcpTransportConfig::StreamableHttp {
             url,
             bearer_token_env_var,
@@ -24,15 +29,35 @@ impl HttpSession {
         else {
             unreachable!()
         };
-        forward_streamable_http_mcp_request(
+        // Protect header state only. Tool POSTs and cancellation must run concurrently.
+        let initialize =
+            payload.get("method").and_then(serde_json::Value::as_str) == Some("initialize");
+        let (before, generation) = {
+            let mut state = self.state.lock().expect("HTTP MCP session mutex poisoned");
+            if initialize {
+                state.generation += 1;
+                state.headers = HttpState::default()
+            }
+            (state.headers.clone(), state.generation)
+        };
+        let mut headers = before.clone();
+        let result = forward_streamable_http_mcp_request(
             url,
             bearer_token_env_var.as_deref(),
             http_headers,
             env_http_headers,
             payload,
             self.backing.tool_timeout_sec,
-            &mut self.state,
-        )
+            &mut headers,
+        );
+        if initialize || headers != before {
+            let mut state = self.state.lock().expect("HTTP MCP session mutex poisoned");
+            // An older 404/initialize must not erase or replace a newer handshake.
+            if state.generation == generation && state.headers == before {
+                state.headers = headers
+            }
+        }
+        result
     }
 }
 impl Drop for HttpSession {
@@ -47,7 +72,12 @@ impl Drop for HttpSession {
         else {
             return;
         };
-        if self.state.session_id.is_some() {
+        let state = &self
+            .state
+            .get_mut()
+            .expect("HTTP MCP session mutex poisoned")
+            .headers;
+        if state.session_id.is_some() {
             // Best-effort remote lease release. Local state is always retired;
             // servers may legitimately reject DELETE with 405. Bound cleanup.
             if let Ok(request) = http_request(
@@ -57,7 +87,7 @@ impl Drop for HttpSession {
                 http_headers,
                 env_http_headers,
                 Duration::from_secs(1),
-                &self.state,
+                state,
             ) {
                 let _ = request.call();
             }
@@ -65,7 +95,7 @@ impl Drop for HttpSession {
     }
 }
 type OwnerKey = (String, String, String);
-type Sessions = BTreeMap<OwnerKey, Arc<Mutex<HttpSession>>>;
+type Sessions = BTreeMap<OwnerKey, Arc<HttpSession>>;
 fn sessions() -> &'static Mutex<Sessions> {
     static SESSIONS: OnceLock<Mutex<Sessions>> = OnceLock::new();
     SESSIONS.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -82,17 +112,13 @@ pub(crate) fn dispatch(
         .expect("HTTP MCP sessions mutex poisoned")
         .entry(key)
         .or_insert_with(|| {
-            Arc::new(Mutex::new(HttpSession {
+            Arc::new(HttpSession {
                 backing: backing.clone(),
-                state: HttpState::default(),
-            }))
+                state: Mutex::new(SessionState::default()),
+            })
         })
         .clone();
-    let result = session
-        .lock()
-        .expect("HTTP MCP session mutex poisoned")
-        .dispatch(payload);
-    result
+    session.dispatch(payload)
 }
 pub(crate) fn release_session(owner: &str) {
     release(|key| key.1 == owner);
@@ -114,7 +140,11 @@ fn release(matches: impl Fn(&OwnerKey) -> bool) {
             .filter_map(|key| sessions.remove(&key))
             .collect()
     };
-    drop(released);
+    if !released.is_empty() {
+        // Callers may hold the provider-service lock. DELETE is best effort and
+        // belongs on a blocking cleanup thread, after all local leases retire.
+        std::thread::spawn(move || drop(released));
+    }
 }
 
 #[cfg(test)]
