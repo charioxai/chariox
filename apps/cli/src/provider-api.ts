@@ -15,6 +15,7 @@ import type { LocalIpcClient } from "./ipc.js"
 import type { CharioxLogger } from "./logging.js"
 import {
   getProviderAuthStatusRequest,
+  getProviderAccountProfileRequest,
   getProviderLoginStatusRequest,
   sendProviderLoginInputRequest,
   setProviderAccountCredentialRequest,
@@ -215,7 +216,23 @@ export async function getProviderAuthStatus(
   client: LocalIpcClient,
   provider: string,
   accountProfile = "default",
+  mode: "verify" | "saved" = "verify",
 ): Promise<ProviderAuthStatus> {
+  // MP-08/MP-11: automatic login completion reads the observation saved by
+  // enrollment. Only explicit Status/Refresh should start verification turns.
+  if (mode === "saved") {
+    const response = await client.send<Record<string, unknown>>(getProviderAccountProfileRequest(provider, accountProfile))
+    const { profile } = expectVariant<{ profile: ProviderAccountProfile }>(response, "ProviderAccountProfile")
+    return {
+      provider: profile.provider,
+      account_profile: profile.profile_id,
+      auth_state: profile.auth_state,
+      identity_summary: profile.identity_summary ?? null,
+      plan: profile.plan ?? null,
+      detected_version: profile.detected_provider_version ?? null,
+      login_hint: null,
+    }
+  }
   const response = await client.send<Record<string, unknown>>(getProviderAuthStatusRequest(provider, accountProfile))
   const payload = expectVariant<{ status: ProviderAuthStatus }>(response, "ProviderAuthStatus")
   return payload.status
