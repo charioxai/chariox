@@ -443,6 +443,8 @@ impl DaemonApp {
         app.app_control
             .lifecycle()
             .attach_event_config(app.config_projection.clone());
+        app.durable_state
+            .attach_workflow_history_authority(app.config_projection.clone());
         let restore_started = Instant::now();
         app.restore_durable_state()?;
         if app.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker

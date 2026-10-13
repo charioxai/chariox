@@ -303,6 +303,7 @@ pub use workspace::*;
 /// Version 506 integrates those contracts, including main's 491, with the 493
 /// agent-model union; generated consumers follow this coordinator-allocated
 /// acceptance version.
+/// Version 513 normalizes admitted paired display callers and owner-only, read-only historical workflow projections (MP-08/MP-10/MP-11).
 /// Version 490 requires bounded relay response framing and socket-local receipts.
 /// Version 491 adds credential-free Cloud kernel ownership projections, receiving
 /// CLIENT key-bound pivots, Cloud-free terminal pairing and provider account

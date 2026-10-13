@@ -38,7 +38,74 @@ pub(super) fn write_in(
     Ok(())
 }
 
+// MP-08 / MP-10 / MP-11: a live config projection identifies the kernel owner,
+// never a mutable endpoint/Room owner. Unbound offline stores fail closed.
+#[derive(Clone, Default)]
+pub(super) struct WorkflowHistoryAuthority(
+    std::sync::Arc<
+        std::sync::Mutex<Option<crate::runtime::projection::DaemonConfigProjectionStore>>,
+    >,
+);
+impl std::fmt::Debug for WorkflowHistoryAuthority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WorkflowHistoryAuthority")
+    }
+}
+
 impl DurableKernelStateStore {
+    pub(crate) fn attach_workflow_history_authority(
+        &self,
+        config: crate::runtime::projection::DaemonConfigProjectionStore,
+    ) {
+        *self
+            .workflow_history_authority
+            .0
+            .lock()
+            .expect("workflow history authority lock") = Some(config);
+    }
+
+    pub(crate) fn workflow_history_is_kernel_owner(&self, kernel_id: &str, user_id: &str) -> bool {
+        self.workflow_history_authority
+            .0
+            .lock()
+            .expect("workflow history authority lock")
+            .as_ref()
+            .is_some_and(|config| {
+                config.snapshot().daemon_id == kernel_id && config.local_owner_user_id() == user_id
+            })
+    }
+
+    pub(crate) fn workflow_run_predates_ownership_tracking(
+        &self,
+        kernel_id: &str,
+        session_id: &str,
+        run: &crate::session::WorkflowRun,
+    ) -> Result<bool, DaemonError> {
+        if run.created_by_agent_id().is_some() {
+            return Ok(false);
+        }
+        match run.queue_item_id() {
+            Some(queue) => Ok(self
+                .workflow_invocation_owner(kernel_id, session_id, queue)?
+                .is_none()),
+            None => Ok(true),
+        }
+    }
+
+    pub(crate) fn workflow_invocation_owner(
+        &self,
+        owner_id: &str,
+        session_id: &str,
+        queue_item_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let operation = "durable_state.workflow_invocation_owner";
+        let connection = self.lock_connection(operation)?;
+        connection.query_row(
+            "SELECT metadata_value FROM durable_state_metadata WHERE owner_id=?1 AND metadata_key=?2",
+            params![owner_id,metadata_key(session_id,queue_item_id)], |row| row.get(0),
+        ).optional().map_err(|error| DaemonError::LocalTransport {operation,message:error.to_string()})
+    }
+
     pub(crate) fn workflow_invocation_is_owned(
         &self,
         owner_id: &str,
@@ -46,13 +113,10 @@ impl DurableKernelStateStore {
         queue_item_id: &str,
         user_id: &str,
     ) -> Result<bool, DaemonError> {
-        let operation = "durable_state.workflow_invocation_is_owned";
-        let connection = self.lock_connection(operation)?;
-        let creator: Option<String> = connection.query_row(
-            "SELECT metadata_value FROM durable_state_metadata WHERE owner_id=?1 AND metadata_key=?2",
-            params![owner_id,metadata_key(session_id,queue_item_id)], |row| row.get(0),
-        ).optional().map_err(|error| DaemonError::LocalTransport {operation,message:error.to_string()})?;
-        Ok(creator.as_deref() == Some(user_id))
+        Ok(self
+            .workflow_invocation_owner(owner_id, session_id, queue_item_id)?
+            .as_deref()
+            == Some(user_id))
     }
 }
 

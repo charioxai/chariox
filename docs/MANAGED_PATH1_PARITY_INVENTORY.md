@@ -1,5 +1,23 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 historical workflow admission (2026-10-13)
+
+Allocated local513/peer121 carries paired display caller normalization and an
+owner-only historical workflow read marker. Runs with no immutable agent creator
+or invoking-user proof are read-only to the authenticated kernel owner; Full
+collaboration does not expose them to another user. Current Room, endpoint and
+node ownership never creates historical proof. List/Get, snapshots, updates and
+Room inventory share the same provenance policy. Individual and captured Room
+pause/resume/stop controls reject legacy runs below client adapters. New runs
+retain atomic invoking-user proof and their ordinary control path. Web/TUI
+project the historical label; native clients receive the same shared marker.
+
+This is common kernel behavior, not a managed-only policy. Managed upgrade pins
+retain506 as an explicit predecessor and the consuming web floor follows513.
+Focused regressions, real pre-proof upgrade cells HW-01/HW-02/HW-03 in the agent
+model plan, and current semantic review of this admission anchor are separate
+requirements. No MP item gains acceptance from this inventory alone.
+
 ## MP-08 / MP-10 / MP-11 home App authority across leases (2026-10-13)
 
 Under Miguel's D1 decision, an agent's placement does not select a different App

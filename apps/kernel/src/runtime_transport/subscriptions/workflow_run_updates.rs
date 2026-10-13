@@ -20,9 +20,9 @@ pub(super) fn drain_visible_workflow_run_updates(
     updates
         .into_iter()
         .filter_map(|run| {
-            match session.workflow_run_visible_for_user(&run, owner_user_id, Some(&history)) {
-                Ok(true) => Some(Ok(run)),
-                Ok(false) => None,
+            match session.project_workflow_run_for_user(run, owner_user_id, Some(&history)) {
+                Ok(Some(run)) => Some(Ok(run)),
+                Ok(None) => None,
                 Err(error) => Some(Err(error)),
             }
         })

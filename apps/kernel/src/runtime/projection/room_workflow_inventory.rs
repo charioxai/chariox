@@ -39,6 +39,8 @@ pub struct RoomWorkflowSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomWorkflowRunSummary {
     pub run_id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub created_before_ownership_tracking: bool,
     pub endpoint_id: String,
     pub status: WorkflowRunStatus,
     pub can_pause: bool,
@@ -78,10 +80,13 @@ impl RoomWorkflowInventory {
                     .filter(|run| run.workflow_id() == workflow.id() && !run.status().is_terminal())
                     .map(|run| RoomWorkflowRunSummary {
                         run_id: run.id().to_string(),
+                        created_before_ownership_tracking: run.created_before_ownership_tracking(),
                         endpoint_id: run.endpoint_id().to_string(),
                         status: run.status(),
-                        can_pause: run.status() != WorkflowRunStatus::Paused,
-                        can_resume: run.status() == WorkflowRunStatus::Paused
+                        can_pause: !run.created_before_ownership_tracking()
+                            && run.status() != WorkflowRunStatus::Paused,
+                        can_resume: !run.created_before_ownership_tracking()
+                            && run.status() == WorkflowRunStatus::Paused
                             && run.node_runs().iter().any(|node| {
                                 node.status() == WorkflowNodeRunStatus::Stopped
                                     && node.completion().is_none()
@@ -90,7 +95,7 @@ impl RoomWorkflowInventory {
                                         .and_then(|envelope| envelope.rendered_prompt())
                                         .is_some()
                             }),
-                        can_stop: true,
+                        can_stop: !run.created_before_ownership_tracking(),
                     })
                     .collect::<Vec<_>>();
                 let paused_count = runs
@@ -223,7 +228,7 @@ mod tests {
                 vec![],
             );
             run.set_status(status);
-            room.create_workflow_run(run);
+            room.create_workflow_run(run.with_creator(Some("fixture-agent".into())));
         }
         let inventory = RoomWorkflowInventory::project(&room, "viewer");
         let workflow = &inventory.workflows[0];

@@ -16,6 +16,7 @@ impl KernelRuntimeOwnedState {
                 let mut sessions = self.session_store.write();
                 let session_before_resume = sessions.get_session(session_id)?;
                 let original = sessions.resolve_workflow_run_ref(session_id, workflow_run_ref)?;
+                self.ensure_workflow_run_has_control_provenance(&session_before_resume, &original)?;
                 // Classify an unsubmitted original entry before publishing the run
                 // as runnable to the owned pump. A concurrent pump admission
                 // afterward must suppress this retry, not turn it into an

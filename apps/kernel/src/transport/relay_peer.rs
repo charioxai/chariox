@@ -111,6 +111,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// (MP-08/MP-09/MP-10/MP-11), and includes main's 101 kernel ownership,
 /// waiting-room and Room workflow contracts (#974). Generated consumers follow
 /// this allocated version.
+/// Version 121 carries the local 513 union, paired display caller normalization and historical workflow read projections (MP-08/MP-10/MP-11).
 /// Version 128 binds owner-managed destinations in context import arm/receipt
 /// shapes to local protocol 520 (landing 2026-10-14; branch-only 117 was never
 /// released; MP-08/MP-11).

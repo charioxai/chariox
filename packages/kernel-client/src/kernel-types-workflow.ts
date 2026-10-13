@@ -1032,6 +1032,7 @@ export type WorkflowFailureEvent = {
 }
 
 export type WorkflowRun = {
+  created_before_ownership_tracking?: boolean
   created_by_agent_id?: string | null
   id: string
   workflow_id: string
@@ -1127,6 +1128,7 @@ export type RoomWorkflowSummary = {
   endpoints: RoomWorkflowEndpointSummary[]
 }
 export type RoomWorkflowRunSummary = {
+  created_before_ownership_tracking?: boolean
   run_id: string
   endpoint_id: string
   status: WorkflowRun["status"]

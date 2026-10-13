@@ -453,16 +453,12 @@ pub(crate) fn redact_response_for_user(
             workflow_runs: workflow_runs
                 .into_iter()
                 .filter_map(|run| {
-                    let visible = workflow_run_context.map_or(Ok(false), |session| {
-                        session.workflow_run_visible_for_user(
-                            &run,
-                            caller_user_id,
-                            workflow_history,
-                        )
+                    let projected = workflow_run_context.map_or(Ok(None), |session| {
+                        session.project_workflow_run_for_user(run, caller_user_id, workflow_history)
                     });
-                    match visible {
-                        Ok(true) => Some(Ok(run)),
-                        Ok(false) => None,
+                    match projected {
+                        Ok(Some(run)) => Some(Ok(run)),
+                        Ok(None) => None,
                         Err(error) => Some(Err(error)),
                     }
                 })
@@ -476,19 +472,14 @@ pub(crate) fn redact_response_for_user(
                         operation: "read workflow run".into(),
                     }
                 })?;
-                if !session.workflow_run_visible_for_user(
-                    &workflow_run,
-                    caller_user_id,
-                    workflow_history,
-                )? {
-                    return Err(DaemonError::OwnershipAccessDenied {
+                session
+                    .project_workflow_run_for_user(workflow_run, caller_user_id, workflow_history)?
+                    .ok_or_else(|| DaemonError::OwnershipAccessDenied {
                         user_id: caller_user_id.into(),
                         owner_user_id: session.owner_user_id().into(),
                         resource: "workflow run".into(),
                         operation: "read workflow run",
-                    });
-                }
-                workflow_run
+                    })?
             },
         },
         LocalDaemonResponse::WorkflowRunCancelled {
@@ -664,7 +655,13 @@ mod tests {
             Vec::new(),
         );
         archived.set_status(WorkflowRunStatus::Completed);
-        (session, active, archived)
+        // These transparent-read fixtures have immutable agent provenance. Legacy
+        // autonomous history needs the configured durable authority instead.
+        (
+            session,
+            active.with_creator(Some("agent-redaction".into())),
+            archived.with_creator(Some("agent-redaction".into())),
+        )
     }
 
     fn redacted_runs_for(
