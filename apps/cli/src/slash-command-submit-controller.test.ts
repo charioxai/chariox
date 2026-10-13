@@ -226,14 +226,18 @@ for (const outcome of ["success", "error", "shared shell"] as const) {
     const controller = createSlashCommandSubmitController(harness.deps)
     const result = controller.submit(submitted, { allowSlashCommandSubmission: true })
     await entered
+    // MP-08 / MP-10 / MP-11: main consumes the submitted command before
+    // awaiting the handler. Completion must not clear the later draft again.
+    assert.equal(harness.clearPromptCount(), 1)
+    assert.equal(harness.commandCenterClearCount(), 1)
     text = "/agent model ctx gpt-6-luna"
     complete()
     assert.equal((await result)?.kind, "agent")
     assert.equal(text, "/agent model ctx gpt-6-luna")
-    assert.equal(harness.clearPromptCount(), 0)
-    assert.equal(harness.commandCenterClearCount(), 0)
-    assert.deepEqual(harness.promptHistoryIndexes(), [])
-    assert.deepEqual(harness.promptHistoryDrafts(), [])
+    assert.equal(harness.clearPromptCount(), 1)
+    assert.equal(harness.commandCenterClearCount(), 1)
+    assert.deepEqual(harness.promptHistoryIndexes(), [null])
+    assert.deepEqual(harness.promptHistoryDrafts(), [null])
     if (outcome === "error") assert.equal(harness.footerMessages().at(-1)?.message, "account failed")
   })
 }
