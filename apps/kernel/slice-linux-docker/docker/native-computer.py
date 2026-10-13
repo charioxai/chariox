@@ -66,10 +66,13 @@ def input_action(action, processes=None, connection=None):
             admit_clipboard()
     if kind == 'text':
         # MP-08/MP-10/MP-11: committed human text is already bounded/ordered
-        # by the owned channel. Keep per-key X sync and restoration, while
-        # agent/Vault paths retain their pacing and fresh focus/clipboard fences.
+        # by the owned channel. Unicode overlays still need the existing
+        # delivery pace before recycling/restoring their two safe keycodes;
+        # X sync alone does not mean Chromium has consumed each key event.
+        # Agent/Vault paths retain their pacing and fresh focus/clipboard fences.
         if connection is not None and processes is None:
-            keyboard.type_text(action['text'],pace_seconds=0,connection=connection)
+            pace = 0 if action['text'].isascii() else 0.04
+            keyboard.type_text(action['text'],pace_seconds=pace,connection=connection)
         else:
             keyboard.type_text(action['text'],before_press=guard)
         return
