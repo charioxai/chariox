@@ -260,3 +260,109 @@ fn native_claude_stale_stop_cannot_settle_a_successor() {
         .unwrap();
     assert_eq!(f.active().unwrap().id(), f.prompt.id());
 }
+
+#[test]
+fn native_claude_early_cancel_waits_for_an_official_response_before_pty_interrupt() {
+    let mut f = CancellationFixture::new(2_501);
+    f.process();
+    assert!(
+        f.app
+            .active_turns
+            .get(f.run.id())
+            .unwrap()
+            .interruption_retry_sent_at_ms
+            .is_none(),
+        "no early physical Esc before an official response"
+    );
+    assert!(
+        f.active().is_some_and(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling),
+        "before an official assistant response, keep the hook cancellation pending instead of sending an unacknowledgeable early Esc"
+    );
+    assert_eq!(
+        f.app.providers.get_run(f.run.id()).unwrap().state(),
+        crate::provider::ProviderRunState::Running
+    );
+}
+
+#[test]
+fn native_claude_response_readiness_requires_fresh_official_assistant_output() {
+    for (fresh, timestamped, synthetic) in [
+        (true, true, false),
+        (false, true, false),
+        (true, false, false),
+        (true, true, true),
+    ] {
+        let mut f = CancellationFixture::new(0);
+        let transcript = f.root.0.join("response.jsonl");
+        let mut response = serde_json::json!({"type":"assistant", "uuid":"response", "message":{"id":"response-message", "model":if synthetic { "<synthetic>" } else { "claude-haiku" }, "role":"assistant", "stop_reason":"tool_use", "content":[{"type":"thinking", "thinking":"Reviewing public documentation"}]}});
+        if timestamped {
+            let at = if fresh {
+                f.prompt.created_at_ms()
+            } else {
+                f.prompt.created_at_ms().saturating_sub(1)
+            };
+            response["timestamp"] = chrono::DateTime::from_timestamp_millis(at as i64)
+                .unwrap()
+                .to_rfc3339()
+                .into();
+        }
+        fs::write(&transcript, response.to_string() + "\n").unwrap();
+        fs::write(f.root.0.join("events.jsonl"), serde_json::json!({"hook_event_name":"SessionStart", "transcript_path":transcript.display().to_string()}).to_string()+"\n").unwrap();
+        f.process();
+        let turn = f.app.active_turns.get(f.run.id()).unwrap();
+        assert_eq!(
+            turn.native_response_started,
+            fresh && timestamped && !synthetic
+        );
+        assert!(
+            !turn.native_interruption_confirmed,
+            "response readiness never acknowledges cancellation"
+        );
+        assert_eq!(
+            f.active().unwrap().status(),
+            crate::session::PromptStatus::Cancelling
+        );
+    }
+}
+
+#[test]
+fn native_claude_response_readiness_is_prompt_scoped() {
+    let f = CancellationFixture::new(0);
+    f.app
+        .active_turns
+        .note_native_response_started(f.run.id(), "foreign-prompt");
+    assert!(
+        !f.app
+            .active_turns
+            .get(f.run.id())
+            .unwrap()
+            .native_response_started
+    );
+    f.app
+        .active_turns
+        .note_native_response_started(f.run.id(), f.prompt.id());
+    assert!(
+        f.app
+            .active_turns
+            .get(f.run.id())
+            .unwrap()
+            .native_response_started
+    );
+}
+
+#[test]
+fn native_claude_abort_replay_cannot_extend_the_hard_deadline() {
+    let mut f = CancellationFixture::new(10_001);
+    f.app
+        .active_turns
+        .mark_interruption_requested(f.run.id(), f.prompt.id(), unix_epoch_ms());
+    f.process();
+    assert!(
+        f.active().is_none(),
+        "abort replay must preserve the first cancellation deadline"
+    );
+    assert_eq!(
+        f.settled().settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Failed
+    );
+}

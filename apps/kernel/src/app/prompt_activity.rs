@@ -130,6 +130,7 @@ pub(crate) struct ActiveTurnState {
     pub(crate) interruption_requested_at_ms: Option<u64>,
     pub(crate) interruption_retry_sent_at_ms: Option<u64>,
     pub(crate) native_interruption_confirmed: bool,
+    pub(crate) native_response_started: bool,
     pub(crate) native_prompt_hook_request_id: Option<String>,
     // A durable completion failed after authoritative completion was accepted.
     // Unlike assistant-message completion, this allows retry without another
@@ -161,6 +162,7 @@ impl ActiveTurnState {
             interruption_requested_at_ms: None,
             interruption_retry_sent_at_ms: None,
             native_interruption_confirmed: false,
+            native_response_started: false,
             native_prompt_hook_request_id: None,
             completion_retry_observed_at_ms: None,
             completion_retry_attempt: 0,
@@ -258,6 +260,19 @@ impl ActiveTurnStore {
         }
     }
 
+    pub(crate) fn note_native_response_started(&self, provider_run_id: &str, prompt_id: &str) {
+        if let Some(turn) = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(provider_run_id)
+        {
+            if turn.prompt_id == prompt_id {
+                turn.native_response_started = true;
+            }
+        }
+    }
+
     pub(crate) fn bind_native_prompt_hook_request(
         &self,
         provider_run_id: &str,
@@ -289,7 +304,8 @@ impl ActiveTurnStore {
             .get_mut(provider_run_id)
         {
             if turn.prompt_id == prompt_id {
-                turn.interruption_requested_at_ms = Some(requested_at_ms);
+                turn.interruption_requested_at_ms
+                    .get_or_insert(requested_at_ms);
             }
         }
     }
@@ -484,6 +500,7 @@ fn merge_active_turn_start(
             .interruption_retry_sent_at_ms
             .or(existing.interruption_retry_sent_at_ms);
         incoming.native_interruption_confirmed |= existing.native_interruption_confirmed;
+        incoming.native_response_started |= existing.native_response_started;
         if existing.completion_retry_observed_at_ms.is_some() {
             incoming.completion_retry_observed_at_ms = existing.completion_retry_observed_at_ms;
             incoming.completion_retry_attempt = existing.completion_retry_attempt;

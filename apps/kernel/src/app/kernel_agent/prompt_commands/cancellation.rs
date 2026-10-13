@@ -97,7 +97,7 @@ impl<'a> KernelAgentService<'a> {
                 // normal liveness reconciliation finalizes this cancellation.
                 crate::app::provider_runtime::ProviderProcessTracker::new(self.app)
                     .remove_run(&provider_run_id)?;
-            } else {
+            } else if !native_claude {
                 crate::app::terminal_input::ProviderTerminalInput::new(self.app)
                     .send_provider_input(
                         session_id,

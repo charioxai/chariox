@@ -232,6 +232,13 @@ pub(super) fn resolve_pending_cancellation(
         )?;
         return Ok(());
     }
+    // MP-08 / MP-10 / MP-11: an early Esc can restore Claude's draft without
+    // an official interruption receipt. Let the pending hook decline admission,
+    // or wait for a fresh protected assistant record before the physical Esc.
+    // This is interrupt readiness, never cancellation acknowledgement.
+    if !turn.native_response_started {
+        return Ok(());
+    }
     if now.saturating_sub(
         turn.interruption_retry_sent_at_ms
             .unwrap_or(requested_at_ms),

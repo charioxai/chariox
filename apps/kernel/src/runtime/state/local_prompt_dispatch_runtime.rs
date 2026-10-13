@@ -4640,13 +4640,17 @@ impl KernelRuntimeState {
                 abort_input,
             );
             self.with_app_side_effect(|app| {
-                app.write_provider_pty_input_for_runtime(&dispatch.provider_run_id, abort_input)?;
                 if crate::provider::provider_run_is_claude_native_tui(&provider_run) {
                     app.active_turns.mark_interruption_requested(
                         &dispatch.provider_run_id,
                         &dispatch.prompt_id,
                         requested_at_ms,
                     );
+                } else {
+                    app.write_provider_pty_input_for_runtime(
+                        &dispatch.provider_run_id,
+                        abort_input,
+                    )?;
                 }
                 Ok(())
             })

@@ -903,6 +903,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .flatten()
             })
             .map(|prompt| prompt.id().to_string());
+        if let Some(prompt_id) = active_prompt_id.as_deref() {
+            if minimum_timestamp_ms
+                .is_some_and(|minimum| drain.response_started_at_ms.is_some_and(|at| at >= minimum))
+            {
+                self.app
+                    .active_turns
+                    .note_native_response_started(provider_run_id, prompt_id);
+            }
+        }
         acknowledge_claude_headless_steering_enqueue(
             context_file,
             active_prompt_id.as_deref(),

@@ -38,6 +38,7 @@ pub(super) struct ClaudeTranscriptDrain {
     pub(super) terminal_assistant_message_ids: Vec<String>,
     pub(super) terminal_failure: Option<String>,
     pub(super) interrupted_at_ms: Option<u64>,
+    pub(super) response_started_at_ms: Option<u64>,
     pub(super) enqueued_prompts: Vec<String>,
     pub(super) session_id: Option<String>,
     pub(super) model: Option<String>,
@@ -167,6 +168,18 @@ pub(super) fn drain_claude_transcript_raw_since(
         }
         drain.chunks.extend(chunks);
         if let Some(message_id) = claude_transcript_assistant_message_id(&value) {
+            if value
+                .get("message")
+                .and_then(|message| message.get("model"))
+                .and_then(Value::as_str)
+                != Some("<synthetic>")
+            {
+                if let Some(at) = claude_transcript_timestamp_ms(&value) {
+                    drain.response_started_at_ms =
+                        Some(drain.response_started_at_ms.unwrap_or(0).max(at));
+                }
+            }
+
             if cursor.seen_assistant_message_ids.insert(message_id.clone()) {
                 drain.assistant_message_ids.push(message_id.clone());
                 if claude_transcript_assistant_turn_is_terminal(&value) {
