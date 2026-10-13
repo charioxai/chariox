@@ -2,10 +2,10 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 export const validOwnedPid = pid => Number.isSafeInteger(pid) && pid > 1 && pid <= 2147483647;
-async function identity(pid) {
+async function identity(pid, read = readFile) {
   if (!validOwnedPid(pid)) return null;
   try {
-    const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+    const stat = await read(`/proc/${pid}/stat`, 'utf8');
     const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
     return { pid, parent: Number(fields[1]), started: fields[19], state: fields[0] };
   } catch (error) { if (error.code === 'ENOENT' || error.code === 'ESRCH') return null; throw error; }
@@ -14,8 +14,8 @@ export async function processIdentity(pid, parent = process.pid) {
   const item = await identity(pid);
   return item?.parent === parent ? item : null;
 }
-export async function descendants(roots) {
-  const processes = (await Promise.all((await readdir('/proc')).filter(name => /^\d+$/.test(name)).map(name => identity(Number(name))))).filter(Boolean);
+export async function descendants(roots, { read = readFile, list = readdir } = {}) {
+  const processes = (await Promise.all((await list('/proc')).filter(name => /^\d+$/.test(name)).map(name => identity(Number(name), read)))).filter(Boolean);
   const owned = new Map(roots.filter(item=>processes.some(current=>current.pid===item.pid && current.started===item.started && (current.parent===item.parent || (item.parent>1 && current.parent===1)))).map(item => [item.pid, item]));
   for (let changed = true; changed;) {
     changed = false;
@@ -47,3 +47,6 @@ export async function isOwnedAlive(item) {
   const current=await identity(item?.pid);
   return Boolean(current && current.started===item.started && current.state!=='Z');
 }
+
+// MP-08/MP-10/MP-11: RED observation-only API initially uses global discovery.
+export const observedDescendants = descendants;
