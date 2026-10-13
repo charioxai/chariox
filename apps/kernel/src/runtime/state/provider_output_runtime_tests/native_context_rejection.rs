@@ -238,6 +238,15 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
         provider_run_id: run.id().into(),
     };
     let runtime = owned_runtime_state(&app).await;
+    // Native hook prompts use ordinary account admission too. Authenticate only
+    // this disposable fixture's Claude profile, never an ambient builder login.
+    crate::test_support::authenticate_provider_account(
+        &runtime.owned.provider_account_profiles,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        "claude",
+        "default",
+    )
+    .unwrap();
     fs::write(&events, serde_json::json!({"hook_event_name":"UserPromptSubmit", "prompt":"first native request", "hook_context_request_id":"failed-request", "hook_context_deadline_ms":crate::session::unix_epoch_ms() + 5000}).to_string()).unwrap();
     if subscription && before_submit {
         let mut locked = app.lock().await;
