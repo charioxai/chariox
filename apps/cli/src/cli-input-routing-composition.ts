@@ -240,6 +240,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   let handleSharedShellCommand = async (_rawCommand: string): Promise<boolean> => false
   let pendingProjectRenameId: string | null = null
   const slashCommandSubmitController = createSlashCommandSubmitController({
+    getPromptText: () => deps.promptTextController.currentText(),
     isAttached: deps.isAttached,
     getSessionId: () => deps.sessionState().id,
     recordPromptAreaHistoryEntry: deps.recordPromptAreaHistoryEntry,
