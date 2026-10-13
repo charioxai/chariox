@@ -29,7 +29,7 @@ export type ProviderLoginStripState = {
 export type ProviderLoginInteractionControllerDeps = {
   getKernelId: () => Promise<string>
   getLoginStatus: (loginId: string) => Promise<ProviderLoginStatus>
-  getAuthStatus: (provider: string, accountProfile: string) => Promise<ProviderAuthStatus>
+  getAuthStatus: (provider: string, accountProfile: string, mode: "saved") => Promise<ProviderAuthStatus>
   accountLabel: (provider: string, accountProfile: string) => string
   localDesktop: () => boolean
   openUrl: (url: string) => Promise<boolean>
@@ -74,7 +74,7 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
     clearTimer(login.timer)
     const label = deps.accountLabel(ref.provider, ref.account_profile)
     if (status.state === "succeeded") {
-      const auth = await deps.getAuthStatus(ref.provider, ref.account_profile).catch(() => null)
+      const auth = await deps.getAuthStatus(ref.provider, ref.account_profile, "saved").catch(() => null)
       const message = `Signed in to ${providerLoginName(ref.provider)}${auth?.identity_summary ? ` as ${auth.identity_summary}` : ""} · saved to ${label}`
       deps.appendNotice(message)
       deps.flashFooter(message, "info")

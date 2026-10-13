@@ -1,5 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { getProviderAuthStatus } from "./provider-api.js"
+import type { LocalIpcClient } from "./ipc.js"
 import type { ProviderLoginStatus, RuntimeInteraction } from "./cli-types.js"
 import { createProviderLoginInteractionController, type ProviderLoginInteractionControllerDeps } from "./provider-login-interaction-controller.js"
 
@@ -229,3 +231,43 @@ for (const kernelId of ["fleet", "worker"]) {
     } finally { h.controller.dispose() }
   })
 }
+
+test("MP-08/MP-10/MP-11 post-login CLI status reads the kernel's saved observation without verification", async () => {
+  const requests: unknown[] = []
+  const profile = { provider: "claude", profile_id: status("succeeded").account_profile, auth_state: "authenticated", identity_summary: "miguel@example.org", detected_version: "2.1.296" }
+  const client = {
+    send: async (request: unknown) => {
+      requests.push(request)
+      return { ProviderAccountProfile: { profile } }
+    },
+  } as unknown as LocalIpcClient
+  const h = harness([status("succeeded")], {
+    getAuthStatus: (...args) => getProviderAuthStatus(client, ...args),
+  })
+  try {
+    h.controller.stripState(interaction)
+    await h.tick()
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+    assert.deepEqual(requests, [{ GetProviderAccountProfile: { provider: "claude", account_profile: profile.profile_id } }])
+    assert.deepEqual(h.notices, ["Signed in to Claude as miguel@example.org · saved to disposable-claude"])
+    assert.equal(h.timers.length, 0)
+  } finally { h.controller.dispose() }
+})
+
+
+test("MP-08/MP-10/MP-11 unavailable saved login observation never falls back to verification", async () => {
+  const requests: unknown[] = []
+  const client = {
+    send: async (request: unknown) => { requests.push(request); throw new Error("kernel disconnected") },
+  } as unknown as LocalIpcClient
+  const h = harness([status("succeeded")], {
+    getAuthStatus: (...args) => getProviderAuthStatus(client, ...args),
+  })
+  try {
+    h.controller.stripState(interaction)
+    await h.tick()
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+    assert.deepEqual(requests, [{ GetProviderAccountProfile: { provider: "claude", account_profile: status("succeeded").account_profile } }])
+    assert.deepEqual(h.notices, ["Signed in to Claude · saved to disposable-claude"])
+  } finally { h.controller.dispose() }
+})

@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { LocalIpcClient } from "./ipc.js"
-import { getProviderCatalog, getProviderCommandCatalogs, runProviderSetupToken } from "./provider-api.js"
+import { getProviderAuthStatus, getProviderCatalog, getProviderCommandCatalogs, runProviderSetupToken } from "./provider-api.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 
@@ -94,6 +94,16 @@ function clientRejecting(error: Error): LocalIpcClient {
     },
   } as unknown as LocalIpcClient
 }
+
+test("MP-08/MP-10/MP-11 explicit Status still requests verification", async () => {
+  const requests: unknown[] = []
+  const status = { provider: "claude", auth_state: "authenticated", account_profile: "work", identity_summary: "user@example.org", login_hint: null, detected_version: "2.1.296" }
+  const client = {
+    send: async (request: unknown) => { requests.push(request); return { ProviderAuthStatus: { status } } },
+  } as unknown as LocalIpcClient
+  assert.deepEqual(await getProviderAuthStatus(client, "claude", "work"), status)
+  assert.deepEqual(requests, [{ GetProviderAuthStatus: { provider: "claude", account_profile: "work" } }])
+})
 
 // MP-08/MP-11: a main410 daemon rejects G2's run field with an upgrade diagnostic.
 test("setup-token run names protocol411 when the daemon lacks its run field", async () => {
