@@ -125,6 +125,7 @@ impl KernelRuntimeOwnedState {
         Ok(request)
     }
 
+    #[cfg(test)]
     pub(super) fn prepare_leased_provider_launch_request(
         &self,
         request: crate::provider::LaunchProviderRequest,
