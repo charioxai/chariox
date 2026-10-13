@@ -950,7 +950,7 @@ exact fault point before/after commit and first failing seam on base.
 | Provider | CX = Codex, OC = OpenCode, CL = Claude. 1. Select a product-linked account and pin official harness version. 2. Launch the selected real provider through the built kernel; no SDK, stub or alternate runtime. |
 | Client | W = web, T = local TUI, R = remote TUI, B = combined web + local + remote TUI. 1. Attach built real client(s), web with real entry/flags in a real desktop browser via Playwright at DPR 1 and 2, TUI binary via PTY on a real machine. 2. Drive prompts and owner interactions through that UI over the hosted relay. 3. Reconnect and inspect the same task. B rotates prompt/answering clients in both directions and asserts every projection; other cells drive only their selected client, plus the existing real browser attachment at both densities when pixels are needed. |
 | Placement | L = provider on home kernel; R = leased provider on a distinct real worker kernel through the hosted relay; S = provider in a product-provisioned Docker slice selected by `slice_ref`, attached through home admission. 1. Provision lane-owned topology through product commands on real machines. 2. Verify execution and home/worker/run/lease bindings; L still uses the hosted client relay path. 3. Keep the user-domain Chromium outside the slice. All 12 PRs affect provider/task paths, so S is relevant to each; include worker-loss subcases on S. |
-| Environment | O = ordinary kernel; M = same reviewed runtime on a fresh/fresh-equivalent managed Path-1 host. 1. Pin OSS/Cloud/binary/image identities. 2. Run with normal product launch, compare O/M outcomes after excluding only signed deployment and mandatory shutdown. M requires coordinator-provided authorized infrastructure; this study authorizes no provisioning/deployment. |
+| Machine | O = ordinary machine (the user's own kernel); M = managed machine running the same reviewed runtime on a fresh/fresh-equivalent Path-1 host. 1. Pin OSS/Cloud/binary/image identities. 2. Run with normal product launch, compare O/M outcomes after excluding only signed deployment and mandatory shutdown. M requires coordinator-provided authorized infrastructure; this study authorizes no provisioning/deployment. |
 
 **P0 — owner prerequisites shared by every A/I/FB matrix:** product-linked
 real accounts and available quota for all three official providers; paired
@@ -1276,7 +1276,7 @@ close FB, I or any MP gate; every missing live resource/action remains explicit.
 
 Run I01–I03 on the exact final paired OSS/Cloud build, after PRs 1–10 + 12, then
 again after retirement. IDs are `I{01..03}-{provider}-{client}-{placement}-
-{environment}-{before-retirement|after-retirement}` over every axis above
+{machine}-{before-retirement|after-retirement}` over every axis above
 (72 cells per scenario per integration phase). Steps/evidence/results expand
 exactly like A cells. Mix all three
 providers in delegation chains, rotating the selected provider as root;
