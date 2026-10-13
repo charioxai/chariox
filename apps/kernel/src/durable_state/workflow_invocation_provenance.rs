@@ -1,4 +1,4 @@
-//! MP-08/MP-10/MP-11: immutable human invocation provenance, kernel-private.
+//! MP-08/MP-10/MP-11: immutable user-owned invocation provenance, kernel-private.
 use super::DurableKernelStateStore;
 use crate::error::DaemonError;
 use rusqlite::{params, OptionalExtension, Transaction};
