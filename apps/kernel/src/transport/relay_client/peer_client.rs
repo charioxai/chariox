@@ -492,7 +492,7 @@ pub async fn enqueue_peer_request_via_connected_relay_with_timeout(
 
 /// MP-08/MP-11: a managed slice already holds its provisioner-bound HOME key;
 /// its slice runtime token is not admitted for relay metadata discovery.
-fn managed_slice_home_public_key(
+pub(crate) fn managed_slice_home_public_key(
     config: &crate::config::DaemonConfig,
     target_ref: &str,
 ) -> Option<String> {

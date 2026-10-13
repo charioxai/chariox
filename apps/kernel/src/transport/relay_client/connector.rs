@@ -1254,8 +1254,8 @@ async fn run_daemon_relay_connector_inner(
                                                 "phase": "heartbeat",
                                             }),
                                         );
+                                        // Keep heartbeats flowing while in-flight work drains.
                                         let _ = reconnect_gate.request_reconnect(&outgoing_tx, reason);
-                                        continue;
                                     }
                                 }
                                 if heartbeat_registration.is_some() {

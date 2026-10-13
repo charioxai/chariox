@@ -36,7 +36,8 @@ pub(super) enum RelayReconnectDecision {
 impl RelayReconnectGate {
     fn begin_daemon_request(&self) -> bool {
         let mut state = self.state.lock().expect("relay reconnect gate poisoned");
-        if state.closing {
+        // A pending reconnect admits no new work, so in-flight requests drain.
+        if state.closing || state.pending_reconnect.is_some() {
             return false;
         }
         state.active_daemon_requests = state.active_daemon_requests.saturating_add(1);
@@ -113,14 +114,14 @@ pub(super) async fn handle_incoming_envelope(
         } => {
             if !reconnect_gate.begin_daemon_request() {
                 // MP-08/MP-10/MP-11: never leave a new client request hanging
-                // behind the retained bulk reply. Reuse the retryable offline
-                // refusal already understood by local/remote/browser clients.
+                // behind the retained bulk reply. Reuse the relay's own
+                // not-admitted code, which clients already retry.
                 outgoing_tx
                     .send(RelayEnvelope::DaemonResponse {
                         relay_request_id,
                         encrypted_response: None,
                         error: Some(super::request_errors::relay_error(
-                            "daemon_offline",
+                            "target_not_connected",
                             "kernel relay connection is reconnecting",
                             true,
                         )),
@@ -265,7 +266,7 @@ pub(super) async fn handle_incoming_envelope(
                         relay_request_id,
                         encrypted_response: None,
                         error: Some(super::request_errors::relay_error(
-                            "daemon_offline",
+                            "target_not_connected",
                             "kernel relay connection is reconnecting",
                             true,
                         )),
