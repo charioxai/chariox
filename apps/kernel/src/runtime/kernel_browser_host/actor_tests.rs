@@ -1119,10 +1119,10 @@ while IFS= read -r request; do
  *'"op":"state"'*)
    if test -f "$root/seeded"; then
      printf 'started\n' > "$root/state"
-     (while ! test -f "$root/release"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"generation":1,"observation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id") &
+     (while ! test -f "$root/release"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"generation":1,"_observation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id") &
    else
      printf 'seeded\n' > "$root/seeded"
-     printf '{"id":%s,"ok":true,"result":{"generation":1,"observation":2,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id"
+     printf '{"id":%s,"ok":true,"result":{"generation":1,"_observation":2,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id"
    fi ;;
  *'"op":"input"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"input_completed":true}}\n' "$id" ;;
  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id";exit 0 ;;
@@ -1163,7 +1163,7 @@ done
 // post-dispatch reconcile) cannot roll the ledger back to the older document.
 #[test]
 fn mp11_older_controller_observation_does_not_replace_a_newer_one() {
-    let state = |observation: u64, document: &str| json!({"generation":1,"observation":observation,
+    let state = |observation: u64, document: &str| json!({"generation":1,"_observation":observation,
         "tabs":[{"tab_id":"host-tab-a","document_id":document}]});
     let current = |document: &str| json!({"tab_id":"host-tab-a","generation":1,"document_id":document});
     let mut model = crate::runtime::kernel_browser_actors::KernelBrowserActors::default();
@@ -1172,4 +1172,36 @@ fn mp11_older_controller_observation_does_not_replace_a_newer_one() {
     assert!(model.input_is_current(&current("after-click")));
     model.reconcile(&state(3, "next")).unwrap();
     assert!(model.input_is_current(&current("next")));
+}
+
+// MP-08/MP-11: the controller-internal observation order must not cost a reply its own
+// `observation` payload (a Notes selection carries one).
+#[test]
+fn mp08_note_selection_reply_keeps_its_observation_payload() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-mp08-note-observation-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"op":"note_selection"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"observation":{"quote":"Ada"}}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id";exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
+    let reply = host.protected_request("alice", None, "host.browser",
+        json!({"op":"note_selection","tab_id":"host-tab-a","generation":1}),
+        json!({"values":[],"targets":[],"unknown":false}));
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(reply.unwrap()["observation"]["quote"], "Ada");
 }

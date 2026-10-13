@@ -582,7 +582,7 @@ impl KernelBrowserHost {
                 .reconcile(state)?;
             // The observation order is controller-internal; replies keep their shape.
             if let Some(state) = state.as_object_mut() {
-                state.remove("observation");
+                state.remove("_observation");
             }
         }
         if let (Some(admission), Ok(payload)) = (admission, &mut result) {

@@ -227,7 +227,7 @@ export class KernelBrowserHost {
   // MP-08/MP-10/MP-11: reconciles can overlap (a state poll beside input). They
   // apply in start order: an older observation reports the newer current tabs.
   tabState() {
-    return redactObservation({ state: "ready", generation: this.generation, observation: this.observed,
+    return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed,
       tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport }, this.protection.values);
   }
   async reconcile() {

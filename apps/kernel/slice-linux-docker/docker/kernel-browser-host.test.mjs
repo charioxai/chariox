@@ -858,7 +858,7 @@ test("MP-08/MP-10/MP-11 a state poll in flight does not hold input", { timeout: 
     release.resolve();
     const polled = await state;
     assert.equal(polled.ok, true);
-    assert.ok(polled.result.observation <= typed.result.observation, "the later input observation stays the newest");
+    assert.ok(polled.result._observation <= typed.result._observation, "the later input observation stays the newest");
   } finally { release.resolve(); input.end(); await running; lines.close(); output.end(); }
 }));
 
@@ -878,7 +878,7 @@ test("MP-11 an older tab observation never replaces a newer one", () => using(as
   release.resolve();
   const stale = await older;
   assert.equal(newer.tabs.length, 2);
-  assert.equal(stale.observation, newer.observation, "a stale observation reports the current tabs");
+  assert.equal(stale._observation, newer._observation, "a stale observation reports the current tabs");
   assert.equal(stale.tabs.length, 2);
   assert.equal(host.tabs.size, 2);
   assert.ok(host.tabs.has(opened.tab_id));
