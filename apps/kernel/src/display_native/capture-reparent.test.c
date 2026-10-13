@@ -47,6 +47,10 @@ int main(void) {
  insets[0]=5;XChangeProperty(d,client,XInternAtom(d,"_GTK_FRAME_EXTENTS",False),XA_CARDINAL,32,PropModeReplace,(unsigned char*)insets,4);XSync(d,False);
  assert(cx_capture_read(capture,pixels,bounds)==-1);assert(pointer_target(capture,2,3,&px,&py)==-1);
  XFreeGC(d,gc);cx_capture_close(capture);
+ insets[0]=4;insets[3]=65;XChangeProperty(d,client,XInternAtom(d,"_GTK_FRAME_EXTENTS",False),XA_CARDINAL,32,PropModeReplace,(unsigned char*)insets,4);XSync(d,False);
+ assert(!cx_capture_open_mode(pid,128,128,1));
+ insets[3]=4;XChangeProperty(d,client,XInternAtom(d,"_GTK_FRAME_EXTENTS",False),XA_CARDINAL,32,PropModeReplace,(unsigned char*)insets,3);XSync(d,False);
+ assert(!cx_capture_open_mode(pid,128,128,1));
 #endif
  XDestroyWindow(d,frame);XCloseDisplay(d);
  puts("MP-08/MP-10/MP-11 reparented owned client capture, root visibility and foreign/ambiguous refusal PASS");

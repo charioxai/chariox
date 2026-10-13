@@ -6,12 +6,13 @@ import unittest
 from pathlib import Path
 
 
-def selector(tree, owners, sizes):
+def selector(tree, owners, sizes, insets=None):
     source = ast.parse(Path(__file__).with_name('kernel-browser-xshm.py').read_text())
     function = next(node for node in source.body if isinstance(node, ast.FunctionDef) and node.name == 'owned_windows')
     context = {'children': lambda _display, parent: tree.get(parent, []),
                'pid_of': lambda _display, window: owners.get(window),
-               'dims': lambda _display, window: sizes.get(window, (1, 1))}
+               'dims': lambda _display, window: sizes.get(window, (1, 1)),
+               'frame_insets': lambda _display, window: (insets or {}).get(window, [0,0,0,0])}
     exec(compile(ast.Module(body=[function], type_ignores=[]), 'owned_windows', 'exec'), context)
     return lambda: context['owned_windows'](None, 0, 42, 128, 128)
 
@@ -28,3 +29,7 @@ class NativeWindowSelection(unittest.TestCase):
         for tree in [{node: [node+1] for node in range(10)}, {0: list(range(1, 2050))}]:
             with self.assertRaisesRegex(ValueError, 'tree bound'):
                 selector(tree, {}, {})()
+
+    def test_client_frame_insets_preserve_the_exact_viewport(self):
+        self.assertEqual(selector({0:[1]}, {1:42}, {1:(136,147)}, {1:[4,4,0,4]})(), [1])
+        self.assertEqual(selector({0:[1]}, {1:42}, {1:(136,147)}, {1:[3,4,0,4]})(), [])

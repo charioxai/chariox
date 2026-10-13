@@ -27,7 +27,8 @@ struct Capture {
     Damage damage;
     XImage *image;
     XShmSegmentInfo shm;
-    int attached, event, width, height, window_height, offset, redirected, redirect_mode, desktop;
+    int attached, event, width, height, window_width, window_height, xoffset, offset, redirected, redirect_mode, desktop;
+    unsigned long insets[4];
     unsigned long owner;
     uint8_t *previous;
     /* The slot holding the latest readback. Only this worker writes slots,
@@ -54,6 +55,23 @@ static unsigned long window_pid(Display *d, Window w) {
 static int dimensions(Display *d, Window w, unsigned *width, unsigned *height) {
     Window root; int x,y; unsigned border,depth;
     return XGetGeometry(d,w,&root,&x,&y,width,height,&border,&depth);
+}
+/* MP-08/MP-10/MP-11: Chromium publishes its client-side frame/shadow
+ * extents. They select a bounded candidate crop, proved by CDP attestation
+ * before admission and re-checked before every readback and native input. */
+static int frame_insets(Display *d,Window w,unsigned long insets[4]) {
+    Atom actual;int format;unsigned long count,remaining;unsigned char *data=NULL;
+    memset(insets,0,4*sizeof(*insets));
+    int status=XGetWindowProperty(d,w,XInternAtom(d,"_GTK_FRAME_EXTENTS",False),0,4,False,XA_CARDINAL,&actual,&format,&count,&remaining,&data);
+    int valid=status==Success&&(actual==None||(actual==XA_CARDINAL&&format==32&&count==4&&!remaining&&data));
+    if(valid&&actual!=None)for(int i=0;i<4;i++){insets[i]=((unsigned long*)data)[i];if(insets[i]>64)valid=0;}
+    if(data)XFree(data);
+    return valid;
+}
+static int bound_surface(struct Capture *c) {
+    unsigned w,h;unsigned long insets[4];
+    if(!dimensions(c->display,c->window,&w,&h)||w!=(unsigned)c->window_width||h!=(unsigned)c->window_height)return 0;
+    return c->desktop||(window_pid(c->display,c->window)==c->owner&&frame_insets(c->display,c->window,insets)&&!memcmp(insets,c->insets,sizeof(insets)));
 }
 void cx_capture_close(struct Capture *c) {
     if (!c) return;
@@ -98,11 +116,13 @@ static void find_client_windows(struct ClientSearch *search,Window parent,unsign
     if(count>search->remaining||(count&&depth>=8)){search->failed=1;if(children)XFree(children);return;}
     search->remaining-=count;
     for(unsigned i=0;i<count&&!search->failed;i++) {
-        unsigned w,h;
-        if(window_pid(search->capture->display,children[i])==search->capture->owner&&dimensions(search->capture->display,children[i],&w,&h)) {
+        unsigned w,h;unsigned long insets[4];
+        if(window_pid(search->capture->display,children[i])==search->capture->owner) {
+            if(!dimensions(search->capture->display,children[i],&w,&h)||!frame_insets(search->capture->display,children[i],insets)){search->failed=1;break;}
             if(search->owned++<8){size_t n=strlen(search->seen);snprintf(search->seen+n,sizeof(search->seen)-n,"%s%ux%u",n?",":"",w,h);}
-            if(w==(unsigned)search->capture->width&&h>=(unsigned)search->capture->height&&h-search->capture->height<=400) {
-                search->capture->window=children[i];search->capture->window_height=h;search->found++;
+            if(w==(unsigned)search->capture->width+insets[0]+insets[1]&&h>=(unsigned)search->capture->height+insets[2]+insets[3]&&h-search->capture->height<=400) {
+                search->capture->window=children[i];search->capture->window_width=w;search->capture->window_height=h;
+                memcpy(search->capture->insets,insets,sizeof(insets));search->found++;
                 continue; /* Its nested controls are part of this same client. */
             }
         }
@@ -123,7 +143,7 @@ struct Capture *cx_capture_open_mode(unsigned long owner, int width, int height,
         unsigned w,h;
         c->desktop=1;c->window=DefaultRootWindow(c->display);
         if (!dimensions(c->display,c->window,&w,&h) || w!=(unsigned)width || h!=(unsigned)height) {open_refused("desktop_geometry");goto fail;}
-        c->window_height=height;c->pixmap=c->window;
+        c->window_width=width;c->window_height=height;c->pixmap=c->window;
         goto image;
     }
     find_client_windows(&search,DefaultRootWindow(c->display),0);
@@ -132,7 +152,7 @@ struct Capture *cx_capture_open_mode(unsigned long owner, int width, int height,
         fprintf(stderr,"MD-DISPLAY: native geometry requested %dx%d owned %s\n",width,height,search.owned?search.seen:"none");
         open_refused(search.found?"window_ambiguous":"window_not_found");goto fail;
     }
-    c->offset=c->window_height-height;
+    c->xoffset=c->insets[0];c->offset=c->window_height-c->insets[3]-height;
     /* MP-08/MP-10: the shared Computer desktop presents the root, so its
      * browser client must remain automatically composited while captured. */
     if(!(automatic?redirect_window(c,CompositeRedirectAutomatic):
@@ -171,7 +191,7 @@ int cx_capture_damage(struct Capture *c) {
         XEvent event; XNextEvent(c->display,&event);
         if (event.type==c->event) {
             XRectangle r=((XDamageNotifyEvent *)&event)->area;
-            if (r.x<c->width && r.x+r.width>0 && r.y<c->offset+c->height && r.y+r.height>c->offset) dirty=1;
+            if (r.x<c->xoffset+c->width && r.x+r.width>c->xoffset && r.y<c->offset+c->height && r.y+r.height>c->offset) dirty=1;
         }
     }
     return dirty;
@@ -320,8 +340,7 @@ static void shift_plan(struct Capture *c,const uint8_t *raw,const uint8_t *base,
 int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
     c->tile_count=c->adjacent_count=-1;c->shift.valid=0;
     memset(c->cpu,0,sizeof(c->cpu));double at=capture_cpu();
-    unsigned w,h;
-    if ((!c->desktop && window_pid(c->display,c->window)!=c->owner) || !dimensions(c->display,c->window,&w,&h) || w!=(unsigned)c->width || h!=(unsigned)c->window_height || !XShmGetImage(c->display,c->pixmap,c->image,0,c->offset,AllPlanes)) return -1;
+    if (!bound_surface(c) || !XShmGetImage(c->display,c->pixmap,c->image,c->xoffset,c->offset,AllPlanes)) return -1;
     c->cpu[0]=capture_cpu()-at;at=capture_cpu();
     size_t stride=(size_t)c->width*4, size=stride*c->height;
     uint8_t *raw=(uint8_t *)c->image->data;
@@ -399,12 +418,20 @@ int cx_shift_plan(const uint8_t *raw,const uint8_t *base,int width,int height,in
  * 1: another top-level window covers it, -1: not owned/unknown). */
 static int pointer_target(struct Capture *c,int x,int y,int *px,int *py){
     if(x<0||y<0||x>=c->width||y>=c->height)return -1;
-    if(window_pid(c->display,c->window)!=c->owner)return -1;
+    if(!bound_surface(c))return -1;
     Window root=DefaultRootWindow(c->display),child;int rx,ry,ox,oy;
     if(!XTranslateCoordinates(c->display,c->window,root,0,0,&rx,&ry,&child))return -1;
-    *px=rx+x;*py=ry+c->offset+y;
-    if(!XTranslateCoordinates(c->display,root,root,*px,*py,&ox,&oy,&child))return -1;
-    return child==c->window?0:1;
+    *px=rx+c->xoffset+x;*py=ry+c->offset+y;
+    // A WM frame reparents the client; follow only the topmost child at the
+    // proved root point. Foreign overlays never grant the underlying client.
+    Window parent=root;
+    for(int depth=0;depth<8;depth++){
+        if(!XTranslateCoordinates(c->display,root,parent,*px,*py,&ox,&oy,&child))return -1;
+        if(child==c->window)return 0;
+        if(!child)return 1;
+        parent=child;
+    }
+    return -1;
 }
 /* MP-08/MP-10: wheel notches into the owned window on the kernel's private X
  * server, so Chromium applies native smooth scrolling (CDP wheel deltas are
@@ -436,7 +463,7 @@ int cx_capture_click(struct Capture *c,int x,int y){
  * actor and text target. A keysym outside the private keymap is refused. */
 int cx_capture_key(struct Capture *c,unsigned long keysym,int shift){
     if(c->desktop)return -1; /* MP-11: desktop input keeps its own admission. */
-    if(window_pid(c->display,c->window)!=c->owner)return -1;
+    if(!bound_surface(c))return -1;
     KeyCode code=XKeysymToKeycode(c->display,(KeySym)keysym),shifter=XKeysymToKeycode(c->display,XK_Shift_L);
     if(!code||!shifter)return -1;
     if(XkbKeycodeToKeysym(c->display,code,0,0)!=(KeySym)keysym){

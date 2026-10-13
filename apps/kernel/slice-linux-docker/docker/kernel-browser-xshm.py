@@ -46,6 +46,18 @@ def children(d,w):
     try:return list(values[:n.value])
     finally:
         if values:free(values)
+def frame_insets(d,w):
+    actual=L();fmt=I();n=L();remaining=L();data=P()
+    status=property_(d,w,atom(d,b'_GTK_FRAME_EXTENTS',0),0,4,0,6,c.byref(actual),c.byref(fmt),c.byref(n),c.byref(remaining),c.byref(data))
+    try:
+        if status!=0:raise ValueError('client frame insets unavailable')
+        if actual.value==0:return [0,0,0,0]
+        if actual.value!=6 or fmt.value!=32 or n.value!=4 or remaining.value or not data:raise ValueError('client frame insets invalid')
+        values=list(c.cast(data,c.POINTER(L))[:4])
+        if any(value>64 for value in values):raise ValueError('client frame insets bound')
+        return values
+    finally:
+        if data:free(data)
 def owned_windows(d, root, owner, width, height):
     # MP-08/MP-11: reparenting never grants the WM frame's pixels. Complete
     # the bounded search and require one exact-PID client, as the native worker.
@@ -59,7 +71,8 @@ def owned_windows(d, root, owner, width, height):
         for window in descendants:
             if pid_of(d, window) == owner:
                 w, h = dims(d, window)
-                if w == width and height <= h <= height + 400:
+                left,right,top,bottom=frame_insets(d,window)
+                if w == width+left+right and height+top+bottom <= h <= height+400:
                     matches.append(window); continue
             pending.append((window, depth + 1))
     return matches
@@ -93,7 +106,8 @@ try:
     windows=[] if desktop else owned_windows(d,root_window(d),owner,width,height)
     if desktop:windows=[root_window(d)]
     if len(windows)!=1:raise ValueError('owned browser window ambiguous')
-    window=windows[0];ww,hh=dims(d,window);offset=hh-height
+    window=windows[0];ww,hh=dims(d,window);insets=[0,0,0,0] if desktop else frame_insets(d,window)
+    xoffset=insets[0];offset=hh-insets[3]-height
     # Bottom-aligned viewport is independently attested against CDP before use.
     if offset>400:raise ValueError('viewport crop bound')
     if desktop:
@@ -159,7 +173,7 @@ try:
             next_event(d,c.byref(event))
             if c.cast(event,c.POINTER(I))[0]==event_base.value:
                 rect=c.cast(event,c.POINTER(DamageEvent)).contents.area
-                x0=max(0,rect.x);y0=max(0,rect.y-offset);x1=min(width,rect.x+rect.width);y1=min(height,rect.y+rect.height-offset)
+                x0=max(0,rect.x-xoffset);y0=max(0,rect.y-offset);x1=min(width,rect.x+rect.width-xoffset);y1=min(height,rect.y+rect.height-offset)
                 if x1>x0 and y1>y0:
                     if not dirty:damage_ready_ms=time.time()*1000
                     area=[min(area[0],x0),min(area[1],y0),max(area[2],x1),max(area[3],y1)] if dirty else [x0,y0,x1,y1];dirty=True
@@ -175,7 +189,8 @@ try:
         if desktop:before=accessibility.capture_snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'),config.get('values',[]))
         stage='get_image'
         get_image_ms=time.time()*1000
-        if not get_image(d,pixmap,image,0,offset,0xffffffff):raise ValueError('readback')
+        if not desktop and frame_insets(d,window)!=insets:raise ValueError('client frame insets changed')
+        if not get_image(d,pixmap,image,xoffset,offset,0xffffffff):raise ValueError('readback')
         image_ready_ms=time.time()*1000
         # XShm avoids Xlib pixel IPC. One bounded copy crosses the helper pipe.
         raw=c.string_at(shm.shmaddr,size);readback_ms=time.time()*1000

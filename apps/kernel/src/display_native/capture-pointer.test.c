@@ -20,12 +20,14 @@ int main(void) {
     Window popup=XCreateWindow(d,DefaultRootWindow(d),60,60,40,40,0,CopyFromParent,InputOutput,CopyFromParent,CWOverrideRedirect,&a);
     XSelectInput(d,popup,ButtonPressMask);XMapRaised(d,popup);XSync(d,False);
     struct Capture *c=cx_capture_open(pid,128,128);assert(c);
-    assert(cx_capture_click(c,10,10)==0);assert(presses(d,w)==1);
+    // Dispatch uses another X connection. Its flush is asynchronous; settle
+    // that connection before counting events on this observer connection.
+    assert(cx_capture_click(c,10,10)==0);XSync(c->display,False);assert(presses(d,w)==1);
     assert(cx_capture_click(c,70,70)==1);assert(presses(d,popup)==0);assert(presses(d,w)==0);
     assert(cx_capture_wheel(c,70,70,0,1)==1);assert(presses(d,popup)==0);
-    assert(cx_capture_wheel(c,10,10,0,1)==0);assert(presses(d,w)==1); /* one notch: one button-5 press */
+    assert(cx_capture_wheel(c,10,10,0,1)==0);XSync(c->display,False);assert(presses(d,w)==1); /* one notch: one button-5 press */
     XUnmapWindow(d,popup);XSync(d,False);
-    assert(cx_capture_click(c,70,70)==0);assert(presses(d,w)==1);
+    assert(cx_capture_click(c,70,70)==0);XSync(c->display,False);assert(presses(d,w)==1);
     cx_capture_close(c);XDestroyWindow(d,popup);XDestroyWindow(d,w);XCloseDisplay(d);
     puts("MP-11 native pointer input reaches only the uncovered owned window");
 }
