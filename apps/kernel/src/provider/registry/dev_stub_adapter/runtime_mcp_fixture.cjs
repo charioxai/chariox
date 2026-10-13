@@ -39,7 +39,12 @@ async function call(request) {
     if (size > 8 * 1024 * 1024) throw Error('fixture response exceeded limit')
     parts.push(chunk)
   }
-  const value = JSON.parse(Buffer.concat(parts).toString('utf8'))
+  const text = Buffer.concat(parts).toString('utf8')
+  const value = response.headers.get('content-type')?.includes('text/event-stream')
+    ? text.split(/\r?\n/).filter(line => line.startsWith('data: '))
+      .map(line => JSON.parse(line.slice(6))).find(value => value.id === request.id)
+    : JSON.parse(text)
+  if (!value) throw Error('fixture runtime omitted response')
   if (!response.ok && !value.error) throw Error('fixture runtime rejected request')
   return value
 }

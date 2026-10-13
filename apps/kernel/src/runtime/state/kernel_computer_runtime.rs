@@ -47,7 +47,7 @@ impl KernelRuntimeState {
         &self,
         runs: &[crate::provider::RuntimeProviderRun],
     ) -> Vec<RuntimeToolSpec> {
-        if !cfg!(target_os = "linux") {
+        if !cfg!(any(target_os = "linux", target_os = "macos")) {
             return Vec::new();
         }
         let [run] = runs else {
@@ -57,7 +57,7 @@ impl KernelRuntimeState {
             return Vec::new();
         };
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
-        let mut tools=vec![RuntimeToolSpec{name:LOADER.into(),description:"MP-08: load Computer tools for the user's kernel-owned Linux desktop. Focus grants new resources; existing tasks retain their explicit desktop until idle expiry or revoke. Room/slice membership grants no host access.".into(),input_schema:serde_json::json!({"type":"object","properties":{},"additionalProperties":false})}];
+        let mut tools=vec![RuntimeToolSpec{name:LOADER.into(),description:"MP-08: load Computer tools for the user's kernel desktop. Focus grants new resources; existing tasks retain their explicit desktop until idle expiry or revoke. The owner starts a personal macOS seat. Room/slice membership grants no host access.".into(),input_schema:serde_json::json!({"type":"object","properties":{},"additionalProperties":false})}];
         if self.owned.kernel_browser_host.is_loaded_for(
             &user,
             agent.id(),
@@ -140,9 +140,9 @@ impl KernelRuntimeState {
         name: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        if !cfg!(target_os = "linux") {
+        if !cfg!(any(target_os = "linux", target_os = "macos")) {
             return Err(host_error(
-                "MP-11: agent Computer tools require Linux".into(),
+                "MP-11: agent Computer tools require Linux or macOS".into(),
             ));
         }
         let runs = self
@@ -251,9 +251,9 @@ mod tests {
         )
         .is_err());
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     #[tokio::test]
-    async fn m1_agent_computer_tools_are_refused_at_dispatch_off_linux() {
+    async fn m1_agent_computer_tools_are_refused_on_unsupported_platforms() {
         let app =
             crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
         let state = crate::runtime::router::CommandRouter::with_interactive_capacity(
@@ -270,7 +270,24 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap_err();
-            assert!(error.to_string().contains("require Linux"), "{error}");
+            assert!(error.to_string().contains("require Linux or macOS"), "{error}");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_agent_computer_dispatch_requires_provider_admission() {
+        crate::test_support::isolated_env_test!();
+        let app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let state = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)), 1,
+        ).runtime_state();
+        for (name, arguments) in [
+            (LOADER, serde_json::json!({})),
+            (TOOL, serde_json::json!({"command":{"op":"state"}})),
+        ] {
+            let error = state.try_kernel_computer_tool("unadmitted", name, arguments)
+                .await.unwrap().unwrap_err();
+            assert!(error.to_string().contains("admitted local provider run required"), "{error}");
         }
     }
 }
