@@ -28,6 +28,13 @@ return it with bounded validation for the kernel to apply and verify later on th
 
 Include installer prerequisites explicitly, such as unzip for the Linux Bun installer.
 Stop on installer failure and verify the installed executable before a later step uses it.
+Install the toolchains and components named by the validation checks; minimal Rust toolchains
+may need rustfmt and clippy. Use valid native command syntax and project-relative paths.
+
+After the kernel reports a failed recipe, preserve every explicitly requested validation command
+and every check from a user-authored definition. Correct invalid checks in an automatically
+generated definition using project evidence, preserving their intended tool and build coverage.
+Never replace checks with success placeholders; the kernel reruns the corrected commands.
 
 Project evidence discovery is read-only and the provider capability is enforced as read-only.
 For recipe discovery, use provider-native read-only file inspection, including shell reads only

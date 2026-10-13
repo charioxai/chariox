@@ -156,6 +156,14 @@ paths run inside a disposable VM, the transferred repository passes its bounded
 Rust, Cargo, and native-dependency build, and cleanup succeeds. Local tests do
 not close those deployment and live-validation steps.
 
+MP-08 / MP-10 / MP-11: after a generated recipe fails, repair may correct its
+invalid validation commands using project evidence while preserving intended
+tool and build coverage. Explicitly requested checks and checks from a
+user-authored definition remain immutable. A repaired user-authored definition
+keeps that origin so a later repair cannot discard its validation contract.
+The kernel independently reruns all returned checks before reporting readiness;
+source parsing and tool connectivity never substitute for the live worker build.
+
 ## Managed and ordinary kernel parity
 
 Status: open. Do not mark this work complete until every ledger item below has

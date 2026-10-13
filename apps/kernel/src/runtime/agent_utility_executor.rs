@@ -313,6 +313,7 @@ async fn run_project_environment_setup_utility(
             &output,
             input.definition.as_ref(),
             &input.target_platform,
+            &input.validation_commands,
         )?
     } else {
         parse_project_environment_setup_utility_output(
