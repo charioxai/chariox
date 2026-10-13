@@ -233,7 +233,7 @@ export class KernelBrowserHost {
   tabState() {
     // MP-08: private creation evidence for the kernel, stripped before client projection.
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
-    return redactObservation({ state: "ready", generation: this.generation, observation: this.observed, _tab_creation_actions,
+    return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
       tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:hostViewport() }, this.protection.values);
   }
   async reconcile() {

@@ -641,9 +641,10 @@ impl KernelBrowserHost {
         if let Ok(state) = &mut result {
             let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
             ledger.reconcile_inventory(state, &tab_creation_actions)?;
-            // The observation order is controller-internal; replies keep their shape.
+            // The observation order is controller-internal; replies keep their shape
+            // (a Notes selection's own `observation` result passes through).
             if let Some(state) = state.as_object_mut() {
-                state.remove("observation");
+                state.remove("_observation");
             }
         }
         if let Ok(payload) = &mut result {
