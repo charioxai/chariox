@@ -440,8 +440,15 @@ fn claude_profile_auth_status(
     if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
         zeroize::Zeroize::zeroize(value);
     }
+    let mut rejected = matches!(
+        &checked,
+        Err(crate::provider::ClaudeCredentialCheckError::Rejected)
+    );
     let verified = match checked {
-        Ok(()) => {
+        Err(error @ crate::provider::ClaudeCredentialCheckError::Inconclusive(_)) => {
+            return Err(error.into_daemon_error())
+        }
+        checked => {
             // Local unavailability on reread still says nothing about the token.
             let current = crate::provider::resolve_provider_account_credentials(
                 config,
@@ -450,8 +457,9 @@ fn claude_profile_auth_status(
                 &profile.profile_id,
             )?;
             if current.iter().eq(secrets.iter()) {
-                Ok(())
+                checked.map_err(|error| error.into_daemon_error())
             } else {
+                rejected = false;
                 Err(DaemonError::LocalTransport {
                     operation: "verify Claude setup token",
                     message:
@@ -460,21 +468,19 @@ fn claude_profile_auth_status(
                 })
             }
         }
-        Err(error @ crate::provider::ClaudeCredentialCheckError::Inconclusive(_)) => {
-            return Err(error.into_daemon_error())
-        }
-        Err(error @ crate::provider::ClaudeCredentialCheckError::Rejected) => {
-            Err(error.into_daemon_error())
-        }
     };
     if let Err(error) = verified {
-        // Definitive rejection or an unverified replacement closes admission.
+        // Definitive rejection skips another check; a replacement needs verification.
         // Local and transient failures above preserve the saved observation.
         registry.update_observation(
             owner_user_id,
             provider,
             &profile.profile_id,
-            crate::account_profile::ProviderAccountAuthState::Error,
+            if rejected {
+                crate::account_profile::ProviderAccountAuthState::Expired
+            } else {
+                crate::account_profile::ProviderAccountAuthState::Error
+            },
             None,
             None,
             None,
