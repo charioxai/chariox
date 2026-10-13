@@ -116,8 +116,8 @@ impl KernelRuntimeState {
                 .await;
         }
         // Refresh uses the same Cloud inventory credential as the waiting room.
-        // No workflow data is sent to Cloud. A failed read keeps the last-known
-        // cache, while the error tells clients that it is not a fresh inventory.
+        // No workflow data is sent to Cloud. Directory failure preserves source
+        // identities; only a current peer reply establishes remote availability.
         let refresh = crate::transport::relay_client::refresh_remote_inventory_projection(
             self.owned.config_projection.clone(),
             projection.clone(),
@@ -871,7 +871,8 @@ mod tests {
             .await
             .unwrap();
         assert!(target.store.notification_cached_sources("local").unwrap()[0].available);
-        // A failed directory read is not an authoritative offline answer.
+        // A failed directory read preserves source identities, but unpinned
+        // availability must be verified before attachment can resume.
         target_runtime
             .owned
             .notification_inventory_projection
@@ -892,6 +893,11 @@ mod tests {
             .owned
             .notification_inventory_projection
             .update(vec![], vec![presence]);
+        target_runtime
+            .refresh_notification_sources_from_inventory("local", false)
+            .await
+            .unwrap();
+        assert!(target.store.notification_cached_sources("local").unwrap()[0].available);
         let LocalDaemonResponse::WorkflowNotificationAttached { subscription } = target_runtime
             .execute_workflow_notification_command(
                 LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
