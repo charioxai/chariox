@@ -25,6 +25,7 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
         Self { app }
     }
 
+    #[cfg(test)]
     pub(crate) fn spawn_for_launch(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
         self.spawn_for_launch_with_credentials(
             run,

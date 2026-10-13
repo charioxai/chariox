@@ -1020,19 +1020,27 @@ impl<'a> ProviderOutputPumpContext<'a> {
             return Ok(());
         };
         let durable_state_store = self.app.durable_state_store();
-        self.app.agents.set_agent_runtime_profile_durably(
-            &durable_state_store,
-            agent_id,
-            provider_run.provider(),
-            Some(provider_run.model().to_string()),
-            provider_run.variant().map(str::to_string),
-            None,
-            resume_state.clone(),
-            Some(provider_run.id()),
-            None,
-        )?;
-        let _ = crate::app::KernelSessionReadService::new(self.app)
-            .session_snapshot(provider_run.session_id())?;
+        // MP-08/MP-10/MP-11: late metadata belongs to the retired run's
+        // history, not to the agent's newly selected profile.
+        let store = self.app.providers.clone();
+        let updated = store.with_current_profile_run(provider_run, |_| {
+            self.app.agents.set_agent_runtime_profile_durably(
+                &durable_state_store,
+                agent_id,
+                provider_run.provider(),
+                Some(provider_run.model().to_string()),
+                provider_run.variant().map(str::to_string),
+                None,
+                resume_state.clone(),
+                Some(provider_run.id()),
+                None,
+            )?;
+            Ok(())
+        })?;
+        if updated.is_some() {
+            let _ = crate::app::KernelSessionReadService::new(self.app)
+                .session_snapshot(provider_run.session_id())?;
+        }
         Ok(())
     }
 
