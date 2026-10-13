@@ -143,10 +143,21 @@ pub(crate) async fn execute_connect_cloud_relay_request(
 pub(crate) async fn execute_issue_cloud_relay_client_token_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    remote_relay_inventory_projection: &RemoteRelayInventoryProjectionStore,
     request: IssueCloudRelayClientTokenRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let (profile, token) =
-        issue_cloud_relay_client_token(runtime_state, config_projection, request).await?;
+    let own_account_target = target_is_own_account_kernel(
+        &config_projection.snapshot(),
+        remote_relay_inventory_projection,
+        &request.target_daemon_alias,
+    );
+    let (profile, token) = issue_cloud_relay_client_token(
+        runtime_state,
+        config_projection,
+        request,
+        own_account_target,
+    )
+    .await?;
     Ok(LocalDaemonResponse::CloudRelayClientTokenIssued { profile, token })
 }
 
@@ -195,6 +206,8 @@ pub(crate) async fn execute_resolve_kernel_client_connection_request(
                 session_id: request.session_id.clone(),
                 public_key_thumbprint: None,
             },
+            // The resolved kernel comes from this account's relay inventory.
+            true,
         )
         .await?;
         KernelClientConnection {
@@ -232,10 +245,12 @@ async fn issue_cloud_relay_client_token(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: IssueCloudRelayClientTokenRequest,
+    own_account_target: bool,
 ) -> Result<(CloudRelayProfile, CloudRelayRuntimeToken), DaemonError> {
     let required_public_key_thumbprint = request.public_key_thumbprint.clone();
     let mut profile = required_cloud_relay_profile(config_projection)?;
-    let (requested_client_id, options) = terminal_client_issuance(&profile, &request);
+    let (requested_client_id, options) =
+        terminal_client_issuance(&profile, &request, own_account_target);
     let config = config_projection.snapshot();
     let target = if config.daemon_alias.as_deref() == Some(request.target_daemon_alias.as_str()) {
         config.daemon_id.as_str()
@@ -280,9 +295,30 @@ async fn issue_cloud_relay_client_token(
     Ok((public_profile, token))
 }
 
+/// Cloud grants this account's own kernels without a session and admits a
+/// foreign kernel only through shared-session membership.
+fn target_is_own_account_kernel(
+    config: &crate::config::DaemonConfig,
+    remote_relay_inventory_projection: &RemoteRelayInventoryProjectionStore,
+    target: &str,
+) -> bool {
+    config.daemon_id == target
+        || config.daemon_alias.as_deref() == Some(target)
+        || remote_relay_inventory_projection
+            .snapshot()
+            .1
+            .iter()
+            .any(|kernel| {
+                kernel.kernel_id == target
+                    || kernel.relay_alias.as_deref() == Some(target)
+                    || kernel.kernel_alias.as_deref() == Some(target)
+            })
+}
+
 fn terminal_client_issuance<'a>(
     profile: &'a crate::config::PersistedCloudRelayProfile,
     request: &'a IssueCloudRelayClientTokenRequest,
+    own_account_target: bool,
 ) -> (&'a str, CloudTerminalClientOptions) {
     // A keyed terminal is already paired. Renew its exact subject and keep
     // revocation authoritative; never re-pair it or replace the kernel login ID.
@@ -296,15 +332,10 @@ fn terminal_client_issuance<'a>(
         CloudTerminalClientOptions {
             pair_account_client: !keyed && profile.client_id.is_none(),
             ttl_ms: Some(CLOUD_RELAY_CLIENT_TOKEN_TTL_MS),
-            // A kernel-owned legacy machine profile bootstraps a terminal
-            // against the kernel. Its local Room ID is not a Cloud shared-session
-            // identity; the kernel admits the requested Room on attachment.
-            // Client-only profiles retain their actual shared-session scope.
-            session_id: if profile
-                .machine_credential
-                .as_deref()
-                .is_some_and(|credential| !credential.trim().is_empty())
-            {
+            // A Room ID for this account's own kernel is local; that kernel
+            // admits the Room on attachment. A foreign kernel keeps the Cloud
+            // shared-session scope that admits the grant.
+            session_id: if own_account_target {
                 None
             } else {
                 request.session_id.clone()
@@ -450,7 +481,7 @@ mod tests {
             session_id: Some("session-target".into()),
             public_key_thumbprint: Some("a".repeat(64)),
         };
-        let (subject, options) = terminal_client_issuance(&profile, &request);
+        let (subject, options) = terminal_client_issuance(&profile, &request, false);
         assert_eq!(subject, "paired-terminal");
         assert_eq!(options.ttl_ms, Some(CLOUD_RELAY_CLIENT_TOKEN_TTL_MS));
         assert_eq!(options.session_id.as_deref(), Some("session-target"));
@@ -458,7 +489,7 @@ mod tests {
         // Revocation must be enforced by issuance, never undone by re-pairing.
         profile.client_id = None;
         assert!(
-            !terminal_client_issuance(&profile, &request)
+            !terminal_client_issuance(&profile, &request, false)
                 .1
                 .pair_account_client
         );
@@ -477,7 +508,7 @@ mod tests {
             session_id: Some("local-room-not-shared-in-cloud".into()),
             public_key_thumbprint: Some("a".repeat(64)),
         };
-        let (subject, options) = terminal_client_issuance(&profile, &request);
+        let (subject, options) = terminal_client_issuance(&profile, &request, true);
         assert_eq!(subject, "paired-terminal");
         assert_eq!(
             options.public_key_thumbprint.as_deref(),
@@ -502,8 +533,46 @@ mod tests {
             session_id: Some("cloud-shared-session".into()),
             public_key_thumbprint: Some("a".repeat(64)),
         };
-        let (_, options) = terminal_client_issuance(&profile, &request);
+        let (_, options) = terminal_client_issuance(&profile, &request, false);
         assert_eq!(options.session_id.as_deref(), Some("cloud-shared-session"));
+    }
+
+    #[test]
+    fn only_this_accounts_kernels_drop_the_session_scope() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.daemon_id = "local-kernel".into();
+        config.daemon_alias = Some("local-alias".into());
+        let inventory = RemoteRelayInventoryProjectionStore::default();
+        inventory.update(
+            Vec::new(),
+            vec![chariox_relay::protocol::RelayKernelPresence {
+                kernel_id: "owned-remote-kernel".into(),
+                machine_id: "owned-machine".into(),
+                machine_alias: None,
+                relay_alias: Some("owned-relay-alias".into()),
+                kernel_alias: None,
+                available_providers: Vec::new(),
+                provider_accounts: Vec::new(),
+                capabilities: Vec::new(),
+                accepting_remote_leases: false,
+                leased_agent_count: 0,
+                local_session_count: 0,
+                public_key: "owned-public-key".into(),
+            }],
+        );
+        for target in [
+            "local-kernel",
+            "local-alias",
+            "owned-remote-kernel",
+            "owned-relay-alias",
+        ] {
+            assert!(target_is_own_account_kernel(&config, &inventory, target));
+        }
+        assert!(!target_is_own_account_kernel(
+            &config,
+            &inventory,
+            "host-kernel-of-another-account"
+        ));
     }
 
     fn relay_token_with_thumbprint(thumbprint: Option<&str>) -> String {

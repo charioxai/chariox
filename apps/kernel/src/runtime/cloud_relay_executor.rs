@@ -75,6 +75,7 @@ pub(crate) async fn execute_cloud_relay_request(
             execute_issue_cloud_relay_client_token_request(
                 runtime_state,
                 config_projection,
+                remote_relay_inventory_projection,
                 request,
             )
             .await

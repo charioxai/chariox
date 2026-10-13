@@ -21,11 +21,13 @@ admitted subject, key, session and target through that kernel. Runtime requests
 and events still travel directly to the target over the encrypted relay lanes.
 A machine-only managed target must never replace the account issuer.
 
-MP-08/MP-10/MP-11: a kernel-owned legacy machine profile issues a grant for one
-canonical kernel target. A local Room ID stays in the kernel attachment path;
-it is not sent as a Cloud shared-session identity. Client-only credentials keep
-their actual Cloud shared-session scope. Pairing aliases label the invitation
-and never appear in the grant’s allowed targets.
+MP-08/MP-10/MP-11: an issuing kernel grants one canonical kernel target. For
+this account's own kernels (the issuing kernel or its relay inventory) a Room
+ID stays in the kernel attachment path and is not sent as a Cloud
+shared-session identity. A foreign target keeps the Cloud shared-session scope
+that admits the grant, and the client reports the session the grant carries.
+Pairing aliases label the invitation and never appear in the grant’s allowed
+targets.
 
 If the original issuer is unavailable, the client displays a notice and retries
 within the existing grant lifetime without changing authority or dropping the
