@@ -2324,6 +2324,66 @@ fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
     let _ = fs::remove_dir_all(dir);
 }
 
+// MP-08/MP-10/MP-11: Claude Code writes one transcript record per content
+// block, each carrying the message's stop reason. A drain that reads the
+// final message's thinking record before its text record must not complete
+// the turn, or settlement drops the answer that follows.
+#[test]
+fn claude_transcript_final_message_completes_only_with_its_visible_text() {
+    let mut cursor = ClaudeTranscriptCursor::default();
+    let dir = std::env::temp_dir().join(format!(
+        "chariox-claude-transcript-split-final-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    fs::create_dir_all(&dir).expect("fixture dir should create");
+    let transcript = dir.join("session.jsonl");
+    let record = |uuid: &str, block: serde_json::Value| {
+        serde_json::json!({
+            "type": "assistant",
+            "uuid": uuid,
+            "message": {
+                "id": "msg_final",
+                "model": "claude-haiku-4-5",
+                "role": "assistant",
+                "stop_reason": "end_turn",
+                "content": [block]
+            }
+        })
+        .to_string()
+            + "\n"
+    };
+    fs::write(
+        &transcript,
+        record(
+            "final-thinking",
+            serde_json::json!({ "type": "thinking", "thinking": "found it" }),
+        ),
+    )
+    .expect("thinking record should write");
+    let thinking = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+    assert_eq!(thinking.chunks.len(), 1);
+    assert!(
+        thinking.terminal_assistant_message_ids.is_empty(),
+        "a thinking-only record cannot complete the turn"
+    );
+    assert!(thinking.assistant_message_ids.is_empty());
+
+    let mut raw = fs::read_to_string(&transcript).expect("fixture should read");
+    raw.push_str(&record(
+        "final-text",
+        serde_json::json!({ "type": "text", "text": "Linux is a family of free and open-source software Unix-like operating systems." }),
+    ));
+    fs::write(&transcript, raw).expect("text record should append");
+    let text = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+    assert_eq!(text.chunks.len(), 1);
+    assert_eq!(text.chunks[0].kind, TerminalOutputKind::ProviderOutput);
+    assert_eq!(text.assistant_message_ids, vec!["msg_final"]);
+    assert_eq!(text.terminal_assistant_message_ids, vec!["msg_final"]);
+
+    let _ = fs::remove_dir_all(dir);
+}
+
 #[test]
 fn claude_transcript_drain_classifies_session_limit_without_success_completion() {
     let mut cursor = ClaudeTranscriptCursor::default();
