@@ -846,14 +846,6 @@ mod tests {
         };
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].source_id, source_record.source_id);
-        target
-            .store
-            .notify(NotificationOperation::Cache {
-                owner: "local".into(),
-                kernel: sc.daemon_id.clone(),
-                sources,
-            })
-            .unwrap();
         let presence = crate::transport::relay_discovery::get_live_kernel(&tc, &sc.daemon_id)
             .await
             .unwrap();
@@ -861,6 +853,48 @@ mod tests {
             .owned
             .notification_inventory_projection
             .update(vec![], vec![presence.clone()]);
+        // MP-08/MP-10: this source has never been cached. Require the fixture
+        // Cloud directory (127.0.0.1:1), so the fresh projection must
+        // bypass its refresh and query the authorized peer. The failed-directory
+        // fallback intentionally queries cached kernels only and cannot pass this.
+        let mut directory_unreachable = tc.clone();
+        directory_unreachable
+            .cloud_relay
+            .as_mut()
+            .unwrap()
+            .kernel_credential = Some("fixture-directory-unreachable".into());
+        target_runtime
+            .owned
+            .config_projection
+            .update(directory_unreachable);
+        assert!(
+            crate::transport::relay_client::refresh_remote_inventory_projection(
+                target_runtime.owned.config_projection.clone(),
+                target_runtime
+                    .owned
+                    .notification_inventory_projection
+                    .clone(),
+            )
+            .await
+            .is_err()
+        );
+        assert!(target
+            .store
+            .notification_cached_sources("local")
+            .unwrap()
+            .is_empty());
+        target_runtime
+            .refresh_notification_sources("local")
+            .await
+            .unwrap();
+        let discovered = target.store.notification_cached_sources("local").unwrap();
+        assert_eq!(
+            discovered.len(),
+            1,
+            "fresh presence must discover an uncached source without a directory refresh"
+        );
+        assert_eq!(discovered[0].source_id, source_record.source_id);
+        assert!(discovered[0].available);
         target_runtime
             .refresh_notification_sources_from_inventory("local", false)
             .await
