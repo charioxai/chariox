@@ -1,13 +1,21 @@
 import childProcess from "node:child_process"
 
+type LauncherParentWatchOptions = {
+  exit?: () => void
+  inspect?: (pid: number) => boolean | null | Promise<boolean | null>
+  platform?: NodeJS.Platform
+}
+
+function exitLauncherChild() {
+  process.stderr.write("chariox: launcher parent exited; closing TUI\n")
+  process.exit(1)
+}
+
 // MP-08/MP-11: Linux uses the launcher's PR_SET_PDEATHSIG. macOS needs an
 // asynchronous fallback, including while the renderer/runtime are loading.
 export function watchCliLauncherParent(
   launcherPid: string | undefined,
-  parentPid: () => number = () => process.ppid,
-  exit: () => void = () => process.exit(1),
-  parentExists: (pid: number) => boolean | Promise<boolean> = launcherExists,
-  platform: NodeJS.Platform = process.platform,
+  { exit = exitLauncherChild, inspect = launcherExists, platform = process.platform }: LauncherParentWatchOptions = {},
 ): () => void {
   if (!launcherPid) return () => {}
   const expected = Number(launcherPid)
@@ -21,12 +29,14 @@ export function watchCliLauncherParent(
     if (stopped || pending) return
     pending = true
     try {
-      const alive = parentPid() === expected && await parentExists(expected)
-      if (!stopped && !alive) {
+      const alive = await inspect(expected)
+      if (!stopped && alive === false) {
         stopped = true
         clearInterval(timer)
         exit()
       }
+    } catch {
+      // A spawn failure or incomplete inspection is unknown, never parent death.
     } finally {
       pending = false
     }
@@ -40,23 +50,53 @@ export function watchCliLauncherParent(
   }
 }
 
-function launcherExists(pid: number): Promise<boolean> {
+function launcherExists(pid: number): Promise<boolean | null> {
   // Bun caches process.ppid on macOS, and kill(pid, 0) accepts zombies and
-  // recycled PIDs. Inspect current ancestry/state without blocking rendering.
+  // recycled PIDs. Walk the live ancestry, allowing a spawning Bun wrapper.
   return new Promise((resolve) => {
-    childProcess.execFile("/bin/ps", ["-o", "pid=,ppid=,stat=", "-p", `${process.pid},${pid}`], {
+    childProcess.execFile("/bin/ps", ["-axo", "pid=,ppid=,stat="], {
       encoding: "utf8",
       env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
       timeout: 1000,
     }, (error, stdout) => {
-      if (error) {
-        // A foreground-group signal can kill ps too. Retry on the next poll.
-        resolve(Boolean(error.signal))
+      // Spawn/timeout/signal errors are not a process-table observation. A
+      // numeric nonzero ps exit may still carry a complete, useful snapshot.
+      if (error && (error.signal || error.killed || typeof error.code !== "number")) {
+        resolve(null)
         return
       }
       const rows = stdout.trim().split("\n").map((row) => row.trim().split(/\s+/))
-      resolve(rows.some(([id, parent]) => Number(id) === process.pid && Number(parent) === pid)
-        && rows.some(([id, , state]) => Number(id) === pid && state && !state.startsWith("Z")))
+      if (rows.some(([id, parent, state, extra]) => !/^\d+$/.test(id ?? "")
+        || !/^\d+$/.test(parent ?? "") || !/^[A-Za-z]/.test(state ?? "") || extra)) {
+        resolve(null)
+        return
+      }
+      const processes = new Map(rows.map(([id, parent, state]) => [Number(id), { parent: Number(parent), state: state! }]))
+      if (!processes.has(process.pid)) {
+        resolve(null)
+        return
+      }
+      const launcher = processes.get(pid)
+      if (!launcher || launcher.state.startsWith("Z")) {
+        resolve(false)
+        return
+      }
+      const visited = new Set<number>()
+      let ancestor = process.pid
+      while (ancestor > 1 && !visited.has(ancestor)) {
+        if (ancestor === pid) {
+          resolve(true)
+          return
+        }
+        visited.add(ancestor)
+        const row = processes.get(ancestor)
+        if (!row) {
+          resolve(null)
+          return
+        }
+        ancestor = row.parent
+      }
+      resolve(false)
     })
   })
 }
