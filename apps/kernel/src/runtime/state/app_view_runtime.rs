@@ -583,7 +583,7 @@ impl KernelRuntimeState {
             Some((binding, false)) if binding.installation == call.installation_id => {
                 match self
                     .invoke_app_view_tool(
-                        Some(&session_id),
+                        ViewCaller::Owner(Some(&session_id)),
                         &binding,
                         &call.method,
                         call.params,
@@ -760,7 +760,7 @@ impl KernelRuntimeState {
 
     pub(super) async fn invoke_app_view_tool(
         &self,
-        session_id: Option<&str>,
+        caller: ViewCaller<'_>,
         binding: &AppViewBinding,
         tool: &str,
         input: Value,
@@ -813,16 +813,31 @@ impl KernelRuntimeState {
             .try_admit()
             .map_err(|_| coded(app_call_errors::admission_busy()))?;
         let store = self.owned.durable_state_store.clone();
-        let caller = view_caller(binding, session_id);
+        let granted = self.view_agent_grant(&caller, binding);
+        let turn = match &caller {
+            ViewCaller::Agent(agent) => self.view_agent_turn(agent),
+            ViewCaller::Owner(_) => None,
+        };
+        let caller = view_caller(binding, caller, turn);
         let tool_name = tool;
         let operation_budget = tracked.operation_budget();
+        let still_granted = granted.clone();
         let response = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            store.enqueue_app_tool(slot, &tool_name, input, caller, operation_budget)
+            // MP-08/MP-11: hold the agent store across the check and enqueue.
+            let agents = still_granted.as_ref().map(|(agents, _)| agents.read());
+            if let (Some(agents), Some((_, check))) = (&agents, &still_granted) {
+                if !check(agents) {
+                    return Ok(Err(agent_not_granted()));
+                }
+            }
+            store
+                .enqueue_app_tool(slot, &tool_name, input, caller, operation_budget)
+                .map(Ok)
         })
         .await
         .map_err(|_| unavailable())?
-        .map_err(|error| coded(app_call_errors::enqueue_error(&error)))?;
+        .map_err(|error| coded(app_call_errors::enqueue_error(&error)))??;
         // Dropping the pending reply makes the worker peer send `cancel`.
         let reply = tokio::select! {
             reply = response.receive() => reply
@@ -839,12 +854,103 @@ impl KernelRuntimeState {
         let store = self.owned.durable_state_store.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            store.accept_app_tool_reply(reply)
+            // A revoked agent's late reply is not recorded as its result.
+            let agents = granted.as_ref().map(|(agents, _)| agents.read());
+            if let (Some(agents), Some((_, check))) = (&agents, &granted) {
+                if !check(agents) {
+                    return Err(agent_not_granted());
+                }
+            }
+            store.accept_app_tool_reply(reply).map_err(app_error)
         })
         .await
         .map_err(|_| unavailable())?
-        .map_err(app_error)
     }
+
+    /// The agent store check an agent's view call keeps until its reply.
+    fn view_agent_grant(
+        &self,
+        caller: &ViewCaller<'_>,
+        binding: &AppViewBinding,
+    ) -> Option<(crate::agent::AgentServiceStore, AgentGrantCheck)> {
+        let ViewCaller::Agent(agent) = caller else {
+            return None;
+        };
+        let (id, session, owner) = (
+            agent.id().to_owned(),
+            agent.session_id().to_owned(),
+            agent.owner_user_id().to_owned(),
+        );
+        let installation = binding.installation.clone();
+        let check: AgentGrantCheck = std::sync::Arc::new(move |agents| {
+            agents.get_agent(&id).is_ok_and(|current| {
+                current.session_id() == session
+                    && current.owner_user_id() == owner
+                    && current
+                        .has_extension_grant(crate::extension::ExtensionKind::App, &installation)
+            })
+        });
+        Some((self.owned.agent_store.clone(), check))
+    }
+
+    /// The agent's running turn, when it has one the App context can carry.
+    fn view_agent_turn(&self, agent: &crate::agent::AgentInstance) -> Option<String> {
+        let session = self
+            .owned
+            .session_store
+            .get_session(agent.session_id())
+            .ok()?;
+        self.owned
+            .prompt_state_owner
+            .active_prompt_for_agent_snapshot(&session, agent.id())
+            .filter(|prompt| prompt.status() == crate::session::PromptStatus::Running)
+            .map(|prompt| prompt.id().to_owned())
+            .filter(|id| CallerContext::valid_id(id))
+    }
+}
+
+/// Who a view call runs as. MP-08/MP-10/MP-11: the owner's view, unless an
+/// agent's input drove the user-domain App Tab; that call runs as the agent,
+/// with the agent's own App grant and attribution, never the owner's authority.
+pub(super) enum ViewCaller<'a> {
+    Owner(Option<&'a str>),
+    Agent(&'a crate::agent::AgentInstance),
+}
+
+/// A Room view, or a user view its owner drives, runs as the owner (V-SDK-04:
+/// no separate view privilege); an agent-driven user view runs as the agent.
+/// Critical effects still need the kernel's human validation either way.
+fn view_caller(
+    binding: &AppViewBinding,
+    caller: ViewCaller<'_>,
+    turn_id: Option<String>,
+) -> CallerContext {
+    let operation_id = format!("app-operation-{:016x}", rand::random::<u64>());
+    match caller {
+        ViewCaller::Owner(room) => CallerContext {
+            actor: Actor::Human(binding.owner.clone()),
+            room_id: room.map(str::to_owned),
+            operation_id,
+            task_id: None,
+            turn_id: None,
+        },
+        ViewCaller::Agent(agent) => CallerContext {
+            actor: Actor::Agent(agent.id().into()),
+            room_id: Some(agent.session_id().into()),
+            operation_id,
+            task_id: None,
+            turn_id,
+        },
+    }
+}
+
+type AgentGrantCheck = std::sync::Arc<dyn Fn(&crate::agent::AgentService) -> bool + Send + Sync>;
+
+pub(super) fn agent_not_granted() -> BrowserAppViewError {
+    view_error(
+        "AGENT_APP_NOT_GRANTED",
+        "This agent has no grant for this App; the owner can grant it the App",
+    )
 }
 
 /// The App's own error (e.g. CONFLICT from a stale edit) reaches its view;
@@ -852,21 +958,6 @@ impl KernelRuntimeState {
 fn app_error(error: crate::durable_state::app_tools::AppToolsError) -> BrowserAppViewError {
     let (code, message) = crate::runtime::app_call_errors::tool_call_error(&error);
     view_error(&code, &message)
-}
-
-/// A view call runs as the view's owner, whoever drives the Tab: the view is
-/// the owner's human surface, and a person or an agent operating the shared
-/// Room browser acts through it with the owner's App authority (V-SDK-04: no
-/// separate view privilege). Critical effects still need the kernel's human
-/// validation, which a view click cannot provide.
-fn view_caller(binding: &AppViewBinding, session_id: Option<&str>) -> CallerContext {
-    CallerContext {
-        actor: Actor::Human(binding.owner.clone()),
-        room_id: session_id.map(str::to_owned),
-        operation_id: format!("app-operation-{:016x}", rand::random::<u64>()),
-        task_id: None,
-        turn_id: None,
-    }
 }
 
 /// One origin per owner and installation keeps each App's web storage apart.
@@ -996,7 +1087,7 @@ mod tests {
             generation: 1,
             panel: Default::default(),
         };
-        let caller = view_caller(&binding, Some("session-1"));
+        let caller = view_caller(&binding, ViewCaller::Owner(Some("session-1")), None);
         assert!(matches!(&caller.actor, Actor::Human(owner) if owner == "alice"));
         assert_eq!(caller.room_id.as_deref(), Some("session-1"));
         assert!(caller.task_id.is_none() && caller.turn_id.is_none());

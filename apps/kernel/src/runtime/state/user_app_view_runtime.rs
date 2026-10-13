@@ -73,44 +73,15 @@ impl KernelRuntimeState {
         let failed = crate::runtime::app_control::failed;
         let mut response = match request {
             LocalDaemonRequest::OpenUserAppView(request) => {
-                let (binding, frontend) = match self
-                    .user_app_frontend(owner, &request.installation_id)
-                    .await
+                match self
+                    .open_user_app_view(owner, &request.installation_id, request.host)
+                    .await?
                 {
-                    Ok(view) => view,
-                    Err(code) => return Ok(failed(code)),
-                };
-                let mut view = match instances.open(
-                    owner,
-                    binding.clone(),
-                    &origin_label(owner, &request.installation_id),
-                ) {
-                    Ok(view) => view,
-                    Err(code) => return Ok(failed(code)),
-                };
-                self.app_control()
-                    .views()
-                    .register(&view.view_id, &view.view_id, binding.clone());
-                if request.host == Some(UserAppViewHost::KernelBrowser) {
-                    let hosted = self.open_user_app_browser(owner, &view, &frontend).await;
-                    match hosted {
-                        Ok(opened) => view = opened,
-                        Err(error) => {
-                            self.forget_user_app_view(owner, &view.view_id);
-                            return Err(error);
-                        }
+                    Ok((view, frontend)) => {
+                        Ok(LocalDaemonResponse::UserAppViewOpened { view, frontend })
                     }
+                    Err(code) => return Ok(failed(code)),
                 }
-                // Uninstall/update can commit while assets are read or the host opens.
-                if !self
-                    .user_app_generation_live(owner, &request.installation_id, binding.generation)
-                    .await
-                    || instances.get(owner, &view.view_id).is_none()
-                {
-                    self.close_user_app_view(owner, &view.view_id).await;
-                    return Ok(failed(AppRequestErrorCode::Conflict));
-                }
-                Ok(LocalDaemonResponse::UserAppViewOpened { view, frontend })
             }
             LocalDaemonRequest::ListUserAppViews(_) => {
                 Ok(LocalDaemonResponse::UserAppViewsListed {
@@ -167,6 +138,7 @@ impl KernelRuntimeState {
                         &request.method,
                         request.input.clone(),
                         &mut tracked,
+                        super::app_view_runtime::ViewCaller::Owner(None),
                     )
                     .await;
                 match result {
@@ -257,6 +229,49 @@ impl KernelRuntimeState {
         Ok(response)
     }
 
+    /// Open an instance of the installation's active release, optionally as a
+    /// Tab of the owner's kernel browser. Shared by Open and App Tab restore.
+    pub(super) async fn open_user_app_view(
+        &self,
+        owner: &str,
+        installation: &str,
+        host: Option<UserAppViewHost>,
+    ) -> Result<Result<(UserAppView, AppFrontendBundle), AppRequestErrorCode>, DaemonError> {
+        let instances = self.app_control().user_views();
+        let (binding, frontend) = match self.user_app_frontend(owner, installation).await {
+            Ok(view) => view,
+            Err(code) => return Ok(Err(code)),
+        };
+        let mut view =
+            match instances.open(owner, binding.clone(), &origin_label(owner, installation)) {
+                Ok(view) => view,
+                Err(code) => return Ok(Err(code)),
+            };
+        self.app_control()
+            .views()
+            .register(&view.view_id, &view.view_id, binding.clone());
+        if host == Some(UserAppViewHost::KernelBrowser) {
+            match self.open_user_app_browser(owner, &view, &frontend).await {
+                Ok(opened) => view = opened,
+                Err(error) => {
+                    self.forget_user_app_view(owner, &view.view_id);
+                    return Err(error);
+                }
+            }
+        }
+        // Uninstall/update can commit while assets are read or the host opens.
+        if !self
+            .user_app_generation_live(owner, installation, binding.generation)
+            .await
+            || instances.get(owner, &view.view_id).is_none()
+        {
+            self.close_user_app_view(owner, &view.view_id).await;
+            return Ok(Err(AppRequestErrorCode::Conflict));
+        }
+        Ok(Ok((view, frontend)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn invoke_user_app_view_call(
         &self,
         owner: &str,
@@ -265,6 +280,7 @@ impl KernelRuntimeState {
         method: &str,
         input: serde_json::Value,
         tracked: &mut crate::runtime::app_views::ViewCall,
+        caller: super::app_view_runtime::ViewCaller<'_>,
     ) -> Result<serde_json::Value, crate::runtime::browser_controller_app_view::BrowserAppViewError>
     {
         if self
@@ -282,7 +298,7 @@ impl KernelRuntimeState {
         if method == "chariox.panel" {
             return Ok(serde_json::json!({"placement": "none", "minimized": false}));
         }
-        self.invoke_app_view_tool(None, binding, method, input, tracked)
+        self.invoke_app_view_tool(caller, binding, method, input, tracked)
             .await
     }
 

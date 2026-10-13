@@ -35,7 +35,10 @@ import { displayCredit, displayPushCredit } from './kernel-browser-display-credi
 export const nativeRetryDelayMs = attempts => Math.min(60_000, 1_000 * 2 ** (attempts - 1));
 
 export function scheduleHostRequest(request) {
-  return request.method === 'host.browser' && request.params?.op === 'screenshot' &&
+  // MP-08/MP-10: App drains wait for enqueue, so the shared bridge lane must
+  // stay independent of input and lifecycle barriers on the host as in Rooms.
+  return ['browser.app.calls','browser.app.respond'].includes(request.method) ||
+    request.method === 'host.browser' && request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string'
     ? {kind:'bridge'} : {kind:'barrier'};
 }
@@ -447,8 +450,13 @@ export class KernelBrowserHost {
     let tab = command.op === 'input' && typeof command.document_id === 'string'
       ? await this.displayTarget(command) : await this.target(command);
     assertNotCancelled(signal);
-    if (["input", "navigate", "close"].includes(command.op) && (command.focused_agent || command._agent_input)
-      && [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.targetId === tab.target_id)) {
+    // MP-08/MP-11: an agent drives an App Tab as itself, only after the kernel
+    // claimed that App view in the agent's own grant. The page stays on its origin.
+    const app = [...(this.browser.appTabs?.apps?.values() ?? [])].find(open => open.targetId === tab.target_id);
+    const agent = command.focused_agent || command._agent_input
+      ? /^agent:(.+)$/.exec(String(command.observed_by ?? ""))?.[1] ?? "unattributed-agent" : null;
+    if (app && (["input", "navigate", "close"].includes(command.op) && agent && command._app_view_tab !== tab.tab_id
+      || command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin)) {
       throw new UserDomainRefusal("not_granted");
     }
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
@@ -506,6 +514,7 @@ export class KernelBrowserHost {
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
         this.compositors.get(tab.tab_id)?.source?.wake?.();
       };
+      const appInput = app ? this.browser.appTabs.beginInput?.(tab.target_id, agent) : null;
       try {
         // MP-08/MP-10/MP-11: agent and ordinary input must await CDP's ack,
         // including the lifetime of hidden-target focus emulation. Only an
@@ -532,6 +541,7 @@ export class KernelBrowserHost {
         }
         throw error;
       }
+      finally { appInput?.(); }
       const post = timestamp();
       if(command.input.kind === 'scroll')this.scrolling.set(tab.tab_id,{document_id:tab.document_id,until:performance.now()+400});
       const result = this.observe(await this.reconcile(), null, scope);

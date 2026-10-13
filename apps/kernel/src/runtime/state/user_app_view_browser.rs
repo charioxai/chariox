@@ -2,13 +2,15 @@
 //! uses the existing host/controller; App authority stays in the shared queue.
 use super::{
     app_view_host::{AppViewHost, KernelBrowserAppViewHost},
+    app_view_runtime::{agent_not_granted, ViewCaller},
     KernelRuntimeState,
 };
 use crate::{
     error::DaemonError,
     local::{AppFrontendBundle, UserAppView, UserAppViewBrowser},
     runtime::browser_controller_app_view::{
-        BrowserAppViewCall, BrowserAppViewCalls, BrowserAppViewRequest,
+        BrowserAppViewActor, BrowserAppViewCall, BrowserAppViewCalls, BrowserAppViewError,
+        BrowserAppViewRequest,
     },
 };
 
@@ -77,6 +79,7 @@ impl KernelRuntimeState {
                 "App opening cancelled or host identity changed",
             ));
         };
+        self.remember_user_app_tabs(owner);
         if instances.begin_browser_pump(owner) {
             let state = self.clone();
             let owner = owner.to_owned();
@@ -85,10 +88,52 @@ impl KernelRuntimeState {
         Ok(bound)
     }
 
+    /// MP-08/MP-11: the agent whose input drove a call must still hold this
+    /// App view in its own user-domain grant, for the view's owner.
+    fn user_app_view_agent(
+        &self,
+        owner: &str,
+        view_id: &str,
+        actor: &BrowserAppViewActor,
+    ) -> Result<crate::agent::AgentInstance, BrowserAppViewError> {
+        let agent = (actor.kind == "agent")
+            .then(|| self.owned.agent_store.get_agent(&actor.id).ok())
+            .flatten()
+            .ok_or_else(agent_not_granted)?;
+        let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        let holds = self
+            .user_domain_owner_aliases(&user)
+            .iter()
+            .any(|alias| alias == owner)
+            && self.owned.kernel_browser_host.holds_resource(
+                &user,
+                agent.id(),
+                &crate::local::UserDomainResource::AppView {
+                    view_id: view_id.into(),
+                },
+            );
+        holds.then_some(agent).ok_or_else(agent_not_granted)
+    }
+
     pub(super) fn forget_user_app_view(&self, owner: &str, id: &str) {
-        self.app_control().user_views().close(owner, id);
+        if self.app_control().user_views().close(owner, id) {
+            self.remember_user_app_tabs(owner);
+        }
         self.app_control().views().forget_session(id);
         self.app_control().views().keep_pumping(id);
+    }
+
+    /// The browser went away (stop, crash or restart): end the instance and
+    /// keep the owner's intent, so the App reopens with the browser.
+    pub(super) fn suspend_user_app_view(&self, owner: &str, id: &str) {
+        // MP-08/MP-11: shutdown already retired this instance. A late pump
+        // result must not replace the saved intent with the empty registry.
+        if !self.app_control().user_views().suspend(owner, id) {
+            return;
+        }
+        self.app_control().views().forget_session(id);
+        self.app_control().views().keep_pumping(id);
+        self.remember_user_app_tabs(owner);
     }
 
     pub(super) async fn close_user_app_view(&self, owner: &str, id: &str) {
@@ -138,14 +183,14 @@ impl KernelRuntimeState {
                 }) {
                 Ok(batch) => batch,
                 Err(_) => {
-                    // Browser loss invalidates these instances; ordinary tabs may
-                    // restore, App instances never gain authority on restoration.
+                    // Browser loss invalidates these instances; an old instance
+                    // never regains authority. The App reopens as a new one.
                     for view in polled.iter().filter(|v| {
                         v.browser
                             .as_ref()
                             .is_some_and(|b| b.generation == generation)
                     }) {
-                        self.close_user_app_view(&owner, &view.view_id).await;
+                        self.suspend_user_app_view(&owner, &view.view_id);
                     }
                     cadence.failed();
                     continue;
@@ -213,16 +258,29 @@ impl KernelRuntimeState {
         let Some((binding, _)) = self.app_control().user_views().get(&owner, &view.view_id) else {
             return;
         };
-        let outcome = self
-            .invoke_user_app_view_call(
-                &owner,
-                &view.view_id,
-                &binding,
-                &call.method,
-                call.params,
-                &mut tracked,
-            )
-            .await;
+        let agent = call
+            .actor
+            .as_ref()
+            .map(|actor| self.user_app_view_agent(&owner, &view.view_id, actor))
+            .transpose();
+        let outcome = match &agent {
+            Err(error) => Err(error.clone()),
+            Ok(agent) => {
+                let caller = agent
+                    .as_ref()
+                    .map_or(ViewCaller::Owner(None), ViewCaller::Agent);
+                self.invoke_user_app_view_call(
+                    &owner,
+                    &view.view_id,
+                    &binding,
+                    &call.method,
+                    call.params,
+                    &mut tracked,
+                    caller,
+                )
+                .await
+            }
+        };
         if tracked.is_cancelled()
             || self
                 .app_control()

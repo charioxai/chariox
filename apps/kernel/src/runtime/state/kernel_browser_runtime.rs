@@ -241,14 +241,14 @@ impl KernelRuntimeState {
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 if matches!(command, KernelBrowserCommand::Stop) {
                     let views = self.app_control().user_views();
-                    for view in self
-                        .user_domain_owner_aliases(&user)
-                        .iter()
-                        .flat_map(|owner| views.browser_views(owner))
-                    {
-                        self.forget_user_app_view(&user, &view.view_id);
+                    for owner in self.user_domain_owner_aliases(&user) {
+                        for view in views.browser_views(&owner) {
+                            self.suspend_user_app_view(&owner, &view.view_id);
+                        }
                     }
                 }
+                #[allow(unused_variables)]
+                let stop = matches!(command, KernelBrowserCommand::Stop);
                 let mut params = serde_json::to_value(command)
                     .map_err(|_| host_error("MD-2: invalid command".into()))?;
                 params["observed_by"] = serde_json::json!(actor);
@@ -271,6 +271,11 @@ impl KernelRuntimeState {
                             .unwrap()
                             .clone(),
                     );
+                }
+                // MP-08/MP-11: the owner's live browser brings back its App Tabs.
+                #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+                if !stop {
+                    self.restore_user_app_tabs(&user);
                 }
                 return Ok(result);
             }
@@ -595,9 +600,10 @@ impl KernelRuntimeState {
                         .scrub_error(&scope, error)
                 });
         }
-        let params = browser_tool_params(arguments)?;
+        #[allow(unused_mut)]
+        let mut params = browser_tool_params(arguments)?;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        if let Some(tab) = params["tab_id"].as_str() {
+        if let Some(tab) = params["tab_id"].as_str().map(str::to_owned) {
             let views = self.app_control().user_views();
             for view in self
                 .user_domain_owner_aliases(&user)
@@ -617,6 +623,9 @@ impl KernelRuntimeState {
                         false,
                     )
                     .map_err(host_error)?;
+                    // MP-08/MP-11: the host lets an agent drive an App Tab
+                    // only with this claim; its bridge calls run as the agent.
+                    params["_app_view_tab"] = tab.clone().into();
                 }
             }
         }

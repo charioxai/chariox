@@ -29,9 +29,6 @@ export class MirrorService {
     if(!stream || stream.scope!==scope || generation!==this.host.generation) throw new Error('MP-11: stale or foreign mirror');
     stream.expires=Date.now()+lifetime;return stream;
   }
-  assertWebTab(tab) {
-    if([...(this.host.browser.appTabs?.apps?.values()??[])].some(app=>app.targetId===tab.target_id))throw new Error('MP-11: App views require the native App capability path');
-  }
   async world(tab) {
     const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
     const {frameTree}=await connection.send('Page.getFrameTree',{},sessionId);
@@ -58,7 +55,6 @@ export class MirrorService {
     if(this.host.scales.has(tab.tab_id) && this.host.scales.get(tab.tab_id)!==scale)throw new Error('MP-08: canonical mirror geometry already selected');
     // MP-08/MP-10: target() reconciles the kernel-owned viewport. An
     // attached mirror is an observer and must never resize the shared page.
-    this.assertWebTab(tab);
     this.host.scales.set(tab.tab_id,scale);
     const subscription_id=`host-mirror-${randomUUID()}`;
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
@@ -75,7 +71,7 @@ export class MirrorService {
     const mark=name=>{this.host.timing?.(`mirror_${name}`,stage);stage=timestamp();};
     const stream=this.require(command.subscription_id,scope,command.generation),tab=await this.host.displayTarget({tab_id:stream.tab_id,generation:command.generation});
     mark('target');
-    this.assertWebTab(tab);assertNotCancelled(signal);const world=await this.world(tab),policy=this.host.protection;
+    assertNotCancelled(signal);const world=await this.world(tab),policy=this.host.protection;
     mark('world');
     if(stream.document_id!==tab.document_id) {stream.previous=null;stream.observed=null;stream.epochs=[];stream.refinePending=false;stream.resources.clear();stream.cache.clear();stream.fallback.clear();}
     if(stream.policy!==policy) {stream.previous=null;stream.observed=null;stream.epochs=[];stream.refinePending=false;stream.resources.clear();stream.cache.clear();}
@@ -213,7 +209,7 @@ export class MirrorService {
     return packet;
   }
   async resolveInput(tab,input,scope,signal) {
-    this.assertWebTab(tab);const stream=this.require(input.subscription_id,scope,this.host.generation);
+    const stream=this.require(input.subscription_id,scope,this.host.generation);
     if(stream.tab_id!==tab.tab_id||stream.document_id!==tab.document_id)throw new Error('MP-11: stale mirror input document');
     if(stream.policy!==this.host.protection)throw new Error('MP-11: stale mirror protection policy');
     stream.epochs=stream.epochs.filter(e=>this.now()-e.issuedAt<=2000).slice(-8);

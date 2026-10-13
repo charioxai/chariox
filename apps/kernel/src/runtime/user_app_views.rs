@@ -14,6 +14,10 @@ struct Registry {
     browser_targets: HashMap<String, String>,
     pumping: BTreeSet<String>,
     stopped: bool,
+    /// MP-08/MP-11: Apps an owner left open when the browser or kernel went
+    /// away. They reopen as new Tabs once the browser serves the owner again.
+    restore: HashMap<String, Vec<String>>,
+    restoring: HashMap<String, (bool, std::time::Instant)>,
 }
 
 #[derive(Clone, Default)]
@@ -164,6 +168,92 @@ impl UserAppViews {
         drop(registry);
         self.changed.notify_waiters();
         true
+    }
+
+    /// End an instance whose browser went away, keeping the owner's intent.
+    pub(crate) fn suspend(&self, owner: &str, id: &str) -> bool {
+        let installation = self.get(owner, id).map(|(binding, _)| binding.installation);
+        let closed = self.close(owner, id);
+        if let (true, Some(installation)) = (closed, installation) {
+            let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+            let pending = registry.restore.entry(owner.into()).or_default();
+            if pending.len() < 32 {
+                pending.push(installation);
+            }
+        }
+        closed
+    }
+
+    /// Installations to reopen: hosted instances, then pending restores.
+    pub(crate) fn restore_intent(&self, owner: &str) -> Vec<String> {
+        let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        let hosted = registry
+            .views
+            .values()
+            .filter(|(b, v)| b.owner == owner && v.browser.is_some())
+            .map(|(b, _)| b.installation.clone());
+        hosted
+            .chain(registry.restore.get(owner).into_iter().flatten().cloned())
+            .take(32)
+            .collect()
+    }
+
+    /// Seed restore intent persisted by an earlier kernel (first use only).
+    pub(crate) fn seed_restore(&self, owner: &str, installations: Vec<String>) {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        registry
+            .restore
+            .entry(owner.into())
+            .or_insert_with(|| installations.into_iter().take(32).collect());
+    }
+
+    pub(crate) fn has_restore(&self, owner: &str) -> Option<bool> {
+        let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        registry
+            .restore
+            .get(owner)
+            .map(|pending| !pending.is_empty())
+    }
+
+    /// One restore pass per owner at a time, at most every five seconds.
+    pub(crate) fn begin_restore(&self, owner: &str) -> bool {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        if registry.stopped
+            || registry.restoring.get(owner).is_some_and(|(running, at)| {
+                *running || at.elapsed() < std::time::Duration::from_secs(5)
+            })
+        {
+            return false;
+        }
+        registry
+            .restoring
+            .insert(owner.into(), (true, std::time::Instant::now()));
+        true
+    }
+
+    pub(crate) fn end_restore(&self, owner: &str) {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((running, _)) = registry.restoring.get_mut(owner) {
+            *running = false;
+        }
+    }
+
+    pub(crate) fn take_restore(&self, owner: &str) -> Vec<String> {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        registry
+            .restore
+            .get_mut(owner)
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn return_restore(&self, owner: &str, installations: Vec<String>) {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        let pending = registry.restore.entry(owner.into()).or_default();
+        let mut kept = installations;
+        kept.append(pending);
+        kept.truncate(32);
+        *pending = kept;
     }
 
     pub(crate) fn record_change(&self, owner: &str) {
@@ -317,5 +407,38 @@ mod tests {
             views.open("alice", binding("alice"), "a"),
             Err(AppRequestErrorCode::LimitExceeded)
         );
+    }
+
+    #[test]
+    fn mp08_browser_loss_keeps_app_tab_intent_and_close_ends_it() {
+        let views = UserAppViews::default();
+        let browser = |n| crate::local::UserAppViewBrowser {
+            tab_id: format!("host-tab-{n}"),
+            generation: 1,
+        };
+        let kept = views.open("alice", binding("alice"), "a").unwrap();
+        let closed = views.open("alice", binding("alice"), "a").unwrap();
+        views.bind_browser("alice", &kept.view_id, "t1".into(), browser(1));
+        views.bind_browser("alice", &closed.view_id, "t2".into(), browser(2));
+        assert_eq!(views.restore_intent("alice").len(), 2);
+        assert!(views.close("alice", &closed.view_id));
+        assert!(!views.suspend("bob", &kept.view_id));
+        assert!(views.suspend("alice", &kept.view_id));
+        assert!(views.get("alice", &kept.view_id).is_none());
+        assert_eq!(
+            views.restore_intent("alice"),
+            vec![kept.installation_id.clone()]
+        );
+        assert_eq!(views.has_restore("alice"), Some(true));
+        // A seed from disk never replaces live intent.
+        views.seed_restore("alice", vec!["other".into()]);
+        assert!(views.begin_restore("alice"));
+        assert!(!views.begin_restore("alice"), "one pass at a time");
+        let pending = views.take_restore("alice");
+        assert_eq!(pending, vec![kept.installation_id.clone()]);
+        views.return_restore("alice", pending);
+        views.end_restore("alice");
+        assert!(!views.begin_restore("alice"), "retries wait five seconds");
+        assert_eq!(views.restore_intent("bob"), Vec::<String>::new());
     }
 }

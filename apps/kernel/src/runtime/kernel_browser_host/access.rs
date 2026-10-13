@@ -466,6 +466,19 @@ impl KernelBrowserHost {
                 .grant(&admission.user, agent)
                 .is_ok_and(|grant| grant.resources.contains(resource))
     }
+    /// MP-08/MP-11: whether the agent's own grant still holds `resource`.
+    pub(crate) fn holds_resource(
+        &self,
+        user: &str,
+        agent: &str,
+        resource: &UserDomainResource,
+    ) -> bool {
+        let state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .access
+            .grant(user, agent)
+            .is_ok_and(|grant| grant.resources.contains(resource))
+    }
     pub(crate) fn resource_notice(
         &self,
         admission: Option<&KernelBrowserAdmission>,
