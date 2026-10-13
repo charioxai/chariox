@@ -19,13 +19,34 @@ pub(crate) fn cloud_relay_profile_has_runtime_credentials(
     profile.kernel_credential.is_some() || profile.machine_credential.is_some()
 }
 
+// MP-08 / MP-10 / MP-11: durable enrollment does not select the active transport.
+// An absent URL permits initial Cloud hydration; an explicit private URL wins.
+pub(crate) fn cloud_relay_transport_selected(config: &DaemonConfig) -> bool {
+    config.cloud_relay.is_some()
+        && config
+            .relay_url
+            .as_deref()
+            .is_none_or(|url| config.relay_url_uses_cloud_profile(url))
+}
+
+/// The Cloud profile, only while its relay is the selected transport.
+pub(crate) fn active_cloud_profile(config: &DaemonConfig) -> Option<&PersistedCloudRelayProfile> {
+    config
+        .cloud_relay
+        .as_ref()
+        .filter(|_| cloud_relay_transport_selected(config))
+}
+
 pub(crate) fn cloud_relay_token_refresh_due(config: &DaemonConfig, now_ms: u64) -> bool {
     let Some(profile) = config.cloud_relay.as_ref() else {
         return false;
     };
-    if !cloud_relay_profile_has_runtime_credentials(profile) {
+    if !cloud_relay_transport_selected(config)
+        || !cloud_relay_profile_has_runtime_credentials(profile)
+    {
         return false;
     }
+    // Selected transport: only a missing URL or a non-canonical spelling differ.
     config.relay_url.as_deref() != Some(profile.relay_url.as_str())
         || config.relay_token.is_none()
         || !cloud_relay_token_matches_runtime_key(config)
@@ -104,6 +125,9 @@ pub(crate) fn cloud_kernel_presence_body(
     online: bool,
     registration: Option<&DaemonRegistration>,
 ) -> Option<serde_json::Value> {
+    if online && !cloud_relay_transport_selected(config) {
+        return None;
+    }
     let machine_id = profile.machine_id.clone()?;
     if !cloud_relay_profile_has_runtime_credentials(profile) {
         return None;
@@ -269,6 +293,23 @@ mod tests {
         assert!(!cloud_relay_runtime_token_is_fresh(
             &wrong_key, &fresh, 100_000
         ));
+    }
+
+    #[test]
+    fn retained_cloud_private_relay_does_not_refresh_or_publish_online() {
+        let profile = profile();
+        let mut config = config(Some(profile.clone()));
+        config.relay_url = Some("ws://127.0.0.1:47000".into());
+        config.relay_token = Some("synthetic-private-relay".into());
+        assert!(
+            !cloud_relay_token_refresh_due(&config, 100_000),
+            "MP-08 / MP-10 / MP-11 retained enrollment must not replace private transport"
+        );
+        assert!(
+            cloud_kernel_presence_body(&config, &profile, true, None).is_none(),
+            "MP-08 / MP-10 / MP-11 a private relay connection is not hosted online presence"
+        );
+        assert!(cloud_kernel_presence_body(&config, &profile, false, None).is_some());
     }
 
     #[test]

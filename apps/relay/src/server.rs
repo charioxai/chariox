@@ -104,6 +104,11 @@ impl RelayServer {
                 _ = &mut shutdown => break,
                 accept = listener.accept() => {
                     let (stream, peer_addr) = accept?;
+                    // MP-08 / MP-10 / MP-11: deliver short replies without TCP coalescing delays.
+                    if let Err(error) = stream.set_nodelay(true) {
+                        eprintln!("relay peer TCP policy failed: {error}");
+                        continue;
+                    }
                     let registry = Arc::clone(&self.registry);
                     let auth_verifier = self.auth_verifier.clone();
                     let relay_request_counter = Arc::clone(&self.relay_request_counter);

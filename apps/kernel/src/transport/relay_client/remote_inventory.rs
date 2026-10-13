@@ -89,7 +89,9 @@ pub(crate) async fn refresh_remote_inventory_projection(
         .relay_request_timeout_ms
         .min(REMOTE_INVENTORY_RELAY_TIMEOUT_MS);
 
-    let visible_kernel_ids = if let Some(profile) = runtime_config.cloud_relay.as_ref() {
+    let visible_kernel_ids = if let Some(profile) =
+        crate::runtime::cloud_relay_control::active_cloud_profile(&runtime_config)
+    {
         relay_discovery::authorization::visible_targets(profile).await?
     } else {
         None
@@ -151,7 +153,10 @@ async fn validate_live_relay_kernels(
             continue;
         }
         let is_known = known_kernel_ids.contains(&kernel.kernel_id);
-        if !requires_peer_probe(is_known, config.cloud_relay.is_some()) {
+        if !requires_peer_probe(
+            is_known,
+            crate::runtime::cloud_relay_control::cloud_relay_transport_selected(config),
+        ) {
             validated.push(kernel);
             continue;
         }

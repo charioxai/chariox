@@ -228,7 +228,7 @@ impl CommandRouter {
         caller: &crate::runtime::command::KernelCaller,
     ) -> bool {
         let config = self.config_projection.snapshot();
-        config.cloud_relay.is_none()
+        !crate::runtime::cloud_relay_control::cloud_relay_transport_selected(&config)
             || crate::runtime::cloud_relay_authorization::cloud_relay_caller_owner(&config, caller)
     }
 
@@ -279,7 +279,10 @@ impl CommandRouter {
                 .map(|p| (&p.kernel_id, &p.public_key))
                 .collect::<std::collections::BTreeMap<_, _>>()
         {
-            if let Some(profile) = self.config_projection.snapshot().cloud_relay {
+            let config = self.config_projection.snapshot();
+            if let Some(profile) =
+                crate::runtime::cloud_relay_control::active_cloud_profile(&config)
+            {
                 self.runtime_state
                     .refresh_notification_sources_from_inventory(&profile.user_id, true)
                     .await?;
