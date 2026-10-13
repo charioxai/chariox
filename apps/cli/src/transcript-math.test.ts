@@ -37,3 +37,10 @@ test("display math gets its own paragraph and markdown specials are escaped", ()
 test("math in fences and code spans stays literal through the preprocessor", () => {
   assert.equal(prepareTranscriptMarkdown("`$x^2$` and $x^2$\n```tex\n$$y^2$$\n```"), "`$x^2$` and x²\n```tex\n$$y^2$$\n```")
 })
+
+// MP-08 / MP-10: display math must not leave its quote/list container.
+test("display math keeps blockquote and list containers", () => {
+  assert.equal(prepareTranscriptMarkdown("> $$x^2$$"), "> x²")
+  assert.equal(prepareTranscriptMarkdown("- $$x^2$$"), "- x²")
+  assert.equal(prepareTranscriptMarkdown("- result:\n  $$x^2$$"), "- result:\n  x²")
+})

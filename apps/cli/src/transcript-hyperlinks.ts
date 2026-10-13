@@ -69,6 +69,16 @@ export const createTranscriptMarkdownNodeRenderer = (renderer: ConstructorParame
   const node = context.defaultRender()
   if (node instanceof CodeRenderable) {
     linkifyTranscriptFallback(node)
+    // OpenTUI styles escapes but does not conceal their introducer. Only
+    // parser-recognized prose escapes change; code spans/fences stay literal.
+    const highlight = node.onHighlight
+    node.onHighlight = async (highlights, context) => (await highlight?.(highlights, context) ?? highlights).map(value => {
+      const [start, end, scope, meta] = value
+      const escaped = context.content.slice(start, end)
+      return scope === "string.escape" && /^\\[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]$/.test(escaped)
+        ? [start, end, scope, { ...meta, conceal: escaped.slice(1) }]
+        : value
+    })
     const original = node.onChunks
     node.onChunks = async (chunks, details) => linkifyTranscriptChunks(await original?.(chunks, details) ?? chunks)
   }

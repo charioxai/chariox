@@ -104,7 +104,12 @@ function findClosingRun(text: string, from: number, length: number): number {
 }
 
 function escapeLinkText(value: string): string {
-  return value.replace(/[[\]\\]/g, "\\$&")
+  if (!/[\[\]\\`*_<>~]/.test(value)) return value
+  // A code span keeps filenames/alt labels literal without visible escapes
+  // or extra Markdown token blocks around escaped brackets.
+  const runs = [...value.matchAll(/`+/g)].map(match => match[0].length)
+  const fence = "`".repeat(Math.max(0, ...runs) + 1)
+  return `${fence} ${value} ${fence}`
 }
 
 function safeUrl(value: string): URL | null {

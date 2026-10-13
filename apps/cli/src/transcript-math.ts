@@ -60,7 +60,8 @@ export function renderTranscriptMath(text: string): string {
     const unicode = texToUnicode(found.tex)
     output += unicode === null
       ? text.slice(found.start, found.end)
-      : found.display ? `\n\n${escapeMarkdown(unicode)}\n\n` : escapeMarkdown(unicode)
+      : found.display && !inMarkdownContainer(text, found.start)
+        ? `\n\n${escapeMarkdown(unicode)}\n\n` : escapeMarkdown(unicode)
     index = found.end
   }
   return (output + text.slice(index)).replace(/\n{3,}/g, "\n\n")
@@ -222,4 +223,9 @@ function skipSpaces(parser: Parser): void {
 
 function escapeMarkdown(value: string): string {
   return value.replace(/[\\`*_[\]<>|~]/g, "\\$&")
+}
+
+function inMarkdownContainer(text: string, start: number): boolean {
+  const prefix = text.slice(text.lastIndexOf("\n", start - 1) + 1, start)
+  return /^(?:\s*(?:>\s*)+|\s*(?:[-+*]|\d+[.)])\s+|[ \t]{2,})$/.test(prefix)
 }
