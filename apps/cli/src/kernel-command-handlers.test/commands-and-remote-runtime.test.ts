@@ -381,7 +381,7 @@ test("MP-08/MP-11 BY-05 TUI copy status shows the authoritative refusal and acti
     ["owner_context_authorization_revoked", "This copy approval was revoked by the owner. Ask for a new approval."],
     ["owner_context_authorization_expired", "This copy approval expired. Start a new copy to request approval."],
     ["owner_context_authorization_already_used", "This copy approval was already used. Start a new copy to request approval."],
-  ]) {
+  ] as const) {
     const notices: string[] = [], flashes: Array<{message: string; tone: string}> = []
     await handleKernelSlashCommand({
       isAttached: () => true, sessionState: () => makeSession(),
