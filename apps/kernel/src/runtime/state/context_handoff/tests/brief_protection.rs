@@ -135,7 +135,7 @@ async fn assert_utility_input(recovered: bool) {
             &fixture.session_id,
             "attachment",
             &fixture.agent_id,
-            &format!("fresh benign history {}", "notes ".repeat(500)),
+            format!("fresh benign history {}", "notes ".repeat(500)),
         ),
         Default::default(),
         Some(fixture.runtime.owned.room_secret_observations.epoch + 1),
