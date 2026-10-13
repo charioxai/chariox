@@ -32,11 +32,6 @@ pub(super) fn handle_message_part_delta(
         return Ok(());
     }
     let Some(role) = state.message_roles.get(&message_id).map(String::as_str) else {
-        state
-            .buffered_text_deltas
-            .entry(part_id)
-            .or_default()
-            .push(delta);
         return Ok(());
     };
     if role != "assistant" {
@@ -62,13 +57,7 @@ pub(super) fn handle_message_part_delta(
             );
         }
         Some(_) => {}
-        None => {
-            state
-                .buffered_text_deltas
-                .entry(part_id)
-                .or_default()
-                .push(delta);
-        }
+        None => {}
     }
     Ok(())
 }
@@ -167,7 +156,6 @@ pub(super) fn emit_authoritative_part_text(
         if text.is_empty() {
             return;
         }
-        state.buffered_text_deltas.remove(part_id);
         state
             .emitted_text_by_part
             .insert(part_id.to_string(), text.to_string());
@@ -178,8 +166,6 @@ pub(super) fn emit_authoritative_part_text(
         });
         return;
     };
-
-    state.buffered_text_deltas.remove(part_id);
 
     if text == emitted || emitted.starts_with(text) {
         return;
@@ -208,23 +194,30 @@ fn emit_part_delta(
     chunks: &mut Vec<OpenCodeOutputChunk>,
 ) {
     let Some(streamed) = state.streamed_text_by_part.get_mut(&part_id) else {
-        state
-            .buffered_text_deltas
-            .entry(part_id)
-            .or_default()
-            .push(delta);
         return;
     };
+    let caught_up = state
+        .emitted_text_by_part
+        .get(&part_id)
+        .is_some_and(|emitted| emitted.as_str() == streamed.as_str());
     streamed.push_str(&delta);
-    let cumulative = streamed.clone();
-    if !state.emitted_text_by_part.contains_key(&part_id) {
+    if caught_up {
         state
-            .buffered_text_deltas
-            .entry(part_id)
-            .or_default()
-            .push(delta);
+            .emitted_text_by_part
+            .get_mut(&part_id)
+            .unwrap()
+            .push_str(&delta);
+        chunks.push(OpenCodeOutputChunk {
+            kind,
+            merge_key: Some(part_id),
+            bytes: delta.into_bytes(),
+        });
         return;
     }
+    if !state.emitted_text_by_part.contains_key(&part_id) {
+        return;
+    }
+    let cumulative = streamed.clone();
     emit_authoritative_part_text(state, &part_id, &cumulative, kind, chunks);
 }
 

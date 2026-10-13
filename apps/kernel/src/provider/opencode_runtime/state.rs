@@ -41,7 +41,6 @@ pub(crate) struct OpenCodeRuntimeState {
     // text that is still queued in the event subscription.
     pub(super) streamed_text_by_part: BTreeMap<String, String>,
     pub(super) emitted_tool_summaries: BTreeMap<String, String>,
-    pub(super) buffered_text_deltas: BTreeMap<String, Vec<String>>,
     pub(super) message_roles: BTreeMap<String, String>,
     pub(super) part_kinds: BTreeMap<String, String>,
     pub(super) part_message_ids: BTreeMap<String, String>,
@@ -71,7 +70,6 @@ impl OpenCodeRuntimeState {
             emitted_text_by_part: BTreeMap::new(),
             streamed_text_by_part: BTreeMap::new(),
             emitted_tool_summaries: BTreeMap::new(),
-            buffered_text_deltas: BTreeMap::new(),
             message_roles: BTreeMap::new(),
             part_kinds: BTreeMap::new(),
             part_message_ids: BTreeMap::new(),
@@ -165,7 +163,6 @@ impl OpenCodeRuntimeState {
         self.emitted_text_by_part.clear();
         self.streamed_text_by_part.clear();
         self.emitted_tool_summaries.clear();
-        self.buffered_text_deltas.clear();
         self.message_roles.clear();
         self.part_kinds.clear();
         self.part_message_ids.clear();
