@@ -81,6 +81,7 @@ impl OpenCodeClient {
             let mut data_lines = Vec::new();
             let mut last_text_message = String::new();
             let mut last_part_message = String::new();
+            let mut text_part_ids = std::collections::BTreeSet::new();
 
             loop {
                 if stop_for_thread.load(Ordering::SeqCst) {
@@ -100,6 +101,17 @@ impl OpenCodeClient {
                             let payload = data_lines.join("\n");
                             data_lines.clear();
                             if let Some(event) = parse_sse_event(&payload, &provider_run_id) {
+                                // MP-08 / MP-10: reasoning parts also use a `text`
+                                // delta field. Classify from native part metadata,
+                                // with bounded diagnostic state and no content.
+                                if let OpenCodeEvent::MessagePartUpdated { part } = &event {
+                                    if part.kind == "text" {
+                                        text_part_ids.insert(part.id.clone());
+                                        if text_part_ids.len() > 128 { text_part_ids.pop_first(); }
+                                    } else {
+                                        text_part_ids.remove(&part.id);
+                                    }
+                                }
                                 // MP-08 / MP-10: first-part/first-text timestamps at
                                 // the reader, before the output pump. No content.
                                 let first = match &event {
@@ -113,8 +125,10 @@ impl OpenCodeClient {
                                         message_id,
                                         part_id,
                                         delta,
+                                        field,
                                         ..
-                                    } if !delta.is_empty() && *message_id != last_text_message => {
+                                    } if field == "text" && text_part_ids.contains(part_id)
+                                        && !delta.is_empty() && *message_id != last_text_message => {
                                         last_text_message.clone_from(message_id);
                                         Some(("first text delta received", message_id, part_id))
                                     }
