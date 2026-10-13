@@ -83,8 +83,8 @@ fn context_failure_case(scenario: ContextFailureScenario) {
             .record_native_prompt_started_with_attachments(
                 session.id(),
                 attachment.id(),
+                attachment.id(),
                 agent.id(),
-                "retry audit",
                 "retry audit",
                 Vec::new(),
             )
