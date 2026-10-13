@@ -663,6 +663,12 @@ impl KernelRuntimeOwnedState {
         settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
     ) {
+        if let Some(run) = provider_run_id.and_then(|id| self.provider_store.get_run(id).ok()) {
+            crate::app::clear_claude_context_delivery_for_settled_prompt(
+                &run,
+                completed_prompt.id(),
+            );
+        }
         let started_at_ms = provider_run_id
             .and_then(|provider_run_id| {
                 self.active_turns

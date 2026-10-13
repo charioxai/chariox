@@ -43,13 +43,31 @@ impl PausedBrief {
                 )
                 .unwrap();
         }
+        Self::from_history(
+            root,
+            runtime,
+            session_id,
+            agent_id,
+            attachment_id,
+            prompt_id,
+        )
+    }
+    fn from_history(
+        root: crate::test_support::TestWorktree,
+        runtime: KernelRuntimeState,
+        session_id: String,
+        agent_id: String,
+        attachment_id: String,
+        prompt_id: String,
+    ) -> Self {
         let started = root.path().join("brief-started");
         let release = root.path().join("brief-release");
         let captured = root.path().join("final-provider-envelope");
+        let utility_inputs = root.path().join("brief-utility-inputs");
         let answer = serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":BRIEF}]}}).to_string();
         let script = format!(
-            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in *'Update the handoff brief'*) touch '{}'; n=0; while [ ! -f '{}' ] && [ $n -lt 800 ]; do sleep .01; n=$((n+1)); done; printf '%s\\n' '{}' ;; *) printf '%s\\n' \"$line\" >> '{}' ;; esac; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done\n",
-            started.display(), release.display(), answer, captured.display()
+            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in *'Update the handoff brief'*) printf '%s\\n' \"$line\" >> '{}'; touch '{}'; n=0; while [ ! -f '{}' ] && [ $n -lt 800 ]; do sleep .01; n=$((n+1)); done; printf '%s\\n' '{}' ;; *) printf '%s\\n' \"$line\" >> '{}' ;; esac; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done\n",
+            utility_inputs.display(), started.display(), release.display(), answer, captured.display()
         );
         let executable = root.path().join("paused-brief-fixture");
         std::fs::write(&executable, script).unwrap();
@@ -464,4 +482,130 @@ async fn native_hook_rebuild_excludes_the_current_managed_prompt() {
         !context.contains("unique-current-managed-request"),
         "fresh native hook replayed the current managed request in its handoff"
     );
+}
+
+#[tokio::test]
+async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_input() {
+    let (root, runtime, session_id, agent_id, attachment_id, prompt_id, _) =
+        runtime_with_active_prompt_and_history(Some("retire-this-transcript")).await;
+    for index in 0..100 {
+        let prior = format!("prior-review-{index}");
+        runtime
+            .owned
+            .operational_history_store
+            .append(&crate::history::HistoryEvent::transcript(
+                100,
+                &crate::history::SessionHistoryEntry::user_prompt(
+                    &session_id,
+                    &prior,
+                    &agent_id,
+                    &format!(
+                        "retire-this-transcript {index} {}",
+                        "historical review record ".repeat(100)
+                    ),
+                ),
+                crate::history::HistoryEventTurnContext {
+                    prompt_id: Some(prior),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+    }
+    let fixture = PausedBrief::from_history(
+        root,
+        runtime,
+        session_id,
+        agent_id,
+        attachment_id,
+        prompt_id,
+    );
+    fixture.prepare().await;
+    {
+        let _guard = fixture
+            .runtime
+            .owned
+            .room_secret_observations
+            .barrier(&fixture.session_id)
+            .unwrap()
+            .write_owned()
+            .await;
+        fixture
+            .runtime
+            .owned
+            .room_secret_observations
+            .forget(&fixture.session_id)
+            .unwrap();
+    }
+    fixture.release();
+    fixture.wait_for("final-provider-envelope").await;
+    let inputs = std::fs::read_to_string(fixture.root.path().join("brief-utility-inputs")).unwrap();
+    assert!(
+        inputs.lines().next().unwrap().contains("1 of 2"),
+        "the regression must exercise two real rendered utility chunks"
+    );
+    assert_eq!(
+        inputs.lines().count(),
+        1,
+        "a second utility replayed a captured transcript after Room retirement"
+    );
+    assert!(!fixture.envelope().contains("retire-this-transcript"));
+    assert!(!fixture.envelope().contains("brief-only-amber"));
+    assert!(
+        fixture
+            .runtime
+            .owned
+            .operational_history_store
+            .load_agent_handoff_brief(&fixture.session_id, &fixture.agent_id)
+            .unwrap()
+            .is_none(),
+        "retired fold kept its watermark"
+    );
+}
+
+#[tokio::test]
+async fn native_utility_protection_gate_runs_before_any_prompt_write() {
+    let fixture = PausedBrief::new(false, false).await;
+    let scratch = super::super::super::project_environment_export::MetadataUtilityScratch::new(
+        &fixture
+            .runtime
+            .owned
+            .config_projection
+            .snapshot()
+            .private_runtime_state_root(),
+    )
+    .unwrap();
+    let mut run = fixture.run.clone();
+    run.set_metadata_only_discovery(scratch.0.clone());
+    let admission = crate::provider::ProviderUtilityAdmission::new(|| {
+        Err(DaemonError::LocalTransport {
+            operation: "utility source protection test",
+            message: "source policy changed".into(),
+        })
+    });
+    let error = crate::runtime::agent_utility_executor::run_provider_utility_prompt_with_admission(
+        &fixture.runtime,
+        run,
+        crate::runtime::agent_utility_executor::AgentUtilityPromptParts {
+            visible_user_prompt: "Update the handoff brief with protected source".into(),
+            hidden_system_context: String::new(),
+        },
+        "utility source protection test",
+        crate::provider::ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
+        std::time::Duration::from_secs(2),
+        Some(admission),
+    )
+    .await
+    .expect_err("changed source must be rejected at the native writer");
+    assert!(
+        matches!(
+            error,
+            DaemonError::LocalTransport {
+                operation: "utility source protection test",
+                ..
+            }
+        ),
+        "the actor did not reach the source-admission seam: {error}"
+    );
+    assert!(!fixture.root.path().join("brief-started").exists());
+    assert!(!fixture.root.path().join("brief-utility-inputs").exists());
 }

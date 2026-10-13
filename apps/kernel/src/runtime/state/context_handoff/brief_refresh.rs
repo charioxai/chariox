@@ -11,7 +11,7 @@ use crate::error::DaemonError;
 use crate::history::{AgentHandoffBrief, HistoryEventKind};
 use crate::provider::{ProviderUtilityExecutionPolicy, RuntimeProviderRun};
 use crate::runtime::agent_utility_executor::{
-    run_provider_utility_prompt, AgentUtilityPromptParts,
+    run_provider_utility_prompt_with_admission, AgentUtilityPromptParts,
 };
 
 use super::super::project_environment_export::MetadataUtilityScratch;
@@ -25,6 +25,20 @@ const BRIEF_DEADLINE: Duration = Duration::from_secs(120);
 const CODEX_BRIEF_MODEL: &str = "gpt-6-luna";
 
 impl KernelRuntimeOwnedState {
+    fn require_brief_source_revision(
+        &self,
+        session_id: &str,
+        source_revision: u64,
+    ) -> Result<(), DaemonError> {
+        self.room_secret_observations.require(session_id, false)?;
+        if self.room_secret_observations.revision(session_id)? != source_revision {
+            return Err(brief_error(
+                "Room history policy changed while preparing the brief",
+            ));
+        }
+        Ok(())
+    }
+
     /// The protected source that a current fold has not covered. Older rendering
     /// revisions replay source once, retaining the old durable fold on failure.
     pub(super) fn handoff_brief_update_history(
@@ -145,8 +159,18 @@ impl KernelRuntimeState {
         prompt_is_current: &(impl Fn() -> bool + Sync),
     ) -> Result<(Option<String>, usize), DaemonError> {
         let history = &owned.operational_history_store;
-        let (stored, events) =
-            owned.handoff_brief_update_history(session_id, agent_id, prompt_id)?;
+        let (source_revision, stored, events) = {
+            let _guard = owned
+                .room_secret_observations
+                .barrier(session_id)?
+                .read_owned()
+                .await;
+            owned.room_secret_observations.require(session_id, false)?;
+            let source_revision = owned.room_secret_observations.revision(session_id)?;
+            let (stored, events) =
+                owned.handoff_brief_update_history(session_id, agent_id, prompt_id)?;
+            (source_revision, stored, events)
+        };
         let mut brief = stored.map(|stored| stored.brief);
         let chunks = transcript_chunks(&events);
         if chunks.iter().all(|chunk| chunk.text.is_empty()) {
@@ -187,10 +211,18 @@ impl KernelRuntimeState {
                         if !prompt_is_current() {
                             return Err(brief_error("the dispatching prompt is no longer active"));
                         }
+                        let guard = owned
+                            .room_secret_observations
+                            .barrier(session_id)?
+                            .read_owned()
+                            .await;
+                        owned.require_brief_source_revision(session_id, source_revision)?;
                         prompt.visible_user_prompt = owned
                             .room_secret_observations
                             .scrub(session_id, prompt.visible_user_prompt)?;
-                        self.brief_call(&run, prompt, started).await
+                        drop(guard);
+                        self.brief_call(&run, prompt, started, owned, source_revision)
+                            .await
                     },
                 )
                 .await?;
@@ -200,6 +232,13 @@ impl KernelRuntimeState {
                 if !prompt_is_current() {
                     return Ok((brief, calls));
                 }
+                // Never retain a fold of source retired while the utility ran.
+                let _guard = owned
+                    .room_secret_observations
+                    .barrier(session_id)?
+                    .read_owned()
+                    .await;
+                owned.require_brief_source_revision(session_id, source_revision)?;
                 brief =
                     Some(owned.room_secret_observations.scrub(
                         session_id,
@@ -208,6 +247,12 @@ impl KernelRuntimeState {
                         })?,
                     )?);
             }
+            let _guard = owned
+                .room_secret_observations
+                .barrier(session_id)?
+                .read_owned()
+                .await;
+            owned.require_brief_source_revision(session_id, source_revision)?;
             if let Some(brief) = &brief {
                 history.save_agent_handoff_brief(
                     session_id,
@@ -230,18 +275,38 @@ impl KernelRuntimeState {
         utility_run: &RuntimeProviderRun,
         prompt: AgentUtilityPromptParts,
         started: Instant,
+        owned: &KernelRuntimeOwnedState,
+        source_revision: u64,
     ) -> Result<String, DaemonError> {
         let remaining = BRIEF_DEADLINE
             .checked_sub(started.elapsed())
             .filter(|remaining| !remaining.is_zero())
             .ok_or_else(|| brief_error("the brief deadline passed"))?;
-        run_provider_utility_prompt(
+        let observations = owned.room_secret_observations.clone();
+        let session_id = utility_run.session_id().to_string();
+        let admission = crate::provider::ProviderUtilityAdmission::new(move || {
+            let guard = observations
+                .barrier(&session_id)?
+                .try_read_owned()
+                .map_err(|_| {
+                    brief_error("Room history policy is being updated before utility submission")
+                })?;
+            observations.require(&session_id, false)?;
+            if observations.revision(&session_id)? != source_revision {
+                return Err(brief_error(
+                    "Room history policy changed before utility submission",
+                ));
+            }
+            Ok(Box::new(guard))
+        });
+        run_provider_utility_prompt_with_admission(
             self,
             utility_run.clone(),
             prompt,
             "update handoff brief",
             ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
             remaining,
+            Some(admission),
         )
         .await
     }

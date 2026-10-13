@@ -75,6 +75,7 @@ impl KernelRuntimeState {
                 String::new(),
                 COMPACT_TIMEOUT,
                 ProviderUtilityExecutionPolicy::SessionCommand,
+                None,
             )
             .await;
         let fields = serde_json::json!({

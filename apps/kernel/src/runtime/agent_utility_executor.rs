@@ -343,6 +343,27 @@ pub(crate) async fn run_provider_utility_prompt(
     policy: ProviderUtilityExecutionPolicy,
     timeout: Duration,
 ) -> Result<String, DaemonError> {
+    run_provider_utility_prompt_with_admission(
+        runtime_state,
+        provider_run,
+        prompt,
+        operation,
+        policy,
+        timeout,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn run_provider_utility_prompt_with_admission(
+    runtime_state: &KernelRuntimeState,
+    provider_run: RuntimeProviderRun,
+    prompt: AgentUtilityPromptParts,
+    operation: &'static str,
+    policy: ProviderUtilityExecutionPolicy,
+    timeout: Duration,
+    admission: Option<crate::provider::ProviderUtilityAdmission>,
+) -> Result<String, DaemonError> {
     let provider_run = if policy.is_read_only_discovery() {
         let mut read_only_run = provider_run;
         read_only_run.set_execution_config(
@@ -362,18 +383,28 @@ pub(crate) async fn run_provider_utility_prompt(
                 prompt.hidden_system_context,
                 timeout,
                 policy,
+                admission,
             )
             .await;
     }
-    tokio::task::spawn_blocking(move || {
-        crate::provider::run_blocking_provider_utility_prompt(
+    tokio::task::spawn_blocking(move || match admission {
+        Some(admission) => crate::provider::run_blocking_provider_utility_prompt_with_admission(
             &provider_run,
             &prompt.visible_user_prompt,
             &prompt.hidden_system_context,
             timeout,
             operation,
             policy,
-        )
+            Some(admission),
+        ),
+        None => crate::provider::run_blocking_provider_utility_prompt(
+            &provider_run,
+            &prompt.visible_user_prompt,
+            &prompt.hidden_system_context,
+            timeout,
+            operation,
+            policy,
+        ),
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {

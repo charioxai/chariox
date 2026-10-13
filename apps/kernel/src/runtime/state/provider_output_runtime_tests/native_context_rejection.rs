@@ -63,6 +63,15 @@ async fn home_projection_drain_leaves_hook_for_a_busy_provider_lane() {
     .await;
 }
 
+#[tokio::test]
+async fn expired_managed_hook_replaces_a_settled_previous_delivery() {
+    rejection_scenario(NativeContextScenario {
+        stale_expired_delivery: true,
+        ..Default::default()
+    })
+    .await;
+}
+
 #[derive(Default)]
 struct NativeContextScenario {
     subscription: bool,
@@ -71,6 +80,7 @@ struct NativeContextScenario {
     leased: bool,
     recent_failure: bool,
     hold_provider_lane: bool,
+    stale_expired_delivery: bool,
 }
 
 async fn rejection_scenario(scenario: NativeContextScenario) {
@@ -81,6 +91,7 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
         leased,
         recent_failure,
         hold_provider_lane,
+        stale_expired_delivery,
     } = scenario;
     let worktree = crate::test_support::TestWorktree::new("native-context-failure");
     let mut config = crate::config::DaemonConfig::for_tests();
@@ -318,6 +329,94 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
         .unwrap()
         .active_prompt_for_agent(agent.id())
         .is_some());
+    if stale_expired_delivery {
+        let previous = runtime
+            .owned
+            .session_snapshot(session.id())
+            .unwrap()
+            .active_prompt_for_agent(agent.id())
+            .unwrap()
+            .clone();
+        let delivery_path = format!("{}.context-delivery", context.display());
+        let old_delivery = fs::read(&delivery_path).unwrap();
+        runtime
+            .owned
+            .cancel_active_prompt_only(session.id(), agent.id())
+            .unwrap();
+        // Reproduce a late binding left by the settled previous hook. No provider
+        // cancellation contract is implemented by this expiry regression.
+        fs::write(&delivery_path, old_delivery).unwrap();
+        let admitted = {
+            let mut locked = app.lock().await;
+            match locked
+                .record_native_prompt_started_with_attachments(
+                    session.id(),
+                    attachment.id(),
+                    attachment.id(),
+                    agent.id(),
+                    "expired managed retry",
+                    Vec::new(),
+                )
+                .unwrap()
+            {
+                crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+                other => panic!("unexpected current admission: {other:?}"),
+            }
+        };
+        assert_ne!(previous.id(), admitted.id());
+        fs::write(
+            worktree.path().join("active-prompt-id"),
+            format!(
+                "submit-wait:{}:{}",
+                admitted.id(),
+                crate::session::unix_epoch_ms()
+            ),
+        )
+        .unwrap();
+        fs::write(worktree.path().join("headless-submit-retry.json"), serde_json::json!({
+            "prompt_id":admitted.id(), "count":0, "last_attempt_ms":crate::session::unix_epoch_ms(),
+            "visible_prompt":"expired managed retry"
+        }).to_string()).unwrap();
+        fs::write(
+            &events,
+            format!(
+                "{}\n{}",
+                serde_json::json!({
+                    "hook_event_name":"UserPromptSubmit", "prompt":"expired managed retry",
+                    "hook_context_request_id":"expired-current-request",
+                    "hook_context_deadline_ms":crate::session::unix_epoch_ms().saturating_sub(1)
+                }),
+                serde_json::json!({"hook_event_name":"CharioxContextFailed",
+            "hook_context_request_id":"expired-current-request"})
+            ),
+        )
+        .unwrap();
+        runtime
+            .pump_owned_provider_output(session.id(), run.id(), vec![], true)
+            .await
+            .unwrap();
+        assert!(
+            runtime
+                .owned
+                .session_snapshot(session.id())
+                .unwrap()
+                .active_prompt_for_agent(agent.id())
+                .is_none(),
+            "obsolete delivery blocked rejection of the new admitted expired prompt"
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(run.id())
+                .unwrap()
+                .state(),
+            crate::provider::ProviderRunState::Running,
+            "hook rejection retired a healthy provider"
+        );
+        assert!(!std::path::Path::new(&delivery_path).exists());
+        return;
+    }
     if recent_failure {
         // The visible error arrived in earlier PTY chunks; this poll has no new bytes.
         fs::write(

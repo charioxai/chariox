@@ -320,6 +320,9 @@ impl KernelRuntimeOwnedState {
         prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
     ) {
+        if let Some(run) = provider_run_id.and_then(|id| self.provider_store.get_run(id).ok()) {
+            crate::app::clear_claude_context_delivery_for_settled_prompt(&run, prompt.id());
+        }
         let settled_at_ms = crate::session::unix_epoch_ms();
         if let Some(provider_run_id) =
             provider_run_id.filter(|run_id| !self.prompt_completion_recorded(run_id))
