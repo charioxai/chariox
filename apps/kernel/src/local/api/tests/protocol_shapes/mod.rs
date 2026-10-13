@@ -57,6 +57,9 @@ fn history_page_entry(
 ) -> crate::session_history_page::SessionHistoryPageEntry {
     crate::session_history_page::SessionHistoryPageEntry {
         entry_index: sequence,
+        sequence_end: None,
+        sequence_byte_lengths: Vec::new(),
+        sequence_indices: Vec::new(),
         fragment_start: 0,
         fragment_end: text.chars().count(),
         total_chars: text.chars().count(),

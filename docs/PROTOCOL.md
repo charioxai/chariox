@@ -139,6 +139,14 @@ requests. The outline's `steering` flag identifies budgeted steering prompts;
 observed and recovery prompt envelopes retain their collapsed, on-demand role.
 Clients that omit the request flag retain the earlier outline and blob paths.
 
+MP-08 / MP-10: complete owned output/thought groups in initial history pages
+also compact repeated delta metadata. `sequence_end`, `sequence_byte_lengths`
+and `sequence_indices` retain each original row identity, including gaps left
+by another agent. Clients reconstruct the rows before fragment reconciliation;
+inline summaries admit all those identities while displaying one message.
+The first row's timestamp is retained. Partial rows, tool snapshots and external
+observations are not compacted; persisted operational history is unchanged.
+
 Purpose:
 
 - user keystrokes to provider PTY

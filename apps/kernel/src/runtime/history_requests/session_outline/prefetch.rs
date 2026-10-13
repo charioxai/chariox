@@ -44,7 +44,7 @@ pub(super) fn prefetch_outline_blobs(
                 .collect();
                 let page = SessionHistoryBlobContentPage {
                     blob_id: blob.blob_id.clone(),
-                    entries,
+                    entries: crate::session_history_page::coalesce_history_page_entries(entries),
                 };
                 let size = serde_json::to_vec(&page)
                     .map_err(|error| DaemonError::LocalTransport {

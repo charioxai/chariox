@@ -173,3 +173,95 @@ async fn blob_contents_batch_returns_each_requested_blob_in_order() {
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
+
+#[tokio::test]
+async fn initial_outline_compacts_word_delta_metadata_before_relay_delivery() {
+    // MP-08 / MP-10: supplementary regression for the real WAN oversized response.
+    let path = std::env::temp_dir().join(format!(
+        "chariox-initial-compact-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let store = OperationalHistoryStore::open(path.clone()).unwrap();
+    let context = HistoryEventTurnContext {
+        session_id: Some("s".into()),
+        agent_id: Some("a".into()),
+        turn_id: Some("t".into()),
+        prompt_id: Some("p".into()),
+        provider_run_id: Some("r".into()),
+        ..HistoryEventTurnContext::default()
+    };
+    store
+        .append(&HistoryEvent::transcript(
+            1,
+            &SessionHistoryEntry::user_prompt("s", "c", "a", "review the source"),
+            context.clone(),
+        ))
+        .unwrap();
+    for sequence in 2..=513 {
+        store
+            .append(&HistoryEvent::transcript(
+                sequence,
+                &SessionHistoryEntry::provider_output(
+                    "s",
+                    "r",
+                    Some("a"),
+                    TerminalOutputKind::ProviderReasoning,
+                    Some("thought".into()),
+                    "é中".to_string(),
+                ),
+                context.clone(),
+            ))
+            .unwrap();
+    }
+    let result = execute_session_history_outline_request(
+        store.clone(),
+        GetSessionHistoryOutlineRequest {
+            session_id: "s".into(),
+            agent_ids: Some(vec!["a".into()]),
+            latest_prompt_count: Some(4),
+            cursor: None,
+            include_prefetched_content: true,
+        },
+    )
+    .await
+    .unwrap();
+    let LocalDaemonResponse::SessionHistoryOutline { agents } = result else {
+        panic!("outline")
+    };
+    let pages = agents[0].prefetched_blobs.as_ref().unwrap();
+    assert!(
+        serde_json::to_vec(pages).unwrap().len() < 12_000,
+        "MP-08 / MP-10: closed thought deltas repeat metadata on the WAN wire"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn complete_inline_delta_groups_keep_each_original_sequence() {
+    // MP-08 / MP-10: grouped inline words must deduplicate the same rows as blobs.
+    let events = [(10, "é"), (12, "中"), (13, "é")]
+        .into_iter()
+        .map(|(sequence, text)| {
+            HistoryEvent::transcript(
+                sequence,
+                &SessionHistoryEntry::provider_output(
+                    "s",
+                    "r",
+                    Some("a"),
+                    TerminalOutputKind::ProviderOutput,
+                    Some("m".into()),
+                    text.to_string(),
+                ),
+                HistoryEventTurnContext::default(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let page = outline_page_entry_from_event_group(&events.iter().collect::<Vec<_>>()).unwrap();
+    assert_eq!(page.sequence_indices, vec![10, 12, 13]);
+    assert_eq!(page.sequence_byte_lengths, vec![2, 3, 2]);
+    assert_eq!(page.entry.text, "é中é");
+}

@@ -424,6 +424,18 @@ pub(super) fn outline_page_entry_from_event_group(
         .map(|entry| entry.text)
         .collect::<String>();
     let total_chars = text.chars().count();
+    // MP-08 / MP-10: complete inline groups need every original replay identity too.
+    if total_chars <= MAX_OUTLINE_INLINE_CHARS {
+        let rows = crate::session_history_page::coalesce_history_page_entries(
+            ordered_events
+                .iter()
+                .filter_map(|event| page_entry_from_event((**event).clone()))
+                .collect(),
+        );
+        if rows.len() == 1 && rows[0].sequence_end.is_some() {
+            return rows.into_iter().next();
+        }
+    }
     let fragment_end = total_chars.min(MAX_OUTLINE_INLINE_CHARS);
     page_entry.entry.text = text.chars().take(fragment_end).collect();
     page_entry.fragment_start = 0;
@@ -452,6 +464,9 @@ fn page_entry_from_event_with_inline_limit(
     }
     Some(SessionHistoryPageEntry {
         entry_index: event.sequence as usize,
+        sequence_end: None,
+        sequence_byte_lengths: Vec::new(),
+        sequence_indices: Vec::new(),
         fragment_start: 0,
         fragment_end,
         total_chars,

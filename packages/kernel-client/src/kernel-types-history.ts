@@ -1,5 +1,8 @@
 export type SessionHistoryPageEntry = {
   entry_index: number
+  sequence_end?: number
+  sequence_byte_lengths?: number[]
+  sequence_indices?: number[]
   fragment_start: number
   fragment_end: number
   total_chars: number

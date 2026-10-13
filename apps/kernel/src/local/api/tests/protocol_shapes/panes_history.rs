@@ -9,18 +9,34 @@ fn panes_history_508_range_steering_and_initial_content_snapshot() {
         116
     );
     for (source, expected_hash) in [
-        (include_str!("../../types/history.rs"), "dfb4d570b4ce481f7bd1edaa408f78e4560e00ffa2d3d38d42ff68d4fe65324a"),
-        (include_str!("../../../../terminal/stream/records.rs"), "e328717397216d51489f9c032bdd136400ce0726f6468eb20280e77a4c313462"),
+        (
+            include_str!("../../../../session_history_page.rs"),
+            "732bdf072fe9483e319fe931aa6df21f8b6ee417f09c8787436ae6f8655739b8",
+        ),
+        (
+            include_str!("../../types/history.rs"),
+            "dfb4d570b4ce481f7bd1edaa408f78e4560e00ffa2d3d38d42ff68d4fe65324a",
+        ),
+        (
+            include_str!("../../../../terminal/stream/records.rs"),
+            "e328717397216d51489f9c032bdd136400ce0726f6468eb20280e77a4c313462",
+        ),
     ] {
-        assert_eq!(format!("{:x}", Sha256::digest(source.as_bytes())), expected_hash,
-            "MP-08 / MP-10: wire definitions changed; update the allocated protocol and snapshot");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(source.as_bytes())),
+            expected_hash,
+            "MP-08 / MP-10: wire definitions changed; update the allocated protocol and snapshot"
+        );
     }
     let expected = serde_json::json!({
+        "page": {"entry_index": 10, "sequence_end": 13, "sequence_indices": [10,12,13], "sequence_byte_lengths": [2, 3, 2], "fragment_start": 0, "fragment_end": 3, "total_chars": 3, "entry": {"session_id":"s", "provider_run_id":"r", "agent_id":"a", "source_attachment_id":null, "kind":"provider_output", "merge_key":"m", "text":"é中é", "timestamp_ms":1}},
         "request": {"GetSessionHistoryOutline": {"session_id": "s", "agent_ids": ["a"], "latest_prompt_count": 4, "include_prefetched_content": true}},
         "agent": {"agent_id": "a", "turns": [], "prefetched_blobs": []},
         "blob": {"blob_id": "history:10:10", "kind": "user_prompt", "title": "prompt", "summary": "steer", "sequence_start": 10, "sequence_end": 10, "entry_count": 1, "total_chars": 5, "timestamp_ms": 1, "steering": true},
         "output": {"record_id": 1, "sequence": 10, "sequence_end": 11, "sequence_byte_lengths": [2, 3], "timestamp_ms": 1, "session_id": "s", "provider_run_id": "r", "kind": "provider_output", "recipient_attachment_ids": ["c"], "pending_recipient_attachment_ids": ["c"], "bytes": [195,169,228,184,173]}
     });
+    let page: crate::session_history_page::SessionHistoryPageEntry =
+        serde_json::from_value(expected["page"].clone()).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(expected["request"].clone()).unwrap();
     let agent: crate::local::SessionHistoryOutlineAgent =
         serde_json::from_value(expected["agent"].clone()).unwrap();
@@ -28,13 +44,12 @@ fn panes_history_508_range_steering_and_initial_content_snapshot() {
         serde_json::from_value(expected["blob"].clone()).unwrap();
     let output: crate::terminal::TerminalOutputRecord =
         serde_json::from_value(expected["output"].clone()).unwrap();
-    let snapshot =
-        serde_json::json!({ "request": request, "agent": agent, "blob": blob, "output": output });
+    let snapshot = serde_json::json!({ "page": page, "request": request, "agent": agent, "blob": blob, "output": output });
     assert_eq!(snapshot, expected);
     let hash = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{hash:x}"),
-        "5b03268f87d6e8655f086a1c91d2fde59cfb680ee71ca7189edc0bbd6cdbec36"
+        "0cc528d63467dc46965fdf51075ad217ddc494199eb1388c888f602673443879"
     );
 
     // Missing optional metadata preserves the legacy shapes.

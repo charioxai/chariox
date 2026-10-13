@@ -55,6 +55,7 @@ import {
   type SessionHistoryOutlineTurnPromptMetadata,
 } from "./session-history-outline.js"
 import { mergeAdjacentSessionHistoryPageEntries } from "./session-history-page-entries.js"
+import { expandSessionHistoryPageSequences } from "./session-history-page-sequences.js"
 import type {
   SessionHistoryEntry,
   SessionHistoryExternalObservation,
@@ -122,7 +123,7 @@ export function hydrateSessionHistoryTranscriptEntries(
   historyEntries: SessionHistoryPageEntry[],
   hydrateOptions: SessionHistoryTranscriptHydrateOptions = {},
 ): SessionHistoryTranscriptEntry[] {
-  const mergedHistoryEntries = mergeAdjacentSessionHistoryPageEntries(historyEntries)
+  const mergedHistoryEntries = mergeAdjacentSessionHistoryPageEntries(historyEntries.flatMap(expandSessionHistoryPageSequences))
   let entries: SessionHistoryTranscriptEntry[] = []
   const tools = new Map<string, ToolTranscriptUpdate>()
   let nextId = 0
