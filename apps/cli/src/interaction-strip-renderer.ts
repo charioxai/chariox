@@ -56,7 +56,7 @@ export function renderAgentInteractionStrips(options: InteractionStripRenderOpti
   }
 }
 
-function renderInteractionStrip(
+export function renderInteractionStrip(
   options: InteractionStripRenderOptions,
   box: BoxRenderable | undefined,
   agent: AgentInstance | null | undefined,

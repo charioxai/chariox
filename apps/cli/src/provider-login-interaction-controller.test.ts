@@ -271,3 +271,47 @@ test("MP-08/MP-10/MP-11 unavailable saved login observation never falls back to 
     assert.deepEqual(h.notices, ["Signed in to Claude · saved to disposable-claude"])
   } finally { h.controller.dispose() }
 })
+
+
+test("MP-08/MP-10/MP-11 waiting-room login follows the kernel's link, masked code, and Vault phases", async () => {
+  const vault = { ...interaction, id: "login-1", title: "Unlock Chariox Vault", provider_login: null,
+    message: "Enter the Chariox Vault passphrase.", custom_choice: { id: "passphrase", label: "Vault passphrase", input_kind: "secret" as const } }
+  const h = harness([
+    { ...status("running"), interaction: { ...interaction, id: "login-1" } },
+    { ...status("running"), interaction: vault },
+    status("cancelled"),
+  ])
+  try {
+    h.controller.track({ login_id: "login-1", provider: "claude", account_profile: status("running").account_profile })
+    await h.tick()
+    const code = h.controller.sessionlessInteraction()!
+    assert.equal(code.provider_login?.login.auth_url, url)
+    assert.equal(code.custom_choice?.input_kind, "secret")
+    assert.equal(h.controller.stripState(code)?.view.takesCode, true)
+    await h.tick()
+    const prompt = h.controller.sessionlessInteraction()!
+    assert.equal(prompt.title, vault.title)
+    assert.equal(prompt.custom_choice?.id, "passphrase")
+    assert.equal(prompt.custom_choice?.input_kind, "secret")
+    assert.equal(h.controller.stripState(prompt), null, "an old link must not hide the kernel's Vault phase")
+    await h.tick()
+    assert.equal(h.controller.sessionlessInteraction(), null)
+  } finally { h.controller.dispose() }
+})
+
+
+test("MP-08/MP-11 waiting-room Codex device link survives adoption of the kernel projection", async () => {
+  const h = harness([{ ...status("running"), provider: "codex", interaction: {
+    ...interaction, provider_login: null, custom_choice: null,
+  } }])
+  try {
+    h.controller.track({ login_id: "login-1", provider: "codex", account_profile: status("running").account_profile,
+      login_kind: "chatgptDeviceCode", verification_url: "https://auth.openai.com/device", user_code: "PUBLIC-CODE" })
+    await h.tick()
+    for (let i = 0; i < 2; i++) {
+      const current = h.controller.sessionlessInteraction()!
+      assert.equal(h.controller.stripState(current)?.view.url, "https://auth.openai.com/device")
+      assert.equal(current.provider_login?.login.user_code, "PUBLIC-CODE")
+    }
+  } finally { h.controller.dispose() }
+})

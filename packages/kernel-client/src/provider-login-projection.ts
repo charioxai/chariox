@@ -1,3 +1,7 @@
+import type { RuntimeInteraction } from "./kernel-types-runtime.js"
+import type { ProviderLoginStatus } from "./kernel-types-provider.js"
+import { cancelProviderLoginRequest, sendProviderLoginInputRequest } from "./ipc-provider-requests.js"
+
 /** MP-08/MP-10/MP-11: human-only login UI. Never include these lines in traces. */
 export type RuntimeProviderLogin = {
   kernel_id: string
@@ -87,4 +91,32 @@ export function safeProviderLoginUrl(value: string): string | null {
     const url = new URL(value)
     return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.href : null
   } catch { return null }
+}
+
+/** MP-08/MP-11: the same kernel-owned template used by the attached workflow.
+ * Waiting-room clients consume it directly; they never invent login/Vault phases. */
+export function providerLoginStatusInteraction(
+  status: ProviderLoginStatus,
+  projection: RuntimeProviderLogin,
+): RuntimeInteraction | null {
+  if (status.state !== "running" || !status.interaction) return null
+  const template = status.interaction as RuntimeInteraction
+  return { ...template, provider_login: template.provider_login ?? projection }
+}
+
+/** Human response adapter for a sessionless login's existing kernel endpoint.
+ * The kernel retains the login, PTY, Vault and input authority. */
+export function providerLoginInteractionReplyRequest(
+  interaction: RuntimeInteraction,
+  choiceId: string,
+  reply: string | null,
+) {
+  const loginId = interaction.provider_login?.login.login_id
+  if (!loginId) throw new Error("Provider login has no login ID")
+  if (choiceId === "cancel" && interaction.choices.some(choice => choice.id === choiceId)) {
+    return cancelProviderLoginRequest(loginId)
+  }
+  if (choiceId !== interaction.custom_choice?.id || !reply) throw new Error("Provider login response is unavailable")
+  const bytes = new TextEncoder().encode(`${reply}\r`)
+  return sendProviderLoginInputRequest(loginId, btoa(String.fromCharCode(...bytes)))
 }

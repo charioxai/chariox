@@ -516,7 +516,7 @@ function formatProviderLoginNotice(
 }
 
 async function presentLoginLink(deps: ProviderCommandHandlerDeps, login: ProviderLoginStart, signIn = true): Promise<void> {
-  if (signIn && login.login_id) deps.trackProviderLogin?.({ login_id: login.login_id, provider: login.provider, account_profile: login.account_profile })
+  if (signIn && login.login_id) deps.trackProviderLogin?.({ ...login, login_id: login.login_id })
   const url = login.verification_url ?? login.auth_url
   if (!url || !providerLoginUrl(url)) return
   await presentUrl(deps, url, { userCode: login.user_code, autoOpen: true })

@@ -1,3 +1,5 @@
+import { createProviderLoginPopupComposition } from "./provider-login-popup-composition.js"
+import { routeRawPastes } from "./raw-paste-routing.js"
 import { createProviderLoginLinkOpener, localDesktopAvailable } from "./provider-login-link.js"
 import { createProviderLoginInteractionController } from "./provider-login-interaction-controller.js"
 import { getRelayStatus } from "./relay-api.js"
@@ -269,7 +271,10 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     copyUrl: async (url) => clipboardCopyMessage(await copyTextToClipboard(url, renderer)),
     appendNotice: (message, tone) => appendNotice(message, tone),
     flashFooter: (message, tone) => flashFooter(message, tone),
-    render: () => renderAgentInteractions(),
+    render: () => {
+      renderAgentInteractions()
+      providerAccountRecovery.render()
+    },
   })
   onCleanup(providerLoginInteractions.dispose)
   const agentPaneRuntimeStore = createAgentPaneRuntimeStoreController<
@@ -670,7 +675,16 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     onFooterFlashChange: () => updateSessionChrome(),
   })
   let blockedAccountTarget: {sessionId: string; agentId: string} | undefined
+  const providerLoginPopup = createProviderLoginPopupComposition({
+    renderer, attached: isAttached, login: providerLoginInteractions, choices: interactionChoiceStore,
+    send: (request) => client.send(request),
+    flashFooter: (message, tone) => flashFooter(message, tone),
+    render: () => providerAccountRecovery.render(),
+  })
+  onCleanup(providerLoginPopup.dispose)
+  onCleanup(routeRawPastes(renderer.keyInput, providerLoginPopup.handlePaste))
   const providerAccountRecovery = createProviderAccountRecoveryController({
+    loginSurface: providerLoginPopup,
     renderer,
     dimensions,
     actions: target => {
