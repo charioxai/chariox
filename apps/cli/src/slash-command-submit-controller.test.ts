@@ -212,7 +212,6 @@ for (const outcome of ["success", "error", "shared shell"] as const) {
     const pending = new Promise<void>(resolve => { complete = resolve })
     const entered = new Promise<void>(resolve => { started = resolve })
     const harness = createHarness({ clearPromptText: () => { text = "" } })
-    harness.deps.getPromptText = () => text
     const handler = async () => {
       started()
       await pending
@@ -245,7 +244,6 @@ for (const outcome of ["success", "error", "shared shell"] as const) {
 test("a completed command clears its unchanged submitted draft", async () => {
   let text = "/agent account ctx kaissandra.ai"
   const harness = createHarness({ clearPromptText: () => { text = "" } })
-  harness.deps.getPromptText = () => text
   await createSlashCommandSubmitController(harness.deps).submit(text, { allowSlashCommandSubmission: true })
   assert.equal(text, "")
   assert.equal(harness.clearPromptCount(), 1)
