@@ -9,6 +9,7 @@ export type CliLoadingStateControllerDeps = {
   workflowScreenActive: () => boolean
   rebuildTranscript: () => void
   requestTranscriptRender: () => void
+  rebuildEmptyAuxiliaryPanes: () => void
 }
 
 export function createCliLoadingStateController(
@@ -25,6 +26,7 @@ export function createCliLoadingStateController(
       return false
     }
     deps.setSessionHydrating(next)
+    deps.rebuildEmptyAuxiliaryPanes()
     if (
       deps.isAttached()
       && deps.visibleTranscriptEntryCount() === 0

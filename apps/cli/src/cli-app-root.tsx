@@ -812,6 +812,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setCurrentAuxiliaryAgentId: agentPaneRuntimeStore.setCurrentAuxiliaryAgentId,
     registerAgentScrollbox: agentPaneRuntimeStore.registerScrollbox,
     rebuildAuxiliaryAgentPane: (agentId) => rebuildAuxiliaryAgentPane(agentId),
+    rebuildEmptyAuxiliaryAgentPanes: () => rebuildEmptyAuxiliaryAgentPanes(),
     primaryTranscriptRuntimeStore, agentPaneEntries,
     replaceTranscriptEntries: (nextEntries, agentId) => replaceTranscriptEntries(nextEntries, agentId),
     logViewDebug, promptSubmissionAgentStateController, setAgentBusyLatches,
@@ -823,14 +824,15 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   sessionChromeUpdateController = responseShellSessionChromeUpdateController
 
   const {
-    clearAllAuxiliaryAgentPanes, clearAuxiliaryAgentPane, rebuildAuxiliaryAgentPane, persistVisibleTranscriptEntries,
+    clearAllAuxiliaryAgentPanes, clearAuxiliaryAgentPane, rebuildAuxiliaryAgentPane, rebuildEmptyAuxiliaryAgentPanes,
+    persistVisibleTranscriptEntries,
     setAgentPanePreview, setAgentTranscriptEntries, currentAgentPaneEntries, hasTrailingUserPrompt,
     toggleAuxiliaryPaneTurn, toggleAuxiliaryPaneBlob, syncVisibleTranscriptPreview, appendAgentPanePreview,
     appendTranscriptEntryToAgentPane, appendProviderChunkToAgentPane, appendToolUpdateToAgentPane, refreshAgentPanes,
     refreshAgentHistories,
     shouldRefreshAgentPanesForSessionChange,
   } = createCliAgentPaneComposition({
-    client, renderer, isAttached, visibleTranscriptAgentId,
+    client, renderer, isAttached, sessionHydrating, visibleTranscriptAgentId,
     visibleTranscriptEntries: transcriptEntryProjectionController.renderableEntries,
     agentPaneEntries, setAgentPaneEntries, setAgentPanePreviews, setCollapsedTurnIdsByAgent,
     setNextHistoryCursor, sessionState, focusedAgentId, maxAgentsPerScreen,
@@ -854,7 +856,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     renderer, appLogger, formatError,
     scheduleTimer: startTimeout,
     isAttached, sessionHydrating, loadingHistory, nextHistoryCursor,
-    setNextHistoryCursor, entryCounter, setEntryCounter, setHistoryLoadingState,
+    setNextHistoryCursor, entryCounter, setEntryCounter, setHistoryLoadingState, setSessionHydratingState,
     setEntries: (nextEntries) => {
       setEntries(reconcile(nextEntries))
     },
