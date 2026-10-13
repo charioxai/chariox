@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { acceptAppHostActionRequest, appHostActionMinimumProtocolVersion, restoreAppDataSnapshotRequest, startSliceRequest, submitRoomEnvironmentBrowserActionRequest } from "@chariox/kernel-client/ipc-requests"
+import { addSshMachineRequest, removeSshMachineRequest, sshMachineMinimumProtocolVersion, acceptAppHostActionRequest, appHostActionMinimumProtocolVersion, restoreAppDataSnapshotRequest, startSliceRequest, submitRoomEnvironmentBrowserActionRequest } from "@chariox/kernel-client/ipc-requests"
 import { requireKernelFeatureProtocol } from "./kernel-feature-minimum.js"
 
 test("MP-08 MP-10 native active steering requires allocated protocol 491", () => {
@@ -103,4 +103,14 @@ test("MP-08 / MP-11 automation inject refuses 490 before transport", () => {
 
 test("MP-08 / MP-11 automation injection requires a confirmed kernel generation", () => {
   for (const version of [undefined, 0, NaN]) assert.throws(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, version), /kernel support unknown.*491/)
+})
+
+// MP-07 / MP-08 / MP-11: SSH variants first shipped in the allocated C5 union.
+test("MP-07 / MP-08 / MP-11 SSH machine operations refuse older kernels before transport", () => {
+  for (const request of [addSshMachineRequest("linux-lan"), removeSshMachineRequest("owned-install")]) {
+    for (const version of [491, sshMachineMinimumProtocolVersion - 1]) {
+      assert.throws(() => requireKernelFeatureProtocol(request, version), /SSH machine management needs protocol ≥509.*update the kernel/)
+    }
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, sshMachineMinimumProtocolVersion))
+  }
 })
