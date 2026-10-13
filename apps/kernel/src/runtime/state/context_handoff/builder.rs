@@ -180,7 +180,7 @@ fn truncate_bytes(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_string();
     }
-    let mut end = max_bytes.checked_sub(TRUNCATED.len()).unwrap_or(0);
+    let mut end = max_bytes.saturating_sub(TRUNCATED.len());
     if end == 0 {
         return String::new();
     }
