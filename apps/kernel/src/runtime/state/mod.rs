@@ -162,6 +162,9 @@ pub(crate) struct KernelRuntimeState {
     external_command_authority: Option<ExternalCommandAuthority>,
     room_provider_origin: Option<(String, String)>,
     room_request_origin: Option<(String, LocalDaemonRequest)>,
+    /// MP-08 / MP-11: the transport admitted this command from a terminal
+    /// (local token or relay client), not from a granted or launched agent.
+    terminal_caller: bool,
     relay_peer_authority: Option<crate::runtime::relay_peer_authority::RelayPeerAuthority>,
     forwarded_peer_binding: Option<forwarded_peer_authority::ForwardedPeerBinding>,
     #[cfg(test)]
@@ -834,6 +837,7 @@ impl KernelRuntimeState {
             external_command_authority: None,
             room_provider_origin: None,
             room_request_origin: None,
+            terminal_caller: false,
             relay_peer_authority: None,
             forwarded_peer_binding: None,
             #[cfg(test)]
