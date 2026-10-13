@@ -307,13 +307,8 @@ pub(crate) fn refresh_provider_account_profile_with_config(
     account_profile: &str,
     config: &DaemonConfig,
 ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
-    let profile = registry.get(owner_user_id, provider, account_profile)?;
-    if crate::provider::canonical_provider_family(provider) == Some("claude")
-        && crate::provider::provider_account_credential_registered(
-            owner_user_id,
-            provider,
-            &profile.profile_id,
-        )?
+    if let Some(profile) =
+        saved_claude_token_observation(registry, owner_user_id, provider, account_profile)?
     {
         return Ok(profile);
     }
@@ -324,6 +319,42 @@ pub(crate) fn refresh_provider_account_profile_with_config(
         account_profile,
         config,
     )
+}
+
+fn saved_claude_token_observation(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+) -> Result<Option<crate::account_profile::ProviderAccountProfile>, DaemonError> {
+    let profile = registry.get(owner_user_id, provider, account_profile)?;
+    if crate::provider::canonical_provider_family(provider) == Some("claude")
+        && crate::provider::provider_account_credential_registered(
+            owner_user_id,
+            provider,
+            &profile.profile_id,
+        )?
+    {
+        return Ok(Some(profile));
+    }
+    Ok(None)
+}
+
+/// MP-08 / MP-11: publication startup observes native auth without an optional
+/// usage probe. Enrolled tokens share the automatic refresh's saved-state gate.
+pub(crate) fn refresh_provider_account_auth_with_config(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    config: &DaemonConfig,
+) -> Result<(), DaemonError> {
+    if saved_claude_token_observation(registry, owner_user_id, provider, account_profile)?.is_some()
+    {
+        return Ok(());
+    }
+    observe_provider_auth_status(registry, owner_user_id, provider, account_profile, config)
+        .map(|_| ())
 }
 
 pub(crate) fn refresh_provider_account_profile_explicitly(
@@ -442,8 +473,15 @@ fn claude_profile_auth_status(
     if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
         zeroize::Zeroize::zeroize(value);
     }
+    let mut rejected = matches!(
+        &checked,
+        Err(crate::provider::ClaudeCredentialCheckError::Rejected)
+    );
     let verified = match checked {
-        Ok(()) => {
+        Err(error @ crate::provider::ClaudeCredentialCheckError::Inconclusive(_)) => {
+            return Err(error.into_daemon_error())
+        }
+        checked => {
             // Local unavailability on reread still says nothing about the token.
             let current = crate::provider::resolve_provider_account_credentials(
                 config,
@@ -452,8 +490,9 @@ fn claude_profile_auth_status(
                 &profile.profile_id,
             )?;
             if current.iter().eq(secrets.iter()) {
-                Ok(())
+                checked.map_err(|error| error.into_daemon_error())
             } else {
+                rejected = false;
                 Err(DaemonError::LocalTransport {
                     operation: "verify Claude setup token",
                     message:
@@ -462,21 +501,19 @@ fn claude_profile_auth_status(
                 })
             }
         }
-        Err(error @ crate::provider::ClaudeCredentialCheckError::Inconclusive(_)) => {
-            return Err(error.into_daemon_error())
-        }
-        Err(error @ crate::provider::ClaudeCredentialCheckError::Rejected) => {
-            Err(error.into_daemon_error())
-        }
     };
     if let Err(error) = verified {
-        // Definitive rejection or an unverified replacement closes admission.
+        // Definitive rejection skips another check; a replacement needs verification.
         // Local and transient failures above preserve the saved observation.
         registry.update_observation(
             owner_user_id,
             provider,
             &profile.profile_id,
-            crate::account_profile::ProviderAccountAuthState::Error,
+            if rejected {
+                crate::account_profile::ProviderAccountAuthState::Expired
+            } else {
+                crate::account_profile::ProviderAccountAuthState::Error
+            },
             None,
             None,
             None,

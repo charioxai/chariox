@@ -81,6 +81,68 @@ esac
             ProviderAccountAuthState::Authenticated,
             "MP-08/MP-10/MP-11: stored-token receipt must establish verified authentication"
         );
+        if recheck == Some("concurrent-rejection") {
+            let ready = root.join("check-ready");
+            let release = root.join("check-release");
+            std::fs::write(&executable, format!("#!/bin/sh\ncase \"$1\" in\n--version) echo fixture;;\n*) touch '{}'\nwhile [ ! -f '{}' ]; do sleep 0.02; done\nprintf '%s\\n' '{{\"type\":\"result\",\"is_error\":true,\"api_error_status\":401}}'\nexit 1;;\nesac\n", ready.display(), release.display())).unwrap();
+            let writer_registry = registry.clone();
+            let writer_profile = profile.profile_id.clone();
+            let writer_alias = alias.to_string();
+            let writer_config = projection.snapshot();
+            let writer = std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while !ready.exists() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "MP-08/MP-11: check must begin before replacement"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                crate::provider::store_provider_account_credential(
+                    &writer_config,
+                    "local",
+                    &writer_alias,
+                    &writer_profile,
+                    "synthetic-replacement",
+                    true,
+                )
+                .unwrap();
+                writer_registry
+                    .update_observation(
+                        "local",
+                        &writer_alias,
+                        &writer_profile,
+                        ProviderAccountAuthState::Authenticated,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                std::fs::write(release, "release").unwrap();
+            });
+            let refreshed =
+                crate::local::provider_requests::refresh_provider_account_profile_explicitly(
+                    registry,
+                    "local",
+                    alias,
+                    &profile.profile_id,
+                    &projection.snapshot(),
+                );
+            writer.join().unwrap();
+            assert!(refreshed.is_err());
+            assert_eq!(
+                registry
+                    .get("local", alias, &profile.profile_id)
+                    .unwrap()
+                    .auth_state,
+                ProviderAccountAuthState::Error,
+                "MP-08/MP-11: rejection of the old token must not expire its replacement"
+            );
+            drop(runtime);
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
         if matches!(recheck, Some("transient" | "unexpected-result")) {
             let before = registry.get("local", alias, &profile.profile_id).unwrap();
             let response = if recheck == Some("transient") {
@@ -251,13 +313,13 @@ esac
                 refresh.is_err(),
                 "MP-08/MP-11: Refresh must verify the current token ({case})"
             );
-            assert_ne!(
+            assert_eq!(
                 registry
                     .get("local", alias, &profile.profile_id)
                     .unwrap()
                     .auth_state,
-                ProviderAccountAuthState::Authenticated,
-                "MP-08/MP-11: failed verification must close launch admission"
+                ProviderAccountAuthState::Expired,
+                "MP-08/MP-11: definitive rejection must skip a second paid first-use check"
             );
             registry
                 .update_observation(
@@ -282,12 +344,13 @@ esac
                 status.is_err(),
                 "MP-08/MP-11: Status must verify the current token ({case})"
             );
-            assert_ne!(
+            assert_eq!(
                 registry
                     .get("local", alias, &profile.profile_id)
                     .unwrap()
                     .auth_state,
-                ProviderAccountAuthState::Authenticated
+                ProviderAccountAuthState::Expired,
+                "MP-08/MP-11: rejected Status must agree with first-use recovery"
             );
             drop(runtime);
             std::fs::remove_dir_all(root).unwrap();
@@ -404,6 +467,11 @@ async fn direct_setup_token_enrollment_rejects_unverified_secret() {
 async fn refresh_rechecks_revoked_setup_token() {
     crate::test_support::isolated_env_test!();
     enrollment("claude-p", true, Some("revoked")).await;
+}
+#[tokio::test]
+async fn rejected_check_does_not_expire_a_concurrent_replacement() {
+    crate::test_support::isolated_env_test!();
+    enrollment("claude-p", true, Some("concurrent-rejection")).await;
 }
 #[tokio::test]
 async fn refresh_rechecks_replaced_setup_token() {
