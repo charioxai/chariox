@@ -175,7 +175,7 @@ async fn workflow_wait_cancellation(cancel_creator: bool) {
     let fixture = interrupt_fixture_with_creator(
         crate::test_support::TestWorktree::new("a03-workflow-wait"),
         config,
-        cancel_creator,
+        true,
     );
     let owned = &fixture.runtime.owned;
     let session = owned
@@ -1075,7 +1075,7 @@ fn interrupt_fixture_with_config(
     worktree: crate::test_support::TestWorktree,
     config: crate::config::DaemonConfig,
 ) -> InterruptFixture {
-    interrupt_fixture_with_creator(worktree, config, false)
+    interrupt_fixture_with_creator(worktree, config, true)
 }
 
 fn interrupt_fixture_with_creator(
@@ -1136,6 +1136,9 @@ fn interrupt_fixture_with_creator(
                 None,
                 Some(unrelated_agent.id()),
             )
+            .unwrap();
+        app.sessions_mut()
+            .remove_queued_workflow_prompt(session.id(), queued.id())
             .unwrap();
         app.sessions_mut()
             .invoke_queued_workflow_endpoint(session.id(), &queued)

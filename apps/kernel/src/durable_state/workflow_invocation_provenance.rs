@@ -70,9 +70,7 @@ impl DurableKernelStateStore {
             .lock()
             .expect("workflow history authority lock")
             .as_ref()
-            .is_some_and(|config| {
-                config.snapshot().daemon_id == kernel_id && config.local_owner_user_id() == user_id
-            })
+            .is_some_and(|config| config.is_kernel_owner(kernel_id, user_id))
     }
 
     pub(crate) fn workflow_run_predates_ownership_tracking(

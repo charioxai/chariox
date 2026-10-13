@@ -222,15 +222,27 @@ async fn paused_workflow_prompt_cannot_be_promoted_after_provider_launch() {
             Some("entry".to_string()),
         )
         .expect("workflow endpoint should be created");
-    let workflow_run = app
+    let queued = app
         .sessions_mut()
-        .invoke_workflow_endpoint(
+        .enqueue_workflow_prompt_by_agent(
             session.id(),
             workflow.id(),
             endpoint.id(),
-            Some("run once".to_string()),
+            Some("run once".into()),
+            None,
+            crate::session::WorkflowQueuedPromptSource::Manual,
+            None,
+            None,
+            Some(agent.id()),
         )
-        .expect("workflow run should be created");
+        .unwrap();
+    app.sessions_mut()
+        .remove_queued_workflow_prompt(session.id(), queued.id())
+        .unwrap();
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_queued_workflow_endpoint(session.id(), &queued)
+        .expect("proven workflow run should be created");
     let node_run_id = workflow_run.node_runs()[0].id().to_string();
     app.sessions_mut()
         .prepare_workflow_turn(

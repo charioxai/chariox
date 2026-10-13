@@ -33,10 +33,27 @@ pub(super) async fn handle_subscribe(
         crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
             command: crate::local::KernelBrowserCommand::State,
         });
+    let subscription_caller = match display_subscription_caller(router, identity, &public_key) {
+        Ok(caller) => caller,
+        Err(error) => {
+            // MP-08/MP-10/MP-11: a revoked grant or failed pairing read rejects
+            // this subscription only; it must not abort every relay subscriber.
+            let mut error = super::request_errors::map_relay_error(&error);
+            error.retryable = false;
+            return send_outgoing_envelope(
+                outgoing_tx,
+                RelayEnvelope::DaemonResponse {
+                    relay_request_id: request_id,
+                    encrypted_response: None,
+                    error: Some(error),
+                },
+            );
+        }
+    };
     let caller = KernelCommand::from_local_request_with_caller(
         request_id.clone(),
         KernelCommandSource::RelayClient,
-        display_subscription_caller(router, identity, &public_key)?,
+        subscription_caller,
         None,
         None,
         &request,
@@ -312,6 +329,60 @@ mod paired_tests {
             display_subscription_caller(&router, None, &public).is_err(),
             "MP-11: revoked keys never acquire a display caller"
         );
+        // MP-08/MP-10/MP-11: revocation between outer admission and the display
+        // lookup is one definitive subscription failure, never a connection error.
+        let tasks = Arc::new(Mutex::new(BTreeMap::from([(
+            "unrelated".into(),
+            RelaySubscriptionTask {
+                relay_subscription_id: "other-relay".into(),
+                client_public_key: "other-key".into(),
+                display_id: None,
+                display_pump: None,
+                handle: tokio::spawn(sleep(Duration::from_secs(60))),
+            },
+        )])));
+        let (outgoing, mut replies, _events) = RelayOutgoingSender::channel(4);
+        let router = Arc::new(router);
+        let result = handle_subscribe(
+            &router,
+            &outgoing,
+            &tasks,
+            DisplaySubscription {
+                request_id: "revoked-display".into(),
+                relay_id: "display-relay".into(),
+                display_id: "display".into(),
+                generation: "1".into(),
+                identity: None,
+                public_key: public,
+                resume: None,
+            },
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "MP-11: pairing error must not drop relay: {result:?}"
+        );
+        let Some(RelayEnvelope::DaemonResponse {
+            relay_request_id,
+            error: Some(error),
+            ..
+        }) = replies.recv().await
+        else {
+            panic!("display admission error response")
+        };
+        assert_eq!(relay_request_id, "revoked-display");
+        assert!(
+            !error.retryable,
+            "MP-11: a rejected display subscription is definitive"
+        );
+        tokio::task::yield_now().await;
+        {
+            let guard = tasks.lock().await;
+            assert_eq!(guard.len(), 1);
+            assert!(!guard["unrelated"].handle.is_finished());
+        }
+        assert!(replies.try_recv().is_err());
+        super::super::subscriptions::abort_subscription_tasks(&router, &tasks).await;
         router.runtime_state().shutdown_cleanup().await.unwrap();
     }
 }

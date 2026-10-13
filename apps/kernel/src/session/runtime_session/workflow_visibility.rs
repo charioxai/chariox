@@ -11,36 +11,42 @@ impl RuntimeSession {
         user_id: &str,
         history: Option<&DurableKernelStateStore>,
     ) -> Result<bool, DaemonError> {
-        if let Some(store) = history {
-            if store.workflow_run_predates_ownership_tracking(
-                self.host_daemon_id(),
-                self.id(),
-                run,
-            )? {
-                return Ok(store.workflow_history_is_kernel_owner(self.host_daemon_id(), user_id));
+        let kernel_owner = history.is_some_and(|store| {
+            store.workflow_history_is_kernel_owner(self.host_daemon_id(), user_id)
+        });
+        self.workflow_run_access(run, user_id, history, kernel_owner)
+            .map(|(visible, _)| visible)
+    }
+
+    fn workflow_run_access(
+        &self,
+        run: &WorkflowRun,
+        user_id: &str,
+        history: Option<&DurableKernelStateStore>,
+        kernel_owner: bool,
+    ) -> Result<(bool, bool), DaemonError> {
+        let invoker = match (run.created_by_agent_id(), history, run.queue_item_id()) {
+            (None, Some(store), Some(queue)) => {
+                store.workflow_invocation_owner(self.host_daemon_id(), self.id(), queue)?
             }
+            _ => None,
+        };
+        if run.created_by_agent_id().is_none() && history.is_some() && invoker.is_none() {
+            return Ok((kernel_owner, true));
         }
         // A projection without the provenance store cannot establish an autonomous
         // run's invoker or the kernel-owner historical exception. Fail closed.
         if history.is_none() && run.created_by_agent_id().is_none() {
-            return Ok(false);
+            return Ok((false, false));
         }
         if self
             .collaboration_level_for_user(user_id)
             .is_some_and(|level| level.can_view_agent_trace())
         {
-            return Ok(true);
+            return Ok((true, false));
         }
         let Some(creator) = run.created_by_agent_id() else {
-            return match (history, run.queue_item_id()) {
-                (Some(store), Some(queue_item_id)) => store.workflow_invocation_is_owned(
-                    self.host_daemon_id(),
-                    self.id(),
-                    queue_item_id,
-                    user_id,
-                ),
-                _ => Ok(false),
-            };
+            return Ok((invoker.as_deref() == Some(user_id), false));
         };
         for id in std::iter::once(creator)
             .chain(run.node_runs().iter().map(|node| node.agent_id()))
@@ -54,10 +60,10 @@ impl RuntimeSession {
                 },
             };
             if !owned {
-                return Ok(false);
+                return Ok((false, false));
             }
         }
-        Ok(true)
+        Ok((true, false))
     }
 
     pub(crate) fn project_workflow_run_for_user(
@@ -66,17 +72,16 @@ impl RuntimeSession {
         user_id: &str,
         history: Option<&DurableKernelStateStore>,
     ) -> Result<Option<WorkflowRun>, DaemonError> {
-        if !self.workflow_run_visible_for_user(&run, user_id, history)? {
+        let kernel_owner = history.is_some_and(|store| {
+            store.workflow_history_is_kernel_owner(self.host_daemon_id(), user_id)
+        });
+        let (visible, historical) =
+            self.workflow_run_access(&run, user_id, history, kernel_owner)?;
+        if !visible {
             return Ok(None);
         }
-        if let Some(store) = history {
-            if store.workflow_run_predates_ownership_tracking(
-                self.host_daemon_id(),
-                self.id(),
-                &run,
-            )? {
-                run.mark_created_before_ownership_tracking();
-            }
+        if historical {
+            run.mark_created_before_ownership_tracking();
         }
         Ok(Some(run))
     }
@@ -87,8 +92,17 @@ impl RuntimeSession {
         history: Option<&DurableKernelStateStore>,
     ) -> Result<Vec<WorkflowRun>, DaemonError> {
         let mut visible = Vec::new();
+        let kernel_owner = history.is_some_and(|store| {
+            store.workflow_history_is_kernel_owner(self.host_daemon_id(), user_id)
+        });
         for run in self.workflow_runs() {
-            if let Some(run) = self.project_workflow_run_for_user(run.clone(), user_id, history)? {
+            let (allowed, historical) =
+                self.workflow_run_access(run, user_id, history, kernel_owner)?;
+            if allowed {
+                let mut run = run.clone();
+                if historical {
+                    run.mark_created_before_ownership_tracking();
+                }
                 visible.push(run);
             }
         }

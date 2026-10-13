@@ -297,8 +297,7 @@ impl SessionService {
             .map(|s| s.id().to_string())
             .collect::<Vec<_>>();
         for session_id in session_ids {
-            let (queued_prompt_specs, mut session_changed) = {
-                let mut queued_prompt_specs = Vec::new();
+            let session_changed = {
                 let mut session_changed = false;
                 let session = match self.store.get_mut(&session_id) {
                     Some(session) => session,
@@ -403,6 +402,7 @@ impl SessionService {
                             queue_id: watchdog.queue_id().map(str::to_string),
                             invocation_prompt: watchdog.invocation_prompt().to_string(),
                             enqueue_prompt: !queued_watchdog_ids.contains(watchdog.id()),
+                            enqueue_only: false,
                         });
                         continue;
                     }
@@ -442,16 +442,21 @@ impl SessionService {
                                 session_changed = true;
                             }
                             WorkflowWatchdogPolicy::Queue => {
-                                if !watchdog.pending_run()
-                                    && !queued_watchdog_ids.contains(watchdog.id())
-                                {
-                                    queued_prompt_specs.push((
-                                        watchdog.workflow_id().to_string(),
-                                        watchdog.endpoint_id().to_string(),
-                                        watchdog.queue_id().map(str::to_string),
-                                        watchdog.invocation_prompt().to_string(),
-                                        watchdog.id().to_string(),
-                                    ));
+                                // A rejected admission can leave the pending intent
+                                // without a queue item. Retry the actual missing item.
+                                if !queued_watchdog_ids.contains(watchdog.id()) {
+                                    // MP-08/MP-10/MP-11: admission belongs to the
+                                    // runtime transaction, including owner provenance.
+                                    plans.push(WorkflowWatchdogTickPlan {
+                                        watchdog_id: watchdog.id().to_string(),
+                                        session_id: session_id.clone(),
+                                        workflow_id: watchdog.workflow_id().to_string(),
+                                        endpoint_id: watchdog.endpoint_id().to_string(),
+                                        queue_id: watchdog.queue_id().map(str::to_string),
+                                        invocation_prompt: watchdog.invocation_prompt().to_string(),
+                                        enqueue_prompt: true,
+                                        enqueue_only: true,
+                                    });
                                 }
                                 watchdog.set_pending_run(true);
                                 watchdog.set_last_status(Some("queued_running".to_string()));
@@ -472,28 +477,11 @@ impl SessionService {
                         queue_id: watchdog.queue_id().map(str::to_string),
                         invocation_prompt: watchdog.invocation_prompt().to_string(),
                         enqueue_prompt: !queued_watchdog_ids.contains(watchdog.id()),
+                        enqueue_only: false,
                     });
                 }
-                (queued_prompt_specs, session_changed)
+                session_changed
             };
-            for (workflow_id, endpoint_id, queue_id, invocation_prompt, watchdog_id) in
-                queued_prompt_specs
-            {
-                if self
-                    .enqueue_workflow_prompt(
-                        &session_id,
-                        &workflow_id,
-                        &endpoint_id,
-                        Some(invocation_prompt),
-                        queue_id.as_deref(),
-                        WorkflowQueuedPromptSource::Scheduled,
-                        Some(watchdog_id),
-                    )
-                    .is_ok()
-                {
-                    session_changed = true;
-                }
-            }
             if session_changed {
                 changed_session_ids.insert(session_id);
             }
