@@ -38,18 +38,17 @@ pub(crate) fn resolve_bounded_host(
     }
     // The OS resolver is an owned bounded utility; blocking getaddrinfo must
     // not leave unbounded detached resolver threads after a Check timeout.
-    #[cfg(target_os = "linux")]
-    let name = "getent";
+    // Resolver selection is an OS operation, including MCP calls without a
+    // Project trust context. Never select a workspace helper through PATH.
     #[cfg(target_os = "macos")]
-    let name = "dscacheutil";
+    let path = PathBuf::from("/usr/bin/dscacheutil");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let path = PathBuf::from("/usr/bin/getent");
     #[cfg(windows)]
-    let name = "powershell.exe";
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-    let name = "getent";
+    let path = PathBuf::from(std::env::var_os("SystemRoot").ok_or("resolver_unavailable")?)
+        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
 
     {
-        let path = crate::project_environment::check_inventory::executable(name)
-            .ok_or("resolver_unavailable")?;
         // Vets the complete interpreter chain while preserving symlink argv[0].
         let mut command = crate::project_environment::check_executable::command(&path, roots)
             .map_err(|_| "resolver_unavailable")?;

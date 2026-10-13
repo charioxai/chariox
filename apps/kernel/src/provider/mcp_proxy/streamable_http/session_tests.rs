@@ -1,6 +1,69 @@
 //! MP-08 / MP-10 / MP-11: owner isolation, header authority and lease release.
 use super::*;
 use std::io::{Read, Write};
+#[cfg(target_os = "linux")]
+#[test]
+fn review2148_http_mcp_never_executes_workspace_dns_or_interpreters() {
+    if std::env::var_os("CHARIOX_REVIEW2148_DNS_CHILD").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!(
+                    "{}::review2148_http_mcp_never_executes_workspace_dns_or_interpreters",
+                    module_path!().split_once("::").unwrap().1
+                ),
+                "--test-threads=1",
+            ])
+            .env("CHARIOX_REVIEW2148_DNS_CHILD", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let root = crate::test_support::TestWorktree::new("review2148-mcp-dns");
+    let interpreter = root.path().join("workspace-interpreter");
+    std::fs::write(
+        &interpreter,
+        format!(
+            "#!/bin/sh\necho forbidden > '{}'\n",
+            root.path().join("executed").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&interpreter, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let getent = root.path().join("getent");
+    std::fs::write(&getent, format!("#!{}\n", interpreter.display())).unwrap();
+    std::fs::set_permissions(&getent, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let old = std::env::var_os("PATH").unwrap();
+    std::env::set_var(
+        "PATH",
+        std::env::join_paths(
+            std::iter::once(root.path().to_path_buf()).chain(std::env::split_paths(&old)),
+        )
+        .unwrap(),
+    );
+    let backing = CharioxMcpServerConfig::streamable_http(
+        "review2148-dns",
+        "http://review2148-mcp.invalid/mcp",
+    );
+    let _ = dispatch(
+        "review2148-dns-run",
+        "review2148-dns-session",
+        &backing,
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+    );
+    release_run("review2148-dns-run");
+    std::env::set_var("PATH", old);
+    assert!(
+        !root.path().join("executed").exists(),
+        "the shared HTTP adapter must not select workspace DNS helpers or their interpreters"
+    );
+}
 #[test]
 fn review1301_http_sessions_keep_owner_headers_and_release_only_owned_leases() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

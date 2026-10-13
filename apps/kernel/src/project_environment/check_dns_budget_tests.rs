@@ -59,8 +59,8 @@ echo survived > "$0.survived"
     std::env::set_var("PATH", original);
     std::thread::sleep(Duration::from_millis(500));
     assert!(
-        root.path().join("getent.started").exists(),
-        "HTTP must use the same owned resolver boundary as TCP"
+        !root.path().join("getent.started").exists(),
+        "HTTP must not execute an ambient PATH resolver"
     );
     assert!(
         !root.path().join("getent.survived").exists(),

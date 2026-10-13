@@ -669,10 +669,11 @@ impl Importer {
                 .pointer("/package/rust-version")
                 .and_then(Value::as_str)
             {
+                let minimum = format!(">={version}");
                 self.software(
                     file,
                     "rust",
-                    Some(version),
+                    Some(&minimum),
                     unique_line(text, "rust-version"),
                     false,
                 );

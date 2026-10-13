@@ -247,6 +247,54 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
     }
     (!constraint.is_empty()).then_some(accepted)
 }
+
+/// The admitted numeric grammar consists of unions of intervals/prefixes.
+/// A nonempty intersection contains zero, a declared boundary, or its successor.
+/// Unknown syntax stays unproven for Check rather than becoming a Save conflict.
+pub(super) fn constraints_overlap(a: Option<&str>, b: Option<&str>) -> Option<bool> {
+    let (Some(a), Some(b)) = (a, b) else {
+        return Some(true);
+    };
+    satisfies("0.0.0.0", a)?;
+    satisfies("0.0.0.0", b)?;
+    let mut candidates = std::collections::BTreeSet::from([[0u32; 4]]);
+    for token in [a, b]
+        .into_iter()
+        .flat_map(|c| c.split("||"))
+        .flat_map(str::split_whitespace)
+    {
+        if token == "*" {
+            continue;
+        }
+        let token = token.trim_start_matches(['>', '<', '=', '^', '~']);
+        let token = token
+            .strip_suffix(".*")
+            .or_else(|| token.strip_suffix(".x"))
+            .unwrap_or(token);
+        let n = numbers(token)?;
+        if n.len() > 4 || candidates.len() > 512 {
+            return None;
+        }
+        let mut bound = [0; 4];
+        bound[..n.len()].copy_from_slice(&n);
+        candidates.insert(bound);
+        for i in (0..4).rev() {
+            if let Some(next) = bound[i].checked_add(1) {
+                bound[i] = next;
+                bound[i + 1..].fill(0);
+                candidates.insert(bound);
+                break;
+            }
+        }
+    }
+    for candidate in candidates {
+        let version = candidate.map(|n| n.to_string()).join(".");
+        if satisfies(&version, a)? && satisfies(&version, b)? {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
 pub(super) use super::check_health::{health, health_until};
 
 /// MP-08 / MP-10 / MP-11: package and font inventory reads installed facts,

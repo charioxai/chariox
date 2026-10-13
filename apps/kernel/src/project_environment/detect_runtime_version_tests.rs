@@ -17,7 +17,7 @@ fn review931_7_manifest_runtime_versions_survive_proposal_merge() {
     let detection = detect_environment(&[folder(&root)], "environment").unwrap();
     for (runtime, expected, path, line) in [
         ("python", ">=3.12", "pyproject.toml", 2),
-        ("rust", "1.85", "Cargo.toml", 3),
+        ("rust", ">=1.85", "Cargo.toml", 3),
     ] {
         let proposals: Vec<_> = detection.proposals.iter().filter(|p| matches!(&p.requirement.spec, RequirementSpec::Software { identity, .. } if identity == runtime)).collect();
         assert_eq!(proposals.len(), 1);
