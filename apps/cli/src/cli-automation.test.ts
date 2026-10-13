@@ -72,7 +72,7 @@ test("startCliAutomationServer frames json-line requests", async () => {
     })
   } finally {
     socket.destroy()
-    stopCliAutomationServer(server, socketPath)
+    stopCliAutomationServer(server)
   }
 })
 
@@ -119,7 +119,7 @@ test("an old automation server cannot unlink its replacement's socket", async ()
   const oldServer = await startCliAutomationServer(options)
   const newServer = await startCliAutomationServer(options)
   try {
-    stopCliAutomationServer(oldServer, socketPath)
+    stopCliAutomationServer(oldServer)
     await new Promise((resolve) => setTimeout(resolve, 50))
     const socket = await connect(socketPath)
     try {
@@ -130,7 +130,7 @@ test("an old automation server cannot unlink its replacement's socket", async ()
       socket.destroy()
     }
   } finally {
-    stopCliAutomationServer(newServer, socketPath)
+    stopCliAutomationServer(newServer)
   }
 })
 
@@ -139,7 +139,7 @@ test("automation cleanup synchronously removes its own public socket", async () 
   const dir = await mkdtemp(join(tmpdir(), "chariox-cli-stop-"))
   const socketPath = join(dir, "automation.sock")
   const server = await startCliAutomationServer({ socketPath, formatError: String, handleRequest: () => true })
-  stopCliAutomationServer(server, socketPath)
+  stopCliAutomationServer(server)
   await assert.rejects(lstat(socketPath), { code: "ENOENT" })
 })
 
@@ -154,11 +154,11 @@ test("automation binds beside the requested short socket", async () => {
     assert.equal(dirname(dirname(privatePath)), dir)
     const socket = await connect(socketPath)
     socket.destroy()
-    stopCliAutomationServer(server, socketPath)
+    stopCliAutomationServer(server)
     server = undefined
     await assert.rejects(readlink(socketPath), { code: "ENOENT" })
   } finally {
-    if (server) stopCliAutomationServer(server, socketPath)
+    if (server) stopCliAutomationServer(server)
     await rm(dir, { recursive: true, force: true })
   }
 })

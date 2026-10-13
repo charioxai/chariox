@@ -28,7 +28,7 @@ test("cli automation server controller starts and stops the automation socket", 
   assert.deepEqual(harness.calls(), [
     "start:/tmp/chariox.sock",
     "info:cli automation socket listening:/tmp/chariox.sock",
-    "stop:server-1:/tmp/chariox.sock",
+    "stop:server-1",
   ])
 })
 
@@ -69,8 +69,9 @@ function createHarness(options: {
       onListening?.(requestedSocketPath)
       return options.server ?? fakeServer("server-default")
     },
-    stopServer: (server, stoppedSocketPath) => {
-      calls.push(`stop:${String((server as { id?: unknown }).id)}:${stoppedSocketPath}`)
+    stopServer: (server, ...extra) => {
+      assert.equal(extra.length, 0, "stop only needs the owned server")
+      calls.push(`stop:${String((server as { id?: unknown }).id)}`)
     },
     formatError: (error) => error instanceof Error ? error.message : String(error),
     logger: {

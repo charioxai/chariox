@@ -179,7 +179,7 @@ export async function startCliAutomationServer({
   return server
 }
 
-export function stopCliAutomationServer(server: CliAutomationServer, _socketPath: string): void {
+export function stopCliAutomationServer(server: CliAutomationServer): void {
   automationCleanup.get(server)?.()
   automationCleanup.delete(server)
   server.close()
