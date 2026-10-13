@@ -518,3 +518,49 @@ async fn mp11_an_ungranted_agent_reaches_no_app_host_action() {
         assert_eq!(refused.code, "AGENT_APP_NOT_GRANTED", "{tool}");
     }
 }
+
+/// #992 review F3 follow-up (live r3b step 07): an App the owner reopens before the
+/// first restore pass settles exactly one saved Tab, not two.
+#[test]
+fn mp08_an_app_reopened_before_seeding_settles_one_saved_tab() {
+    let (runtime, _, _cleanup) = fixture();
+    let owner = "local";
+    let path = runtime
+        .owned
+        .kernel_browser_host
+        .profile_root(&runtime.provider_account_authority_owner_user_id(owner))
+        .join("app-tabs.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let saved = serde_json::json!({"apps": [
+        {"owner": owner, "installation_id": "todo"},
+        {"owner": owner, "installation_id": "todo"},
+    ]});
+    std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let views = runtime.app_control().user_views();
+    let view = views
+        .open(
+            owner,
+            AppViewBinding {
+                owner: owner.into(),
+                installation: "todo".into(),
+                generation: 1,
+                panel: Default::default(),
+                logical_tab: None,
+            },
+            "a",
+        )
+        .unwrap();
+    views
+        .bind_browser(
+            owner,
+            &view.view_id,
+            "target".into(),
+            crate::local::UserAppViewBrowser {
+                tab_id: "host-tab-reopened".into(),
+                generation: 1,
+            },
+        )
+        .unwrap();
+    runtime.remember_user_app_tabs(owner);
+    assert_eq!(views.take_restore(owner), vec!["todo".to_string()]);
+}

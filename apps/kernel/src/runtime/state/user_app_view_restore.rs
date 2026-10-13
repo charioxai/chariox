@@ -35,26 +35,21 @@ impl KernelRuntimeState {
             .unwrap_or_default()
     }
 
-    /// Load intent saved by an earlier kernel once, minus Apps already open.
+    /// Load intent saved by an earlier kernel once. Apps already open are
+    /// subtracted when restore intent is read, so they settle one saved Tab each.
     fn seed_user_app_tabs(&self, owner: &str) {
         let views = self.app_control().user_views();
         if views.has_restore(owner).is_some() {
             return;
         }
-        let mut hosted = views.restore_intent(owner);
-        let mut pending = Vec::new();
-        for app in self.saved_app_tabs(owner).apps {
-            if app.owner != owner {
-                continue;
-            }
-            match hosted.iter().position(|open| *open == app.installation_id) {
-                Some(index) => {
-                    hosted.swap_remove(index);
-                }
-                None => pending.push(app.installation_id),
-            }
-        }
-        views.seed_restore(owner, pending);
+        let saved = self.saved_app_tabs(owner).apps.into_iter();
+        views.seed_restore(
+            owner,
+            saved
+                .filter(|app| app.owner == owner)
+                .map(|app| app.installation_id)
+                .collect(),
+        );
     }
 
     /// Record which Apps the owner keeps open, beside its browser profile.
