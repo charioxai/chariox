@@ -70,20 +70,10 @@ impl KernelRuntimeOwnedState {
                 return run.account_profile().to_string();
             }
         }
-        // A cold default may have been changed since this native session ran.
-        // Without a source binding, retain the previous fail-safe reset rather
-        // than assuming the current default owns the old native session.
-        if agent.provider_account_profile() == "default" {
-            return "default".to_string();
-        }
-        let owner = crate::account_profile::provider_account_authority_owner_user_id(
-            &self.config_projection.snapshot(),
-            agent.owner_user_id(),
-        );
-        self.provider_account_profiles
-            .get(&owner, agent.provider(), agent.provider_account_profile())
-            .map(|profile| profile.profile_id)
-            .unwrap_or_else(|_| agent.provider_account_profile().to_string())
+        // An unbound selector may have been reassigned since the native session
+        // ran. Compare it as stored: concrete ids retain their original behavior,
+        // while aliases reset instead of guessing the current account owns it.
+        agent.provider_account_profile().to_string()
     }
 
     pub(super) fn validate_agent_profile_update(
