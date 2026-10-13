@@ -59,7 +59,8 @@ pub(crate) fn pairing_transport_token(token: String) -> String {
 }
 
 pub(crate) fn required(config: &DaemonConfig) -> bool {
-    config.cloud_relay.is_none() && config.relay_url.is_some()
+    config.relay_url.is_some()
+        && !crate::runtime::cloud_relay_control::cloud_relay_transport_selected(config)
 }
 pub(crate) fn register(
     config: &DaemonConfig,
