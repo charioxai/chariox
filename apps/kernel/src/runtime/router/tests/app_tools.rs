@@ -7,6 +7,8 @@ use chariox_app_runtime::{
     worker_process::test_fixture::{Fixture, Mode},
 };
 
+mod leased;
+
 struct RejectBroker;
 impl Broker for RejectBroker {
     fn handle(&self, _request: BrokerRequest) -> BrokerFuture {

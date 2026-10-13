@@ -60,9 +60,7 @@ impl KernelRuntimeState {
                     app_grant: None,
                 };
                 grant.validate_app_binding()?;
-                if self.room_agent_tools_enabled()
-                    && (agent.remote_execution().is_some() || self.slice_kernel_id().is_some())
-                {
+                if self.room_agent_tools_enabled() && self.slice_kernel_id().is_some() {
                     return Err(crate::runtime::room_tool_admission::denied(
                         "leased agents use their Room Browser/Computer route",
                     ));

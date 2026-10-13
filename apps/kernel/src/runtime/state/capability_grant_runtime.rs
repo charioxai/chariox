@@ -223,6 +223,7 @@ mod tests {
 pub(crate) struct AppBindingPermit {
     pub(super) actor: crate::agent::AgentInstance,
     pub(super) target_id: String,
+    pub(super) target_binding: Option<crate::agent::RemoteAgentBinding>,
     pub(super) installation: String,
     pub(super) target_revision: u64,
     pub(super) prompt_id: Option<String>,
@@ -300,6 +301,21 @@ impl KernelRuntimeState {
         resource: &str,
         scope_live: impl Fn() -> bool + Send + Sync,
     ) -> Result<String, DaemonError> {
+        if agent.remote_execution().is_some() {
+            return Err(refused(UserDomainRefusalReason::NotGranted));
+        }
+        self.confirm_app_capability_request(agent, resource, scope_live)
+            .await
+    }
+
+    /// MP-08/MP-10/MP-11 D1: owner-approved Apps use the same prompt witness
+    /// on the home kernel, including an authenticated leased provider epoch.
+    pub(super) async fn confirm_app_capability_request(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        resource: &str,
+        scope_live: impl Fn() -> bool + Send + Sync,
+    ) -> Result<String, DaemonError> {
         let prompt = self
             .owner_requested_prompt(agent)
             .ok_or_else(|| refused(UserDomainRefusalReason::NotRequested))?;
@@ -347,7 +363,7 @@ impl KernelRuntimeState {
         let current = self.owned.agent_store.get_agent(agent.id())?;
         if current.owner_user_id() != agent.owner_user_id()
             || current.session_id() != agent.session_id()
-            || current.remote_execution().is_some()
+            || current.remote_execution() != agent.remote_execution()
             || self.owner_requested_prompt(&current).as_deref() != Some(prompt.as_str())
             || !scope_live()
         {
@@ -510,7 +526,8 @@ impl KernelRuntimeState {
     }
 
     /// MP-08/MP-11: the owner's prompt that is running this agent's turn, if any.
-    /// Agent messages, workflows, schedules, leases and wakes are never owner requests.
+    /// Agent messages, workflows, schedules and automatic wakes are never owner requests.
+    /// A human prompt keeps this provenance when its agent executes on a lease.
     pub(crate) fn owner_requested_prompt(
         &self,
         agent: &crate::agent::AgentInstance,
