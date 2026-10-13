@@ -583,8 +583,12 @@ impl KernelBrowserHost {
         // MP-08/MP-10: an idle App drain waits for page enqueue. Keep its
         // existing admission/cancellation, but release the controller mutex
         // while waiting so input, observations and App replies can proceed.
+        // MP-08/MP-10/MP-11: a read-only state poll waits for the page's reconcile; input
+        // must not queue behind it. The ledger ignores observations older than its newest.
+        let state = method == "host.browser" && params["op"] == "state";
         let mut result = if display
             || method == "browser.app.calls"
+            || state
             || (method == "host.browser" && params["op"] == "input")
         {
             let signal = cancellation
@@ -634,9 +638,13 @@ impl KernelBrowserHost {
                 state.remove("_tab_creation_actions")
             })
             .unwrap_or(Value::Null);
-        if let Ok(state) = &result {
+        if let Ok(state) = &mut result {
             let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
             ledger.reconcile_inventory(state, &tab_creation_actions)?;
+            // The observation order is controller-internal; replies keep their shape.
+            if let Some(state) = state.as_object_mut() {
+                state.remove("observation");
+            }
         }
         if let Ok(payload) = &mut result {
             let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
