@@ -1803,6 +1803,65 @@ fn app_side_duplicate_completion_before_promoted_workflow_dispatch_is_ignored() 
     assert_eq!(active_prompt_id, promoted_prompt_id);
 }
 
+// MP-08 / MP-10 / PANE-11: exercise actual pump publication for both
+// empty native drains. A running prompt must not inherit the idle delay.
+#[test]
+fn panes_stream_active_empty_poll_retries_within_first_output_budget() {
+    for empty_batch in [
+        None,
+        Some(crate::provider::ProviderPromptSignalBatch::default()),
+    ] {
+        let (mut app, _worktree, session_id, attachment_id, run_id) =
+            structured_provider_test_app();
+        let agent_id = app
+            .providers()
+            .get_run(&run_id)
+            .unwrap()
+            .agent_instance_id()
+            .unwrap()
+            .to_string();
+        let prompt = crate::session::PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            &attachment_id,
+            &agent_id,
+            "stream output",
+            crate::session::PromptStatus::Queued,
+        );
+        let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+            .prompt_owner_submit_prepared_prompt(&session_id, prompt, false)
+            .unwrap()
+        else {
+            panic!("prompt must start")
+        };
+        app.mark_active_prompt_delivery(
+            &session_id,
+            &agent_id,
+            prompt.id(),
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(run_id.clone()),
+            None,
+        )
+        .unwrap();
+        app.prompt_owner_mark_active_prompt_running(&session_id, &agent_id)
+            .unwrap();
+        app.structured_output_record_store()
+            .mark_poll_enqueued(&run_id, Some(prompt.id().to_string()));
+        app.providers_mut()
+            .push_finished_structured_output_poll_for_test(run_id.clone(), Ok(empty_batch));
+        let before = crate::session::unix_epoch_ms();
+        pump_structured_test_run(&mut app, &session_id, &attachment_id, &run_id);
+        let due = app
+            .structured_output_record_store()
+            .poll_due_at_ms(&run_id)
+            .expect("empty active drain must retain a retry");
+        assert!(
+            due <= before.saturating_add(100),
+            "active empty drain exceeds reader-to-emission budget: {} ms",
+            due.saturating_sub(before)
+        );
+    }
+}
+
 #[test]
 fn metadata_only_structured_batch_backs_off_polling() {
     let (mut app, _worktree, session_id, attachment_id, provider_run_id) =

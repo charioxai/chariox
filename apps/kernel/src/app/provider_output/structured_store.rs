@@ -5,6 +5,17 @@ use crate::provider::ProviderPromptSignalBatch;
 use crate::terminal::TerminalOutputRecord;
 
 pub(crate) const STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS: u64 = 500;
+// MP-08 / MP-10: bounded active fallback from panes/08-ttft-handoff.
+// Readiness remains the primary wakeup; idle and failed polls keep 500 ms.
+const STRUCTURED_OUTPUT_ACTIVE_EMPTY_POLL_BACKOFF_MS: u64 = 40;
+
+pub(crate) fn structured_output_empty_poll_backoff_ms(active_prompt: bool) -> u64 {
+    if active_prompt {
+        STRUCTURED_OUTPUT_ACTIVE_EMPTY_POLL_BACKOFF_MS
+    } else {
+        STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS
+    }
+}
 pub(crate) const STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT: u8 = 3;
 
 #[derive(Debug, Clone)]
@@ -223,9 +234,18 @@ impl StructuredOutputRecordStore {
         provider_run_id: impl Into<String>,
         now_ms: u64,
     ) {
+        self.schedule_after_empty_poll_for_activity(provider_run_id, now_ms, false);
+    }
+
+    pub(crate) fn schedule_after_empty_poll_for_activity(
+        &self,
+        provider_run_id: impl Into<String>,
+        now_ms: u64,
+        active_prompt: bool,
+    ) {
         self.schedule_next_poll(
             provider_run_id.into(),
-            now_ms.saturating_add(STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS),
+            now_ms.saturating_add(structured_output_empty_poll_backoff_ms(active_prompt)),
         );
     }
 
