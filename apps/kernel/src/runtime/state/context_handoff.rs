@@ -29,7 +29,7 @@ pub(super) struct PendingAgentContextHandoff {
     pub(super) target_model: Option<String>,
     /// Captured from the target launch environment; internal, not serialized.
     target_1m_context_disabled: bool,
-    pub(super) conversation: AgentConversation,
+    conversation: AgentConversation,
     /// Derived from history for a provider switch, so it carries the agent's
     /// handoff brief.
     pub(super) derived: bool,
@@ -273,10 +273,7 @@ impl super::KernelRuntimeOwnedState {
             agent_id,
             agent_id,
             target_provider_run_id,
-            target_provider,
-            target_account_profile,
-            target_model,
-            false,
+            (target_provider, target_account_profile, target_model, false),
         );
     }
 
@@ -305,10 +302,12 @@ impl super::KernelRuntimeOwnedState {
             agent_id,
             agent_id,
             None,
-            source_run.provider(),
-            source_run.account_profile(),
-            None,
-            true,
+            (
+                source_run.provider(),
+                source_run.account_profile(),
+                None,
+                true,
+            ),
         );
         Ok(())
     }
@@ -329,10 +328,12 @@ impl super::KernelRuntimeOwnedState {
             source_agent_id,
             target_agent_id,
             Some(target_run.id()),
-            target_run.provider(),
-            target_run.account_profile(),
-            Some(target_run.model()),
-            false,
+            (
+                target_run.provider(),
+                target_run.account_profile(),
+                Some(target_run.model()),
+                false,
+            ),
         );
     }
 
@@ -343,11 +344,9 @@ impl super::KernelRuntimeOwnedState {
         source_history_agent_id: &str,
         agent_id: &str,
         target_provider_run_id: Option<&str>,
-        target_provider: &str,
-        target_account_profile: &str,
-        target_model: Option<&str>,
-        derived: bool,
+        target_context: (&str, &str, Option<&str>, bool),
     ) {
+        let (target_provider, target_account_profile, target_model, derived) = target_context;
         self.pending_agent_context_handoffs
             .clear(session_id, agent_id);
         let room_revision = self.room_secret_observations.revision(session_id).ok();
