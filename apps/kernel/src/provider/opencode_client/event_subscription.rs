@@ -107,7 +107,9 @@ impl OpenCodeClient {
                                 if let OpenCodeEvent::MessagePartUpdated { part } = &event {
                                     if part.kind == "text" {
                                         text_part_ids.insert(part.id.clone());
-                                        if text_part_ids.len() > 128 { text_part_ids.pop_first(); }
+                                        if text_part_ids.len() > 128 {
+                                            text_part_ids.pop_first();
+                                        }
                                     } else {
                                         text_part_ids.remove(&part.id);
                                     }
@@ -127,8 +129,11 @@ impl OpenCodeClient {
                                         delta,
                                         field,
                                         ..
-                                    } if field == "text" && text_part_ids.contains(part_id)
-                                        && !delta.is_empty() && *message_id != last_text_message => {
+                                    } if field == "text"
+                                        && text_part_ids.contains(part_id)
+                                        && !delta.is_empty()
+                                        && *message_id != last_text_message =>
+                                    {
                                         last_text_message.clone_from(message_id);
                                         Some(("first text delta received", message_id, part_id))
                                     }
