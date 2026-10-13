@@ -130,6 +130,7 @@ pub(super) fn execute_utility_command(
     timeout: Duration,
     policy: ProviderUtilityExecutionPolicy,
     cancellation: Option<super::utility_cancellation::MetadataUtilityCancellation>,
+    admission: Option<crate::provider::ProviderUtilityAdmission>,
 ) -> Result<String, DaemonError> {
     if policy.is_read_only_discovery()
         && (run.execution_mode() != crate::provider::AgentExecutionMode::Plan
@@ -168,6 +169,7 @@ pub(super) fn execute_utility_command(
                 &envelope,
                 timeout,
                 cancellation.as_ref(),
+                admission.as_ref(),
             );
             drop(utility);
             result
@@ -175,7 +177,14 @@ pub(super) fn execute_utility_command(
         runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
         return result;
     }
-    let result = run_claude_utility_prompt_on_runtime(&run, &mut state, &envelope, timeout, None);
+    let result = run_claude_utility_prompt_on_runtime(
+        &run,
+        &mut state,
+        &envelope,
+        timeout,
+        None,
+        admission.as_ref(),
+    );
     runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
     result
 }
@@ -186,11 +195,14 @@ fn run_claude_utility_prompt_on_runtime(
     envelope: &PromptEnvelope,
     timeout: Duration,
     cancellation: Option<&super::utility_cancellation::MetadataUtilityCancellation>,
+    admission: Option<&crate::provider::ProviderUtilityAdmission>,
 ) -> Result<String, DaemonError> {
     if cancellation.is_some_and(|c| c.is_cancelled()) {
         return Err(cancelled_metadata_utility(run));
     }
+    let guard = admission.map(|check| check.acquire()).transpose()?;
     submit_claude_prompt(run, state, envelope)?;
+    drop(guard);
     let deadline = std::time::Instant::now() + timeout;
     let mut output = String::new();
     while std::time::Instant::now() < deadline {

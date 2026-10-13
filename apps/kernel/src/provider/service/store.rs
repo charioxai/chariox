@@ -522,12 +522,32 @@ impl ProviderProcessServiceStore {
         timeout: std::time::Duration,
         policy: super::super::ProviderUtilityExecutionPolicy,
     ) -> Result<String, DaemonError> {
+        self.run_structured_utility_prompt_with_admission(
+            run,
+            visible_user_prompt,
+            hidden_system_context,
+            timeout,
+            policy,
+            None,
+        )
+    }
+
+    pub(crate) fn run_structured_utility_prompt_with_admission(
+        &self,
+        run: &RuntimeProviderRun,
+        visible_user_prompt: &str,
+        hidden_system_context: &str,
+        timeout: std::time::Duration,
+        policy: super::super::ProviderUtilityExecutionPolicy,
+        admission: Option<crate::provider::ProviderUtilityAdmission>,
+    ) -> Result<String, DaemonError> {
         let response_rx = self.write().enqueue_structured_utility_prompt(
             run,
             visible_user_prompt,
             hidden_system_context,
             timeout,
             policy,
+            admission,
         )?;
         response_rx
             .recv()

@@ -286,6 +286,7 @@ impl ProviderProcessService {
         hidden_system_context: &str,
         timeout: std::time::Duration,
         policy: super::super::ProviderUtilityExecutionPolicy,
+        admission: Option<crate::provider::ProviderUtilityAdmission>,
     ) -> Result<std::sync::mpsc::Receiver<Result<String, DaemonError>>, DaemonError> {
         if !self.run_uses_structured_prompt_io(run) {
             return Err(DaemonError::LocalTransport {
@@ -318,6 +319,7 @@ impl ProviderProcessService {
             envelope,
             timeout,
             policy,
+            admission,
         )
     }
 
