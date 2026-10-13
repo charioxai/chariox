@@ -225,6 +225,8 @@ export type TranscriptEntry = {
   blobIcon?: string
   historyDeferred?: boolean
   historyEntryIndex?: number
+  /** Complete persisted rows already represented by this client entry. */
+  historySequenceRanges?: readonly (readonly [number, number])[]
   historyFragmentStart?: number
   historyFragmentEnd?: number
   historyTotalChars?: number

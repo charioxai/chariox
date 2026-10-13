@@ -1,6 +1,24 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+test("MP-08 / MP-10 an unseen repeated history-sequenced delta is preserved", () => {
+  const history = { ...entry(1, "assistant", "a", { mergeKey: "part", historyEntryIndex: 10 }), historySequenceRanges: [[10, 10] as const] }
+  const result = applyTranscriptProviderChunk([history], { role: "assistant", chunk: "a", mergeKey: "part", metadata: { historySequence: 11 } })
+  assert.equal(result.entries[0]?.text, "aa")
+  assert.deepEqual(result.entries[0]?.historySequenceRanges, [[10, 11]])
+  assert.deepEqual(history.historySequenceRanges, [[10, 10]])
+  const replay = applyTranscriptProviderChunk(result.entries, { role: "assistant", chunk: "a", mergeKey: "part", metadata: { historySequence: 11 } })
+  assert.equal(replay.kind, "noop")
+  assert.equal(replay.entries[0]?.text, "aa")
+})
+
+test("MP-08 / MP-10 a partial history fragment is completed before its row is deduplicated", () => {
+  const result = applyTranscriptProviderChunk([entry(1, "assistant", "a", { mergeKey: "part", historyEntryIndex: 10 })], { role: "assistant", chunk: "aa", mergeKey: "part", metadata: { historySequence: 10 } })
+  assert.equal(result.entries[0]?.text, "aa")
+  const replay = applyTranscriptProviderChunk(result.entries, { role: "assistant", chunk: "aa", mergeKey: "part", metadata: { historySequence: 10 } })
+  assert.equal(replay.kind, "noop")
+})
+
 import {
   applyTranscriptProviderChunk,
   applyTranscriptToolUpdate,

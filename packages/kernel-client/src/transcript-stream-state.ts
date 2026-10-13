@@ -39,10 +39,12 @@ export type TranscriptStreamEntry = {
   readonly promptOrigin?: string | null
   readonly sourceAttachmentId?: string | null
   readonly historyEntryIndex?: number
+  readonly historySequenceRanges?: readonly (readonly [number, number])[]
   readonly historyTurnLifecycle?: "open" | "completed" | "cancelled" | "failed"
 } & ExternalProviderObservedMutableTranscriptMetadataFields
 
 export type TranscriptStreamMetadata = ExternalProviderObservedMutableTranscriptMetadataFields & {
+  readonly historySequence?: number | undefined
   readonly promptId?: string | null | undefined
   readonly promptOrigin?: string | null | undefined
   readonly sourceAttachmentId?: string | null | undefined
@@ -102,6 +104,7 @@ type MutableTranscriptStreamEntry =
     | "promptId"
     | "promptOrigin"
     | "sourceAttachmentId"
+    | "historySequenceRanges"
   > & {
     text: string
     turnId?: number | null
@@ -111,6 +114,7 @@ type MutableTranscriptStreamEntry =
     promptId?: string | null
     promptOrigin?: string | null
     sourceAttachmentId?: string | null
+    historySequenceRanges?: readonly (readonly [number, number])[]
   }
 
 export function normalizeTranscriptProviderChunk(chunk: string): string {
@@ -295,6 +299,7 @@ function mergeProviderChunk(
         normalized,
         normalizedSource,
         historyEntryIndex,
+        metadata.historySequence,
       )
       if (kind === "noop") {
         return { kind, entry: candidate }
@@ -317,6 +322,7 @@ function mergeProviderChunk(
       normalized,
       normalizedSource,
       historyEntryIndex,
+      metadata.historySequence,
     )
     if (kind === "noop") {
       return { kind, entry: last }
@@ -357,13 +363,18 @@ function applyMergedChunk(
   normalized: string,
   normalizedSource: string | undefined,
   historyEntryIndex: number | undefined,
+  historySequence: number | undefined,
 ): "noop" | "merged" {
   if (role === "assistant" || role === "reasoning") {
+    if (historySequence !== undefined && candidate.historySequenceRanges?.some(([start, end]) => historySequence >= start && historySequence <= end)) {
+      return "noop"
+    }
     if (transcriptStreamEntryIsHydratedHistory(candidate)) {
-      if (historyEntryIndex === undefined && candidate.text === normalized) {
+      if (historySequence === undefined && historyEntryIndex === undefined && candidate.text === normalized) {
         return "noop"
       }
-      if (normalized.length > candidate.text.length && normalized.startsWith(candidate.text)) {
+      if ((historySequence === undefined || historySequence === candidate.historyEntryIndex)
+        && normalized.length > candidate.text.length && normalized.startsWith(candidate.text)) {
         candidate.text = normalized
         if (normalizedSource !== undefined) {
           candidate.sourceText = normalizedSource
@@ -430,6 +441,13 @@ function applyStreamMetadata(
 ): void {
   applyExternalProviderObservedTranscriptMetadata(entry, metadata)
   applyTranscriptPromptMetadata(entry, metadata, options)
+  if (metadata.historySequence !== undefined) {
+    const ranges = entry.historySequenceRanges ?? []
+    const last = ranges.at(-1)
+    entry.historySequenceRanges = last && last[1] + 1 === metadata.historySequence
+      ? [...ranges.slice(0, -1), [last[0], metadata.historySequence]]
+      : [...ranges, [metadata.historySequence, metadata.historySequence]]
+  }
 }
 
 function cloneEntries<TEntry extends TranscriptStreamEntry>(entries: readonly TEntry[]): TEntry[] {

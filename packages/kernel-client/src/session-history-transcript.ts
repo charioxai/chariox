@@ -10,6 +10,7 @@ import {
   externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
   promptOriginExternalProviderObservedMetadata,
+  sessionHistoryEntryIsExternalProviderObserved,
   transcriptExternalProviderObservedTurnMetadata,
   type ExternalProviderObservedTranscriptFields,
 } from "./external-provider-observation.js"
@@ -148,6 +149,7 @@ export function hydrateSessionHistoryTranscriptEntries(
       providerRunId: options.providerRunId,
       mergeAdjacentUnkeyedRoles: ["reasoning"],
       metadata: {
+        historySequence: options.historySequence,
         source: options.source,
         externalProvider: options.externalProvider,
         externalProviderSessionId: options.externalProviderSessionId,
@@ -185,6 +187,9 @@ export function hydrateSessionHistoryTranscriptEntries(
       historyFragmentStart: pageEntry.fragment_start,
       historyFragmentEnd: pageEntry.fragment_end,
       historyTotalChars: pageEntry.total_chars,
+      ...(!sessionHistoryEntryIsExternalProviderObserved(pageEntry.entry)
+        && pageEntry.fragment_start === 0 && pageEntry.fragment_end === pageEntry.total_chars
+        ? { historySequence: pageEntry.entry_index } : {}),
     }
     if (pageEntry.entry.provider_run_id !== undefined) entryOptions.providerRunId = pageEntry.entry.provider_run_id
     if (currentTurnId > 0) entryOptions.turnId = currentTurnId
@@ -468,6 +473,7 @@ function applySessionHistoryTranscriptMetadata(
 }
 
 type SessionHistoryTranscriptMetadataOptions = {
+  historySequence?: number
   providerRunId?: string | null | undefined
   source?: SessionHistoryTranscriptEntry["source"] | undefined
   externalProvider?: string | null | undefined
