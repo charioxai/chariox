@@ -33,7 +33,7 @@ for (const args of [["--help"], ["-h"], ["--unknown"], ["unexpected"], ["--works
       const code = path.join(root, "code")
       await mkdir(code)
       await writeFile(path.join(code, "package.json"), '{"type":"module"}')
-      for (const name of ["index", "cli-options", "app-command-catalog"]) {
+      for (const name of ["index", "cli-options", "app-command-catalog", "cli-launcher-parent"]) {
         const result = await transformAsync(await readFile(path.join(source, `${name}.ts`), "utf8"), { filename: `${name}.ts`, presets: [tsPreset] })
         await writeFile(path.join(code, `${name}.js`), result.code)
       }
