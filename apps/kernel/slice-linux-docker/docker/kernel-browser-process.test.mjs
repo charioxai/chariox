@@ -5,6 +5,14 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {HostChromium} from './kernel-browser-process.mjs';
 import {OwnedDisplay,ownsDisplay} from './kernel-browser-owned-display.mjs';
+test('MP-08/MP-11 native window ownership selects the CDP browser only from verified descendants',async()=>{
+ const {ownedBrowserPid}=await import('./kernel-browser-process.mjs');
+ assert.equal(typeof ownedBrowserPid,'function');
+ const processInfo=[{type:'browser',id:42},{type:'renderer',id:43}],owned=[{pid:41},{pid:42},{pid:43}];
+ assert.equal(ownedBrowserPid(processInfo,owned),42,'the supervisor PID41 owns no Chromium window');
+ for(const candidates of [[],[{type:'browser',id:99}],[{type:'browser',id:1}],[{type:'browser',id:42},{type:'browser',id:43}]])
+  assert.throws(()=>ownedBrowserPid(candidates,owned),/owned browser PID/);
+});
 test('MP-08/MP-10 production Chromium exposes its shared desktop to native capture',async()=>{
  const root=await mkdtemp(tmpdir()+'/chariox-desktop-native-binding-'),getuid=process.getuid;
  process.getuid=()=>1000;
