@@ -169,12 +169,19 @@ async fn token_rollover_during_registration_defers_reauthentication_without_disc
     let mut app = DaemonApp::bootstrap(next_config.clone()).unwrap();
     let registration = app.relay_registration();
     let mut active = "old".to_string();
-    let result = dynamic_relay_heartbeat_registration(url, &mut active, &config,
-        || std::future::ready(registration.clone())).await;
-    assert!(matches!(result, Ok(None)), "renewal race must keep the socket open");
+    let result = dynamic_relay_heartbeat_registration(url, &mut active, &config, || {
+        std::future::ready(registration.clone())
+    })
+    .await;
+    assert!(
+        matches!(result, Ok(None)),
+        "renewal race must keep the socket open"
+    );
     assert_eq!(active, "old", "do not acknowledge an unsent registration");
-    let result = dynamic_relay_heartbeat_registration(url, &mut active, &next_config,
-        || std::future::ready(registration)).await;
+    let result = dynamic_relay_heartbeat_registration(url, &mut active, &next_config, || {
+        std::future::ready(registration)
+    })
+    .await;
     assert!(matches!(result, Ok(Some(_))));
     assert_eq!(active, "second-renewal");
 }

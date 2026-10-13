@@ -494,15 +494,22 @@ mod tests {
                     "wss://relay.example.test",
                     "old-token",
                     &config,
-                ).unwrap(),
+                )
+                .unwrap(),
                 RelayReconnectDecision::Unchanged,
                 "token renewal must use the existing heartbeat reauthentication path",
             );
             for _ in 0..active_requests {
                 assert_eq!(gate.finish_daemon_request(&outgoing_tx).unwrap(), None);
             }
-            assert!(priority_rx.try_recv().is_err(), "renewal must not queue Close");
-            assert!(gate.begin_daemon_request(), "new requests must remain admitted");
+            assert!(
+                priority_rx.try_recv().is_err(),
+                "renewal must not queue Close"
+            );
+            assert!(
+                gate.begin_daemon_request(),
+                "new requests must remain admitted"
+            );
             assert_eq!(gate.finish_daemon_request(&outgoing_tx).unwrap(), None);
         }
     }
