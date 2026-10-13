@@ -26,7 +26,7 @@ pub(super) struct PendingAgentContextHandoff {
     pub(super) target_provider: String,
     pub(super) target_account_profile: String,
     pub(super) target_model: Option<String>,
-    pub(super) conversation: AgentConversation,
+    conversation: AgentConversation,
     /// Derived from history for a provider switch, so it carries the agent's
     /// handoff brief.
     pub(super) derived: bool,
@@ -267,9 +267,7 @@ impl super::KernelRuntimeOwnedState {
             agent_id,
             agent_id,
             target_provider_run_id,
-            target_provider,
-            target_account_profile,
-            target_model,
+            (target_provider, target_account_profile, target_model),
         );
     }
 
@@ -289,9 +287,11 @@ impl super::KernelRuntimeOwnedState {
             source_agent_id,
             target_agent_id,
             Some(target_run.id()),
-            target_run.provider(),
-            target_run.account_profile(),
-            Some(target_run.model()),
+            (
+                target_run.provider(),
+                target_run.account_profile(),
+                Some(target_run.model()),
+            ),
         );
     }
 
@@ -302,10 +302,9 @@ impl super::KernelRuntimeOwnedState {
         source_history_agent_id: &str,
         agent_id: &str,
         target_provider_run_id: Option<&str>,
-        target_provider: &str,
-        target_account_profile: &str,
-        target_model: Option<&str>,
+        target_profile: (&str, &str, Option<&str>),
     ) {
+        let (target_provider, target_account_profile, target_model) = target_profile;
         self.pending_agent_context_handoffs
             .clear(session_id, agent_id);
         let room_revision = self.room_secret_observations.revision(session_id).ok();
