@@ -443,7 +443,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   } = createCliWaitingRoomComposition({
     onLaunchRefused: (message, retry) => providerAccountRecovery.showLaunchRefusal(message, retry),
     openProviderAccounts: () => openProviderAccountsPopup(),
-    runCommand: (command) => executeCommandCenterCommand(command),
+    runCommand: async (command) => runProviderAccountsPopupCommand({ kind: "run", command }),
     client, cloudClient, options, appLogger, formatError,
     isAttached, kernelConnected, waitingRoomState, setWaitingRoomState, setWaitingRoomStateProjection,
     waitingRoomLaunchOwnershipRevision,
@@ -739,7 +739,22 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   }
   const runProviderAccountsPopupCommand = (command: ProviderAccountsPopupCommand) => {
     if (command.kind === "run") {
-      void executeCommandCenterCommand(command.command)
+      if (isAttached()) {
+        void executeCommandCenterCommand(command.command)
+        return
+      }
+      // In the waiting room a command's notices would replace the waiting-room
+      // view; show them (sign-in link and code) in the popup instead.
+      const before = entries.length
+      void executeCommandCenterCommand(command.command).then(() => {
+        const notices = entries.slice(before).filter(entry => entry.role === "notice").map(entry => entry.text)
+        if (!notices.length || isAttached()) return
+        replaceTranscriptEntries(entries.slice(0, before))
+        providerAccountRecovery.showProviderAccounts("Provider accounts", notices.join("\n"), [
+          { label: "Back to the waiting room", choices: [{ label: "Close", run: () => {} }] },
+          { label: "Provider accounts", choices: [{ label: "Open", run: () => openProviderAccountsPopup() }] },
+        ])
+      })
       return
     }
     if (command.kind === "stage") {
