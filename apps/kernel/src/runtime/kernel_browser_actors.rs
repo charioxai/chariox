@@ -66,8 +66,9 @@ impl KernelBrowserActors {
         // MP-08/MP-10/MP-11: concurrent controller reads finish out of order; the
         // controller numbers its observations within a generation.
         let observation = state["_observation"].as_u64();
-        if generation == self.generation
-            && observation.is_some_and(|observation| observation <= self.observation)
+        if generation < self.generation
+            || generation == self.generation
+                && observation.is_some_and(|observation| observation <= self.observation)
         {
             return Ok(());
         }
@@ -244,7 +245,7 @@ impl KernelBrowserActors {
             outer
         };
         let request = match input["kind"].as_str() {
-            Some("text" | "composition") => {
+            Some("text") => {
                 request.with_arguments(EnvironmentActionArguments::KeyboardText {
                     utf8_byte_count: input["text"].as_str().unwrap_or_default().len() as u32,
                     character_count: input["text"].as_str().unwrap_or_default().chars().count()

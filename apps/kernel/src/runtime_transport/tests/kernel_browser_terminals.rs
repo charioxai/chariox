@@ -248,6 +248,7 @@ async fn mdnotes_two_local_connections_child() {
                     tab_id: tab.clone(),
                     generation,
                     device_scale_factor: 1,
+                    wire: None,
                 },
             )
             .await,
@@ -261,6 +262,8 @@ async fn mdnotes_two_local_connections_child() {
                 generation,
                 after_sequence: 0,
                 drift_nodes: vec![],
+                wait_ms: None,
+                resend: None,
             },
         )
         .await;
@@ -280,6 +283,8 @@ async fn mdnotes_two_local_connections_child() {
                     generation,
                     after_sequence: 0,
                     drift_nodes: vec![],
+                    wait_ms: None,
+                    resend: None,
                 },
             )
             .await,
@@ -305,6 +310,8 @@ async fn mdnotes_two_local_connections_child() {
                     generation,
                     after_sequence: 1,
                     drift_nodes: vec![],
+                    wait_ms: None,
+                    resend: None,
                 },
             )
             .await,
@@ -339,6 +346,7 @@ async fn mdnotes_two_local_connections_child() {
                     tab_id: tab.clone(),
                     generation,
                     device_scale_factor: 1,
+                    wire: None,
                 },
             )
             .await,
@@ -356,6 +364,8 @@ async fn mdnotes_two_local_connections_child() {
                     generation,
                     after_sequence: 0,
                     drift_nodes: vec![],
+                    wait_ms: None,
+                    resend: None,
                 },
             )
             .await,

@@ -3747,3 +3747,19 @@ that login is required before creating any local invite. `/relay cloud pair` and
 `pair-machine` are retired; use `/client invite` for a terminal and independent
 `/cloud link` enrollment on the receiving kernel. Neither caller credentials nor
 human session tokens are sent to or persisted by the kernel.
+
+## MP-08 / MP-10 / MP-11 combined App Tab DOM mirror contract (517 / peer 125)
+
+Coordinator-allocated local protocol 517 combines the App Tab call, grant and
+input-attribution contract with DOM mirror v2 author CSS, text, live controls,
+compact deltas, per-document protection, native density, long-poll credits and
+resend. Mirror reads retain the shared per-viewer input ordering. Clients enable
+App echo pipelining only at the allocated ordering floor 516 or later; the
+v2 renderer retains its 503 shape floor. Old clients keep their existing
+minimum-version checks. App authority remains in the kernel App host; Cloud
+projects the kernel's Tab and surface geometry.
+
+The combined request snapshot is browser-mirror-517.json with a canonical SHA-256
+shape guard. Run the installed signed Todo App through the real /app open client
+flow, Notes and presented-glyph DPR1/2 drills from MULTIDOMAIN_DOM_MIRRORING.md.
+These tests supplement exact-head review and real hosted acceptance.

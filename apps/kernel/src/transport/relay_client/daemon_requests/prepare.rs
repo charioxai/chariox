@@ -168,7 +168,7 @@ mod tests {
             subscription_id: "mirror".into(),
             sequence: 3,
             action: A::Text {
-                node_id: "n1".into(),
+                node_id: Some("n1".into()),
                 text: "a".into(),
             },
         })
@@ -180,6 +180,8 @@ mod tests {
                 generation: 1,
                 after_sequence: 3,
                 drift_nodes: vec![],
+                wait_ms: Some(1500),
+                resend: None,
             })
             .browser_input_key()
             .unwrap()
@@ -203,7 +205,7 @@ mod tests {
                 subscription_id: "mirror".into(),
                 sequence,
                 action: A::Text {
-                    node_id: "n1".into(),
+                    node_id: Some("n1".into()),
                     text: "a".into(),
                 },
             })
@@ -215,6 +217,8 @@ mod tests {
             generation: 1,
             after_sequence: 3,
             drift_nodes: vec![],
+                wait_ms: Some(1500),
+                resend: None,
         })
         .browser_input_key()
         .unwrap();

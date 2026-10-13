@@ -41,7 +41,7 @@ export function scheduleHostRequest(request, browser) {
   // it only observes, so input does not queue behind it.
   return ['browser.app.calls','browser.app.respond'].includes(request.method) ||
     request.method === 'host.browser' && (request.params?.op === 'screenshot' &&
-    typeof request.params.display_subscription_id === 'string' ||
+    typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && Number.isInteger(request.params.wait_ms) ||
     request.params?.op === 'state' && browser?.canReconcileConcurrently?.(hostViewport(), { browserBarVisible: false }) === true)
     ? {kind:'bridge'} : {kind:'barrier'};
 }
@@ -440,7 +440,7 @@ export class KernelBrowserHost {
     for (const [id, stream] of this.displays) if (Date.now() > stream.expires) { await stream.close(); this.displays.delete(id); }
     if(command.op==='mirror_subscribe') return this.mirror.subscribe(command,scope);
     if(command.op==='mirror_next') return this.mirror.next(command,scope,{signal});
-    if(command.op==='mirror_close') {this.mirror.require(command.subscription_id,scope,command.generation);this.mirror.streams.delete(command.subscription_id);return {closed:true};}
+    if(command.op==='mirror_close') {this.mirror.require(command.subscription_id,scope,command.generation);this.mirror.drop(command.subscription_id);return {closed:true};}
     const encodedCapture = command.op === "screenshot" && typeof command.display_subscription_id === "string";
     if (encodedCapture || command.op === "display_attach" || (command.op === "unsubscribe" && this.displays.has(command.subscription_id))) {
       const stream = this.displays.get(command.display_subscription_id ?? command.subscription_id);
@@ -543,7 +543,7 @@ export class KernelBrowserHost {
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
         const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>viewerActive()&&owned.click(x,y):null;
         const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;
-        const deferred=await this.sampleLane(tab).run("input", () => this.popupEvidence.capture(this.browser, tab, command._action_id, beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) })));
+        const deferred=await this.sampleLane(tab).run("input", () => this.popupEvidence.capture(this.browser, tab, command._action_id, beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, viewScale: this.scales.has(tab.tab_id) ? this.scales.get(tab.tab_id) / (this.chromium?.scale ?? 1) : 1, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) })));
         // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
         // fenced, ledgered dispatch is ordered by CDP; the renderer's
         // frame-aligned ack would otherwise serialize kernel input admission.

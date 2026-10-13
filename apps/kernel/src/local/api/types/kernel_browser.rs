@@ -12,16 +12,30 @@ pub enum KernelBrowserCommand {
     RevokeGrants {
         agent_id: Option<String>,
     },
+    /// MP-08/MP-10: protocol 482 `wire: 2` selects the author-CSS snapshot
+    /// plus delta mirror; absent keeps the 443 computed-style packets.
     MirrorSubscribe {
         tab_id: String,
         generation: u64,
         device_scale_factor: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wire: Option<u32>,
     },
+    /// MP-08/MP-10: protocol 482 `wait_ms` (<= 2000) makes a v2 credit a long
+    /// poll answered by the next page change; credits apply in sequence.
     MirrorNext {
         subscription_id: String,
         generation: u64,
         after_sequence: u64,
+        #[serde(default)]
         drift_nodes: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_ms: Option<u32>,
+        /// Protocol 501: the viewer lacks the packet after `after_sequence` (a reply
+        /// lost with its socket, or a failed credit): the controller resends it from
+        /// its history at once, ending earlier long polls.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resend: Option<bool>,
     },
     MirrorClose {
         subscription_id: String,
@@ -148,20 +162,40 @@ pub struct KernelBrowserRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KernelBrowserMirrorAction {
+    /// Protocol 482: `x`/`y` are the viewer's CSS offset inside the node's box;
+    /// the kernel clamps them to the live box and hit-tests before dispatch.
     Click {
         node_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y: Option<f64>,
     },
     Focus {
         node_id: String,
     },
+    /// Protocol 482: without `node_id`, text goes to the live native focus.
     Text {
-        node_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
         text: String,
     },
     Scroll {
         node_id: String,
         delta_x: i32,
         delta_y: i32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y: Option<f64>,
+    },
+    /// Protocol 482 viewer-owned scroll: the kernel follows the viewer's
+    /// position (window when `node_id` is absent).
+    ScrollTo {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
+        x: f64,
+        y: f64,
     },
     Key {
         key: String,
@@ -172,11 +206,21 @@ pub enum KernelBrowserMirrorAction {
         focus_id: String,
         focus_offset: u32,
     },
-    Composition {
+    /// Protocol 492: the viewer's focus left this control; the kernel blurs it
+    /// only while it is still the live focus.
+    Blur {
         node_id: String,
-        text: String,
-        selection_start: u32,
-        selection_end: u32,
+    },
+    /// Protocol 492: a control state committed by the viewer's own UI (a select
+    /// pick, a date/time/color/range picker, a multiple select's option).
+    Set {
+        node_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checked: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selected_index: Option<i32>,
     },
     Coordinate {
         input: KernelBrowserInput,

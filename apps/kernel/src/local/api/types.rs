@@ -304,4 +304,6 @@ pub use workspace::*;
 /// Version 511 orders a DOM mirror read behind its viewer's earlier mirror input,
 /// so a client sends the read with the key and gets its echo in one round trip
 /// (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 511;
+/// Version 517 combines App Tab calls/grants and ordered reads with DOM mirror v2
+/// author CSS, live controls, compact deltas, native density and long-poll credits.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 517;
