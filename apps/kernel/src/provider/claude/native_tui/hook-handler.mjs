@@ -261,12 +261,19 @@ if (eventName === "UserPromptSubmit") {
     try { unlinkSync(cancellationFile) } catch {}
     process.exit(0)
   }
-  process.stdout.write(JSON.stringify({
+  await new Promise((resolve, reject) => process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "UserPromptSubmit",
       additionalContext
     }
-  }))
+  }), error => error ? reject(error) : resolve()))
+  if (!contextOnlyHook && hookContextRequestId) {
+    // MP-08 / MP-10 / MP-11: readiness for physical input, never cancellation.
+    appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
+      at: new Date().toISOString(), hook_event_name: "UserPromptSubmitReady",
+      hook_context_request_id: hookContextRequestId,
+    }) + "\n")
+  }
   process.exit(0)
 } else if (eventName === "PreToolUse" || eventName === "PermissionRequest") {
   if (input.permission_mode === "bypassPermissions") {

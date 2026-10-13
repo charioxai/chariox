@@ -25,9 +25,8 @@ where
             Err(error)
                 if bootstrap
                     && matches!(&error, DaemonError::RelayTransport {
-                        operation: "read relay peer response", code, message, retryable: true,
-                    } if code == "transport_error"
-                        && message.contains("local transport `authorize forwarded home context` failed: worker provider run does not match active remote agent binding")) =>
+                        operation: "read relay peer response", code, retryable: true, ..
+                    } if code == "native_provider_binding_pending") =>
             {
                 let now = tokio::time::Instant::now();
                 if now >= deadline {
@@ -51,7 +50,7 @@ mod tests {
     fn binding_not_ready() -> DaemonError {
         DaemonError::RelayTransport {
             operation: "read relay peer response",
-            code: "transport_error".into(),
+            code: "native_provider_binding_pending".into(),
             message: "local transport `authorize forwarded home context` failed: worker provider run does not match active remote agent binding".into(),
             retryable: true,
         }
@@ -95,6 +94,32 @@ mod tests {
             assert!(result.is_err());
             assert_eq!(attempts.get(), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn mp11_bootstrap_retry_uses_a_code_instead_of_diagnostic_wording() {
+        let attempts = Cell::new(0);
+        let result = wait_for_native_binding(
+            true,
+            &serde_json::json!({"method":"initialize"}),
+            Duration::from_secs(1),
+            || {
+                attempts.set(attempts.get() + 1);
+                std::future::ready(if attempts.get() == 1 {
+                    Err(DaemonError::RelayTransport {
+                        operation: "read relay peer response",
+                        code: "native_provider_binding_pending".into(),
+                        message: "A revised human diagnostic".into(),
+                        retryable: true,
+                    })
+                } else {
+                    Ok(())
+                })
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(attempts.get(), 2);
     }
 
     #[tokio::test]

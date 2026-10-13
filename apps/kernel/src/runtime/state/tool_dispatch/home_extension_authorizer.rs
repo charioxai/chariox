@@ -138,11 +138,7 @@ pub(in crate::runtime::state) fn authorize_remote_home_context(
                 .active_prompt_for_agent(&session, &context.home_agent_id)
                 .is_none()
             {
-                return Err(DaemonError::LocalTransport {
-                    operation,
-                    message: "worker provider run does not match active remote agent binding"
-                        .to_string(),
-                });
+                return Err(DaemonError::NativeProviderBindingPending);
             }
             let _ = state
                 .owned

@@ -28,6 +28,7 @@ pub(super) fn request_pending_prompt_hook_cancellation(
         || turn.session_id != session_id
         || turn.agent_id != agent_id
         || turn.interruption_requested_at_ms.is_none()
+        || turn.native_prompt_hook_resolved
         || !app
             .providers
             .get_run_for_agent(session_id, agent_id)
@@ -228,21 +229,23 @@ pub(super) fn resolve_pending_cancellation(
             session_id,
             provider_run_id,
             context_file,
-            CANCELLATION_FAILURE,
+            if turn.interruption_retry_sent_at_ms.is_some() {
+                CANCELLATION_FAILURE
+            } else {
+                "Claude cancellation could not be delivered before the deadline; the run was ended."
+            },
         )?;
         return Ok(());
     }
-    // MP-08 / MP-10 / MP-11: an early Esc can restore Claude's draft without
-    // an official interruption receipt. Let the pending hook decline admission,
-    // or wait for a fresh protected assistant record before the physical Esc.
+    // MP-08 / MP-10 / MP-11: decline a still-pending hook; after its response
+    // is written, deliver Esc without waiting for a completed assistant block.
     // This is interrupt readiness, never cancellation acknowledgement.
-    if !turn.native_response_started {
+    if !turn.native_response_started && !turn.native_prompt_hook_resolved {
         return Ok(());
     }
-    if now.saturating_sub(
-        turn.interruption_retry_sent_at_ms
-            .unwrap_or(requested_at_ms),
-    ) < CANCELLATION_RETRY_MS
+    if turn
+        .interruption_retry_sent_at_ms
+        .is_some_and(|sent_at_ms| now.saturating_sub(sent_at_ms) < CANCELLATION_RETRY_MS)
     {
         return Ok(());
     }
@@ -261,6 +264,12 @@ pub(super) fn resolve_pending_cancellation(
     }
     app.active_turns
         .note_native_interruption_delivery(provider_run_id, prompt.id(), now);
+    app.terminal.record_input(
+        session_id,
+        provider_run_id,
+        prompt.source_attachment_id(),
+        crate::provider::provider_prompt_abort_input(&run),
+    );
     if app
         .write_provider_pty_input_for_runtime(
             provider_run_id,
@@ -310,10 +319,46 @@ pub(super) fn bind_prompt_hook_request(
             if let Some(request_id) = turn.native_prompt_hook_request_id.as_deref() {
                 let context = fs::read_to_string(context_file).unwrap_or_default();
                 write_claude_hook_context_response(context_file, request_id, &context);
+                return Ok(());
             }
         }
     }
+    reply_ignored_prompt_hook(context_file, event);
     Ok(())
+}
+
+pub(super) fn reply_ignored_prompt_hook(context_file: &str, event: &serde_json::Value) {
+    if let Some(request_id) = event
+        .get("hook_context_request_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| valid_claude_hook_request_id(id))
+    {
+        write_claude_hook_context_response(context_file, request_id, "");
+    }
+}
+
+pub(super) fn observe_prompt_hook_ready(
+    app: &mut DaemonApp,
+    provider_run_id: &str,
+    context_file: &str,
+    event: &serde_json::Value,
+) {
+    if let Some(request_id) = event
+        .get("hook_context_request_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| valid_claude_hook_request_id(id))
+    {
+        app.active_turns
+            .note_native_prompt_hook_resolved(provider_run_id, request_id);
+        // MP-08 / MP-10 / MP-11: resolved hooks cannot consume later markers.
+        if let Some(parent) = std::path::Path::new(context_file).parent() {
+            let _ = fs::remove_file(
+                parent
+                    .join("hook-context-responses")
+                    .join(format!("{request_id}.cancelled")),
+            );
+        }
+    }
 }
 
 pub(super) fn observe_prompt_hook_interruption(
@@ -358,5 +403,7 @@ pub(super) fn observe_prompt_hook_interruption(
     else {
         return Ok(());
     };
-    mark_native_interruption_for_cancellation(app, session_id, provider_run_id, context_file, at)
+    mark_native_interruption_for_cancellation(app, session_id, provider_run_id, context_file, at)?;
+    observe_prompt_hook_ready(app, provider_run_id, context_file, event);
+    Ok(())
 }

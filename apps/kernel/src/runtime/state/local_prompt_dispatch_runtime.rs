@@ -4633,12 +4633,14 @@ impl KernelRuntimeState {
             }
             let abort_input = crate::provider::provider_prompt_abort_input(&provider_run);
             let requested_at_ms = crate::session::unix_epoch_ms();
-            owned.terminal_stream.record_input(
-                &dispatch.session_id,
-                &dispatch.provider_run_id,
-                &dispatch.source_attachment_id,
-                abort_input,
-            );
+            if !crate::provider::provider_run_is_claude_native_tui(&provider_run) {
+                owned.terminal_stream.record_input(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &dispatch.source_attachment_id,
+                    abort_input,
+                );
+            }
             self.with_app_side_effect(|app| {
                 if crate::provider::provider_run_is_claude_native_tui(&provider_run) {
                     app.active_turns.mark_interruption_requested(

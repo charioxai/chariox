@@ -102,9 +102,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version70 combines Apps Phase1 and autonomous Room observation contracts (MP-08/MP-10).
 /// Version73 adds bounded Browser artifacts, opaque upload bytes and bounded Computer holds (MP-08/MP-10/MP-11).
 /// A v70 worker cannot decode these controller variants; reject it before dispatch.
-/// Version 101 binds the embedded local response union to local protocol 491,
+/// Version 118 binds the embedded local response union to local protocol 510,
 /// restores owner-private workflow notifications to the Browser/Computer peer
-/// union and pairs exact home-prompt cancellation admission (MP-08/MP-10/MP-11).
+/// union, exact home-prompt cancellation and definitive completion outcomes (MP-08/MP-10/MP-11).
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 118;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";

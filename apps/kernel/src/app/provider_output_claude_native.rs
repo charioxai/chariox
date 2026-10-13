@@ -427,12 +427,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .map(str::trim)
                     .filter(|prompt| !prompt.is_empty())
                 else {
+                    interruption::reply_ignored_prompt_hook(context_file, &event);
                     continue;
                 };
                 // Provider control text must not create a user turn. Native
                 // interruption is observed from the timestamped transcript;
                 // this guard also excludes control text reported by a hook.
                 if claude_native_prompt_is_internal_control(prompt) {
+                    interruption::reply_ignored_prompt_hook(context_file, &event);
                     continue;
                 }
                 let active_prompt = self
@@ -480,6 +482,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         continue;
                     }
                     if active_prompt.is_some() {
+                        interruption::reply_ignored_prompt_hook(context_file, &event);
                         continue;
                     }
                 }
@@ -503,6 +506,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     })?;
                 }
                 let Some(runtime_attachment_id) = runtime_attachment_id.as_deref() else {
+                    interruption::reply_ignored_prompt_hook(context_file, &event);
                     continue;
                 };
                 let history_source_attachment_id = claude_native_history_source_attachment_id(
@@ -547,6 +551,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     let context = fs::read_to_string(context_file).unwrap_or_default();
                     write_claude_hook_context_response(context_file, request_id, &context);
                 }
+            } else if event_name == "UserPromptSubmitReady" {
+                interruption::observe_prompt_hook_ready(
+                    self.app,
+                    provider_run_id,
+                    context_file,
+                    &event,
+                );
             } else if event_name == "UserPromptSubmitInterrupted" {
                 interruption::observe_prompt_hook_interruption(
                     self.app,

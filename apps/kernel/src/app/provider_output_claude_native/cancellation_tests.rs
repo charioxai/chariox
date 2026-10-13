@@ -1,6 +1,87 @@
 //! MP-08 / MP-10 / MP-11: definitive native cancellation, never idle-screen inference.
 use super::*;
 
+#[test]
+fn native_claude_cancel_after_hook_return_does_not_wait_for_first_assistant_block() {
+    let mut f = CancellationFixture::new(800);
+    f.app
+        .active_turns
+        .bind_native_prompt_hook_request(f.run.id(), f.prompt.id(), "thinking-hook");
+    fs::write(
+        f.root.0.join("events.jsonl"),
+        serde_json::json!({
+            "hook_event_name":"UserPromptSubmitReady", "hook_context_request_id":"thinking-hook"
+        })
+        .to_string()
+            + "\n",
+    )
+    .unwrap();
+    f.process();
+    // The fixture has no PTY; actual delivery failure may retire the turn.
+    assert!(
+        f.app
+            .active_turns
+            .get(f.run.id())
+            .is_none_or(|turn| turn.interruption_retry_sent_at_ms.is_some()),
+        "hook returned but no physical interrupt was attempted"
+    );
+}
+
+#[test]
+fn ignored_native_prompt_hooks_receive_an_explicit_empty_response() {
+    for prompt in ["", "<task-notification>internal</task-notification>"] {
+        let mut f = CancellationFixture::new(0);
+        fs::write(f.root.0.join("events.jsonl"), serde_json::json!({
+            "hook_event_name":"UserPromptSubmit", "hook_context_request_id":"ignored-hook", "prompt":prompt
+        }).to_string()+"\n").unwrap();
+        f.process();
+        assert_eq!(
+            fs::read_to_string(f.root.0.join("hook-context-responses/ignored-hook.txt")).unwrap(),
+            ""
+        );
+    }
+}
+
+#[test]
+fn stale_managed_prompt_hooks_receive_a_response_without_binding_a_turn() {
+    let mut f = CancellationFixture::new(0);
+    let context = f.root.0.join("context").display().to_string();
+    interruption::bind_prompt_hook_request(
+        &mut f.app,
+        &f.session_id,
+        f.run.id(),
+        &context,
+        "foreign-prompt",
+        &serde_json::json!({"hook_context_request_id":"stale-hook"}),
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(f.root.0.join("hook-context-responses/stale-hook.txt")).unwrap(),
+        ""
+    );
+    assert!(f
+        .app
+        .active_turns
+        .get(f.run.id())
+        .unwrap()
+        .native_prompt_hook_request_id
+        .is_none());
+    write_claude_native_marker(&context, "injected:foreign-prompt");
+    fs::write(
+        f.root.0.join("events.jsonl"),
+        serde_json::json!({"hook_event_name":"UserPromptSubmit",
+        "hook_context_request_id":"mismatched-hook", "prompt":"different text"})
+        .to_string()
+            + "\n",
+    )
+    .unwrap();
+    f.process();
+    assert_eq!(
+        fs::read_to_string(f.root.0.join("hook-context-responses/mismatched-hook.txt")).unwrap(),
+        ""
+    );
+}
+
 struct FixtureRoot(PathBuf);
 impl Drop for FixtureRoot {
     fn drop(&mut self) {
@@ -154,6 +235,11 @@ impl CancellationFixture {
 #[test]
 fn native_claude_cancellation_has_a_definitive_hard_deadline() {
     let mut f = CancellationFixture::new(10_001);
+    f.app.active_turns.note_native_interruption_delivery(
+        f.run.id(),
+        f.prompt.id(),
+        unix_epoch_ms().saturating_sub(10_000),
+    );
     f.process();
     assert!(
         f.active().is_none(),
@@ -183,6 +269,44 @@ fn native_claude_cancellation_has_a_definitive_hard_deadline() {
         f.app.providers.get_run(f.run.id()).unwrap().state(),
         crate::provider::ProviderRunState::Ended
     );
+}
+
+#[test]
+fn native_claude_undeliverable_cancel_has_an_accurate_failure_reason() {
+    let mut f = CancellationFixture::new(10_001);
+    f.process();
+    assert!(f
+        .settled()
+        .provider_termination
+        .unwrap()
+        .reason
+        .contains("could not be delivered"));
+}
+
+#[test]
+fn resolved_prompt_hook_does_not_accumulate_cancellation_markers() {
+    let mut f = CancellationFixture::new(0);
+    f.app
+        .active_turns
+        .bind_native_prompt_hook_request(f.run.id(), f.prompt.id(), "resolved-hook");
+    let responses = f.root.0.join("hook-context-responses");
+    fs::create_dir_all(&responses).unwrap();
+    fs::write(responses.join("resolved-hook.cancelled"), "").unwrap();
+    let event = serde_json::json!({"hook_context_request_id":"resolved-hook"});
+    interruption::observe_prompt_hook_ready(
+        &mut f.app,
+        f.run.id(),
+        &f.root.0.join("context").display().to_string(),
+        &event,
+    );
+    interruption::request_pending_prompt_hook_cancellation(
+        &mut f.app,
+        &f.session_id,
+        f.run.id(),
+        &f.root.0.join("context").display().to_string(),
+    )
+    .unwrap();
+    assert!(!responses.join("resolved-hook.cancelled").exists());
 }
 
 #[test]
@@ -293,6 +417,12 @@ fn native_claude_response_readiness_requires_fresh_official_assistant_output() {
         (true, true, true),
     ] {
         let mut f = CancellationFixture::new(0);
+        // Isolate transcript readiness from the separate physical-delivery test.
+        f.app.active_turns.note_native_interruption_delivery(
+            f.run.id(),
+            f.prompt.id(),
+            unix_epoch_ms(),
+        );
         let transcript = f.root.0.join("response.jsonl");
         let mut response = serde_json::json!({"type":"assistant", "uuid":"response", "message":{"id":"response-message", "model":if synthetic { "<synthetic>" } else { "claude-haiku" }, "role":"assistant", "stop_reason":"tool_use", "content":[{"type":"thinking", "thinking":"Reviewing public documentation"}]}});
         if timestamped {

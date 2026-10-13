@@ -132,6 +132,7 @@ pub(crate) struct ActiveTurnState {
     pub(crate) native_interruption_confirmed: bool,
     pub(crate) native_response_started: bool,
     pub(crate) native_prompt_hook_request_id: Option<String>,
+    pub(crate) native_prompt_hook_resolved: bool,
     // A durable completion failed after authoritative completion was accepted.
     // Unlike assistant-message completion, this allows retry without another
     // provider end event. It belongs to this exact prompt and provider run.
@@ -164,6 +165,7 @@ impl ActiveTurnState {
             native_interruption_confirmed: false,
             native_response_started: false,
             native_prompt_hook_request_id: None,
+            native_prompt_hook_resolved: false,
             completion_retry_observed_at_ms: None,
             completion_retry_attempt: 0,
         }
@@ -286,7 +288,23 @@ impl ActiveTurnStore {
             .get_mut(provider_run_id)
         {
             if turn.prompt_id == prompt_id {
+                if turn.native_prompt_hook_request_id.as_deref() != Some(request_id) {
+                    turn.native_prompt_hook_resolved = false;
+                }
                 turn.native_prompt_hook_request_id = Some(request_id.to_string());
+            }
+        }
+    }
+
+    pub(crate) fn note_native_prompt_hook_resolved(&self, provider_run_id: &str, request_id: &str) {
+        if let Some(turn) = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(provider_run_id)
+        {
+            if turn.native_prompt_hook_request_id.as_deref() == Some(request_id) {
+                turn.native_prompt_hook_resolved = true;
             }
         }
     }
@@ -492,6 +510,9 @@ fn merge_active_turn_start(
         incoming.native_prompt_hook_request_id = incoming
             .native_prompt_hook_request_id
             .or_else(|| existing.native_prompt_hook_request_id.clone());
+        if incoming.native_prompt_hook_request_id == existing.native_prompt_hook_request_id {
+            incoming.native_prompt_hook_resolved |= existing.native_prompt_hook_resolved;
+        }
         incoming.settlement_requested |= existing.settlement_requested;
         incoming.interruption_requested_at_ms = incoming
             .interruption_requested_at_ms
