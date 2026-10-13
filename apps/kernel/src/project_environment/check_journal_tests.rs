@@ -146,7 +146,13 @@ fn check_journal_grows_atomically_and_reuses_slots() {
         "initial"
     );
     let before = std::fs::metadata(&path).unwrap().len();
-    checks.folder_binding_digest = "a".repeat(70_000);
+    // Incompressible evidence still exercises atomic capacity growth.
+    use rand::Rng;
+    checks.folder_binding_digest = rand::thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(180_000)
+        .map(char::from)
+        .collect();
     store.save_checks("project", &checks).unwrap();
     assert!(std::fs::metadata(&path).unwrap().len() > before);
     assert_eq!(
@@ -199,4 +205,28 @@ fn rejects_unrecognized_journal_format() {
     std::fs::write(&path, b"{}\n").unwrap();
     assert!(super::check_journal::read(&path).is_err());
     assert!(super::check_journal::append(&path, b"{}").is_err());
+}
+
+#[test]
+fn repeated_check_evidence_fits_a_single_payload_page_without_losing_snapshot_bytes() {
+    // MP-08 / MP-10 / MP-11: bound physical I/O for repeated public observations.
+    // This is a storage regression; the hosted 100-sample Check drill is acceptance.
+    let root = crate::test_support::TestWorktree::new("check-journal-repeated-evidence");
+    let path = root.path().join("checks.wal");
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "observations": vec![serde_json::json!({
+            "status": "ready", "reason_code": "software_present",
+            "safe_summary": "The selected installed program satisfies this requirement",
+        }); 400]
+    }))
+    .unwrap();
+    assert!(bytes.len() > 32 * 1024);
+    super::check_journal::append(&path, &bytes).unwrap();
+    assert_eq!(super::check_journal::read(&path).unwrap().unwrap(), bytes);
+    let image = std::fs::read(&path).unwrap();
+    let payload_bytes = u64::from_le_bytes(image[4096 + 8..4096 + 16].try_into().unwrap());
+    assert!(
+        payload_bytes <= 4096,
+        "repeated observations require {payload_bytes} synchronized payload bytes"
+    );
 }

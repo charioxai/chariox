@@ -8,6 +8,7 @@ use std::path::Path;
 const LIMIT: u64 = 8 * 1024 * 1024;
 const PAGE: u64 = 4096;
 const MAGIC: &[u8; 8] = b"CXCHECK2";
+mod codec;
 #[cfg(target_os = "linux")]
 #[path = "check_journal/direct_io.rs"]
 mod direct_io;
@@ -25,7 +26,9 @@ pub(super) fn read(path: &Path) -> Result<Option<Vec<u8>>, DaemonError> {
         Err(_) => return Err(environment_error("Check journal unavailable")),
     };
     match capacity(&mut file)? {
-        Some(capacity) => Ok(Some(latest(&mut file, capacity)?.bytes)),
+        Some(capacity) => codec::decode(latest(&mut file, capacity)?.bytes)
+            .map(Some)
+            .map_err(|_| environment_error("invalid Check journal payload")),
         None => Err(environment_error("invalid Check journal")),
     }
 }
@@ -39,6 +42,9 @@ pub(super) fn append(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
         return Err(environment_error("Check journal exceeds bounds"));
     }
     let began = std::time::Instant::now();
+    let encoded =
+        codec::encode(bytes).map_err(|_| environment_error("Check journal encoding failed"))?;
+    let bytes = encoded.as_ref();
     let mut file = match open(path, true) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return publish(path, bytes, 1),
