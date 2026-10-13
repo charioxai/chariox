@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { diffView, parseUnifiedDiff } from "./diff-view.js"
-import { formatToolDisplay, readApplyPatchFiles } from "./index.js"
+import { formatToolDisplay, formatToolTranscriptUpdate, readApplyPatchFiles } from "./index.js"
 
 // MP-08 / MP-10 (PANE-09, R16): edit tools render as diffs. The OpenCode
 // record is the real completed `edit` update from a live drill (kernel history).
@@ -28,12 +28,12 @@ test("an OpenCode edit becomes a patch block with removed and added lines", () =
 test("Claude Edit keeps shared lines as context; MultiEdit makes one hunk per edit", () => {
   const [edit] = readApplyPatchFiles({ id: "t", tool: "Edit", status: "completed", input: { file_path: "/w/a.py", old_string: "def f():\n    return 1\n", new_string: "def f():\n    return 2\n" } })
   assert.deepEqual(rows(edit!.diff), [" def f():", "r    return 1", "a    return 2"].map((row) => row.replace(/^ /, "c")))
-  const [multi] = readApplyPatchFiles({ id: "t", tool: "MultiEdit", input: { file_path: "/w/b.txt", edits: [{ old_string: "a", new_string: "b" }, { old_string: "x\n", new_string: "" }] } })
+  const [multi] = readApplyPatchFiles({ id: "t", tool: "MultiEdit", status: "completed", input: { file_path: "/w/b.txt", edits: [{ old_string: "a", new_string: "b" }, { old_string: "x\n", new_string: "" }] } })
   assert.deepEqual(rows(multi!.diff), ["ra", "ab", "gap", "rx"])
 })
 
 test("write tools show the whole file as added", () => {
-  const [file] = readApplyPatchFiles({ id: "t", tool: "write", input: { filePath: "/w/new.md", content: "# t\n\nbody\n" } })
+  const [file] = readApplyPatchFiles({ id: "t", tool: "write", status: "completed", input: { filePath: "/w/new.md", content: "# t\n\nbody\n" } })
   assert.equal(file!.kind, "add")
   assert.deepEqual(rows(file!.diff), ["a# t", "a", "abody"])
   assert.equal(diffView(parseUnifiedDiff(file!.diff!)).verb, "Added")
@@ -42,4 +42,24 @@ test("write tools show the whole file as added", () => {
 test("edit tools without a path or strings are not patches", () => {
   assert.deepEqual(readApplyPatchFiles({ id: "t", tool: "edit", status: "pending" }), [])
   assert.deepEqual(readApplyPatchFiles({ id: "t", tool: "Edit", input: { file_path: "/w/a" } }), [])
+})
+
+// MP-08 / MP-10: attempted edits must keep their status and diagnostics.
+test("unapplied edit/write calls keep generic status and error/output", () => {
+  for (const tool of ["edit", "Edit", "MultiEdit", "write", "Write"]) {
+    for (const status of ["error", "cancelled", "denied", "pending", "running", undefined]) {
+      const update = {
+        id: "rejected", tool, ...(status ? { status } : {}),
+        input: { filePath: "/w/a.py", oldString: "old", newString: "new", content: "new", edits: [{ old_string: "old", new_string: "new" }] },
+        error: "String to replace not found", output: "User rejected the edit",
+      }
+      assert.deepEqual(readApplyPatchFiles(update), [], `${tool}: ${status}`)
+      const display = formatToolDisplay(update)
+      assert.ok(display.blocks.every(block => block.kind !== "patch"))
+      assert.match(formatToolTranscriptUpdate(update), /String to replace not found/)
+      assert.match(formatToolTranscriptUpdate(update), /User rejected the edit/)
+      assert.match(formatToolTranscriptUpdate(update), /String to replace not found/)
+      if (status) assert.ok(formatToolTranscriptUpdate(update).includes(status.toUpperCase()))
+    }
+  }
 })

@@ -12,6 +12,8 @@ type Replacement = { readonly before: string; readonly after: string }
 export function readEditToolFiles(update: ToolTranscriptUpdate): ApplyPatchFile[] {
   const tool = (update.tool ?? "").toLowerCase()
   if (tool !== "edit" && tool !== "multiedit" && tool !== "write") return []
+  // Inputs describe intent until the official harness reports completion.
+  if (update.status !== "completed" || update.error?.trim()) return []
   const input = isObjectValue(update.input) ? update.input as Record<string, unknown> : null
   const filePath = input ? readString(input.filePath) ?? readString(input.file_path) ?? readString(input.path) : null
   if (!input || !filePath) return []
