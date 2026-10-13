@@ -1023,7 +1023,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         // MP-08/MP-10/MP-11: late metadata belongs to the retired run's
         // history, not to the agent's newly selected profile.
         let store = self.app.providers.clone();
-        let updated = store.with_current_live_launch(provider_run, |_| {
+        let updated = store.with_current_profile_run(provider_run, |_| {
             self.app.agents.set_agent_runtime_profile_durably(
                 &durable_state_store,
                 agent_id,

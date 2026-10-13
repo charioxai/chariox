@@ -563,7 +563,7 @@ impl KernelRuntimeState {
                 // MP-08/MP-10/MP-11: a retired run can still finish a poll.
                 // Linearize profile writes with retirement so its metadata
                 // cannot undo a provider/account/model switch.
-                let updated = owned.provider_store.with_current_live_launch(
+                let updated = owned.provider_store.with_current_profile_run(
                     &projected_provider_run,
                     |_| {
                         owned.agent_store.set_agent_runtime_profile_durably(

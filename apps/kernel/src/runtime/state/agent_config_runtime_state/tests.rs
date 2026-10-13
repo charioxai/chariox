@@ -257,6 +257,67 @@ async fn mp08_mp10_mp11_retired_provider_metadata_preserves_selected_profile() {
         &live_resume,
         "current live metadata must still update the resume"
     );
+    // The binding-free fixture settles after its first metadata batch.
+    let started = runtime
+        .owned
+        .start_provider_launch(
+            crate::provider::LaunchProviderRequest::new(
+                &session_id,
+                "dev-stub",
+                &old_provider,
+                "default",
+                "source-model",
+            )
+            .with_agent_id(&agent_id),
+        )
+        .unwrap();
+    runtime
+        .owned
+        .finish_provider_launch_success(&started, None)
+        .unwrap();
+    runtime
+        .owned
+        .provider_store
+        .park_run_provider_only(&session_id, started.run.id())
+        .unwrap();
+    let parked = runtime
+        .owned
+        .provider_store
+        .get_run(started.run.id())
+        .unwrap();
+    assert!(runtime
+        .owned
+        .provider_store
+        .with_current_live_launch::<()>(&parked, |_| {
+            panic!("a parked run cannot admit credential delivery")
+        })
+        .unwrap()
+        .is_none());
+    let parked_resume = crate::provider::ProviderResumeState::from_external_provider_session(
+        "opencode",
+        "parked-thread",
+    );
+    Box::pin(runtime.apply_owned_structured_output_batch(
+        &session_id,
+        started.run.id(),
+        Vec::new(),
+        crate::provider::ProviderPromptSignalBatch {
+            resolved_resume_state: Some(parked_resume.clone()),
+            ..Default::default()
+        },
+    ))
+    .await
+    .unwrap();
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .unwrap()
+            .provider_resume_state(),
+        &parked_resume,
+        "the current parked run still owns its profile metadata"
+    );
     let registry = app.lock().await.provider_account_profile_registry();
     let owner = crate::session::DEFAULT_LOCAL_USER_ID;
     let profile = registry.create_managed(owner, "codex", "Target").unwrap();
