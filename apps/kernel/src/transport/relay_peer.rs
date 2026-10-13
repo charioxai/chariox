@@ -2185,12 +2185,12 @@ mod owner_managed_context_shapes {
 }
 
 #[cfg(test)]
-mod workflow_notification_128_shapes {
+mod workflow_notification_shapes {
     use super::*;
     use crate::local::*;
     use sha2::{Digest, Sha256};
     #[test]
-    fn mp08_mp10_completion_peer_82_snapshot() {
+    fn mp08_mp10_completion_peer_current_snapshot() {
         assert_eq!(
             RELAY_PEER_PROTOCOL_VERSION,
             crate::test_support::expected_relay_peer_protocol_version()
@@ -2225,26 +2225,26 @@ mod workflow_notification_128_shapes {
         };
         let requests = vec![
             RelayPeerRequest::ListWorkflowNotificationSources {
-                protocol_version: 128,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
             },
             RelayPeerRequest::SubscribeWorkflowNotifications {
-                protocol_version: 128,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 source_workflow_ref: "source".into(),
                 target_ref: sub.clone(),
             },
             RelayPeerRequest::DeliverWorkflowNotification {
-                protocol_version: 128,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 subscription_id: "sub".into(),
                 envelope: env,
             },
             RelayPeerRequest::UnsubscribeWorkflowNotifications {
-                protocol_version: 128,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 subscription_id: "sub".into(),
             },
         ];
         let responses = vec![
             RelayPeerResponse::WorkflowNotificationSources {
-                protocol_version: 128,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 sources: vec![WorkflowNotificationSourceSummary {
                     source_id: "source".into(),
                     kernel_id: "kernel".into(),
@@ -2262,10 +2262,19 @@ mod workflow_notification_128_shapes {
             },
             RelayPeerResponse::WorkflowNotificationUnsubscribed,
         ];
-        let wire = serde_json::json!({"requests":requests,"responses":responses});
+        let mut wire = serde_json::json!({"requests":requests,"responses":responses});
+        // Pin the wire shape independently of the generated current peer number.
+        for collection in ["requests", "responses"] {
+            for message in wire[collection].as_array_mut().unwrap() {
+                if let Some(version) = message.get_mut("protocol_version") {
+                    assert_eq!(*version, RELAY_PEER_PROTOCOL_VERSION);
+                    *version = serde_json::json!(0);
+                }
+            }
+        }
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-            "66d568554856f2038651d28e63ff0f35e1d10dc93831fdbca44fe46420a630c2"
+            "874bc240ba66a34636edf93b2aec7ef58cfbc9cbd4a18cbded6c51e687900b7a"
         );
     }
 }
