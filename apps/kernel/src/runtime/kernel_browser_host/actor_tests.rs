@@ -1205,3 +1205,16 @@ done
     std::fs::remove_dir_all(root).unwrap();
     assert_eq!(reply.unwrap()["observation"]["quote"], "Ada");
 }
+
+// MP-11: a state read from before browser restart cannot invalidate the new bindings.
+#[test]
+fn mp11_older_controller_generation_does_not_replace_a_newer_one() {
+    let state = |generation: u64, observation: u64, document: &str| json!({"generation":generation,"_observation":observation,
+        "tabs":[{"tab_id":"host-tab-a","document_id":document}]});
+    let mut model = crate::runtime::kernel_browser_actors::KernelBrowserActors::default();
+    model.reconcile(&state(1, 8, "old")).unwrap();
+    model.reconcile(&state(2, 1, "after-restart")).unwrap();
+    model.reconcile(&state(1, 9, "late-old-reply")).unwrap();
+    assert!(model.input_is_current(&json!({"tab_id":"host-tab-a","generation":2,"document_id":"after-restart"})));
+    assert!(!model.input_is_current(&json!({"tab_id":"host-tab-a","generation":1,"document_id":"late-old-reply"})));
+}

@@ -138,8 +138,10 @@ export class MirrorFrames {
       try {
         const loaderId = await this.loaderId(entry.child);
         if (loaderId !== entry.loaderId) throw new Error('navigated');
-        const raw = await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`);
+        let raw = await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`);
+        if (raw.closed_candidates) { await this.mirror.markClosedHosts(entry.child); raw = this.mirror.merge(raw, await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`)); }
         if (raw.resync) throw new Error('resync');
+        delete raw.closed_candidates; // Controller-private discovery signal never enters the strict rebased delta schema.
         const delta = rebaseDelta(raw, entry.slot);
         // Morphed child nodes (a new page node under a viewer id) are changed input targets too.
         out.ops.push(...delta.ops, ...await this.sheetOps(entry.child, entry.slot, raw.sheets)); out.changed.push(...delta.changed); out.resources.push(...delta.resources);

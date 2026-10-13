@@ -108,6 +108,7 @@ export function installMirror2(sanitizeMirrorCss) {
     let serial = 0, targets = new Set(), records = [], overflow = false, revision = 0;
     const ids = new WeakMap(), nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map(), resOf = new Map();
     const styleNodes = new Map(), roots = new Map(), pendingHosts = new Map(), foreign = new Set(), shapes = new Map();
+    const checkedClosed = new WeakMap();
     const opaque = new Set(); // ids of opaque regions (tiles, foreign frames): none means the kernel has nothing to place
     // Protocol 503: each same-origin frame document's fragment (its `:target`) as last sent; the top document's is a header.
     const fragments = new Map(), fragmentOf = doc => { const hash = doc.location?.hash ?? ''; return hash.length > 1 ? hash.slice(1, 2049) : null; };
@@ -602,7 +603,7 @@ export function installMirror2(sanitizeMirrorCss) {
       }
       for (const [id, last] of fragments) { const doc = nodes.get(id), now = doc ? fragmentOf(doc) : last; if (now !== last) { fragments.set(id, now); ops.push({ op: 'fragment', id, fragment: now }); } }
       for (const key of Object.keys(dirty)) dirty[key].clear();
-      return { ops, changed: rebound, ...take(), ...header(), pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
+      return { ops, changed: rebound, ...take(), ...header(), closed_candidates: [...pendingHosts.values()].some(host => !host.shadowRoot && !closedHosts.has(host) && checkedClosed.get(host) !== host.matches(':defined')), pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
     };
     // Opaque regions visible now, in top-level viewport CSS pixels.
     const opaqueBoxes = () => {
@@ -777,9 +778,19 @@ export function installMirror2(sanitizeMirrorCss) {
       for (let depth = 0; depth < 128; depth++) { let nested = node?.shadowRoot?.activeElement; try { nested ??= node?.localName === 'iframe' ? node.contentDocument?.activeElement : null; } catch {} if (!nested) break; node = nested; }
       const id = node && mirrored(node); return id && foreign.has(id) ? id : null;
     };
-    const markClosedHost = function () { if (this && this.nodeType === 1) { closedHosts.add(this); replaceNode(this); } return true; };
-    // Custom elements without an open root: only then is a DOMSnapshot pass worth it.
-    const customHosts = () => { let n = 0; for (const e of document.querySelectorAll('*')) if (e.localName.includes('-') && !e.shadowRoot && ++n) break; return n; };
+    const markClosedHost = function () { if (this && this.nodeType === 1 && !closedHosts.has(this)) { closedHosts.add(this); replaceNode(this); } return true; };
+    // Traverse every accessible mirrored tree, including open roots and same-origin frames.
+    const customCandidates = () => {
+      const trees = [document], hosts = [];
+      for (let i = 0; i < trees.length && i < 2000; i++) for (const node of trees[i].querySelectorAll('*')) {
+        if (node.shadowRoot) trees.push(node.shadowRoot);
+        if (node.localName === 'iframe') { try { if (node.contentDocument) trees.push(node.contentDocument); } catch {} }
+        if (node.localName.includes('-') && !node.shadowRoot && !closedHosts.has(node)) hosts.push(node);
+      }
+      return hosts;
+    };
+    const customHosts = () => customCandidates().length;
+    const closedChecked = () => { for (const host of customCandidates()) checkedClosed.set(host, host.matches(':defined')); return true; };
     // Trusted-side: resolveNode() hands Vault target nodes to this world, with the fill's value hash and revision.
     const protect = function (hash = null, fillRevision = null) {
       if (!this || this.nodeType !== 1) return true;
@@ -877,6 +888,6 @@ export function installMirror2(sanitizeMirrorCss) {
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
   }
 }

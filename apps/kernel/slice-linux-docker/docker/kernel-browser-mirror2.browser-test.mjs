@@ -1089,3 +1089,23 @@ test("MP-10: review #941@f6fb77245-4 a screenshot-crop region inside a same-orig
       assert.equal(back.fallback, undefined, `MP-10: the mirror returns after ${style}`);
     }
   }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="60" height="60" fill="rgb(255,0,0)"/><rect x="60" width="60" height="60" fill="rgb(0,0,255)"/></svg>' } }));
+
+// MP-08/MP-10/MP-11 review r19: closed custom roots in open roots, same-origin documents and later child lists.
+test('MP-10: review r19 closed custom roots remain opaque in every mirrored tree and after insertion',()=>mirrored(
+ '<x-open></x-open><iframe src="/child"></iframe><script>customElements.define("x-open",class extends HTMLElement{constructor(){super();this.attachShadow({mode:"open"}).innerHTML="<x-closed style=display:block;width:80px;height:40px></x-closed>"}});customElements.define("x-closed",class extends HTMLElement{constructor(){super();this.attachShadow({mode:"closed"}).innerHTML="<b>opaque content</b>"}})</script>',
+ async({next,evaluate})=>{
+  const first=await next();const tiles=first.nodes.filter(n=>n[4]?.reason==='closed_shadow');
+  assert.equal(tiles.length,2,'closed hosts in the open root and same-origin iframe are opaque: '+JSON.stringify(first.nodes.filter(n=>['x-open','x-closed','iframe'].includes(n[2])||n[4]?.reason)));
+  await evaluate('document.body.insertAdjacentHTML("beforeend","<x-closed style=display:block;width:80px;height:40px></x-closed>");true');
+  let found=false;for(let i=0;i<8;i++){const p=await next(1000);if(p.ops.some(op=>op.op==='children'&&op.nodes.some(n=>n[4]?.reason==='closed_shadow')))found=true;}
+  assert(found,'a closed custom root inserted after the snapshot becomes an opaque region through ordinary credits');
+ },{'/child':{type:'text/html',body:'<!doctype html><x-closed style="display:block;width:80px;height:40px"></x-closed><script>customElements.define("x-closed",class extends HTMLElement{constructor(){super();this.attachShadow({mode:"closed"}).innerHTML="<b>frame opaque</b>"}})</script>'}}
+));
+test('MP-10: review r19 a newly inserted closed host becomes a tile without resetting the viewer',()=>mirrored(
+ '<p>stable</p><script>customElements.define("x-closed",class extends HTMLElement{constructor(){super();this.attachShadow({mode:"closed"}).innerHTML="opaque"}})</script>',
+ async({next,evaluate})=>{
+  await next();await evaluate('document.body.insertAdjacentHTML("beforeend","<x-closed style=display:block;width:80px;height:40px></x-closed>");true');
+  let found=false;for(let i=0;i<4;i++){const p=await next(600);assert(!p.reset,'ordinary delta, no reset');if(p.ops.some(op=>op.op==='children'&&op.nodes.some(n=>n[4]?.reason==='closed_shadow')))found=true;}
+  assert(found,'late closed host is an opaque region rather than an empty mirrored host');
+ }
+));

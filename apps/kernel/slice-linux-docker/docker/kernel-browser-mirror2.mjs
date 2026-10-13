@@ -185,23 +185,24 @@ export class Mirror2 {
     if (!await this.evaluate(world, `${world.ref}.customHosts()`)) return 0;
     const snapshot = await world.connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [] }, world.sessionId);
     const strings = snapshot.strings ?? [];
-    const document = world.frame
-      ? snapshot.documents?.find(document => strings[document.frameId] === world.frame.id)
-      : snapshot.documents?.[0];
-    if (!document) throw new Error('MP-11: closed-root frame snapshot unavailable');
-    const nodes = document.nodes, types = nodes?.shadowRootType;
+    const documents = snapshot.documents; // Includes same-origin documents serialized by this world.
+    if (!documents?.length) throw new Error('MP-11: closed-root frame snapshot unavailable');
     let marked = 0;
-    for (let i = 0; i < (types?.index?.length ?? 0) && marked < 256; i++) {
-      if (strings[types.value[i]] !== 'closed') continue;
-      const host = nodes.parentIndex?.[types.index[i]], backendNodeId = nodes.backendNodeId?.[host];
-      if (!Number.isSafeInteger(backendNodeId)) continue;
-      try {
-        const { object } = await world.connection.send('DOM.resolveNode', { backendNodeId, executionContextId: world.contextId }, world.sessionId);
-        await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.markClosedHost.call(this)}`, returnByValue: true }, world.sessionId);
-        await world.connection.send('Runtime.releaseObject', { objectId: object.objectId }, world.sessionId).catch(() => {});
-        marked++;
-      } catch {}
+    for (const document of documents) {
+      const nodes = document.nodes, types = nodes?.shadowRootType;
+      for (let i = 0; i < (types?.index?.length ?? 0) && marked < 256; i++) {
+        if (strings[types.value[i]] !== 'closed') continue;
+        const host = nodes.parentIndex?.[types.index[i]], backendNodeId = nodes.backendNodeId?.[host];
+        if (!Number.isSafeInteger(backendNodeId)) continue;
+        try {
+          const { object } = await world.connection.send('DOM.resolveNode', { backendNodeId, executionContextId: world.contextId }, world.sessionId);
+          const result = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.markClosedHost.call(this)}`, returnByValue: true }, world.sessionId);
+          await world.connection.send('Runtime.releaseObject', { objectId: object.objectId }, world.sessionId).catch(() => {});
+          if (result.result?.value === true) marked++;
+        } catch {}
+      }
     }
+    await this.evaluate(world, `${world.ref}.closedChecked()`);
     return marked;
   }
   // Registered Vault targets are marked by node identity in the observer's world.
@@ -305,6 +306,11 @@ export class Mirror2 {
       return processDelta(await this.evaluate(world, `${world.ref}.drain()`));
     };
     const processDelta = async delta => {
+      // New/upgraded custom hosts trigger trusted discovery before their final projection. Steady-state credits add no round trip.
+      if (delta.closed_candidates) {
+        await this.markClosedHosts(world);
+        delta = this.merge(delta, await this.evaluate(world, `${world.ref}.drain()`));
+      }
       if (delta.resync) return delta;
       const ops = [], resources = [...delta.resources];
       if (JSON.stringify(delta.scroll) !== stream.pageScroll) { stream.pageScroll = JSON.stringify(delta.scroll); stream.movedAt = Date.now(); }
