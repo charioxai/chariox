@@ -37,7 +37,7 @@ const report = {mpItems: ['MP-08', 'MP-10', 'MP-11'], area: 'apps-byom/BY-03', p
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 const safe = text => confidential.reduce((value, secret) => value.replaceAll(secret, '[redacted]'), String(text))
 const save = () => writeFile(path.join(E, 'RESULT.json'), JSON.stringify(report, null, 2))
-const shot = (page, name) => page.screenshot({path: path.join(E, name + '.png'), scale: 'device', timeout: 60000}).catch(error => { (report.screenshotErrors ??= []).push({name, error: safe(error.message).split('\n')[0]}) })
+const shot = (page, name) => page.screenshot({path: path.join(E, name + '.png'), scale: 'device', timeout: 60000, mask: [page.locator('input, textarea, [data-sensitive]')]}).catch(error => { (report.screenshotErrors ??= []).push({name, error: safe(error.message).split('\n')[0]}) })
 async function sample() {
   const mem = Number((await readFile('/proc/meminfo', 'utf8')).match(/MemAvailable:\s+(\d+)/)[1]) * 1024
   const fs = await statfs('/'); resources.push({at: new Date().toISOString(), memAvailable: mem, diskFree: fs.bavail * fs.bsize})
@@ -246,7 +246,7 @@ try {
   }
   report.network = await network.snapshot(); report.status = cells.every(cell => cell.status === 'PASS') ? 'PASS' : 'FAIL'
   if (report.status === 'FAIL') process.exitCode = 1
-} catch (error) { for (const [index, open] of (browser?.contexts() ?? []).flatMap(context => context.pages()).entries()) await open.screenshot({path: path.join(E, `failure-${index}.png`), scale: 'device', timeout: 30000}).catch(() => {}); report.status = 'FAIL'; report.error = safe(error.message).split('Call log:')[0].slice(0, 1200); process.exitCode = 1 }
+} catch (error) { for (const [index, open] of (browser?.contexts() ?? []).flatMap(context => context.pages()).entries()) await shot(open, `failure-${index}`); report.status = 'FAIL'; report.error = safe(error.message).split('Call log:')[0].slice(0, 1200); process.exitCode = 1 }
 finally {
   if (browser) await browser.close(); if (network) report.networkCleanup = await network.close()
   for (const child of children.reverse()) await stop(child)
