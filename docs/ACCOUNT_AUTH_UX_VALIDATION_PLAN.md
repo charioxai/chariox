@@ -13,6 +13,16 @@ Use an isolated kernel with its product-created, unsigned default Codex account 
 
 - `apps-tui-ux/ACCOUNT-AUTH-QUOTA`: With a genuinely exhausted product-linked account and a usable alternative, show model-specific exhaustion and the provider-reported reset times before launch. Web at DPR 1/2 and the real TUI must steer to account selection without launching or suggesting a new sign-in. Select an account with usable quota, preserve it through session and provider-run creation, and complete a real turn. Known credit-backed warnings and stale/reset usage must remain distinct from confirmed exhaustion. Fixtures cannot establish this row.
 
+### Waiting-room provider accounts (protocol 511)
+
+Use a kernel host that (a) has a native Claude Code login, (b) does not have OpenCode installed, and (c) separately, a kernel with no signed-in account at all. Use the real built web entry and the real TUI against the candidate kernel over the hosted relay. Stop every new sign-in at the provider's device or authorization link; never complete or revoke a shared login.
+
+- `apps-tui-ux/WR-ACCOUNTS-POPUP-WEB-DPR1`: At DPR 1, clicking Account on kernel (c) opens the Provider Accounts popup without creating a session. **Add new Codex account** reaches the real device-code link. The Account picker on kernel (a) offers **Add new Claude account**.
+- `apps-tui-ux/WR-ACCOUNTS-POPUP-WEB-DPR2`: Repeat the web scenario at DPR 2.
+- `apps-tui-ux/WR-ACCOUNTS-POPUP-TUI`: In the real TUI, Enter on Account for kernel (c) opens the popup. Its add row and the Account row's add value reach the same real link.
+- `apps-tui-ux/WR-NATIVE-ACCOUNT-AUTO`: Kernel (a) shows its native Claude account signed in, in web and TUI, without **Use native account** or `import-native`. A real Claude turn under that account succeeds.
+- `apps-tui-ux/WR-HARNESS-NOT-INSTALLED`: On kernel (b), the provider list, model list, Account picker and popup in web and TUI offer no OpenCode entry. Codex and Claude remain available.
+
 Each scenario requires screenshots and public logs of the baseline failure and candidate success, exact source heads and binary hashes, plus owned-resource cleanup. Focused source tests supplement these drills; they do not close an acceptance row. A provider 401 must be reported to the coordinator immediately. No entire MP item closes from these scenarios alone.
 
 ## Supplementary regression checks

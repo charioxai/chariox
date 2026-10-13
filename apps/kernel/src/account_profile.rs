@@ -42,6 +42,8 @@ mod managed_fs;
 mod materialization_tests;
 #[path = "account_profile_replica_refresh.rs"]
 mod replica_refresh;
+#[path = "account_profile_native_discovery.rs"]
+mod native_discovery;
 pub(crate) const MAX_MANAGED_CONTEXT_MATERIALIZATION_BYTES: usize = 16 * 1024 * 1024;
 #[cfg(test)]
 thread_local! {
@@ -944,6 +946,9 @@ struct RegistryDocument {
     profiles: Vec<StoredProviderAccountProfile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pending_replica_cleanup: Vec<PendingReplicaCleanup>,
+    /// Native scopes whose registration the user removed; discovery skips them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    dismissed_native_scopes: Vec<native_discovery::DismissedNativeScope>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -961,6 +966,7 @@ impl Default for RegistryDocument {
             credential_copy_notices: Vec::new(),
             profiles: Vec::new(),
             pending_replica_cleanup: Vec::new(),
+            dismissed_native_scopes: Vec::new(),
         }
     }
 }
@@ -970,6 +976,7 @@ pub struct ProviderAccountProfileRegistry {
     path: PathBuf,
     document: Arc<RwLock<RegistryDocument>>,
     usage_refresh_attempts: Arc<ProviderAccountUsageRefreshCoordinator>,
+    native_discovery: Arc<Mutex<native_discovery::NativeDiscoveryState>>,
 }
 
 type ProviderAccountUsageRefreshKey = (String, String, String);
@@ -1055,6 +1062,7 @@ impl ProviderAccountProfileRegistry {
             path,
             document: Arc::new(RwLock::new(document)),
             usage_refresh_attempts: Arc::new(ProviderAccountUsageRefreshCoordinator::default()),
+            native_discovery: Arc::default(),
         };
         if changed {
             let document = registry.read_document()?;
@@ -1755,6 +1763,24 @@ impl ProviderAccountProfileRegistry {
                 "native provider account roots must be absolute",
             ));
         }
+        let profile = self.register_native_scope(owner_user_id, provider, locator.clone())?;
+        let mut document = self.write_document()?;
+        let dismissed = document.dismissed_native_scopes.len();
+        native_discovery::restore_native_scope(&mut document, owner_user_id, provider, &locator);
+        if document.dismissed_native_scopes.len() != dismissed {
+            self.persist_locked(&document)?;
+        }
+        Ok(profile)
+    }
+
+    /// Registers a native scope idempotently; shared by explicit import and
+    /// automatic discovery.
+    fn register_native_scope(
+        &self,
+        owner_user_id: &str,
+        provider: &'static str,
+        locator: ProviderAccountLocator,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
         let mut document = self.write_document()?;
         if let Some(existing) = document.profiles.iter().find(|entry| {
             entry.public.owner_user_id == owner_user_id
@@ -1846,6 +1872,7 @@ impl ProviderAccountProfileRegistry {
         let mut document = self.write_document()?;
         let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
         let removed = document.profiles.remove(index);
+        native_discovery::dismiss_native_scope(&mut document, &removed);
         if removed.public.is_default {
             if let Some(next) = document.profiles.iter_mut().find(|profile| {
                 profile.public.owner_user_id == owner_user_id && profile.public.provider == provider

@@ -109,6 +109,7 @@ pub(crate) mod project_environment_setup_utility;
 pub mod projection;
 pub(crate) mod prompt_settings_executor;
 pub mod prompt_state;
+pub(crate) mod native_provider_account_discovery;
 pub(crate) mod provider_account_control;
 pub(crate) mod provider_account_portability;
 pub(crate) mod provider_auth_control;

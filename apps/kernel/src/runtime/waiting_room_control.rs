@@ -119,6 +119,9 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
     let account_owner_user_id =
         runtime_state.provider_account_authority_owner_user_id(caller_user_id);
+    super::native_provider_account_discovery::schedule_native_provider_account_discovery(
+        runtime_state,
+    );
     let config = config_projection.snapshot();
     let relay_status = projected_relay_status_view(relay_state, config_projection).await;
     let (remote_machines, remote_kernels) = remote_relay_inventory_projection.snapshot();

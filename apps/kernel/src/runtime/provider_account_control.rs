@@ -11,6 +11,11 @@ pub(crate) async fn execute_provider_account_request(
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let owner_user_id = runtime_state.provider_account_authority_owner_user_id(owner_user_id);
+    if matches!(request, LocalDaemonRequest::ListProviderAccountProfiles(_)) {
+        super::native_provider_account_discovery::schedule_native_provider_account_discovery(
+            runtime_state,
+        );
+    }
     let invalidates_catalog = !matches!(
         request,
         LocalDaemonRequest::ListProviderAccountProfiles(_)
