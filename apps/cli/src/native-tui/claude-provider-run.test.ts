@@ -2,7 +2,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import type { LocalIpcClient } from "../ipc.js"
-import { waitForClaudeRemoteRenderedRunExit } from "./claude-provider-run.js"
+import { closeClaudeRemoteRenderedClient, waitForClaudeRemoteRenderedRunExit } from "./claude-provider-run.js"
 
 const context = { sessionId: "session", agentId: "agent" }
 function fixture(runId: string, status: string, category = "runtime_failure", lease?: string): LocalIpcClient {
@@ -49,4 +49,15 @@ test("native exit waits for the ended run's still-active turn to settle", async 
   } } as unknown as LocalIpcClient
   await assert.rejects(waitForClaudeRemoteRenderedRunExit(client, "current-run", context), /definitive cancel failure/)
   assert.equal(snapshots, 2)
+})
+
+
+test("native exit closes its client without waiting for a remote unsubscribe acknowledgement", async () => {
+  let closed = false
+  const client = { unsubscribeFromKernelEvents: () => new Promise(() => {}), close: async () => { closed = true } } as unknown as LocalIpcClient
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([closeClaudeRemoteRenderedClient(client), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("native teardown is held by unsubscribe")), 100) })])
+    assert(closed)
+  } finally { clearTimeout(timer) }
 })

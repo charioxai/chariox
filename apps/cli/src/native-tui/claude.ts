@@ -18,6 +18,7 @@ import {
   startClaudePermissionBridge,
 } from "./claude-permission-bridge.js"
 import {
+  closeClaudeRemoteRenderedClient,
   launchClaudeNativeRun,
   launchClaudeRemoteRenderedRun,
   waitForClaudeProviderRunReady,
@@ -473,8 +474,7 @@ async function runClaudeRemoteRendered(
     restoreStdin?.()
     disposeEvents?.()
     pump?.stop()
-    await client.unsubscribeFromKernelEvents().catch(() => {})
-    await client.close()
+    await closeClaudeRemoteRenderedClient(client)
   }
 }
 

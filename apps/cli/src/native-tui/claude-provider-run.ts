@@ -127,3 +127,8 @@ function isProviderRunNotFound(error: unknown): boolean {
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
+
+// MP-08 / MP-10 / MP-11: close retires both transport lanes and their subscriptions.
+export async function closeClaudeRemoteRenderedClient(client: LocalIpcClient): Promise<void> {
+  await client.close()
+}

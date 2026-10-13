@@ -262,6 +262,13 @@ pub(super) fn resolve_pending_cancellation(
             return Ok(());
         }
     }
+    if std::env::var("CHARIOX_PERF_DIAGNOSTICS").is_ok_and(|v| v == "1") {
+        crate::logging::info_with_fields("daemon.native_interrupt_timing", "native interrupt delivery", serde_json::json!({
+            "provider_run_id":provider_run_id, "prompt_id":prompt.id(), "requested_at_ms":requested_at_ms,
+            "delivered_at_ms":now, "hook_resolved":turn.native_prompt_hook_resolved,
+            "response_started":turn.native_response_started,
+        }));
+    }
     app.active_turns
         .note_native_interruption_delivery(provider_run_id, prompt.id(), now);
     app.terminal.record_input(
