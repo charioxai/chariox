@@ -57,3 +57,69 @@ test('Bun parent watch settles after its real launcher is killed', { timeout: 10
     await parentClosed
   }
 })
+
+// MP-08/MP-11: keep the dead launcher unreaped, as a supervisor may do.
+test('Bun parent watch rejects an unreaped zombie launcher', { timeout: 10000 }, async () => {
+  const module = new URL('../dist/cli-launcher-parent.js', import.meta.url).href
+  const entry = `;(async () => {
+    const { watchCliLauncherParent } = await import(${JSON.stringify(module)})
+    // Bun on macOS caches ppid. Force that same metadata seam on Linux too.
+    watchCliLauncherParent(process.env.CHARIOX_CLI_LAUNCHER_PID, () => Number(process.env.CHARIOX_CLI_LAUNCHER_PID))
+    setInterval(() => {}, 1000)
+    console.log(JSON.stringify({ pid: process.pid, ppid: process.ppid }))
+  })()`
+  const parentEntry = `
+    const { spawn } = require('node:child_process')
+    spawn(${JSON.stringify(process.env.BUN_BIN ?? 'bun')}, ['-e', ${JSON.stringify(entry)}], {
+      stdio: ['ignore', 'inherit', 'inherit'],
+      env: { ...process.env, CHARIOX_CLI_LAUNCHER_PID: String(process.pid) },
+    })
+    setInterval(() => {}, 1000)
+  `
+  // Popen.wait() runs only after the test sends a newline on stdin.
+  const supervisorEntry = `
+import subprocess, sys
+parent = subprocess.Popen([sys.argv[1], '-e', sys.argv[2]])
+sys.stdin.readline()
+parent.wait(timeout=3)
+`
+  const supervisor = spawn('python3', ['-c', supervisorEntry, process.execPath, parentEntry],
+    { stdio: ['pipe', 'pipe', 'pipe'] })
+  const guard = createOwnedSignalGuard()
+  const supervisorIdentity = guard.record(supervisor.pid, { freshLaunch: true })
+  const closed = once(supervisor, 'close')
+  let parentIdentity, childIdentity
+  let output = '', stderr = ''
+  supervisor.stderr.on('data', chunk => { stderr += chunk })
+  try {
+    const ready = new Promise((resolve, reject) => {
+      supervisor.stdout.on('data', chunk => {
+        output += chunk
+        if (output.includes('\n')) resolve(JSON.parse(output.split('\n')[0]))
+      })
+      supervisor.on('error', reject)
+    })
+    const child = await Promise.race([ready, delay(3000).then(() => { throw new Error(`Bun did not start: ${stderr}`) })])
+    parentIdentity = guard.record(child.ppid, { freshLaunch: true })
+    childIdentity = guard.record(child.pid, { freshLaunch: true })
+    guard.pid(parentIdentity, 'SIGKILL')
+    await delay(250)
+    const { execFileSync } = await import('node:child_process')
+    const state = execFileSync('ps', ['-o', 'stat=', '-p', String(child.ppid)], { encoding: 'utf8' }).trim()
+    assert.match(state, /^Z/, 'supervisor reaped the launcher before the probe')
+    const deadline = Date.now() + 2000
+    while (Date.now() < deadline && guard.refresh().some(row => row.pid === child.pid && row.state !== 'Z')) await delay(25)
+    assert.equal(guard.refresh().some(row => row.pid === child.pid && row.state !== 'Z'), false,
+      'Bun child survived its zombie launcher by more than 2 seconds')
+  } finally {
+    for (const identity of guard.processes(supervisorIdentity)) {
+      if (identity.pid !== supervisor.pid) guard.pid(identity, 'SIGKILL')
+    }
+    if (parentIdentity) guard.pid(parentIdentity, 'SIGKILL')
+    if (childIdentity) guard.pid(childIdentity, 'SIGKILL')
+    supervisor.stdin.end('\n')
+    await Promise.race([closed, delay(3000)])
+    guard.pid(supervisorIdentity, 'SIGKILL')
+    await closed
+  }
+})

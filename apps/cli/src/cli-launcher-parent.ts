@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process"
+
 // MP-08/MP-11: macOS has no PR_SET_PDEATHSIG. Watch the exact launcher parent
 // from the entry point, including while the renderer/runtime are still loading.
 export function watchCliLauncherParent(
@@ -21,12 +23,17 @@ export function watchCliLauncherParent(
 }
 
 function launcherExists(pid: number): boolean {
-  // Bun caches process.ppid on macOS. Query only the validated launcher PID;
-  // signal 0 checks existence without delivering a signal to that process.
+  // Bun caches process.ppid on macOS, and kill(pid, 0) accepts zombies and
+  // recycled PIDs. Read current ancestry and state in one process-table query.
   try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH"
+    const rows = execFileSync("/bin/ps", ["-o", "pid=,ppid=,stat=", "-p", `${process.pid},${pid}`], {
+      encoding: "utf8",
+      timeout: 1000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim().split("\n").map((row) => row.trim().split(/\s+/))
+    return rows.some(([id, parent]) => Number(id) === process.pid && Number(parent) === pid)
+      && rows.some(([id, , state]) => Number(id) === pid && state && !state.startsWith("Z"))
+  } catch {
+    return false
   }
 }
