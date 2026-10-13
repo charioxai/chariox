@@ -35,7 +35,10 @@ import { displayCredit, displayPushCredit } from './kernel-browser-display-credi
 export const nativeRetryDelayMs = attempts => Math.min(60_000, 1_000 * 2 ** (attempts - 1));
 
 export function scheduleHostRequest(request) {
-  return request.method === 'host.browser' && request.params?.op === 'screenshot' &&
+  // MP-08/MP-10: App drains wait for enqueue, so the shared bridge lane must
+  // stay independent of input and lifecycle barriers on the host as in Rooms.
+  return ['browser.app.calls','browser.app.respond'].includes(request.method) ||
+    request.method === 'host.browser' && request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string'
     ? {kind:'bridge'} : {kind:'barrier'};
 }

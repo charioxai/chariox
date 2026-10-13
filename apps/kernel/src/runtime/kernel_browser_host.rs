@@ -580,7 +580,13 @@ impl KernelBrowserHost {
         let display = method == "host.browser"
             && params["op"] == "screenshot"
             && params["display_subscription_id"].is_string();
-        let mut result = if display || (method == "host.browser" && params["op"] == "input") {
+        // MP-08/MP-10: an idle App drain waits for page enqueue. Keep its
+        // existing admission/cancellation, but release the controller mutex
+        // while waiting so input, observations and App replies can proceed.
+        let mut result = if display
+            || method == "browser.app.calls"
+            || (method == "host.browser" && params["op"] == "input")
+        {
             let signal = cancellation
                 .clone()
                 .unwrap_or_else(|| Arc::new(BrowserCancellation::default()));

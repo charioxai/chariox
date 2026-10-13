@@ -2,6 +2,82 @@
 use super::*;
 use serde_json::json;
 use std::time::Instant;
+
+#[test]
+fn mp10_idle_app_drain_does_not_lock_out_host_input() {
+    let root =
+        std::env::temp_dir().join(format!("chariox-app-drain-{:032x}", rand::random::<u128>()));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"method":"browser.app.calls"'*)
+  printf started > "$root/started"
+  (while [ ! -f "$root/release" ]; do sleep 0.01; done
+   printf '{"id":%s,"ok":true,"result":{"calls":[]}}\n' "$id") & ;;
+ *'"method":"host.browser"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    host.protected_request(
+        "alice",
+        None,
+        "host.browser",
+        json!({"op":"state"}),
+        policy.clone(),
+    )
+    .unwrap();
+    let completed = std::thread::scope(|scope| {
+        let drain = scope.spawn(|| {
+            host.protected_request(
+                "alice",
+                None,
+                "browser.app.calls",
+                json!({}),
+                policy.clone(),
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !root.join("started").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let entered = root.join("started").exists();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let input_host = &host;
+        let input_policy = policy.clone();
+        let input = scope.spawn(move || {
+            sender.send(input_host.protected_request("alice", None, "host.browser",
+                json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"text","text":"typed"}}), input_policy)).unwrap();
+        });
+        let result = receiver.recv_timeout(Duration::from_millis(200));
+        // Settle both owned operations before asserting the observed ordering.
+        std::fs::write(root.join("release"), "release").unwrap();
+        input.join().unwrap();
+        drain.join().unwrap().unwrap();
+        entered && result.is_ok_and(|result| result.is_ok())
+    });
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        completed,
+        "MP-10: held App drain must not own the host input lock"
+    );
+}
 #[test]
 fn human_takeover_cancels_the_running_controller_and_fences_the_focused_agent() {
     check_running_cancellation(false, false);
