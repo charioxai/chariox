@@ -86,7 +86,10 @@ impl KernelBrowserHost {
         }
         // Human keystrokes claim Desktop immediately and cancel agent input before
         // waiting on controller I/O. The shared action model reserves the same target.
-        let mutation = matches!(params["op"].as_str(), Some("input" | "target_action" | "launch_application"));
+        let mutation = matches!(
+            params["op"].as_str(),
+            Some("input" | "target_action" | "launch_application")
+        );
         if mutation && admission.is_none_or(|a| a.agent.is_none()) {
             let model = self.actor_model(user)?;
             let mut model = model
@@ -101,10 +104,14 @@ impl KernelBrowserHost {
                 params["generation"].as_str().unwrap_or_default(),
             )?;
         }
+        let prepared_at = std::time::Instant::now();
         let backend = self.backend(user)?;
         let mut backend = backend
             .lock()
             .map_err(|_| "MP-11: desktop operation lock unavailable")?;
+        if mutation {
+            crate::transport::kernel_browser_display::timing("computer_backend_wait", prepared_at);
+        }
         self.check_admission(admission)?;
         self.require_running()?;
         // The supervised child validates health at startup. Warm operations
@@ -185,11 +192,15 @@ impl KernelBrowserHost {
             model.reconcile_desktop(&state)?;
             return Ok(state);
         }
+        let state_at = std::time::Instant::now();
         let state = backend.host_request_cancellable(
             "host.computer",
             serde_json::json!({"op":"state"}),
             admission.map(|a| a.cancellation.clone()),
         )?;
+        if mutation {
+            crate::transport::kernel_browser_display::timing("computer_state", state_at);
+        }
         self.check_admission(admission)?;
         let surface = state["surface_id"]
             .as_str()
@@ -294,6 +305,12 @@ impl KernelBrowserHost {
         // MP-08/MP-11: a human desktop video subscription starts a viewer lease.
         let viewer = (params["op"] == "display_subscribe")
             .then(|| browser_actor(admission, &params).actor_id);
+        if mutation {
+            crate::transport::kernel_browser_display::timing(
+                "computer_before_dispatch",
+                prepared_at,
+            );
+        }
         let result =
             backend.host_request_cancellable("host.computer", params, cancellation.clone());
         if let (Some(actor), Ok(reply)) = (&viewer, &result) {

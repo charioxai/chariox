@@ -54,7 +54,7 @@ export function timedHostRequests(host, scheduleRequest) {
   const queued = new WeakMap();
   return {
     scheduleRequest(request) {
-      if (request.method === 'host.browser' && request.params?.op === 'input') queued.set(request, timestamp());
+      if (['host.browser','host.computer'].includes(request.method) && request.params?.op === 'input') queued.set(request, timestamp());
       return scheduleRequest(request);
     },
     handleRequest(request, options) {

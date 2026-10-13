@@ -103,7 +103,8 @@ impl KernelRuntimeState {
             && params["op"] == "screenshot"
             && params["display_subscription_id"].is_string();
         let mirror = method == "host.browser" && params["op"] == "mirror_next";
-        let input = method == "host.browser" && params["op"] == "input";
+        let input =
+            matches!(method.as_str(), "host.browser" | "host.computer") && params["op"] == "input";
         let at = std::time::Instant::now();
         let result = tokio::task::spawn_blocking(move || {
             // MP-08/MP-10/MP-11: numeric queue attribution, never request data.
