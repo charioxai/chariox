@@ -277,7 +277,12 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       }
 
       let attachedSession = await deps.getSessionState(session.id)
-      if (!isCurrent()) return
+      if (!isCurrent()) {
+        // A partial snapshot has not published the attachment, so the newer
+        // binding could not release it through detachCurrentAttachment.
+        if (!provisionalSession) await deps.detachAttachment(attachment.id)
+        return
+      }
 
       applyAttachedState(attachedSession, attachment, createdSession)
 

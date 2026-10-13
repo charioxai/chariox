@@ -1242,3 +1242,35 @@ test("MP-08 / MP-10 an old attach hydration cannot restore the Room after a newe
   assert.equal(current.id, "new")
   assert.equal((binding as RuntimeAttachment | null)?.session_id, "new")
 })
+
+// MP-08 / MP-10: a partial Room snapshot has not published its attachment yet.
+test("superseded partial attach releases its unpublished attachment", async () => {
+  const base = createBaseDeps().deps.sessionState()
+  const room = (id: string): RuntimeSession => ({ ...base, id })
+  let current = room("initial")
+  let binding: RuntimeAttachment | null = null
+  let release!: (session: RuntimeSession) => void
+  let reached!: () => void
+  const pending = new Promise<RuntimeSession>(resolve => { release = resolve })
+  const requested = new Promise<void>(resolve => { reached = resolve })
+  const detached: string[] = []
+  const { deps } = createBaseDeps({
+    attachmentState: () => binding,
+    sessionState: () => current,
+    setAttachmentState: (value: RuntimeAttachment | null) => { binding = value },
+    setSessionState: (value: RuntimeSession) => { current = value },
+    detachAttachment: async (id: string) => { detached.push(id) },
+    attachToSession: async (id: string) => ({ id: "att-" + id, session_id: id }),
+    getSessionState: async (id: string) => { if (id === "old") { reached(); return pending } return room(id) },
+    hydrateAttachedSessionBinding: async (id: string) => room(id),
+  })
+  const controller = createSessionLifecycleController(deps as never)
+  const old = controller.attachBinding({ id: "old" }, false)
+  await requested
+  await controller.attachBinding({ id: "new" }, false)
+  release(room("old"))
+  await old
+  assert.deepEqual(detached, ["att-old"])
+  assert.equal(current.id, "new")
+  assert.equal((binding as RuntimeAttachment | null)?.id, "att-new")
+})
