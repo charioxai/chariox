@@ -160,7 +160,11 @@ pub(super) fn drain_claude_transcript_raw_since(
         }
         drain.chunks.extend(chunks);
         if let Some(message_id) = claude_transcript_assistant_message_id(&value) {
-            if cursor.seen_assistant_message_ids.insert(message_id.clone()) {
+            // Claude writes each content block as its own record, thinking
+            // first; only the visible block completes the message.
+            if claude_transcript_record_has_visible_block(&value)
+                && cursor.seen_assistant_message_ids.insert(message_id.clone())
+            {
                 drain.assistant_message_ids.push(message_id.clone());
                 if claude_transcript_assistant_turn_is_terminal(&value) {
                     drain.terminal_assistant_message_ids.push(message_id);
@@ -175,6 +179,24 @@ pub(super) fn drain_claude_transcript_raw_since(
         },
     );
     drain
+}
+
+fn claude_transcript_record_has_visible_block(value: &Value) -> bool {
+    let Some(blocks) = value
+        .get("message")
+        .unwrap_or(value)
+        .get("content")
+        .and_then(Value::as_array)
+    else {
+        return true;
+    };
+    blocks.is_empty()
+        || blocks.iter().any(|block| {
+            !matches!(
+                block.get("type").and_then(Value::as_str),
+                Some("thinking" | "redacted_thinking")
+            )
+        })
 }
 
 fn claude_transcript_assistant_turn_is_terminal(value: &Value) -> bool {
