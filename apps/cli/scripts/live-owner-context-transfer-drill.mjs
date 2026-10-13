@@ -8,7 +8,7 @@ import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdir, mkdtemp, writeFile, readFile, rm, rename, access, chmod } from 'node:fs/promises'
-import { spawnOwned, signalOwnedProcessGroup, signalOwnedProcess, processSnapshot } from '../../kernel/slice-linux-docker/owned-process-signals.mjs'
+import { spawnOwned, signalOwnedProcessGroup, signalOwnedProcess, ownedProcessHandles, processSnapshot } from '../../kernel/slice-linux-docker/owned-process-signals.mjs'
 import { createReadStream } from 'node:fs'
 import { LocalIpcClient } from '../../../packages/kernel-client/dist/ipc.js'
 
@@ -65,11 +65,11 @@ async function stop(child) {
   // MP-11: the retained setsid leader pins every descendant; the shared guard
   // validates PID/start identities before either a positive or group signal.
   if (child.exitCode === null) {
-    for(const row of remaining().filter(row=>row.pid!==child.pid))signalOwnedProcess(row.pid,'SIGTERM')
+    for(const handle of ownedProcessHandles(child).filter(handle=>handle.pid!==child.pid))signalOwnedProcess(handle,'SIGTERM')
     signalOwnedProcessGroup(child,'SIGTERM')
     await Promise.race([child.done,sleep(5000)])
   }
-  for(const row of remaining().filter(row=>row.pid!==child.pid))signalOwnedProcess(row.pid,'SIGKILL')
+  for(const handle of ownedProcessHandles(child).filter(handle=>handle.pid!==child.pid))signalOwnedProcess(handle,'SIGKILL')
   if (child.exitCode === null) { signalOwnedProcessGroup(child,'SIGKILL'); await child.done }
   await until(()=>remaining().length===0,`${child.name} owned session cleanup`,5000)
 }
