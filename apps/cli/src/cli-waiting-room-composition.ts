@@ -223,6 +223,8 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   const kernelConnectionController = createWaitingRoomKernelConnectionController({
     cloudClient: deps.cloudClient, kernelConnected: deps.kernelConnected,
     getInventory: client => getInventoryForClient(client),
+    getProviderCatalog: client => getProviderCatalog(client, deps.appLogger),
+    setProviderCatalog: deps.setProviderCatalogState,
     client: deps.client,
     clientId: deps.options.clientId,
     initialTargetKernelId: deps.options.targetDaemonId,
