@@ -5,15 +5,6 @@ use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, ProviderRunState};
 
 impl DaemonApp {
-    pub(crate) fn require_prompt_agent_authenticated(
-        &self,
-        agent: &crate::agent::AgentInstance,
-        operation: &'static str,
-    ) -> Result<(), DaemonError> {
-        self.provider_account_profiles
-            .require_agent_authenticated(&self.config, agent, operation)
-    }
-
     pub(crate) fn ensure_prompt_provider_run_for_agent(
         &mut self,
         session_id: &str,
