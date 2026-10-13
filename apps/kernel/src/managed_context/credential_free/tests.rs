@@ -1327,6 +1327,38 @@ thread_local! {
 // MP-11: supplementary interruption injection into a real Git child; never
 // available through production configuration, serialized requests or PATH.
 pub(super) fn interrupt_scan_child(child: &mut std::process::Child, args: &[&str]) {
+    #[cfg(unix)]
+    if args.contains(&"--batch") {
+        BLOCK_OBJECT_READ.with(|object| {
+            if let Some(oid) = object.borrow_mut().take() {
+                use std::io::Write;
+                use std::os::fd::AsRawFd;
+                writeln!(child.stdin.as_mut().unwrap(), "{oid}").unwrap();
+                let fd = child.stdout.as_ref().unwrap().as_raw_fd();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                loop {
+                    let mut available: libc::c_int = 0;
+                    assert_eq!(
+                        unsafe { libc::ioctl(fd, libc::FIONREAD, &mut available) },
+                        0
+                    );
+                    if available > 256 {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "Git must publish an object header and partial body"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                assert!(child.id() > 1 && child.id() <= i32::MAX as u32);
+                assert_eq!(
+                    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGSTOP) },
+                    0
+                );
+            }
+        });
+    }
     INTERRUPT_SCAN.with(|fault| {
         if fault.get().is_some_and(|command| args.contains(&command)) {
             fault.set(None);
@@ -1409,4 +1441,37 @@ fn mp08_mp11_repository_history_limit_remains_terminal() {
             "{error}"
         );
     }
+}
+
+thread_local! {
+    static HISTORY_LIMIT: std::cell::Cell<std::time::Duration> = const { std::cell::Cell::new(std::time::Duration::from_secs(120)) };
+    static BLOCK_OBJECT_READ: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+pub(super) fn history_scan_limit() -> std::time::Duration {
+    HISTORY_LIMIT.with(|limit| limit.get())
+}
+
+#[cfg(unix)]
+#[test]
+fn mp08_mp11_history_watchdog_during_object_read_reports_timeout() {
+    let fixture = InlineShellFixture::file("large.txt", &vec![b'x'; 1024 * 1024], true);
+    let oid = git(
+        &fixture.project,
+        &["rev-parse", "HEAD~1:large.txt"],
+        MAX_FILE,
+    )
+    .unwrap();
+    BLOCK_OBJECT_READ.with(|object| {
+        *object.borrow_mut() = Some(String::from_utf8(oid).unwrap().trim().to_owned())
+    });
+    HISTORY_LIMIT.with(|limit| limit.set(std::time::Duration::from_millis(50)));
+    let result = scan_repository(&fixture.project);
+    HISTORY_LIMIT.with(|limit| limit.set(std::time::Duration::from_secs(120)));
+    BLOCK_OBJECT_READ.with(|object| assert!(object.borrow().is_none()));
+    let error = result.unwrap_err();
+    assert!(
+        error.to_string().contains("120 second time limit"),
+        "{error}"
+    );
+    assert!(!error.to_string().contains("credential-bearing"), "{error}");
 }

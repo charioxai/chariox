@@ -10,6 +10,10 @@ use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
 pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError> {
+    #[cfg(test)]
+    let scan_limit = tests::history_scan_limit();
+    #[cfg(not(test))]
+    let scan_limit = Duration::from_secs(120);
     let paths = git(root, &["rev-list", "--objects", "HEAD"], MAX_FILE)?;
     let paths = std::str::from_utf8(&paths)
         .map_err(|_| refused())?
@@ -62,11 +66,17 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
     let watched = child.clone();
     let killed_for_refusal = Arc::new(AtomicBool::new(false));
     let watchdog_killed = killed_for_refusal.clone();
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let watchdog_timeout = timed_out.clone();
     let watchdog = std::thread::spawn(move || {
-        if deadline.recv_timeout(Duration::from_secs(120)).is_err() {
+        if matches!(
+            deadline.recv_timeout(scan_limit),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ) {
             let mut owned = watched.lock().expect("owned Git child");
-            if owned.id() > 1 {
+            if !watchdog_killed.load(Ordering::Relaxed) && owned.id() > 1 {
                 if owned.kill().is_ok() {
+                    watchdog_timeout.store(true, Ordering::Relaxed);
                     watchdog_killed.store(true, Ordering::Relaxed);
                 }
             }
@@ -108,7 +118,7 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
                     "Copy history exceeds the 1 GiB scan-byte limit",
                 ));
             }
-            if start.elapsed() > Duration::from_secs(120) {
+            if start.elapsed() > scan_limit {
                 return Err(admission_error(
                     "Copy history scan exceeded the 120 second time limit",
                 ));
@@ -174,8 +184,14 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
     })();
     let status = loop {
         let mut owned = child.lock().expect("owned Git child");
-        if (result.is_err() || start.elapsed() > Duration::from_secs(120)) && owned.id() > 1 {
+        if (result.is_err() || start.elapsed() > scan_limit)
+            && !killed_for_refusal.load(Ordering::Relaxed)
+            && owned.id() > 1
+        {
             if owned.kill().is_ok() {
+                // The first policy kill owns the reason. A later watchdog must
+                // not replace a size/credential refusal with a timeout.
+                timed_out.store(result.is_ok(), Ordering::Relaxed);
                 killed_for_refusal.store(true, Ordering::Relaxed);
             }
         }
@@ -194,6 +210,11 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
     let _ = writer.join();
     let status = status?;
     scan_git_status(status, killed_for_refusal.load(Ordering::Relaxed))?;
+    if timed_out.load(Ordering::Relaxed) {
+        return Err(admission_error(
+            "Copy history scan exceeded the 120 second time limit",
+        ));
+    }
     // Preserve the actionable policy reason after our kill; external signals
     // still take precedence in scan_git_status above.
     if !status.success() && result.is_ok() {
