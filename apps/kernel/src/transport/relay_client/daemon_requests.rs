@@ -125,13 +125,7 @@ pub(super) async fn handle_prepared_daemon_request(
                             }
                         }
                     };
-                    let mut caller = KernelCaller::for_relay_request(None);
-                    caller.caller_id = grant.client_id.clone();
-                    caller.client_id = Some(grant.client_id);
-                    caller.user_id = Some(crate::session::DEFAULT_LOCAL_USER_ID.into());
-                    caller.public_key_thumbprint = Some(grant.public_key_thumbprint);
-                    caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
-                    caller
+                    KernelCaller::from_paired_terminal(grant)
                 }
             } else {
                 KernelCaller::for_relay_request(caller_identity)

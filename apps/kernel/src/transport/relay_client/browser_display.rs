@@ -28,7 +28,7 @@ pub(super) async fn handle_subscribe(
         public_key,
         resume,
     } = subscription;
-    use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+    use crate::runtime::command::{KernelCommand, KernelCommandSource};
     let request =
         crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
             command: crate::local::KernelBrowserCommand::State,
@@ -36,9 +36,7 @@ pub(super) async fn handle_subscribe(
     let caller = KernelCommand::from_local_request_with_caller(
         request_id.clone(),
         KernelCommandSource::RelayClient,
-        identity
-            .map(KernelCaller::from_relay_identity)
-            .unwrap_or_else(|| KernelCaller::for_source(&KernelCommandSource::RelayClient)),
+        display_subscription_caller(router, identity, &public_key)?,
         None,
         None,
         &request,
@@ -222,5 +220,98 @@ mod tests {
         assert!(browser_display_delivery_id(&tasks, "d", "key")
             .await
             .is_none());
+    }
+}
+
+// MP-08/MP-10/MP-11: metadata must retain the RPC's terminal actor.
+fn display_subscription_caller(
+    router: &CommandRouter,
+    identity: Option<RelayCallerIdentity>,
+    public_key: &str,
+) -> Result<crate::runtime::command::KernelCaller, DaemonError> {
+    use crate::runtime::command::KernelCaller;
+    Ok(match router.admit_self_host_terminal(public_key)? {
+        Some(grant) => KernelCaller::from_paired_terminal(grant),
+        None => KernelCaller::for_relay_request(identity),
+    })
+}
+
+#[cfg(test)]
+mod paired_tests {
+    use super::*;
+    use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+    #[tokio::test]
+    async fn mp08_mp10_mp11_paired_display_metadata_keeps_rpc_actor() {
+        let work = crate::test_support::TestWorktree::new("paired-display-actor");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config_path = work.path().join("config.toml");
+        config.relay_url = Some("ws://127.0.0.1:1".into());
+        config.relay_token = Some("test-transport".into());
+        config.user_config.state.path = Some(work.path().join("state.db").display().to_string());
+        let private = crate::transport::relay_crypto::generate_private_key_base64();
+        let public =
+            crate::transport::relay_crypto::public_key_from_private_key_base64(&private).unwrap();
+        let grant = crate::config::PersistedClientPairing {
+            client_id: "paired-web".into(),
+            alias: None,
+            terminal_type: "web".into(),
+            public_key_thumbprint: crate::runtime::terminal_pairings::public_key_thumbprint(
+                &public,
+            ),
+            paired_at_ms: crate::session::unix_epoch_ms(),
+            revoked: false,
+        };
+        crate::runtime::self_host_terminal_grants::register(
+            &config,
+            "pairing-link",
+            &grant.client_id,
+            crate::session::unix_epoch_ms() + 60_000,
+            "web",
+            None,
+        )
+        .unwrap();
+        crate::runtime::self_host_terminal_grants::redeem(&config, "pairing-link", grant.clone())
+            .unwrap();
+        let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let request =
+            crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+                command: crate::local::KernelBrowserCommand::State,
+            });
+        // This is the RPC's pre-existing paired admission contract.
+        let mut rpc = KernelCaller::for_relay_request(None);
+        rpc.caller_id = grant.client_id.clone();
+        rpc.client_id = Some(grant.client_id.clone());
+        rpc.user_id = Some(crate::session::DEFAULT_LOCAL_USER_ID.into());
+        rpc.public_key_thumbprint = Some(grant.public_key_thumbprint.clone());
+        rpc.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+        let command = |caller| {
+            KernelCommand::from_local_request_with_caller(
+                "paired",
+                KernelCommandSource::RelayClient,
+                caller,
+                None,
+                None,
+                &request,
+            )
+        };
+        let rpc_actor = router
+            .runtime_state()
+            .kernel_browser_terminal_context(&command(rpc))
+            .unwrap();
+        let display = display_subscription_caller(&router, None, &public).unwrap();
+        assert_eq!(
+            router
+                .runtime_state()
+                .kernel_browser_terminal_context(&command(display))
+                .expect("MP-08 P2: paired metadata is an authenticated terminal"),
+            rpc_actor
+        );
+        crate::runtime::self_host_terminal_grants::revoke(&config, &grant.client_id).unwrap();
+        assert!(
+            display_subscription_caller(&router, None, &public).is_err(),
+            "MP-11: revoked keys never acquire a display caller"
+        );
+        router.runtime_state().shutdown_cleanup().await.unwrap();
     }
 }
