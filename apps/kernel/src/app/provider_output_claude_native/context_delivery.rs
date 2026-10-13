@@ -46,6 +46,58 @@ pub(super) fn request_expired(event: &Value) -> bool {
 }
 
 impl ProviderOutputClaudeNativeBridge<'_> {
+    /// A late hook cannot deliver context, but its failure must still settle
+    /// the exact managed prompt that was admitted before PTY injection.
+    pub(super) fn bind_expired_managed_context_failure(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        run_id: &str,
+        context_file: &str,
+        event: &Value,
+    ) -> Result<(), DaemonError> {
+        if fs::metadata(format!("{context_file}.context-delivery")).is_ok() {
+            return Ok(());
+        }
+        let Some(request_id) = event.get("hook_context_request_id").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        let Some(prompt) = event.get("prompt").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        let marker = claude_native_marker(context_file);
+        let Some(dispatch_id) = marker.as_deref().and_then(claude_native_dispatch_prompt_id) else {
+            return Ok(());
+        };
+        let active = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?;
+        if active.as_ref().map(|prompt| prompt.id()) != Some(dispatch_id)
+            || !claude_headless_dispatch_matches_prompt(context_file, dispatch_id, prompt)
+        {
+            return Ok(());
+        }
+        let current = self.app.providers.get_run(run_id)?;
+        if let Some(session) = event.get("session_id").and_then(Value::as_str) {
+            if current.provider_session_id().or_else(|| {
+                current
+                    .resume_state()
+                    .provider_session_id(current.adapter_key())
+            }) != Some(session)
+            {
+                return Ok(());
+            }
+        }
+        stage(
+            context_file,
+            request_id,
+            run_id,
+            dispatch_id,
+            dispatch_id,
+            true,
+        )
+    }
+
     fn matching_context_delivery(
         &mut self,
         session_id: &str,
