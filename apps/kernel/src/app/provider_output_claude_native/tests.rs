@@ -1499,12 +1499,12 @@ fn claude_workspace_trust_selects_yes_above_highlighted_no() {
 
 #[test]
 fn claude_workspace_trust_approval_reads_the_completed_frame() {
-    workspace_trust_approval_frame("  Yes, I trust this folder", "\x1b[A\n", 1);
+    workspace_trust_approval_frame("Yes, I trust this folder\nNo, exit", "\x1b[A\n", 1);
 }
 
 #[test]
 fn claude_workspace_trust_unparseable_approval_is_not_denial() {
-    workspace_trust_approval_frame("  Yes, I trust this folder", "", 2);
+    workspace_trust_approval_frame("Yes, I trust this folder\nNo, exit", "", 2);
 }
 
 fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
@@ -1638,6 +1638,9 @@ fn workspace_trust_approval_frame(choices: &str, expected_input: &str, frame_mod
                 "\n❯ No, exit",
             )
             .unwrap();
+    }
+    if frame_mode == 2 {
+        fs::write(root.join("permission-recent.txt"), "unparseable current frame").unwrap();
     }
     bridge.resolve("allow_once", "allow");
     if frame_mode == 2 {
