@@ -11,6 +11,7 @@ use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchRe
 
 use super::executable_resolution::ExecutableResolutionState;
 
+mod auth_probe;
 mod catalog;
 mod launch_args;
 mod mcp_config;
@@ -18,6 +19,7 @@ mod native_tui;
 mod usage_capture;
 mod usage_probe;
 
+pub(crate) use auth_probe::verify_claude_setup_token;
 pub use catalog::claude_provider_catalog;
 use catalog::CLAUDE_HEADLESS_PROVIDER_ID;
 pub(crate) use launch_args::claude_args_with_execution_config;

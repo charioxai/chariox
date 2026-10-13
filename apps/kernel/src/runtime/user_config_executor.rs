@@ -115,12 +115,13 @@ pub(crate) async fn execute_set_provider_account_credential_request(
         )
         .await?;
     let token = zeroize::Zeroizing::new(request.value.trim().to_string());
-    claude_setup_token_login::verify(runtime_state, &owner_user_id, &profile.profile_id, &token)
-        .await
-        .map_err(|message| DaemonError::LocalTransport {
-            operation: "store provider account credential",
-            message,
-        })?;
+    claude_setup_token_login::verify_account_token(
+        runtime_state,
+        &owner_user_id,
+        &profile.profile_id,
+        &token,
+    )
+    .await?;
     let _vault_unlock = runtime_state
         .ensure_vault_unlocked_for_command_context(
             command,
@@ -364,3 +365,6 @@ fn credential_vault_status(
     let user_config = config_projection.snapshot().user_config;
     crate::secret::chariox_encrypted_vault_status(&user_config.credential_vault.path)
 }
+
+#[cfg(test)]
+mod tests;

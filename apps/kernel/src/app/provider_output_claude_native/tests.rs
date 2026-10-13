@@ -1654,7 +1654,21 @@ fn claude_workspace_trust_selects_yes_above_highlighted_no() {
     workspace_trust_approval_fixture("1. Yes, I trust this folder\n❯ 2. No, exit", "\x1b[A\n");
 }
 
+#[test]
+fn claude_workspace_trust_approval_reads_the_completed_frame() {
+    workspace_trust_approval_frame("Yes, I trust this folder\nNo, exit", "\x1b[A\n", 1);
+}
+
+#[test]
+fn claude_workspace_trust_unparseable_approval_is_not_denial() {
+    workspace_trust_approval_frame("Yes, I trust this folder\nNo, exit", "", 2);
+}
+
 fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
+    workspace_trust_approval_frame(choices, expected_input, 0);
+}
+
+fn workspace_trust_approval_frame(choices: &str, expected_input: &str, frame_mode: u8) {
     let worktree = crate::test_support::TestWorktree::new("claude-native-trust-approval");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
@@ -1777,7 +1791,46 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
         "no PTY bytes may be sent before trust approval"
     );
 
+    if frame_mode == 1 {
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .process_terminal_output(
+                session.id(),
+                run.id(),
+                &run,
+                Some(std::sync::Arc::new(bridge.clone())),
+                "\n❯ No, exit",
+            )
+            .unwrap();
+    }
+    if frame_mode == 2 {
+        fs::write(
+            claude_permission_recent_file(&context_file).unwrap(),
+            "Quick safety check: choices unavailable",
+        )
+        .unwrap();
+    }
     bridge.resolve("allow_once", "allow");
+    if frame_mode == 2 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let result = ProviderOutputClaudeNativeBridge::new(&mut app)
+                .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch);
+            if let Err(error) = result {
+                let message = error.to_string();
+                assert!(
+                    message.contains("could not select"),
+                    "MP-08/MP-11: explicit approval is not denial: {message}"
+                );
+                assert!(!message.contains("trust was denied"));
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        app.pty.remove_process(run.id()).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        return;
+    }
     let mut approved = false;
     for _ in 0..500 {
         let _ = ProviderOutputClaudeNativeBridge::new(&mut app)
