@@ -271,6 +271,10 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     daemonDisconnected: deps.daemonDisconnected,
     sessionBindingRepairInFlight: deps.sessionBindingRepairInFlight,
     currentSessionEventBindingReady: deps.currentSessionEventBindingReady,
+    onAttachedTransportClosed: () => {
+      deps.kernelEventSubscriptionController.reset()
+      void deps.recoverAttachedSessionAfterKernelRestart()
+    },
     isAttached: deps.isAttached,
     restartWaitingRoomEventStream: () => {
       void deps.client.restartKernelEventStream().catch((error: unknown) => {
@@ -535,7 +539,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     clearLocalBusyStateForAuthoritativeIdle: deps.clearLocalBusyStateForAuthoritativeIdle,
     recordDaemonActivity,
     onRecovered: () => {
-      kernelEventController.applyTransportResumed(true)
+      kernelEventController.applyTransportResumed()
     },
     onStateLookupFailed: (sessionId, message, error) => {
       deps.appLogger?.debug?.("session unavailable recovery lookup failed", {

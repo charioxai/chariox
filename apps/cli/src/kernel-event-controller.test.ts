@@ -571,3 +571,21 @@ test("MP-08/MP-10 generic resumed traffic cannot settle an in-flight session rep
   assert(calls.includes("daemon-disconnected:false"))
   controller.disposeConnectionDisplay()
 })
+
+// MP-08/MP-10: a matching old attachment is not a live binding after a close.
+test("binding recovery cannot reuse the subscription invalidated by transport loss", () => {
+  let bindingReady = true
+  const { deps, calls } = createDeps({
+    currentSessionEventBindingReady: () => bindingReady,
+    onAttachedTransportClosed: () => { bindingReady = false },
+  })
+  const controller = createKernelEventController(deps as never)
+  controller.applyTransportClosed("event stream closed")
+  controller.applyTransportResumed(true)
+  assert.equal(bindingReady, false)
+  assert.equal(calls.includes("daemon-disconnected:false"), false)
+  bindingReady = true
+  controller.applyTransportResumed(true)
+  assert.equal(calls.includes("daemon-disconnected:false"), true)
+  controller.disposeConnectionDisplay()
+})

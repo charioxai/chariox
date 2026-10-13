@@ -58,6 +58,7 @@ type KernelEventControllerDeps = {
   daemonDisconnected?: () => boolean
   sessionBindingRepairInFlight?: () => boolean
   currentSessionEventBindingReady?: () => boolean
+  onAttachedTransportClosed?: () => void
   setStatusLine: (value: string) => void
   updateSessionChrome: () => void
   isAttached: () => boolean
@@ -285,13 +286,14 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
 
   const applyTransportClosed = (_message: string) => {
     connectionDisplay.closed()
-    if (!deps.isAttached()) {
-      // Control and event closes share this signal. Replace the event binding
-      // first so the next rows report is guaranteed to be a complete baseline.
-      deps.restartWaitingRoomEventStream()
-      deps.onWaitingRoomTransportClosed()
+    if (deps.isAttached()) {
+      deps.onAttachedTransportClosed?.()
       return
     }
+    // Control and event closes share this signal. Replace the event binding
+    // first so the next rows report is guaranteed to be a complete baseline.
+    deps.restartWaitingRoomEventStream()
+    deps.onWaitingRoomTransportClosed()
   }
 
   const applyTransportResumed = (bindingRecovered = false) => {
