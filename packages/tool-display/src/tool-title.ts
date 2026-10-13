@@ -226,6 +226,7 @@ function toolTitleShellCommand(command: string, verb: (done: string, running: st
     }
     if (program === "rg" || program === "grep") {
       const explicitPatterns: string[] = []
+      const patternFiles: string[] = []
       const positional: string[] = []
       for (let index = 1; index < words.length; index += 1) {
         const word = words[index]!
@@ -233,11 +234,19 @@ function toolTitleShellCommand(command: string, verb: (done: string, running: st
           if (words[index + 1]) explicitPatterns.push(toolTitleUnquote(words[++index]!))
         } else if (word.startsWith("--regexp=")) {
           explicitPatterns.push(toolTitleUnquote(word.slice(9)))
+        } else if (word === "-f" || word === "--file") {
+          if (words[index + 1]) patternFiles.push(toolTitleUnquote(words[++index]!))
+        } else if (word.startsWith("--file=")) {
+          patternFiles.push(toolTitleUnquote(word.slice(7)))
         } else if (TOOL_TITLE_VALUE_OPTIONS.has(word)) {
           index += 1
         } else if (!word.startsWith("-")) {
           positional.push(toolTitleUnquote(word))
         }
+      }
+      if (patternFiles.length) {
+        const label = explicitPatterns.length ? `for ${explicitPatterns.join(", ")} and` : "using"
+        return `${verb("Searched", "Searching")} ${label} patterns from ${patternFiles.join(", ")}${positional.length ? ` in ${positional.join(", ")}` : ""}`
       }
       const [pattern, ...paths] = explicitPatterns.length
         ? [explicitPatterns.join(", "), ...positional]

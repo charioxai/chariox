@@ -114,3 +114,10 @@ test("MP-08 / MP-10 shell titles keep explicit search patterns and ordinary list
     ["cat -A README.md", "Read README.md"],
   ]) assert.equal(toolDisplayTitle({id:"review-search",tool:"bash",status:"completed",input:{command:command!}}), expected)
 })
+
+// MP-08 / MP-10: -f supplies a pattern file; following operands remain paths.
+test("shell search titles preserve pattern-file operands", () => {
+  for (const command of ["rg -f patterns.txt src", "grep --file patterns.txt src", "rg --file=patterns.txt src"]) {
+    assert.equal(toolDisplayTitle({ id: "patterns", tool: "bash", status: "completed", input: { command } }), "Searched using patterns from patterns.txt in src")
+  }
+})
