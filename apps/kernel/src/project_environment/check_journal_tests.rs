@@ -134,20 +134,17 @@ fn check_journal_retains_last_complete_durable_snapshot() {
 }
 
 #[test]
-fn check_journal_grows_atomically_and_imports_append_snapshots() {
+fn check_journal_grows_atomically_and_reuses_slots() {
     let root = crate::test_support::TestWorktree::new("envp04-check-resize");
     let store = ProjectEnvironmentStore::new(root.path());
     let path = store.path("project").with_extension("checks.wal");
     let mut checks = EnvironmentChecks::default();
-    checks.folder_binding_digest = "legacy append".into();
-    let mut legacy = serde_json::to_vec(&checks).unwrap();
-    legacy.push(b'\n');
-    crate::config::write_private_file(&path, &legacy).unwrap();
+    checks.folder_binding_digest = "initial".into();
+    store.save_checks("project", &checks).unwrap();
     assert_eq!(
         store.load_checks("project").unwrap().folder_binding_digest,
-        "legacy append"
+        "initial"
     );
-    store.save_checks("project", &checks).unwrap();
     let before = std::fs::metadata(&path).unwrap().len();
     checks.folder_binding_digest = "a".repeat(70_000);
     store.save_checks("project", &checks).unwrap();
@@ -166,22 +163,15 @@ fn check_journal_grows_atomically_and_imports_append_snapshots() {
     );
 }
 #[test]
-fn check_journal_imports_legacy_snapshot_and_rejects_symlinks() {
+fn check_journal_rejects_symlinks_and_hardlinks() {
     let root = crate::test_support::TestWorktree::new("envp04-check-journal");
     let store = ProjectEnvironmentStore::new(root.path());
     let mut checks = EnvironmentChecks::default();
-    checks.folder_binding_digest = "legacy".into();
-    let legacy = store.path("project").with_extension("checks.json");
-    crate::config::write_private_file(&legacy, &serde_json::to_vec(&checks).unwrap()).unwrap();
-    assert_eq!(
-        store.load_checks("project").unwrap().folder_binding_digest,
-        "legacy"
-    );
+    checks.folder_binding_digest = "current".into();
     store.save_checks("project", &checks).unwrap();
-    std::fs::remove_file(legacy).unwrap();
     assert_eq!(
         store.load_checks("project").unwrap().folder_binding_digest,
-        "legacy"
+        "current"
     );
     #[cfg(unix)]
     {
