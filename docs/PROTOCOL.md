@@ -3755,7 +3755,7 @@ input-attribution contract with DOM mirror v2 author CSS, text, live controls,
 compact deltas, per-document protection, native density, long-poll credits and
 resend. Mirror reads retain the shared per-viewer input ordering. Clients enable
 App echo pipelining only at the allocated ordering floor 516 or later; the
-v2 renderer retains its 503 shape floor. Old clients keep their existing
+v2 renderer requires 517 to admit inert layout-attribute deltas on opaque tiles. Old clients keep their existing
 minimum-version checks. App authority remains in the kernel App host; Cloud
 projects the kernel's Tab and surface geometry.
 

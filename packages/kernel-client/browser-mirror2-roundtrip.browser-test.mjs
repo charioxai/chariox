@@ -125,3 +125,16 @@ for(const origin of ['localhost:PORT','127.0.0.1:CHILDPORT'])test(`MP-08/MP-10: 
     let large=await next();for(let i=0;i<4&&large.fallback!=='region_area';i++)large=await next();
     assert.equal(large.fallback,'region_area','MP-11: the same closed region obeys the 25% opaque-area video handoff');
   }));
+
+// MP-08/MP-10/MP-11: review a44f1afce F1, layout and pixels belong to the same opaque box.
+for(const tag of ['canvas','x-opaque'])test(`MP-10: opaque ${tag} preserves author position, display and transform across class/style deltas`,()=>roundtrip(
+ `<!doctype html><style>.moved{left:420px!important;top:260px!important;display:block!important;transform:translate(7px,11px)!important}</style><${tag} id="box" width="80" height="40" style="position:absolute;left:200px;top:100px;display:block;width:80px;height:40px;${tag==='canvas'?'transform:translate(13px,7px)':''}"></${tag}><script>${tag==='canvas'?"const c=box.getContext('2d');c.fillStyle='rgb(19,31,47)';c.fillRect(0,0,80,40)":"customElements.define('x-opaque',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'closed'}).innerHTML='<div style=width:80px;height:40px;background:rgb(19,31,47)></div>'}})"}</script>`,
+ '',async({page,next,apply,evaluate})=>{
+  const properties="(()=>{const e=document.getElementById('box'),r=e.getBoundingClientRect(),s=getComputedStyle(e);return {x:r.x,y:r.y,width:r.width,height:r.height,display:s.display,transform:s.transform}})()";
+  const read=()=>page.evaluate(()=>{const e=window.r.frame.contentDocument.getElementById('box'),r=e.getBoundingClientRect(),s=e.ownerDocument.defaultView.getComputedStyle(e);return {x:r.x,y:r.y,width:r.width,height:r.height,display:s.display,transform:s.transform,paint:s.backgroundImage}});
+  const agree=async()=>{const expected=await evaluate(properties),actual=await read();for(const name of ['x','y','width','height'])assert(Math.abs(actual[name]-expected[name])<=1,`MP-10: ${tag} ${name}: ${actual[name]} vs ${expected[name]}`);assert.equal(actual.display,expected.display);assert.equal(actual.transform,expected.transform);assert(actual.paint.startsWith('url('),'MP-10: tile paint survives layout reconciliation');};
+  await apply(await next());await agree();
+  for(const expression of ["box.className='moved';true","box.className='';box.setAttribute('style','position:absolute;left:600px;top:300px;display:block;width:80px;height:40px');true"]){
+   await evaluate(expression);for(let i=0;i<3;i++){const packet=await next();assert(!packet.reset);await apply(packet);await page.waitForTimeout(30);}await agree();
+  }
+ }));
