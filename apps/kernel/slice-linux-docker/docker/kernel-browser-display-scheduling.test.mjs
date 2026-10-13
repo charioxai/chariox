@@ -20,3 +20,18 @@ for(const method of ['host.browser','host.computer'])test('MP-08/MP-10/MP-11 '+m
  // Always release ownership before asserting, so RED tests clean up as well.
  input.end();release();await running;assert.equal(early,true);assert.deepEqual(replies,[2,1]);
 });
+
+// MP-08/MP-10/MP-11: a resource-heavy mirror read must not park native input.
+test('MP-08/MP-10/MP-11 Computer input progresses during held Browser mirror observation',async()=>{
+ const input=new PassThrough(),output=new PassThrough();let release,started,completed;
+ const began=new Promise(r=>started=r),hold=new Promise(r=>release=r),inputDone=new Promise(r=>completed=r);
+ output.on('data',b=>{for(const line of b.toString().trim().split('\n'))if(line&&JSON.parse(line).id===2)completed()});
+ const server=new BrowserControllerStdioServer({input,output,scheduleRequest:scheduleHostRequest,handleRequest:async request=>{
+  if(request.id===1){started();await hold}return {id:request.id,ok:true,result:{}};
+ }});
+ const running=server.run();
+ input.write(JSON.stringify({id:1,method:'host.browser',params:{op:'mirror_next',subscription_id:'mirror',generation:1}})+'\n');await began;
+ input.write(JSON.stringify({id:2,method:'host.computer',params:{op:'input',surface_id:'s',generation:'g'}})+'\n');
+ const early=await Promise.race([inputDone.then(()=>true),new Promise(r=>setTimeout(()=>r(false),50))]);
+ input.end();release();await running;assert.equal(early,true,'mirror observation blocked native input');
+});
