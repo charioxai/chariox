@@ -531,8 +531,12 @@ impl KernelBrowserHost {
         // it never holds the backend lock while it waits for a page change.
         let long_poll =
             method == "host.browser" && params["op"] == "mirror_next" && params["wait_ms"].is_u64();
+        // MP-08/MP-10/MP-11: a read-only state poll waits for the page's reconcile; input
+        // must not queue behind it. The ledger ignores observations older than its newest.
+        let state = method == "host.browser" && params["op"] == "state";
         let mut result = if display
             || long_poll
+            || state
             || (method == "host.browser" && params["op"] == "input")
         {
             let signal = cancellation
@@ -571,11 +575,15 @@ impl KernelBrowserHost {
         // Reconcile authority with full controller state before applying a
         // retained agent's projection; scoped inventory cannot remove another
         // actor's tabs or input ownership from the shared ledger.
-        if let Ok(state) = &result {
+        if let Ok(state) = &mut result {
             model
                 .lock()
                 .map_err(|_| "MD-3: actor lock poisoned")?
                 .reconcile(state)?;
+            // The observation order is controller-internal; replies keep their shape.
+            if let Some(state) = state.as_object_mut() {
+                state.remove("observation");
+            }
         }
         if let (Some(admission), Ok(payload)) = (admission, &mut result) {
             if let Some(agent) = admission.agent.as_deref() {
