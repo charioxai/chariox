@@ -3468,3 +3468,22 @@ that login is required before creating any local invite. `/relay cloud pair` and
 `pair-machine` are retired; use `/client invite` for a terminal and independent
 `/cloud link` enrollment on the receiving kernel. Neither caller credentials nor
 human session tokens are sent to or persisted by the kernel.
+
+### BYOM C5 — local 509 / relay peer 117 (MP-05 / MP-08 / MP-10 / MP-11)
+
+Coordinator allocation for the main-merged owner-managed contract. Local 509
+binds SSH machine add/remove, interactive owner-managed context admission, and
+credential-free destination receipts together with main's local 491 contract.
+Peer 117 binds owner-managed context arming and the merged embedded local
+request/response unions. C4's experimental local 480 / peer 88 and the interim
+main-merged local 491 / peer 101 are historical candidates, not C5 identities.
+
+The owner-context request helpers require local >=509 / peer >=117 and the
+`owner_managed_context_transfer_v1` capability. The Copy flow rejects older or
+unknown versions before sending the request, with an upgrade diagnostic; general
+Web/native minimums remain unchanged. Local snapshots, relay snapshots and
+version assertions pin this allocated generation; payload-only hashes retain
+their values except snapshots that explicitly serialize a peer protocol number.
+The focused real Web/TUI Copy/restart drill must use the exact C5 kernel and
+client, through hosted WSS, and record receiving protocol and owner binding.
+Signing input checks do not establish installed-target or multi-hour acceptance.

@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn room_workflows_protocol_439_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 509);
     let room = crate::session::RuntimeSession::new(
         "room",
         None,
@@ -99,7 +99,7 @@ fn mp08_mp11_session_state_and_snapshot_hash_required_room_workflows() {
         .contains_key("room_workflows"));
     assert!(event.as_object().unwrap().contains_key("room_workflows"));
     let shape = serde_json::json!({"state":state,"event":event});
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 509);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())),
         "503a28a5f32edec28c1939c6f58934567598b16936b8c56bd16099930d6fb1ae"

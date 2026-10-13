@@ -274,7 +274,7 @@ pub use workspace::*;
 /// cursor. It also restores workflow notifications, Room workflow inventory and
 /// controls, opt-in Cloud device denial and exact home-prompt cancellation
 /// admission (MP-08/MP-10/MP-11).
-/// The BYOM merge adds owner-managed SSH machine add/remove, credential-free
-/// owner-managed context admission and destination receipts on top of 491.
-/// PROTOCOL-ALLOCATION-PENDING: the coordinator must allocate a new number.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 491;
+/// Version 509 adds owner-managed SSH machine add/remove, credential-free
+/// owner-managed context admission and destination receipts on top of 491,
+/// paired with coordinator-allocated relay peer 117 (MP-08/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 509;
