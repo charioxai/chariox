@@ -242,7 +242,31 @@ fn claude_headless_prompt_input(
 
 fn claude_headless_prompt_matches(expected: &str, observed: &str) -> bool {
     let normalize = |value: &str| value.replace("\r\n", "\n").replace('\r', "\n");
-    normalize(expected).trim() == normalize(observed).trim()
+    let expected = normalize(expected);
+    let observed = normalize(observed);
+    let observed = observed.trim();
+    if expected.trim() == observed {
+        return true;
+    }
+    // Official UserPromptSubmit expands a collapsed paste using these tag
+    // lines. Match only one complete wrapper around the exact injected text.
+    let Some(tag) = observed.strip_prefix("<pasted_content id=\"") else {
+        return false;
+    };
+    let Some((id, body)) = tag.split_once("\">\n") else {
+        return false;
+    };
+    if id.is_empty()
+        || id.len() > 64
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return false;
+    }
+    let closing = format!("\n</pasted_content id=\"{id}\">");
+    body.strip_suffix(&closing)
+        .is_some_and(|body| body.trim() == expected.trim())
 }
 
 fn claude_native_prompt_is_internal_control(prompt: &str) -> bool {
