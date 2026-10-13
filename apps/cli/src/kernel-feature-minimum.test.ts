@@ -98,3 +98,16 @@ test("MP-08 / MP-11 automation inject refuses 490 before transport", () => {
 test("MP-08 / MP-11 automation injection requires a confirmed kernel generation", () => {
   for (const version of [undefined, 0, NaN]) assert.throws(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, version), /kernel support unknown.*491/)
 })
+
+// MP-08 / MP-10 / MP-11: old kernels lack the final-output settlement barrier.
+test("native provider launches reject missing settlement support while ordinary launches remain compatible", () => {
+  for (const request of [{ LaunchProviderRun: { native_tui: true } },
+    { LaunchProviderRuns: { launches: [{ native_tui: false }, { native_tui: true }] } }]) {
+    for (const version of [undefined, NaN, 509.5, 491, 509]) {
+      assert.throws(() => requireKernelFeatureProtocol(request, version), /Native turn settlement needs protocol ≥510/)
+    }
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 510))
+  }
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ LaunchProviderRun: { native_tui: false } }, 491))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ LaunchProviderRuns: { launches: [{ native_tui: false }] } }, 491))
+})

@@ -10,6 +10,7 @@ pub struct TerminalStreamService {
     output_records: BTreeMap<u64, StoredTerminalOutputRecord>,
     pending_output_by_attachment: BTreeMap<(String, String), VecDeque<u64>>,
     next_output_record_id: u64,
+    output_watermark_by_session: BTreeMap<String, u64>,
     last_output_record_id: Option<u64>,
     notice_records: BTreeMap<u64, RuntimeNoticeRecord>,
     pub(super) pending_notice_by_attachment: BTreeMap<(String, String), VecDeque<u64>>,
@@ -401,6 +402,8 @@ impl TerminalStreamService {
         }
         let record_id = self.next_output_record_id;
         self.next_output_record_id = self.next_output_record_id.saturating_add(1);
+        self.output_watermark_by_session
+            .insert(record.session_id.clone(), self.next_output_record_id);
         for attachment_id in &record.pending_recipient_attachment_ids {
             self.pending_output_by_attachment
                 .entry((record.session_id.clone(), attachment_id.clone()))
@@ -472,6 +475,30 @@ impl TerminalStreamService {
             .cloned()
             .chain(record.recipient_attachment_ids.iter().cloned())
             .collect::<BTreeSet<_>>();
+        let advances_boundary = content_changed
+            || record
+                .recipient_attachment_ids
+                .iter()
+                .any(|attachment_id| !existing_recipients.contains(attachment_id));
+        if advances_boundary {
+            // A delivered ID cannot represent a newer snapshot. Keep the
+            // stable merge identity, but enqueue this generation after every
+            // older record so native settlement has an exact output barrier.
+            for attachment_id in &pending_recipients {
+                if let Some(queue) = self.pending_output_by_attachment.get_mut(&(
+                    record.session_id.clone(),
+                    attachment_id.clone(),
+                )) {
+                    queue.retain(|pending_id| *pending_id != record_id);
+                }
+            }
+            let mut replacement = record.clone();
+            replacement.recipient_attachment_ids = recipient_attachment_ids.into_iter().collect();
+            replacement.pending_recipient_attachment_ids = pending_recipients.into_iter().collect();
+            self.remove_output_record(record_id);
+            self.push_output_record(replacement);
+            return true;
+        }
         for attachment_id in &pending_recipients {
             let key = (record.session_id.clone(), attachment_id.clone());
             let queue = self.pending_output_by_attachment.entry(key).or_default();
@@ -605,6 +632,13 @@ impl TerminalStreamService {
 
     fn refresh_health(&self) {
         self.health_store.update(self.current_health_snapshot());
+    }
+
+    pub(crate) fn output_watermark(&self, session_id: &str) -> u64 {
+        self.output_watermark_by_session
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn drain_output_records(
@@ -1013,6 +1047,7 @@ impl TerminalStreamService {
     }
 
     pub fn remove_session(&mut self, session_id: &str) {
+        self.output_watermark_by_session.remove(session_id);
         self.input_records
             .retain(|record| record.session_id != session_id);
         let output_record_ids = self

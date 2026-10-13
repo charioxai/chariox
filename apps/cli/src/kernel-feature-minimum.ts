@@ -55,6 +55,10 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     feature = name === "KeepManagedEnvironmentRunning"
       ? { feature: "Managed environment keep running", minimum: requests.managedEnvironmentKeepRunningMinimumProtocolVersion }
       : { feature: "Disposable worker control", minimum: requests.disposableWorkerControlMinimumProtocolVersion }
+  } else if ((name === "LaunchProviderRun" && payload?.native_tui === true)
+    || (name === "LaunchProviderRuns" && Array.isArray(payload?.launches)
+      && payload.launches.some((launch) => record(launch)?.native_tui === true))) {
+    feature = { feature: "Native turn settlement", minimum: requests.nativeTurnSettlementMinimumProtocolVersion }
   } else if (name === "ConfigureAppAutomation" && payload?.delivery_mode === "inject") {
     feature = { feature: "App automation injection", minimum: 491 }
   } else if (name === "CancelActivePrompt" && payload?.expected_prompt_id != null) {
@@ -81,7 +85,7 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
 export function requireKernelFeatureProtocol(request: unknown, protocolVersion: number | undefined): void {
   const feature = kernelFeatureMinimum(request)
   if (protocolVersion === undefined || !Number.isInteger(protocolVersion) || protocolVersion < 1) {
-    if (feature?.feature === "Exact prompt cancellation" || feature?.feature === "App automation injection") {
+    if (feature?.feature === "Exact prompt cancellation" || feature?.feature === "App automation injection" || feature?.feature === "Native turn settlement") {
       throw new KernelProtocolMinimumError(`kernel support unknown: ${feature.feature} needs protocol ≥${feature.minimum}; reconnect to an updated kernel`)
     }
     return

@@ -3357,3 +3357,19 @@ that login is required before creating any local invite. `/relay cloud pair` and
 `pair-machine` are retired; use `/client invite` for a terminal and independent
 `/cloud link` enrollment on the receiving kernel. Neither caller credentials nor
 human session tokens are sent to or persisted by the kernel.
+
+
+### MP-08 / MP-10 / MP-11 native settlement boundary (protocol510 / peer118)
+
+`SessionState.terminal_output_watermark` is the exclusive terminal record ID
+admitted for that session at the snapshot. Retirement does not decrease it;
+other sessions in the same terminal shard do not advance it. Native clients
+retain each completion until its fixed output boundary has been projected,
+even if unrelated agents continue producing output or a successor completes.
+Changed external transcript snapshots and newly addressed snapshot recipients
+receive a new record ID while keeping the same merge identity. This prevents
+new content from hiding behind an already delivered ID. Identical snapshots
+for existing recipients do not create output or requeue consumed records.
+Native `LaunchProviderRun(s)` requests require protocol510; ordinary launches
+retain their existing minimums. These source contracts do not close MP-10 live
+acceptance.

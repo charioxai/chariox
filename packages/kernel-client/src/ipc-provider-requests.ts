@@ -1,3 +1,6 @@
+/** MP-08 / MP-10 / MP-11: final-output settlement for native provider clients. */
+export const nativeTurnSettlementMinimumProtocolVersion = 510
+
 export function listProviderProcessesRequest(provider?: string | null) {
   return {
     ListProviderProcesses: {

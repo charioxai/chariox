@@ -217,7 +217,7 @@ fn external_observed_output_replaces_pending_record_with_same_merge_key() {
     let drained = terminal.drain_output_records("session-1", "attachment-1");
     assert_eq!(drained.len(), 1);
     assert_eq!(drained[0].bytes, b"updated version");
-    assert_eq!(drained[0].record_id, Some(0));
+    assert_eq!(drained[0].record_id, Some(1));
 }
 
 #[test]
@@ -254,11 +254,11 @@ fn external_observed_output_requeues_replacement_for_drained_recipient() {
 
     let first_after_update = terminal.drain_output_records("session-1", "attachment-1");
     assert_eq!(first_after_update.len(), 1);
-    assert_eq!(first_after_update[0].record_id, Some(0));
+    assert_eq!(first_after_update[0].record_id, Some(1));
     assert_eq!(first_after_update[0].bytes, b"updated version");
     let second = terminal.drain_output_records("session-1", "attachment-2");
     assert_eq!(second.len(), 1);
-    assert_eq!(second[0].record_id, Some(0));
+    assert_eq!(second[0].record_id, Some(1));
     assert_eq!(second[0].bytes, b"updated version");
     assert!(terminal.output_records().is_empty());
 }
@@ -1239,4 +1239,32 @@ fn workflow_run_updates_are_bounded_per_attachment() {
         vec![second, third]
     );
     assert!(terminal.workflow_run_update_records.is_empty());
+}
+
+// MP-08 / MP-10 / MP-11: a changed snapshot cannot hide behind an already
+// delivered ID while a sibling keeps this attachment's output backlogged.
+#[test]
+fn changed_external_snapshot_advances_the_native_settlement_boundary() {
+    let mut terminal = TerminalStreamService::new();
+    let (key, metadata, source) = external_observed_metadata("assistant-final");
+    let recipients = vec!["native".to_string(), "slow".to_string()];
+    terminal.fan_out_external_observed_output("session", "run-a", Some("agent-a"),
+        TerminalOutputKind::ProviderOutput, Some(key.clone()), recipients.clone(),
+        b"initial", metadata.clone(), source.clone());
+    let initial = terminal.drain_output_records("session", "native");
+    for index in 0..12 {
+        terminal.fan_out_output("session", "run-b", Some("agent-b"),
+            TerminalOutputKind::ProviderOutput, Some(format!("sibling-{index}")),
+            vec!["native".to_string()], b"sibling");
+    }
+    let before = terminal.output_watermark("session");
+    terminal.fan_out_external_observed_output("session", "run-a", Some("agent-a"),
+        TerminalOutputKind::ProviderOutput, Some(key), recipients, b"final", metadata, source);
+    let boundary = terminal.output_watermark("session");
+    assert!(boundary > before, "revised final output must advance the snapshot boundary");
+    let records = terminal.drain_output_records("session", "native");
+    let final_record = records.iter().find(|record| record.bytes == b"final").unwrap();
+    assert!(final_record.record_id > initial[0].record_id);
+    assert_eq!(final_record.record_id, Some(boundary - 1));
+    assert!(records.windows(2).all(|pair| pair[0].record_id < pair[1].record_id));
 }

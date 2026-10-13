@@ -449,6 +449,13 @@ impl TerminalStreamStore {
             .has_pending_output_records(session_id, attachment_id)
     }
 
+    pub(crate) fn output_watermark(&self, session_id: &str) -> u64 {
+        self.shard(session_id)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .output_watermark(session_id)
+    }
+
     pub fn record_assistant_message_completion(
         &self,
         session_id: &str,
