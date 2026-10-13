@@ -4,6 +4,11 @@ use super::*;
 
 const LIVE_WORKFLOW_ORPHAN_GRACE_PERIOD_MS: u64 = 5_000;
 
+type WorkflowAdmission<T> = (
+    T,
+    Option<crate::durable_state::workflow_invocation_provenance::WorkflowUserInvocation>,
+);
+
 impl KernelRuntimeOwnedState {
     fn workflow_ensure_dispatchable_runtime_instance(
         &self,
@@ -691,6 +696,23 @@ impl KernelRuntimeOwnedState {
         admit: impl FnOnce(&mut crate::session::SessionService) -> Result<Option<T>, DaemonError>,
         committed: Option<&mut bool>,
     ) -> Result<Option<T>, DaemonError> {
+        self.workflow_admit_prompt_transaction_with_invoker(
+            session_id,
+            reason,
+            |sessions| admit(sessions).map(|value| value.map(|value| (value, None))),
+            committed,
+        )
+    }
+
+    fn workflow_admit_prompt_transaction_with_invoker<T>(
+        &self,
+        session_id: &str,
+        reason: &str,
+        admit: impl FnOnce(
+            &mut crate::session::SessionService,
+        ) -> Result<Option<WorkflowAdmission<T>>, DaemonError>,
+        committed: Option<&mut bool>,
+    ) -> Result<Option<T>, DaemonError> {
         let _admission = self.begin_managed_activity_admission()?;
         let activity_mutation = self.begin_managed_activity_mutation();
         let durable_state_store = self.durable_state_store.clone();
@@ -704,12 +726,16 @@ impl KernelRuntimeOwnedState {
                     return Err(error);
                 }
             };
-            let Some(admitted) = admitted else {
+            let Some((admitted, invocation_creator)) = admitted else {
                 return Ok(None);
             };
             let durable_session = sessions.get_session(session_id)?;
-            if let Err(error) =
-                durable_state_store.persist_workflow_runtime_transition(&durable_session, reason)
+            if let Err(error) = durable_state_store
+                .persist_workflow_runtime_transition_with_invocation(
+                    &durable_session,
+                    reason,
+                    invocation_creator,
+                )
             {
                 sessions.restore_session(session_before_admission);
                 return Err(error);
@@ -797,6 +823,7 @@ impl KernelRuntimeOwnedState {
             publication_invocation,
             None,
             None,
+            None,
         )
     }
 
@@ -811,6 +838,7 @@ impl KernelRuntimeOwnedState {
         queue_ref: Option<&str>,
         publication_invocation: Option<crate::session::WorkflowPublicationInvocationEnvelope>,
         creator: Option<&str>,
+        invoking_user: Option<&str>,
         obligation: Option<&str>,
     ) -> Result<
         (
@@ -847,7 +875,7 @@ impl KernelRuntimeOwnedState {
         };
         let mut committed = false;
         let mut resource_id = None;
-        let admitted = self.workflow_admit_prompt_transaction(
+        let admitted = self.workflow_admit_prompt_transaction_with_invoker(
             session_id,
             "workflow_prompt_enqueued",
             |sessions| {
@@ -863,7 +891,13 @@ impl KernelRuntimeOwnedState {
                     creator,
                 )?;
                 resource_id = Some(queued.id().to_string());
-                Ok(Some(queued))
+                let invocation = invoking_user.filter(|_| creator.is_none()).map(|user_id| {
+                    crate::durable_state::workflow_invocation_provenance::WorkflowUserInvocation {
+                        queue_item_id: queued.id().to_string(),
+                        user_id: user_id.to_string(),
+                    }
+                });
+                Ok(Some((queued, invocation)))
             },
             Some(&mut committed),
         );

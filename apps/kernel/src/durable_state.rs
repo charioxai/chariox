@@ -57,6 +57,7 @@ pub(crate) mod room_environment;
 pub(crate) mod storage_full;
 pub(crate) mod worker_prompt_receipts;
 pub(crate) mod worker_steer_receipts;
+pub(crate) mod workflow_invocation_provenance;
 mod writer_fence;
 use writer_fence::fenced_writer_error;
 pub(crate) mod notification_target;
@@ -263,6 +264,7 @@ enum DurableWriteOperation {
         workflow_runs: Vec<DurableWorkflowRunWrite>,
         delivery_receipts: Vec<DurableDeliveryReceiptWrite>,
         prompt_state_jsons: Vec<String>,
+        invocation_creator: Option<workflow_invocation_provenance::WorkflowUserInvocation>,
     },
     WorkflowRuntimeMigration {
         owner_id: String,
@@ -1836,6 +1838,7 @@ fn commit_durable_write_batch(
                 workflow_runs,
                 delivery_receipts,
                 prompt_state_jsons,
+                invocation_creator,
             } => workflow_runtime::write_workflow_runtime_transition(
                 &transaction,
                 workflow_runtime::WorkflowRuntimeTransitionWrite {
@@ -1850,6 +1853,7 @@ fn commit_durable_write_batch(
                     workflow_runs,
                     delivery_receipts,
                     prompt_state_jsons,
+                    invocation_creator: invocation_creator.as_ref(),
                 },
             ),
             DurableWriteOperation::WorkflowRuntimeMigration {

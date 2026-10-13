@@ -2001,6 +2001,7 @@ fn room_admission_concurrent_workflow_nodes_record_invoking_creator() {
                 None,
                 Some(actor.id()),
                 None,
+                None,
             )
             .unwrap();
     }

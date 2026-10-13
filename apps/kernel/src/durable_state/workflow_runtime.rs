@@ -50,15 +50,19 @@ impl DurableKernelStateStore {
         session: &RuntimeSession,
         reason: &str,
     ) -> Result<u64, DaemonError> {
+        self.persist_workflow_runtime_transition_with_invocation(session, reason, None)
+    }
+
+    pub(crate) fn persist_workflow_runtime_transition_with_invocation(
+        &self,
+        session: &RuntimeSession,
+        reason: &str,
+        invocation_creator: Option<super::workflow_invocation_provenance::WorkflowUserInvocation>,
+    ) -> Result<u64, DaemonError> {
         self.persist_workflow_runtime_event(
-            session,
-            "workflow.runtime.updated",
-            serde_json::json!({
-                "owner_id": session.host_daemon_id(),
-                "session_id": session.id(),
-                "reason": reason,
-            }),
-            Vec::new(),
+            session, "workflow.runtime.updated",
+            serde_json::json!({"owner_id":session.host_daemon_id(),"session_id":session.id(),"reason":reason}),
+            Vec::new(), invocation_creator,
         )
     }
 
@@ -104,6 +108,7 @@ impl DurableKernelStateStore {
                 "reason": reason,
             }),
             prompt_state_jsons,
+            None,
         )
     }
 
@@ -120,6 +125,7 @@ impl DurableKernelStateStore {
                 "session": session,
             }),
             Vec::new(),
+            None,
         )
     }
 
@@ -129,6 +135,7 @@ impl DurableKernelStateStore {
         event_kind: &'static str,
         payload: serde_json::Value,
         prompt_state_jsons: Vec<String>,
+        invocation_creator: Option<super::workflow_invocation_provenance::WorkflowUserInvocation>,
     ) -> Result<u64, DaemonError> {
         let timestamp_ms = unix_epoch_ms();
         let event_id = format!("state_evt_{timestamp_ms}_{}", super::rand_suffix());
@@ -151,6 +158,7 @@ impl DurableKernelStateStore {
                 workflow_runs: encoded.workflow_runs,
                 delivery_receipts: encoded.delivery_receipts,
                 prompt_state_jsons,
+                invocation_creator,
             })
     }
 
@@ -443,12 +451,23 @@ pub(super) struct WorkflowRuntimeTransitionWrite<'a> {
     pub(super) workflow_runs: &'a [DurableWorkflowRunWrite],
     pub(super) delivery_receipts: &'a [DurableDeliveryReceiptWrite],
     pub(super) prompt_state_jsons: &'a [String],
+    pub(super) invocation_creator:
+        Option<&'a super::workflow_invocation_provenance::WorkflowUserInvocation>,
 }
 
 pub(super) fn write_workflow_runtime_transition(
     transaction: &Transaction<'_>,
     write: WorkflowRuntimeTransitionWrite<'_>,
 ) -> Result<u64, rusqlite::Error> {
+    if let Some(invocation) = write.invocation_creator {
+        super::workflow_invocation_provenance::write_in(
+            transaction,
+            write.owner_id,
+            write.session_id,
+            invocation,
+            write.timestamp_ms,
+        )?;
+    }
     transaction.execute(
         "INSERT INTO durable_state_events (
             event_id, kind, subject_id, timestamp_ms, payload_json
