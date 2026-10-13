@@ -551,6 +551,59 @@ mod tests {
     }
 
     #[test]
+    fn controller_browser_document_text_skips_page_code() {
+        // MP-08/MP-10: real Wikipedia pages carry large inline config scripts
+        // ahead of the article; they must not crowd out the readable text.
+        let node = |element_ref: &str, parent_ref: Option<&str>, node_name: &str, text: &str| {
+            RoomBrowserDomNode {
+                element_ref: element_ref.to_string(),
+                parent_ref: parent_ref.map(str::to_string),
+                document_index: 0,
+                node_type: if node_name == "#text" { 3 } else { 1 },
+                node_name: node_name.to_string(),
+                text: text.to_string(),
+                attributes: Default::default(),
+                bounds: None,
+            }
+        };
+        let snapshot = RoomBrowserStructuredSnapshot {
+            session_id: "session".to_string(),
+            environment_id: "environment".to_string(),
+            runtime_generation: 1,
+            browser_generation: 1,
+            tab_id: "tab-1".to_string(),
+            document_revision: 1,
+            snapshot_revision: 1,
+            accessibility_nodes: Vec::new(),
+            accessibility_truncated: false,
+            dom_documents: Vec::new(),
+            shadow_roots: Vec::new(),
+            dom_nodes: vec![
+                node(
+                    "script-1",
+                    None,
+                    "SCRIPT",
+                    "RLCONF={\"wgPageName\":\"Linux\"};",
+                ),
+                node("style-1", None, "STYLE", ""),
+                node("style-text", Some("style-1"), "#text", ".mw-body{margin:0}"),
+                node("p-1", None, "P", ""),
+                node(
+                    "p-text",
+                    Some("p-1"),
+                    "#text",
+                    "Linux is a family of free and open-source software.",
+                ),
+            ],
+        };
+
+        assert_eq!(
+            controller_browser_document_text(&snapshot),
+            "Linux is a family of free and open-source software."
+        );
+    }
+
+    #[test]
     fn controller_browser_text_bound_never_splits_utf8() {
         let mut output = "a".repeat(MAX_CONTROLLER_BROWSER_TEXT_BYTES - 2);
 

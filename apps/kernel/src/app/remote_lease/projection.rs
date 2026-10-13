@@ -119,6 +119,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 bytes: record.bytes,
             })
             .collect::<Vec<_>>();
+        #[cfg(test)]
+        test_pause::run_after_output_drain(self.app);
         let projection_id = format!(
             "{}:{}:{provider_run_id}",
             leased_agent.backing_session_id, leased_agent.backing_agent_id,
@@ -2213,6 +2215,113 @@ mod explicit_completion_tests {
             )
             .expect("active prompt should load")
             .is_none());
+    }
+
+    #[test]
+    fn explicit_completion_released_mid_drain_carries_the_output_tail() {
+        // MP-08/MP-10: the provider pump fans out the rest of the final
+        // message and settles the turn while a home drain is in flight.
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "session-1",
+                "agent-home-1",
+                false,
+                "user-home",
+            )
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                "default",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+            .submit_leased_prompt(&leased_agent.id, "read the article\n", Vec::new())
+            .expect("leased prompt should submit");
+        assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+        app.leased_agents
+            .get_mut(&leased_agent.id)
+            .expect("leased agent should remain registered")
+            .provider = "codex".to_string();
+        let attachments = vec![leased_agent.backing_attachment_id.clone()];
+        app.terminal_mut().fan_out_output(
+            &leased_agent.backing_session_id,
+            &provider_run_id,
+            Some(&leased_agent.backing_agent_id),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            Some("assistant-output".to_string()),
+            attachments.clone(),
+            b"Linux is a family of free",
+        );
+        let (session_id, agent_id, run_id) = (
+            leased_agent.backing_session_id.clone(),
+            leased_agent.backing_agent_id.clone(),
+            provider_run_id.clone(),
+        );
+        RemoteLeaseRuntime::new(&mut app).after_leased_output_drain_for_test(move |app| {
+            app.terminal_mut().fan_out_output(
+                &session_id,
+                &run_id,
+                Some(&agent_id),
+                crate::terminal::TerminalOutputKind::ProviderOutput,
+                Some("assistant-output".to_string()),
+                attachments.clone(),
+                b" and open-source software Unix-like operating systems.",
+            );
+            app.terminal_mut().record_assistant_message_completion(
+                &session_id,
+                &run_id,
+                Some(&agent_id),
+                attachments,
+                "assistant-final",
+                crate::session::unix_epoch_ms(),
+            );
+            app.complete_active_prompt(&session_id, &agent_id, Some(&run_id))
+                .expect("provider turn completion should settle the backing prompt");
+        });
+
+        let mut projected = Vec::new();
+        for _ in 0..3 {
+            let Some((_, event)) = RemoteLeaseRuntime::new(&mut app)
+                .drain_leased_runtime_projection_with_recovery(
+                    &leased_agent.id,
+                    &provider_run_id,
+                    false,
+                    true,
+                )
+                .expect("projection should succeed")
+            else {
+                continue;
+            };
+            let RelayPeerEvent::LeasedRuntimeProjection {
+                output_chunks,
+                completions,
+                ..
+            } = event;
+            projected.extend(output_chunks.into_iter().flat_map(|chunk| chunk.bytes));
+            if !completions.is_empty() {
+                assert_eq!(completions[0].message_id, "assistant-final");
+                assert_eq!(
+                    String::from_utf8_lossy(&projected),
+                    "Linux is a family of free and open-source software Unix-like operating systems."
+                );
+                return;
+            }
+        }
+        panic!("the settled turn should release its completion");
     }
 
     #[test]
