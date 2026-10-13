@@ -1682,7 +1682,10 @@ pub(crate) fn resolve_repository_selection(
 
 fn fail_status(status: &mut ManagedContextOutboundOperationStatus, error: &DaemonError) {
     status.phase = ManagedContextOutboundOperationPhase::Failed;
-    status.failure_message = Some(error.to_string());
+    status.failure_message = Some(match error {
+        DaemonError::ManagedContext { message, .. } => message.clone(),
+        _ => error.to_string(),
+    });
     match error {
         DaemonError::ManagedContext {
             code, retryable, ..
@@ -2913,6 +2916,37 @@ mod tests {
 
         assert!(store.prepared_git_enrollment_ticket(&first).is_err());
         assert!(store.prepared_git_enrollment_ticket(&replacement).is_ok());
+    }
+
+    #[test]
+    fn mp08_mp11_copy_status_projects_safe_inner_owner_refusal() {
+        let message = "This copy approval was revoked by the owner. Ask for a new approval.";
+        let error = DaemonError::ManagedContext {
+            code: "owner_context_authorization_revoked",
+            operation: "owner context admission",
+            message: message.to_owned(),
+            retryable: false,
+        };
+        assert!(error
+            .to_string()
+            .starts_with("managed context `owner context admission` failed:"));
+        let mut status = ManagedContextOutboundOperationStatus {
+            context_id: "context-1".to_string(),
+            plan_digest: "sha256:one".to_string(),
+            phase: ManagedContextOutboundOperationPhase::Uploading,
+            accepted_bytes: 0,
+            package_size_bytes: 0,
+            receipt: None,
+            failure_code: None,
+            failure_message: None,
+            retryable: false,
+            updated_at_ms: 0,
+        };
+        fail_status(&mut status, &error);
+        // This is the actual kernel output consumed verbatim by /kernel copy-status.
+        let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(value["failureMessage"], message);
+        assert_eq!(value["failureCode"], "owner_context_authorization_revoked");
     }
 
     #[test]
