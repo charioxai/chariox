@@ -883,7 +883,7 @@ fn abort_interrupts_fresh_metadata_utility_before_its_deadline() {
     assert!(marker.exists(), "utility must be executing before Abort");
     let cancelled = Instant::now();
     store
-        .enqueue_structured_prompt_abort("s".into(), run.id().into())
+        .enqueue_structured_prompt_abort("s".into(), run.id().into(), "utility-cancel".into())
         .unwrap();
     let result = worker.join().unwrap();
     let elapsed = cancelled.elapsed();

@@ -122,6 +122,7 @@ async fn native_cancel_composer_fixture(settles_before_abort: bool) {
                 .finalize_local_prompt_cancellation_with_queued_advance(
                     session.id(),
                     agent.id(),
+                    &prompt_id,
                     Some(run.id()),
                 )
                 .unwrap();
