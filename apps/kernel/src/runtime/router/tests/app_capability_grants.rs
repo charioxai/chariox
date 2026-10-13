@@ -299,7 +299,7 @@ async fn capability_app_peer_cannot_revoke_or_grant_foreign_bindings() {
 }
 
 #[tokio::test]
-async fn capability_leased_agents_cannot_publish_or_retain_app_tools() {
+async fn capability_stale_home_run_cannot_acquire_after_agent_is_leased() {
     let room = room();
     let (agent, token) = room.agents[0].clone();
     room.router
@@ -330,14 +330,60 @@ async fn capability_leased_agents_cannot_publish_or_retain_app_tools() {
     running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
     assert!(
         !request_app(&room, &token, "installed").await,
-        "MP-08: a prior binding cannot authorize leased App acquisition"
+        "MP-11 D1: an old local provider token cannot authorize the leased actor"
     );
+    room.app
+        .lock()
+        .await
+        .agents()
+        .set_remote_execution_active_worker_provider_run_id(&agent, Some("worker-run".into()))
+        .unwrap();
+    let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {
+        home_kernel_id: room.app.lock().await.config().daemon_id.clone(),
+        home_session_id: room.session.clone(),
+        home_agent_id: agent.clone(),
+        home_prompt_id: None,
+        leased_agent_id: "worker-agent".into(),
+        worker_kernel_id: "worker".into(),
+        worker_machine_id: "worker-machine".into(),
+        worker_provider_run_id: "worker-run".into(),
+        worker_worktree_path: room._scratch.0.to_string_lossy().into(),
+        worker_workspace_identity: crate::io::WorkspaceIdentity::local(
+            room._scratch.0.to_string_lossy(),
+        ),
+    };
+    let home = room.router.runtime_state.with_relay_peer_authority(
+        crate::runtime::relay_peer_authority::test_peer_authority("worker"),
+    );
+    let (result, _, _) = home
+        .dispatch_forwarded_capability_runtime_tool_call(
+            context.clone(),
+            crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL.into(),
+            serde_json::json!({"kind":"app","name":"installed"}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        result.ok,
+        "MP-08 D1: an admitted leased epoch reuses its home App binding"
+    );
+    let mut stale = context;
+    stale.worker_provider_run_id = "replaced-run".into();
+    assert!(home
+        .dispatch_forwarded_capability_runtime_tool_call(
+            stale,
+            crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL.into(),
+            serde_json::json!({"kind":"app","name":"installed"})
+        )
+        .await
+        .is_err());
+
     assert!(
         room.router
             .runtime_tool_specs_for_auth_token(&token)
             .iter()
             .all(|tool| !tool.name.starts_with("app_")),
-        "MP-11: leased runs publish no App tools"
+        "MP-11: a tool-less catalog still publishes no App tools"
     );
 }
 
