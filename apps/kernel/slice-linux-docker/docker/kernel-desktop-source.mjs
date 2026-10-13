@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { NativePipe, NativeRaster } from './kernel-browser-native-pipe.mjs';
-import { NativeWorkerControl } from './kernel-browser-native-worker.mjs';
+import { NativeWorkerControl, nativeWorkerResource } from './kernel-browser-native-worker.mjs';
 import { SharedRasterPool } from './kernel-browser-shared-raster.mjs';
 import { safeChildPid } from './kernel-browser-display.mjs';
 import { displayMaskRegions, maskNativeRaster } from './kernel-browser-pixels.mjs';
@@ -16,8 +16,7 @@ const python = () => process.env.CHARIOX_BROWSER_DISPLAY_PYTHON || '/usr/bin/pyt
 // MP-08/MP-10: the kernel's own native worker (XShm capture + x264), shared
 // with the browser display, when this kernel was built with it.
 export function nativeDesktopWorker(environment = process.env) {
-  const executable = environment.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER, root = environment.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT;
-  return path.isAbsolute(executable ?? '') && path.isAbsolute(root ?? '') ? { executable, root } : null;
+  return nativeWorkerResource(environment);
 }
 const UNOBSERVED_MS = 200, HEARTBEAT_MS = 100;
 // MP-11: process identity is pid, parent and start time (never run state), in pid order.
