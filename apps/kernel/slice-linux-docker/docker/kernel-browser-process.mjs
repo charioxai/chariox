@@ -51,11 +51,22 @@ export function chromiumTemporaryEnvironment(environment, fd, pid = process.pid)
   return { ...environment, TMPDIR: `/proc/${pid}/fd/${fd}` };
 }
 
+// MP-11: CDP identifies Chromium, while the launch PID may be its supervisor.
+// Accept exactly one browser process already in the desktop's verified tree.
+export function ownedBrowserPid(processInfo, owned) {
+  const browsers = Array.isArray(processInfo) ? processInfo.filter(item => item.type === 'browser') : [];
+  const pid = browsers[0]?.id;
+  if (browsers.length !== 1 || !Number.isSafeInteger(pid) || pid <= 1 || !owned.some(item => item.pid === pid))
+    throw Error('MP-11: owned browser PID unavailable');
+  return pid;
+}
+
 export class HostChromium {
   constructor(root, { environment = process.env } = {}) {
     this.root = root;
     this.environment = environment;
     this.child = null;
+    this.browserPid = null;
     this.desktop = process.platform === "linux" ? new LinuxOwnedDesktop(root, { environment }) : null;
     // MP-08/MP-10: on the shared owned desktop Chromium is one window at the
     // desktop's scale; only a private owned display may rescale it.
@@ -110,7 +121,11 @@ export class HostChromium {
     child.once('exit', () => { void connection.close(); });
     try {
       if (this.desktop?.binding()) await this.desktop.recordOwned(child, true);
-      await connection.send('Browser.getVersion'); return connection;
+      await connection.send('Browser.getVersion');
+      this.browserPid = this.desktop?.binding()
+        ? ownedBrowserPid((await connection.send('SystemInfo.getProcessInfo')).processInfo, await this.desktop.browserProcesses())
+        : child.pid;
+      return connection;
     }
     catch {}
     await this.stop();
@@ -119,6 +134,7 @@ export class HostChromium {
   async stop(connection = this.connection) {
     const child = this.child;
     this.child = null;
+    this.browserPid = null;
     this.connection = null;
     if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) {
       await this.display?.close();this.display=null;
