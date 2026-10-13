@@ -243,6 +243,7 @@ pub(super) fn write_queue_state_in(
             workflow_runs: &encoded.workflow_runs,
             delivery_receipts: &encoded.delivery_receipts,
             prompt_state_jsons: &[],
+            invocation_creator: None,
         },
     )
     .map(|_| ())

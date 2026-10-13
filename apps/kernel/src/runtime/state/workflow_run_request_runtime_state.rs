@@ -52,6 +52,7 @@ impl KernelRuntimeState {
                         request.queue_ref.as_deref(),
                         request.publication_invocation.clone(),
                         caller_agent_id,
+                        caller_agent_id.is_none().then_some(caller_user_id),
                         obligation.as_deref(),
                     ) {
                     Ok(outcome) => outcome,

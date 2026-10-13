@@ -18,7 +18,15 @@ impl RuntimeSession {
             return Ok(true);
         }
         let Some(creator) = run.created_by_agent_id() else {
-            return Ok(false);
+            return match (history, run.queue_item_id()) {
+                (Some(store), Some(queue_item_id)) => store.workflow_invocation_is_owned(
+                    self.host_daemon_id(),
+                    self.id(),
+                    queue_item_id,
+                    user_id,
+                ),
+                _ => Ok(false),
+            };
         };
         for id in std::iter::once(creator)
             .chain(run.node_runs().iter().map(|node| node.agent_id()))
