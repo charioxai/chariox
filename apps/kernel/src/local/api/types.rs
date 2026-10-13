@@ -301,4 +301,7 @@ pub use workspace::*;
 /// Version 506 integrates those contracts, including main's 491, with the 493
 /// agent-model union; generated consumers follow this coordinator-allocated
 /// acceptance version.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 506;
+/// Version 511 orders a DOM mirror read behind its viewer's earlier mirror input,
+/// so a client sends the read with the key and gets its echo in one round trip
+/// (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 511;

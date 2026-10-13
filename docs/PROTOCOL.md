@@ -596,6 +596,12 @@ local 491 / relay peer 101 (#974) kernel ownership, waiting-room and Room
 workflow contracts. Client feature floors depend on
 the contracts they use; this entry allocates no new protocol version.
 
+MP-08 / MP-10 / MP-11: local protocol **511** orders a DOM mirror read
+(`mirror_next`) behind every earlier `mirror_input` of the same mirror
+subscription and generation that reached the kernel first; the read never holds
+later input. A 511 client writes the read right behind a key, so the key's echo
+arrives in one relay round trip; older clients still read after the input reply.
+
 MP-08 / MP-10 / MP-11 G08: legacy recall tools (`chariox.search_recall`,
 `chariox.query_recall`, used while room agent tools are off) keep the
 `scope` values `current_session` and `all`; the argument shape is unchanged.

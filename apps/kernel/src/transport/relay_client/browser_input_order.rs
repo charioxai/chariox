@@ -129,6 +129,25 @@ mod tests {
         assert_eq!(order.0.lock().unwrap().pending, 0);
     }
     #[tokio::test]
+    async fn mp08_a_released_read_turn_never_holds_later_input() {
+        let order = BrowserInputOrder::default();
+        let mut key = order.reserve("mirror".into()).unwrap();
+        key.ready().await;
+        let mut read = order.reserve("mirror".into()).unwrap();
+        let mut next = order.reserve("mirror".into()).unwrap();
+        assert!(timeout(Duration::from_millis(5), read.ready())
+            .await
+            .is_err());
+        drop(key);
+        read.ready().await;
+        drop(read);
+        timeout(Duration::from_millis(5), next.ready())
+            .await
+            .unwrap();
+        drop(next);
+        assert_eq!(order.0.lock().unwrap().pending, 0);
+    }
+    #[tokio::test]
     async fn mp08_other_tabs_and_noninput_work_stay_independent() {
         let order = BrowserInputOrder::default();
         let held = order.reserve("first".into()).unwrap();

@@ -9,7 +9,10 @@ pub(in crate::transport::relay_client) struct PreparedDaemonRequest {
     pub(super) encrypted_request: EncryptedRelayPayload,
 }
 impl PreparedDaemonRequest {
-    pub(in crate::transport::relay_client) fn browser_input_key(&self) -> Option<String> {
+    /// MP-08/MP-10/MP-11: the order key of a viewer's browser input. `true` marks a
+    /// mirror read: it observes after that viewer's earlier input and holds none of
+    /// its later input, so a read sent right behind a key carries that key's echo.
+    pub(in crate::transport::relay_client) fn browser_input_key(&self) -> Option<(String, bool)> {
         use crate::local::{KernelBrowserCommand as C, KernelBrowserRequest};
         let ParsedRelayClientMessage::Request(request) = &self.message else {
             return None;
@@ -18,16 +21,24 @@ impl PreparedDaemonRequest {
         else {
             return None;
         };
-        let (tab, generation) = match command {
+        // A mirror subscription binds one tab and viewer; its input and reads share it.
+        let (tab, generation, read) = match command {
             C::Input {
                 tab_id, generation, ..
             }
             | C::DisplayInput {
                 tab_id, generation, ..
-            }
-            | C::MirrorInput {
-                tab_id, generation, ..
-            } => (tab_id, generation),
+            } => (tab_id, generation, false),
+            C::MirrorInput {
+                subscription_id,
+                generation,
+                ..
+            } => (subscription_id, generation, false),
+            C::MirrorNext {
+                subscription_id,
+                generation,
+                ..
+            } => (subscription_id, generation, true),
             _ => return None,
         };
         if tab.is_empty() || tab.len() > 256 {
@@ -44,6 +55,7 @@ impl PreparedDaemonRequest {
             generation,
         ))
         .ok()
+        .map(|key| (key, read))
     }
 }
 
@@ -145,6 +157,36 @@ mod tests {
         assert_eq!(first.browser_input_key().unwrap(), key);
         first.caller_identity.as_mut().unwrap().user_id = Some("other".into());
         assert_ne!(first.browser_input_key().unwrap(), key);
+    }
+    #[test]
+    fn mp08_a_mirror_read_follows_its_viewers_input_without_holding_it() {
+        use crate::local::{KernelBrowserCommand as C, KernelBrowserMirrorAction as A};
+        let input = prepared(C::MirrorInput {
+            tab_id: "tab".into(),
+            generation: 1,
+            document_id: "doc".into(),
+            subscription_id: "mirror".into(),
+            sequence: 3,
+            action: A::Text {
+                node_id: "n1".into(),
+                text: "a".into(),
+            },
+        })
+        .browser_input_key()
+        .unwrap();
+        let read = |subscription_id: &str| {
+            prepared(C::MirrorNext {
+                subscription_id: subscription_id.into(),
+                generation: 1,
+                after_sequence: 3,
+                drift_nodes: vec![],
+            })
+            .browser_input_key()
+            .unwrap()
+        };
+        assert!(!input.1);
+        assert_eq!(read("mirror"), (input.0.clone(), true));
+        assert_ne!(read("other").0, input.0);
     }
     #[test]
     fn mp08_display_credits_and_unidentified_requests_do_not_take_input_turns() {
