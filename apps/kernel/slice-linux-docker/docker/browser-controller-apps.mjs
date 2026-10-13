@@ -22,6 +22,9 @@ const MAX_CALL_BYTES = 512 * 1024;
 const MAX_ANSWERABLE_CALLS = 1024;
 const FULLSCREEN_CHECK_INTERVAL_MS = 250;
 const CALL_WAIT_MS = 250;
+// MP-08/MP-11: calls a page makes this soon after an agent's input stay the
+// agent's even if a person touches the Tab meanwhile.
+const AGENT_CALL_WINDOW_MS = 5_000;
 const BINDING = "__charioxAppCall";
 export const APP_CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
@@ -133,6 +136,33 @@ export class AppTabs {
     this.nextFullscreenCheck = 0;
     this.restoreGraceMs = restoreGraceMs;
     this.orphanRestores = new Map();
+    this.now = () => performance.now();
+  }
+
+  // MP-08/MP-10/MP-11: the kernel host reports who drives an App Tab (an
+  // agent id, or null for a person). A call runs as the agent while its input
+  // is in flight, within a short window after it, and until a person's input
+  // follows; the kernel then authorizes it as that agent, never as the owner.
+  beginInput(targetId, agent) {
+    const app = [...this.apps.values()].find(open => open.targetId === targetId);
+    if (!app) return () => {};
+    const mark = () => {
+      if (agent) Object.assign(app, { agent, agentAt: this.now() });
+      else app.humanAt = this.now();
+    };
+    mark();
+    if (agent) app.agentInputs = (app.agentInputs ?? 0) + 1;
+    return () => {
+      if (agent) app.agentInputs--;
+      mark();
+    };
+  }
+
+  callActor(app) {
+    if (!app.agent) return undefined;
+    const driving = app.agentInputs > 0 || this.now() - app.agentAt < AGENT_CALL_WINDOW_MS
+      || !(app.humanAt > app.agentAt);
+    return driving ? { kind: "agent", id: app.agent } : undefined;
   }
 
   async open(params) {
@@ -312,6 +342,8 @@ export class AppTabs {
     let call;
     try { call = JSON.parse(payload); } catch { return; }
     if (typeof call?.id !== "string" || typeof call.method !== "string" || call.method.length > 128) return;
+    // Attribute at binding time, before any await can admit other input.
+    const actor = this.callActor(app);
     // Resolve the document before admission; the bounded queue check and push
     // then run without an await, even when a page sends one concurrent burst.
     const documentId = app.document ?? await this.document(sessionId, app);
@@ -327,7 +359,7 @@ export class AppTabs {
     if (app.pending.size > MAX_ANSWERABLE_CALLS) app.pending.delete(app.pending.values().next().value);
     this.calls.push({ installation_id: app.installation, target_id: app.targetId,
       document_id: documentId, call_id: call.id,
-      method: call.method, params: call.params ?? {} });
+      method: call.method, params: call.params ?? {}, ...(actor ? { actor } : {}) });
     this.wakeCalls();
   }
 

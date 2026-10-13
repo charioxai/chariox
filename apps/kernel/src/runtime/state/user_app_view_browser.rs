@@ -2,13 +2,15 @@
 //! uses the existing host/controller; App authority stays in the shared queue.
 use super::{
     app_view_host::{AppViewHost, KernelBrowserAppViewHost},
+    app_view_runtime::{agent_not_granted, ViewCaller},
     KernelRuntimeState,
 };
 use crate::{
     error::DaemonError,
     local::{AppFrontendBundle, UserAppView, UserAppViewBrowser},
     runtime::browser_controller_app_view::{
-        BrowserAppViewCall, BrowserAppViewCalls, BrowserAppViewRequest,
+        BrowserAppViewActor, BrowserAppViewCall, BrowserAppViewCalls, BrowserAppViewError,
+        BrowserAppViewRequest,
     },
 };
 
@@ -83,6 +85,33 @@ impl KernelRuntimeState {
             tokio::spawn(async move { state.pump_user_app_browser(owner).await });
         }
         Ok(bound)
+    }
+
+    /// MP-08/MP-11: the agent whose input drove a call must still hold this
+    /// App view in its own user-domain grant, for the view's owner.
+    fn user_app_view_agent(
+        &self,
+        owner: &str,
+        view_id: &str,
+        actor: &BrowserAppViewActor,
+    ) -> Result<crate::agent::AgentInstance, BrowserAppViewError> {
+        let agent = (actor.kind == "agent")
+            .then(|| self.owned.agent_store.get_agent(&actor.id).ok())
+            .flatten()
+            .ok_or_else(agent_not_granted)?;
+        let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        let holds = self
+            .user_domain_owner_aliases(&user)
+            .iter()
+            .any(|alias| alias == owner)
+            && self.owned.kernel_browser_host.holds_resource(
+                &user,
+                agent.id(),
+                &crate::local::UserDomainResource::AppView {
+                    view_id: view_id.into(),
+                },
+            );
+        holds.then_some(agent).ok_or_else(agent_not_granted)
     }
 
     pub(super) fn forget_user_app_view(&self, owner: &str, id: &str) {
@@ -213,16 +242,29 @@ impl KernelRuntimeState {
         let Some((binding, _)) = self.app_control().user_views().get(&owner, &view.view_id) else {
             return;
         };
-        let outcome = self
-            .invoke_user_app_view_call(
-                &owner,
-                &view.view_id,
-                &binding,
-                &call.method,
-                call.params,
-                &mut tracked,
-            )
-            .await;
+        let agent = call
+            .actor
+            .as_ref()
+            .map(|actor| self.user_app_view_agent(&owner, &view.view_id, actor))
+            .transpose();
+        let outcome = match &agent {
+            Err(error) => Err(error.clone()),
+            Ok(agent) => {
+                let caller = agent
+                    .as_ref()
+                    .map_or(ViewCaller::Owner(None), ViewCaller::Agent);
+                self.invoke_user_app_view_call(
+                    &owner,
+                    &view.view_id,
+                    &binding,
+                    &call.method,
+                    call.params,
+                    &mut tracked,
+                    caller,
+                )
+                .await
+            }
+        };
         if tracked.is_cancelled()
             || self
                 .app_control()

@@ -97,6 +97,16 @@ pub(crate) struct BrowserAppViewCall {
     pub(crate) method: String,
     #[serde(default)]
     pub(crate) params: Value,
+    /// MP-08/MP-11: the agent whose input drove a user-domain App Tab's call;
+    /// absent when the owner drives it. Room views keep the Room rule.
+    #[serde(default)]
+    pub(crate) actor: Option<BrowserAppViewActor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct BrowserAppViewActor {
+    pub(crate) kind: String,
+    pub(crate) id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

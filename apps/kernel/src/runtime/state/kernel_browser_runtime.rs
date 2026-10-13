@@ -595,9 +595,10 @@ impl KernelRuntimeState {
                         .scrub_error(&scope, error)
                 });
         }
-        let params = browser_tool_params(arguments)?;
+        #[allow(unused_mut)]
+        let mut params = browser_tool_params(arguments)?;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        if let Some(tab) = params["tab_id"].as_str() {
+        if let Some(tab) = params["tab_id"].as_str().map(str::to_owned) {
             let views = self.app_control().user_views();
             for view in self
                 .user_domain_owner_aliases(&user)
@@ -617,6 +618,9 @@ impl KernelRuntimeState {
                         false,
                     )
                     .map_err(host_error)?;
+                    // MP-08/MP-11: the host lets an agent drive an App Tab
+                    // only with this claim; its bridge calls run as the agent.
+                    params["_app_view_tab"] = tab.clone().into();
                 }
             }
         }

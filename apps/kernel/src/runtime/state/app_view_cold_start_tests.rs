@@ -215,6 +215,7 @@ async fn inconclusive_identity_check_keeps_drained_live_calls_and_cancels_gone_d
             call_id: "call-1".into(),
             method: "list_todos".into(),
             params: serde_json::json!({}),
+            actor: None,
         }],
         open_targets: Some(vec!["live".into()]),
         documents: Some(std::collections::HashMap::from([(
@@ -277,6 +278,7 @@ async fn inconclusive_identity_probes_are_throttled_without_slowing_live_calls()
             call_id: "call-1".into(),
             method: "list_todos".into(),
             params: serde_json::json!({}),
+            actor: None,
         }],
         open_targets: Some(vec!["live".into()]),
         documents: None,

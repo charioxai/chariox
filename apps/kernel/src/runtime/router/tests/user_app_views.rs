@@ -451,6 +451,7 @@ fn run_drill(stall: bool, browser: bool) {
                 if browser {
                     assert!(browser_request(&router, KernelBrowserCommand::State).await["tabs"].as_array().unwrap().is_empty());
                     Box::pin(check_focused_browser_tab(&router, &root, view.browser.as_ref().unwrap().generation)).await;
+                    Box::pin(check_agent_app_input(&router, &observed, &root)).await;
                 }
                 })).catch_unwind().await;
                 if browser { Box::pin(router.runtime_state.shutdown_cleanup()).await.unwrap(); }
@@ -461,7 +462,7 @@ fn run_drill(stall: bool, browser: bool) {
             if let Err(error) = outcome { std::panic::resume_unwind(error); }
             if browser {
                 let evidence_root = std::path::PathBuf::from(std::env::var_os("CHARIOX_MDINT_DRILL_ROOT").unwrap());
-                std::fs::write(evidence_root.join("MDINT-PASS.txt"), "PASS: no-session kernel Chromium App, real signed bundle/page bridge/fixed ABI worker, owner channel context, detached passkey approval and receipt, close, then focused on-demand MCP tab; worker reaped, host shutdown. No model, client/relay projection, Mac or production Vault claim.\n").unwrap();
+                std::fs::write(evidence_root.join("MDINT-PASS.txt"), "PASS: no-session kernel Chromium App, real signed bundle/page bridge/fixed ABI worker, owner channel context, detached passkey approval and receipt, close, then focused on-demand MCP tab, then a focused agent's App Tab input refused without its own App grant and run as the agent with it; worker reaped, host shutdown. No model, client/relay projection, Mac or production Vault claim.\n").unwrap();
             }
         })
         .unwrap()
@@ -801,4 +802,198 @@ async fn check_browser_keyboard(
         last["context"]["actor"],
         serde_json::json!({"kind":"human","id":"alice"})
     );
+}
+
+async fn wait_for_page(router: &CommandRouter, browser: &UserAppViewBrowser, text: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let page = browser_request(
+                router,
+                KernelBrowserCommand::Snapshot {
+                    tab_id: browser.tab_id.clone(),
+                    generation: browser.generation,
+                },
+            )
+            .await;
+            if page.to_string().contains(text) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("page text {text}"));
+}
+
+// MP-08/MP-10/MP-11: an agent drives the owner's App Tab as itself. Its
+// bridge calls need its own App grant and reach the App as the agent.
+async fn check_agent_app_input(
+    router: &CommandRouter,
+    observed: &chariox_app_runtime::worker_process::test_fixture::Observation,
+    root: &std::path::Path,
+) {
+    let LocalDaemonResponse::UserAppViewOpened { view, .. } = request(
+        router,
+        "alice",
+        LocalDaemonRequest::OpenUserAppView(OpenUserAppViewRequest {
+            installation_id: "installed".into(),
+            host: Some(UserAppViewHost::KernelBrowser),
+        }),
+    )
+    .await
+    .unwrap() else {
+        panic!("App open for the agent drill")
+    };
+    let calls = observed.tool_invocations() + 1;
+    Box::pin(check_browser_page(router, &view, observed, calls)).await;
+    let browser = view.browser.as_ref().unwrap();
+    let workspace = root.join("agent-app-workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let (session, agent, run) = {
+        let mut app = router.app.lock().await;
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(
+                CreateSessionRequest::new(workspace.to_string_lossy(), workspace.to_string_lossy())
+                    .with_owner_user_id("alice"),
+            )
+            .unwrap();
+        let run = launch_test_provider(
+            &mut app,
+            session.id(),
+            agent.id(),
+            "dev-stub",
+            "dev-stub",
+            "default",
+        );
+        (session, agent, run)
+    };
+    let credential = run.runtime_mcp_auth_token().unwrap();
+    request(
+        router,
+        "alice",
+        LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+            session_id: session.id().into(),
+            agent_id: agent.id().into(),
+        }),
+    )
+    .await
+    .unwrap();
+    router
+        .dispatch_authenticated_runtime_tool_call(
+            credential,
+            "chariox.load_kernel_browser",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+    let state = router
+        .dispatch_authenticated_runtime_tool_call(
+            credential,
+            "chariox.kernel_browser",
+            serde_json::json!({"command":{"op":"state"}}),
+        )
+        .await
+        .unwrap();
+    let document = state.payload["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tab| tab["tab_id"] == browser.tab_id)
+        .and_then(|tab| tab["document_id"].as_str())
+        .expect("agent observes the App Tab")
+        .to_owned();
+    let agent_types = |text: &'static str, focus: bool| {
+        let document = document.clone();
+        async move {
+            let focus = focus.then(|| serde_json::json!({"kind":"key","key":"Tab"}));
+            for input in focus.into_iter().chain([
+                serde_json::json!({"kind":"text","text":text}),
+                serde_json::json!({"kind":"key","key":"Enter"}),
+            ]) {
+                router
+                    .dispatch_authenticated_runtime_tool_call(
+                        credential,
+                        "chariox.kernel_browser",
+                        serde_json::json!({"document_id":document,"command":{"op":"input",
+                            "tab_id":browser.tab_id,"generation":browser.generation,"input":input}}),
+                    )
+                    .await
+                    .expect("agent input on its claimed App Tab");
+            }
+        }
+    };
+    // Without its own App grant, the agent's click cannot borrow the owner's.
+    agent_types(" agent-ungranted", true).await;
+    wait_for_page(
+        router,
+        browser,
+        "Keyboard App channel refused AGENT_APP_NOT_GRANTED",
+    )
+    .await;
+    assert_eq!(observed.tool_invocations(), calls);
+    router
+        .runtime_state
+        .grant_agent_extension(
+            agent.id(),
+            crate::extension::ExtensionGrant::app("installed"),
+            "alice",
+        )
+        .await
+        .unwrap();
+    agent_types(" agent-granted", false).await;
+    wait_for_page(router, browser, "Keyboard App channel {\\\"ok\\\":true}").await;
+    assert_eq!(observed.tool_invocations(), calls + 1);
+    let last = observed.tool_requests().unwrap().last().unwrap().clone();
+    assert!(last["params"]["input"]["text"]
+        .as_str()
+        .unwrap()
+        .ends_with("agent-granted"));
+    assert_eq!(
+        last["context"]["actor"],
+        serde_json::json!({"kind":"agent","id":agent.id()})
+    );
+    assert_eq!(last["context"]["agent_id"], agent.id());
+    assert_eq!(last["context"]["room_id"], session.id());
+    // After the agent's window, the owner's own keys run as the owner again.
+    tokio::time::sleep(std::time::Duration::from_millis(5_200)).await;
+    for input in [
+        KernelBrowserInput::Text {
+            text: " owner".into(),
+        },
+        KernelBrowserInput::Key {
+            key: "Enter".into(),
+        },
+    ] {
+        browser_request(
+            router,
+            KernelBrowserCommand::Input {
+                tab_id: browser.tab_id.clone(),
+                generation: browser.generation,
+                input,
+            },
+        )
+        .await;
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while observed.tool_invocations() < calls + 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("owner keyboard App call");
+    let last = observed.tool_requests().unwrap().last().unwrap().clone();
+    assert_eq!(
+        last["context"]["actor"],
+        serde_json::json!({"kind":"human","id":"alice"})
+    );
+    assert!(last["context"].get("agent_id").is_none());
+    request(
+        router,
+        "alice",
+        LocalDaemonRequest::CloseUserAppView(UserAppViewRequest {
+            view_id: view.view_id.clone(),
+        }),
+    )
+    .await
+    .unwrap();
 }

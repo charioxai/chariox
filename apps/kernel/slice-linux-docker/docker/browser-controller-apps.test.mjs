@@ -663,3 +663,36 @@ test("user-domain instances of one App have independent targets and do not adopt
     await assert.rejects(tabs.open({...params,instance_id}));
   }
 });
+
+// MP-08/MP-10/MP-11: an App receives who drove each bridge call.
+test("bridge calls an agent's input drives run as that agent until a person drives the Tab", async () => {
+  const { tabs, connection } = await opened();
+  let now = 1_000;
+  tabs.now = () => now;
+  const bind = id => connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id, method: "delete_todo" }) } });
+  const actors = async () => (await tabs.takeCalls()).calls.map(call => call.actor ?? null);
+  const agent = { kind: "agent", id: "agent-7" };
+  await bind("load");
+  assert.deepEqual(await actors(), [null]);
+  const done = tabs.beginInput("t1", "agent-7");
+  await bind("during");
+  done();
+  now += 60_000;
+  // A timer the agent's click armed still runs as the agent.
+  await bind("later");
+  assert.deepEqual(await actors(), [agent, agent]);
+  const human = tabs.beginInput("t1", null);
+  human();
+  await bind("person");
+  assert.deepEqual(await actors(), [null]);
+  // A person's input right after the agent's does not take its calls over.
+  tabs.beginInput("t1", "agent-7")();
+  now += 1_000;
+  tabs.beginInput("t1", null)();
+  await bind("too-soon");
+  now += 5_000;
+  await bind("person-again");
+  assert.deepEqual(await actors(), [agent, null]);
+  assert.equal(typeof tabs.beginInput("unknown", "agent-7"), "function");
+});

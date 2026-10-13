@@ -167,6 +167,7 @@ impl KernelRuntimeState {
                         &request.method,
                         request.input.clone(),
                         &mut tracked,
+                        super::app_view_runtime::ViewCaller::Owner(None),
                     )
                     .await;
                 match result {
@@ -257,6 +258,7 @@ impl KernelRuntimeState {
         Ok(response)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn invoke_user_app_view_call(
         &self,
         owner: &str,
@@ -265,6 +267,7 @@ impl KernelRuntimeState {
         method: &str,
         input: serde_json::Value,
         tracked: &mut crate::runtime::app_views::ViewCall,
+        caller: super::app_view_runtime::ViewCaller<'_>,
     ) -> Result<serde_json::Value, crate::runtime::browser_controller_app_view::BrowserAppViewError>
     {
         if self
@@ -282,7 +285,7 @@ impl KernelRuntimeState {
         if method == "chariox.panel" {
             return Ok(serde_json::json!({"placement": "none", "minimized": false}));
         }
-        self.invoke_app_view_tool(None, binding, method, input, tracked)
+        self.invoke_app_view_tool(caller, binding, method, input, tracked)
             .await
     }
 

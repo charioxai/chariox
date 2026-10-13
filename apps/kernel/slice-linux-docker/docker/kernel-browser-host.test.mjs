@@ -530,19 +530,32 @@ test("MD-3: bound stream captures a document-bound source rather than annotating
   assert.fail("bound stream frame never arrived");
 }));
 
-test("MD integration: focused browser input cannot impersonate a human App call; App tabs are not restored", () => using(async ({ host, sent }, root) => {
+test("MP-08/MP-11: agents drive App tabs only with the kernel's App view claim; App tabs are not restored", () => using(async ({ host, sent }, root) => {
   const opened = await host.request({op:"open",url:"https://app.a.invalid/"});
   const target = host.tabs.get(opened.tab_id).target_id;
-  host.browser.appTabs = {apps:new Map([["app", {targetId:target}]])};
-  const command = {op:"input",tab_id:opened.tab_id,generation:opened.generation,input:{kind:"click",x:12,y:20}};
+  const inputs = [];
+  host.browser.appTabs = {apps:new Map([["app", {targetId:target, origin:"https://app.a.invalid"}]]),
+    beginInput: (targetId, agent) => { inputs.push([targetId, agent]); return () => inputs.push(["done", targetId]); }};
+  const agent = {focused_agent:true,_agent_input:true,observed_by:"agent:agent-7"};
+  const command = {op:"input",tab_id:opened.tab_id,generation:opened.generation,document_id:`doc-${target}`,input:{kind:"click",x:12,y:20}};
   for (const op of ["input", "navigate", "close"]) {
-    await assert.rejects(host.request({...command,op,url:"https://app.a.invalid/",_agent_input:true}), error => error.code === "user_domain_not_granted");
+    await assert.rejects(host.request({...command,...agent,op,url:"https://app.a.invalid/"}), error => error.code === "user_domain_not_granted");
   }
   assert(!sent.some(call=>call.method==="Input.dispatchMouseEvent"));
-  await host.request(command);
+  const claimed = {...command,...agent,_app_view_tab:opened.tab_id};
+  await host.request(claimed);
   assert(sent.some(call=>call.method==="Input.dispatchMouseEvent"));
+  assert.deepEqual(inputs, [[target, "agent-7"], ["done", target]]);
+  await host.request({...command});
+  assert.deepEqual(inputs.slice(2), [[target, null], ["done", target]]);
+  // The App page stays on its own origin, whoever navigates it.
+  await assert.rejects(host.request({...claimed,op:"navigate",url:"https://example.com/"}), error => error.code === "user_domain_not_granted");
+  await assert.rejects(host.request({...command,op:"navigate",url:"https://example.com/"}), error => error.code === "user_domain_not_granted");
+  await host.request({...claimed,op:"navigate",url:"https://app.a.invalid/list"});
   const {readFile} = await import("node:fs/promises");
   assert.deepEqual(JSON.parse(await readFile(path.join(root,"tabs.json"),"utf8")).tabs, []);
+  await host.request({...claimed,op:"close"});
+  assert(!host.tabs.has(opened.tab_id));
 }));
 
 test("MD integration: stale-generation App drains cannot reach the new controller", () => using(async ({ host, sent }) => {
