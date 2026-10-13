@@ -75,6 +75,7 @@ pub(crate) use prompt_lifecycle::{
     KernelQueuedPromptCancellation, KernelQueuedPromptSteer, KernelQueuedPromptUpdate,
     KernelRemotePromptDispatch, KernelRemotePromptDispatchIntent,
 };
+pub(crate) use provider_output_claude_native::clear_claude_context_delivery_for_settled_prompt;
 #[cfg(test)]
 pub(crate) use provider_output_claude_native::tests::{startup_readiness_run, StartupTrustBridge};
 pub(crate) use provider_output_claude_native::{

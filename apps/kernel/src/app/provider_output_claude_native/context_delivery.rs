@@ -45,7 +45,62 @@ pub(super) fn request_expired(event: &Value) -> bool {
         .is_some_and(|deadline| unix_epoch_ms() >= deadline)
 }
 
+fn read_pending(context_file: &str) -> Option<PendingDelivery> {
+    fs::read(format!("{context_file}.context-delivery"))
+        .ok()
+        .and_then(|text| serde_json::from_slice(&text).ok())
+}
+
+/// Settlement may trail a receipt for another turn; clear only its own binding.
+pub(crate) fn clear_claude_context_delivery_for_settled_prompt(
+    run: &RuntimeProviderRun,
+    prompt_id: &str,
+) {
+    let Some(context_file) = run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
+        return;
+    };
+    if read_pending(context_file).is_some_and(|pending| {
+        pending.run_id == run.id()
+            && pending
+                .active_prompt_id
+                .as_deref()
+                .unwrap_or(&pending.prompt_id)
+                == prompt_id
+    }) {
+        let _ = fs::remove_file(format!("{context_file}.context-delivery"));
+    }
+}
+
 impl ProviderOutputClaudeNativeBridge<'_> {
+    fn current_context_delivery(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        run_id: &str,
+        context_file: &str,
+    ) -> Result<Option<PendingDelivery>, DaemonError> {
+        let pending = read_pending(context_file);
+        let active = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?;
+        if pending.as_ref().is_some_and(|pending| {
+            pending.run_id == run_id
+                && active.as_ref().map(|prompt| prompt.id())
+                    == Some(
+                        pending
+                            .active_prompt_id
+                            .as_deref()
+                            .unwrap_or(&pending.prompt_id),
+                    )
+        }) {
+            return Ok(pending);
+        }
+        // A late receipt must neither retain an obsolete owner nor remove a
+        // binding for the current live target merely because its request differs.
+        let _ = fs::remove_file(format!("{context_file}.context-delivery"));
+        Ok(None)
+    }
+
     /// A late hook cannot deliver context, but its failure must still settle
     /// the exact managed prompt that was admitted before PTY injection.
     pub(super) fn bind_expired_managed_context_failure(
@@ -56,7 +111,10 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         context_file: &str,
         event: &Value,
     ) -> Result<(), DaemonError> {
-        if fs::metadata(format!("{context_file}.context-delivery")).is_ok() {
+        if self
+            .current_context_delivery(session_id, agent_id, run_id, context_file)?
+            .is_some()
+        {
             return Ok(());
         }
         let Some(request_id) = event.get("hook_context_request_id").and_then(Value::as_str) else {
@@ -106,26 +164,13 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         context_file: &str,
         event: &Value,
     ) -> Result<Option<PendingDelivery>, DaemonError> {
-        let pending_path = format!("{context_file}.context-delivery");
-        let Some(pending) = fs::read(&pending_path)
-            .ok()
-            .and_then(|text| serde_json::from_slice::<PendingDelivery>(&text).ok())
+        let Some(pending) =
+            self.current_context_delivery(session_id, agent_id, run_id, context_file)?
         else {
             return Ok(None);
         };
-        let active = self
-            .app
-            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?;
         if event.get("hook_context_request_id").and_then(Value::as_str)
             != Some(pending.request_id.as_str())
-            || pending.run_id != run_id
-            || active.as_ref().map(|prompt| prompt.id())
-                != Some(
-                    pending
-                        .active_prompt_id
-                        .as_deref()
-                        .unwrap_or(&pending.prompt_id),
-                )
         {
             return Ok(None);
         }

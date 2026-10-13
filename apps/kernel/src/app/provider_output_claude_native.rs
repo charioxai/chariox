@@ -25,6 +25,7 @@ mod session_start;
 pub(crate) mod tests;
 mod transcript;
 
+pub(crate) use context_delivery::clear_claude_context_delivery_for_settled_prompt;
 pub(crate) use permission::format_claude_permission_message;
 
 use attachments::{
@@ -917,13 +918,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         context_file: &str,
         mark_next_headless_prompt_ready: bool,
     ) -> Result<(), DaemonError> {
-        if self
+        if let Some(prompt) = self
             .app
             .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
-            .is_some()
         {
             self.app
                 .complete_active_prompt(session_id, agent_id, Some(provider_run_id))?;
+            if let Ok(run) = self.app.providers.get_run(provider_run_id) {
+                clear_claude_context_delivery_for_settled_prompt(&run, prompt.id());
+            }
         }
         let _ = fs::write(context_file, "");
         write_claude_native_marker(context_file, "");
