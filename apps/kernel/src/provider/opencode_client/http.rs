@@ -254,7 +254,9 @@ fn retry_attempts_for_request(method: &'static str, path: &str) -> usize {
 }
 
 fn read_timeout_for_request(method: &'static str, path: &str) -> Duration {
-    if method == "POST" && is_mcp_connect_path(path) {
+    if (method == "POST" && is_mcp_connect_path(path))
+        || (method == "GET" && matches!(path, "/provider" | "/config" | "/agent"))
+    {
         return Duration::from_secs(12);
     }
     Duration::from_secs(2)
@@ -465,6 +467,74 @@ mod tests {
         is_retryable_opencode_http_error, method_to_operation, read_timeout_for_request,
         retry_attempts_for_request, OpenCodeHttpFailure,
     };
+
+    #[test]
+    fn cold_native_catalog_and_defaults_can_finish_after_health_is_ready() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let stopped = Arc::new(AtomicBool::new(false));
+        let server_stopped = Arc::clone(&stopped);
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            let mut replies = Vec::new();
+            while !server_stopped.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        let mut request = [0; 2048];
+                        let count = stream.read(&mut request).unwrap();
+                        requests.push(
+                            String::from_utf8_lossy(&request[..count])
+                                .lines()
+                                .next()
+                                .unwrap()
+                                .to_string(),
+                        );
+                        replies.push(thread::spawn(move || {
+                            // A healthy cold native server can still be initializing its catalog.
+                            thread::sleep(Duration::from_millis(3200));
+                            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+                        }));
+                    }
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(error) => panic!("test listener failed: {error}"),
+                }
+            }
+            for reply in replies {
+                reply.join().unwrap();
+            }
+            requests
+        });
+        let client = super::OpenCodeClient::new("cold-native", &endpoint).unwrap();
+        let responses = ["/provider", "/config", "/agent"]
+            .map(|path| client.send_json_request::<serde_json::Value>("GET", path, None));
+        stopped.store(true, Ordering::Release);
+        let requests = server.join().unwrap();
+        for response in responses {
+            assert!(
+                response.is_ok(),
+                "cold native initialization timed out: {response:?}"
+            );
+        }
+        assert_eq!(
+            requests.len(),
+            3,
+            "initialization requests must not restart while the native server is still replying"
+        );
+    }
 
     #[test]
     fn retries_opencode_mcp_connect_startup_io_failures() {

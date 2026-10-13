@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod cancellation_tests;
 mod drain;
+#[cfg(test)]
+mod finalized_snapshot_tests;
 mod parts;
 mod permission;
 #[cfg(test)]
@@ -44,6 +46,42 @@ mod tests {
         transcript::render_tool_transcript_update,
         OpenCodeAssistantCompletion, OpenCodeRuntimeState, ToolTranscriptUpdate,
     };
+
+    // Event-focused tests retain a healthy native fallback status endpoint.
+    // A connected event channel cannot substitute for HTTP availability.
+    fn busy_native_endpoint() -> String {
+        static ENDPOINT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        ENDPOINT
+            .get_or_init(|| {
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let address = listener.local_addr().unwrap();
+                std::thread::spawn(move || {
+                    use std::io::{Read, Write};
+                    for mut stream in listener.incoming().flatten() {
+                        stream
+                            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                            .unwrap();
+                        let mut request = [0; 2048];
+                        let count = stream.read(&mut request).unwrap();
+                        let path = String::from_utf8_lossy(&request[..count]);
+                        let body = if path.starts_with("GET /session/status ") {
+                            r#"{"session-1":{"type":"busy"}}"#
+                        } else {
+                            "[]"
+                        };
+                        write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        )
+                        .unwrap();
+                    }
+                });
+                format!("http://{address}")
+            })
+            .clone()
+    }
 
     pub(super) fn test_run() -> RuntimeProviderRun {
         RuntimeProviderRun::new(
@@ -355,7 +393,7 @@ mod tests {
     fn abort_reset_discards_the_cancelled_turn_error_before_the_next_prompt() {
         let (event_sender, event_receiver) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
-            "http://localhost:1".to_string(),
+            busy_native_endpoint(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(event_receiver),
         );
@@ -538,7 +576,7 @@ mod tests {
     fn terminal_assistant_for_active_prompt_waits_for_idle_before_completion() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
-            "http://localhost:1".to_string(),
+            busy_native_endpoint(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
@@ -633,7 +671,7 @@ mod tests {
     fn idle_after_completed_assistant_without_parent_completes_active_prompt() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
-            "http://localhost:1".to_string(),
+            busy_native_endpoint(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
@@ -683,7 +721,7 @@ mod tests {
     fn idle_after_nonterminal_assistant_completion_keeps_active_prompt_open() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
-            "http://localhost:1".to_string(),
+            busy_native_endpoint(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
@@ -775,7 +813,7 @@ mod tests {
     fn prompt_submission_clears_prior_unparented_assistant_completion() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
-            "http://localhost:1".to_string(),
+            busy_native_endpoint(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
@@ -1049,7 +1087,7 @@ mod tests {
     fn cross_session_sibling_error_does_not_fail_the_active_prompt() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
-            "http://localhost:1".to_string(),
+            busy_native_endpoint(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
@@ -1083,7 +1121,7 @@ mod tests {
     fn idle_status_after_submitted_prompt_without_response_does_not_complete_prompt() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
-            "http://localhost:1".to_string(),
+            busy_native_endpoint(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
@@ -1108,7 +1146,7 @@ mod tests {
     fn idle_after_observed_busy_status_does_not_complete_without_terminal_assistant() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
-            "http://localhost:1".to_string(),
+            busy_native_endpoint(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
@@ -1143,7 +1181,7 @@ mod tests {
     fn idle_after_unknown_assistant_step_waits_for_provider_continuation() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
-            "http://localhost:1".to_string(),
+            busy_native_endpoint(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
@@ -1209,7 +1247,7 @@ mod tests {
     fn unknown_assistant_becomes_eligible_only_after_terminal_update() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
-            "http://localhost:1".to_string(),
+            busy_native_endpoint(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
@@ -1262,7 +1300,7 @@ mod tests {
     fn idle_status_after_assistant_text_does_not_complete_without_terminal_assistant() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
-            "http://localhost:1".to_string(),
+            busy_native_endpoint(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
@@ -1314,7 +1352,7 @@ mod tests {
     fn tool_call_assistant_blocks_prompt_completion_until_final_assistant() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
-            "http://localhost:1".to_string(),
+            busy_native_endpoint(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
@@ -1434,7 +1472,7 @@ mod tests {
     fn idle_status_after_tool_call_only_assistant_does_not_complete_prompt() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
-            "http://localhost:1".to_string(),
+            busy_native_endpoint(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
