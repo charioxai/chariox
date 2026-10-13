@@ -37,7 +37,7 @@ const report = {mpItems: ['MP-08', 'MP-10', 'MP-11'], area: 'apps-byom/BY-03', p
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 const safe = text => confidential.reduce((value, secret) => value.replaceAll(secret, '[redacted]'), String(text))
 const save = () => writeFile(path.join(E, 'RESULT.json'), JSON.stringify(report, null, 2))
-const shot = (page, name) => page.screenshot({path: path.join(E, name + '.png'), scale: 'device', timeout: 60000, mask: [page.locator('input, textarea, [data-sensitive]')]}).catch(error => { (report.screenshotErrors ??= []).push({name, error: safe(error.message).split('\n')[0]}) })
+const shot = async (page, name) => { let hidden; try { hidden = await page.addStyleTag({content: 'input, textarea, [data-sensitive] { visibility: hidden !important; }'}); await page.screenshot({path: path.join(E, name + '.png'), scale: 'device', timeout: 60000, mask: [page.locator('input, textarea, [data-sensitive]')]}) } catch (error) { (report.screenshotErrors ??= []).push({name, error: safe(error.message).split('\n')[0]}) } finally { await hidden?.evaluate(node => node.remove()).catch(() => {}) } }
 async function sample() {
   const mem = Number((await readFile('/proc/meminfo', 'utf8')).match(/MemAvailable:\s+(\d+)/)[1]) * 1024
   const fs = await statfs('/'); resources.push({at: new Date().toISOString(), memAvailable: mem, diskFree: fs.bavail * fs.bsize})
@@ -155,6 +155,17 @@ try {
   socket = path.join(scratch, 'tui.sock'); tuiLog = path.join(scratch, 'tui.log'); const log = await open(tuiLog, 'w', 0o600)
   spawn('python3', [path.join(repo, 'apps/cli/scripts/lib/owner-context-terminal.py'), cli, '--kernel-url', source.url, '--automation-socket', socket, '--session', session.id, '--workspace', shallowRepo, '--worktree', shallowRepo, '--provider', 'codex', '--account-profile', linked.profile_id, '--model', 'codex/gpt-6.1-sol'], source.env, ['pipe', log.fd, log.fd]); await log.close()
   await until(async () => { try { return (await automation({action: 'snapshot'})).session?.id } catch { return false } }, 'real TUI ready')
+  // A real official provider turn confirms that the enrolled runtime and TUI
+  // still use the normal linked-profile path. No login mutation is involved.
+  await automation({action: 'submit_prompt', prompt: 'Reply with BYOMREL-R35-OK only.'})
+  await until(async () => {
+    const snapshot = await automation({action: 'snapshot'})
+    return snapshot.transcript?.entries?.some(entry => entry.role === 'assistant' && entry.text?.includes('BYOMREL-R35-OK'))
+      && snapshot.session?.agents?.every(agent => !agent.isProcessing)
+  }, 'real provider turn settled', 180000)
+  report.providerSmoke = {provider: 'codex', marker: 'BYOMREL-R35-OK', status: 'PASS'}
+  const smokeLog = path.join(E, 'provider-tui.log'); await writeFile(smokeLog, safe(await readFile(tuiLog, 'utf8')))
+  await run('python3', [path.join(repo, 'apps/cli/scripts/lib/owner-context-terminal.py'), '--render', smokeLog, path.join(E, 'provider-tui.png')])
   await setup.close()
 
   for (const dpr of [1, 2]) {
@@ -191,8 +202,9 @@ try {
     await automation({action: 'submit_prompt', prompt: '/kernel copy-status ' + contextId}); await pause(500)
     const terminal = path.join(E, `dpr${dpr}-shallow-tui.log`); const vt = safe(await readFile(tuiLog, 'utf8')); await writeFile(terminal, vt)
     await run('python3', [path.join(repo, 'apps/cli/scripts/lib/owner-context-terminal.py'), '--render', terminal, path.join(E, `dpr${dpr}-shallow-tui.png`)])
+    shallow.safeKernelMessage = !status.failureMessage?.startsWith('managed context `')
     shallow.tuiActionable = JSON.stringify(await automation({action: 'snapshot'})).includes(kernelShallowAdvice) || vt.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').includes('git fetch --unshallow')
-    shallow.status = status.phase === 'failed' && status.acceptedBytes === 0 && !status.receipt && shallow.webSpecific && shallow.tuiActionable ? 'PASS' : 'FAIL'
+    shallow.status = status.phase === 'failed' && status.acceptedBytes === 0 && !status.receipt && shallow.webSpecific && shallow.tuiActionable && shallow.safeKernelMessage ? 'PASS' : 'FAIL'
     await save(); console.log('MP-08 / MP-10 / MP-11 BY-03 shallow DPR' + dpr, shallow.status)
     await dialog.getByRole('button', {name: 'Close', exact: true}).click()
 
@@ -213,6 +225,11 @@ try {
     // signout: two tabs of one sign-in, each with its own Cloud session and relay grant.
     const signout = {cell: 'signout', dpr, status: 'FAIL'}; cells.push(signout)
     const login = await signedInContext(dpr), tabs = [await newPage(login), await newPage(login)]
+    // A sibling browser retains the cookie authenticated before sign-out. Its
+    // later real page load must not publish a new Cloud session for that login.
+    const sibling = await browser.newContext({deviceScaleFactor: dpr, viewport: {width: 1440, height: 1000}})
+    await sibling.addCookies(await login.cookies())
+    const reloading = await newPage(sibling)
     for (const tab of tabs) {
       report.stage = `signout dpr${dpr} tab ${tabs.indexOf(tab)} connect`
       await tab.bringToFront(); await myKernels(tab); const copy = await openCopy(tab)
@@ -248,14 +265,18 @@ try {
     signout.otherTabRelayEvents = tabs[0].relayEvents.map(e => ({event: e.event, connectionId: e.connectionId, relayOrigin: e.relayOrigin, msAfterSignOut: e.at - startedAt}))
     signout.otherTabOpenSocketsAfterWindow = tabs[0].openRelayConnections().length
     signout.everyObservedConnectionClosed = observedConnections.every(id => tabs[0].relayEvents.some(e => e.connectionId === id && e.event === 'closed'))
+    const publication = reloading.waitForResponse(response => new URL(response.url()).pathname === '/auth/cloud-session' && response.request().method() === 'POST', {timeout: 60000})
+    await reloading.goto(origin + '/terminals')
+    signout.siblingPublicationAfterSignOut = (await publication).status()
+    await shot(reloading, `dpr${dpr}-signout-stale-login-reload`)
     signout.sessionAfter = await tabs[0].evaluate(async () => (await (await fetch('/auth/session')).json()).authenticated)
     await tabs[0].bringToFront(); await shot(tabs[0], `dpr${dpr}-signout-other-tab`)
     await myKernels(tabs[0]).catch(() => {}); await shot(tabs[0], `dpr${dpr}-signout-other-tab-my-kernels`)
-    signout.status = signout.distinctCloudSessions && signout.otherTabBefore === 200 && signout.usedVisibleControl && rejectedAt && signout.otherTabOpenSocketsAfterWindow === 0 && signout.everyObservedConnectionClosed && signout.sessionAfter === false ? 'PASS' : 'FAIL'
+    signout.status = signout.distinctCloudSessions && signout.otherTabBefore === 200 && signout.usedVisibleControl && rejectedAt && signout.otherTabOpenSocketsAfterWindow === 0 && signout.everyObservedConnectionClosed && signout.siblingPublicationAfterSignOut === 403 && signout.sessionAfter === false ? 'PASS' : 'FAIL'
     await save(); console.log('MP-08 / MP-10 / MP-11 BY-03 signout DPR' + dpr, signout.status)
-    await login.close()
+    await sibling.close(); await login.close()
   }
-  report.network = await network.snapshot(); report.status = cells.every(cell => cell.status === 'PASS') ? 'PASS' : 'FAIL'
+  report.network = await network.snapshot(); report.status = cells.every(cell => cell.status === 'PASS') && !report.screenshotErrors?.length ? 'PASS' : 'FAIL'
   if (report.status === 'FAIL') process.exitCode = 1
 } catch (error) { for (const [index, open] of (browser?.contexts() ?? []).flatMap(context => context.pages()).entries()) await shot(open, `failure-${index}`); report.status = 'FAIL'; report.error = safe(error.message).split('Call log:')[0].slice(0, 1200); process.exitCode = 1 }
 finally {

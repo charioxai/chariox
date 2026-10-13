@@ -7,11 +7,12 @@ import {readFile} from 'node:fs/promises'
 const source = await readFile(new URL('./live-byom-account-drill.mjs', import.meta.url), 'utf8')
 const shotSource = source.match(/^const shot = .*$/m)[0]
 test('MP-08 / MP-11 every diagnostic screenshot masks capability-bearing controls', async () => {
-  const capabilityControls = {selector: 'controls'}, calls = []
-  const page = {locator: () => capabilityControls, screenshot: async options => {calls.push(options)}}
+  const capabilityControls = {selector: 'controls'}, calls = [], styles = []
+  const page = {locator: () => capabilityControls, addStyleTag: async options => {styles.push(options); return {evaluate: async () => {}}}, screenshot: async options => {calls.push(options)}}
   const shot = vm.runInNewContext(shotSource + '; shot', {path, E: '/evidence', report: {}, safe: String})
   await shot(page, 'failure-0')
   assert.deepEqual(Array.from(calls[0].mask ?? []), [capabilityControls])
+  assert.match(styles[0]?.content ?? "", /visibility: hidden !important/)
   assert.match(source, /catch \(error\) \{[^]*await shot\(open, `failure-\$\{index\}`\)/)
 })
 
