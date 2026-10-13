@@ -439,8 +439,10 @@ impl KernelRuntimeState {
         let app_result = self
             .with_app_side_effect(|app| app.shutdown_cleanup())
             .await;
+        let history_result = self.provider_history_appends.flush_all().await;
         controller_result?;
-        app_result
+        app_result?;
+        history_result
     }
 
     pub(crate) fn session_snapshot_projection(

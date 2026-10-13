@@ -152,6 +152,7 @@ pub(crate) struct KernelRuntimeState {
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
+    provider_history_appends: provider_history_runtime::ProviderHistoryAppends,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
     detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
     owned: KernelRuntimeOwnedState,
@@ -411,6 +412,7 @@ pub(in crate::runtime) use provider_login_state::{
     ProviderLoginProcessBackend, ProviderLoginProcessRecord, ProviderLoginProcessStore,
     PROVIDER_LOGIN_TIMEOUT_MS,
 };
+mod provider_history_runtime;
 mod provider_mcp_continuation_runtime;
 mod provider_output_pump_runtime;
 mod provider_output_runtime;
@@ -776,6 +778,7 @@ impl KernelRuntimeState {
             app_lock_wait_probe: None,
             app,
             provider_runtime_lanes,
+            provider_history_appends: Default::default(),
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             owned: KernelRuntimeOwnedState {

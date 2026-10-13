@@ -24,6 +24,7 @@ const OPENCODE_EVENT_RESUBSCRIBE_TIMEOUT: std::time::Duration = std::time::Durat
 const OPENCODE_EVENT_RESUBSCRIBE_RETRY_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(100);
 const OPENCODE_EVENT_DRAIN_MAX_EVENTS: usize = 256;
+const OPENCODE_EVENT_DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(10);
 const OPENCODE_EMPTY_IDLE_ASSISTANT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 const OPENCODE_EMPTY_IDLE_ASSISTANT_FAILURE: &str =
     "OpenCode became idle without producing assistant output. Chariox closed this turn so the agent can be retried with a fresh provider session.";
@@ -46,7 +47,18 @@ pub(in crate::provider) fn drain_opencode_events(
     let mut resolved_usage_tokens_total = None;
     let drain_active_user_message_id = state.active_user_message_id.clone();
 
+    let started = std::time::Instant::now();
     for _ in 0..OPENCODE_EVENT_DRAIN_MAX_EVENTS {
+        // MP-08 / MP-10: publish ready text before a long render burst. The
+        // next actor poll resumes the same queue without losing an event.
+        // Once completion was observed, inspect the remaining queued events so
+        // a sibling failure still overrides completion in this drain.
+        if !chunks.is_empty()
+            && !prompt_completed
+            && started.elapsed() >= OPENCODE_EVENT_DRAIN_BUDGET
+        {
+            break;
+        }
         let event = state
             .pending_event
             .take()

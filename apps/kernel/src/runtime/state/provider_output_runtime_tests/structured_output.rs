@@ -277,6 +277,157 @@ async fn panes_stream_history_handoff_keeps_the_published_turn_identity() {
     assert_ne!(event.prompt_id.as_deref(), Some("replacement-prompt"));
 }
 
+#[tokio::test]
+async fn panes_stream_next_ready_batch_does_not_wait_for_previous_history_ack() {
+    // MP-08 / MP-10: first words may span batches. Busy persistence must not
+    // freeze the second batch; completion still waits for both history writes.
+    let worktree = crate::test_support::TestWorktree::new("panes-stream-history-two-batches");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "panes-stream-history-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "opencode-go/gpt-6-luna",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-panes-stream-history-two-batches",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "panes-stream-history-fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("http://127.0.0.1:1".into()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run.clone());
+    spawn_inert_pty_for_run(&mut app, run.id());
+    app.structured_output_record_store()
+        .mark_poll_enqueued(run.id(), None);
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            run.id().to_string(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("text-1".into()),
+                    bytes: b"CHECK:".to_vec(),
+                }],
+                ..Default::default()
+            })),
+        );
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+
+    let append_lock = runtime.owned.transcript_history_append_lock.clone();
+    let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+    let holder = std::thread::spawn(move || {
+        let _held = append_lock.lock().unwrap();
+        locked_tx.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(350));
+    });
+    locked_rx.await.unwrap();
+    let started = std::time::Instant::now();
+    let cleanup = InertPtyCleanup {
+        app: app.clone(),
+        provider_run_id: run.id().into(),
+    };
+    let (output, delivery_ms) = tokio::join!(
+        async {
+            let mut records = Vec::new();
+            for bytes in [b"CHECK".as_slice(), b":".as_slice()] {
+                records.extend(
+                    runtime
+                        .apply_owned_structured_output_batch(
+                            session.id(),
+                            run.id(),
+                            vec![attachment.id().into()],
+                            crate::provider::ProviderPromptSignalBatch {
+                                chunks: vec![crate::provider::ProviderPromptChunk {
+                                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                                    merge_key: Some("two-batch-text".into()),
+                                    bytes: bytes.to_vec(),
+                                }],
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .unwrap(),
+                );
+            }
+            runtime
+                .apply_owned_structured_output_batch(
+                    session.id(),
+                    run.id(),
+                    vec![attachment.id().into()],
+                    crate::provider::ProviderPromptSignalBatch {
+                        prompt_completed: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            records
+        },
+        async {
+            let mut prefix = Vec::new();
+            loop {
+                if let crate::runtime_transport::WatchResult::Ok { records, .. } = runtime
+                    .watch_relay_subscription_state(session.id(), attachment.id(), false, None, 0)
+                    .await
+                {
+                    for record in records {
+                        prefix.extend(record.bytes);
+                    }
+                }
+                if prefix == b"CHECK:" {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            started.elapsed().as_millis()
+        },
+    );
+    holder.join().unwrap();
+    assert_eq!(
+        output.into_iter().flat_map(|r| r.bytes).collect::<Vec<_>>(),
+        b"CHECK:"
+    );
+    let events = runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session.id(), Some(agent.id()))
+        .unwrap();
+    assert_eq!(
+        events.iter().map(|e| e.text.as_str()).collect::<String>(),
+        "CHECK:",
+        "completion must retain both history chunks in order"
+    );
+    drop(cleanup);
+    assert!(
+        delivery_ms < 150,
+        "MP-08 / MP-10: second ready batch waited {delivery_ms} ms for history ack"
+    );
+}
+
 #[test]
 fn publication_output_rejects_opencode_model_substitution_before_run_mutation() {
     let request = crate::provider::LaunchProviderRequest::new(
@@ -1096,6 +1247,7 @@ async fn structured_output_batch_persists_one_turn_id_for_all_chunks() {
         .await
         .expect("structured output batch should be accepted");
     assert_eq!(records.len(), 2);
+    runtime.flush_provider_history(run.id()).await.unwrap();
 
     let events = runtime
         .owned

@@ -714,24 +714,23 @@ impl KernelRuntimeState {
                 }
             })
             .collect::<Vec<_>>();
+        // MP-08 / MP-10: reserve bounded persistence capacity before publishing.
+        // The handoff itself is synchronous, so cancellation cannot leave an
+        // already-visible batch without an accepted write. Context was frozen
+        // while this batch still belonged to its original turn.
+        let history_entries = owned.prepare_history_entries(session_id, history_entries);
+        let history_lease = self
+            .reserve_provider_history(provider_run_id, !history_entries.is_empty())
+            .await?;
         let records = owned.fan_out_terminal_outputs_to_recipients(
             session_id,
             recipient_attachment_ids.clone(),
             terminal_outputs,
         );
-        // MP-08 / MP-10: persistence still completes before turn settlement,
-        // but the synchronous writer acknowledgement must not block the task
-        // that also publishes other ready runs and terminal subscriptions.
-        let history_entries = owned.prepare_history_entries(session_id, history_entries);
-        let history_owned = owned.clone();
-        tokio::task::spawn_blocking(move || {
-            history_owned.append_prepared_history_entries(history_entries);
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "append provider output history",
-            message: error.to_string(),
-        })?;
+        self.enqueue_provider_history(history_entries, history_lease);
+        if !completions.is_empty() || prompt_completed || terminal_failure.is_some() {
+            self.flush_provider_history(provider_run_id).await?;
+        }
         for completion in &completions {
             owned.record_assistant_message_completion(
                 session_id,

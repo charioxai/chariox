@@ -126,3 +126,80 @@ fn check_ready_text(busy_before_text: bool) {
         assert!(state.pending_event.is_none());
     }
 }
+
+#[test]
+fn panes_stream_opencode_ready_text_is_not_held_for_a_greedy_render_burst() {
+    // MP-08 / MP-10: a realistic large tool burst must not hold earlier text.
+    // The remainder still drains in order, without losing any tool snapshot.
+    let (tx, rx) = mpsc::channel();
+    let mut state = OpenCodeRuntimeState::new(
+        "http://127.0.0.1:1".into(),
+        "session-1".into(),
+        OpenCodeEventSubscription::for_tests(rx),
+    );
+    state.note_prompt_submitted("user-1".into());
+    state.live_text_from_start = true;
+    state
+        .message_roles
+        .insert("assistant-1".into(), "assistant".into());
+    state
+        .message_parent_ids
+        .insert("assistant-1".into(), Some("user-1".into()));
+    state.part_kinds.insert("text-1".into(), "text".into());
+    state
+        .emitted_text_by_part
+        .insert("text-1".into(), String::new());
+    tx.send(OpenCodeEvent::MessagePartDelta {
+        session_id: "session-1".into(),
+        message_id: "assistant-1".into(),
+        part_id: "text-1".into(),
+        field: "text".into(),
+        delta: "CHECK:".into(),
+    })
+    .unwrap();
+    for i in 0..63 {
+        tx.send(OpenCodeEvent::MessagePartUpdated {
+            part: Box::new(crate::provider::OpenCodePart {
+                id: format!("tool-{i}"),
+                session_id: "session-1".into(),
+                message_id: "assistant-1".into(),
+                kind: "tool".into(),
+                text: String::new(),
+                tool: "read".into(),
+                time: None,
+                state: Some(crate::provider::OpenCodeToolState {
+                    status: "completed".into(),
+                    output: "render burst\n".repeat(24_000),
+                    ..Default::default()
+                }),
+            }),
+        })
+        .unwrap();
+    }
+    let run = test_run();
+    let first = drain_opencode_events(&run, &mut state, None).unwrap();
+    assert_eq!(first.chunks.first().unwrap().bytes, b"CHECK:");
+    let first_count = first.chunks.len();
+    let mut keys = first
+        .chunks
+        .into_iter()
+        .filter_map(|c| c.merge_key)
+        .collect::<Vec<_>>();
+    while keys.len() < 64 {
+        keys.extend(
+            drain_opencode_events(&run, &mut state, None)
+                .unwrap()
+                .chunks
+                .into_iter()
+                .filter_map(|c| c.merge_key),
+        );
+    }
+    assert_eq!(keys[0], "text-1");
+    for i in 0..63 {
+        assert_eq!(keys[i + 1], format!("tool-{i}"));
+    }
+    assert!(
+        first_count < 64,
+        "MP-08 / MP-10: first ready text waited for all {first_count} expensive renders"
+    );
+}

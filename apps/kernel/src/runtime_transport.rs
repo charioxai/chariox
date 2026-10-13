@@ -791,6 +791,7 @@ struct EventWriteCoalescer<T> {
     delay_ms: u64,
     frames: VecDeque<T>,
     ready_at: Option<tokio::time::Instant>,
+    last_emitted_at: Option<tokio::time::Instant>,
 }
 
 impl<T> EventWriteCoalescer<T> {
@@ -799,6 +800,7 @@ impl<T> EventWriteCoalescer<T> {
             delay_ms,
             frames: VecDeque::new(),
             ready_at: None,
+            last_emitted_at: None,
         }
     }
 
@@ -807,18 +809,26 @@ impl<T> EventWriteCoalescer<T> {
     }
 
     fn push_event(&mut self, frame: T, now: tokio::time::Instant) -> Option<T> {
-        if self.delay_ms == 0 {
+        let window = Duration::from_millis(self.delay_ms);
+        if self.frames.is_empty()
+            && (self.delay_ms == 0
+                || self
+                    .last_emitted_at
+                    .is_none_or(|last| now.saturating_duration_since(last) >= window))
+        {
+            self.last_emitted_at = Some(now);
             return Some(frame);
         }
         self.frames.push_back(frame);
         if self.ready_at.is_none() {
-            self.ready_at = Some(now + Duration::from_millis(self.delay_ms));
+            self.ready_at = Some(self.last_emitted_at.unwrap_or(now) + window);
         }
         None
     }
 
-    fn drain_ready(&mut self) -> Vec<T> {
+    fn drain_ready(&mut self, now: tokio::time::Instant) -> Vec<T> {
         self.ready_at = None;
+        self.last_emitted_at = Some(now);
         self.frames.drain(..).collect()
     }
 }
@@ -975,17 +985,17 @@ where
                             break;
                         }
                     }
+                    _ = tokio::time::sleep_until(ready_at) => {
+                        for frame in event_write_coalescer.drain_ready(tokio::time::Instant::now()) {
+                            if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
+                                break 'writer_loop;
+                            }
+                        }
+                    }
                     Some(frame) = event_rx.recv() => {
                         if let Some(frame) = event_write_coalescer.push_event(frame, tokio::time::Instant::now()) {
                             if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
                                 break;
-                            }
-                        }
-                    }
-                    _ = tokio::time::sleep_until(ready_at) => {
-                        for frame in event_write_coalescer.drain_ready() {
-                            if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
-                                break 'writer_loop;
                             }
                         }
                     }
