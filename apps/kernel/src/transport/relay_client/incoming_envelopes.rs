@@ -632,9 +632,10 @@ mod tests {
         assert!(matches!(written.get(1), Some(RelayEnvelope::Close { .. })));
     }
 
-    // MP-08/MP-10/MP-11: close must not drain a display slideshow first.
+    // MP-08/MP-10/MP-11: close must not drain a display slideshow first, but
+    // leased projections already committed by the pump must still be written.
     #[test]
-    fn reconnect_discards_queued_display_events_but_preserves_bulk_replies() {
+    fn reconnect_discards_queued_display_events_but_preserves_peer_events_and_bulk_replies() {
         let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(4);
         let payload = chariox_relay::protocol::EncryptedRelayPayload {
             sender_public_key: "sender".into(),
@@ -645,6 +646,15 @@ mod tests {
             .try_send(RelayEnvelope::DaemonEvent {
                 subscription_id: "display".into(),
                 event_id: 1,
+                encrypted_event: payload.clone(),
+            })
+            .unwrap();
+        outgoing_tx
+            .try_send(RelayEnvelope::DaemonPeerEvent {
+                target: ClientTarget {
+                    daemon_id: Some("home".into()),
+                    daemon_alias: None,
+                },
                 encrypted_event: payload.clone(),
             })
             .unwrap();
@@ -661,17 +671,30 @@ mod tests {
         let written: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok())
             .filter(|envelope| outgoing_tx.should_write(envelope))
             .collect();
-        assert!(matches!(
-            written.first(),
-            Some(RelayEnvelope::DaemonResponse { .. })
-        ));
-        assert!(matches!(written.get(1), Some(RelayEnvelope::Close { .. })));
-        assert_eq!(written.len(), 2);
+        assert!(
+            matches!(
+                written.as_slice(),
+                [
+                    RelayEnvelope::DaemonPeerEvent { .. },
+                    RelayEnvelope::DaemonResponse { .. },
+                    RelayEnvelope::Close { .. },
+                ]
+            ),
+            "only display events may be discarded: {written:?}"
+        );
     }
 
-    // MP-08/MP-10/MP-11: a retained bulk reply must not silence new controls.
+    // MP-08/MP-10/MP-11: a retained bulk reply must not silence new controls,
+    // and a pending reconnect admits no new work so in-flight requests drain.
+    // The refusal reuses the relay's own not-admitted code.
     #[tokio::test]
-    async fn closing_connection_replies_to_daemon_and_peer_requests() {
+    async fn closing_or_draining_connection_refuses_daemon_and_peer_requests() {
+        for draining in [false, true] {
+            refuses_new_requests_while_reconnecting(draining).await;
+        }
+    }
+
+    async fn refuses_new_requests_while_reconnecting(draining: bool) {
         let app = Arc::new(tokio::sync::Mutex::new(
             crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap(),
         ));
@@ -682,7 +705,10 @@ mod tests {
         let events = Arc::new(RelayEventRuntime::for_tests(1));
         let cache = Arc::new(CommandResultCache::default());
         let gate = Arc::new(RelayReconnectGate::default());
-        let (outgoing, mut priority, _events) = RelayOutgoingSender::channel(4);
+        let (outgoing, mut priority, mut event_lane) = RelayOutgoingSender::channel(4);
+        if draining {
+            assert!(gate.begin_daemon_request());
+        }
         gate.request_reconnect(&outgoing, "config changed").unwrap();
         let payload = chariox_relay::protocol::EncryptedRelayPayload {
             sender_public_key: "unused".into(),
@@ -728,10 +754,24 @@ mod tests {
                 | RelayEnvelope::DaemonIncomingPeerResponse {
                     error: Some(error), ..
                 } => error,
-                other => panic!("expected reconnect refusal: {other:?}"),
+                other => panic!("expected reconnect refusal (draining={draining}): {other:?}"),
             };
-            assert_eq!(error.code, "daemon_offline");
+            assert_eq!(error.code, "target_not_connected", "draining={draining}");
             assert!(error.retryable);
+        }
+        if draining {
+            assert!(
+                event_lane.try_recv().is_err(),
+                "Close waits for in-flight work"
+            );
+            assert_eq!(
+                gate.finish_daemon_request(&outgoing).unwrap(),
+                Some("config changed")
+            );
+            assert!(matches!(
+                event_lane.try_recv(),
+                Ok(RelayEnvelope::Close { .. })
+            ));
         }
     }
 
