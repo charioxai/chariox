@@ -22,12 +22,10 @@ pub(crate) fn authorize_kernel_cloud_request(
                 Some(request.client_id.as_str()),
                 request.public_key_thumbprint.as_deref(),
             )),
-            LocalDaemonRequest::ResolveKernelClientConnection(request) if hosted_transport => {
-                Some((
-                    request.client_id.as_deref(),
-                    request.public_key_thumbprint.as_deref(),
-                ))
-            }
+            LocalDaemonRequest::ResolveKernelClientConnection(request) => Some((
+                request.client_id.as_deref(),
+                request.public_key_thumbprint.as_deref(),
+            )),
             LocalDaemonRequest::JoinTerminalPairingLink(request) if hosted_transport => Some((
                 request.terminal_id.as_deref(),
                 request.public_key_thumbprint.as_deref(),
@@ -76,12 +74,13 @@ pub(crate) fn authorize_kernel_cloud_request(
             | LocalDaemonRequest::PairCloudRelayMachine(_)
             | LocalDaemonRequest::ConnectCloudRelay(_)
             | LocalDaemonRequest::IssueCloudRelayClientToken(_)
+            // A private pivot reuses the kernel's own relay credential.
+            | LocalDaemonRequest::ResolveKernelClientConnection(_)
     );
     let directory = hosted_transport
         && matches!(
             request,
-            LocalDaemonRequest::ResolveKernelClientConnection(_)
-                | LocalDaemonRequest::ListRemoteMachines(_)
+            LocalDaemonRequest::ListRemoteMachines(_)
                 | LocalDaemonRequest::ListRemoteMachineKernels(_)
                 | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)
         );
@@ -149,7 +148,6 @@ mod tests {
         });
         for value in [
             serde_json::json!({"ListRemoteMachines": null}),
-            serde_json::json!({"ResolveKernelClientConnection": {"kernel_ref": "private-peer"}}),
             serde_json::json!({"JoinTerminalPairingLink": {"pairing_link": "synthetic-link"}}),
         ] {
             let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();

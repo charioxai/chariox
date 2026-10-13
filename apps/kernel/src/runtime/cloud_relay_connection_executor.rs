@@ -485,6 +485,95 @@ mod tests {
     }
 
     #[test]
+    fn private_relay_terminals_never_receive_the_kernel_relay_token() {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(private_relay_terminal_resolve())
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn private_relay_terminal_resolve() {
+        // MP-08 / MP-10 / MP-11: a paired terminal keeps its own grant; only the
+        // local operator may resolve a pivot that reuses the kernel credential.
+        use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+        for retained_profile in [false, true] {
+            let root = std::env::temp_dir().join(format!(
+                "chariox-loginuxsec-{}-{}",
+                std::process::id(),
+                rand::random::<u64>()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let mut config = crate::config::DaemonConfig::for_tests();
+            config.user_config.state.path = Some(root.join("state.db").display().to_string());
+            config.relay_url = Some("ws://operator-relay:49100".into());
+            config.relay_token = Some("synthetic-kernel-credential".into());
+            if retained_profile {
+                config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+                    api_url: "http://127.0.0.1:1".into(),
+                    relay_url: "wss://cloud-relay".into(),
+                    user_id: "cloud-owner".into(),
+                    realm_id: "cloud-realm".into(),
+                    kernel_credential: Some("synthetic-enrollment".into()),
+                    ..Default::default()
+                });
+            }
+            let app = crate::app::DaemonApp::bootstrap(config).unwrap();
+            app.remote_relay_inventory_projection_store()
+                .update(Vec::new(), vec![kernel()]);
+            let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+                Arc::new(tokio::sync::Mutex::new(app)),
+                1,
+            );
+            let request =
+                crate::local::LocalDaemonRequest::ResolveKernelClientConnection(request());
+            for (user_id, realm_id) in [
+                (crate::session::DEFAULT_LOCAL_USER_ID, None),
+                ("cloud-owner", Some("cloud-realm")),
+            ] {
+                // The same caller shape as private-relay terminal admission.
+                let mut caller = KernelCaller::for_relay_request(None);
+                caller.caller_id = "client-1".into();
+                caller.client_id = Some("client-1".into());
+                caller.user_id = Some(user_id.into());
+                caller.realm_id = realm_id.map(Into::into);
+                caller.public_key_thumbprint = Some("terminal-thumbprint".into());
+                caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+                let command = KernelCommand::from_local_request_with_caller(
+                    "relay-resolve",
+                    KernelCommandSource::RelayClient,
+                    caller,
+                    None,
+                    None,
+                    &request,
+                );
+                let response = router.dispatch(command, request.clone()).await;
+                assert!(!format!("{response:?}").contains("synthetic-kernel-credential"));
+                assert!(response.is_err(), "terminal pivot must be refused");
+            }
+            let local = router
+                .dispatch(
+                    KernelCommand::from_local_request("local-resolve", None, None, &request),
+                    request,
+                )
+                .await
+                .unwrap();
+            let LocalDaemonResponse::KernelClientConnectionResolved { connection } = local else {
+                panic!("expected resolved connection")
+            };
+            assert_eq!(connection.relay_url, "ws://operator-relay:49100");
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn keyed_terminal_renewal_keeps_the_requested_subject_without_repairing_it() {
         let mut profile = crate::config::PersistedCloudRelayProfile {
             client_id: Some("kernel-login-client".into()),
