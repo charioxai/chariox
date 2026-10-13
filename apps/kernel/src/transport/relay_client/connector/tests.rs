@@ -157,7 +157,7 @@ async fn dynamic_relay_token_rotation_returns_one_registration_heartbeat() {
 }
 
 #[tokio::test]
-async fn token_rollover_during_registration_defers_reauthentication_without_disconnect() {
+async fn token_rollover_during_registration_authenticates_snapshot_without_disconnect() {
     // MP-08/MP-10/MP-11: refreshing the config between the snapshot and
     // registration must not turn a harmless renewal race into a reconnect.
     let url = "wss://relay.example.test";
@@ -174,10 +174,13 @@ async fn token_rollover_during_registration_defers_reauthentication_without_disc
     })
     .await;
     assert!(
-        matches!(result, Ok(None)),
-        "renewal race must keep the socket open"
+        matches!(result, Ok(Some(ref r)) if r.auth_token == "first-renewal"),
+        "renewal race must authenticate the snapshot on the same socket"
     );
-    assert_eq!(active, "old", "do not acknowledge an unsent registration");
+    assert_eq!(
+        active, "first-renewal",
+        "track the registration actually queued"
+    );
     let result = dynamic_relay_heartbeat_registration(url, &mut active, &next_config, || {
         std::future::ready(registration)
     })

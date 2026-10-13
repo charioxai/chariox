@@ -8,8 +8,8 @@ A relay URL change or removal of its credential remains a real reconnect.
 The kernel already sends `DaemonHeartbeat.registration` to authenticate a renewed
 credential in-band. The incoming peer-response path must leave token changes to
 that path, rather than enqueue `Close`. A config snapshot overtaken while building
-registration must retry on the next heartbeat without acknowledging the unsent
-credential or closing the socket. No serialized shape changes are required.
+registration must authenticate the snapshot credential on that same socket,
+then pick up the newer credential on the following heartbeat. No serialized shape changes are required.
 
 ## Source regression checks — MP-08 / MP-11
 
@@ -18,8 +18,8 @@ wrapper, with disk-backed TMPDIR and the documented resource limits. They cover:
 
 - Renewed credentials after a peer reply, both idle and with active daemon
   requests: no queued Close, continued request admission.
-- A second renewal while registration is being built: no reconnect, then the
-  current credential is sent on the next heartbeat.
+- A second renewal while registration is being built: the snapshot credential
+  is authenticated without reconnect, then the next heartbeat uses the newer one.
 - Real scoped relay sockets and two kernel connectors: a multi-MB encrypted peer
   request completes intact, an existing waiting-room subscription retains its
   route, the relay receives the new credential and that same subscription delivers

@@ -86,9 +86,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
         let mut frames = chariox_relay::frame_transport::FrameReceiver::default();
         while let Some(message) =
-            chariox_relay::frame_transport::read_message(&mut socket, &mut frames).await?
+            chariox_relay::frame_transport::read_message(&mut socket, &mut frames).await
         {
-            let Message::Text(text) = message else {
+            let Message::Text(text) = message? else {
                 continue;
             };
             match serde_json::from_str::<RelayEnvelope>(&text)? {
