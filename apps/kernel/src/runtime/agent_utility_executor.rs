@@ -36,6 +36,7 @@ fn agent_utility_timeout(policy: ProviderUtilityExecutionPolicy) -> Duration {
     match policy {
         ProviderUtilityExecutionPolicy::ReadOnlyDiscovery => PROJECT_ENVIRONMENT_DISCOVERY_TIMEOUT,
         ProviderUtilityExecutionPolicy::ExistingRun
+        | ProviderUtilityExecutionPolicy::SessionCommand
         | ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery => AGENT_UTILITY_TIMEOUT,
     }
 }

@@ -115,11 +115,10 @@ mod tests {
             .try_claim_idle_queue_promotion(&session, "agent")
             .unwrap();
         owner
-            .activate_next_queued_prompt_with_prompt_id(
+            .activate_next_queued_prompt(
                 &session,
                 "agent",
                 None,
-                "active-older".into(),
             )
             .unwrap();
         drop(retry);

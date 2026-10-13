@@ -156,11 +156,10 @@ mod tests {
                 .unwrap();
             preparing.send(()).unwrap();
             gate.await.unwrap();
-            promoter_owner.activate_next_queued_prompt_with_prompt_id(
+            promoter_owner.activate_next_queued_prompt(
                 &promoter_session,
                 "agent-1",
                 Some(head.id()),
-                "active-older".into(),
             )
         });
         prepared.await.unwrap();
@@ -204,11 +203,10 @@ mod tests {
         );
         assert_eq!(
             owner
-                .activate_next_queued_prompt_with_prompt_id(
+                .activate_next_queued_prompt(
                     &session,
                     "agent-1",
                     None,
-                    "active-newer".into(),
                 )
                 .unwrap()
                 .unwrap()
