@@ -85,6 +85,11 @@ export async function compileCli(options) {
   const result = await Bun.build({
     entrypoints: [entry, parserWorker],
     root: repoRoot,
+    // MP-08 / MP-10: parse the standalone TUI at build time, before cold attachment.
+    format: "esm",
+    minify: true,
+    bytecode: true,
+    sourcemap: "linked",
     compile: {
       target: target.bun,
       outfile: path.resolve(options.outfile),
