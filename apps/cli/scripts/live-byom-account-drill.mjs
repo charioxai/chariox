@@ -50,6 +50,8 @@ async function until(fn, label, timeout = 60000) {
 }
 function spawn(command, args, env, stdio = ['pipe', 'pipe', 'pipe']) {
   const child = spawnOwned(command, args, {cwd: repo, env, stdio, detached: true, retainLeader: true}); children.push(child)
+  const processRecord = {pid: child.pid ?? null, command: path.basename(command)}; (report.processes ??= []).push(processRecord)
+  child.once('close', (code, signal) => Object.assign(processRecord, {exitCode: code, signal}))
   child.done = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', (code, signal) => resolve({code, signal})) })
   return child
 }
@@ -60,7 +62,9 @@ async function run(command, args, env = process.env, input = '') {
 }
 async function stop(child) {
   if (child.exitCode !== null) return
-  for (const handle of ownedProcessHandles(child).filter(value => value.pid !== child.pid)) signalOwnedProcess(handle, 'SIGTERM')
+  const handles = ownedProcessHandles(child)
+  ;(report.stoppedProcessIdentities ??= []).push(...handles.map(({pid, start}) => ({pid, start})))
+  for (const handle of handles.filter(value => value.pid !== child.pid)) signalOwnedProcess(handle, 'SIGTERM')
   signalOwnedProcessGroup(child, 'SIGTERM'); await Promise.race([child.done, pause(5000)])
   if (child.exitCode === null) { signalOwnedProcessGroup(child, 'SIGKILL'); await child.done }
 }
@@ -149,9 +153,10 @@ try {
   // Shallow clone of a public repository, as the BY-03 owner prepared it.
   const shallowRepo = path.join(workspace, 'slugify'); await run('git', ['clone', '--quiet', '--depth', '1', 'https://github.com/sindresorhus/slugify.git', shallowRepo])
   assert.equal((await run('git', ['-C', shallowRepo, 'rev-parse', '--is-shallow-repository'])).trim(), 'true')
-  const linked = (await rpc(source, {LinkProviderAccountProfile: {provider: 'codex', label: 'byomrel-r34', path: required('BYOM_CODEX_PROFILE')}})).ProviderAccountProfile.profile
+  const linked = (await rpc(source, {LinkProviderAccountProfile: {provider: 'codex', label: 'byom-account', path: required('BYOM_CODEX_PROFILE')}})).ProviderAccountProfile.profile
+  await rpc(source, {RefreshProviderAccountProfile: {provider: 'codex', account_profile: linked.profile_id}})
   await rpc(source, {SetDefaultProviderAccountProfile: {provider: 'codex', account_profile: linked.profile_id}})
-  const session = (await rpc(source, {CreateSession: {workspace_id: shallowRepo, worktree_id: shallowRepo, alias: 'byomrel-r34-shallow', project_selection: {kind: 'new'}}})).SessionCreated.session
+  const session = (await rpc(source, {CreateSession: {workspace_id: shallowRepo, worktree_id: shallowRepo, alias: 'byom-account-shallow', project_selection: {kind: 'new'}}})).SessionCreated.session
   socket = path.join(scratch, 'tui.sock'); tuiLog = path.join(scratch, 'tui.log'); const log = await open(tuiLog, 'w', 0o600)
   spawn('python3', [path.join(repo, 'apps/cli/scripts/lib/owner-context-terminal.py'), cli, '--kernel-url', source.url, '--automation-socket', socket, '--session', session.id, '--workspace', shallowRepo, '--worktree', shallowRepo, '--provider', 'codex', '--account-profile', linked.profile_id, '--model', 'codex/gpt-6.1-sol'], source.env, ['pipe', log.fd, log.fd]); await log.close()
   await until(async () => { try { return (await automation({action: 'snapshot'})).session?.id } catch { return false } }, 'real TUI ready')
