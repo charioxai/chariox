@@ -107,10 +107,15 @@ impl KernelRuntimeState {
         }
         match self.owned.session_snapshot(&request.session_id) {
             Ok(session) => {
-                let inventory = crate::runtime::projection::RoomWorkflowInventory::project(
-                    &session,
-                    caller_user_id,
-                );
+                let inventory =
+                    match crate::runtime::projection::RoomWorkflowInventory::project_with_history(
+                        &session,
+                        caller_user_id,
+                        Some(&self.owned.durable_state_store),
+                    ) {
+                        Ok(inventory) => inventory,
+                        Err(error) => return (Err(error), Some(session)),
+                    };
                 (
                     Ok(LocalDaemonResponse::RoomWorkflowRunsControlled { results, inventory }),
                     Some(session),

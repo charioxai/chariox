@@ -95,6 +95,11 @@ impl SessionSnapshotProjection {
         user_id: &str,
         history: &crate::durable_state::DurableKernelStateStore,
     ) -> Result<Self, DaemonError> {
+        self.room_workflows = super::RoomWorkflowInventory::project_with_history(
+            &self.session,
+            user_id,
+            Some(history),
+        )?;
         self.session = self
             .session
             .redacted_for_user_with_workflow_history(user_id, history)?;
