@@ -588,8 +588,8 @@ fn kill_owned_validation_session(identity: &ValidationProcessIdentity) -> Result
     // Keep the exact leader stopped and unreaped while draining descendants.
     // Forking tools can add a child after any one snapshot, including in another
     // process group. The retained leader birth proves ownership on every pass.
-    validate_live_child_identity(identity)?;
     let pidfd = open_pidfd(identity.pid)?;
+    validate_live_child_identity(identity)?;
     send_pidfd_signal(&pidfd, libc::SIGSTOP)?;
     let stopped_deadline = Instant::now() + STOP_TIMEOUT;
     let result = (|| {
@@ -629,9 +629,11 @@ fn kill_owned_validation_session(identity: &ValidationProcessIdentity) -> Result
             std::thread::sleep(Duration::from_millis(20));
         }
     })();
-    // A failed inspection must not leave our leader stopped indefinitely.
-    send_pidfd_signal(&pidfd, libc::SIGKILL)?;
-    result
+    // The birth witness was checked while this pidfd was retained. Cleanup
+    // cannot signal a later PID reuse, and a signal error must not hide the
+    // original inspection failure or leave our verified leader stopped.
+    let killed = send_pidfd_signal(&pidfd, libc::SIGKILL);
+    result.and(killed)
 }
 
 #[cfg(target_os = "linux")]
@@ -897,11 +899,11 @@ mod tests {
         let root = test_root("live-group");
         let scratch = make_scratch(&root, "live-group-op", 1, 0);
         let marker = root.join("timeout-child");
-        let mut command = std::process::Command::new("/bin/sh");
+        let mut command = std::process::Command::new("/bin/bash");
         command
             .args([
                 "-c",
-                "timeout 30 sh -c 'echo $$ > \"$RECOVERY_CHILD\"; exec sleep 30'",
+                "timeout 30 sh -c 'echo $$ > \"$RECOVERY_CHILD\"; exec sleep 30'; exit $?",
             ])
             .env("RECOVERY_CHILD", &marker)
             .stdin(std::process::Stdio::null());
@@ -937,7 +939,6 @@ mod tests {
             .unwrap();
         let writer = read_proc_identity(writer_pid).unwrap();
         assert_eq!(writer.session_id, identity.session_id);
-        assert_ne!(writer.process_group_id, identity.process_group_id);
         let writer_exit = open_pidfd(writer_pid).unwrap();
 
         let reaper = std::thread::spawn(move || {
@@ -960,6 +961,7 @@ mod tests {
             !writer_alive,
             "recovery must settle the timeout subgroup before scratch removal"
         );
+        assert_ne!(writer.process_group_id, identity.process_group_id);
         assert!(!scratch.path().exists());
         assert!(process_group_is_absent(identity.process_group_id)
             .expect("the group should be readable"));
@@ -1516,10 +1518,17 @@ mod tests {
         let marker = root.join("timeout-child");
         let environment =
             BTreeMap::from([("SUBGROUP_MARKER".to_string(), marker.display().to_string())]);
+        let subgroup = std::cell::Cell::new(None);
         let result = super::super::project_environment_setup_validation::run_worker_validation_command_with_recovery(
-            "timeout 30 sh -c 'echo $$ > \"$SUBGROUP_MARKER\"; exec sleep 30'",
+            "timeout 30 sh -c 'echo $$ > \"$SUBGROUP_MARKER\"; exec sleep 30'; exit $?",
             &root.join("workspace"), &environment, &scratch, &store,
-            "timeout-subgroup-op", 1, 0, || marker.exists(), None,
+            "timeout-subgroup-op", 1, 0, || {
+                let Some(pid) = fs::read_to_string(&marker).ok()
+                    .and_then(|text| text.trim().parse::<u32>().ok()) else { return false; };
+                let Ok(current) = read_proc_identity(pid) else { return false; };
+                subgroup.set(Some((current.process_group_id, current.session_id)));
+                true
+            }, None,
         );
         let pid = fs::read_to_string(&marker)
             .unwrap()
@@ -1536,6 +1545,10 @@ mod tests {
         }
         let scratch_removed = !scratch.path().exists();
         let _ = fs::remove_dir_all(&root);
+        let (group, session) = subgroup
+            .get()
+            .expect("the writer must be observed before cancellation");
+        assert_ne!(group, session, "the fixture must create a timeout subgroup");
         let error = result.expect_err("cancellation must remain a failure");
         assert!(
             error.contains("cancelled"),
