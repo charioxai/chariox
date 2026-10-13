@@ -280,6 +280,8 @@ pub struct ConfigureAppAutomationRequest {
     pub publication_ref: String,
     pub queue_ref: Option<String>,
     pub scheduled: bool,
+    #[serde(default)]
+    pub delivery_mode: NotificationDeliveryMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -585,6 +587,7 @@ pub struct AppAutomationSummary {
     pub queue_id: String,
     pub scheduled: bool,
     pub status: AppAutomationStatus,
+    pub delivery_mode: NotificationDeliveryMode,
 }
 
 /// Protocol 409: a human accepts one pending clipboard/link request. The

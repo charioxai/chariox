@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod binary_event;
 pub mod config;
+pub mod frame_transport;
 pub mod protocol;
 pub mod revocation_sync;
 pub mod server;

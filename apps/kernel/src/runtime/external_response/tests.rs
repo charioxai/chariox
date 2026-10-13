@@ -224,6 +224,9 @@ fn secret_responses() -> Vec<LocalDaemonResponse> {
                 user_code: Some(CANARY.into()),
             },
         },
+        serde_json::from_value(serde_json::json!({"EnvironmentProviderAuthorizationLink":{"link":{
+            "provider":"codex","linked_profile_ref":null,"authorization_url":CANARY,"expires_at_ms":1}}}))
+        .unwrap(),
     ]
 }
 
@@ -270,6 +273,32 @@ fn external_response_all_request_variants_protect_secret_replies() {
             );
         }
     }
+}
+
+// MP-08 / MP-11: #888's portability preflight acknowledgement is empty and
+// carries no credential, so it is public on typed and raw reply paths.
+#[test]
+fn external_response_provider_portability_acknowledgement_is_public() {
+    for class in [
+        KernelConnectionClass::ExternalAgent,
+        KernelConnectionClass::KernelAgent,
+    ] {
+        let projected = finish_response(
+            &command(class),
+            Ok(LocalDaemonResponse::ProviderAccountPortabilityPreflightPassed {}),
+        )
+        .unwrap();
+        assert!(matches!(
+            projected,
+            LocalDaemonResponse::ProviderAccountPortabilityPreflightPassed {}
+        ));
+    }
+    let mut raw = serde_json::json!({"ProviderAccountPortabilityPreflightPassed": {}});
+    project_response_value(&mut raw).unwrap();
+    assert_eq!(
+        raw,
+        serde_json::json!({"ProviderAccountPortabilityPreflightPassed": {}})
+    );
 }
 
 #[test]

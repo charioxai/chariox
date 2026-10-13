@@ -104,12 +104,15 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Older worker contracts are rejected before dispatch.
 /// MP-08/MP-10/MP-11: version 96 offers opaque binary relay event framing.
 /// Transport falls back to JSON/base64 when the relay or receiver is older.
+/// Version 101 (main) binds the embedded local response union to local protocol 491,
+/// restores owner-private workflow notifications to the Browser/Computer peer
+/// union and pairs exact home-prompt cancellation admission (MP-08/MP-10/MP-11).
 /// MP-08/MP-10/MP-11: version 111 carries local protocol 503 kernel-browser shapes
-/// (per-document mirror fragments); runtime admission is unchanged (peer90 floor).
+/// (per-document mirror fragments) and includes main's 101 union.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 111;
-/// MP-08/MP-10/MP-11: peer96 changes only negotiated transport. Keep the
-/// pre-existing peer90 runtime/security admission floor for legacy workers.
-pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = 90;
+/// MP-08/MP-10/MP-11: peer96 and peer111 change only negotiated transport and
+/// kernel-browser shapes. Runtime admission requires main's peer101 union.
+pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = 101;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -588,6 +591,23 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerRequest {
+    ListWorkflowNotificationSources {
+        protocol_version: u32,
+    },
+    SubscribeWorkflowNotifications {
+        protocol_version: u32,
+        source_workflow_ref: String,
+        target_ref: crate::local::WorkflowNotificationSubscription,
+    },
+    UnsubscribeWorkflowNotifications {
+        protocol_version: u32,
+        subscription_id: String,
+    },
+    DeliverWorkflowNotification {
+        protocol_version: u32,
+        subscription_id: String,
+        envelope: crate::local::WorkflowNotificationEnvelope,
+    },
     RoomBrowserController {
         session_id: String,
         slice_id: String,
@@ -992,6 +1012,17 @@ pub enum RelayPeerRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
+    WorkflowNotificationSources {
+        protocol_version: u32,
+        sources: Vec<crate::local::WorkflowNotificationSourceSummary>,
+    },
+    WorkflowNotificationSubscribed {
+        subscription: crate::local::WorkflowNotificationSubscription,
+    },
+    WorkflowNotificationUnsubscribed,
+    WorkflowNotificationAccepted {
+        ack: crate::local::WorkflowNotificationAck,
+    },
     RoomBrowserController {
         session_id: String,
         slice_id: String,
@@ -2104,16 +2135,15 @@ mod notes_protocol_probe_tests {
 #[cfg(test)]
 mod mp08_transport_compatibility_tests {
     #[test]
-    fn mp08_peer96_transport_preserves_legacy_worker_runtime_admission() {
+    fn mp08_peer_runtime_admission_requires_main_peer101_union() {
         assert_eq!(super::RELAY_PEER_PROTOCOL_VERSION, 111);
-        // MP-08/MP-10/MP-11: real remote-binding admission keeps the existing
-        // security floor. Unknown/pre90 workers fail; peer94 stays compatible.
+        // MP-08/MP-10/MP-11: real remote-binding admission requires main's peer101
+        // union; transport-only peer96 and kernel-browser peer111 add no floor.
         for (version, compatible) in [
             (None, false),
-            (Some(89), false),
-            (Some(90), true),
-            (Some(94), true),
-            (Some(96), true),
+            (Some(90), false),
+            (Some(100), false),
+            (Some(101), true),
             (Some(110), true),
             (Some(111), true),
         ] {
@@ -2126,5 +2156,88 @@ mod mp08_transport_compatibility_tests {
                 .unwrap();
             assert_eq!(binding.relay_peer_protocol_compatible(), compatible);
         }
+    }
+}
+
+#[cfg(test)]
+mod workflow_notification_101_shapes {
+    use super::*;
+    use crate::local::*;
+    use sha2::{Digest, Sha256};
+    #[test]
+    fn mp08_mp10_completion_peer_101_snapshot() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 111);
+        let sub = WorkflowNotificationSubscription {
+            delivery_mode: crate::local::NotificationDeliveryMode::Queue,
+            subscription_id: "sub".into(),
+            source_id: "source".into(),
+            owner_user_id: "owner".into(),
+            source_kernel_id: "source-kernel".into(),
+            target_kernel_id: "target-kernel".into(),
+            target_kind: WorkflowNotificationTargetKind::WorkflowEndpoint,
+            session_id: "session".into(),
+            workflow_id: "workflow".into(),
+            publication_id: "publication".into(),
+            endpoint_id: "endpoint".into(),
+            queue_id: "queue".into(),
+            ttl_days: 7,
+            source_available: true,
+            events: WorkflowNotificationEvents::Both,
+            filters: serde_json::json!({"repo":"fixture/repo","pr":[873]}),
+        };
+        let env = WorkflowNotificationEnvelope {
+            source_id: "source".into(),
+            occurrence_id: "run".into(),
+            output: None,
+            status: WorkflowNotificationStatus::Failure,
+            subject: Some("github:fixture/repo/pull/873".into()),
+            fields: serde_json::json!({"status":"failure","repo":"fixture/repo","pr":873}),
+            ancestry: vec!["source-workflow".into()],
+            deadline_ms: 604800000,
+        };
+        let requests = vec![
+            RelayPeerRequest::ListWorkflowNotificationSources {
+                protocol_version: 101,
+            },
+            RelayPeerRequest::SubscribeWorkflowNotifications {
+                protocol_version: 101,
+                source_workflow_ref: "source".into(),
+                target_ref: sub.clone(),
+            },
+            RelayPeerRequest::DeliverWorkflowNotification {
+                protocol_version: 101,
+                subscription_id: "sub".into(),
+                envelope: env,
+            },
+            RelayPeerRequest::UnsubscribeWorkflowNotifications {
+                protocol_version: 101,
+                subscription_id: "sub".into(),
+            },
+        ];
+        let responses = vec![
+            RelayPeerResponse::WorkflowNotificationSources {
+                protocol_version: 101,
+                sources: vec![WorkflowNotificationSourceSummary {
+                    source_id: "source".into(),
+                    kernel_id: "kernel".into(),
+                    session_id: "session".into(),
+                    workflow_id: "workflow".into(),
+                    name: "Reviewer".into(),
+                    events: WorkflowNotificationEvents::Both,
+                    fields: vec!["repo".into(), "pr".into()],
+                    available: true,
+                }],
+            },
+            RelayPeerResponse::WorkflowNotificationSubscribed { subscription: sub },
+            RelayPeerResponse::WorkflowNotificationAccepted {
+                ack: WorkflowNotificationAck::Accepted,
+            },
+            RelayPeerResponse::WorkflowNotificationUnsubscribed,
+        ];
+        let wire = serde_json::json!({"requests":requests,"responses":responses});
+        assert_eq!(
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+            "d9e19811e96919dc9760c1e0151c755a54c7760bc7e05a398e2db381d1a291a8"
+        );
     }
 }

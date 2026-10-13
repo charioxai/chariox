@@ -9,6 +9,15 @@ impl KernelRuntimeOwnedState {
         metaagent_id: &str,
     ) -> Result<(), DaemonError> {
         match request {
+            LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
+            | LocalDaemonRequest::AttachWorkflowNotification(_)
+            | LocalDaemonRequest::DetachWorkflowNotification(_)
+            | LocalDaemonRequest::ListWorkflowNotifications(_) => {
+                Err(DaemonError::LocalTransport {
+                    operation: "workflow.notifications",
+                    message: "workflow notifications require the owning user's command".into(),
+                })
+            }
             LocalDaemonRequest::CreateWorkflow(_) | LocalDaemonRequest::ListWorkflows(_) => Ok(()),
             // A generated workflow belongs to a person's own agent.
             LocalDaemonRequest::CreateAgentWorkflow(_) => Err(DaemonError::LocalTransport {
@@ -40,6 +49,13 @@ impl KernelRuntimeOwnedState {
                     &request.workflow_run_ref,
                     metaagent_id,
                     "cancel workflow run",
+                ),
+            LocalDaemonRequest::ControlRoomWorkflowRuns(request) => self
+                .ensure_workflow_controlled_by_metaagent(
+                    &request.session_id,
+                    &request.workflow_id,
+                    metaagent_id,
+                    "control room workflow runs",
                 ),
             LocalDaemonRequest::PauseWorkflowRun(request) => self
                 .ensure_workflow_run_controlled_by_metaagent(

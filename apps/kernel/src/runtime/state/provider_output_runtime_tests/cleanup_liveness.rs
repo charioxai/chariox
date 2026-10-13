@@ -1071,3 +1071,145 @@ async fn owned_destroy_agent_clears_stale_prompt_runtime_state_for_ended_provide
         "destroying an agent should clear active turns for ended provider runs"
     );
 }
+
+// MP-08/MP-10/MP-11: an old abort receipt must not stop a resumed invocation.
+#[tokio::test]
+async fn stale_structured_abort_ack_preserves_running_workflow_prompt() {
+    assert_structured_abort_receipt_ownership(false, true, false).await;
+}
+
+#[tokio::test]
+async fn stale_structured_abort_ack_preserves_new_cancelling_prompt() {
+    assert_structured_abort_receipt_ownership(true, true, false).await;
+}
+
+#[tokio::test]
+async fn current_structured_abort_ack_settles_its_cancelling_prompt() {
+    assert_structured_abort_receipt_ownership(true, false, false).await;
+}
+
+#[tokio::test]
+async fn stale_structured_abort_ack_error_preserves_new_cancelling_prompt() {
+    assert_structured_abort_receipt_ownership(true, true, true).await;
+}
+
+async fn assert_structured_abort_receipt_ownership(cancelling: bool, stale: bool, failed: bool) {
+    let worktree = crate::test_support::TestWorktree::new("abort-receipt-generation");
+    let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "abort-receipt-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), None)
+        .unwrap();
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .unwrap();
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(session.id(), workflow.id(), node.id(), None)
+        .unwrap();
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(session.id(), workflow.id(), endpoint.id(), None)
+        .unwrap();
+    let node_run_id = workflow_run.node_runs()[0].id();
+    app.sessions_mut()
+        .start_workflow_node_run(session.id(), workflow_run.id(), node_run_id)
+        .unwrap();
+    let provider_run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "abort-receipt-provider",
+        session.id().to_string(),
+        Some(agent.id().to_string()),
+        "codex".to_string(),
+    );
+    app.providers_mut()
+        .insert_run_for_test(provider_run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        "resumed-current-prompt",
+        attachment.id(),
+        agent.id(),
+        "research the public MDN documentation",
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(workflow_run.id(), node_run_id);
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .unwrap();
+    let prompt = app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .unwrap()
+        .expect("submission should assign the canonical active prompt ID");
+    if cancelling {
+        app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
+            .unwrap();
+    }
+    app.providers_mut().inject_finished_abort_for_test(
+        crate::provider::FinishedProviderPromptAbortJob {
+            session_id: session.id().to_string(),
+            provider_run_id: provider_run.id().to_string(),
+            prompt_id: if stale {
+                "older-interrupted-prompt".to_string()
+            } else {
+                prompt.id().to_string()
+            },
+            result: if failed {
+                Err(crate::error::DaemonError::LocalTransport {
+                    operation: "abort receipt regression",
+                    message: "older abort failed".to_string(),
+                })
+            } else {
+                Ok(())
+            },
+        },
+    );
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime.owned.reap_structured_prompt_jobs();
+    let snapshot = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    let current_run = snapshot.workflow_run(workflow_run.id()).unwrap();
+    if stale {
+        assert_eq!(
+            current_run.status(),
+            crate::session::WorkflowRunStatus::Running,
+            "an older abort acknowledgement stopped the new workflow invocation"
+        );
+        assert!(current_run.failure_events().is_empty());
+        let active = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&snapshot, agent.id())
+            .unwrap();
+        assert_eq!(active.id(), prompt.id());
+        assert_eq!(
+            active.status(),
+            if cancelling {
+                crate::session::PromptStatus::Cancelling
+            } else {
+                crate::session::PromptStatus::Running
+            }
+        );
+    } else {
+        assert_eq!(
+            current_run.status(),
+            crate::session::WorkflowRunStatus::Stopped
+        );
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&snapshot, agent.id())
+            .is_none());
+    }
+}

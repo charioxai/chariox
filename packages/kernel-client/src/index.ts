@@ -89,3 +89,7 @@ export { roomBrowserArtifactRequest, roomBrowserArtifactMinimumProtocolVersion, 
 export * from "./notes.js"
 
 export * from "./user-domain-refusal.js"
+
+export * from "./project-environment-aggregate.js"
+
+export * from "./project-environment-aggregate-requests.js"

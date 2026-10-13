@@ -135,6 +135,7 @@ fn local_request_api_resolves_self_hosted_kernel_client_connection_from_inventor
     let connection = match harness
         .dispatch(LocalDaemonRequest::ResolveKernelClientConnection(
             ResolveKernelClientConnectionRequest {
+                public_key_thumbprint: None,
                 kernel_ref: "daemon-1".to_string(),
                 machine_ref: Some("machine-1".to_string()),
                 client_id: Some("cli-1".to_string()),

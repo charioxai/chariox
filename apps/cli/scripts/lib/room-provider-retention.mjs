@@ -41,6 +41,7 @@ export async function stopOrDeleteRoomSlice({ retain, stop, remove }) {
 export function roomCleanupComplete(cleanup, retain) {
   return cleanup.containerGone && cleanup.fixtureWorkspaceRemoved
     && cleanup.listenersReleased && !cleanup.plaintextSecretLeak
+    && (cleanup.childCleanupFailures?.length ?? 0) === 0
     && (retain
       ? cleanup.providerStateRetained && cleanup.homeVolumeRetained
       : cleanup.volumeGone && cleanup.tempRootRemoved)

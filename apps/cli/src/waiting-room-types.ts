@@ -113,6 +113,7 @@ export type WaitingRoomState = {
 }
 
 export type WaitingRoomRemoteMachine = {
+  displayFreshness?: "cached/refreshing" | "reconnecting"
   machine_id: string
   machine_alias?: string | null
   registry_alias?: string | null
@@ -126,6 +127,7 @@ export type WaitingRoomRemoteMachine = {
 }
 
 export type WaitingRoomRemoteKernel = {
+  displayFreshness?: "cached/refreshing" | "reconnecting"
   kernel_id: string
   machine_id: string
   machine_alias?: string | null

@@ -19,6 +19,9 @@ test("MP-07/MP-10/MP-11 protocol 503 retains admitted predecessor contracts and 
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
   assert.equal(policy.protocol, runtimeProtocol)
   assert.equal(policy.protocol, 503)
+  const publication = await readFile(join(REPOSITORY_ROOT, "docker/publication/Dockerfile"), "utf8")
+  const publicationPins = [...publication.matchAll(/^ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=(\d+)$/gm)].map(match => Number(match[1]))
+  assert.deepEqual(publicationPins, [runtimeProtocol, runtimeProtocol], "builder and runtime publication pins must match the binary")
   for (const list of [policy.upgradeFrom, policy.rollbackTo]) {
     assert.ok(Array.isArray(list) && list.length > 0 && list.length <= 32)
     assert.ok(list.every((version, index) => Number.isSafeInteger(version)
@@ -27,10 +30,14 @@ test("MP-07/MP-10/MP-11 protocol 503 retains admitted predecessor contracts and 
     assert.ok(list.includes(367), "the release before release F must stay reciprocal for in-place updates")
     assert.ok(list.includes(376), "the previous release (release F) must stay reciprocal for in-place updates")
     assert.ok(list.includes(416), "released Apps predecessor remains reciprocal")
+    assert.ok(list.includes(472), "the main predecessor (protocol 472) must stay reciprocal for in-place updates")
+    assert.ok(list.includes(487), "released main predecessor remains reciprocal")
+    assert.ok(list.includes(490), "released main predecessor (protocol 490) remains reciprocal")
+    assert.ok(list.includes(491), "released main predecessor (protocol 491) remains reciprocal")
     assert.ok(list.includes(503), "new protocol must include itself")
   }
-  assert.deepEqual(policy.upgradeFrom, [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 503])
-  assert.deepEqual(policy.rollbackTo, [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 503])
+  assert.deepEqual(policy.upgradeFrom, [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 472, 487, 490, 491, 503])
+  assert.deepEqual(policy.rollbackTo, [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 472, 487, 490, 491, 503])
 
   const scratch = await mkdtemp(join(tmpdir(), "chariox-protocol-503-policy-"))
   try {
@@ -48,13 +55,13 @@ test("MP-07/MP-10/MP-11 protocol 503 retains admitted predecessor contracts and 
     ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
 
     // Policy fixtures do not prove real-binary persisted-state migration.
-    for (const version of [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435]) {
+    for (const version of [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 472, 487, 490, 491]) {
       const oldRoot = join(scratch, `protocol-${version}`)
       assert.equal(transition(oldRoot, version, newRoot, 503), "")
       assert.equal(transition(newRoot, 503, oldRoot, version), "")
     }
     // Released G2 and Apps predecessors are reciprocal; other branch numbers stay refused.
-    for (const version of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index), 412, 413, 414, ...Array.from({ length: 18 }, (_, index) => 417 + index), ...Array.from({ length: 7 }, (_, index) => 436 + index)]) {
+    for (const version of [488, 489, 492, 495, 496, 499, 312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index), 412, 413, 414, ...Array.from({ length: 18 }, (_, index) => 417 + index), ...Array.from({ length: 7 }, (_, index) => 436 + index)]) {
       const oldRoot = join(scratch, `protocol-${version}`)
       assert.throws(() => transition(oldRoot, version, newRoot, 503), /not reciprocally authorized/)
       assert.throws(() => transition(newRoot, 503, oldRoot, version), /not reciprocally authorized/)

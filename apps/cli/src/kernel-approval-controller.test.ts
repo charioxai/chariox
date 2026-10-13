@@ -126,7 +126,8 @@ test("global dialog keys and duplicate raw bytes cannot reach agent or prompt sh
   let rawKey = "return"
   let rawCtrl = false
   const raw = createCliStdinKeyController({
-    parseKeypress: () => key(rawKey, { ctrl: rawCtrl }), kernelApprovalOwnsInput: h.controller.ownsInput,
+    createStdinParser: () => ({ push: () => {}, drain: (onEvent: (event: { type: string; key: unknown }) => void) => onEvent({ type: "key", key: key(rawKey, { ctrl: rawCtrl }) }) }),
+    kernelApprovalOwnsInput: h.controller.ownsInput,
     dialogOverlayOpen: () => false, handleSessionBrowserKey: forbidden,
   } as unknown as CliStdinKeyControllerDeps)
   rawKey = "g"; rawCtrl = true

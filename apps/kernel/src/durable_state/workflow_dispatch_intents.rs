@@ -117,7 +117,7 @@ impl DurableKernelStateStore {
         let connection = self.lock_connection("workflow.entry.pending")?;
         connection.query_row("SELECT i.session_id,i.run_id,i.node_id,i.agent_id,i.operation_id,i.fingerprint,i.submitted,i.queued_json
          FROM durable_workflow_dispatch_intents i JOIN durable_workflow_runs r ON r.owner_id=i.owner_id AND r.session_id=i.session_id AND r.run_id=i.run_id
-         WHERE i.owner_id=?1 AND i.session_id=?2 AND i.submitted=0 AND r.status NOT IN ('Completed','Failed','Stopped') ORDER BY r.created_at_ms,i.run_id LIMIT 1",params![owner,session],decode).optional().map_err(|error|storage_error("read pending workflow entry intent",error))
+         WHERE i.owner_id=?1 AND i.session_id=?2 AND i.submitted=0 AND r.status NOT IN ('Completed','Failed','Stopped','Paused') ORDER BY r.created_at_ms,i.run_id LIMIT 1",params![owner,session],decode).optional().map_err(|error|storage_error("read pending workflow entry intent",error))
     }
     pub(crate) fn pending_workflow_dispatch_sessions(
         &self,
@@ -132,7 +132,7 @@ impl DurableKernelStateStore {
             ));
         }
         let connection = self.lock_connection("workflow.entry.sessions")?;
-        let mut statement=connection.prepare("SELECT DISTINCT i.session_id FROM durable_workflow_dispatch_intents i JOIN durable_workflow_runs r ON r.owner_id=i.owner_id AND r.session_id=i.session_id AND r.run_id=i.run_id WHERE i.owner_id=?1 AND i.submitted=0 AND i.session_id>?2 AND r.status NOT IN ('Completed','Failed','Stopped') ORDER BY i.session_id LIMIT ?3").map_err(|error|storage_error("prepare workflow entry sessions",error))?;
+        let mut statement=connection.prepare("SELECT DISTINCT i.session_id FROM durable_workflow_dispatch_intents i JOIN durable_workflow_runs r ON r.owner_id=i.owner_id AND r.session_id=i.session_id AND r.run_id=i.run_id WHERE i.owner_id=?1 AND i.submitted=0 AND i.session_id>?2 AND r.status NOT IN ('Completed','Failed','Stopped','Paused') UNION SELECT e.session_id FROM durable_workflow_hot_entities e WHERE e.owner_id=?1 AND e.entity_kind='queued_prompt' AND e.session_id>?2 AND json_extract(e.payload_json,'$.status')='queued' AND json_extract(e.payload_json,'$.publication_invocation.transport') IN ('app_event','workflow_notification') ORDER BY session_id LIMIT ?3").map_err(|error|storage_error("prepare workflow entry sessions",error))?;
         let rows = statement
             .query_map(params![owner, after.unwrap_or(""), limit as i64], |r| {
                 r.get(0)

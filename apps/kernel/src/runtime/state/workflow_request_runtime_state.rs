@@ -25,6 +25,14 @@ impl KernelRuntimeState {
         }
 
         let outcome = match request {
+            request @ (LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
+            | LocalDaemonRequest::AttachWorkflowNotification(_)
+            | LocalDaemonRequest::DetachWorkflowNotification(_)
+            | LocalDaemonRequest::ListWorkflowNotifications(_)) => (
+                self.execute_workflow_notification_command(request, &caller_user_id)
+                    .await,
+                None,
+            ),
             LocalDaemonRequest::CreateWorkflow(request) => {
                 let result =
                     owned.workflow_create_workflow(request, caller_metaagent_id.as_deref());
@@ -485,6 +493,10 @@ impl KernelRuntimeState {
             }
             LocalDaemonRequest::CancelWorkflowRun(request) => {
                 self.execute_workflow_cancel_run_request(request).await
+            }
+            LocalDaemonRequest::ControlRoomWorkflowRuns(request) => {
+                self.execute_room_workflow_control_request(request, &caller_user_id)
+                    .await
             }
             LocalDaemonRequest::PauseWorkflowRun(request) => {
                 self.execute_workflow_pause_run_request(request).await

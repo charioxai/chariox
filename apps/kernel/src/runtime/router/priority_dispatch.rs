@@ -428,13 +428,22 @@ impl CommandRouter {
             | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)) => {
                 boxed_handler(|| async move {
                     let caller_user_id = command_caller_user_id(&command);
+                    let directory =
+                        if crate::runtime::cloud_relay_authorization::kernel_cloud_owner(
+                            &self.config_projection.snapshot(),
+                            &command,
+                        ) {
+                            self.remote_relay_inventory_projection.clone()
+                        } else {
+                            Default::default()
+                        };
                     execute_waiting_room_request(
                         &self.runtime_state,
                         &self.session_projection,
                         &self.waiting_room_session_summaries,
                         Arc::clone(&self.relay_state),
                         self.config_projection.clone(),
-                        self.remote_relay_inventory_projection.clone(),
+                        directory,
                         request,
                         &caller_user_id,
                     )
@@ -574,8 +583,7 @@ impl CommandRouter {
             | LocalDaemonRequest::GetProviderLoginStatus(_)
             | LocalDaemonRequest::SendProviderLoginInput(_)
             | LocalDaemonRequest::CancelProviderLogin(_)) => boxed_handler(|| async move {
-                let caller_user_id = command_caller_user_id(&command);
-                execute_provider_auth_request(&self.runtime_state, &caller_user_id, request).await
+                execute_provider_auth_request(&self.runtime_state, &command, request).await
             }),
             request @ (LocalDaemonRequest::ListProviderAccountProfiles(_)
             | LocalDaemonRequest::GetProviderAccountProfile(_)
@@ -690,6 +698,11 @@ impl CommandRouter {
             LocalDaemonRequest::CancelActivePrompt(request) => boxed_handler(|| async move {
                 self.agent_runtime
                     .dispatch_prompt_cancel(&command, request)
+                    .await
+            }),
+            LocalDaemonRequest::SteerActivePrompt(request) => boxed_handler(|| async move {
+                self.agent_runtime
+                    .dispatch_prompt_steer_active(&command, request)
                     .await
             }),
             LocalDaemonRequest::SteerQueuedPrompt(request) => boxed_handler(|| async move {

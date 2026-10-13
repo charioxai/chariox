@@ -92,16 +92,18 @@ test("waiting room key controller opens managed configuration from the Machine f
   assert.deepEqual(harness.calls(), ["open-managed-machine"])
 })
 
-test("waiting room key controller opens managed configuration when Machine cycles to new", () => {
-  const harness = createHarness({
-    state: waitingRoomState({ focus: "launch-machine", selectedMachineRef: "local" }),
-    remote: { managedEnvironments: [] },
-  })
-
-  assert.equal(harness.controller.handleKey({ name: "right", eventType: "press" }), true)
-
-  assert.equal(harness.reconciledStates().at(-1)?.selectedMachineRef, NEW_MANAGED_MACHINE_REF)
-  assert.deepEqual(harness.calls(), ["reconcile", "open-managed-machine"])
+test("Machine navigation waits for Enter before opening managed configuration", () => {
+  for (const name of ["right", "left"]) {
+    const harness = createHarness({
+      state: waitingRoomState({ focus: "launch-machine", selectedMachineRef: "local" }),
+      remote: { managedEnvironments: [] },
+    })
+    assert.equal(harness.controller.handleKey({ name, eventType: "press" }), true)
+    assert.equal(harness.reconciledStates().at(-1)?.selectedMachineRef, NEW_MANAGED_MACHINE_REF)
+    assert.deepEqual(harness.calls(), ["reconcile"])
+    assert.equal(harness.controller.handleKey({ name: "enter", eventType: "press" }), true)
+    assert.deepEqual(harness.calls(), ["reconcile", "open-managed-machine"])
+  }
 })
 
 test("waiting room key controller renames and restores the focused project", () => {
@@ -165,6 +167,7 @@ function createHarness(options: {
       calls.push(`lifecycle:${action}`)
       lifecycleActions.push(action)
     },
+    openProjectEnvironment: (projectId) => { calls.push(`environment:${projectId}`) },
     beginProjectRename: (projectId, name) => {
       calls.push(`rename:${projectId}:${name}`)
     },
@@ -230,3 +233,13 @@ function projectSummary(overrides: Partial<WaitingRoomProjectSummary> = {}): Wai
     ...overrides,
   }
 }
+
+// MP-08 / MP-10: No attached Session or Agent is required.
+test("ENV P01 V opens exactly the selected Project and ignores release/modifiers", () => {
+  const harness = createHarness({ state: waitingRoomState({ focus: "project-entry", projectIndex: 1 }), projects: [projectSummary(), projectSummary({ id: "second" })] })
+  harness.controller.handleKey({ name: "v", eventType: "release" })
+  harness.controller.handleKey({ name: "v", eventType: "press", ctrl: true })
+  assert.deepEqual(harness.calls(), [])
+  harness.controller.handleKey({ name: "v", eventType: "press" })
+  assert.deepEqual(harness.calls(), ["environment:second"])
+})

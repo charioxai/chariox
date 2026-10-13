@@ -14,6 +14,8 @@ type KernelSessionUnavailableControllerOptions<TSession extends { id: string }, 
   recordDaemonActivity: (activityType: string) => void
   onRecovered: () => void
   onStateLookupFailed: (sessionId: string, message: string, error: unknown) => void
+  isSessionUnavailableError: (error: unknown) => boolean
+  onTransientFailure: () => void
   transitionToNoSession: (message: string) => Promise<void>
 }
 
@@ -40,7 +42,14 @@ export function createKernelSessionUnavailableController<TSession extends { id: 
         options.onRecovered()
         return
       } catch (error) {
+        if (!options.isAttached() || options.getSession().id !== sessionId) {
+          return
+        }
         options.onStateLookupFailed(sessionId, message, error)
+        if (!options.isSessionUnavailableError(error)) {
+          options.onTransientFailure()
+          return
+        }
       }
     }
     await options.transitionToNoSession(message)

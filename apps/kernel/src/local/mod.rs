@@ -1,3 +1,11 @@
+pub use api::{
+    AttachWorkflowNotificationRequest, DetachWorkflowNotificationRequest,
+    ListWorkflowNotificationsRequest, NotificationDeliveryMode,
+    RegisterWorkflowNotificationSourceRequest, WorkflowNotificationAck,
+    WorkflowNotificationDiagnostic, WorkflowNotificationEnvelope, WorkflowNotificationEvents,
+    WorkflowNotificationSource, WorkflowNotificationSourceSummary, WorkflowNotificationStatus,
+    WorkflowNotificationSubscription, WorkflowNotificationTargetKind,
+};
 mod api;
 pub use api::{
     CaptureVisibleRegionRequest, ScreenshotRegion, ScreenshotSurface, VisibleRegionCapture,
@@ -10,6 +18,7 @@ pub(crate) mod provider_requests;
 pub(crate) mod test_support;
 
 pub(crate) use api::redact_client_response_value;
+pub use api::PreflightProviderAccountPortabilityRequest;
 pub use api::{
     deployment_credential_enrollment_interaction_id,
     deployment_credential_enrollment_service_subject, AppPackageUploadPhase,
@@ -38,15 +47,15 @@ pub use api::{
     CloudRelayRuntimeToken, CloudRelayStatusRequest, CloudSessionInvite,
     CloudSessionInviteAcceptance, CloudSessionInviteDetails, CloudSessionMember,
     CommitAndPushWorkspaceChangesRequest, CommitWorkspaceChangesRequest, CompletePromptRequest,
-    ConfigureRelayRequest, ConnectCloudRelayRequest, ControlWorkflowPublicationRuntimeRequest,
-    CreateAgentPromptScheduleRequest, CreateAgentWorkflowRequest, CreateCloudSessionInviteRequest,
-    CreateDisposableWorkerRequest, CreateManagedEnvironmentRequest, CreatePairingInviteRequest,
-    CreateSessionInviteRequest, CreateSliceBackupRequest, CreateSliceRequest,
-    CreateTerminalPairingLinkRequest, CreateWorkflowCodeArtifactRequest,
-    CreateWorkflowEndpointRequest, CreateWorkflowPromptQueueRequest,
-    CreateWorkflowPublicationRequest, CreateWorkflowRequest, CreateWorkflowScheduleRequest,
-    CreateWorkflowWatchdogRequest, CreateWorkspaceDirectoryRequest, CreateWorkspaceLinkRequest,
-    CreateWorkspacePullRequestRequest, CreateWorkspaceWorktreeRequest,
+    ConfigureRelayRequest, ConnectCloudRelayRequest, ControlRoomWorkflowRunsRequest,
+    ControlWorkflowPublicationRuntimeRequest, CreateAgentPromptScheduleRequest,
+    CreateAgentWorkflowRequest, CreateCloudSessionInviteRequest, CreateDisposableWorkerRequest,
+    CreateManagedEnvironmentRequest, CreatePairingInviteRequest, CreateSessionInviteRequest,
+    CreateSliceBackupRequest, CreateSliceRequest, CreateTerminalPairingLinkRequest,
+    CreateWorkflowCodeArtifactRequest, CreateWorkflowEndpointRequest,
+    CreateWorkflowPromptQueueRequest, CreateWorkflowPublicationRequest, CreateWorkflowRequest,
+    CreateWorkflowScheduleRequest, CreateWorkflowWatchdogRequest, CreateWorkspaceDirectoryRequest,
+    CreateWorkspaceLinkRequest, CreateWorkspacePullRequestRequest, CreateWorkspaceWorktreeRequest,
     CredentialEnrollmentCallback, CredentialEnrollmentInteractionStatus, CycleAgentFocusRequest,
     DeleteCredentialSecretRequest, DeleteKernelRequest, DeleteProjectRequest, DeleteSessionRequest,
     DeleteWorkflowCodeArtifactRequest, DeleteWorkflowRegistryEntryRequest,
@@ -71,10 +80,10 @@ pub use api::{
     GetManagedContextLaunchTargetRequest, GetManagedContextTransferStatusRequest,
     GetManagedEnvironmentReimagePreflightRequest, GetManagedEnvironmentRequest,
     GetMcpServerRequest, GetMetaagentTurnBlobRequest, GetMetaagentTurnOverviewRequest,
-    GetProjectEnvironmentManifestRequest, GetProjectEnvironmentSetupStatusRequest,
-    GetPromptInputHistoryRequest, GetPromptSettingRequest, GetProviderAuthStatusRequest,
-    GetProviderCatalogRequest, GetProviderCommandCatalogsRequest, GetProviderLoginStatusRequest,
-    GetProviderRunRequest, GetRoomEnvironmentEventsRequest,
+    GetProjectEnvironmentManifestRequest, GetProjectEnvironmentRequest,
+    GetProjectEnvironmentSetupStatusRequest, GetPromptInputHistoryRequest, GetPromptSettingRequest,
+    GetProviderAuthStatusRequest, GetProviderCatalogRequest, GetProviderCommandCatalogsRequest,
+    GetProviderLoginStatusRequest, GetProviderRunRequest, GetRoomEnvironmentEventsRequest,
     GetRoomEnvironmentResourceInventoryRequest, GetRoomEnvironmentStateRequest,
     GetRoomEnvironmentTabAccessibilityRequest, GetScriptRequest,
     GetSessionHistoryBlobContentRequest, GetSessionHistoryOutlineRequest, GetSessionStateRequest,
@@ -173,7 +182,8 @@ pub use api::{
     RoomEnvironmentClipboardText, RoomEnvironmentHumanAction, RoomEnvironmentHumanBrowserAction,
     RoomEnvironmentKeyboardInput, RoomEnvironmentPointerButton,
     RoomEnvironmentPointerPositionRequest, RoomEnvironmentResourceInventory,
-    RoomEnvironmentTabAccessibility, RoomEnvironmentViewportRequest, RunAgentUtilityRequest,
+    RoomEnvironmentTabAccessibility, RoomEnvironmentViewportRequest, RoomWorkflowRunAction,
+    RoomWorkflowRunControlOutcome, RoomWorkflowRunControlResult, RunAgentUtilityRequest,
     RunShellCapabilityRequest, RunWorkflowCodeArtifactRequest, RunWorkflowCodeRequest,
     RunWorkflowRegistryEntryRequest, SearchEventGeneratorCatalogRequest,
     SearchMetaagentCommandsRequest, SearchRecallRequest, SearchWorkspaceDirectoriesRequest,
@@ -193,9 +203,9 @@ pub use api::{
     SpawnAgentRequest, SpawnAgentsRequest, SpawnAgentsRequestItem, StartCloudRelayLoginRequest,
     StartEventGeneratorAuthorizationRequest, StartManagedContextTransferRequest,
     StartProjectEnvironmentSetupRequest, StartProviderLoginRequest, StartRoomEnvironmentRequest,
-    StartSliceProviderLoginRequest, SteerQueuedPromptRequest, StopRoomEnvironmentRequest,
-    StoreTransferredFileCapabilityRequest, SubmitPromptRequest, SubmitPromptsRequest,
-    SubmitPromptsRequestItem, SubmitRoomEnvironmentActionRequest,
+    StartSliceProviderLoginRequest, SteerActivePromptRequest, SteerQueuedPromptRequest,
+    StopRoomEnvironmentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest,
+    SubmitPromptsRequest, SubmitPromptsRequestItem, SubmitRoomEnvironmentActionRequest,
     SubmitRoomEnvironmentBrowserActionRequest, SyncRemoteExtensionManifestRequest,
     TeardownProviderProcessesRequest, TerminalCommandCatalog,
     TerminalCommandCatalogExecutionTarget, TerminalCommandCatalogNode,
@@ -297,3 +307,11 @@ pub fn default_access_holder_pid() -> std::io::Result<u32> {
     let (peer, _) = crate::runtime::kernel_access::process::inspect(std::process::id())?;
     crate::runtime::kernel_access::requester::default_holder(&peer).map(|holder| holder.pid)
 }
+
+pub use api::{
+    ApplyProjectEnvironmentRequest, CheckProjectEnvironmentRequest, CommitEnvironmentImportRequest,
+    DetectProjectEnvironmentRequest, EnvironmentExportDestination, EnvironmentOperationRequest,
+    ExportProjectEnvironmentRequest, PlanProjectEnvironmentRequest, PreviewEnvironmentDiffRequest,
+    PreviewEnvironmentImportRequest, RetryEnvironmentOperationRequest,
+    SaveProjectEnvironmentRevisionRequest,
+};

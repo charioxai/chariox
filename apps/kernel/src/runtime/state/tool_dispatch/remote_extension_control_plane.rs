@@ -1,5 +1,3 @@
-use chariox_relay::protocol::ClientTarget;
-
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
@@ -147,19 +145,19 @@ impl KernelRuntimeState {
         // tool. Snapshot configuration under the app lock, then release it
         // before waiting for the relay round trip.
         let config = self.config_snapshot().await;
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
-            &config,
-            ClientTarget {
-                daemon_id: Some(remote_context.home_kernel_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::ForwardMetaRuntimeTool {
-                context: remote_context,
-                tool_name: tool_name.to_string(),
-                arguments,
-            },
-        )
-        .await?;
+        let home_kernel_id = remote_context.home_kernel_id.clone();
+        let response = self
+            .send_worker_home_runtime_request(
+                &config,
+                &home_kernel_id,
+                RelayPeerRequest::ForwardMetaRuntimeTool {
+                    context: remote_context,
+                    tool_name: tool_name.to_string(),
+                    arguments,
+                },
+                std::time::Duration::from_millis(config.relay_request_timeout_ms),
+            )
+            .await?;
         match response {
             RelayPeerResponse::MetaRuntimeToolHandled { result } => Ok(Some(result)),
             other => Err(DaemonError::LocalTransport {
@@ -253,12 +251,9 @@ impl KernelRuntimeState {
                 // Home may call back into this worker to install a grant. Do not
                 // hold the worker app mutex across that outbound request.
                 let response =
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    self.send_worker_home_runtime_request(
                         &config,
-                        ClientTarget {
-                            daemon_id: Some(remote_context.home_kernel_id.clone()),
-                            daemon_alias: None,
-                        },
+                        &remote_context.home_kernel_id,
                         RelayPeerRequest::ForwardCapabilityRuntimeTool {
                             context: remote_context.clone(),
                             tool_name: if attempt == 0 {
@@ -274,6 +269,7 @@ impl KernelRuntimeState {
                                 serde_json::json!({})
                             },
                         },
+                        std::time::Duration::from_millis(config.relay_request_timeout_ms),
                     )
                     .await?;
                 let RelayPeerResponse::CapabilityRuntimeToolHandled {

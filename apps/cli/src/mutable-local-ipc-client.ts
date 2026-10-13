@@ -1,6 +1,6 @@
 import type { KernelEvent } from "@chariox/kernel-client/kernel-events"
 
-import type { LocalIpcClient } from "./ipc.js"
+import type { LocalIpcClient, RelaySubscriptionDiagnostic } from "./ipc.js"
 
 type KernelEventHandler = (event: KernelEvent) => void
 
@@ -48,6 +48,7 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
   let currentClient = initialClient
   const clientChangedHandlers = new Set<() => void>()
   const handlers = new Map<KernelEventHandler, () => void>()
+  const diagnostics = new Map<(value: RelaySubscriptionDiagnostic) => void, () => void>()
 
   const bindHandler = (handler: KernelEventHandler) => currentClient.onKernelEvent(handler)
 
@@ -75,13 +76,18 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
       for (const dispose of handlers.values()) {
         dispose()
       }
+      for (const dispose of diagnostics.values()) dispose()
       currentClient = nextClient
+      for (const handler of diagnostics.keys()) diagnostics.set(handler, currentClient.onRelaySubscriptionDiagnostic(handler))
       for (const handler of handlers.keys()) {
         handlers.set(handler, bindHandler(handler))
       }
       for (const handler of clientChangedHandlers) handler()
       return previousClient
     },
+    retainForRelayRenewal() { return currentClient.retainForRelayRenewal() },
+    startRelayAuthRenewal(...args: Parameters<LocalIpcClient["startRelayAuthRenewal"]>) { return currentClient.startRelayAuthRenewal(...args) },
+    invalidateRelayAuthorization(error: unknown) { currentClient.invalidateRelayAuthorization(error) },
     supportsKernelEvents() {
       return currentClient.supportsKernelEvents()
     },
@@ -108,6 +114,10 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
     },
     restartKernelEventStream(): Promise<void> {
       return currentClient.restartKernelEventStream()
+    },
+    onRelaySubscriptionDiagnostic(handler: (value: RelaySubscriptionDiagnostic) => void) {
+      diagnostics.set(handler, currentClient.onRelaySubscriptionDiagnostic(handler))
+      return () => { diagnostics.get(handler)?.(); diagnostics.delete(handler) }
     },
     onKernelEvent(handler: KernelEventHandler) {
       const dispose = bindHandler(handler)

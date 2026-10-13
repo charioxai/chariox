@@ -434,7 +434,7 @@ async function writeReport(reportPath, report) {
 function terminateGroup(child, signal) {
   if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return
   try {
-    signalOwnedProcessGroup(child.pid, signal)
+    signalOwnedProcessGroup(child, signal)
   } catch {
     signalOwnedProcess(child, signal)
   }

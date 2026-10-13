@@ -30,6 +30,7 @@ mod managed_context;
 mod managed_environment;
 mod native_spawn_slice;
 mod notes;
+mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
 mod prompt_settings;
@@ -49,6 +50,7 @@ mod slice_logs;
 mod user_app_views;
 mod user_domain_access;
 mod workflow_code;
+mod workflow_notifications;
 mod workspace_history_external;
 
 fn history_page_entry(
@@ -89,3 +91,5 @@ fn history_page_entry(
 }
 
 mod screenshot;
+
+mod room_workflows;

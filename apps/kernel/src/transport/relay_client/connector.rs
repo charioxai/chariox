@@ -796,7 +796,9 @@ async fn run_daemon_relay_connector_inner(
         );
         let connect_started = Instant::now();
         match timeout(RELAY_CONNECT_TIMEOUT, async {
-            let request = chariox_relay::binary_event::connection_request(&relay_url)?;
+            let request = chariox_relay::binary_event::connection_request(
+                &chariox_relay::frame_transport::transport_url(&relay_url),
+            )?;
             tokio_tungstenite::connect_async_with_config(
                 request,
                 None,
@@ -856,6 +858,8 @@ async fn run_daemon_relay_connector_inner(
                     RelayOutgoingSender::channel(RELAY_OUTGOING_QUEUE_LIMIT);
                 let reconnect_gate = Arc::new(RelayReconnectGate::default());
                 let (pong_tx, mut pong_rx) = mpsc::channel::<Vec<u8>>(RELAY_OUTGOING_QUEUE_LIMIT);
+                let (transport_receipt_tx, mut transport_receipt_rx) = mpsc::channel::<String>(8);
+                let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
                 let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
                 let writer_task = tokio::spawn(async move {
                     let mut priority_open = true;
@@ -878,6 +882,9 @@ async fn run_daemon_relay_connector_inner(
                         if let Some(ready_at) = event_write_coalescer.ready_at() {
                             tokio::select! {
                                 biased;
+                                Some(receipt) = transport_receipt_rx.recv() => {
+                                    if writer.send(Message::Text(receipt.into())).await.is_err() { break; }
+                                }
                                 Some(payload) = pong_rx.recv() => {
                                     if writer.send(Message::Pong(payload.into())).await.is_err() {
                                         break;
@@ -918,6 +925,9 @@ async fn run_daemon_relay_connector_inner(
 
                         tokio::select! {
                             biased;
+                            Some(receipt) = transport_receipt_rx.recv() => {
+                                if writer.send(Message::Text(receipt.into())).await.is_err() { break; }
+                            }
                             Some(payload) = pong_rx.recv() => {
                                 if writer.send(Message::Pong(payload.into())).await.is_err() {
                                     break;
@@ -1082,6 +1092,13 @@ async fn run_daemon_relay_connector_inner(
                         incoming = reader.next() => {
                             match incoming {
                                 Some(Ok(Message::Text(payload))) => {
+                                    let (payload, receipt) = relay_frames.receive(&payload).unwrap_or_else(|_| (
+                                        Some("{\"kind\":\"close\",\"reason\":\"invalid relay transport frame\"}".to_string()), None));
+                                    if let Some(receipt) = receipt {
+                                        if transport_receipt_tx.try_send(receipt).is_err() { break "relay receipt queue saturated"; }
+                                    }
+                                    let Some(payload) = payload else { continue; };
+
                                     if let Err(error) = handle_incoming_envelope(
                                         IncomingEnvelopeContext {
                                             router: &router,

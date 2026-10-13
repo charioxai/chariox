@@ -303,6 +303,14 @@ pub enum DaemonError {
     NoActiveProviderRun { session_id: String },
     #[error("provider run `{provider_run_id}` has no PTY process")]
     PtyProcessNotFound { provider_run_id: String },
+
+    /// Internal proof that a steer was not submitted or was explicitly rejected.
+    /// Unclassified errors may follow a provider write and cannot authorize replay.
+    #[error("provider did not accept steering: {source}")]
+    ProviderPromptSteerRejected {
+        #[source]
+        source: Box<DaemonError>,
+    },
     #[error("provider protocol `{operation}` failed for run `{provider_run_id}`: {message}")]
     ProviderProtocol {
         provider_run_id: String,
@@ -414,6 +422,16 @@ pub enum DaemonError {
 }
 
 impl DaemonError {
+    pub(crate) fn steer_not_submitted(self, steering: bool) -> Self {
+        if steering {
+            Self::ProviderPromptSteerRejected {
+                source: Box::new(self),
+            }
+        } else {
+            self
+        }
+    }
+
     /// True when a worker reports that the prompt it was asked to settle is no
     /// longer active. Relay peers carry that error as text, so the relay
     /// transport message is matched as well as the local variants.

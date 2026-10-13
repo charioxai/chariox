@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./relay-auth-renewal": "./dist/relay-auth-renewal.js",
     "./relay-authorization": "./dist/relay-authorization.js",
     ".": "./dist/index.js",
     "./ipc": "./dist/ipc.js",
@@ -93,7 +94,10 @@
     "./hidden-input": "./dist/hidden-input.js",
     "./user-domain-access": "./dist/user-domain-access.js",
     "./browser-mirror": "./dist/browser-mirror.js",
-    "./browser-mirror2": "./dist/browser-mirror2.js"
+    "./browser-mirror2": "./dist/browser-mirror2.js",
+    "./room-workflows": "./dist/room-workflows.js",
+    "./room-workflows-controller": "./dist/room-workflows-controller.js",
+    "./project-environment-aggregate": "./dist/project-environment-aggregate.js"
   },
   "types": "./dist/index.d.ts",
   "scripts": {

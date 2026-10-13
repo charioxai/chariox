@@ -19,3 +19,6 @@ export type * from "./kernel-types-kernel-browser.js"
 export { userDomainWindowBadge } from "./kernel-types-kernel-browser.js"
 
 export * from "./notes.js"
+
+export type * from "./kernel-types-workflow-notifications.js"
+export type * from "./kernel-types-project-environment-aggregate.js"

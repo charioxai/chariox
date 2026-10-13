@@ -713,6 +713,7 @@ fn local_daemon_protocol_kernel_client_connection_shape_is_versioned() {
 
     let snapshot = serde_json::json!([
         LocalDaemonRequest::ResolveKernelClientConnection(ResolveKernelClientConnectionRequest {
+            public_key_thumbprint: None,
             kernel_ref: "kernel-1".to_string(),
             machine_ref: Some("machine-1".to_string()),
             client_id: Some("cli-1".to_string()),
@@ -743,6 +744,6 @@ fn local_daemon_protocol_kernel_client_connection_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "623235862705f7aa8f85c6b29f98188caa2b75ac7acf0f8f72f63f822b888e9a"
+        "7dacd30594d735dbe373670c4c0425d5c4515181243af73fbc482140db326912"
     );
 }

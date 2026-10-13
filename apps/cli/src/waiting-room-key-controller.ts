@@ -35,6 +35,7 @@ export type WaitingRoomKeyControllerDeps = {
   setWaitingRoomState: (state: WaitingRoomState) => void
   rebuildTranscript: () => void
   applyLifecycleAction: (action: WaitingRoomSessionLifecycleAction) => void
+  openProjectEnvironment?: (projectId: string) => void
   beginProjectRename?: (projectId: string, currentName: string) => void
   restoreProject?: (projectId: string) => void
   activateWaitingRoom: () => void
@@ -82,16 +83,7 @@ export function createWaitingRoomKeyController(
           : keyNavigationOptions,
       )
       if (keyNavigation.action === "navigate") {
-        const openedManagedMachine = (
-          keyNavigation.key === "left" || keyNavigation.key === "right"
-        )
-          && keyNavigation.nextState.focus === "launch-machine"
-          && !waitingRoomConfiguresNewManagedMachine(keyNavigationOptions.state.selectedMachineRef)
-          && waitingRoomConfiguresNewManagedMachine(keyNavigation.nextState.selectedMachineRef)
         deps.reconcileWaitingRoom(keyNavigation.nextState)
-        if (openedManagedMachine) {
-          deps.openManagedMachineDialog?.()
-        }
         return true
       }
       if (keyNavigation.action === "release") {
@@ -112,6 +104,10 @@ export function createWaitingRoomKeyController(
         const project = state.focus === "project-entry"
           ? waitingRoomProjectsForNavigation(deps.getRemoteState().projects)[state.projectIndex ?? 0]
           : null
+        if (project && event.name === "v") {
+          deps.openProjectEnvironment?.(project.id)
+          return true
+        }
         if (project && event.name === "e") {
           deps.beginProjectRename?.(project.id, project.name)
           return true

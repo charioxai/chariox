@@ -1,162 +1,78 @@
-import type {
-  ManagedContextLaunchTarget,
-  ManagedContextTransferStatus,
-} from "@chariox/kernel-client/ipc-managed-context-requests"
-import {
-  managedEnvironmentCreateMinimumProtocolVersion,
-  managedEnvironmentReimagePreflightMinimumProtocolVersion,
-  type ManagedContextTransferTicket,
-  type ManagedEnvironmentCatalog,
-  type ManagedEnvironmentContextPlanInput,
-  type ManagedEnvironmentLifecycleAction,
-  type ManagedEnvironmentPreReimageObservationAcknowledgement,
-  type ManagedEnvironmentReimagePreflight,
-  type ManagedEnvironmentReimageResult,
-  type ManagedEnvironmentResult,
-  type ManagedEnvironmentSummary,
-} from "@chariox/kernel-client/ipc-managed-environment-requests"
+import type { ManagedContextLaunchTarget, ManagedContextTransferStatus } from "@chariox/kernel-client/ipc-managed-context-requests"
+import type { ManagedContextTransferTicket, ManagedEnvironmentCatalog, ManagedEnvironmentContextPlanInput, ManagedEnvironmentReimagePreflight, ManagedEnvironmentReimageResult, ManagedEnvironmentResult, ManagedEnvironmentSummary, ManagedEnvironmentPreReimageObservationAcknowledgement } from "@chariox/kernel-client/ipc-managed-environment-requests"
+import type { CloudControlProfile } from "./cloud-control-auth.js"
 import type { LocalIpcClient } from "./ipc.js"
-import {
-  createManagedEnvironmentRequest,
-  getManagedContextLaunchTargetRequest,
-  getManagedContextTransferStatusRequest,
-  getManagedEnvironmentRequest,
-  getManagedEnvironmentReimagePreflightRequest,
-  listManagedEnvironmentCatalogRequest,
-  observeManagedEnvironmentPreReimageRequest,
-  prepareManagedEnvironmentContextTransferRequest,
-  requestManagedEnvironmentLifecycleRequest,
-  requestManagedEnvironmentReimageRequest,
-  startManagedContextTransferRequest,
-} from "./ipc-requests.js"
+import type { createManagedEnvironmentRequest, requestManagedEnvironmentLifecycleRequest, requestManagedEnvironmentReimageRequest } from "./ipc-requests.js"
+import { getManagedContextLaunchTargetRequest, getManagedContextTransferStatusRequest, observeManagedEnvironmentPreReimageRequest, preflightProviderAccountPortabilityRequest, providerAccountPortabilityPreflightMinimumProtocolVersion, startManagedContextTransferRequest } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import { sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
+import { managedEnvironmentJson } from "./managed-environment-cloud-http.js"
+import { prepareManagedEnvironmentReimageStop } from "./managed-environment-reimage-stop.js"
 
-export async function listManagedEnvironmentCatalog(
-  client: LocalIpcClient,
-): Promise<ManagedEnvironmentCatalog> {
-  const response = await client.send<Record<string, unknown>>(listManagedEnvironmentCatalogRequest())
-  return expectVariant<{ catalog: ManagedEnvironmentCatalog }>(
-    response,
-    "ManagedEnvironmentCatalog",
-  ).catalog
+// MP-08 / MP-11: human control plane uses terminal authority; context export,
+// import, local launch and old-generation observation stay kernel-owned.
+export async function listManagedEnvironmentCatalog(profile: CloudControlProfile): Promise<ManagedEnvironmentCatalog> {
+  const [options, environments] = await Promise.all([
+    managedEnvironmentJson<Pick<ManagedEnvironmentCatalog, "computeClasses" | "contextSources">>(profile, "/managed-environments/options"),
+    managedEnvironmentJson<Pick<ManagedEnvironmentCatalog, "environments">>(profile, "/managed-environments"),
+  ])
+  return {...options, ...environments}
 }
-
-export async function getManagedEnvironment(
-  client: LocalIpcClient,
-  environmentId: string,
-): Promise<ManagedEnvironmentSummary> {
-  const response = await client.send<Record<string, unknown>>(getManagedEnvironmentRequest(environmentId))
-  const environment = expectVariant<{ environment: ManagedEnvironmentSummary }>(
-    response,
-    "ManagedEnvironment",
-  ).environment
-  if (environment.environmentId !== environmentId) {
-    throw new Error("kernel returned a different managed environment")
-  }
+export async function getManagedEnvironment(profile: CloudControlProfile, environmentId: string): Promise<ManagedEnvironmentSummary> {
+  const {environment} = await managedEnvironmentJson<{environment: ManagedEnvironmentSummary}>(profile, `/managed-environments/${encodeURIComponent(environmentId)}`)
+  if (environment.environmentId !== environmentId || environment.accountId !== profile.accountId) throw new Error("Cloud returned a different managed environment")
   return environment
 }
-
-export async function getManagedEnvironmentReimagePreflight(
-  client: LocalIpcClient,
-  environmentId: string,
-): Promise<ManagedEnvironmentReimagePreflight> {
-  const response = await sendWithProtocolMinimum<Record<string, unknown>>(
-    client.send.bind(client),
-    getManagedEnvironmentReimagePreflightRequest(environmentId),
-    {
-      capability: "Managed environment reimage preflight",
-      requestVariant: "GetManagedEnvironmentReimagePreflight",
-      minimumProtocolVersion: managedEnvironmentReimagePreflightMinimumProtocolVersion,
-    },
-  )
-  const preflight = expectVariant<{ preflight: ManagedEnvironmentReimagePreflight }>(
-    response,
-    "ManagedEnvironmentReimagePreflight",
-  ).preflight
-  if (preflight.environmentId !== environmentId) {
-    throw new Error("kernel returned reimage preflight for a different managed environment")
-  }
+export async function getManagedEnvironmentReimagePreflight(profile: CloudControlProfile, environmentId: string): Promise<ManagedEnvironmentReimagePreflight> {
+  const preflight = await managedEnvironmentJson<ManagedEnvironmentReimagePreflight>(profile, `/managed-environments/${encodeURIComponent(environmentId)}/reimage/preflight`)
+  if (preflight.environmentId !== environmentId) throw new Error("Cloud returned reimage preflight for a different managed environment")
   return preflight
 }
-
-export async function createManagedEnvironment(
-  client: LocalIpcClient,
-  input: {
-    clientRequestId: string
-    name: string
-    region: string
-    computeClass: string
-    managedRepositoryRoot?: string
-    autoStopPolicy: { minimumRuntimeSeconds: number; idleDelaySeconds: number | null }
-    contextPlan: ManagedEnvironmentContextPlanInput
-  },
-): Promise<ManagedEnvironmentResult> {
-  const request = createManagedEnvironmentRequest(input)
-  const response = input.managedRepositoryRoot === undefined
-    ? await client.send<Record<string, unknown>>(request)
-    : await sendWithProtocolMinimum<Record<string, unknown>>(
-        client.send.bind(client),
-        request,
-        {
-          capability: "Custom managed repository root",
-          requestVariant: "CreateManagedEnvironment",
-          unknownField: "managedRepositoryRoot",
-          minimumProtocolVersion: managedEnvironmentCreateMinimumProtocolVersion,
-        },
-      )
-  const result = expectVariant<{ result: ManagedEnvironmentResult }>(
-    response,
-    "ManagedEnvironmentCreated",
-  ).result
+export async function createManagedEnvironment(profile: CloudControlProfile, input: Parameters<typeof createManagedEnvironmentRequest>[0], client?: LocalIpcClient): Promise<ManagedEnvironmentResult> {
+  await preflightProviderAccountPortability(client, input.contextPlan)
+  const result = await managedEnvironmentJson<ManagedEnvironmentResult>(profile, "/managed-environments", input)
   validateManagedEnvironmentResult(result)
+  if (result.environment.accountId !== profile.accountId) throw new Error("Cloud returned a different managed account")
   return result
 }
-
-export async function requestManagedEnvironmentLifecycle(
-  client: LocalIpcClient,
-  input: {
-    environmentId: string
-    action: ManagedEnvironmentLifecycleAction
-    idempotencyKey: string
-  },
-): Promise<ManagedEnvironmentResult> {
-  const response = await client.send<Record<string, unknown>>(
-    requestManagedEnvironmentLifecycleRequest(input),
-  )
-  const result = expectVariant<{ result: ManagedEnvironmentResult }>(
-    response,
-    "ManagedEnvironmentLifecycleRequested",
-  ).result
+export async function requestManagedEnvironmentLifecycle(profile: CloudControlProfile, input: Parameters<typeof requestManagedEnvironmentLifecycleRequest>[0]): Promise<ManagedEnvironmentResult> {
+  const {environmentId, ...body} = input
+  const result = await managedEnvironmentJson<ManagedEnvironmentResult>(profile, `/managed-environments/${encodeURIComponent(environmentId)}/lifecycle`, body)
   validateManagedEnvironmentResult(result, input.environmentId)
+  if (result.environment.accountId !== profile.accountId) throw new Error("Cloud returned a different managed account")
   return result
 }
-
-export async function requestManagedEnvironmentReimage(
-  client: LocalIpcClient,
-  input: {
-    environmentId: string
-    expectedGeneration: number
-    expectedProviderServerId: string
-    expectedProviderImageId: string
-    expectedProviderProfileId: string
-    expectedProviderProfileDigest: string
-    expectedRuntimeReleaseDigest: string
-    expectedRuntimeSourceCommit: string
-    expectedRuntimeSourceTree: string
-    contextPlan: ManagedEnvironmentContextPlanInput
-    idempotencyKey: string
-  },
-): Promise<ManagedEnvironmentReimageResult> {
-  const response = await client.send<Record<string, unknown>>(
-    requestManagedEnvironmentReimageRequest(input),
-  )
-  const result = expectVariant<{ result: ManagedEnvironmentReimageResult }>(
-    response,
-    "ManagedEnvironmentReimageRequested",
-  ).result
+export async function requestManagedEnvironmentReimage(profile: CloudControlProfile, input: Parameters<typeof requestManagedEnvironmentReimageRequest>[0], client?: LocalIpcClient): Promise<ManagedEnvironmentReimageResult> {
+  await preflightProviderAccountPortability(client, input.contextPlan)
+  await prepareManagedEnvironmentReimageStop(profile, input)
+  const {environmentId, ...body} = input
+  const result = await managedEnvironmentJson<ManagedEnvironmentReimageResult>(profile, `/managed-environments/${encodeURIComponent(environmentId)}/reimage`, body)
   validateManagedEnvironmentReimageResult(result, input)
+  if (result.environment.accountId !== profile.accountId) throw new Error("Cloud returned a different managed account")
   return result
+}
+export async function prepareManagedEnvironmentContextTransfer(profile: CloudControlProfile, environmentId: string): Promise<ManagedContextTransferTicket> {
+  const ticket = await managedEnvironmentJson<ManagedContextTransferTicket>(profile, `/managed-environments/${encodeURIComponent(environmentId)}/context-transfer`)
+  if (ticket.environmentId !== environmentId) throw new Error("Cloud returned a context transfer ticket for a different managed environment")
+  // StartManagedContextTransfer validates the ticket against the source kernel
+  // identity before it reads, exports or sends any selected context.
+  return ticket
+}
+
+export async function preflightProviderAccountPortability(client: LocalIpcClient | undefined, plan: ManagedEnvironmentContextPlanInput): Promise<void> {
+  if (plan.providerAccounts.kind === "none") return
+  if (!client) throw new Error("Selected provider accounts require a kernel credential portability preflight before provisioning")
+  const response = await sendWithProtocolMinimum<Record<string, unknown>>(
+    client.send.bind(client), preflightProviderAccountPortabilityRequest(plan.providerAccounts), {
+      capability: "MP-08 / MP-11 provider account portability preflight",
+      requestVariant: "PreflightProviderAccountPortability",
+      minimumProtocolVersion: providerAccountPortabilityPreflightMinimumProtocolVersion,
+    },
+  )
+  const acknowledgement = expectVariant<Record<string, never>>(response, "ProviderAccountPortabilityPreflightPassed")
+  if (!acknowledgement || typeof acknowledgement !== "object" || Array.isArray(acknowledgement) || Object.keys(acknowledgement).length !== 0) {
+    throw new Error("kernel returned an invalid provider portability acknowledgement")
+  }
 }
 
 export async function observeManagedEnvironmentPreReimage(
@@ -178,23 +94,6 @@ export async function observeManagedEnvironmentPreReimage(
     throw new Error("kernel returned a mismatched managed pre-reimage observation acknowledgement")
   }
   return acknowledgement
-}
-
-export async function prepareManagedEnvironmentContextTransfer(
-  client: LocalIpcClient,
-  environmentId: string,
-): Promise<ManagedContextTransferTicket> {
-  const response = await client.send<Record<string, unknown>>(
-    prepareManagedEnvironmentContextTransferRequest(environmentId),
-  )
-  const ticket = expectVariant<{ ticket: ManagedContextTransferTicket }>(
-    response,
-    "ManagedEnvironmentContextTransferPrepared",
-  ).ticket
-  if (ticket.environmentId !== environmentId) {
-    throw new Error("kernel returned a context transfer ticket for a different managed environment")
-  }
-  return ticket
 }
 
 export async function startManagedContextTransfer(
