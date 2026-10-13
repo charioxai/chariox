@@ -5,7 +5,7 @@ import { watchCliLauncherParent } from "./cli-launcher-parent.js"
 test("launcher parent watch exits after parent death without signalling another PID", async () => {
   let parent = 12345
   let exits = 0
-  const stop = watchCliLauncherParent("12345", () => parent, () => { exits += 1 })
+  const stop = watchCliLauncherParent("12345", () => parent, () => { exits += 1 }, () => true)
   try {
     assert.equal(exits, 0)
     parent = 1
@@ -14,6 +14,16 @@ test("launcher parent watch exits after parent death without signalling another 
   } finally {
     stop()
   }
+})
+
+test("launcher parent watch detects death when the runtime caches its parent PID", () => {
+  let exits = 0
+  const stop = watchCliLauncherParent("12345", () => 12345, () => { exits += 1 }, (pid) => {
+    assert.equal(pid, 12345)
+    return false
+  })
+  stop()
+  assert.equal(exits, 1)
 })
 
 test("launcher parent watch detects death before entry point starts", () => {
