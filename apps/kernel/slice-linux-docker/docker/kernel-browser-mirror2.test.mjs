@@ -321,3 +321,22 @@ test('MP-08/MP-10: opaque regions are measured by the next quiet packet, not by 
   await mirror.tiles(world, { tab_id: 't' }, stream, true, true, false);
   assert.deepEqual(calls, ['m.opaqueBoxes()'], 'MP-10: a reset always measures');
 });
+
+// MP-08/MP-10: after an empty drain the long poll re-arms with one renderer round trip: the drain reports the main
+// document's loaded count (a separate loadedCount() would wait for a busy page's next task first).
+test('MP-08/MP-10: an empty drain re-arms the long poll without a separate loaded-count evaluation', async () => {
+  const calls = [], tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+  const connection = { isOpen: () => true, send: async () => ({}) };
+  const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+  const header = { scroll: '[0,0]', focused: 'null', selection: 'null', fragment: 'null' };
+  const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy: 'p', fallback: null, header, sentScroll: [0, 0], resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', movedAt: 0 };
+  const host = { protection: 'p', generation: 1, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+    browser: { connection, documentIdsByTarget: new Map([['T', 'D1']]), sessionsByTarget: new Map([['T', 'S']]) } };
+  const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
+  const delta = ops => ({ ops, changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0, loaded: 4 });
+  mirror.evaluate = async (_world, expression) => { calls.push(expression.replace(/\(.*$/, '')); return expression.includes('loadedCount') ? 4 : delta(expression.includes('waitDrain') ? [{ op: 'text', id: 'n5', text: 'menu' }] : []); };
+  mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
+  const packet = await mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 1, wait_ms: 1000 }, 'scope', undefined, Date.now() + 1000);
+  assert.deepEqual(packet.ops, [{ op: 'text', id: 'n5', text: 'menu' }]);
+  assert.deepEqual(calls, ['m.drain', 'm.waitDrain'], 'MP-08: no loadedCount() between the drain and the long poll');
+});

@@ -198,7 +198,8 @@ export function installMirror2(sanitizeMirrorCss) {
         // Focus and selection taken by a pointer press wait (50 ms at most) for the rest of its click, so the
         // click's own changes (a menu rendered a frame later) leave in the same packet; other moves wake now.
         listen('pointerdown', () => { pressedAt = performance.now(); });
-        const soon = () => { if (performance.now() - pressedAt < 100) setTimeout(wake, 50); else wake(); };
+        const moved = () => { const { focused, selection, range } = focusState(); if (JSON.stringify([focused, selection, range]) !== reported) wake(); };
+        const soon = () => { if (performance.now() - pressedAt < 100) setTimeout(moved, 50); else moved(); };
         listen('focusin', soon);
         // Popover and dialog transitions (toggle does not bubble: capture sees it); the cursor samples the rest.
         const stateEvent = event => { const target = event.composedPath()[0] ?? event.target; if (target?.nodeType === 1) { dirty.state.add(target); wake(); } };
@@ -389,7 +390,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const rootSignatures = new Map();
     const replaceNode = node => { const id = mirrored(node); if (!id) return; const parent = nodes.get(parentOf.get(id)); forget(id); if (parent) dirty.children.add(parent); };
     const insideMask = node => { for (let n = node, depth = 0; n && depth < DEPTH; depth++) { const id = mirrored(n); if (id && kindOf.get(id) === 'mask') return n; n = n.parentNode ?? n.host; } return null; };
-    const header = () => {
+    const focusState = () => {
       let focused = document.activeElement;
       for (let i = 0; i < 128; i++) { let child = focused?.shadowRoot?.activeElement; try { child ??= focused?.localName === 'iframe' ? focused.contentDocument?.activeElement : null; } catch {} if (!child || child === focused) break; focused = child; }
       // Same-origin child documents have their own selection: the one changed last, else any observed one (top first).
@@ -403,7 +404,16 @@ export function installMirror2(sanitizeMirrorCss) {
       }
       // Nothing focused (the page's body or root element) is null: the viewer blurs too (protocol 492).
       const focusId = focused && focused !== focused.ownerDocument.body && focused !== focused.ownerDocument.documentElement ? mirrored(focused) : null;
-      return { scroll: [scrollX, scrollY], focused: focusId && kindOf.get(focusId) !== 'mask' ? focusId : null, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0 };
+      // A focused text control's own range travels as a form op: part of the state a focus or selection event may move.
+      const range = ['input', 'textarea'].includes(focused?.localName) ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
+      return { focused: focusId && kindOf.get(focusId) !== 'mask' ? focusId : null, selection, range };
+    };
+    // MP-08/MP-10: the focus/selection state the last drain reported. A focus or selection event that leaves it
+    // unchanged (focus emulation restoring the same element) does not end the long poll before the input it precedes.
+    let reported = '';
+    const header = () => {
+      const { focused, selection, range } = focusState(); reported = JSON.stringify([focused, selection, range]);
+      return { scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0 };
     };
     const take = () => { const resources = newResources, sheets = pendingSheets; newResources = []; pendingSheets = []; return { resources, sheets }; };
     const resetTargets = () => { targets = new Set(); return true; };
@@ -592,7 +602,7 @@ export function installMirror2(sanitizeMirrorCss) {
       }
       for (const [id, last] of fragments) { const doc = nodes.get(id), now = doc ? fragmentOf(doc) : last; if (now !== last) { fragments.set(id, now); ops.push({ op: 'fragment', id, fragment: now }); } }
       for (const key of Object.keys(dirty)) dirty[key].clear();
-      return { ops, changed: rebound, ...take(), ...header(), pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())) };
+      return { ops, changed: rebound, ...take(), ...header(), pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
     };
     // Opaque regions visible now, in top-level viewport CSS pixels.
     const opaqueBoxes = () => {

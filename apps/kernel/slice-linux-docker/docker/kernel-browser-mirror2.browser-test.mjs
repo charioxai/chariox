@@ -873,6 +873,32 @@ test("MP-10: a click that focuses a button and renders its overlay a frame later
     assert(first.ops.some(op => op.op === "children") && JSON.stringify(first.ops).includes("Switch branches/tags"), `MP-10: with the overlay in the same packet: ${JSON.stringify(first.ops).slice(0, 300)}`);
   }));
 
+// MP-08/MP-10: focus emulation ahead of an input restores focus to the element the viewer already has. That focusin
+// must not end the armed long poll (the re-armed poll would wait behind the input's own page task); a move does.
+test("MP-08/MP-10: a focus event that leaves the reported focus unchanged keeps the long poll armed; a focus move ends it", () => mirrored(
+  '<input id="a"><input id="b"><p id="p">one</p>', async ({ next, evaluate, host }) => {
+    await evaluate("document.querySelector('#a').focus();true");
+    const snapshot = await next(), ids = Object.fromEntries(elements(snapshot).filter(([, tag]) => tag === "input").map(([id, , attrs]) => [attrs.id, id]));
+    assert.equal(snapshot.focused, ids.a);
+    const connection = host.browser.connection, send = connection.send;
+    let waits = 0;
+    connection.send = (method, params, session) => { if (method === "Runtime.evaluate" && params?.expression?.includes(".waitDrain(")) waits++; return send.call(connection, method, params, session); };
+    try {
+      const pending = next(1500);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      await evaluate("const a=document.querySelector('#a');a.blur();a.focus();true");
+      await new Promise(resolve => setTimeout(resolve, 200));
+      await evaluate("document.querySelector('#p').textContent='two';true");
+      const packet = await pending;
+      assert(JSON.stringify(packet.ops).includes("two"), "MP-10: the change leaves in the armed poll");
+      assert.equal(waits, 1, "MP-08: the unchanged focus did not end and re-arm the long poll");
+      const started = Date.now(), moving = next(1500);
+      await evaluate("document.querySelector('#b').focus();true");
+      assert.equal((await moving).focused, ids.b, "MP-10: a focus move still travels");
+      assert(Date.now() - started < 1000, "MP-10: at once, not at the poll bound");
+    } finally { connection.send = send; }
+  }));
+
 // Round 10 drop drill (DPR1, 3.3 s after reconnect): the web transport replays the credit that was in flight when the
 // socket dropped; the kernel answers the replay with the original run, which was still long-polling.
 test("MP-10: a credit replayed after a reconnect ends the original credit's long poll (answered now, not after its wait)", () => mirrored('<p id="x">one</p>', async ({ next, host, subscription_id, generation }) => {

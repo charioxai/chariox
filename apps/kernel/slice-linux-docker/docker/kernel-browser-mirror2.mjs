@@ -332,7 +332,7 @@ export class Mirror2 {
       // The first packet carries DOM, CSS and fonts; images follow it. Resource
       // bytes travel only in packets without DOM changes (and in bounded
       // slices), so an echo never queues behind image bytes on the socket.
-      resources = reset ? await this.materialize(world, stream, 'font') : this.empty(stream, source) ? await this.materialize(world, stream, null) : [];
+      resources = reset ? await this.materialize(world, stream, 'font') : this.empty(stream, source) ? await this.materialize(world, stream, null, source.loaded) : [];
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       while (!reset && !resources.length && this.empty(stream, source) && Date.now() < deadline && stream.hurry === hurry) {
         const settle = stream.movedAt + SETTLE_MS - Date.now(), refine = settle > 0 && this.refinePending(stream) ? settle + 1 : 500;
@@ -340,7 +340,7 @@ export class Mirror2 {
         assertNotCancelled(signal);
         if (more.resync) { reset = true; source = await read(); this.register(stream, source); break; }
         this.register(stream, more); source = this.merge(source, more);
-        if (this.empty(stream, source)) resources = await this.materialize(world, stream, null);
+        if (this.empty(stream, source)) resources = await this.materialize(world, stream, null, more.loaded);
       }
     } catch (error) {
       await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
@@ -459,9 +459,11 @@ export class Mirror2 {
   // Bytes the page itself loaded: data URLs, the inspector's resource tree, or
   // Chrome's cache (credential-free) for URLs in the page's Resource Timing.
   // A URL a stylesheet merely mentions waits until the page loads it.
-  async materialize(main, stream, kind) {
+  // MP-08/MP-10: the drain just taken reports the main document's count; a separate evaluate would wait for a
+  // busy page's next task before the long poll re-arms.
+  async materialize(main, stream, kind, drained) {
     const worlds = new Map([[0, main], ...[...stream.frameSlots].map(([slot, entry]) => [slot, entry.child])]);
-    let counts = 0; for (const world of worlds.values()) counts += await this.evaluate(world, `${world.ref}.loadedCount()`).catch(() => 0);
+    let counts = 0; for (const [slot, world] of worlds) counts += !slot && Number.isSafeInteger(drained) ? drained : await this.evaluate(world, `${world.ref}.loadedCount()`).catch(() => 0);
     const recheck = counts !== stream.loadedCount; stream.loadedCount = counts;
     const out = [];
     for (const [slot, world] of worlds) {
