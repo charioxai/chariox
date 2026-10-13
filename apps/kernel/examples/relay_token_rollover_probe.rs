@@ -37,15 +37,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let started = std::time::Instant::now();
     let request_id = format!(
-        "tokenroll-{}-{}",
+        "daemon-peer-tmp-{}-{}-1",
         std::process::id(),
         chariox_kernel::session::unix_epoch_ms()
     );
+    let stage = std::cell::Cell::new("connect");
     let operation = async {
         let (mut socket, _) =
             connect_async(chariox_relay::frame_transport::transport_url(url)).await?;
         // Same temporary peer registration namespace used by the kernel's peer
         // client. Identity, signing scope and keys come from the product loader.
+        stage.set("register");
         let registration = DaemonRegistration {
             auth_token: config
                 .relay_token
@@ -66,11 +68,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             leased_agent_count: 0,
             local_session_count: 0,
         };
+        if chariox_relay::protocol::canonical_peer_daemon_id(&registration.daemon_id)
+            != Some(config.daemon_id.as_str())
+        {
+            return Err("probe must use the product temporary peer namespace".into());
+        }
         socket
             .send(Message::Text(
                 serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })?.into(),
             ))
             .await?;
+        stage.set("send_peer_request");
         socket
             .send(Message::Text(
                 serde_json::to_string(&RelayEnvelope::DaemonPeerRequest {
@@ -84,6 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into(),
             ))
             .await?;
+        stage.set("read_response");
         let mut frames = chariox_relay::frame_transport::FrameReceiver::default();
         while let Some(message) =
             chariox_relay::frame_transport::read_message(&mut socket, &mut frames).await
@@ -98,9 +107,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     encrypted_response: Some(response),
                     error: None,
                 } if returned == request_id && from_daemon_id == target => {
+                    stage.set("verify_binding");
                     if response.sender_public_key != config.relay_public_key {
                         return Ok(false);
                     }
+                    stage.set("decrypt_response");
                     let decrypted = relay_crypto::decrypt_payload_for_private_key(
                         &config.relay_private_key,
                         &response,
@@ -110,10 +121,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         && response["daemon_id"] == target
                         && response["value"] == payload;
                     socket.close(None).await?;
+                    stage.set(if intact {
+                        "verified"
+                    } else {
+                        "payload_mismatch"
+                    });
                     return Ok(intact);
                 }
-                RelayEnvelope::Close { .. } | RelayEnvelope::DaemonPeerResponse { .. } => {
-                    return Ok(false)
+                RelayEnvelope::Close { .. } => {
+                    stage.set("relay_close");
+                    return Ok(false);
+                }
+                RelayEnvelope::DaemonPeerResponse { .. } => {
+                    stage.set("peer_error_or_wrong_response");
+                    return Ok(false);
                 }
                 _ => {}
             }
@@ -126,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "{}",
-        serde_json::json!({"mpItems":["MP-08","MP-10","MP-11"], "intact":intact, "bytes":bytes, "elapsedMs":started.elapsed().as_millis()})
+        serde_json::json!({"mpItems":["MP-08","MP-10","MP-11"], "intact":intact, "stage":stage.get(), "bytes":bytes, "elapsedMs":started.elapsed().as_millis()})
     );
     Ok(())
 }
