@@ -413,7 +413,7 @@ test("provider account alias resolution rejects ambiguous folded labels", async 
   assert.equal(await resolveProviderAccountAlias(deps, "codex", "Validation"), "uppercase-id")
   assert.equal(await resolveProviderAccountAlias(deps, "codex", "validation"), "lowercase-id")
   assert.equal(await resolveProviderAccountAlias(deps, "codex", "VALIDATION"), null)
-  assert.deepEqual(footers, ["provider account alias VALIDATION was not found for codex"])
+  assert.deepEqual(footers, ["provider account alias VALIDATION is ambiguous for codex: Validation, validation. Use an exact label or profile ID."])
 })
 
 test("provider account actions reject unknown aliases with public-label errors and no mutation", async () => {

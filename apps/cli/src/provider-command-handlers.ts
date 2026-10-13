@@ -449,13 +449,11 @@ export async function resolveProviderAccountAlias(
     deps.flashFooter("provider account management is unavailable", "error")
     return null
   }
-  const profile = findProviderAccountByAlias(
-    await deps.listProviderAccountProfiles(provider),
-    provider,
-    alias,
-  )
-  if (profile) return profile.profile_id
-  deps.flashFooter(`provider account alias ${alias.trim()} was not found for ${provider}`, "error")
+  const selection = resolveProviderAccountSelection(await deps.listProviderAccountProfiles(provider), provider, alias)
+  if (selection.kind === "resolved") return selection.profile.profile_id
+  deps.flashFooter(selection.kind === "ambiguous"
+    ? `provider account alias ${alias.trim()} is ambiguous for ${provider}: ${selection.aliases.join(", ")}. Use an exact label or profile ID.`
+    : `provider account alias ${alias.trim()} was not found for ${provider}`, "error")
   return null
 }
 
@@ -578,15 +576,6 @@ function credentialKindLabel(profile: {
   }
 }
 
-function findProviderAccountByAlias(
-  profiles: Awaited<ReturnType<NonNullable<ProviderCommandHandlerDeps["listProviderAccountProfiles"]>>>,
-  provider: string,
-  alias: string,
-) {
-  const selection = resolveProviderAccountSelection(profiles, provider, alias)
-  return selection.kind === "resolved" ? selection.profile : undefined
-}
-
 async function resolveProviderAccountReference(
   deps: ProviderCommandHandlerDeps,
   provider: string,
@@ -598,10 +587,7 @@ async function resolveProviderAccountReference(
     deps.flashFooter("provider account selection is unavailable", "error")
     return null
   }
-  const profile = findProviderAccountByAlias(await deps.listProviderAccountProfiles(provider), provider, normalizedAlias)
-  if (profile) return profile.profile_id
-  deps.flashFooter(`provider account alias ${normalizedAlias} was not found for ${provider}`, "error")
-  return null
+  return resolveProviderAccountAlias(deps, provider, normalizedAlias)
 }
 
 async function providerAccountPublicLabel(
