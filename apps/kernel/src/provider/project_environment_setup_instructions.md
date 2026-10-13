@@ -26,6 +26,9 @@ include the appropriate openssh-client/ssh and tmux system-tool steps and bounde
 not assume the managed image already provides them. Prefer the project's existing setup recipe and
 return it with bounded validation for the kernel to apply and verify later on the selected worker.
 
+Include installer prerequisites explicitly, such as unzip for the Linux Bun installer.
+Stop on installer failure and verify the installed executable before a later step uses it.
+
 Project evidence discovery is read-only and the provider capability is enforced as read-only.
 For recipe discovery, use provider-native read-only file inspection, including shell reads only
 where the provider's enforced read-only sandbox permits them. Do not execute setup scripts,

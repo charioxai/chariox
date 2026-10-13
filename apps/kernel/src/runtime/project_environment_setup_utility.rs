@@ -55,6 +55,7 @@ struct ProjectEnvironmentSetupUtilityOutput {
 
 pub(crate) fn project_environment_setup_utility_prompt_assembly(
     input: &ProjectEnvironmentSetupUtilityInput,
+    allow_definition_revision: bool,
 ) -> Result<ProjectEnvironmentSetupUtilityPrompt, DaemonError> {
     let schema = project_environment_setup_utility_schema();
     let input_json =
@@ -62,8 +63,21 @@ pub(crate) fn project_environment_setup_utility_prompt_assembly(
             operation: "run project environment setup utility",
             message: format!("could not encode project environment setup input: {error}"),
         })?;
-    let visible_user_prompt =
+    let mut visible_user_prompt =
         project_environment_setup_utility_visible_prompt(&input_json, &schema);
+    // MP-08 / MP-11: the same trusted repair policy controls both the prompt
+    // and output parser. Unattested recipes have not been attempted yet.
+    if allow_definition_revision
+        && input
+            .definition
+            .as_ref()
+            .is_some_and(|definition| !definition.is_unattested_file_backed())
+    {
+        visible_user_prompt.insert_str(
+            0,
+            "The kernel already attempted this recipe: applying or validating the selected definition failed. Repair the failed definition through read-only discovery. Retain every stored validation command; additional checks are allowed. Do not return the unchanged recipe without correcting the failure.\n\n",
+        );
+    }
     Ok(ProjectEnvironmentSetupUtilityPrompt {
         visible_user_prompt,
         hidden_system_context: crate::prompt_assembly::PromptAssemblyService::from_env()?
@@ -109,6 +123,8 @@ Returned setup steps execute with a fresh isolated HOME. Check that a tool actua
 that HOME before skipping installation; an executable on PATH can be a launcher whose\n\
 user-scoped toolchain state is absent. Reuse working system tools and install only missing\n\
 requirements, using the package manager's bounded lock waiting when installation is needed.\n\n\
+Include installer prerequisites explicitly, such as unzip for the Linux Bun installer.\n\
+Stop on installer failure and verify the installed executable before a later step uses it.\n\n\
 Prefer an existing project Dockerfile, devcontainer, setup script, lockfile, or verified\n\
 environment recipe over inventing equivalent commands. Do not copy binaries from a host or Mac,\n\
 read host credential stores, install a provider SDK, or replace the home kernel.\n\n\
@@ -607,6 +623,55 @@ mod tests {
         assert!(hidden.contains("tools must be disabled for this pass"));
         assert!(prompt.contains("do not run setup or validation"));
         assert!(!prompt.contains("Run the requested setup in the worker before returning"));
+    }
+
+    // MP-08 / MP-10 / MP-11: a repair utility must receive the kernel's failure
+    // decision without acquiring setup execution or weaker validation authority.
+    #[test]
+    fn repair_prompt_reports_failed_recipe_and_preserves_validation_authority() {
+        let input = ProjectEnvironmentSetupUtilityInput {
+            project_id: "project-1".into(),
+            workspace_id: "/workspace".into(),
+            target_worker_id: "worker-1".into(),
+            target_platform: "linux-x86_64".into(),
+            definition: Some(definition()),
+            validation_commands: vec!["cargo check".into()],
+        };
+        let ordinary = project_environment_setup_utility_prompt_assembly(&input, false).unwrap();
+        assert!(!ordinary
+            .visible_user_prompt
+            .contains("The kernel already attempted"));
+        let repair = project_environment_setup_utility_prompt_assembly(&input, true).unwrap();
+        assert!(repair
+            .visible_user_prompt
+            .contains("The kernel already attempted"));
+        assert!(repair
+            .visible_user_prompt
+            .contains("applying or validating the selected definition failed"));
+        assert!(repair
+            .visible_user_prompt
+            .contains("Retain every stored validation command"));
+        assert!(repair.visible_user_prompt.contains("discovery-only turn"));
+        assert!(repair
+            .visible_user_prompt
+            .contains("installer prerequisites"));
+        assert!(repair
+            .hidden_system_context
+            .contains("installer prerequisites"));
+        let mut initial = input.clone();
+        initial.definition = None;
+        let discovery = project_environment_setup_utility_prompt_assembly(&initial, true).unwrap();
+        assert!(!discovery
+            .visible_user_prompt
+            .contains("The kernel already attempted"));
+        let mut unattested = definition();
+        unattested.source = ProjectEnvironmentDefinitionSource::SetupScript;
+        unattested.source_path = Some("setup.sh".into());
+        initial.definition = Some(unattested);
+        let discovery = project_environment_setup_utility_prompt_assembly(&initial, true).unwrap();
+        assert!(!discovery
+            .visible_user_prompt
+            .contains("The kernel already attempted"));
     }
 
     #[test]

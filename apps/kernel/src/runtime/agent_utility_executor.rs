@@ -298,7 +298,8 @@ async fn run_project_environment_setup_utility(
     input: ProjectEnvironmentSetupUtilityInput,
     allow_definition_revision: bool,
 ) -> Result<AgentUtilityOutput, DaemonError> {
-    let prompt = project_environment_setup_utility_prompt_assembly(&input)?;
+    let prompt =
+        project_environment_setup_utility_prompt_assembly(&input, allow_definition_revision)?;
     let output = run_provider_utility_prompt(
         runtime_state,
         provider_run,
