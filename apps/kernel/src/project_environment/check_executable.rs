@@ -3,6 +3,17 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 fn trusted(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, &'static str> {
+    let parent = path
+        .parent()
+        .ok_or("interpreter_unavailable")?
+        .canonicalize()
+        .map_err(|_| "interpreter_unavailable")?;
+    if roots
+        .iter()
+        .any(|root| path.starts_with(root) || parent.starts_with(root))
+    {
+        return Err("untrusted_executable");
+    }
     let path = path.canonicalize().map_err(|_| "interpreter_unavailable")?;
     let metadata = path.metadata().map_err(|_| "interpreter_unavailable")?;
     if !metadata.is_file() || roots.iter().any(|root| path.starts_with(root)) {

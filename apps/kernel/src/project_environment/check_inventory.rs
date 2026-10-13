@@ -129,9 +129,6 @@ pub(super) fn version_until(
     let Some(path) = executable(name) else {
         return Ok(None);
     };
-    if roots.iter().any(|r| path.starts_with(r)) {
-        return Err("untrusted_executable");
-    }
     let mut command = super::check_executable::command(&path, roots)?;
     command.args(args);
     if matches!(name, "cargo" | "rustc") {
@@ -315,11 +312,7 @@ pub(super) fn software_version_until(
                 return Err("font_inventory_unavailable");
             };
             let mut c = super::check_executable::command(&path, roots)?;
-            c.args(["--format", "%{family}\n"])
-                .current_dir("/")
-                .env_clear()
-                .env("LANG", "C")
-                .env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            c.args(["--format", "%{family}\n"]);
             let output = crate::local::provider_requests::capture_inventory_probe(
                 c,
                 remaining(deadline, Duration::from_secs(3))?,
@@ -349,11 +342,7 @@ pub(super) fn software_version_until(
                 return Err("package_inventory_unavailable");
             };
             let mut c = super::check_executable::command(&path, roots)?;
-            c.args(["--show", "--showformat=${Status}\t${Version}", "--", name])
-                .current_dir("/")
-                .env_clear()
-                .env("LANG", "C")
-                .env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            c.args(["--show", "--showformat=${Status}\t${Version}", "--", name]);
             let output = crate::local::provider_requests::capture_inventory_probe(
                 c,
                 remaining(deadline, Duration::from_secs(3))?,

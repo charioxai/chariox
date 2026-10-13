@@ -63,11 +63,6 @@ pub(crate) fn resolve_bounded_host(
         }) {
             return Ok(addresses);
         }
-        command
-            .current_dir("/")
-            .env_clear()
-            .env("LANG", "C")
-            .env("PATH", "/usr/bin:/bin");
         #[cfg(not(any(target_os = "macos", windows)))]
         command.args(["ahosts", host]);
         #[cfg(windows)]

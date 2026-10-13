@@ -180,3 +180,33 @@ fn font_and_apt_inventory_reject_canonical_workspace_executables() {
     }
     std::env::set_var("PATH", prior);
 }
+
+// MP-08 / MP-10 / MP-11: canonical host binaries must not inherit a workspace venv.
+#[cfg(unix)]
+#[test]
+fn workspace_invocation_paths_cannot_select_trusted_host_interpreters() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let tools = crate::test_support::TestWorktree::new("host-interpreter-tools");
+    let workspace = crate::test_support::TestWorktree::new("workspace-venv");
+    let bin = workspace.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    symlink("/usr/bin/python3", bin.join("python3")).unwrap();
+    symlink(&bin, tools.path().join("alias")).unwrap();
+    symlink("/usr/bin", workspace.path().join("host-bin")).unwrap();
+    let script = tools.path().join("npm");
+    std::fs::write(&script, "#!/usr/bin/env python3\nprint('1.2.3')\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let roots = [workspace.path().canonicalize().unwrap()];
+    let prior = std::env::var_os("PATH").unwrap();
+    std::env::set_var("PATH", &bin);
+    let interpreter = super::check_executable::command(&script, &roots).err();
+    let alias = super::check_executable::command(&tools.path().join("alias/python3"), &roots).err();
+    let directory_alias =
+        super::check_executable::command(&workspace.path().join("host-bin/python3"), &roots).err();
+    std::env::set_var("PATH", prior);
+    assert_eq!(interpreter, Some("untrusted_executable"));
+    assert_eq!(alias, Some("untrusted_executable"));
+    assert_eq!(directory_alias, Some("untrusted_executable"));
+}
