@@ -223,6 +223,15 @@ async fn leased_account_authority_survives_launch_reload_and_worker_recovery() {
                     )
                     .unwrap();
                 }
+                // This namespace fixture is already authenticated. Do not send
+                // its synthetic token to an installed official provider CLI.
+                crate::test_support::authenticate_provider_account(
+                    &registry,
+                    owner,
+                    provider,
+                    &profile.profile_id,
+                )
+                .unwrap();
                 profiles.insert(owner, profile.profile_id);
             }
             let leased = {
