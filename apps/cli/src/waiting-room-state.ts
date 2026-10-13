@@ -23,7 +23,6 @@ import {
 } from "./waiting-room-remote-rows.js"
 import {
   normalizeWaitingRoomLaunchPlacement,
-  waitingRoomLaunchPlacement,
 } from "@chariox/kernel-client/waiting-room-runtime-placement"
 import {
   waitingRoomPreviewSessions,
@@ -47,7 +46,7 @@ import {
   waitingRoomConfiguresNewManagedMachine,
   waitingRoomProjectRepositoryOptions,
 } from "./waiting-room-managed-environments.js"
-import { normalizeProviderAccountProfileId, offeredBackendProviderIds } from "./waiting-room-provider-accounts.js"
+import { normalizeProviderAccountProfileId, waitingRoomOfferedBackendProviderIds } from "./waiting-room-provider-accounts.js"
 
 export function createWaitingRoomState(
   sessions: SessionListEntry[],
@@ -125,7 +124,7 @@ export function normalizeWaitingRoomState(
   })
   const providerId = offeredProvider(
     normalizeBackendProvider(state.providerId),
-    offeredBackendProviderIds(remote.installedProviders, !waitingRoomLaunchPlacement(state, remote).workerKernelRef),
+    waitingRoomOfferedBackendProviderIds(state, remote),
   )
   const accountProfileId = normalizeProviderAccountProfileId(remote.providerAccounts, providerId, state.accountProfileId)
   const selected = selectConfiguredModel(catalog, state.modelId, providerId)

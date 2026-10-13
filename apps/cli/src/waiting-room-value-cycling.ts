@@ -17,7 +17,6 @@ import {
 import {
   cycleWaitingRoomLaunchKernel,
   cycleWaitingRoomLaunchMachine,
-  waitingRoomLaunchPlacement,
 } from "@chariox/kernel-client/waiting-room-runtime-placement"
 import { normalizeWaitingRoomState } from "./waiting-room-state.js"
 import { cycleWaitingRoomWorktreeSelectionId } from "./waiting-room-worktrees.js"
@@ -36,7 +35,7 @@ import {
   toggleManagedRepositorySelection,
   toggleManagedProviderAccountSelection,
 } from "./waiting-room-managed-environments.js"
-import { offeredBackendProviderIds, providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
+import { waitingRoomOfferedBackendProviderIds, providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
 
 export function cycleWaitingRoomValue(
   state: WaitingRoomState,
@@ -78,10 +77,7 @@ export function cycleWaitingRoomFocusedValue(
     })
   }
   if (state.focus === "provider") {
-    const providers = offeredBackendProviderIds(
-      remote.installedProviders,
-      !waitingRoomLaunchPlacement(state, remote).workerKernelRef,
-    )
+    const providers = waitingRoomOfferedBackendProviderIds(state, remote)
     if (providers.length === 0) return state
     const index = Math.max(0, providers.indexOf(state.providerId))
     return context.normalizeState({

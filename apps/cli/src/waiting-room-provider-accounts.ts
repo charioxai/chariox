@@ -1,3 +1,5 @@
+import { waitingRoomLaunchPlacement } from "@chariox/kernel-client/waiting-room-runtime-placement"
+import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 import {
   providerAccountCapacity,
   providerAccountCapacityLabel,
@@ -19,6 +21,19 @@ export function offeredBackendProviderIds(
 ): readonly BackendProviderId[] {
   if (!installedProviders || !localExecution) return BACKEND_PROVIDER_IDS
   return BACKEND_PROVIDER_IDS.filter((id) => installedProviders.includes(providerAccountFamily(id)))
+}
+
+/** MP-08/MP-11: only the execution kernel may narrow provider choices. */
+export function waitingRoomOfferedBackendProviderIds(
+  state: WaitingRoomState,
+  remote: WaitingRoomRemoteState,
+): readonly BackendProviderId[] {
+  const placement = waitingRoomLaunchPlacement(state, remote)
+  const local = placement.kernelRef === "local"
+    && !placement.managedEnvironmentId && !placement.newManagedEnvironment
+  const installed = local ? remote.installedProviders
+    : remote.kernels?.find((kernel) => kernel.kernel_id === placement.kernelRef)?.available_providers
+  return offeredBackendProviderIds(installed)
 }
 
 export function providerAccountFamily(provider: string): string {

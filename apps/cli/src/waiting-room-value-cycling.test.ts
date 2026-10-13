@@ -9,7 +9,7 @@ import {
   createWaitingRoomState,
   normalizeWaitingRoomState,
 } from "./waiting-room-state.js"
-import type { WaitingRoomState } from "./waiting-room-types.js"
+import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 
 test("waiting room focused value cycling normalizes provider and model changes", () => {
   const catalog = fallbackProviderCatalog()
@@ -178,4 +178,44 @@ test("MP-08 Account row cycling ends with an add-new-account value that never be
   assert.equal(state.accountAddSelected, true)
   state = normalizeState({ ...state, focus: "model" })
   assert.equal(state.accountAddSelected, undefined, "leaving the row drops the add value")
+})
+
+for (const machine of ["remote-machine", "managed:new", "managed:environment:pending"]) {
+  test(`MP-08/MP-11 provider choices do not use the home inventory for ${machine}`, () => {
+    const catalog = fallbackProviderCatalog()
+    const remote: WaitingRoomRemoteState = {
+      installedProviders: ["codex"],
+      machines: [{ machine_id: "remote-machine", kernel_count: 1 }],
+      kernels: [{ kernel_id: "remote-kernel", machine_id: "remote-machine" }],
+      managedEnvironments: [],
+    }
+    const normalizeState = (state: WaitingRoomState) => normalizeWaitingRoomState(state, [], catalog, DEFAULT_THEME_REGISTRY, remote)
+    let state = normalizeState({
+      ...createWaitingRoomState([], catalog, "claude-p", "default", ""),
+      focus: "provider",
+      selectedMachineRef: machine,
+      selectedKernelRef: "remote-kernel",
+    })
+    assert.equal(state.providerId, "claude-p", "home-only Codex must not replace the destination provider")
+    const seen = new Set<string>()
+    for (let step = 0; step < 4; step++) {
+      state = cycleWaitingRoomFocusedValue(state, 1, { catalog, themeRegistry: DEFAULT_THEME_REGISTRY, remote, normalizeState })
+      seen.add(state.providerId)
+    }
+    assert.deepEqual([...seen].sort(), ["claude-headless", "claude-p", "codex", "opencode"])
+  })
+}
+
+test("MP-08/MP-11 remote kernels filter by their own advertised providers", () => {
+  const catalog = fallbackProviderCatalog()
+  const remote: WaitingRoomRemoteState = {
+    installedProviders: ["codex"],
+    machines: [{ machine_id: "remote-machine", kernel_count: 1 }],
+    kernels: [{ kernel_id: "remote-kernel", machine_id: "remote-machine", available_providers: ["claude"] }],
+  }
+  const normalizeState = (state: WaitingRoomState) => normalizeWaitingRoomState(state, [], catalog, DEFAULT_THEME_REGISTRY, remote)
+  const initial = normalizeState({ ...createWaitingRoomState([], catalog, "claude-p", "default", ""),
+    focus: "provider", selectedMachineRef: "remote-machine", selectedKernelRef: "remote-kernel" })
+  assert.equal(initial.providerId, "claude-p")
+  assert.equal(cycleWaitingRoomFocusedValue(initial, 1, { catalog, themeRegistry: DEFAULT_THEME_REGISTRY, remote, normalizeState }).providerId, "claude-headless")
 })
