@@ -484,12 +484,3 @@ impl KernelRuntimeOwnedState {
         }))
     }
 }
-
-fn join_hidden_context(first: &str, second: &str) -> String {
-    match (first.trim(), second.trim()) {
-        ("", "") => String::new(),
-        (first, "") => first.to_string(),
-        ("", second) => second.to_string(),
-        (first, second) => format!("{first}\n\n{second}"),
-    }
-}

@@ -251,7 +251,7 @@ mod tests {
                 Some("agent"),
                 TerminalOutputKind::ProviderTool,
                 None,
-                &payload.to_string(),
+                payload.to_string(),
             ),
             HistoryEventTurnContext::default(),
         )

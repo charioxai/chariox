@@ -263,7 +263,7 @@ fn collect_turns(sorted: &[HistoryEvent]) -> Vec<HandoffTurn> {
     for event in sorted {
         match event.kind {
             HistoryEventKind::UserPrompt => {
-                if let Some(content) = non_empty_content(&event) {
+                if let Some(content) = non_empty_content(event) {
                     turns.push(HandoffTurn {
                         prompt_id: event.prompt_id.clone(),
                         user_prompt: content,
@@ -278,14 +278,14 @@ fn collect_turns(sorted: &[HistoryEvent]) -> Vec<HandoffTurn> {
                 // Answers stream as deltas whose spacing is part of the text.
                 if let (Some(turn), Some(content)) = (turns.last_mut(), event.content.as_ref()) {
                     turn.has_provider_attempt |= !content.trim().is_empty();
-                    turn.push_output(&event, content);
+                    turn.push_output(event, content);
                 }
             }
             HistoryEventKind::ProviderTool
             | HistoryEventKind::ProviderError
             | HistoryEventKind::ProviderStatus
             | HistoryEventKind::Notice => {
-                if let (Some(turn), Some(content)) = (turns.last_mut(), non_empty_content(&event)) {
+                if let (Some(turn), Some(content)) = (turns.last_mut(), non_empty_content(event)) {
                     if event.kind == HistoryEventKind::ProviderTool {
                         turn.output_item = None;
                     }

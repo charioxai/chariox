@@ -1994,7 +1994,7 @@ pub(in crate::runtime::state) mod tests {
             &session_id,
             "prior",
             &agent_id,
-            &format!("remember amber-kestrel {}", "notes ".repeat(2_000)),
+            format!("remember amber-kestrel {}", "notes ".repeat(2_000)),
         );
         runtime
             .owned
