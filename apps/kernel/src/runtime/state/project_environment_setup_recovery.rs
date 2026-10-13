@@ -510,14 +510,7 @@ pub(in crate::runtime::state::project_environment_setup) fn kill_live_process_gr
         return Err("validation child handle no longer matches its process lease".to_string());
     }
     validate_live_child_identity(identity)?;
-    let result = unsafe { libc::kill(-(identity.process_group_id as libc::pid_t), libc::SIGKILL) };
-    if result == 0 {
-        return Ok(());
-    }
-    match std::io::Error::last_os_error().raw_os_error() {
-        Some(libc::ESRCH) => Ok(()),
-        _ => Err("owned validation process group could not be terminated".to_string()),
-    }
+    kill_owned_validation_session(identity)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -542,6 +535,9 @@ fn settle_process_group(identity: &ValidationProcessIdentity) -> Result<(), Stri
         Ok(_) | Err(_) => return wait_for_process_group_absence(identity.process_group_id),
     };
     if initial.state == 'Z' || initial.state == 'X' {
+        if let Err(error) = kill_owned_validation_session(identity) {
+            return wait_for_process_group_absence(identity.process_group_id).map_err(|_| error);
+        }
         return wait_for_process_group_absence(identity.process_group_id);
     }
 
@@ -595,12 +591,55 @@ fn kill_stopped_process_group(identity: &ValidationProcessIdentity) -> Result<()
             "validation child identity changed before process-group termination".to_string(),
         );
     }
-    let result = unsafe { libc::kill(-(identity.process_group_id as libc::pid_t), libc::SIGKILL) };
-    if result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
-        Ok(())
-    } else {
-        Err("owned validation process group could not be terminated".to_string())
+    kill_owned_validation_session(identity)
+}
+
+#[cfg(target_os = "linux")]
+fn kill_owned_validation_session(identity: &ValidationProcessIdentity) -> Result<(), String> {
+    // GNU timeout and job-control shells create subgroups without leaving setsid's
+    // exclusive session. Signal each captured birth, never a numeric foreign group.
+    let mut signals =
+        crate::runtime::owned_process_signals::OwnedProcessSignals::for_linux_session_identity(
+            identity.pid,
+            identity.start_time_ticks,
+        )
+        .map_err(|error| error.to_string())?;
+    signals
+        .kill_owned_processes()
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn validation_session_is_absent(session_id: u32) -> Result<bool, String> {
+    if session_id <= 1 || session_id > i32::MAX as u32 {
+        return Err("validation session identity is invalid".to_string());
     }
+    for entry in fs::read_dir("/proc").map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        if pid <= 1 {
+            continue;
+        }
+        let stat = match fs::read_to_string(entry.path().join("stat")) {
+            Ok(stat) => stat,
+            Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+                continue
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        let process = parse_proc_identity(pid, &stat)?;
+        if process.session_id == session_id && !matches!(process.state, 'Z' | 'X') {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn validation_session_is_absent(_session_id: u32) -> Result<bool, String> {
+    Err("durable validation process recovery is unsupported on this platform".to_string())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -640,7 +679,9 @@ pub(in crate::runtime::state::project_environment_setup) fn wait_for_process_gro
 ) -> Result<(), String> {
     let deadline = Instant::now() + GROUP_SETTLE_TIMEOUT;
     loop {
-        if process_group_is_absent(process_group_id)? {
+        if process_group_is_absent(process_group_id)?
+            && validation_session_is_absent(process_group_id)?
+        {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -740,6 +781,11 @@ fn read_proc_identity(pid: u32) -> Result<ProcIdentity, String> {
     }
     let stat = fs::read_to_string(format!("/proc/{pid}/stat"))
         .map_err(|error| format!("validation child identity could not be read: {error}"))?;
+    parse_proc_identity(pid, &stat)
+}
+
+#[cfg(target_os = "linux")]
+fn parse_proc_identity(pid: u32, stat: &str) -> Result<ProcIdentity, String> {
     let close = stat
         .rfind(')')
         .ok_or_else(|| "validation child stat record is malformed".to_string())?;
@@ -818,8 +864,15 @@ mod tests {
         use std::os::unix::process::CommandExt;
         let root = test_root("live-group");
         let scratch = make_scratch(&root, "live-group-op", 1, 0);
-        let mut command = std::process::Command::new("/bin/sleep");
-        command.arg("30").stdin(std::process::Stdio::null());
+        let marker = root.join("timeout-child");
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "timeout 30 sh -c 'echo $$ > \"$RECOVERY_CHILD\"; exec sleep 30'",
+            ])
+            .env("RECOVERY_CHILD", &marker)
+            .stdin(std::process::Stdio::null());
         unsafe {
             command.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -841,17 +894,43 @@ mod tests {
             .bind_process(identity.clone())
             .expect("the fixture process should bind to the lease");
 
+        let marker_deadline = Instant::now() + Duration::from_secs(3);
+        while !marker.exists() && Instant::now() < marker_deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let writer_pid = fs::read_to_string(&marker)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        let writer = read_proc_identity(writer_pid).unwrap();
+        assert_eq!(writer.session_id, identity.session_id);
+        assert_ne!(writer.process_group_id, identity.process_group_id);
+        let writer_exit = open_pidfd(writer_pid).unwrap();
+
         let reaper = std::thread::spawn(move || {
             let mut child = child;
             child
                 .wait()
                 .expect("the killed fixture process should be reaped")
         });
-        recover_validation_command(&lease).expect("the owned group should be killed and settled");
+        let recovered = recover_validation_command(&lease);
+        let writer_alive = read_proc_identity(writer_pid).is_ok_and(|current| {
+            current.start_time_ticks == writer.start_time_ticks
+                && !matches!(current.state, 'Z' | 'X')
+        });
+        if writer_alive {
+            let _ = send_pidfd_signal(&writer_exit, libc::SIGKILL);
+        }
+        let _ = reaper.join().expect("the fixture reaper should complete");
+        recovered.expect("the owned session should be killed and settled");
+        assert!(
+            !writer_alive,
+            "recovery must settle the timeout subgroup before scratch removal"
+        );
         assert!(!scratch.path().exists());
         assert!(process_group_is_absent(identity.process_group_id)
             .expect("the group should be readable"));
-        let _ = reaper.join().expect("the fixture reaper should complete");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1363,6 +1442,47 @@ mod tests {
             .expect("the intent should be cleared after the gated child was reaped");
         assert!(final_event.payload["entry"]["validation_command_lease"].is_null());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // MP-08/MP-10/MP-11: GNU timeout creates a subgroup inside our setsid session.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn timeout_subgroup_is_settled_when_validation_is_cancelled() {
+        let root = test_root("timeout-subgroup");
+        let (store, _durable) = durable_setup_store(&root, "timeout-subgroup-op");
+        let scratch = make_scratch(&root, "timeout-subgroup-op", 1, 0);
+        let marker = root.join("timeout-child");
+        let environment =
+            BTreeMap::from([("SUBGROUP_MARKER".to_string(), marker.display().to_string())]);
+        let result = super::super::project_environment_setup_validation::run_worker_validation_command_with_recovery(
+            "timeout 30 sh -c 'echo $$ > \"$SUBGROUP_MARKER\"; exec sleep 30'",
+            &root.join("workspace"), &environment, &scratch, &store,
+            "timeout-subgroup-op", 1, 0, || marker.exists(), None,
+        );
+        let pid = fs::read_to_string(&marker)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        // Always settle the exact test-owned child even on the fail-first source.
+        let identity = read_proc_identity(pid).ok();
+        if let Some(identity) = identity.as_ref() {
+            let pidfd = open_pidfd(pid).unwrap();
+            if read_proc_identity(pid).is_ok_and(|current| current == *identity) {
+                let _ = send_pidfd_signal(&pidfd, libc::SIGKILL);
+            }
+        }
+        let scratch_removed = !scratch.path().exists();
+        let _ = fs::remove_dir_all(&root);
+        let error = result.expect_err("cancellation must remain a failure");
+        assert!(
+            error.contains("cancelled"),
+            "subgroup must settle before cancellation completes: {error}"
+        );
+        assert!(
+            scratch_removed,
+            "settled cancellation must remove owned scratch"
+        );
     }
 
     #[cfg(target_os = "linux")]
