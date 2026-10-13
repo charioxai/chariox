@@ -13,7 +13,7 @@ Use an isolated kernel with its product-created, unsigned default Codex account 
 
 - `apps-tui-ux/ACCOUNT-AUTH-QUOTA`: With a genuinely exhausted product-linked account and a usable alternative, show model-specific exhaustion and the provider-reported reset times before launch. Web at DPR 1/2 and the real TUI must steer to account selection without launching or suggesting a new sign-in. Select an account with usable quota, preserve it through session and provider-run creation, and complete a real turn. Known credit-backed warnings and stale/reset usage must remain distinct from confirmed exhaustion. Fixtures cannot establish this row.
 
-### Waiting-room provider accounts (protocol 511)
+### Waiting-room provider accounts (protocol 512)
 
 Use a kernel host that (a) has a native Claude Code login, (b) does not have OpenCode installed, and (c) separately, a kernel with no signed-in account at all. Use the real built web entry and the real TUI against the candidate kernel over the hosted relay. Stop every new sign-in at the provider's device or authorization link; never complete or revoke a shared login.
 

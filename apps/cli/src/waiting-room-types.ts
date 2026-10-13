@@ -165,7 +165,7 @@ export type WaitingRoomRemoteState = {
   externalProviderSessionsNextCursor?: string | null
   projects?: WaitingRoomProjectSummary[]
   providerAccounts?: ProviderAccountProfile[]
-  /** Protocol 511: provider families installed on the kernel host; absent from older kernels. */
+  /** Protocol 512: provider families installed on the kernel host; absent from older kernels. */
   installedProviders?: readonly string[]
   gitCredentials?: import("@chariox/kernel-client").WaitingRoomGitCredentialSummary[]
   managedComputeClasses?: readonly ManagedEnvironmentComputeClassOption[]

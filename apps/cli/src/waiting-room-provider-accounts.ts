@@ -9,7 +9,7 @@ import { BACKEND_PROVIDER_IDS, type BackendProviderId } from "./provider-catalog
 export { providerAccountCapacity }
 
 /**
- * MP-08: providers the waiting room offers. A protocol-511 kernel reports the
+ * MP-08: providers the waiting room offers. A protocol-512 kernel reports the
  * harness families installed on its host. A remote worker runs its own
  * harnesses and an older kernel reports none, so neither narrows the list.
  */

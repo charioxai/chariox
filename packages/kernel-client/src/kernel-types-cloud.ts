@@ -373,7 +373,7 @@ export type WaitingRoomInventorySnapshot = {
     worktree_label?: string | null
   } | null
   provider_accounts?: import("./kernel-types-provider.js").ProviderAccountProfile[]
-  /** Protocol 511: provider families whose official harness CLI is installed on the kernel host. */
+  /** Protocol 512: provider families whose official harness CLI is installed on the kernel host. */
   installed_providers?: string[]
   git_credentials?: WaitingRoomGitCredentialSummary[]
 }
