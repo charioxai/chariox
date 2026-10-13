@@ -374,7 +374,11 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
             .get_agent(agent.id())
             .unwrap()
             .state(),
-        crate::agent::AgentState::Idle
+        if recent_failure {
+            crate::agent::AgentState::Error
+        } else {
+            crate::agent::AgentState::Idle
+        }
     );
     if recent_failure {
         return;
