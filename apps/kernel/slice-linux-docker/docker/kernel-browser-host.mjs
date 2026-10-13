@@ -506,7 +506,10 @@ export class KernelBrowserHost {
       return this.reconcile();
     }
     if (command.op === "navigate") {
-      await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal });
+      // MP-08/MP-11: the reloaded App page's calls run as whoever navigated it.
+      const appInput = app ? this.browser.appTabs.beginInput?.(tab.target_id, agent) : null;
+      try { await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal }); }
+      finally { appInput?.(); }
       return this.observe(await this.reconcile(), null, scope);
     }
     if (command.op === "note_selection" || command.op === "note_reanchor") return this.observe({ generation:this.generation, observation:await this.browser.observeNote({ ...binding, ...(command.quote ? {quote:command.quote} : {}) }) },tab,scope);
