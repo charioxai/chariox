@@ -1,3 +1,4 @@
+import { createKernelConnectionDisplay, type KernelConnectionDisplayTimer } from "./kernel-connection-display.js"
 import type { RuntimeNoticeRecord, TerminalOutputRecord, TranscriptEntry } from "./cli-types.js"
 import {
   terminalRecordIsProviderTerminal,
@@ -61,6 +62,7 @@ type KernelEventControllerDeps = {
   onWaitingRoomTransportClosed: () => void
   appendNotice: (message: string, tone?: "default" | "warning") => void
   connectedStatusLine: string
+  connectionDisplayTimer?: KernelConnectionDisplayTimer
   markAssistantMessageCompleted: (agentId: string | null | undefined) => void
   handleExternalProviderHistoryUpdated?: (agentId: string | null) => void
 }
@@ -75,8 +77,7 @@ type ProjectedRecordAppendTarget = {
 }
 
 export function createKernelEventController(deps: KernelEventControllerDeps) {
-  let lastTransportNoticeMessage: string | null = null
-  let lastTransportNoticeAtMs = 0
+  const connectionDisplay = createKernelConnectionDisplay({ ...deps, ...(deps.connectionDisplayTimer ? { timer: deps.connectionDisplayTimer } : {}) })
 
   const appendProjectedRecord = (
     projection: TerminalRecordTranscriptProjection,
@@ -281,8 +282,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
 
   const applyTransportClosed = (message: string) => {
     deps.setDaemonDisconnected(true)
-    deps.setStatusLine("Lost connection to the Chariox kernel.")
-    deps.updateSessionChrome()
+    connectionDisplay.closed()
     if (!deps.isAttached()) {
       // Control and event closes share this signal. Replace the event binding
       // first so the next rows report is guaranteed to be a complete baseline.
@@ -290,24 +290,13 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
       deps.onWaitingRoomTransportClosed()
       return
     }
-    const now = Date.now()
-    if (deps.isAttached() && (message !== lastTransportNoticeMessage || now - lastTransportNoticeAtMs > 10_000)) {
-      lastTransportNoticeMessage = message
-      lastTransportNoticeAtMs = now
-      deps.appendNotice(message, "warning")
-    }
+
   }
 
   const applyTransportResumed = () => {
     deps.recordDaemonActivity("kernel_transport_resumed")
     deps.setDaemonDisconnected(false)
-    deps.setStatusLine(deps.connectedStatusLine)
-    deps.updateSessionChrome()
-    if (deps.isAttached() && lastTransportNoticeMessage !== null) {
-      deps.appendNotice("Reconnected to the Chariox kernel.")
-    }
-    lastTransportNoticeMessage = null
-    lastTransportNoticeAtMs = 0
+    connectionDisplay.resumed()
   }
 
   const applyAssistantMessageCompleted = (event: {
@@ -322,6 +311,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     applyRuntimeNotices,
     applyTransportClosed,
     applyTransportResumed,
+    disposeConnectionDisplay: connectionDisplay.dispose,
     applyAssistantMessageCompleted,
   }
 }

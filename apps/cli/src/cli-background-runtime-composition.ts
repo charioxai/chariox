@@ -700,6 +700,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
 
   onCleanup(() => {
     disposeKernelEventHandler()
+    kernelEventController.disposeConnectionDisplay()
     void deps.client.unsubscribeFromKernelEvents().catch(() => {
       // Ignore teardown errors while closing the TUI.
     })
