@@ -628,7 +628,7 @@ impl KernelRuntimeState {
                 if permit
                     .prompt_delivery
                     .as_ref()
-                    .is_none_or(|delivery| !delivery.belongs_to(run))
+                    .is_none_or(|delivery| !delivery.belongs_to_agent_run(&agent, run))
                 {
                     return Err(app_binding_error(
                         "App request's prompt was not delivered to this provider",

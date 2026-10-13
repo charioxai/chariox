@@ -727,8 +727,8 @@ impl KernelRuntimeState {
             Some(slice_id) => self.resolve_slice_worker_kernel_ref(slice_id).await?,
             None => machine_ref.to_string(),
         };
-        self.revoke_agent_app_capability_grants(&local_agent)
-            .await?;
+        // MP-08/MP-10/MP-11 D1: Apps remain home-owned across placement
+        // changes; their existing grant generation and expiry still apply.
         self.owned
             .kernel_browser_host
             .revoke_agent(local_agent.id());

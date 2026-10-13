@@ -387,6 +387,89 @@ async fn capability_stale_home_run_cannot_acquire_after_agent_is_leased() {
     );
 }
 
+// MP-08/MP-10/MP-11 D1: real leases persist the raw worker delivery id.
+#[tokio::test]
+async fn capability_leased_acquisition_uses_delivered_worker_run_and_owner_approval() {
+    let room = room();
+    let agent = room.agents[0].0.clone();
+    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
+    let prompt_id = {
+        let app = room.app.lock().await;
+        let session = app.sessions().get_session(&room.session).unwrap();
+        let prompts = app.prompt_state_owner();
+        let active = prompts
+            .active_prompt_for_agent_snapshot(&session, &agent)
+            .unwrap();
+        let mut delivered = active.clone();
+        delivered.set_durable_delivery(
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some("worker-run".into()),
+            None,
+        );
+        assert!(prompts.replace_active_prompt_if_matches(&session, &agent, &active, delivered));
+        app.agents()
+            .bind_remote_execution(
+                &agent,
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker".into(),
+                    worker_machine_id: "worker-machine".into(),
+                    execution_lease_id: "lease".into(),
+                    leased_agent_id: "worker-agent".into(),
+                    active_worker_provider_run_id: Some("worker-run".into()),
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .unwrap();
+        active.id().to_string()
+    };
+    let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {
+        home_kernel_id: room.app.lock().await.config().daemon_id.clone(),
+        home_session_id: room.session.clone(),
+        home_agent_id: agent.clone(),
+        home_prompt_id: Some(prompt_id),
+        leased_agent_id: "worker-agent".into(),
+        worker_kernel_id: "worker".into(),
+        worker_machine_id: "worker-machine".into(),
+        worker_provider_run_id: "worker-run".into(),
+        worker_worktree_path: room._scratch.0.to_string_lossy().into(),
+        worker_workspace_identity: crate::io::WorkspaceIdentity::local(
+            room._scratch.0.to_string_lossy(),
+        ),
+    };
+    let home = room.router.runtime_state.with_relay_peer_authority(
+        crate::runtime::relay_peer_authority::test_peer_authority("worker"),
+    );
+    let (result, ()) = tokio::join!(
+        async {
+            home.dispatch_forwarded_capability_runtime_tool_call(
+                context.clone(),
+                crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL.into(),
+                serde_json::json!({"kind":"app","name":"installed"}),
+            )
+            .await
+            .expect("MP-08 D1: delivered leased turn reaches home owner approval")
+        },
+        answer_app_decision(&room, "allow")
+    );
+    assert!(result.0.ok);
+    assert!(bound(&room, &agent).await);
+    let mut stale = context;
+    stale.worker_provider_run_id = "replacement".into();
+    assert!(home
+        .dispatch_forwarded_capability_runtime_tool_call(
+            stale,
+            crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL.into(),
+            serde_json::json!({"kind":"app","name":"installed"})
+        )
+        .await
+        .is_err());
+    room.router.runtime_state.shutdown_cleanup().await.unwrap();
+}
+
 #[tokio::test]
 async fn capability_deleting_an_app_grant_source_revokes_its_child() {
     let room = room();
