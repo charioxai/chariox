@@ -587,10 +587,14 @@ fn opencode_auth_status(
     environment: &BTreeMap<String, String>,
 ) -> Result<ProviderAuthStatus, DaemonError> {
     let executable = resolve_opencode_executable()?;
+    // MP-08 / MP-10 / MP-11: auth list exits before background model refresh
+    // settles, which can strand its native lock ahead of explicit provisioning.
+    let mut auth_environment = environment.clone();
+    auth_environment.insert("OPENCODE_DISABLE_MODELS_FETCH".into(), "1".into());
     let mut command = crate::provider::managed_isolated_utility_command(
         executable.display().to_string(),
         vec!["auth".to_string(), "list".to_string()],
-        environment.clone(),
+        auth_environment,
         None,
         "opencode:auth-status",
     )?;
