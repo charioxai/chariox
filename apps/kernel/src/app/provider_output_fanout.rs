@@ -348,14 +348,42 @@ impl ProviderOutputFanout {
         );
         let recipient_attachment_ids =
             self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids);
-        self.terminal.record_assistant_message_completion(
-            session_id,
-            provider_run_id,
-            agent_id,
-            recipient_attachment_ids,
-            message_id,
-            completed_at_ms,
-        );
+        // MP-08 / MP-10 / MP-11: retain the turn that owned the receipt before
+        // settlement or queue promotion can remove its active-turn identity.
+        let prompt_id = message_id
+            .strip_prefix("prompt-complete:")
+            .map(str::to_string)
+            .or_else(|| {
+                self.active_turns
+                    .get(provider_run_id)
+                    .filter(|turn| {
+                        turn.session_id == session_id
+                            && agent_id.is_none_or(|id| turn.agent_id == id)
+                    })
+                    .map(|turn| turn.prompt_id)
+            })
+            .or_else(|| {
+                agent_id.and_then(|id| {
+                    self.session_store
+                        .get_session(session_id)
+                        .ok()
+                        .and_then(|session| {
+                            self.prompt_state_owner
+                                .active_prompt_for_agent_snapshot(&session, id)
+                        })
+                        .map(|prompt| prompt.id().to_string())
+                })
+            });
+        self.terminal
+            .record_assistant_message_completion_for_prompt(
+                session_id,
+                provider_run_id,
+                agent_id,
+                recipient_attachment_ids,
+                message_id,
+                completed_at_ms,
+                prompt_id.as_deref(),
+            );
         self.notify_metaagent_trace_activity(session_id, agent_id);
     }
 

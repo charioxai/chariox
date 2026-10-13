@@ -121,7 +121,9 @@ impl<'a> KernelAgentService<'a> {
                         "error": error.to_string(),
                     }),
                 );
-                return self.finalize_active_prompt_cancellation(session_id, agent_id, None);
+                // The ordinary runtime drain owns definitive completion. A
+                // worker with no active prompt may have completed before Esc.
+                return Err(error);
             }
             Err(error) => return Err(error),
         };

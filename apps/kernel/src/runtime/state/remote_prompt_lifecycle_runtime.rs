@@ -238,7 +238,7 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         target_agent_id: &str,
-        attachment_id: &str,
+        _attachment_id: &str,
         active_prompt: &crate::session::PromptQueueItem,
         cancellation_intent: crate::app::KernelPromptCancellation,
         cancellation_claim: &mut super::remote_prompt_claim_runtime::RemotePromptAgentClaim,
@@ -380,11 +380,14 @@ impl KernelRuntimeState {
                     &remote_execution.leased_agent_id,
                     &delivered_run_id,
                 )?;
-                Ok(Some(self.finalize_remote_prompt_cancellation_and_advance(
-                    session_id,
-                    target_agent_id,
-                    attachment_id,
-                )?))
+                // MP-08 / MP-10 / MP-11: absence is not an interruption receipt.
+                // Replay the exact worker completion before settling or advancing.
+                cancellation_claim.mark_cancellation_sent(&prompt_id, &delivered_run_id);
+                self.spawn_remote_prompt_projection_drain(
+                    session_id.to_string(),
+                    target_agent_id.to_string(),
+                );
+                Ok(Some(cancellation_intent))
             }
             Err(error) => Err(error),
         }

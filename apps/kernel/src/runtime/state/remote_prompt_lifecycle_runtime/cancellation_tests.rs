@@ -693,13 +693,85 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
         .expect("cancellation task should join")
         .expect("settled cancellation should finalize")
         .expect("direct remote cancellation should be handled");
-    metadata_server
-        .await
-        .expect("worker metadata fixture should join");
     assert_eq!(
         cancellation.cancellation.prompt.id(),
         home_prompt_id,
         "settling the worker run must preserve the exact cancelled home prompt"
+    );
+    // MP-08 / MP-10 / MP-11: absence proves settlement, not cancellation.
+    assert_eq!(
+        cancellation.cancellation.prompt.status(),
+        crate::session::PromptStatus::Cancelling,
+        "NoActivePrompt cannot manufacture a cancellation outcome"
+    );
+    let (drain_id, target_id, request) = next_peer_request(
+        &mut peer_requests,
+        &worker_private_key,
+        "settled turn outcome replay",
+    )
+    .await;
+    assert_eq!(target_id, WORKER_ID);
+    assert!(
+        matches!(request, RelayPeerRequest::DrainLeasedRuntimeProjection { provider_run_id, .. } if provider_run_id == WORKER_RUN_ID)
+    );
+    acknowledge_peer_request(
+        &relay_state,
+        drain_id,
+        &worker_private_key,
+        &home_public_key,
+        RelayPeerResponse::LeasedRuntimeProjectionDrained {
+            event: Some(
+                crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id: session_id.clone(),
+                    home_agent_id: agent_id.clone(),
+                    provider_run_id: WORKER_RUN_ID.into(),
+                    provider_run: None,
+                    prompts: vec![],
+                    output_chunks: vec![],
+                    notices: vec![],
+                    completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                        message_id: "completed-before-cancel".into(),
+                        completed_at_ms: crate::session::unix_epoch_ms(),
+                        home_prompt_id: Some(home_prompt_id.clone()),
+                        settlement_status: Some(
+                            crate::git_observer::CompletedTurnSettlementStatus::Completed,
+                        ),
+                        provider_termination: None,
+                    }],
+                },
+            ),
+        },
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap();
+            if runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+                .is_some_and(|prompt| prompt.id() == queued_successor_prompt_id)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let settled = runtime
+        .with_app_side_effect(|app| {
+            app.completed_git_turn_snapshot_store()
+                .projection_for_prompt(&session_id, &agent_id, &home_prompt_id)
+        })
+        .await;
+    assert_eq!(
+        settled.unwrap().settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Completed
     );
     let session = runtime
         .owned
@@ -719,6 +791,9 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
     );
     let successor_prompt_id = active_successor.id().to_string();
 
+    metadata_server
+        .await
+        .expect("worker metadata fixture should join");
     let mut submit_count = 0;
     loop {
         let (request_id, target_id, request) = next_successor_peer_request(

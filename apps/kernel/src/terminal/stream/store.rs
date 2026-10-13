@@ -465,17 +465,40 @@ impl TerminalStreamStore {
         message_id: &str,
         completed_at_ms: u64,
     ) -> AssistantMessageCompletionRecord {
+        self.record_assistant_message_completion_for_prompt(
+            session_id,
+            provider_run_id,
+            agent_id,
+            recipient_attachment_ids,
+            message_id,
+            completed_at_ms,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_assistant_message_completion_for_prompt(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+        message_id: &str,
+        completed_at_ms: u64,
+        prompt_id: Option<&str>,
+    ) -> AssistantMessageCompletionRecord {
         let record = self
             .shard(session_id)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_assistant_message_completion(
+            .record_assistant_message_completion_for_prompt(
                 session_id,
                 provider_run_id,
                 agent_id,
                 recipient_attachment_ids,
                 message_id,
                 completed_at_ms,
+                prompt_id,
             );
         self.record_change_for_completion(&record);
         record

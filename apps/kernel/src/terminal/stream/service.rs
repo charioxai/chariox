@@ -810,6 +810,28 @@ impl TerminalStreamService {
         message_id: &str,
         completed_at_ms: u64,
     ) -> AssistantMessageCompletionRecord {
+        self.record_assistant_message_completion_for_prompt(
+            session_id,
+            provider_run_id,
+            agent_id,
+            recipient_attachment_ids,
+            message_id,
+            completed_at_ms,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_assistant_message_completion_for_prompt(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+        message_id: &str,
+        completed_at_ms: u64,
+        prompt_id: Option<&str>,
+    ) -> AssistantMessageCompletionRecord {
         let record = AssistantMessageCompletionRecord {
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
@@ -818,6 +840,7 @@ impl TerminalStreamService {
             recipient_attachment_ids,
             message_id: message_id.to_string(),
             completed_at_ms,
+            prompt_id: prompt_id.map(str::to_string),
         };
 
         self.push_completion_record(record.clone());

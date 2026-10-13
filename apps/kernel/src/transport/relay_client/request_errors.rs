@@ -24,6 +24,9 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         DaemonError::NoActiveProviderRun { .. } => {
             relay_error("no_active_provider_run", &error.to_string(), false)
         }
+        DaemonError::NoActivePrompt { .. } => {
+            relay_error("no_active_prompt", &error.to_string(), false)
+        }
         DaemonError::NativeProviderBindingPending => {
             relay_error("native_provider_binding_pending", &error.to_string(), true)
         }
