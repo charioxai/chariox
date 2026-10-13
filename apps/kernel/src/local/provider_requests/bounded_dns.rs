@@ -50,11 +50,11 @@ pub(crate) fn resolve_bounded_host(
     {
         let path = crate::project_environment::check_inventory::executable(name)
             .ok_or("resolver_unavailable")?;
-        let path = path.canonicalize().map_err(|_| "resolver_unavailable")?;
-        if roots.iter().any(|root| path.starts_with(root)) {
-            return Err("resolver_unavailable");
-        }
-        let key = (host.to_ascii_lowercase(), path.clone());
+        // Vets the complete interpreter chain while preserving symlink argv[0].
+        let mut command = crate::project_environment::check_executable::command(&path, roots)
+            .map_err(|_| "resolver_unavailable")?;
+        let canonical = path.canonicalize().map_err(|_| "resolver_unavailable")?;
+        let key = (host.to_ascii_lowercase(), canonical);
         if let Some(addresses) = dns_cache().lock().ok().and_then(|cache| {
             cache
                 .get(&key)
@@ -63,7 +63,6 @@ pub(crate) fn resolve_bounded_host(
         }) {
             return Ok(addresses);
         }
-        let mut command = std::process::Command::new(path);
         command
             .current_dir("/")
             .env_clear()
