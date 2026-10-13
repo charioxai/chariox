@@ -45,10 +45,12 @@ fn validate_connected_models(
     services: &[ProviderAccountService],
 ) -> Result<(), String> {
     let models = String::from_utf8_lossy(output);
-    for service in services
-        .iter()
-        .filter(|s| s.auth_state == ProviderAccountAuthState::Authenticated)
-    {
+    // Custom service definitions are not transferred with the native auth store.
+    // Only the built-in Go/Zen catalog readiness gates worker admission here.
+    for service in services.iter().filter(|s| {
+        s.auth_state == ProviderAccountAuthState::Authenticated
+            && matches!(s.service_id.as_str(), "opencode-go" | "opencode")
+    }) {
         let prefix = format!("{}/", service.service_id);
         if !models.lines().any(|line| line.trim().starts_with(&prefix)) {
             return Err(format!("OpenCode native refresh still has no models for connected service `{}`; retry provisioning after its catalog becomes available", service.service_id));
@@ -93,5 +95,14 @@ mod tests {
         ];
         assert!(validate_connected_models(b"opencode-go-other/model\n", &services).is_err());
         assert!(validate_connected_models(b"opencode-go/gpt-6-luna\n", &services).is_ok());
+    }
+    #[test]
+    fn r5_review_extra_custom_service_does_not_block_a_listed_go_account() {
+        let services = [
+            service("opencode-go", ProviderAccountAuthState::Authenticated),
+            service("custom-home-only", ProviderAccountAuthState::Authenticated),
+        ];
+        assert!(validate_connected_models(b"opencode-go/gpt-6-luna\n", &services).is_ok());
+        assert!(validate_connected_models(b"custom-home-only/model\n", &services).is_err());
     }
 }

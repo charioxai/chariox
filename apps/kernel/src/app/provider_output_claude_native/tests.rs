@@ -1814,7 +1814,13 @@ fn workspace_trust_approval_frame(choices: &str, expected_input: &str, frame_mod
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let result = ProviderOutputClaudeNativeBridge::new(&mut app)
-                .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch, &no_context_handoff);
+                .process_prompt_dispatch_attempt(
+                    session.id(),
+                    run.id(),
+                    &run,
+                    &dispatch,
+                    &no_context_handoff,
+                );
             if let Err(error) = result {
                 let message = error.to_string();
                 assert!(
