@@ -73,8 +73,10 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
         }
     });
     let start = Instant::now();
+    // MP-08 / MP-11: retain the pipe through policy kill and status collection.
+    // Dropping it on refusal can turn a terminal limit into retryable SIGPIPE.
+    let mut input = BufReader::new(stdout);
     let result = (|| {
-        let mut input = BufReader::new(stdout);
         let mut items = BTreeSet::new();
         let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut scanned = 0u64;
@@ -186,12 +188,15 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
             Err(_) => break Err(scan_unavailable()),
         }
     };
+    drop(input);
     let _ = done.send(());
     let _ = watchdog.join();
     let _ = writer.join();
     let status = status?;
     scan_git_status(status, killed_for_refusal.load(Ordering::Relaxed))?;
-    if !status.success() {
+    // Preserve the actionable policy reason after our kill; external signals
+    // still take precedence in scan_git_status above.
+    if !status.success() && result.is_ok() {
         return Err(admission_error(
             "Copy history scan failed or exceeded its 120 second time limit",
         ));

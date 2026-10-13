@@ -1305,8 +1305,12 @@ fn mp08_mp11_public_source_retains_secret_detection() {
 #[cfg(unix)]
 #[test]
 fn mp08_mp11_admission_git_signal_retains_copy_retry() {
+    crate::test_support::isolated_env_test!();
     let root = std::env::current_dir().unwrap();
-    let error = git(&root, &["-c", "alias.copy-interrupt=!if [ \"$PPID\" -gt 1 ] && [ \"$(cat /proc/$PPID/comm)\" = git ]; then kill -TERM \"$PPID\"; fi", "copy-interrupt"], MAX_FILE).unwrap_err();
+    // Use the same owned-child seam on Linux and macOS; no /proc or shell kill.
+    INTERRUPT_SCAN.with(|fault| fault.set(Some("status")));
+    let error = git(&root, &["status", "--porcelain"], MAX_FILE).unwrap_err();
+    INTERRUPT_SCAN.with(|fault| assert!(fault.get().is_none()));
     assert!(matches!(
         error,
         DaemonError::ManagedContext {
@@ -1379,4 +1383,30 @@ fn mp08_mp11_scan_limit_kill_stays_terminal() {
     use std::os::unix::process::ExitStatusExt;
     assert!(scan_git_status(std::process::ExitStatus::from_raw(9), true).is_ok());
     assert!(scan_git_status(std::process::ExitStatus::from_raw(15), true).is_err());
+}
+
+// MP-08 / MP-11: exercise the real batch process, not only status classification.
+#[test]
+fn mp08_mp11_repository_history_limit_remains_terminal() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    let fixture =
+        InlineShellFixture::file("oversized.txt", &vec![b'x'; MAX_FILE as usize + 1], true);
+    for _ in 0..32 {
+        let error = history::scan_repository(&fixture.project).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                DaemonError::ManagedContext {
+                    retryable: false,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains("16 MiB per-file limit"),
+            "{error}"
+        );
+    }
 }
