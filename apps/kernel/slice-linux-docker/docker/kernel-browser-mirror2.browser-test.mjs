@@ -1109,3 +1109,37 @@ test('MP-10: review r19 a newly inserted closed host becomes a tile without rese
   assert(found,'late closed host is an opaque region rather than an empty mirrored host');
  }
 ));
+
+// MP-08/MP-10/MP-11: #941 c956f84c7 review F1/F2. No reset may hide a lost descriptor.
+for (const child of [false, true]) test(`MP-10: closed-host discovery retains a simultaneously loaded image in ${child ? 'an attached child' : 'the parent'}`,()=>mirrored(
+ child ? '<iframe src="http://localhost:PORT/child" style="width:300px;height:160px"></iframe>' : '<p>stable</p>',
+ async({next,evaluate,host})=>{
+  if(child)await new Promise(r=>setTimeout(r,400));
+  await next();
+  const mutate='customElements.define("x-resource",class extends HTMLElement{constructor(){super();this.attachShadow({mode:"closed"}).innerHTML="opaque"}});document.body.insertAdjacentHTML("beforeend",\'<x-resource style="display:block;width:40px;height:30px"></x-resource><img width="40" height="40" src="/discovery.svg">\');true';
+  if(child){
+   const connection=await host.browser.ensureConnection();const {targetInfos}=await connection.send('Target.getTargets');
+   const frame=targetInfos.find(t=>t.type==='iframe'&&t.url.includes('/child'));assert(frame,'MP-10: real attached child');
+   const sessionId=await host.browser.ensureTargetSession(connection,frame.targetId);
+   const result=await connection.send('Runtime.evaluate',{expression:`(async()=>{${mutate};await document.querySelector('img').decode();return true})()`,returnByValue:true,awaitPromise:true},sessionId);assert(!result.exceptionDetails);
+  }else await evaluate(`(async()=>{${mutate};await document.querySelector('img').decode();return true})()`);
+  let delivered=false;
+  for(let i=0;i<6;i++){const p=await next(1000);assert(!p.reset,'MP-10: ordinary credit');if(p.resources.some(r=>Buffer.from(r.data_base64,'base64').toString().includes('#1234ab')))delivered=true;if(delivered)break;}
+  assert(delivered,'MP-10: resource descriptor survives discovery and its bytes arrive without reset');
+ },{'/child':{type:'text/html',body:'<!doctype html><p>child</p>'},'/discovery.svg':{type:'image/svg+xml',body:svg('#1234ab')}}
+));
+for(const placement of ['parent','open-root','same-origin-frame','attached-child'])test(`MP-10: an already-defined ${placement} host gets a closed root after the snapshot`,()=>mirrored(
+ placement==='parent'?'<x-late id="late" style="display:block;width:80px;height:40px"></x-late><script>customElements.define("x-late",class extends HTMLElement{})</script>':placement==='open-root'?'<x-open></x-open><script>customElements.define("x-open",class extends HTMLElement{constructor(){super();this.attachShadow({mode:"open"}).innerHTML="<x-late id=late style=display:block;width:80px;height:40px></x-late>"}});customElements.define("x-late",class extends HTMLElement{})</script>':`<iframe src="http://${placement==='attached-child'?'localhost':'127.0.0.1'}:PORT/late" style="width:300px;height:160px"></iframe>`,
+ async({next,evaluate,host})=>{
+  if(placement.includes('frame')||placement==='attached-child')await new Promise(r=>setTimeout(r,400));
+  const initial=await next();assert(!initial.nodes.some(n=>n[4]?.reason==='closed_shadow'),'MP-10: initially rootless');
+  const attach='document.getElementById("late").attachShadow({mode:"closed"}).innerHTML="late opaque";true';
+  if(placement==='attached-child'){
+   const connection=await host.browser.ensureConnection();const {targetInfos}=await connection.send('Target.getTargets');const frame=targetInfos.find(t=>t.type==='iframe'&&t.url.includes('/late'));assert(frame);
+   const sessionId=await host.browser.ensureTargetSession(connection,frame.targetId);assert(!(await connection.send('Runtime.evaluate',{expression:attach,returnByValue:true},sessionId)).exceptionDetails);
+  }else await evaluate(placement==='open-root'?'document.querySelector("x-open").shadowRoot.getElementById("late").attachShadow({mode:"closed"}).innerHTML="late opaque";true':placement==='same-origin-frame'?'document.querySelector("iframe").contentDocument.getElementById("late").attachShadow({mode:"closed"}).innerHTML="late opaque";true':attach);
+  let found=false;
+  for(let i=0;i<5;i++){const p=await next(1000);assert(!p.reset,'MP-10: no reset');if(p.ops.some(op=>op.op==='children'&&op.nodes.some(n=>n[4]?.reason==='closed_shadow'))){found=true;break;}}
+  assert(found,'MP-10: delayed closed root becomes an opaque region through ordinary credits');
+ },{'/late':{type:'text/html',body:'<!doctype html><x-late id="late" style="display:block;width:80px;height:40px"></x-late><script>customElements.define("x-late",class extends HTMLElement{})</script>'}}
+));

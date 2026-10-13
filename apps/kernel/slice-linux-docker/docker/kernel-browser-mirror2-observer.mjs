@@ -120,7 +120,7 @@ export function installMirror2(sanitizeMirrorCss) {
     // reused within a document, below the frame key slot.
     const urlKeys = new Map(); let keySerial = 0, snapshotted = false;
     let selectedDoc = null; // the document whose selection changed last
-    let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, lastStateCheck = 0, stateCursor = 0, lastHostCheck = 0, hostCursor = 0, pressedAt = -Infinity;
+    let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, lastStateCheck = 0, stateCursor = 0, lastHostCheck = 0, hostCursor = 0, lastClosedCheck = 0, pressedAt = -Infinity;
     const dirty = { children: new Set(), attrs: new Map(), text: new Set(), form: new Set(), state: new Set(), scroll: new Set(), replace: new Set(), sheets: new Set(), frames: new Set(), masks: new Set() };
     let waiters = [];
     const wake = () => { const list = waiters; waiters = []; for (const resolve of list) resolve(true); };
@@ -603,7 +603,7 @@ export function installMirror2(sanitizeMirrorCss) {
       }
       for (const [id, last] of fragments) { const doc = nodes.get(id), now = doc ? fragmentOf(doc) : last; if (now !== last) { fragments.set(id, now); ops.push({ op: 'fragment', id, fragment: now }); } }
       for (const key of Object.keys(dirty)) dirty[key].clear();
-      return { ops, changed: rebound, ...take(), ...header(), closed_candidates: [...pendingHosts.values()].some(host => !host.shadowRoot && !closedHosts.has(host) && checkedClosed.get(host) !== host.matches(':defined')), pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
+      return { ops, changed: rebound, ...take(), ...header(), closed_candidates: [...pendingHosts.values()].some(host => !host.shadowRoot && !closedHosts.has(host) && (checkedClosed.get(host) !== host.matches(':defined') || host.matches(':defined') && hostNow - lastClosedCheck >= 2000)), pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
     };
     // Opaque regions visible now, in top-level viewport CSS pixels.
     const opaqueBoxes = () => {
@@ -790,7 +790,9 @@ export function installMirror2(sanitizeMirrorCss) {
       return hosts;
     };
     const customHosts = () => customCandidates().length;
-    const closedChecked = () => { for (const host of customCandidates()) checkedClosed.set(host, host.matches(':defined')); return true; };
+    // MP-08/MP-11: a defined rootless host may attach a closed root without any DOM
+    // mutation. Recheck unresolved defined hosts at most once per two seconds.
+    const closedChecked = () => { lastClosedCheck = performance.now(); for (const host of customCandidates()) checkedClosed.set(host, host.matches(':defined')); return true; };
     // Trusted-side: resolveNode() hands Vault target nodes to this world, with the fill's value hash and revision.
     const protect = function (hash = null, fillRevision = null) {
       if (!this || this.nodeType !== 1) return true;

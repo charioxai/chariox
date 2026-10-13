@@ -451,7 +451,7 @@ export class Mirror2 {
   packetBytes(stream) { return this.recentInput(stream) ? INPUT_PACKET_BYTES : RESOURCE_PACKET_BYTES; }
   recentInput(stream) { return Date.now() - (stream.inputAt ?? 0) < QUIET_MS; }
   refinePending(stream) { for (const entry of stream.resources.values()) if (entry.previewed && !entry.sent) return true; return false; }
-  merge(a, b) { return { ...b, ops: [...(a.ops ?? []), ...(b.ops ?? [])], sheets: [...(a.sheets ?? []), ...(b.sheets ?? [])], changed: [...(a.changed ?? []), ...(b.changed ?? [])] }; }
+  merge(a, b) { return { ...b, ops: [...(a.ops ?? []), ...(b.ops ?? [])], sheets: [...(a.sheets ?? []), ...(b.sheets ?? [])], resources: [...(a.resources ?? []), ...(b.resources ?? [])], changed: [...(a.changed ?? []), ...(b.changed ?? [])] }; }
   // Unattached foreign frames are opaque regions (masked captures only).
   opaque(records, ids) {
     for (const record of records) if (record.foreign) { delete record.foreign; if (ids.includes(record.id)) { record.kind = 'tile'; record.reason = 'cross_origin_frame'; } }
