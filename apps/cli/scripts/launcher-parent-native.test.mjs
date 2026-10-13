@@ -8,21 +8,24 @@ import { createOwnedSignalGuard } from '../../kernel/slice-linux-docker/owned-pr
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-test('Bun parent watch settles after its real launcher is killed', { timeout: 10000 }, async () => {
+for (const wrapped of [false, true]) test(`Bun ${wrapped ? 'Linux wrapped child' : 'macOS fallback'} settles after its launcher is killed`, { timeout: 10000 }, async () => {
   const module = new URL('../dist/cli-launcher-parent.js', import.meta.url).href
   const entry = `;(async () => {
     const { watchCliLauncherParent } = await import(${JSON.stringify(module)})
-    watchCliLauncherParent(process.env.CHARIOX_CLI_LAUNCHER_PID, { platform: "darwin" })
+    watchCliLauncherParent(process.env.CHARIOX_CLI_LAUNCHER_PID, { platform: ${JSON.stringify(wrapped ? "linux" : "darwin")} })
     setInterval(() => {}, 1000)
     console.log(JSON.stringify({ pid: process.pid, ppid: process.ppid }))
   })()`
-  const parentEntry = `
+  const bunCommand = `
     const { spawn } = require('node:child_process')
     spawn(${JSON.stringify(process.env.BUN_BIN ?? 'bun')}, ['-e', ${JSON.stringify(entry)}], {
-      stdio: ['ignore', 'inherit', 'inherit'],
-      env: { ...process.env, CHARIOX_CLI_LAUNCHER_PID: String(process.pid) },
+      stdio: ['ignore', 'inherit', 'inherit'], env: process.env,
     })
     setInterval(() => {}, 1000)
+  `
+  const parentEntry = `
+    process.env.CHARIOX_CLI_LAUNCHER_PID = String(process.pid)
+    ${wrapped ? `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(bunCommand)}], {stdio: ['ignore', 'inherit', 'inherit']}); setInterval(() => {}, 1000)` : bunCommand}
   `
   const parent = spawn(process.execPath, ['-e', parentEntry], { stdio: ['ignore', 'pipe', 'pipe'] })
   const guard = createOwnedSignalGuard()
@@ -42,7 +45,8 @@ test('Bun parent watch settles after its real launcher is killed', { timeout: 10
       parent.on('error', reject)
     })
     const child = await Promise.race([ready, delay(3000).then(() => { throw new Error(`Bun child did not start: ${stderr}`) })])
-    assert.equal(child.ppid, parent.pid)
+    if (wrapped) assert.notEqual(child.ppid, parent.pid)
+    else assert.equal(child.ppid, parent.pid)
     childIdentity = guard.record(child.pid, { freshLaunch: true })
     guard.pid(parentIdentity, 'SIGKILL')
     await parentExited

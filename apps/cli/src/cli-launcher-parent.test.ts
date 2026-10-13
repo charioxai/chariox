@@ -88,7 +88,7 @@ test("process inspection leaves render timers responsive", async () => {
 
 test("Linux relies on launcher PR_SET_PDEATHSIG without process inspection", () => {
   let probes = 0
-  const stop = watchCliLauncherParent("12345", { exit: () => assert.fail("healthy Linux launcher exited"), inspect: () => { probes += 1; return true }, platform: "linux" })
+  const stop = watchCliLauncherParent(String(process.ppid), { exit: () => assert.fail("healthy Linux launcher exited"), inspect: () => { probes += 1; return true }, platform: "linux" })
   stop()
   assert.equal(probes, 0)
 })
@@ -228,4 +228,16 @@ test("default parent-death exit restores terminal modes before process exit", as
     exit.mock.restore()
     stderr.mock.restore()
   }
+})
+
+// MP-08/MP-11: a non-exec BUN_BIN wrapper does not inherit PR_SET_PDEATHSIG
+// into its Bun child, so that child still needs the asynchronous fallback.
+test("Linux wrapped children retain the parent watch", async () => {
+  let exits = 0
+  const stop = watchCliLauncherParent("12345", { platform: "linux", inspect: () => false, exit: () => { exits += 1 } })
+  try {
+    assert.notEqual(process.ppid, 12345)
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(exits, 1)
+  } finally { stop() }
 })

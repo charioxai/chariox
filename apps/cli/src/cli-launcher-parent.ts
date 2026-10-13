@@ -34,7 +34,9 @@ export function watchCliLauncherParent(
   if (!Number.isSafeInteger(expected) || expected <= 1) {
     throw new Error("invalid CLI launcher parent PID")
   }
-  if (platform === "linux") return () => {}
+  // A spawning BUN_BIN wrapper forks a grandchild without PR_SET_PDEATHSIG.
+  // Only a direct Linux child can rely exclusively on the launcher's signal.
+  if (platform === "linux" && process.ppid === expected) return () => {}
   let stopped = false
   let pending = false
   const check = async () => {
