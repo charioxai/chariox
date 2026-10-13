@@ -1406,13 +1406,26 @@ impl KernelRuntimeState {
             })
             .await?;
         if let Some((session_id, recipients)) = native_target {
-            Box::pin(self.pump_owned_provider_output(
-                &session_id,
-                &provider_run_id,
-                recipients,
-                false,
-            ))
-            .await?;
+            if let Some(_permit) = self.provider_runtime_lanes.try_acquire(&provider_run_id) {
+                if let Err(error) = Box::pin(self.pump_owned_provider_output(
+                    &session_id,
+                    &provider_run_id,
+                    recipients,
+                    false,
+                ))
+                .await
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider_output",
+                        "leased native output pump failed",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "provider_run_id": provider_run_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
         }
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
