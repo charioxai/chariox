@@ -67,11 +67,13 @@ export async function waitForClaudeProviderRunReady(
 export async function waitForClaudeRemoteRenderedRunExit(
   client: LocalIpcClient,
   providerRunId: string,
-  context?: { sessionId: string, agentId: string },
+  context?: { sessionId: string, agentId: string, debug?: (label: string, fields: unknown) => void },
 ): Promise<void> {
   let sawProviderRun = false
   let endedAt: number | undefined
   while (true) {
+    const readAt = Date.now()
+    context?.debug?.("exit_run_read_start", { at: readAt })
     const run = await getProviderRunIfAvailable(client, providerRunId).catch((error) => {
       if (sawProviderRun) throw error
       return null
@@ -81,12 +83,14 @@ export async function waitForClaudeRemoteRenderedRunExit(
       continue
     }
     sawProviderRun = true
+    context?.debug?.("exit_run_read_end", { at: Date.now(), elapsedMs: Date.now() - readAt, state: run.state })
     if (run.state === "Ended") {
       // MP-08 / MP-10 / MP-11: the kernel's exact turn record supplies the
       // error outcome. A native PTY exit alone cannot manufacture Cancelled.
       if (context) {
         const state = await client.send<{ SessionState?: { session?: { agents?: AgentInstance[] }, agent_activity?: Record<string, AgentRuntimeActivity> } }>(getSessionStateRequest(context.sessionId))
         const activity = state.SessionState?.agent_activity?.[context.agentId]
+        context.debug?.("exit_settlement_read_end", { at: Date.now(), activeCount: activity?.active_prompt_count, settlement: activity?.last_completed_turn?.settlement_status })
         const turn = activity?.last_completed_turn
         const lease = state.SessionState?.session?.agents?.find(agent => agent.id === context.agentId)?.remote_execution?.leased_agent_id
         const sameRun = (id?: string | null) => id === providerRunId

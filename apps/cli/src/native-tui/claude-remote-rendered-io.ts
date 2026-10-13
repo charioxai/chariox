@@ -33,6 +33,7 @@ export function forwardClaudeRemoteRenderedStdin(options: {
   let pending = Promise.resolve()
   let inputGeneration = 0
   const onData = (chunk: Buffer) => {
+    if (chunk.includes(3)) options.debug("exit_control_queued", { at: Date.now(), ctrlCCount: [...chunk].filter(byte => byte === 3).length })
     const generation = ++inputGeneration
     pending = pending
       .then(() => forwardRemoteRenderedInputChunk({ ...options, composer, chunk }))
@@ -273,6 +274,8 @@ async function forwardRemoteRenderedInputChunk(options: {
       await submitOrForwardRemoteRenderedEnter(options, action.prompt)
       continue
     }
+    const controlAt = Date.now()
+    if (action.data === "\u0003") options.debug("exit_control_send_start", { at: controlAt })
     await sendRemoteRenderedInput(
       options.client,
       options.sessionId,
@@ -281,6 +284,7 @@ async function forwardRemoteRenderedInputChunk(options: {
       action.data,
       options.agentId,
     )
+    if (action.data === "\u0003") options.debug("exit_control_send_end", { at: Date.now(), elapsedMs: Date.now() - controlAt })
   }
 }
 

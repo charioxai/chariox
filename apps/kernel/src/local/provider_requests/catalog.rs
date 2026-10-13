@@ -37,13 +37,18 @@ pub(crate) fn load_provider_catalog(
         thread::sleep(Duration::from_millis(config.provider_catalog_read_delay_ms));
     }
 
-    let mut catalogs = vec![claude_provider_catalog()];
-    if crate::provider::dev_stub_public_inventory_enabled() {
+    let focus = request.provider.as_deref().and_then(crate::provider::canonical_provider_family);
+    let mut catalogs = Vec::new();
+    if focus.is_none_or(|provider| provider == "claude") {
+        catalogs.push(claude_provider_catalog());
+    }
+    if focus.is_none() && crate::provider::dev_stub_public_inventory_enabled() {
         catalogs.push(dev_stub_provider_catalog());
     }
     let mut source_errors = Vec::new();
 
     let selected_profiles = resolve_catalog_profiles(&registry, &owner_user_id, &request)?;
+    if focus.is_none_or(|provider| provider == "opencode") {
     let opencode_profile = selected_profiles
         .get("opencode")
         .expect("OpenCode default profile is migrated");
@@ -63,6 +68,8 @@ pub(crate) fn load_provider_catalog(
         },
         Err(error) => source_errors.push(format!("opencode endpoint: {error}")),
     }
+    }
+    if focus.is_none_or(|provider| provider == "codex") {
     let codex_profile = selected_profiles
         .get("codex")
         .expect("Codex default profile is migrated");
@@ -83,6 +90,7 @@ pub(crate) fn load_provider_catalog(
         Err(error) => source_errors.push(format!("codex endpoint: {error}")),
     }
 
+    }
     let remote_machines = if config.relay_url.is_some() && config.relay_token.is_some() {
         match block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
             &config,
@@ -138,7 +146,20 @@ pub(crate) fn load_provider_catalog(
             "connected": &catalog.connected,
         }),
     );
-    Ok(catalog)
+    Ok(focused_provider_catalog(catalog, focus))
+}
+
+// MP-08 / MP-10 / MP-11: a provider-scoped account query carries only that family.
+fn focused_provider_catalog(mut catalog: OpenCodeProviderCatalog, focus: Option<&str>) -> OpenCodeProviderCatalog {
+    let Some(focus) = focus else { return catalog; };
+    catalog.all.retain(|provider| match focus {
+        "opencode" => !matches!(provider.id.as_str(), "codex" | "claude"),
+        _ => provider.id == focus,
+    });
+    let ids = catalog.all.iter().map(|provider| provider.id.as_str()).collect::<std::collections::BTreeSet<_>>();
+    catalog.connected.retain(|id| ids.contains(id.as_str()));
+    catalog.default.retain(|id, _| ids.contains(id.as_str()));
+    catalog
 }
 
 fn resolve_catalog_profiles(
@@ -1444,6 +1465,24 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn mp08_mp10_provider_scoped_catalog_excludes_other_harnesses_and_preserves_opencode_backends() {
+        let ids = ["claude", "codex", "opencode", "opencode-go", "openai"];
+        let catalog = OpenCodeProviderCatalog {
+            all: ids.iter().map(|id| OpenCodeProviderInfo { id: (*id).into(), name: (*id).into(), remote_machine_aliases: vec!["worker".into()], models: BTreeMap::new() }).collect(),
+            connected: ids.iter().map(|id| (*id).into()).collect(),
+            default: ids.iter().map(|id| ((*id).into(), "model".into())).collect(),
+        };
+        assert_eq!(focused_provider_catalog(catalog.clone(), None), catalog);
+        for (focus, expected) in [("claude", vec!["claude"]), ("codex", vec!["codex"]), ("opencode", vec!["opencode", "opencode-go", "openai"])] {
+            let scoped = focused_provider_catalog(catalog.clone(), Some(focus));
+            assert_eq!(scoped.all.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), expected);
+            assert_eq!(scoped.connected, expected);
+            assert_eq!(scoped.default.keys().map(String::as_str).collect::<std::collections::BTreeSet<_>>(), expected.into_iter().collect());
+            assert!(scoped.all.iter().all(|p| p.remote_machine_aliases == ["worker"]));
+        }
+    }
 
     #[test]
     fn drill_provider_catalog_exposes_dev_stub_without_restricting_fixture_models() {

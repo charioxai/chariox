@@ -468,13 +468,15 @@ async function runClaudeRemoteRendered(
         readiness,
       })
     }
-    await waitForClaudeRemoteRenderedRunExit(client, run.id, { sessionId: session.id, agentId: agent.id })
+    await waitForClaudeRemoteRenderedRunExit(client, run.id, { sessionId: session.id, agentId: agent.id, debug: debugNativeClaude })
   } finally {
     restoreResize?.()
     restoreStdin?.()
     disposeEvents?.()
     pump?.stop()
+    debugNativeClaude("exit_transport_close_start", { at: Date.now() })
     await closeClaudeRemoteRenderedClient(client)
+    debugNativeClaude("exit_transport_close_end", { at: Date.now() })
   }
 }
 
