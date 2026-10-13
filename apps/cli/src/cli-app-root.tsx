@@ -105,6 +105,7 @@ import {
   getProviderAuthStatus,
   getProviderCatalog,
   getProviderLoginStatus,
+  getProviderAccountProfile,
   getProviderRun,
   tryGetProviderRun,
 } from "./provider-api.js"
@@ -258,7 +259,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   const providerLoginInteractions = createProviderLoginInteractionController({
     getKernelId: async () => relayStatusState()?.daemon_id ?? (await getRelayStatus(client)).daemon_id,
     getLoginStatus: (loginId) => getProviderLoginStatus(client, loginId),
-    getAuthStatus: (provider, accountProfile, mode) => getProviderAuthStatus(client, provider, accountProfile, mode),
+    getAccountProfile: (provider, accountProfile) => getProviderAccountProfile(client, provider, accountProfile),
     accountLabel: (provider, accountProfile) => {
       const profile = selectedProviderAccount(providerAccountsState(), provider, accountProfile)
       return profile ? providerAccountDisplayLabel(profile) : accountProfile

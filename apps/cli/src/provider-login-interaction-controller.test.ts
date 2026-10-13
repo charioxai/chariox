@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { getProviderAuthStatus } from "./provider-api.js"
+import { getProviderAccountProfile } from "./provider-api.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type { ProviderLoginStatus, RuntimeInteraction } from "./cli-types.js"
 import { createProviderLoginInteractionController, type ProviderLoginInteractionControllerDeps } from "./provider-login-interaction-controller.js"
@@ -30,7 +30,7 @@ function harness(statuses: Array<ProviderLoginStatus | Error>, overrides: Partia
       if (next instanceof Error) throw next
       return next
     },
-    getAuthStatus: async () => ({ provider: "claude", auth_state: "authenticated", account_profile: "disposable-claude-ggpinwmx", identity_summary: "miguel@example.org", login_hint: null, detected_version: null }),
+    getAccountProfile: async () => ({ provider: "claude", profile_id: "disposable-claude-ggpinwmx", auth_state: "authenticated", identity_summary: "miguel@example.org" } as never),
     accountLabel: () => "disposable-claude",
     localDesktop: () => false,
     openUrl: async () => true,
@@ -184,7 +184,7 @@ test("MP-08/MP-11 a home-attached TUI leaves worker login status and completion 
   const reads: unknown[][] = []
   const h = harness([], {
     getLoginStatus: async (...args) => { reads.push(args); throw Error("provider login was not found") },
-    getAuthStatus: async () => { throw Error("home must not query worker auth") },
+    getAccountProfile: async () => { throw Error("home must not query worker auth") },
   })
   const forwarded: RuntimeInteraction = {
     ...interaction,
@@ -234,7 +234,7 @@ for (const kernelId of ["fleet", "worker"]) {
 
 test("MP-08/MP-10/MP-11 post-login CLI status reads the kernel's saved observation without verification", async () => {
   const requests: unknown[] = []
-  const profile = { provider: "claude", profile_id: status("succeeded").account_profile, auth_state: "authenticated", identity_summary: "miguel@example.org", detected_version: "2.1.296" }
+  const profile = { provider: "claude", profile_id: status("succeeded").account_profile, auth_state: "authenticated", identity_summary: "miguel@example.org", detected_provider_version: "2.1.296" }
   const client = {
     send: async (request: unknown) => {
       requests.push(request)
@@ -242,7 +242,7 @@ test("MP-08/MP-10/MP-11 post-login CLI status reads the kernel's saved observati
     },
   } as unknown as LocalIpcClient
   const h = harness([status("succeeded")], {
-    getAuthStatus: (...args) => getProviderAuthStatus(client, ...args),
+    getAccountProfile: (...args) => getProviderAccountProfile(client, ...args),
   })
   try {
     h.controller.stripState(interaction)
@@ -261,7 +261,7 @@ test("MP-08/MP-10/MP-11 unavailable saved login observation never falls back to 
     send: async (request: unknown) => { requests.push(request); throw new Error("kernel disconnected") },
   } as unknown as LocalIpcClient
   const h = harness([status("succeeded")], {
-    getAuthStatus: (...args) => getProviderAuthStatus(client, ...args),
+    getAccountProfile: (...args) => getProviderAccountProfile(client, ...args),
   })
   try {
     h.controller.stripState(interaction)

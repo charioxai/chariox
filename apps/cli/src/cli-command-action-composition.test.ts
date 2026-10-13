@@ -260,7 +260,7 @@ for (const reference of ["Fresh-Claude", "opaque-claude-id"]) for (const attache
   test(`MP-08 / MP-10 / MP-11 Claude login ${attached ? "attached" : "waiting-room"} via ${reference} submits only a live session context`, async () => {
     const requests: Record<string, any>[] = []
     const profile = { provider: "claude", profile_id: "opaque-claude-id", label: "Fresh-Claude" }
-    const session = attached ? { ...makeSession(), id: "live-session" } : buildDetachedSessionState({})
+    const session = attached ? { ...makeSession(), id: "live-session" } : buildDetachedSessionState({ clientId: "fixture", model: "default", accountProfile: "default", effort: "high" })
     const client = { send: async (request: Record<string, any>) => {
       requests.push(request)
       if ("ListProviderAccountProfiles" in request) return { ProviderAccountProfilesListed: { profiles: [profile] } }

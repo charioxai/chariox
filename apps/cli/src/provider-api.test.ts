@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import * as providerApi from "./provider-api.js"
 import type { LocalIpcClient } from "./ipc.js"
 import { getProviderAuthStatus, getProviderCatalog, getProviderCommandCatalogs, runProviderSetupToken } from "./provider-api.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
@@ -111,4 +112,15 @@ test("setup-token run names protocol411 when the daemon lacks its run field", as
     runProviderSetupToken(clientRejecting(new Error("unknown field `run`")), "work", false),
     /Claude setup token capture requires kernel protocol 411 or newer/,
   )
+})
+
+// MP-08 / MP-11: completion reads an account profile, including its saved version.
+test("MP-08/MP-11 saved account profile keeps its native fields without an auth-status mode", async () => {
+  const profile = { provider: "claude", profile_id: "fresh", auth_state: "authenticated", identity_summary: "user@example.org", detected_provider_version: "2.1.296" }
+  const requests: unknown[] = []
+  const client = { send: async (request: unknown) => { requests.push(request); return { ProviderAccountProfile: { profile } } } } as unknown as LocalIpcClient
+  const result = await providerApi.getProviderAccountProfile(client, "claude", "fresh")
+  assert.deepEqual(result, profile)
+  assert.equal(result.detected_provider_version, "2.1.296")
+  assert.deepEqual(requests, [{ GetProviderAccountProfile: { provider: "claude", account_profile: "fresh" } }])
 })

@@ -5,7 +5,7 @@ import {
   providerLoginView,
   type ProviderLoginView,
 } from "@chariox/kernel-client/provider-login-projection"
-import type { ProviderAuthStatus, ProviderLoginStatus, RuntimeInteraction } from "./cli-types.js"
+import type { ProviderAccountProfile, ProviderLoginStatus, RuntimeInteraction } from "./cli-types.js"
 
 /** The kernel ends a provider login 10 minutes after it starts. */
 const PROVIDER_LOGIN_TIMEOUT_MS = 10 * 60_000
@@ -29,7 +29,7 @@ export type ProviderLoginStripState = {
 export type ProviderLoginInteractionControllerDeps = {
   getKernelId: () => Promise<string>
   getLoginStatus: (loginId: string) => Promise<ProviderLoginStatus>
-  getAuthStatus: (provider: string, accountProfile: string, mode: "saved") => Promise<ProviderAuthStatus>
+  getAccountProfile: (provider: string, accountProfile: string) => Promise<ProviderAccountProfile>
   accountLabel: (provider: string, accountProfile: string) => string
   localDesktop: () => boolean
   openUrl: (url: string) => Promise<boolean>
@@ -74,7 +74,7 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
     clearTimer(login.timer)
     const label = deps.accountLabel(ref.provider, ref.account_profile)
     if (status.state === "succeeded") {
-      const auth = await deps.getAuthStatus(ref.provider, ref.account_profile, "saved").catch(() => null)
+      const auth = await deps.getAccountProfile(ref.provider, ref.account_profile).catch(() => null)
       const message = `Signed in to ${providerLoginName(ref.provider)}${auth?.identity_summary ? ` as ${auth.identity_summary}` : ""} · saved to ${label}`
       deps.appendNotice(message)
       deps.flashFooter(message, "info")
