@@ -111,6 +111,7 @@ pub(crate) use managed_isolation::{
     MANAGED_PROVIDER_ISOLATION_ENV, MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
 };
 pub(crate) use mcp_proxy::{
+    cancel_provider_mcp_proxy_run,
     dispatch_provider_mcp_proxy_request, shutdown_provider_mcp_proxy_session,
 };
 pub(crate) use opencode::{

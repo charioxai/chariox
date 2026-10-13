@@ -191,6 +191,10 @@ pub(crate) fn shutdown_provider_mcp_proxy_run(provider_run_id: &str) {
     }
 }
 
+pub(crate) fn cancel_provider_mcp_proxy_run(provider_run_id: &str) {
+    streamable_http::cancel_run(provider_run_id);
+}
+
 fn mark_provider_proxy_tools_preapproved(response: &mut serde_json::Value) {
     let Some(tools) = response
         .get_mut("result")
