@@ -99,6 +99,22 @@ through its own renderer; if it cannot render the signed frontend it uses a
 kernel Chromium fallback. The Cloud native frontend remains a separate flagged
 prototype; no replacement display transport is selected here.
 
+## Apps as kernel-browser Tabs (MP-08 / MP-10 / MP-11, 2026-10-13)
+
+Owner direction: an App is a Tab of the owner's kernel browser, projected like
+any Tab (DOM mirror under the same observation protection, display stream,
+screenshots). Web and TUI open Apps with `host: "kernel_browser"`; the web
+client shows that Tab in its browser modal and needs no isolated App origin.
+A focused or granted agent may input in, navigate within the App origin and
+close an App Tab after the kernel claimed `UserDomainResource::AppView` in its
+own grant; the host refuses agent mutations without that claim. Each page call
+carries who drove the Tab. An agent-driven call runs as that agent
+(`Actor::Agent`, `agent_id`, `room_id`, running turn) and only while the agent
+still holds the App view and its own App grant (rechecked at enqueue and
+reply; otherwise `AGENT_APP_NOT_GRANTED`); it never borrows the owner's App
+authority. Critical effects still need the owner's validation and passkey.
+Room views keep the Room rule below.
+
 ## Agent access and migration
 
 MP-08 / MP-10 / MP-11: the owner-approved
