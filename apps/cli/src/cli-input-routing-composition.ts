@@ -245,7 +245,6 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const slashCommandSubmitController = createSlashCommandSubmitController({
     isAttached: deps.isAttached,
     getSessionId: () => deps.sessionState().id,
-    getPromptText: () => deps.promptTextController.currentText(),
     recordPromptAreaHistoryEntry: deps.recordPromptAreaHistoryEntry,
     clearPromptText: () => deps.promptTextController.clear(),
     setPromptHistoryIndex: deps.setPromptHistoryIndex,

@@ -68,7 +68,8 @@ impl KernelRuntimeState {
         operation: &'static str,
     ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
         let request = self.owned.prepare_leased_provider_launch_account(request)?;
-        self.prepare_provider_launch_request_with_vault(request, operation).await
+        self.prepare_provider_launch_request_with_vault(request, operation)
+            .await
     }
 
     async fn ensure_provider_account_vault_unlocked_for_launch(
