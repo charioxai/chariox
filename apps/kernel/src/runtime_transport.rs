@@ -50,10 +50,12 @@ use command_cache::{
 };
 use local_auth::KernelLocalAuth;
 use outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
+#[cfg(test)]
+pub(crate) use subscriptions::watch_subscription_state;
+pub(crate) use subscriptions::WatchResult;
 use subscriptions::{
     emit_replay_gap_snapshot, replay_recent_events, run_subscription_loop, ReplaySubscriptionResult,
 };
-pub(crate) use subscriptions::{watch_subscription_state, WatchResult};
 
 pub(crate) const WATCH_INTERVAL_MS: u64 = 100;
 pub(crate) const WAITING_ROOM_ROW_COALESCE_MS: u64 = 500;

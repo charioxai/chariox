@@ -719,7 +719,19 @@ impl KernelRuntimeState {
             recipient_attachment_ids.clone(),
             terminal_outputs,
         );
-        owned.append_history_entries(session_id, history_entries);
+        // MP-08 / MP-10: persistence still completes before turn settlement,
+        // but the synchronous writer acknowledgement must not block the task
+        // that also publishes other ready runs and terminal subscriptions.
+        let history_entries = owned.prepare_history_entries(session_id, history_entries);
+        let history_owned = owned.clone();
+        tokio::task::spawn_blocking(move || {
+            history_owned.append_prepared_history_entries(history_entries);
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "append provider output history",
+            message: error.to_string(),
+        })?;
         for completion in &completions {
             owned.record_assistant_message_completion(
                 session_id,

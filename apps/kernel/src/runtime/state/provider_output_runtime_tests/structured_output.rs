@@ -109,6 +109,174 @@ async fn panes_stream_ready_structured_output_survives_an_unrelated_app_lock() {
     );
 }
 
+#[tokio::test]
+async fn panes_stream_terminal_delivery_does_not_wait_for_history_writer() {
+    // MP-08 / MP-10: ready-output jobs share a task. A synchronous history
+    // wait must not stop that task from delivering an already-published record.
+    let worktree = crate::test_support::TestWorktree::new("panes-stream-history-lock");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "panes-stream-history-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "opencode-go/gpt-6-luna",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-panes-stream-history-lock",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "panes-stream-history-fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("http://127.0.0.1:1".into()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run.clone());
+    spawn_inert_pty_for_run(&mut app, run.id());
+    app.structured_output_record_store()
+        .mark_poll_enqueued(run.id(), None);
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            run.id().to_string(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("text-1".into()),
+                    bytes: b"CHECK:".to_vec(),
+                }],
+                ..Default::default()
+            })),
+        );
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+
+    let append_lock = runtime.owned.transcript_history_append_lock.clone();
+    let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+    let holder = std::thread::spawn(move || {
+        let _held = append_lock.lock().unwrap();
+        locked_tx.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(350));
+    });
+    locked_rx.await.unwrap();
+    let started = std::time::Instant::now();
+    let terminal = runtime.owned.terminal_stream.clone();
+    let before = terminal.attachment_change_sequence(session.id(), attachment.id());
+    let cleanup = InertPtyCleanup {
+        app: app.clone(),
+        provider_run_id: run.id().to_string(),
+    };
+    let (output, delivery_ms) = tokio::join!(
+        runtime.pump_owned_provider_output(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            false,
+        ),
+        async {
+            while terminal.attachment_change_sequence(session.id(), attachment.id()) == before {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            let delivered = runtime
+                .watch_relay_subscription_state(session.id(), attachment.id(), false, None, 0)
+                .await;
+            assert!(matches!(delivered,
+                crate::runtime_transport::WatchResult::Ok { records, .. }
+                    if records.iter().any(|record| record.bytes == b"CHECK:")
+            ));
+            started.elapsed().as_millis()
+        },
+    );
+    holder.join().unwrap();
+    drop(cleanup);
+    assert!(output
+        .unwrap()
+        .iter()
+        .any(|record| record.bytes == b"CHECK:"));
+    assert!(
+        delivery_ms < 150,
+        "MP-08 / MP-10: ready terminal record waited {delivery_ms} ms for history persistence"
+    );
+}
+
+#[tokio::test]
+async fn panes_stream_history_handoff_keeps_the_published_turn_identity() {
+    // MP-08 / MP-10: cancellation or replacement during the blocking handoff
+    // must not attribute the previous output to the replacement prompt.
+    let worktree = crate::test_support::TestWorktree::new("panes-stream-history-turn");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let run_id = "panes-stream-history-turn-run";
+    runtime
+        .owned
+        .active_turns
+        .start(crate::app::ActiveTurnState::new(
+            session.id().into(),
+            agent.id().into(),
+            "published-prompt".into(),
+            run_id.into(),
+        ));
+    let prepared = runtime.owned.prepare_history_entries(
+        session.id(),
+        vec![crate::history::SessionHistoryEntry::provider_output(
+            session.id(),
+            run_id,
+            Some(agent.id()),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            Some("published-text".into()),
+            "published before replacement",
+        )],
+    );
+    runtime
+        .owned
+        .active_turns
+        .start(crate::app::ActiveTurnState::new(
+            session.id().into(),
+            agent.id().into(),
+            "replacement-prompt".into(),
+            run_id.into(),
+        ));
+    let history_owned = runtime.owned.clone();
+    tokio::task::spawn_blocking(move || {
+        history_owned.append_prepared_history_entries(prepared);
+    })
+    .await
+    .unwrap();
+    let events = runtime
+        .owned
+        .operational_history_store
+        .load_session_events(session.id(), Some(agent.id()))
+        .unwrap();
+    let event = events
+        .iter()
+        .find(|event| event.content.as_deref() == Some("published before replacement"))
+        .unwrap();
+    assert_eq!(event.prompt_id.as_deref(), Some("published-prompt"));
+    assert_ne!(event.prompt_id.as_deref(), Some("replacement-prompt"));
+}
+
 #[test]
 fn publication_output_rejects_opencode_model_substitution_before_run_mutation() {
     let request = crate::provider::LaunchProviderRequest::new(
