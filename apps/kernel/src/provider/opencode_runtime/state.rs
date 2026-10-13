@@ -35,6 +35,7 @@ pub struct OpenCodeAssistantCompletion {
 #[derive(Debug)]
 pub(crate) struct OpenCodeRuntimeState {
     pub(super) base_url: String,
+    pub(in crate::provider) prompt_client: Option<crate::provider::OpenCodeClient>,
     pub(super) session_id: String,
     pub(super) emitted_text_by_part: BTreeMap<String, String>,
     pub(super) emitted_tool_summaries: BTreeMap<String, String>,
@@ -65,6 +66,7 @@ impl OpenCodeRuntimeState {
     ) -> Self {
         Self {
             base_url,
+            prompt_client: None,
             session_id,
             emitted_text_by_part: BTreeMap::new(),
             emitted_tool_summaries: BTreeMap::new(),

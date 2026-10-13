@@ -147,6 +147,7 @@ pub(crate) fn initialize_opencode_runtime(
     );
 
     let mut state = OpenCodeRuntimeState::new(base_url, session_id.clone(), event_subscription);
+    state.prompt_client = Some(client);
     state.baseline_existing_messages(&preexisting_messages);
 
     Ok(OpenCodeRuntimeBinding {
@@ -1151,7 +1152,14 @@ fn submit_opencode_prompt_with_policy(
     envelope: &crate::prompt_assembly::PromptEnvelope,
     policy: ProviderUtilityExecutionPolicy,
 ) -> Result<(), DaemonError> {
-    let client = OpenCodeClient::new(run.id(), state.base_url())?;
+    let client = match &state.prompt_client {
+        Some(client) => client.clone(),
+        None => {
+            let client = OpenCodeClient::new(run.id(), state.base_url())?;
+            state.prompt_client = Some(client.clone());
+            client
+        }
+    };
     if let Ok(messages) = client.messages(state.session_id()) {
         state.baseline_existing_messages(&messages);
     }
