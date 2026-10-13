@@ -159,10 +159,12 @@ export class BrowserMirror2Renderer {
       for (let el = target(event); el; el = el.parentElement ?? ((el.getRootNode() as ShadowRoot).host ?? null)) { const id = this.ids.get(el); if (id && this.records.get(id)?.kind !== 'text') return this.records.get(id)?.kind === 'mask' ? null : { id, el } }
       return null
     }
-    const offset = (el: Element, event: MouseEvent): { x: number; y: number } => { const r = el.getBoundingClientRect(); return { x: event.clientX - r.left, y: event.clientY - r.top } }
+    const offset = (el: Element, event: MouseEvent, r: DOMRect = el.getBoundingClientRect()): { x: number; y: number } => ({ x: event.clientX - r.left, y: event.clientY - r.top })
     // A click that ends a text drag selects; it is not forwarded as a click.
-    let origin: { x: number; y: number } | null = null, dragged = false
-    on('pointerdown', event => { const e = event as PointerEvent; origin = { x: e.clientX, y: e.clientY }; dragged = false; this.pointerFocus = null })
+    // MP-08/MP-10: its target's box is read at the press, while layout is clean from the press's hit test; read at
+    // the click it forces the style and layout the press dirtied (focus, :active; 5-6 ms on a large page) ahead of the input.
+    let origin: { x: number; y: number } | null = null, dragged = false, pressed: { el: Element; box: DOMRect } | null = null
+    on('pointerdown', event => { const e = event as PointerEvent; origin = { x: e.clientX, y: e.clientY }; dragged = false; this.pointerFocus = null; const hit = element(event); pressed = hit ? { el: hit.el, box: hit.el.getBoundingClientRect() } : null })
     // A press whose gesture forwards no click (a drag, a select or picker, a release elsewhere) sends its focus now.
     on('pointerup', () => { origin = null; setTimeout(() => { const id = this.pointerFocus; this.pointerFocus = null; if (id && !this.disposed) { this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) } }, 0) })
     on('pointermove', event => { const e = event as PointerEvent; if (origin && (e.buttons & 1) && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > 4) dragged = true })
@@ -174,7 +176,8 @@ export class BrowserMirror2Renderer {
       event.preventDefault()
       if (!hit || dragged || selecting(hit.el)) { if (dragged) { const id = this.pointerFocus; this.pointerFocus = null; if (id) { this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) } this.syncRange() } dragged = false; return }
       // The kernel's click focuses what the viewer's press focused: no separate round trip before it.
-      this.pointerFocus = null; this.enqueue({ kind: 'click', node_id: hit.id, ...offset(hit.el, event as MouseEvent) })
+      const box = pressed?.el === hit.el ? pressed.box : undefined; pressed = null
+      this.pointerFocus = null; this.enqueue({ kind: 'click', node_id: hit.id, ...offset(hit.el, event as MouseEvent, box) })
     })
     // Protocol 492: focus transitions and committed control state, not inferred from clicks or keys.
     on('focusin', event => { const id = this.ids.get(event.composedPath()[0] as Node); if (this.applying || !id || this.records.get(id)?.kind !== 'element' || id === this.focusSent) return; if (origin) { this.pointerFocus = id; return } this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) })

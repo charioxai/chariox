@@ -384,6 +384,21 @@ test('MP-08: protocol 492 a click on a focusable control is forwarded alone (the
   } finally { await page.close(); }
 });
 
+// MP-08/MP-10: the press dirties the viewer's style and layout (focus, :active, or the page itself); the click's
+// offset comes from the target's box read at the press, so the click handler forces no layout ahead of the input.
+test('MP-08/MP-10: a click is addressed by its target\'s box at the press, not re-measured at the click', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'button', attrs: { style: 'display:block;width:200px;height:40px' } }, { id: 'n5', parent: 'n4', kind: 'text', text: 'go' }])));
+    // The press moves the button 5 px down (still under the pointer, so the click targets it).
+    await page.evaluate(() => window.r.frame.contentWindow.addEventListener('mousedown', () => { window.r.frame.contentDocument.querySelector('button').style.cssText += ';position:relative;top:5px'; }));
+    const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelector('button').getBoundingClientRect(); return [f.x + t.x + 30, f.y + t.y + 10]; });
+    await page.mouse.click(box[0], box[1]); await frames(); await frames();
+    const click = (await page.evaluate(() => window.sent)).find(action => action.kind === 'click');
+    assert.deepEqual([click?.node_id, Math.round(click?.x), Math.round(click?.y)], ['n4', 30, 10], 'MP-08: the offset within the pressed box');
+  } finally { await page.close(); }
+});
+
 test('MP-08: a kernel packet that still names the old focus while the viewer\'s pointer is pressed in another control keeps the viewer\'s focus (round 10 hosted dragrepeat)', async () => {
   const page = await viewer();
   try {
