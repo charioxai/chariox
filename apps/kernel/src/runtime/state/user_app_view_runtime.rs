@@ -238,6 +238,9 @@ impl KernelRuntimeState {
         host: Option<UserAppViewHost>,
     ) -> Result<Result<(UserAppView, AppFrontendBundle), AppRequestErrorCode>, DaemonError> {
         let instances = self.app_control().user_views();
+        if host == Some(UserAppViewHost::KernelBrowser) {
+            self.seed_user_app_tabs(owner);
+        }
         let (binding, frontend) = match self.user_app_frontend(owner, installation).await {
             Ok(view) => view,
             Err(code) => return Ok(Err(code)),

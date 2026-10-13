@@ -29,22 +29,16 @@ impl Registry {
             .collect()
     }
 
-    /// Pending restores minus Apps the owner already reopened (#992 review F3).
     fn pending(&self, owner: &str) -> Vec<String> {
-        let mut hosted = self.hosted(owner);
-        self.restore
-            .get(owner)
-            .into_iter()
-            .flatten()
-            .filter(|installation| match hosted.iter().position(|open| open == *installation) {
-                Some(index) => {
-                    hosted.swap_remove(index);
-                    false
-                }
-                None => true,
-            })
-            .cloned()
-            .collect()
+        self.restore.get(owner).cloned().unwrap_or_default()
+    }
+
+    fn settle_restore(&mut self, owner: &str, installation: &str) {
+        if let Some(pending) = self.restore.get_mut(owner) {
+            if let Some(index) = pending.iter().position(|app| app == installation) {
+                pending.remove(index);
+            }
+        }
     }
 }
 
@@ -125,7 +119,9 @@ impl UserAppViews {
             return None;
         }
         view.browser = Some(browser);
+        let installation = binding.installation.clone();
         let view = view.clone();
+        registry.settle_restore(owner, &installation);
         registry.browser_targets.insert(id.into(), target);
         *registry.cursors.entry(owner.into()).or_default() += 1;
         drop(registry);
@@ -224,10 +220,18 @@ impl UserAppViews {
     /// Seed restore intent persisted by an earlier kernel (first use only).
     pub(crate) fn seed_restore(&self, owner: &str, installations: Vec<String>) {
         let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-        registry
-            .restore
-            .entry(owner.into())
-            .or_insert_with(|| installations.into_iter().take(32).collect());
+        if registry.restore.contains_key(owner) {
+            return;
+        }
+        let mut pending: Vec<_> = installations.into_iter().take(32).collect();
+        // First use may load disk after an explicit browser binding. Account
+        // for each hosted Tab once here; later bindings consume their entry.
+        for installation in registry.hosted(owner) {
+            if let Some(index) = pending.iter().position(|app| app == &installation) {
+                pending.remove(index);
+            }
+        }
+        registry.restore.insert(owner.into(), pending);
     }
 
     pub(crate) fn has_restore(&self, owner: &str) -> Option<bool> {
@@ -363,6 +367,37 @@ mod tests {
         hosted(&views);
         assert_eq!(views.restore_intent("alice"), vec!["todo".to_string()]);
         assert!(views.take_restore("alice").is_empty());
+    }
+    /// MP-08/MP-10/MP-11 #992: settle before a close or another browser stop.
+    #[test]
+    fn explicit_reopen_close_or_stop_does_not_resurrect_saved_tabs() {
+        for stop in [false, true] {
+            let views = UserAppViews::default();
+            views.seed_restore("alice", vec!["todo".into(), "todo".into()]);
+            let view = views.open("alice", binding("alice"), "a").unwrap();
+            views.bind_browser(
+                "alice",
+                &view.view_id,
+                "target".into(),
+                crate::local::UserAppViewBrowser {
+                    tab_id: "host-tab-a".into(),
+                    generation: 1,
+                },
+            );
+            assert_eq!(views.restore_intent("alice"), vec!["todo", "todo"]);
+            if stop {
+                views.suspend("alice", &view.view_id);
+            } else {
+                views.close("alice", &view.view_id);
+            }
+            let expected = if stop {
+                vec!["todo", "todo"]
+            } else {
+                vec!["todo"]
+            };
+            assert_eq!(views.restore_intent("alice"), expected);
+            assert_eq!(views.take_restore("alice"), expected);
+        }
     }
     fn binding(owner: &str) -> AppViewBinding {
         AppViewBinding {

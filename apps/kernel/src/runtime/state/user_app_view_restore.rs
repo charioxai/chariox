@@ -35,9 +35,8 @@ impl KernelRuntimeState {
             .unwrap_or_default()
     }
 
-    /// Load intent saved by an earlier kernel once. Apps already open are
-    /// subtracted when restore intent is read, so they settle one saved Tab each.
-    fn seed_user_app_tabs(&self, owner: &str) {
+    /// Load earlier intent once, settling any Tabs already explicitly bound.
+    pub(super) fn seed_user_app_tabs(&self, owner: &str) {
         let views = self.app_control().user_views();
         if views.has_restore(owner).is_some() {
             return;
