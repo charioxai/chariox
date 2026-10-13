@@ -353,7 +353,7 @@ export async function executeWorkflowCommand(
     case "workflow-code":
       return executeWorkflowCodeCommand(args, context, deps)
     default:
-      return { ok: false, message: "usage: workflow list|new|show|alias|delete|run|load|runs|run-show|cancel|resume|node|edge|endpoint|trigger|schedule|queue|registry|code" }
+      return { ok: false, message: "usage: workflow list|new|show|alias|delete|run|load|runs|run-show|cancel|resume|node|edge|endpoint|notifications|trigger|schedule|queue|registry|code" }
   }
 }
 

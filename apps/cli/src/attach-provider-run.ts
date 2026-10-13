@@ -83,7 +83,7 @@ export async function settleAttachProviderRun(
           providerRun: await deps.launchProviderRun(
             session.id,
             decision.launch.provider,
-            accountProfile,
+            decision.targetAgent?.account_profile ?? accountProfile,
             decision.launch.model,
             decision.launch.effort,
             decision.targetAgentId,

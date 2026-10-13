@@ -153,6 +153,33 @@ test("slash command submit delegates catalog-only kernel commands to shared shel
   assert.equal(harness.clearPromptCount(), 1)
 })
 
+// MP-08 / MP-10: exercise the real slash-to-shell ownership predicate.
+for (const raw of [
+  "/workflow notifications on source --fields verdict,review_url",
+  "/workflow notifications off source",
+  "/workflow trigger notification list",
+  "/workflow trigger notification attach source --publication trigger-reference",
+  "/workflow trigger notification detach subscription-1",
+]) {
+  test(`${raw} routes through the shared shell instead of the legacy workflow handler`, async () => {
+    const harness = createHarness({
+      attached: true,
+      handleSharedShellCommand: async command => {
+        if (sharedShellCommandForSlashCommand(command) === null) return false
+        harness.sharedCommands().push(command)
+        return true
+      },
+    })
+    const controller = createSlashCommandSubmitController(harness.deps)
+    const command = await controller.submit(raw, { allowSlashCommandSubmission: true })
+    assert.equal(command?.kind, "workflow")
+    assert.deepEqual(harness.sharedCommands(), [raw])
+    assert.deepEqual(harness.calls(), [])
+    assert.deepEqual(harness.footerMessages(), [])
+    assert.equal(harness.clearPromptCount(), 1)
+  })
+}
+
 test("slash command submit clears the exit command before requesting exit", async () => {
   const events: string[] = []
   const harness = createHarness({

@@ -34,3 +34,11 @@ test("MP-08 / MP-10: settings switch registers output projection, never emits", 
   assert.equal((await executeWorkflowNotificationSettings(["on", "--fields", "verdict,review_url"], context, deps)).ok, true)
   assert.deepEqual(calls, [{ RegisterWorkflowNotificationSource: { session_id: "target", workflow_ref: "consumer", enabled: true, output_fields: ["verdict", "review_url"] } }])
 })
+
+test("MP-08 / MP-10 source settings name the canonical affected workflow", async () => {
+  const result = await executeWorkflowNotificationSettings(["on", "source-alias"], context, {
+    client: { async send() { return { WorkflowNotificationSourceRegistered: { source } } } },
+  })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /Reviewer.*reviewer/)
+})
