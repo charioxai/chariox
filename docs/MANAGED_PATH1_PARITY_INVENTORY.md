@@ -1,5 +1,26 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 home App authority across leases (2026-10-13)
+
+Under Miguel's D1 decision, an agent's placement does not select a different App
+capability policy. The home kernel projects installed App tools to the worker's
+ordinary leased manifest, validates the authenticated current worker epoch, and
+executes the call through the same home App catalog, timed binding, cancellation,
+trust and critical-effect approval path used by an ordinary home agent. App
+packages, storage and authority stay on the home kernel. The existing App bridge
+receives `actor: {kind: "agent", id: <home agent id>}` and `agent_id`; a worker
+surrogate or the human owner is not the calling actor.
+
+App acquisition retains the human prompt witness, explicit owner interaction and
+binding generation through its writer boundary, using the projected leased run
+instead of a local provider-store run. An old local provider token cannot acquire
+an App after its agent moves to a worker. Kernel-browser acquisition keeps its
+existing local-agent contract; native App-tab behavior is a separate lane.
+
+Source regressions and scoped live receipts do not close MP-10's complete
+ordinary/managed matrix or replace current semantic review of App admission.
+No LocalDaemon or relay shape changes in this correction.
+
 ## MP-08/MP-10/MP-11 visual protection amendment (2026-10-09)
 
 Miguel’s fill-target decision supersedes earlier visual echo/media/container and

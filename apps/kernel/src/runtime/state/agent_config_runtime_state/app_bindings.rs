@@ -226,27 +226,38 @@ impl KernelRuntimeState {
             {
                 return Err(app_binding_error("App target changed"));
             }
-            if self.room_agent_tools_enabled() && current.remote_execution().is_some() {
-                return Err(app_binding_error(
-                    "leased agents use their Room Browser/Computer route",
-                ));
+            if current.remote_execution() != agent.remote_execution() {
+                return Err(app_binding_error("App target placement changed"));
             }
             if let Some(permit) = &binding_permit {
                 let current_actor = agents.get_agent(permit.actor.id())?;
                 if current_actor.owner_user_id() != permit.actor.owner_user_id()
                     || current_actor.session_id() != permit.actor.session_id()
-                    || current_actor.remote_execution().is_some()
+                    || current_actor.remote_execution() != permit.actor.remote_execution()
+                    || current.remote_execution() != permit.target_binding.as_ref()
                 {
                     return Err(app_binding_error("App acquisition caller changed"));
                 }
                 if let Some(run) = &permit.provider_run_id {
-                    if !providers
-                        .get_run_for_agent(current_actor.session_id(), current_actor.id())
-                        .is_some_and(|current_run| {
-                            current_run.id() == run
-                                && current_run.owner_user_id() == current_actor.owner_user_id()
-                        })
-                    {
+                    // A home lease has the projected worker epoch, not a local run.
+                    let current_run_matches = match current_actor.remote_execution() {
+                        Some(binding) => binding
+                            .active_worker_provider_run_id
+                            .as_deref()
+                            .is_some_and(|worker| {
+                                crate::provider::projected_leased_provider_run_id(
+                                    &binding.leased_agent_id,
+                                    worker,
+                                ) == *run
+                            }),
+                        None => providers
+                            .get_run_for_agent(current_actor.session_id(), current_actor.id())
+                            .is_some_and(|current_run| {
+                                current_run.id() == run
+                                    && current_run.owner_user_id() == current_actor.owner_user_id()
+                            }),
+                    };
+                    if !current_run_matches {
                         return Err(app_binding_error("App acquisition provider run changed"));
                     }
                 }
@@ -259,7 +270,6 @@ impl KernelRuntimeState {
                     let current_parent = agents.get_agent(permit.actor.id())?;
                     if !current_parent.has_extension_grant(ExtensionKind::App, &grant.name)
                         || !current_parent.extension_grants().contains(parent)
-                        || current.remote_execution().is_some()
                     {
                         return Err(app_binding_error(
                             "App delegation source expired or was revoked",
@@ -573,6 +583,7 @@ impl KernelRuntimeState {
         let mut permit = AppBindingPermit {
             actor: agent.clone(),
             target_id: target.id().into(),
+            target_binding: target.remote_execution().cloned(),
             installation: installation_id.into(),
             target_revision: self.app_binding_revision(target.id(), installation_id),
             prompt_id: None,
@@ -585,10 +596,7 @@ impl KernelRuntimeState {
         };
         self.authorize_current_external_command()?;
         if self.room_agent_tools_enabled() {
-            if agent.remote_execution().is_some()
-                || target.remote_execution().is_some()
-                || self.slice_kernel_id().is_some()
-            {
+            if self.slice_kernel_id().is_some() {
                 return Err(app_binding_error(
                     "leased agents use their Room Browser/Computer route",
                 ));
@@ -620,7 +628,7 @@ impl KernelRuntimeState {
                 if permit
                     .prompt_delivery
                     .as_ref()
-                    .is_none_or(|delivery| !delivery.belongs_to(run))
+                    .is_none_or(|delivery| !delivery.belongs_to_agent_run(&agent, run))
                 {
                     return Err(app_binding_error(
                         "App request's prompt was not delivered to this provider",
@@ -628,7 +636,7 @@ impl KernelRuntimeState {
                 }
             }
             permit.prompt_id = Some(
-                self.confirm_capability_request(
+                self.confirm_app_capability_request(
                     &agent,
                     &format!("App installation `{installation_id}`"),
                     || {

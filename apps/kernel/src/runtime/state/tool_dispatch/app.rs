@@ -263,9 +263,7 @@ impl KernelRuntimeState {
         tool: &RemoteExtensionTool,
         input: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        if self.room_agent_tools_enabled() {
-            return Err(unavailable());
-        }
+        // MP-08/MP-10/MP-11 D1: the home kernel owns App authority for every placement.
         let agent = super::home_extension_authorizer::HomeExtensionAuthorizationService::new(self)
             .authorize_granted_agent(context, tool)?;
         self.invoke_bound_app_tool(
@@ -283,9 +281,6 @@ impl KernelRuntimeState {
         context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
         hinted: &RemoteExtensionTool,
     ) -> Result<RemoteExtensionTool, DaemonError> {
-        if self.room_agent_tools_enabled() {
-            return Err(unavailable()); // MP-08: leased agents use Room Browser/Computer only.
-        }
         let permit = self
             .app_control()
             .try_admit()

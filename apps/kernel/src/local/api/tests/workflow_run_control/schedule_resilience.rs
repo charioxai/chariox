@@ -246,6 +246,36 @@ fn disabled_schedule_queue_recovers_without_duplicates_or_busy_polling_inner() {
     });
     assert!(resumed.workflow_queued_prompts().is_empty());
     assert_eq!(resumed.workflow_runs().len(), 1);
+    // MP-08/MP-10/MP-11 review: inspect the private owner's real router projection,
+    // not only the scheduler's unredacted application state.
+    let run_id = resumed.workflow_runs()[0].id();
+    let listed = harness
+        .dispatch(LocalDaemonRequest::ListWorkflowRuns(
+            ListWorkflowRunsRequest {
+                session_id: session.id().into(),
+                workflow_ref: None,
+                cursor: None,
+                limit: None,
+            },
+        ))
+        .unwrap();
+    let LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. } = listed else {
+        panic!("unexpected list");
+    };
+    assert!(
+        workflow_runs.iter().any(|run| run.id() == run_id),
+        "MP-11: a private owner sees its scheduled run"
+    );
+    assert!(matches!(
+        harness
+            .dispatch(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                session_id: session.id().into(),
+                workflow_run_ref: run_id.into(),
+            }))
+            .unwrap(),
+        LocalDaemonResponse::WorkflowRun { .. }
+    ));
+
     let resumed_schedule = resumed
         .workflow_schedules()
         .iter()
