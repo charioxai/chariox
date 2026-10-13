@@ -1,8 +1,7 @@
 import { createServer, type Server as NetServer, type Socket as NetSocket } from "node:net"
 import { lstatSync, mkdtempSync, readlinkSync, rmdirSync, unlinkSync, type Stats } from "node:fs"
 import { symlink, unlink } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 
 export type CliAutomationRequest = {
   id?: unknown
@@ -123,8 +122,8 @@ export async function startCliAutomationServer({
       throw error
     }
   })
-  const ownedDirectory = mkdtempSync(join(tmpdir(), "chariox-cli-"))
-  const ownedPath = join(ownedDirectory, "automation.sock")
+  const ownedDirectory = mkdtempSync(join(resolve(dirname(socketPath)), ".cx-"))
+  const ownedPath = join(ownedDirectory, "s")
   const server = createServer((socket) => {
     socket.setEncoding("utf8")
     let buffer = ""
