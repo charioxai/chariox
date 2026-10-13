@@ -183,7 +183,8 @@ pub(crate) async fn execute_resolve_kernel_client_connection_request(
         .await?;
     let target_daemon_alias = relay_kernel_target_alias(&kernel);
     let config = config_projection.snapshot();
-    let connection = if config.cloud_relay.is_some() {
+    let connection = if crate::runtime::cloud_relay_control::cloud_relay_transport_selected(&config)
+    {
         let client_id = request
             .client_id
             .clone()
@@ -437,6 +438,51 @@ fn relay_kernel_target_alias(kernel: &chariox_relay::protocol::RelayKernelPresen
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn retained_profile_private_connection_keeps_operator_transport() {
+        // MP-08 / MP-10 / MP-11: a discovered private peer cannot pivot to Cloud.
+        let mut config = crate::config::DaemonConfig::for_tests();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-loginux-review-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.relay_url = Some("ws://operator-relay:49100".into());
+        config.relay_token = Some("synthetic-private-transport".into());
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            api_url: "http://127.0.0.1:1".into(),
+            relay_url: "wss://cloud-relay".into(),
+            kernel_credential: Some("synthetic-enrollment".into()),
+            ..Default::default()
+        });
+        let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        let projection = app.config_projection_store();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        let inventory = RemoteRelayInventoryProjectionStore::default();
+        inventory.update(Vec::new(), vec![kernel()]);
+        let response = execute_resolve_kernel_client_connection_request(
+            &router.runtime_state(),
+            &projection,
+            &inventory,
+            request(),
+        )
+        .await
+        .unwrap();
+        let LocalDaemonResponse::KernelClientConnectionResolved { connection } = response else {
+            panic!("expected resolved connection")
+        };
+        assert_eq!(connection.relay_url, config.relay_url.unwrap());
+        assert_eq!(connection.relay_token, config.relay_token.unwrap());
+        assert_eq!(connection.token_expires_at, None);
+        assert_eq!(connection.kernel_id.as_deref(), Some("kernel-new"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn keyed_terminal_renewal_keeps_the_requested_subject_without_repairing_it() {
