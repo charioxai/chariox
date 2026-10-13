@@ -200,7 +200,6 @@ fn latest(file: &mut File, capacity: u64) -> Result<Snapshot, DaemonError> {
     best.ok_or_else(|| environment_error("invalid Check journal"))
 }
 
-
 fn open(path: &Path, write: bool) -> std::io::Result<File> {
     #[cfg(unix)]
     let file = {
