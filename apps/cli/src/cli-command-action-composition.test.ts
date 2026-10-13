@@ -7,6 +7,7 @@ import { createCliCommandActionComposition, type CliCommandActionCompositionDeps
 import { CloudClient } from "./cloud-client.js"
 import type { CloudClientCredentialStore, CloudClientCredential } from "./cloud-client-credential-store.js"
 import { cloudClientCallerScope } from "./cloud-client-collaboration-scope.js"
+import { buildDetachedSessionState } from "./session-state.js"
 import { makeCommandDeps, makeSession } from "./command-actions-test-support.js"
 
 // MP-08 / MP-11: actual composition + slash handler, with both authority profiles.
@@ -259,7 +260,7 @@ for (const reference of ["Fresh-Claude", "opaque-claude-id"]) for (const attache
   test(`MP-08 / MP-10 / MP-11 Claude login ${attached ? "attached" : "waiting-room"} via ${reference} submits only a live session context`, async () => {
     const requests: Record<string, any>[] = []
     const profile = { provider: "claude", profile_id: "opaque-claude-id", label: "Fresh-Claude" }
-    const session = { ...makeSession(), id: attached ? "live-session" : "__waiting_room__" }
+    const session = attached ? { ...makeSession(), id: "live-session" } : buildDetachedSessionState({})
     const client = { send: async (request: Record<string, any>) => {
       requests.push(request)
       if ("ListProviderAccountProfiles" in request) return { ProviderAccountProfilesListed: { profiles: [profile] } }
