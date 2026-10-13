@@ -45,19 +45,23 @@ impl KernelRuntimeState {
             daemon_id: Some(worker_kernel_id.to_string()),
             daemon_alias: None,
         };
+        let timeout = request.off_lock_response_timeout(std::time::Duration::from_millis(
+            config.relay_request_timeout_ms,
+        ));
         match self.connected_relay_state_for_config(config).await {
             Some(relay_state) => {
-                crate::transport::relay_client::send_peer_request_via_connected_relay(
+                crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
                     config,
                     &relay_state,
                     target,
                     request,
+                    timeout,
                 )
                 .await
             }
             None => {
-                crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                    config, target, request,
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                    config, target, request, timeout,
                 )
                 .await
             }
