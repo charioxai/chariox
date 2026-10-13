@@ -31,9 +31,6 @@ export class MirrorService {
     if(!stream || stream.scope!==scope || generation!==this.host.generation) throw new Error('MP-11: stale or foreign mirror');
     stream.expires=Date.now()+lifetime;return stream;
   }
-  assertWebTab(tab) {
-    if([...(this.host.browser.appTabs?.apps?.values()??[])].some(app=>app.targetId===tab.target_id))throw new Error('MP-11: App views require the native App capability path');
-  }
   async world(tab) {
     const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
     const {frameTree}=await connection.send('Page.getFrameTree',{},sessionId);
@@ -58,7 +55,7 @@ export class MirrorService {
     this.expire();if(this.streams.size>=8||![1,2].includes(command.device_scale_factor)||![undefined,1,2].includes(command.wire))throw new Error('MP-11: mirror negotiation bounds');
     const tab=await this.host.target(command),scale=this.host.scales.get(tab.tab_id);
     if(scale && scale!==command.device_scale_factor)throw new Error('MP-08: canonical mirror geometry already selected');
-    this.assertWebTab(tab);const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
+    const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
     await connection.send('Emulation.setDeviceMetricsOverride',displayDeviceMetrics(1280,800,command.device_scale_factor,this.host.chromium?.scale??1),sessionId);
     this.host.scales.set(tab.tab_id,command.device_scale_factor);
     const subscription_id=`host-mirror-${randomUUID()}`;
@@ -78,7 +75,7 @@ export class MirrorService {
     const mark=name=>{this.host.timing?.(`mirror_${name}`,stage);stage=timestamp();};
     const stream=this.require(command.subscription_id,scope,command.generation),tab=await this.host.displayTarget({tab_id:stream.tab_id,generation:command.generation});
     mark('target');
-    this.assertWebTab(tab);assertNotCancelled(signal);const world=await this.world(tab),policy=this.host.protection;
+    assertNotCancelled(signal);const world=await this.world(tab),policy=this.host.protection;
     mark('world');
     if(stream.document_id!==tab.document_id) {stream.previous=null;stream.observed=null;stream.epochs=[];stream.refinePending=false;stream.resources.clear();stream.cache.clear();stream.fallback.clear();}
     if(stream.policy!==policy) {stream.previous=null;stream.observed=null;stream.epochs=[];stream.refinePending=false;stream.resources.clear();stream.cache.clear();}
@@ -221,7 +218,7 @@ export class MirrorService {
     return packet;
   }
   async resolveInput(tab,input,scope,signal) {
-    this.assertWebTab(tab);const stream=this.require(input.subscription_id,scope,this.host.generation);
+    const stream=this.require(input.subscription_id,scope,this.host.generation);
     // MP-08/MP-11: every v2 page call, its guard included, fences the document itself.
     if(stream.wire===2)return {...await this.v2.resolveInput(stream,tab,input,scope,signal),fenced:true};
     if(stream.tab_id!==tab.tab_id||stream.document_id!==tab.document_id)throw new Error('MP-11: stale mirror input document');

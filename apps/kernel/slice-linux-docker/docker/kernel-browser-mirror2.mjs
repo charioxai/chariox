@@ -271,7 +271,7 @@ export class Mirror2 {
     // its task, holding the next long poll and its echo behind it). Anything else resolves afresh.
     const kept = this.kept(stream, command.generation);
     const tab = kept?.tab ?? await this.host.displayTarget({ tab_id: stream.tab_id, generation: command.generation });
-    this.service.assertWebTab(tab); assertNotCancelled(signal);
+    assertNotCancelled(signal);
     const world = kept?.world ?? await this.world(tab, stream), policy = this.host.protection;
     stream.world = world;
     mark('world');
@@ -639,7 +639,7 @@ export class Mirror2 {
     return out;
   }
   async resolveInput(stream, tab, input, scope, signal) {
-    this.service.assertWebTab(tab); this.service.require(input.subscription_id, scope, this.host.generation);
+    this.service.require(input.subscription_id, scope, this.host.generation);
     if (stream.tab_id !== tab.tab_id || stream.document_id !== tab.document_id) throw new Error('MP-11: stale mirror input document');
     if (stream.policy !== this.host.protection) throw new Error('MP-11: stale mirror protection policy');
     // Epochs are sequences of this document's current snapshot, never a wall clock.

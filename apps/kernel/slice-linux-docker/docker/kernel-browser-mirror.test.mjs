@@ -109,9 +109,11 @@ test('MP-11: resource cache is epoch bounded and oversized decoded images never 
  assert.equal(result.resources.size,0);assert.equal(result.mapped.get('r0'),null);assert.equal(cache.size,0);
 });
 
-test('MP-11: native App capability views never become an alternate DOM frontend',async()=>{
+test('MP-08/MP-11: App Tabs use the shared caller-bound mirror path',async()=>{
  const {service,host}=fixture();host.browser.appTabs={apps:new Map([['app',{targetId:'target'}]])};
- await assert.rejects(service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),/App capability/);
+ const {subscription_id}=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1,wire:2},'a');
+ assert.equal(service.require(subscription_id,'a',1).wire,2);
+ assert.throws(()=>service.require(subscription_id,'foreign',1),/foreign mirror/);
 });
 
 test('MP-08/MP-11: region fallback removes selection metadata referring to its hidden descendants',async()=>{
