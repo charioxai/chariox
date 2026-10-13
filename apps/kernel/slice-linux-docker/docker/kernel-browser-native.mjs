@@ -50,6 +50,7 @@ export class LinuxCapture {
   Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
+ async createRasterPool(){return mkdtemp(path.join(this.display.root,'raster-'));}
  valid(){return !this.closed&&ownsDisplay(this.display)&&this.allowed(this.policy)}
  onCdp(m){
   if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId)this.fence();
@@ -79,7 +80,7 @@ export class LinuxCapture {
    // real pages); retry a bounded number of times instead of refusing.
    this.regions=new NativeRegionProtection(this.connection,this.sessionId,{policy:this.policy,browser:this.browser,tab:this.tab,scale:this.scale,record:reason=>this.timing('region_frame_masked '+reason,performance.timeOrigin+performance.now())});
    for(let attempt=0;;attempt++){try{await this.regions.refresh();break}catch(error){if(attempt>=4||!/region fence retired/.test(error?.message??''))throw error;}}
-   this.poolRoot=await mkdtemp(path.join(this.display.root,'raster-'));
+   this.poolRoot=await this.createRasterPool();
    this.phase='readback';const executable=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER;
    const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...this.display.environment},stdio:['pipe','pipe','pipe']});this.child=child;if(executable)this.nativeWorker=new NativeWorkerControl(child,this.timing);
    const fail=()=>this.fence();child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
