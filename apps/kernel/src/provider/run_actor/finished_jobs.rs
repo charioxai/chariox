@@ -21,6 +21,7 @@ pub(crate) struct FinishedProviderPromptSubmitJob {
 pub(crate) struct FinishedProviderPromptAbortJob {
     pub(crate) session_id: String,
     pub(crate) provider_run_id: String,
+    pub(crate) prompt_id: String,
     pub(crate) result: Result<(), DaemonError>,
 }
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import { createPromptAttachmentController } from "./prompt-attachment-controller.js"
 import { handleAppSlashCommand } from "./app-command-handler.js"
 import { sharedShellCommandForSlashCommand } from "./commands.js"
 import {
@@ -364,3 +365,51 @@ test("/approvals clears command UI before opening and bypasses shared shell exec
   assert.equal((await controller.submit("/approvals", { allowSlashCommandSubmission: true }))?.kind, "approvals")
   assert.equal(opened, 1)
 })
+
+
+test("MP-08 / MP-11 attachment command preserves its newly inserted file token", async () => {
+  const h = createHarness({ attached: true })
+  let text = "/attach README.md"
+  let pending: import("./prompt-attachment-state.js").PendingPromptAttachment[] = []
+  const attachments = createPromptAttachmentController({
+    getPromptInput: () => null,
+    getPromptText: () => text,
+    setPromptText: value => { text = value },
+    pendingAttachments: () => pending,
+    setPendingAttachments: value => { pending = value },
+    updatePendingAttachments: update => { pending = update(pending) },
+    refreshHighlights() {}, updateSessionChrome() {}, requestRender() {},
+  })
+  const controller = createSlashCommandSubmitController({
+    ...h.deps,
+    clearPromptText: () => { text = ""; attachments.syncFromText(text) },
+    handleAttachmentCommand: async () => {
+      await Promise.resolve()
+      attachments.addStoredFiles([{ id: "readme", url: "file:///public/README.md", mime: "text/markdown", filename: "README.md", kind: "text" }], 0)
+    },
+  })
+  assert.equal((await controller.submit("/attach README.md", { allowSlashCommandSubmission: true }))?.kind, "attachment")
+  assert.equal(text, "[file 1]")
+  assert.equal(pending[0]?.filename, "README.md")
+})
+
+for (const rejects of [false, true]) {
+  test(`MP-08 / MP-10 / MP-11 pending focus preserves the next draft (${rejects ? "error" : "success"})`, async () => {
+    let prompt = "/agent focus reviewer"
+    let settle!: () => void
+    const pending = new Promise<void>(resolve => { settle = resolve })
+    const h = createHarness({ attached: true, clearPromptText: () => { prompt = "" } })
+    h.deps.handleAgentCommand = async () => {
+      await pending
+      if (rejects) throw new Error("focus unavailable")
+    }
+    const controller = createSlashCommandSubmitController(h.deps)
+    const submission = controller.submit(prompt, { allowSlashCommandSubmission: true })
+    prompt = "Read the public README next."
+    settle()
+    await submission
+    assert.equal(prompt, "Read the public README next.")
+    assert.equal(h.clearPromptCount(), 1)
+    assert.equal(h.commandCenterClearCount(), 1)
+  })
+}

@@ -1,7 +1,8 @@
+import { spawnOwned, signalOwnedProcessGroup } from "../apps/kernel/slice-linux-docker/owned-process-signals.mjs"
 // Dedicated CI wrapper. Every image/mount/recovery operation is the production
 // Rust module, exercised by ignored hosted tests; no parallel shell provisioner.
 import assert from 'node:assert/strict';
-import { spawn, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { constants, createWriteStream } from 'node:fs';
 import { appendFile, lstat, mkdtemp, open, opendir, realpath, rm, statfs, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
@@ -36,7 +37,7 @@ async function run(label, filter, ignored = false) {
   const stream = createWriteStream(join(evidence, `${label}.log`), { mode: 0o600 });
   const args = ['test', '-p', 'chariox-app-runtime', '--lib', filter, '--', '--test-threads=1', '--nocapture'];
   if (ignored) args.push('--ignored', '--exact');
-  const child = spawn('cargo', args, { cwd: resolve(import.meta.dirname, '..'), env, detached: true,
+  const child = spawnOwned('cargo', args, { cwd: resolve(import.meta.dirname, '..'), env, detached: true,
     stdio: ['ignore', 'pipe', 'pipe'] });
   let ended = false;
   let closed = false;
@@ -47,7 +48,7 @@ async function run(label, filter, ignored = false) {
   });
   let logBytes = 0;
   let logFailure = false;
-  const stop = () => { if (!ended && !closed) { try { process.kill(-child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } } };
+  const stop = () => { if (!ended && !closed) { try { signalOwnedProcessGroup(child, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } } };
   // Trusted compiler/test output is still bounded; retain the prefix as evidence.
   stream.on('error', () => { logFailure = true; stop(); });
   for (const output of [child.stdout, child.stderr]) output.on('data', bytes => {

@@ -143,7 +143,7 @@ impl KernelRuntimeOwnedState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::runtime::state) mod tests {
     mod brief_dispatch_review;
     mod native_cancellation;
     mod native_origin_handoff_review;
@@ -1269,7 +1269,7 @@ mod tests {
         );
     }
 
-    async fn runtime_with_active_prompt() -> (
+    pub(in crate::runtime::state) async fn runtime_with_active_prompt() -> (
         crate::test_support::TestWorktree,
         KernelRuntimeState,
         String,
@@ -2174,6 +2174,56 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn failed_local_settlement_ended_provider_emits_one_completion() {
+        let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+        runtime
+            .owned
+            .provider_store
+            .mark_run_ended_provider_only(&session_id, &provider_run_id)
+            .expect("failed provider should retire");
+        assert!(runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .is_none());
+        assert!(runtime
+            .owned
+            .settle_failed_local_prompt_without_advance(
+                &session_id,
+                &agent_id,
+                &dispatch.prompt_id,
+                &provider_run_id,
+                "provider retired before settlement",
+            )
+            .expect("failed prompt should settle")
+            .is_some());
+        let completions = runtime
+            .owned
+            .terminal_stream
+            .drain_completion_records(&session_id, &observer_id);
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].provider_run_id, provider_run_id);
+        assert_eq!(completions[0].agent_id.as_deref(), Some(agent_id.as_str()));
+        assert!(runtime
+            .owned
+            .settle_failed_local_prompt_without_advance(
+                &session_id,
+                &agent_id,
+                &dispatch.prompt_id,
+                &provider_run_id,
+                "duplicate failed settlement",
+            )
+            .expect("duplicate settlement should be harmless")
+            .is_none());
+        assert!(runtime
+            .owned
+            .terminal_stream
+            .drain_completion_records(&session_id, &observer_id)
+            .is_empty());
+    }
+
     const FAILED_REQUEST_NOTE: &str = "Your previous request (\"active prompt\") failed";
 
     async fn submit_and_dispatch(
@@ -2723,7 +2773,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completed_and_cancelled_turns_add_no_failed_request_note() {
+    async fn mp08_mp10_owned_cancellation_emits_completion_without_provider_output() {
         let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
             runtime_with_admitted_prompt().await;
         let source_id = dispatch.source_attachment_id.clone();
@@ -2743,7 +2793,7 @@ mod tests {
             "after success",
         )
         .await;
-        runtime
+        let cancelled = runtime
             .owned
             .cancel_local_prompt(&session_id, &agent_id, &source_id)
             .expect("cancellation should succeed")
@@ -2753,9 +2803,35 @@ mod tests {
             .finalize_local_prompt_cancellation_with_queued_advance(
                 &session_id,
                 &agent_id,
+                cancelled.cancellation.prompt.id(),
                 Some(&provider_run_id),
             )
             .expect("cancellation should finalize");
+        let completion_id = format!("prompt-complete:{}", cancelled.cancellation.prompt.id());
+        let records = runtime
+            .owned
+            .terminal_stream
+            .drain_completion_records(&session_id, &observer_id);
+        assert_eq!(records.iter().filter(|record| record.message_id == completion_id
+            && record.provider_run_id == provider_run_id).count(), 1,
+            "MP-08/MP-10: the actual owned-state worker path must project the cancelled prompt even when its provider emits no assistant completion");
+        assert!(
+            runtime
+                .owned
+                .finalize_local_prompt_cancellation_with_queued_advance(
+                    &session_id,
+                    &agent_id,
+                    cancelled.cancellation.prompt.id(),
+                    Some(&provider_run_id)
+                )
+                .is_err(),
+            "retired cancellation cannot publish twice"
+        );
+        assert!(runtime
+            .owned
+            .terminal_stream
+            .drain_completion_records(&session_id, &observer_id)
+            .is_empty());
         submit_and_dispatch(&runtime, &session_id, &agent_id, &source_id, "after cancel").await;
 
         assert!(failed_requests(&runtime, &agent_id).is_empty());
@@ -3891,6 +3967,7 @@ impl KernelRuntimeState {
         dispatch: &crate::app::KernelPromptDispatch,
         owned: &KernelRuntimeOwnedState,
     ) -> Result<PromptDispatchAcceptance, DaemonError> {
+        self.authorize_current_external_command()?;
         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
             return Ok(PromptDispatchAcceptance::Dropped);
         }
@@ -4923,6 +5000,16 @@ impl KernelRuntimeState {
                 .await?;
             let provider_run = owned
                 .ensure_provider_run_in_session(&dispatch.session_id, &dispatch.provider_run_id)?;
+            if owned
+                .cancelling_prompt_for_abort(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &dispatch.prompt_id,
+                )
+                .is_none()
+            {
+                return Ok(());
+            }
             if provider_run.state() != crate::provider::ProviderRunState::Running {
                 return Err(DaemonError::InvalidProviderRunState {
                     provider_run_id: dispatch.provider_run_id.clone(),
@@ -4937,6 +5024,7 @@ impl KernelRuntimeState {
                 return owned.provider_store.enqueue_structured_prompt_abort(
                     dispatch.session_id.clone(),
                     dispatch.provider_run_id.clone(),
+                    dispatch.prompt_id.clone(),
                 );
             }
             let input = dispatch.pty_input;
@@ -4970,6 +5058,16 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         {
             let owned = &self.owned;
+            if owned
+                .cancelling_prompt_for_abort(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &dispatch.prompt_id,
+                )
+                .is_none()
+            {
+                return Ok(());
+            }
             let recipients = owned
                 .attachment_store
                 .list_session_attachment_ids(&dispatch.session_id);
@@ -5029,6 +5127,53 @@ impl KernelRuntimeState {
         });
     }
 
+    // MP-08/MP-10/MP-11: the waiter holds the provider operation lane until this
+    // exact cancelled invocation has settled, including settlement by another pump.
+    pub(super) async fn wait_for_structured_prompt_abort_settlement(
+        &self,
+        dispatch: &crate::app::KernelPromptAbortDispatch,
+        completion_signal: &crate::provider::ProviderRunActorCompletionSignal,
+        mut completion_sequence: u64,
+    ) {
+        loop {
+            if self
+                .owned
+                .cancelling_prompt_for_abort(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &dispatch.prompt_id,
+                )
+                .is_none()
+            {
+                return;
+            }
+            // MP-08/MP-10/MP-11: another output pump may settle the owner after
+            // its actor completion was already observed. Recheck that exact
+            // prompt even when there is no further provider event. This delay
+            // never acknowledges an abort or settles a still-cancelling turn.
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(25),
+                completion_signal.wait_for_change_after(completion_sequence),
+            )
+            .await;
+            completion_sequence = completion_signal.sequence();
+            self.reap_structured_prompt_jobs_and_dispatch();
+            let prompt_is_still_cancelling = self
+                .owned
+                .cancelling_prompt_for_abort(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &dispatch.prompt_id,
+                )
+                .is_some();
+            if !prompt_is_still_cancelling {
+                self.spawn_workflow_prompt_dispatches(self.owned.workflow_retry_blocked_claims());
+                let _ = self.owned.session_snapshot(&dispatch.session_id);
+                return;
+            }
+        }
+    }
+
     pub(crate) fn spawn_prompt_abort(
         &self,
         dispatch: crate::app::KernelPromptAbortDispatch,
@@ -5052,81 +5197,43 @@ impl KernelRuntimeState {
             loop {
                 let completion_signal =
                     structured.then(|| state.owned.provider_store.run_actor_completion_signal());
-                let mut completion_sequence = completion_signal
+                let completion_sequence = completion_signal
                     .as_ref()
                     .map(|signal| signal.sequence())
                     .unwrap_or_default();
                 let outcome = match state.enqueue_prompt_abort(&dispatch).await {
                     Ok(()) if !structured => {
-                        if let Ok(provider_run) = state
-                            .owned
-                            .provider_store
-                            .get_run(&dispatch.provider_run_id)
-                        {
-                            if let Some(agent_id) = provider_run.agent_instance_id() {
-                                if let Ok(session) =
-                                    state.owned.session_store.get_session(&dispatch.session_id)
-                                {
-                                    if let Some(prompt) = state
-                                        .owned
-                                        .prompt_state_owner
-                                        .active_prompt_for_agent(&session, agent_id)
-                                    {
-                                        let _ = state
-                                            .owned
-                                            .workflow_cancel_prompt(&dispatch.session_id, &prompt);
-                                    }
-                                }
-                                let _ = state
-                                    .owned
-                                    .finalize_local_prompt_cancellation_with_queued_advance(
-                                        &dispatch.session_id,
-                                        agent_id,
-                                        Some(&dispatch.provider_run_id),
-                                    );
-                            }
+                        if let Some((agent_id, prompt)) = state.owned.cancelling_prompt_for_abort(
+                            &dispatch.session_id,
+                            &dispatch.provider_run_id,
+                            &dispatch.prompt_id,
+                        ) {
+                            let _ = state
+                                .owned
+                                .workflow_cancel_prompt(&dispatch.session_id, &prompt);
+                            let _ = state
+                                .owned
+                                .finalize_local_prompt_cancellation_with_queued_advance(
+                                    &dispatch.session_id,
+                                    &agent_id,
+                                    &dispatch.prompt_id,
+                                    Some(&dispatch.provider_run_id),
+                                );
                         }
                         PromptAbortDispatchOutcome::Done
                     }
-                    Ok(()) => loop {
-                        let completion_signal = completion_signal
-                            .as_ref()
-                            .expect("structured abort should have a completion signal");
-                        completion_signal
-                            .wait_for_change_after(completion_sequence)
+                    Ok(()) => {
+                        state
+                            .wait_for_structured_prompt_abort_settlement(
+                                &dispatch,
+                                completion_signal
+                                    .as_ref()
+                                    .expect("structured abort should have a completion signal"),
+                                completion_sequence,
+                            )
                             .await;
-                        completion_sequence = completion_signal.sequence();
-                        state.reap_structured_prompt_jobs_and_dispatch();
-                        let prompt_is_still_cancelling = state
-                            .owned
-                            .provider_store
-                            .get_run(&dispatch.provider_run_id)
-                            .ok()
-                            .and_then(|run| run.agent_instance_id().map(str::to_string))
-                            .and_then(|agent_id| {
-                                state
-                                    .owned
-                                    .session_store
-                                    .get_session(&dispatch.session_id)
-                                    .ok()
-                                    .and_then(|session| {
-                                        state
-                                            .owned
-                                            .prompt_state_owner
-                                            .active_prompt_for_agent(&session, &agent_id)
-                                    })
-                            })
-                            .is_some_and(|prompt| {
-                                prompt.status() == crate::session::PromptStatus::Cancelling
-                            });
-                        if !prompt_is_still_cancelling {
-                            state.spawn_workflow_prompt_dispatches(
-                                state.owned.workflow_retry_blocked_claims(),
-                            );
-                            let _ = state.owned.session_snapshot(&dispatch.session_id);
-                            break PromptAbortDispatchOutcome::Done;
-                        }
-                    },
+                        PromptAbortDispatchOutcome::Done
+                    }
                     Err(_)
                         if state
                             .structured_prompt_io_in_flight(&dispatch.provider_run_id)

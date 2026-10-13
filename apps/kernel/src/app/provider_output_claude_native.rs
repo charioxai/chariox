@@ -38,7 +38,9 @@ use permission::{
     claude_headless_prompt_waiting_in_composer, claude_headless_workspace_trust_denied,
     claude_headless_workspace_trust_interaction_id,
     claude_headless_workspace_trust_interaction_marker, claude_headless_workspace_trust_visible,
-    claude_native_marker, claude_permission_recent_file, claude_rendered_permission_visible,
+    claude_native_marker, claude_permission_recent_file, claude_rendered_permission_details,
+    claude_rendered_permission_visible, claude_workspace_trust_approval_input,
+    claude_workspace_trust_selection_started_at,
     claude_yolo_rendered_permission_confirmation_pending, clear_claude_hook_permission_tombstone,
     clear_claude_permission_recent, clear_claude_yolo_rendered_permission_confirmation,
     extract_native_hidden_instructions, mark_claude_yolo_rendered_permission_confirmed,
@@ -51,7 +53,7 @@ use permission::{
     write_claude_headless_workspace_trust_interaction_marker, write_claude_hook_context_response,
     write_claude_hook_permission_tombstone, write_claude_native_marker,
     write_claude_permission_input, write_claude_permission_passthrough,
-    write_claude_permission_response,
+    write_claude_permission_response, write_claude_workspace_trust_selection_marker,
 };
 #[cfg(test)]
 use transcript::{drain_claude_transcript_file, drain_claude_transcript_file_since};
@@ -65,6 +67,24 @@ const CLAUDE_TRANSCRIPT_STOP_DRAIN_MS: u64 = 300;
 const CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX: &str = "stop-draining:";
 const CLAUDE_WORKSPACE_TRUST_DENIED: &str =
     "Claude Code workspace trust was denied before the queued task was dispatched.";
+const CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED: &str =
+    "Claude Code could not select the approved workspace trust option; no task text was dispatched. Retry after the trust dialog is fully displayed.";
+const CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED_PREFIX: &str =
+    "startup-workspace-trust-selection-failed:";
+
+fn claude_workspace_trust_failure(context_file: &str) -> Option<&'static str> {
+    if claude_headless_workspace_trust_denied(context_file) {
+        Some(CLAUDE_WORKSPACE_TRUST_DENIED)
+    } else if claude_native_marker(context_file)
+        .as_deref()
+        .is_some_and(|marker| marker.starts_with(CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED_PREFIX))
+    {
+        Some(CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED)
+    } else {
+        None
+    }
+}
+
 const CLAUDE_HEADLESS_EARLY_EXIT: &str =
     "Claude Code exited before acknowledging the queued task; no task text was dispatched.";
 
@@ -95,6 +115,7 @@ pub(crate) enum ClaudeNativeDispatchAttempt {
 enum ClaudeWorkspaceTrustResolution {
     Approved,
     Denied,
+    SelectionFailed,
 }
 
 pub(crate) const CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE: &str = "Claude blocked the prompt because Chariox context delivery failed. Retry after the kernel is ready.";
@@ -350,15 +371,16 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(outcome);
         };
 
-        if claude_headless_workspace_trust_denied(context_file) {
-            outcome.terminal_failure = Some(CLAUDE_WORKSPACE_TRUST_DENIED.to_string());
+        if let Some(message) = claude_workspace_trust_failure(context_file) {
+            outcome.terminal_failure = Some(message.to_string());
             return Ok(outcome);
         }
         if let Some(resolution) =
             self.process_pending_claude_workspace_trust(provider_run_id, context_file)?
         {
-            if resolution == ClaudeWorkspaceTrustResolution::Denied {
-                outcome.terminal_failure = Some(CLAUDE_WORKSPACE_TRUST_DENIED.to_string());
+            if resolution != ClaudeWorkspaceTrustResolution::Approved {
+                outcome.terminal_failure =
+                    claude_workspace_trust_failure(context_file).map(str::to_string);
                 return Ok(outcome);
             }
         }
@@ -1196,6 +1218,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             provider_run,
                             context_file,
                             bridge,
+                            &recent,
                         )?;
                     }
                 }
@@ -1217,11 +1240,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             clear_claude_permission_recent(context_file);
             return Ok(());
         }
-        let recent = if visible {
-            rendered.to_string()
-        } else {
-            update_claude_permission_recent(context_file, rendered)
-        };
+        // MP-08 / MP-10 / MP-11: the tool/action can arrive in a PTY chunk
+        // before the choices. Retain that context for the user's decision.
+        let recent = update_claude_permission_recent(context_file, rendered);
         if !visible && !claude_rendered_permission_visible(&recent) {
             clear_claude_yolo_rendered_permission_confirmation(context_file);
             return Ok(());
@@ -1272,7 +1293,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             RuntimeInteractionKind::Permission,
             RuntimeInteractionLevel::Warning,
             Some("Approve Claude Code tool?".to_string()),
-            "Claude Code is showing a native tool permission prompt.",
+            claude_rendered_permission_details(&recent),
             vec![
                 RuntimeInteractionChoice::new(
                     "allow_once",
@@ -1464,11 +1485,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
             return Ok(ClaudeNativeDispatchAttempt::Completed);
         };
-        if claude_headless_workspace_trust_denied(context_file) {
+        if let Some(message) = claude_workspace_trust_failure(context_file) {
             return Err(DaemonError::ProviderProtocol {
                 provider_run_id: provider_run_id.to_string(),
                 operation: "submit Claude headless prompt",
-                message: CLAUDE_WORKSPACE_TRUST_DENIED.to_string(),
+                message: message.to_string(),
             });
         }
         if provider_run.provider() == "claude-headless"
@@ -1486,11 +1507,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         if let Some(resolution) =
             self.process_pending_claude_workspace_trust(provider_run_id, context_file)?
         {
-            if resolution == ClaudeWorkspaceTrustResolution::Denied {
+            if resolution != ClaudeWorkspaceTrustResolution::Approved {
                 return Err(DaemonError::ProviderProtocol {
                     provider_run_id: provider_run_id.to_string(),
                     operation: "submit Claude headless prompt",
-                    message: CLAUDE_WORKSPACE_TRUST_DENIED.to_string(),
+                    message: claude_workspace_trust_failure(context_file)
+                        .unwrap_or(CLAUDE_WORKSPACE_TRUST_DENIED)
+                        .to_string(),
                 });
             }
         }
@@ -1968,15 +1991,43 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         else {
             return Ok(None);
         };
+        if let Some(selected_at_ms) = claude_workspace_trust_selection_started_at(context_file) {
+            if unix_epoch_ms().saturating_sub(selected_at_ms) < CLAUDE_SUBMIT_DELAY_MS {
+                return Ok(None);
+            }
+            self.app
+                .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
+            write_claude_headless_startup_wait_marker(context_file);
+            clear_claude_permission_recent(context_file);
+            return Ok(Some(ClaudeWorkspaceTrustResolution::Approved));
+        }
         let Some(input) = take_claude_permission_inputs(context_file)
             .into_iter()
             .next()
         else {
             return Ok(None);
         };
+        // An empty startup mailbox reply means the human approved but the
+        // latest provider frame had no safely selectable affirmative row.
+        if input.is_empty() {
+            self.app
+                .write_provider_pty_input_for_runtime(provider_run_id, &[0x03])?;
+            write_claude_native_marker(
+                context_file,
+                &format!("{CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED_PREFIX}{interaction_id}"),
+            );
+            clear_claude_permission_recent(context_file);
+            return Ok(Some(ClaudeWorkspaceTrustResolution::SelectionFailed));
+        }
         self.app
             .write_provider_pty_input_for_runtime(provider_run_id, &input)?;
-        if input == b"\r" {
+        if input == b"\x1b[B" || input == b"\x1b[A" {
+            // Like prompt submission, let the provider register the selection
+            // before Enter, between short app-lock holds.
+            write_claude_workspace_trust_selection_marker(context_file);
+            clear_claude_permission_recent(context_file);
+            Ok(None)
+        } else if input == b"\r" {
             write_claude_headless_startup_wait_marker(context_file);
             clear_claude_permission_recent(context_file);
             Ok(Some(ClaudeWorkspaceTrustResolution::Approved))
@@ -1994,7 +2045,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         provider_run: &RuntimeProviderRun,
         context_file: &str,
         bridge: std::sync::Arc<dyn ProviderNativeInteractionBridge>,
+        rendered: &str,
     ) -> Result<(), DaemonError> {
+        // PTY output can split the header from its choices. Wait for a
+        // recognized selector instead of guessing or failing on a partial frame.
+        let Some(_) = claude_workspace_trust_approval_input(rendered) else {
+            return Ok(());
+        };
         let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
             return Ok(());
         };
@@ -2003,7 +2060,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             timestamp_millis()
         );
         write_claude_headless_workspace_trust_interaction_marker(context_file, &interaction_id);
-        clear_claude_permission_recent(context_file);
+        // Keep accumulating the displayed frame while the interaction is open.
+        // Its selected row may arrive in a later PTY drain.
         let interaction = RuntimeInteraction::new(
             interaction_id.clone(),
             agent_id,
@@ -2042,7 +2100,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     if resolution.reply.as_deref() == Some("allow")
                         || resolution.choice_id.as_deref() == Some("allow_once") =>
                 {
-                    b"\r".to_vec()
+                    claude_permission_recent_file(&context_file)
+                        .and_then(|path| fs::read_to_string(path).ok())
+                        .and_then(|text| {
+                            claude_workspace_trust_approval_input(&text).map(|input| input.to_vec())
+                        })
+                        .unwrap_or_default()
                 }
                 Ok(_) => vec![0x03],
                 Err(error) => {

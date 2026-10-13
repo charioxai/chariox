@@ -48,6 +48,8 @@ export function createWaitingRoomWorkspaceController(deps: {
   getSelection?(): { machineId: string; kernelId: string }
   withClient?(token: WaitingRoomWorkspaceReadToken, read: (client: WorkspaceReadClient) => Promise<void>): Promise<void>
   render(): void
+  /** The waiting room is not mounted while a session is attached. */
+  visible?(): boolean
 }) {
   let machineId = ""
   let kernelId = ""
@@ -56,6 +58,9 @@ export function createWaitingRoomWorkspaceController(deps: {
   let pending: WaitingRoomWorkspaceReadToken | null = null
   const workspaces = new Map<string, string>()
   const inventoryRequests = new WeakMap<WaitingRoomInventory, WaitingRoomWorkspaceReadToken>()
+  // Periodic inventory refreshes must not rebuild (and drop selections in) an
+  // attached transcript; leaving the session rebuilds the waiting room anyway.
+  const render = () => { if (deps.visible?.() ?? true) deps.render() }
 
   function remember() {
     const path = deps.getWorkspace()
@@ -117,7 +122,7 @@ export function createWaitingRoomWorkspaceController(deps: {
       deps.setWorktree(workspace)
       deps.resetSelection()
     }
-    deps.render()
+    render()
   }
 
   async function refreshWorkspace(workspace = deps.getWorkspace(), client?: WorkspaceReadClient): Promise<void> {
@@ -131,7 +136,7 @@ export function createWaitingRoomWorkspaceController(deps: {
       const { worktrees, disabledHint } = await loadWaitingRoomKernelWorktrees(send, workspace)
       if (!isCurrent(token)) return
       setWaitingRoomKernelWorktrees(workspace, deps.getWorktree(), worktrees, disabledHint)
-      deps.render()
+      render()
     }
     try {
       if (client) await read(client)
@@ -166,7 +171,7 @@ export function createWaitingRoomWorkspaceController(deps: {
       deps.resetSelection()
     }
     remember()
-    deps.render()
+    render()
     await refreshWorkspace(workspace, send ? { send } : undefined)
   }
 
@@ -178,7 +183,7 @@ export function createWaitingRoomWorkspaceController(deps: {
     clearWaitingRoomWorktreeInventory()
     deps.resetSelection()
     remember()
-    deps.render()
+    render()
     await refreshWorkspace(path)
   }
 

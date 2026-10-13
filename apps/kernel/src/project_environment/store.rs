@@ -153,7 +153,7 @@ pub struct StoredProjectEnvironment {
 
 #[derive(Debug, Clone)]
 pub struct ProjectEnvironmentStore {
-    root: PathBuf,
+    pub(super) root: PathBuf,
 }
 impl ProjectEnvironmentStore {
     pub fn new(private_state_root: &Path) -> Self {
@@ -161,7 +161,7 @@ impl ProjectEnvironmentStore {
             root: private_state_root.join("project-environments"),
         }
     }
-    fn path(&self, project: &str) -> PathBuf {
+    pub(super) fn path(&self, project: &str) -> PathBuf {
         self.root
             .join(format!("{:x}.json", Sha256::digest(project.as_bytes())))
     }
@@ -264,6 +264,11 @@ impl ProjectEnvironmentStore {
         result
     }
     pub fn remove(&self, project: &str) -> Result<(), DaemonError> {
+        match fs::remove_file(self.path(project).with_extension("identity.json")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(environment_error("remove environment identity failed")),
+        }
         match fs::remove_file(self.path(project)) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -293,15 +298,22 @@ impl std::fmt::Debug for ProjectEnvironmentLock {
 }
 impl ProjectEnvironmentStore {
     pub fn lock(&self, project: &str) -> Result<ProjectEnvironmentLock, DaemonError> {
-        self.acquire_lock(project, false)
+        self.acquire_lock(project, false, "lock")
     }
     pub(crate) fn try_lock(&self, project: &str) -> Result<ProjectEnvironmentLock, DaemonError> {
-        self.acquire_lock(project, true)
+        self.acquire_lock(project, true, "lock")
+    }
+    pub(super) fn identity_lock(
+        &self,
+        project: &str,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        self.acquire_lock(project, false, "identity.lock")
     }
     fn acquire_lock(
         &self,
         project: &str,
         nonblocking: bool,
+        extension: &str,
     ) -> Result<ProjectEnvironmentLock, DaemonError> {
         fs::create_dir_all(&self.root)
             .map_err(|_| environment_error("environment manifest directory unavailable"))?;
@@ -311,7 +323,7 @@ impl ProjectEnvironmentStore {
             fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))
                 .map_err(|_| environment_error("secure environment directory failed"))?;
         }
-        let path = self.path(project).with_extension("lock");
+        let path = self.path(project).with_extension(extension);
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true);
         #[cfg(unix)]

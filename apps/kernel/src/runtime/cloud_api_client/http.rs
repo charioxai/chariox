@@ -5,7 +5,8 @@ use crate::error::DaemonError;
 #[path = "bounded_artifact.rs"]
 mod bounded_artifact;
 
-const CLOUD_API_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+pub(super) const CLOUD_API_REQUEST_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(20);
 
 pub(crate) fn normalize_cloud_api_url(api_url: &str) -> Result<String, DaemonError> {
     let normalized = api_url.trim().trim_end_matches('/').to_string();
@@ -96,6 +97,41 @@ where
     .await
     .map_err(|error| DaemonError::LocalTransport {
         operation: "get authenticated cloud json",
+        message: error.to_string(),
+    })?
+}
+
+pub(crate) async fn get_cloud_kernel_directory(
+    profile: &crate::config::PersistedCloudRelayProfile,
+) -> Result<serde_json::Value, DaemonError> {
+    let profile = profile.clone();
+    tokio::task::spawn_blocking(move || {
+        let url = format!(
+            "{}/relay/targets?accountId={}&realmId={}",
+            profile.api_url,
+            cloud_url_component(&profile.account_id),
+            cloud_url_component(&profile.realm_id)
+        );
+        let credential =
+            profile
+                .kernel_credential
+                .as_deref()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "read My kernels",
+                    message: "independent kernel enrollment is required".into(),
+                })?;
+        let response = ureq::AgentBuilder::new()
+            .timeout(CLOUD_API_REQUEST_TIMEOUT)
+            .build()
+            .get(&url)
+            .set("x-chariox-kernel-credential", credential)
+            .call()
+            .map_err(cloud_transport_error)?;
+        decode_cloud_response(response)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "read My kernels",
         message: error.to_string(),
     })?
 }
@@ -320,7 +356,7 @@ where
     decode_cloud_response(response)
 }
 
-fn decode_cloud_response<T>(response: ureq::Response) -> Result<T, DaemonError>
+pub(super) fn decode_cloud_response<T>(response: ureq::Response) -> Result<T, DaemonError>
 where
     T: serde::de::DeserializeOwned,
 {
@@ -348,19 +384,27 @@ pub(crate) fn cloud_url_component(value: &str) -> String {
         .collect()
 }
 
-fn cloud_transport_error(error: ureq::Error) -> DaemonError {
+pub(super) fn cloud_transport_error(error: ureq::Error) -> DaemonError {
     let message = match error {
         ureq::Error::Status(status, response) => {
             let body = response.into_string().unwrap_or_default();
-            if body.is_empty() {
-                format!("cloud relay request failed with {status}")
-            } else if let Some(code) = cloud_api_error_code(&body) {
-                format!("cloud relay request failed with {status}: cloud_api_code={code}: {body}")
-            } else {
-                format!("cloud relay request failed with {status}: {body}")
-            }
+            return cloud_status_error(status, body);
         }
         ureq::Error::Transport(error) => error.to_string(),
+    };
+    DaemonError::LocalTransport {
+        operation: "cloud relay request",
+        message,
+    }
+}
+
+pub(super) fn cloud_status_error(status: u16, body: String) -> DaemonError {
+    let message = if body.is_empty() {
+        format!("cloud relay request failed with {status}")
+    } else if let Some(code) = cloud_api_error_code(&body) {
+        format!("cloud relay request failed with {status}: cloud_api_code={code}")
+    } else {
+        format!("cloud relay request failed with {status}")
     };
     DaemonError::LocalTransport {
         operation: "cloud relay request",

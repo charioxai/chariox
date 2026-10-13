@@ -3,7 +3,7 @@ import test from "node:test"
 
 import { executeDeploymentSetup } from "./deployed-workflow-setup-executor.js"
 import type { DeploymentSetup } from "./deployed-workflow-setup-api.js"
-import type { RelayCloudProfile } from "./preferences.js"
+import type { CloudControlProfile as RelayCloudProfile } from "./cloud-control-auth.js"
 
 test("deployment setup executor reloads a concurrently advanced checkpoint", async () => {
   const originalFetch = globalThis.fetch

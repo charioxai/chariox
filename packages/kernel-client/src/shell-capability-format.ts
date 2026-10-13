@@ -106,7 +106,7 @@ export function formatProviderCapabilityImportReport(report: ProviderCapabilityI
 
 export function formatEnvironmentList(environments: CharioxEnvironmentConfig[]): string {
   if (environments.length === 0) {
-    return "no environments registered"
+    return "no Script runtimes registered"
   }
   return environments.map((environment) => {
     const runtime = typeof environment.runtime?.type === "string"

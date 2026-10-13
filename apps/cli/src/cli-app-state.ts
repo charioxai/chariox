@@ -118,7 +118,9 @@ export function createCliAppState(options: {
   const [relayStatusState, setRelayStatusState] = createSignal<RelayStatusView | null>(null)
   const [remoteMachinesState, setRemoteMachinesState] = createSignal<RemoteMachineView[]>([])
   const [remoteKernelsState, setRemoteKernelsState] = createSignal<RemoteKernelView[]>([])
-  const [providerAccountsState, setProviderAccountsState] = createSignal<import("./cli-types.js").ProviderAccountProfile[]>([])
+  // MP-08 / MP-11: An account inventory that has not arrived is unknown.
+  // The kernel remains authoritative for a prompt submitted during hydration.
+  const [providerAccountsState, setProviderAccountsState] = createSignal<import("./cli-types.js").ProviderAccountProfile[]>()
   const [slicesState, setSlicesState] = createSignal<SliceRecord[]>([])
   const [terminalsState, setTerminalsState] = createSignal<TerminalView[]>([])
   const [externalProviderSessionsState, setExternalProviderSessionsState] = createSignal<ExternalProviderSessionRecord[]>([])

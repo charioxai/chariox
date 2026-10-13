@@ -25,8 +25,18 @@ pub const DEFAULT_REVOCATION_SYNC_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Deserialize)]
 struct RevocationsDocument {
+    #[serde(rename = "revokedTokens", default)]
+    revoked_tokens: Option<Vec<TokenRevocation>>,
     #[serde(default)]
     revocations: Vec<RevocationEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TokenRevocation {
+    #[serde(rename = "tokenId")]
+    token_id: String,
+    #[serde(rename = "expiresAtMs")]
+    expires_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -50,6 +60,17 @@ pub fn apply_revocations_document(
     let document: RevocationsDocument = serde_json::from_str(body)?;
     let expires_at_ms = now_ms.saturating_add(REVOCATION_SYNC_HORIZON_MS);
     let mut applied = 0;
+    if let Some(tokens) = document.revoked_tokens {
+        for token in tokens {
+            if !token.token_id.is_empty() && token.expires_at_ms > now_ms {
+                registry.revoke_token_id(token.token_id, token.expires_at_ms);
+                applied += 1;
+            }
+        }
+        // Exact token tombstones are authoritative for upgraded Cloud feeds. They
+        // survive relink without blocking the successor credential generation.
+        return Ok(applied);
+    }
     for entry in document.revocations {
         let Some(account_id) = entry
             .account_id
@@ -86,9 +107,38 @@ fn revocations_url(base_url: &str, realm_id: &str) -> String {
     format!("{trimmed}/relay/revocations?realmId={encoded_realm}")
 }
 
-fn fetch_revocations_document(url: &str, timeout: Duration) -> Result<String, String> {
+fn revocation_authorization(realm_id: &str, secret: &str, now_ms: u64) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let timestamp = now_ms.to_string();
+    let payload = serde_json::to_string(&["chariox-relay-revocations-v1", realm_id, &timestamp])
+        .expect("string array serializes");
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC key is valid");
+    mac.update(payload.as_bytes());
+    let signature: String = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("CharioxRelay {timestamp}:{signature}")
+}
+
+fn fetch_revocations_document(
+    url: &str,
+    realm_id: &str,
+    secret: &str,
+    timeout: Duration,
+) -> Result<String, String> {
     let agent = ureq::AgentBuilder::new().timeout(timeout).build();
-    match agent.get(url).call() {
+    match agent
+        .get(url)
+        .set(
+            "authorization",
+            &revocation_authorization(realm_id, secret, current_unix_ms()),
+        )
+        .call()
+    {
         Ok(response) => response.into_string().map_err(|error| error.to_string()),
         Err(error) => Err(error.to_string()),
     }
@@ -99,6 +149,7 @@ fn fetch_revocations_document(url: &str, timeout: Duration) -> Result<String, St
 pub async fn run_revocation_sync(
     base_url: String,
     realm_id: String,
+    secret: String,
     registry: RelayRevocationRegistry,
     interval: Duration,
     mut shutdown_rx: watch::Receiver<bool>,
@@ -115,8 +166,10 @@ pub async fn run_revocation_sync(
             }
             _ = ticker.tick() => {
                 let fetch_url = url.clone();
+                let fetch_realm = realm_id.clone();
+                let fetch_secret = secret.clone();
                 let fetched = tokio::task::spawn_blocking(move || {
-                    fetch_revocations_document(&fetch_url, Duration::from_secs(10))
+                    fetch_revocations_document(&fetch_url, &fetch_realm, &fetch_secret, Duration::from_secs(10))
                 })
                 .await;
                 let now_ms = crate::revocation_sync::current_unix_ms();
@@ -423,6 +476,72 @@ mod tests {
     }
 
     #[test]
+    fn exact_token_revocations_survive_relink_without_blocking_successor() {
+        let registry = RelayRevocationRegistry::new();
+        let verifier = ScopedTokenVerifier::new(
+            BTreeMap::from([
+                (
+                    "old-token".into(),
+                    claims(
+                        "old-jti",
+                        "account-1",
+                        "same-kernel",
+                        RelaySubjectKind::Kernel,
+                        Some("same-machine"),
+                        None,
+                    ),
+                ),
+                (
+                    "new-token".into(),
+                    claims(
+                        "new-jti",
+                        "account-1",
+                        "same-kernel",
+                        RelaySubjectKind::Kernel,
+                        Some("same-machine"),
+                        None,
+                    ),
+                ),
+            ]),
+            BTreeMap::new(),
+            Some(1_000),
+        )
+        .with_revocations(registry.clone());
+        let document = serde_json::json!({
+            "revokedTokens": [{"tokenId":"old-jti", "expiresAtMs":100_000}],
+            "revocations": [{"accountId":"account-1", "subjectKind":"KERNEL", "subject":"same-kernel"}]
+        }).to_string();
+        assert_eq!(
+            apply_revocations_document(&document, &registry, 1_000).unwrap(),
+            1
+        );
+        assert!(verify(&verifier, "old-token", RelayAction::DaemonRegister).is_err());
+        verify(&verifier, "new-token", RelayAction::DaemonRegister)
+            .expect("successor generation admitted");
+        apply_revocations_document(r#"{"revokedTokens":[],"revocations":[]}"#, &registry, 1_000)
+            .unwrap();
+        assert!(verify(&verifier, "old-token", RelayAction::DaemonRegister).is_err());
+    }
+
+    #[test]
+    fn revocation_proof_matches_cloud_fixture_and_binds_realm() {
+        let proof = revocation_authorization(
+            "realm-1",
+            "synthetic-relay-service-secret",
+            1_700_000_000_000,
+        );
+        assert_eq!(proof, "CharioxRelay 1700000000000:8c1df972d011125f02c40a86992e38f894f52e67759717e04e0949e319e42a1e");
+        assert_ne!(
+            proof,
+            revocation_authorization(
+                "realm-2",
+                "synthetic-relay-service-secret",
+                1_700_000_000_000
+            )
+        );
+    }
+
+    #[test]
     fn fetches_and_applies_a_revocations_document_over_http() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
@@ -432,7 +551,12 @@ mod tests {
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept request");
             let mut buffer = [0_u8; 1024];
-            let _ = stream.read(&mut buffer);
+            let size = stream.read(&mut buffer).expect("read request");
+            let request = String::from_utf8_lossy(&buffer[..size]);
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("authorization: charioxrelay "));
+            assert!(!request.contains("synthetic-relay-service-secret"));
             let body = serde_json::json!({
                 "revocations": [
                     { "accountId": "account-1", "subjectKind": "CLIENT", "subject": "client-9" },
@@ -450,8 +574,13 @@ mod tests {
         });
 
         let url = revocations_url(&format!("http://127.0.0.1:{port}"), "realm-1");
-        let body = fetch_revocations_document(&url, Duration::from_secs(5))
-            .expect("fetch revocations document");
+        let body = fetch_revocations_document(
+            &url,
+            "realm-1",
+            "synthetic-relay-service-secret",
+            Duration::from_secs(5),
+        )
+        .expect("fetch revocations document");
         server.join().expect("server thread joins");
 
         let registry = RelayRevocationRegistry::new();

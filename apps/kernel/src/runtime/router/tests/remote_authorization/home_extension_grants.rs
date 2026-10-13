@@ -9,13 +9,8 @@ fn home_owner_controls_extension_grants_for_collaborator_remote_agent() {
 }
 
 async fn home_owner_controls_extension_grants_for_collaborator_remote_agent_inner() {
-    let workspace = std::env::temp_dir().join(format!(
-        "chariox-home-extension-authority-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock should be after unix epoch")
-            .as_nanos()
-    ));
+    let worktree = crate::test_support::TestWorktree::new("home-extension-authority");
+    let workspace = worktree.path();
     let script_dir = workspace.join(".chariox").join("scripts").join("home-only");
     std::fs::create_dir_all(&script_dir).expect("script dir should be created");
     std::fs::write(
@@ -282,6 +277,4 @@ async fn home_owner_controls_extension_grants_for_collaborator_remote_agent_inne
             .and_then(serde_json::Value::as_str),
         Some("user-2")
     );
-
-    let _ = std::fs::remove_dir_all(&workspace);
 }

@@ -1,3 +1,5 @@
+import { startPairedRelayRenewal } from "./paired-relay-renewal.js"
+import { issueCloudPairingBootstrapToken } from "./cloud-client.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type { RelayClientIdentity } from "./ipc.js"
 import { LocalIpcClient as DefaultLocalIpcClient } from "./ipc.js"
@@ -9,6 +11,7 @@ import {
   applyProviderPreferenceDefaults,
   defaultKernelEndpoint,
   parseArgs,
+  parseTerminalPairingLink,
   terminalPairingLinkFromArgs,
 } from "./cli-options.js"
 import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
@@ -33,6 +36,7 @@ import {
   getProviderCatalog,
   getProviderCommandCatalogs,
   launchProviderRun,
+  listProviderAccountProfiles,
   tryGetProviderRun,
 } from "./provider-api.js"
 import { getTerminalCommandCatalog } from "./terminal-command-catalog-api.js"
@@ -106,6 +110,7 @@ export type CliRuntimeBootstrapDeps = {
   applyProviderPreferenceDefaults: (options: CliOptions, preferences: CharioxPreferences) => CliOptions
   defaultKernelEndpoint: () => string
   createClient: (endpoint: string, relayOptions?: RelayClientOptions) => LocalIpcClient
+  resolvePairingBootstrapToken?: (relayUrl: string, kernelId: string, identity: RelayClientIdentity) => Promise<string>
   getRelayIdentity: (createIfMissing: boolean) => RelayClientIdentity | null
   inferWorkspaceTargetsFromLaunchDirectory: (cwd: string) => Promise<{ workspace: string; worktree: string }>
   clearWaitingRoomWorktreeInventory: () => void
@@ -146,6 +151,7 @@ export type CliRuntimeBootstrapResult =
 
 export const defaultCliRuntimeBootstrapDeps: CliRuntimeBootstrapDeps = {
   parseArgs,
+  resolvePairingBootstrapToken: issueCloudPairingBootstrapToken,
   loadPreferences,
   applyProviderPreferenceDefaults,
   defaultKernelEndpoint,
@@ -182,6 +188,17 @@ export async function bootstrapCliRuntime(
   const relayIdentity = cliOptions.relayUrl
     ? deps.getRelayIdentity(Boolean(pairingLink))
     : null
+  const receivingClientAuthority = Boolean(pairingLink && parseTerminalPairingLink(pairingLink).relayToken === "cloud-client-token-required")
+  const receivingProfileBootstrap = receivingClientAuthority && cliOptions.relayToken === "cloud-client-token-required"
+  if (receivingClientAuthority) {
+    if (!relayIdentity || !cliOptions.relayUrl || !cliOptions.targetDaemonId) throw new Error("Cloud pairing requires the receiving terminal's client credentials and key")
+    // MP-08 / MP-10 / MP-11: the link labels an invitation, not receiving authority.
+    cliOptions.clientId = `cli:${relayIdentity.publicKeyThumbprint}`
+    if (cliOptions.relayToken === "cloud-client-token-required") {
+      if (!deps.resolvePairingBootstrapToken) throw new Error("Cloud pairing requires the receiving terminal's client credentials and key")
+      cliOptions.relayToken = await deps.resolvePairingBootstrapToken(cliOptions.relayUrl, cliOptions.targetDaemonId, relayIdentity)
+    }
+  }
   let client = deps.createClient(kernelEndpoint, relayClientOptions(cliOptions, relayIdentity))
   if (pairingLink && relayIdentity) {
     const bootstrapClient = client
@@ -192,15 +209,27 @@ export async function bootstrapCliRuntime(
         cliOptions.clientId,
         relayIdentity.publicKeyThumbprint,
       )
-      if (!joined.relay_token?.trim()) {
+      if (!joined.kernel_pairing && !joined.relay_token?.trim()) {
         throw new Error("key-bound terminal pairing returned no fresh relay token; refusing to continue with the unbound bootstrap token")
       }
+      if (joined.pairing.target_daemon_id !== cliOptions.targetDaemonId || joined.pairing.relay_url !== cliOptions.relayUrl) throw new Error("terminal pairing response targets another kernel or relay")
       await client.close()
       client = deps.createClient(
         kernelEndpoint,
-        relayClientOptions(cliOptions, relayIdentity, joined.relay_token),
+        relayClientOptions(cliOptions, relayIdentity, joined.relay_token ?? undefined),
       )
+      if (joined.relay_token) {
+        startPairedRelayRenewal(client, {
+          token: joined.relay_token, subject: joined.pairing.subject_id, endpoint: kernelEndpoint, target: joined.pairing.target_daemon_id,
+          terminalId: cliOptions.clientId, identity: relayIdentity, createClient: deps.createClient,
+          // MP-08 / MP-10 / MP-11: explicit CLIENT grants need no private
+          // login. Renew with the admitted paired grant; the issuer still
+          // checks the receiving identity, key and active Cloud session.
+          ...(receivingProfileBootstrap && deps.resolvePairingBootstrapToken ? {bootstrapToken: () => deps.resolvePairingBootstrapToken!(joined.pairing.relay_url, joined.pairing.target_daemon_id, relayIdentity)} : {}),
+        })
+      }
     } catch (error) {
+      if (client !== bootstrapClient) await Promise.resolve(client.close()).catch(() => {})
       await Promise.resolve(bootstrapClient.close()).catch(() => {})
       throw error
     }
@@ -276,6 +305,12 @@ export async function bootstrapCliRuntime(
       bootstrap = buildDetachedBootstrap(client, cliOptions, preferences)
     }
   }
+  if (cliOptions.detached && !cliOptions.relayUrl) {
+    // MP-08 / MP-10 / MP-11: Cloud login and later kernel pivots must retain
+    // this terminal's receiving CLIENT, including login after TUI startup.
+    const identity = deps.getRelayIdentity(true)
+    if (identity) cliOptions.clientId = `cli:${identity.publicKeyThumbprint}`
+  }
   bootstrap.themeRegistry = themeRegistry
   if (bootstrap.binding) {
     options.logger?.info("bootstrapped cli session", {
@@ -322,6 +357,7 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
   logger?: CharioxLogger | null,
 ): Promise<BootstrapState> {
   return bootstrapSession(client, options, workspace, worktree, preferences, {
+    listProviderAccountProfiles,
     logger: logger ?? null,
     getConfiguredProviderLaunchDefaults: async (ipcClient) => {
       const { config } = await getUserConfig(ipcClient)
