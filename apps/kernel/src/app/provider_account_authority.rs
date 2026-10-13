@@ -47,3 +47,31 @@ impl crate::app::DaemonApp {
         Ok(crate::account_profile::provider_account_authority_owner_user_id(&self.config, owner))
     }
 }
+
+// MP-08/MP-10/MP-11: admission selects exactly the launch profile's namespace.
+impl crate::app::DaemonApp {
+    pub(crate) fn provider_account_authority_owner_for_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<String, DaemonError> {
+        let execution_owner =
+            self.provider_account_owner_for_execution(agent.session_id(), Some(agent.id()))?;
+        let home_owner = crate::account_profile::provider_account_authority_owner_user_id(
+            &self.config,
+            agent.owner_user_id(),
+        );
+        if execution_owner != home_owner {
+            return Ok(execution_owner);
+        }
+        let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
+            return Ok(home_owner);
+        };
+        crate::account_profile::provider_account_authority_owner_for_profile(
+            &self.config,
+            &self.provider_account_profiles,
+            agent.owner_user_id(),
+            provider,
+            agent.provider_account_profile(),
+        )
+    }
+}

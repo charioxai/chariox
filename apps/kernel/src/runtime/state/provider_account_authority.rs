@@ -15,14 +15,39 @@ impl KernelRuntimeState {
                     .map(|agent| agent.id().to_string())
             });
         }
-        request.provider_account_owner_user_id = Some(
-            self.with_app_side_effect(|app| {
+        let execution_owner = self
+            .with_app_side_effect(|app| {
                 app.provider_account_owner_for_execution(
                     &request.session_id,
                     request.agent_id.as_deref(),
                 )
             })
-            .await?,
+            .await?;
+        request.owner_user_id = match request.agent_id.as_deref() {
+            Some(id) => self
+                .owned
+                .agent_store
+                .get_agent(id)?
+                .owner_user_id()
+                .to_string(),
+            None => session.owner_user_id().to_string(),
+        };
+        let config = self.owned.config_projection.snapshot();
+        request.provider_account_owner_user_id = Some(
+            if execution_owner
+                != crate::account_profile::provider_account_authority_owner_user_id(
+                    &config,
+                    &request.owner_user_id,
+                )
+            {
+                execution_owner
+            } else {
+                crate::account_profile::provider_account_authority_for_launch(
+                    &config,
+                    &self.owned.provider_account_profiles,
+                    &request,
+                )?
+            },
         );
         Ok(request)
     }
