@@ -149,8 +149,17 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           // MP-08/MP-10: CDP pointer coordinates are in the emulated view's
           // space: a DPR1 page on a scale-2 window has view scale 1/2.
           const x = input.x * viewScale, y = input.y * viewScale;
-          await sendInput("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
-          await sendInput("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+          await check(); await mirrorGuard?.();
+          // MP-08/MP-10/MP-11: CDP orders commands on this session. Queue the
+          // matching release before awaiting the frame-paced press reply. Once
+          // admitted, navigation/cancellation must not strand a pressed button.
+          onDispatch?.();
+          const press = connection.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 }, sessionId);
+          const release = connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 }, sessionId);
+          const replies = await Promise.allSettled([press, release]);
+          const failed = replies.find(reply => reply.status === "rejected");
+          if (failed) throw failed.reason;
+          assertNotCancelled(signal);
         } else if (input.kind === "scroll" && Number.isInteger(input.delta_x) && Number.isInteger(input.delta_y) && Math.abs(input.delta_x) <= 10000 && Math.abs(input.delta_y) <= 10000) {
           const nx = notches(input.delta_x), ny = notches(input.delta_y);
           if (nativeWheel && nx !== null && ny !== null && Math.abs(nx) <= 10 && Math.abs(ny) <= 10 && (nx || ny)) {
