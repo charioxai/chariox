@@ -211,3 +211,64 @@ async fn historical_workflows_inner() {
         crate::session::WorkflowRunStatus::Running
     );
 }
+
+// MP-08 / MP-10 / MP-11: completed history is pruned from hot state but remains readable.
+#[test]
+fn mp11_amfix_historical_archive_resume_reports_read_only() {
+    run_remote_authorization_large_stack_test(
+        "historical-archive-resume",
+        historical_archive_resume_inner,
+    );
+}
+
+async fn historical_archive_resume_inner() {
+    let root = crate::test_support::TestWorktree::new("historical-archive-resume");
+    let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let room = app
+        .sessions_mut()
+        .create_session(root.session_request())
+        .unwrap();
+    let mut snapshot = app.session_state_store().get_session(room.id()).unwrap();
+    let mut run = crate::session::WorkflowRun::new(
+        "archived",
+        "workflow",
+        "endpoint",
+        "node",
+        None,
+        None,
+        vec![],
+        vec![],
+    );
+    run.set_status(crate::session::WorkflowRunStatus::Completed);
+    snapshot.create_workflow_run(run);
+    app.durable_state_store()
+        .persist_workflow_runtime_transition(&snapshot, "historical-archive-fixture")
+        .unwrap();
+    // Keep the Room and durable archive; the terminal run is no longer hot.
+    assert!(room.workflow_runs().is_empty());
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let req = LocalDaemonRequest::GetWorkflowRun(crate::local::GetWorkflowRunRequest {
+        session_id: room.id().into(),
+        workflow_run_ref: "archived".into(),
+    });
+    let response = router
+        .dispatch(remote_command_for_request(&req, Some("local")), req)
+        .await
+        .unwrap();
+    let LocalDaemonResponse::WorkflowRun { workflow_run } = response else {
+        panic!("archive read");
+    };
+    assert!(workflow_run.created_before_ownership_tracking());
+    let req = LocalDaemonRequest::ResumeWorkflowRun(crate::local::ResumeWorkflowRunRequest {
+        session_id: room.id().into(),
+        workflow_run_ref: "archived".into(),
+    });
+    let error = router
+        .dispatch(remote_command_for_request(&req, Some("local")), req)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("ownership tracking"),
+        "MP-11: an archived historical run must report its read-only policy: {error}"
+    );
+}
