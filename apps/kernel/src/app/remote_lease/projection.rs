@@ -398,7 +398,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     entry.timestamp_ms,
                     stable_prompt_hash(&entry.text)
                 );
-                if (home_prompt_id.is_some()
+                if (leased_agent.active_home_prompt_id.is_some()
                     && backing_active_prompt
                         .as_ref()
                         .is_some_and(|prompt| prompt.prompt() == entry.text))
@@ -435,7 +435,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
         if let Some(prompt) = backing_active_prompt.as_ref() {
-            if home_prompt_id.is_none()
+            if leased_agent.active_home_prompt_id.is_none()
                 && prompt.source_attachment_id() != leased_agent.backing_attachment_id
                 && !leased_agent
                     .projected_prompt_ids
@@ -2690,21 +2690,19 @@ mod explicit_completion_tests {
                 None,
             )
             .expect("leased agent should be created");
-        let provider_run = RemoteLeaseRuntime::new(&mut app)
-            .launch_leased_native_provider_run(
-                &leased_agent.id,
-                "managed-dev-stub",
-                "managed-dev-stub",
-                "default",
-                "default",
-                None,
-                None,
-                None,
-                Vec::new(),
-                Some(Vec::new()),
-                crate::extension::RemoteExtensionManifest::default(),
-            )
-            .expect("native provider run should launch");
+        // MP-08 / MP-10 / MP-11: a fresh NativeTui fixture, with no stub
+        // actor whose older snapshot could override the requested interface.
+        let mut provider_run = self::provider_run(
+            "provider-run-native-origin-scoped",
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            "claude",
+            "claude-headless",
+            ProviderClientInterface::NativeTui,
+        );
+        provider_run.mark_running();
+        app.providers_mut()
+            .insert_run_for_test(provider_run.clone());
         let outcome = app
             .record_native_prompt_started_with_attachments(
                 &leased_agent.backing_session_id,

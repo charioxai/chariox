@@ -236,6 +236,16 @@ impl KernelRuntimeState {
                     .await?;
                 owned.ensure_quiet_provider_recheck_scheduled(provider_run_id);
             }
+            // MP-08 / MP-10 / MP-11: official hooks can write their bridge
+            // mailbox after the last PTY frame, then wait silently for context.
+            // The kernel pump must keep observing the live bridge while idle;
+            // subscriber reads must not be responsible for provider progress.
+            if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
+                owned.schedule_provider_output_check_after(
+                    provider_run_id,
+                    PTY_PROMPT_SETTLE_QUIET_FOR,
+                );
+            }
         }
         Ok(records)
     }
