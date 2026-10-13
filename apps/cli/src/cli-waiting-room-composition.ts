@@ -1068,6 +1068,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   })
 
   const waitingRoomTargets = () => ({
+    homeKernelId,
     workspacePath: deps.pendingWorkspaceTarget(),
     worktreePath: deps.pendingWorktreeTarget(),
     workspaceId: sourceLaunchTarget?.workspaceId,

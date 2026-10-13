@@ -207,6 +207,7 @@ for (const observedState of ["stopped", "starting", "ready"] as const) {
 
 test("MP-08/MP-11 an active worker stays selected when its inventory excludes itself", () => {
   const remote = {
+    homeKernelId: "home-kernel",
     machines: [{ machine_id: "home-machine" }],
     kernels: [{ kernel_id: "home-kernel", machine_id: "home-machine" }],
     relay: { connected: true, machine_id: "worker-machine", daemon_id: "worker-kernel" },
@@ -221,4 +222,12 @@ test("MP-08/MP-11 an active worker stays selected when its inventory excludes it
 test("MP-08/MP-11 the connected home does not duplicate local placement", () => {
   const remote = { homeKernelId: "home-kernel", relay: { connected: true, machine_id: "home-machine", daemon_id: "home-kernel" } }
   assert.deepEqual(waitingRoomLaunchMachineOptions(remote).map(o => o.id), ["local"])
+})
+
+test("MP-08/MP-11 unknown home identity does not add a phantom step before managed placement", () => {
+  const view = { relay: { connected: true, machine_id: "home-machine", daemon_id: "home-kernel" }, managedEnvironments: [] }
+  assert.deepEqual(waitingRoomLaunchMachineOptions(view).map(o => o.id), ["local", "managed:new"])
+  assert.deepEqual(waitingRoomLaunchKernelOptions(view, "home-machine"), [])
+  const state = { selectedMachineRef: "local", selectedKernelRef: "local" }
+  assert.equal(cycleWaitingRoomLaunchMachine(state, view, 1).selectedMachineRef, "managed:new")
 })

@@ -79,7 +79,7 @@ export function waitingRoomLaunchMachineOptions<TMachine extends WaitingRoomLaun
       machine,
       managedEnvironment: null,
     })),
-    ...(remote.relay?.connected && remote.relay.machine_id && remote.relay.daemon_id !== remote.homeKernelId && remote.relay.daemon_id
+    ...(remote.homeKernelId && remote.relay?.connected && remote.relay.machine_id && remote.relay.daemon_id !== remote.homeKernelId && remote.relay.daemon_id
       && !remote.machines?.some((machine) => machine.machine_id === remote.relay!.machine_id)
       ? [{ id: remote.relay.machine_id, label: remote.relay.machine_alias ?? remote.relay.machine_id, machine: null, managedEnvironment: null }]
       : []),
@@ -142,7 +142,7 @@ export function waitingRoomLaunchKernelOptions<TKernel extends WaitingRoomLaunch
       machineId: kernel.machine_id,
       kernel,
     }))
-  if (remote.relay?.connected && remote.relay.machine_id === machineRef && remote.relay.daemon_id !== remote.homeKernelId && remote.relay.daemon_id
+  if (remote.homeKernelId && remote.relay?.connected && remote.relay.machine_id === machineRef && remote.relay.daemon_id !== remote.homeKernelId && remote.relay.daemon_id
     && !options.some((option) => option.id === remote.relay!.daemon_id)) {
     options.push({ id: remote.relay.daemon_id, label: remote.relay.daemon_alias ?? remote.relay.daemon_id, machineId: machineRef, kernel: null })
   }

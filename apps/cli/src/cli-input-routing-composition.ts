@@ -1,3 +1,4 @@
+import { waitingRoomRemoteTargets } from "./waiting-room-remote-state.js"
 import { cloudShellClient } from "./cloud-shell-client.js"
 import { StdinParser } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
@@ -226,21 +227,6 @@ export type CliInputRoutingCompositionDeps = {
 }
 
 export function createCliInputRoutingComposition(deps: CliInputRoutingCompositionDeps) {
-  const waitingRoomRemoteTargets = () => {
-    const targets = deps.waitingRoomTargets()
-    const managedEnvironmentCatalog = targets.managedEnvironmentCatalog
-    return {
-      ...(targets.workspaceId ? { workspaceId: targets.workspaceId } : {}),
-      ...(targets.worktreeId ? { worktreeId: targets.worktreeId } : {}),
-      ...(managedEnvironmentCatalog
-        ? {
-            managedComputeClasses: managedEnvironmentCatalog.computeClasses,
-            managedContextSources: managedEnvironmentCatalog.contextSources,
-            managedEnvironments: managedEnvironmentCatalog.environments,
-          }
-        : {}),
-    }
-  }
   let handleSharedShellCommand = async (_rawCommand: string): Promise<boolean> => false
   let pendingProjectRenameId: string | null = null
   const slashCommandSubmitController = createSlashCommandSubmitController({
@@ -615,7 +601,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     getSessions: deps.availableSessions,
     getProviderCatalog: deps.providerCatalogState,
     getRemoteState: () => ({
-      ...waitingRoomRemoteTargets(),
+      ...waitingRoomRemoteTargets(deps.waitingRoomTargets()),
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),

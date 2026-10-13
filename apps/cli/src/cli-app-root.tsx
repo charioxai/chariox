@@ -49,7 +49,7 @@ import { createCliRuntimeProjectionComposition } from "./cli-runtime-projection-
 import { createCliSessionLifecycleComposition } from "./cli-session-lifecycle-composition.js"
 import { createCliTranscriptRuntimeComposition } from "./cli-transcript-runtime-composition.js"
 import { createCliWaitingRoomComposition } from "./cli-waiting-room-composition.js"
-import { waitingRoomManagedCatalogRemoteState } from "./waiting-room-managed-environments.js"
+import { waitingRoomRemoteTargets } from "./waiting-room-remote-state.js"
 import { createCliClosingStateController } from "./cli-closing-state-controller.js"
 import {
   COMMAND_CENTER_OVERLAY_FOOTPRINT,
@@ -592,8 +592,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     waitingRoomRemoteState: () => {
       const targets = waitingRoomTargets()
       return {
-        ...targets,
-        ...waitingRoomManagedCatalogRemoteState(targets.managedEnvironmentCatalog),
+        ...waitingRoomRemoteTargets(targets),
         relay: relayStatusState(),
         machines: remoteMachinesState(),
         kernels: remoteKernelsState(),

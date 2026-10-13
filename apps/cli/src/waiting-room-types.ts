@@ -186,11 +186,12 @@ export type WaitingRoomTerminal = {
 }
 
 export type WaitingRoomTargetState = {
+  homeKernelId?: string | null
   workspacePath: string
   worktreePath: string
-  workspaceId?: string
-  worktreeId?: string
-  managedEnvironmentCatalog?: import("@chariox/kernel-client/ipc-managed-environment-requests").ManagedEnvironmentCatalog
+  workspaceId?: string | undefined
+  worktreeId?: string | undefined
+  managedEnvironmentCatalog?: import("@chariox/kernel-client/ipc-managed-environment-requests").ManagedEnvironmentCatalog | undefined
 }
 
 export type WaitingRoomRow = {

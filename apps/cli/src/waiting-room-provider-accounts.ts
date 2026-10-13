@@ -10,16 +10,11 @@ import { BACKEND_PROVIDER_IDS, type BackendProviderId } from "./provider-catalog
 
 export { providerAccountCapacity }
 
-/**
- * MP-08: providers the waiting room offers. A protocol-512 kernel reports the
- * harness families installed on its host. A remote worker runs its own
- * harnesses and an older kernel reports none, so neither narrows the list.
- */
-export function offeredBackendProviderIds(
+/** MP-08/MP-11: the execution kernel's known harness families narrow the list. */
+function offeredBackendProviderIds(
   installedProviders: readonly string[] | undefined,
-  localExecution = true,
 ): readonly BackendProviderId[] {
-  if (!installedProviders || !localExecution) return BACKEND_PROVIDER_IDS
+  if (!installedProviders) return BACKEND_PROVIDER_IDS
   return BACKEND_PROVIDER_IDS.filter((id) => installedProviders.includes(providerAccountFamily(id)))
 }
 
