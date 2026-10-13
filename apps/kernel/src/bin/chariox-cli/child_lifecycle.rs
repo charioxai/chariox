@@ -96,22 +96,28 @@ pub(super) fn run(mut command: Command) -> std::io::Result<ExitStatus> {
 mod tests {
     use super::run;
     use std::process::Command;
+    use std::sync::Mutex;
+
+    // Tokio broadcasts Unix signals to every runtime in this test process.
+    static SIGNAL_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn reaps_child_and_preserves_its_exit_status() {
+        let _guard = SIGNAL_TEST_LOCK.lock().unwrap();
         let mut command = Command::new("sh");
-        command.args(["-c", "exit 7"]);
+        command.args(["-c", "trap 'exit 99' INT; sleep 1; exit 7"]);
         assert_eq!(run(command).unwrap().code(), Some(7));
     }
 
     #[test]
     fn forwards_interrupt_and_waits_for_the_child_handler() {
+        let _guard = SIGNAL_TEST_LOCK.lock().unwrap();
         let parent = std::process::id();
         assert!(parent > 1);
         let mut command = Command::new("sh");
         command.args([
             "-c",
-            "trap 'exit 42' INT; test \"$PPID\" -eq \"$1\" && test \"$1\" -gt 1 || exit 43; kill -s INT \"$1\"; sleep 1; exit 44",
+            "trap 'exit 42' INT; test \"$PPID\" -eq \"$1\" && test \"$1\" -gt 1 || exit 43; sleep 0.1; kill -s INT \"$1\"; sleep 1; exit 44",
             "owned-signal-child",
             &parent.to_string(),
         ]);
@@ -120,12 +126,13 @@ mod tests {
 
     #[test]
     fn interrupt_allows_cleanup_beyond_the_termination_deadline() {
+        let _guard = SIGNAL_TEST_LOCK.lock().unwrap();
         let parent = std::process::id();
         assert!(parent > 1);
         let mut command = Command::new("sh");
         command.args([
             "-c",
-            "trap 'sleep 2; exit 42' INT; test \"$PPID\" -eq \"$1\" && test \"$1\" -gt 1 || exit 43; kill -s INT \"$1\"; sleep 1; exit 44",
+            "trap 'sleep 2; exit 42' INT; test \"$PPID\" -eq \"$1\" && test \"$1\" -gt 1 || exit 43; sleep 0.1; kill -s INT \"$1\"; sleep 1; exit 44",
             "owned-signal-child",
             &parent.to_string(),
         ]);
@@ -134,12 +141,13 @@ mod tests {
 
     #[test]
     fn termination_can_still_stop_interrupt_cleanup() {
+        let _guard = SIGNAL_TEST_LOCK.lock().unwrap();
         let parent = std::process::id();
         assert!(parent > 1);
         let mut command = Command::new("sh");
         command.args([
             "-c",
-            "trap '' INT; trap 'exit 43' TERM; test \"$PPID\" -eq \"$1\" && test \"$1\" -gt 1 || exit 44; kill -s INT \"$1\"; sleep 1; kill -s TERM \"$1\"; sleep 1; exit 45",
+            "trap '' INT; trap 'exit 43' TERM; test \"$PPID\" -eq \"$1\" && test \"$1\" -gt 1 || exit 44; sleep 0.1; kill -s INT \"$1\"; sleep 1; kill -s TERM \"$1\"; sleep 1; exit 45",
             "owned-signal-child",
             &parent.to_string(),
         ]);
@@ -148,6 +156,7 @@ mod tests {
 
     #[test]
     fn child_receives_exact_launcher_parent_identity() {
+        let _guard = SIGNAL_TEST_LOCK.lock().unwrap();
         let mut command = Command::new("sh");
         command.args(["-c", "test \"$CHARIOX_CLI_LAUNCHER_PID\" = \"$PPID\""]);
         assert!(run(command).unwrap().success());
