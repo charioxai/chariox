@@ -105,7 +105,7 @@ export function createProjectEnvironmentReadController(deps: {
         const environment = response.ProjectEnvironment?.environment
         if (!environment || environment.local_project_id !== projectId) throw new Error("Detect unavailable for this Project")
         if (requestGeneration !== generation) return
-        cache.remember(scope, environment); current = environment; lines = viewLines(environment); offset = 0
+        cache.remember(scope, environment); current = environment; previousProposalOffsets = []; proposalIndex = 0; lines = viewLines(environment); offset = 0
       } catch (error) {
         if (requestGeneration !== generation) return
         lines = [error instanceof Error ? error.message : "Detect unavailable", ...viewLines(current!)]

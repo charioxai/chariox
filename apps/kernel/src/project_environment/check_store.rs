@@ -2,7 +2,6 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::Read;
 
 pub(crate) const OBSERVATION_TTL_MS: u64 = 5 * 60 * 1000;
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -57,37 +56,9 @@ impl ProjectEnvironmentStore {
         &self,
         project: &str,
     ) -> Result<EnvironmentChecks, crate::error::DaemonError> {
-        let bytes =
-            match super::check_journal::read(&self.path(project).with_extension("checks.wal"))? {
-                Some(bytes) => bytes,
-                None => {
-                    let mut o = std::fs::OpenOptions::new();
-                    o.read(true);
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::OpenOptionsExt;
-                        o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-                    }
-                    let f = match o.open(self.path(project).with_extension("checks.json")) {
-                        Ok(f) => f,
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                            return Ok(EnvironmentChecks::default())
-                        }
-                        Err(_) => return Err(environment_error("Check journal unavailable")),
-                    };
-                    if !f.metadata().is_ok_and(|m| m.is_file()) {
-                        return Err(environment_error("Check journal must be regular"));
-                    }
-                    let mut bytes = vec![];
-                    f.take(8 * 1024 * 1024 + 1)
-                        .read_to_end(&mut bytes)
-                        .map_err(|_| environment_error("Check journal unavailable"))?;
-                    if bytes.len() > 8 * 1024 * 1024 {
-                        return Err(environment_error("Check journal exceeds bounds"));
-                    }
-                    bytes
-                }
-            };
+        let Some(bytes) = super::check_journal::read(&self.path(project).with_extension("checks.wal"))? else {
+            return Ok(EnvironmentChecks::default());
+        };
         let checks: EnvironmentChecks = serde_json::from_slice(&bytes)
             .map_err(|_| environment_error("invalid Check journal"))?;
         if checks

@@ -269,13 +269,13 @@ fn envp04_new_check_replaces_obsolete_generation_but_preserves_other_targets() {
     );
 }
 
-#[path = "review0212_check_tests.rs"]
+#[path = "check_measurement_tests.rs"]
 mod review0212;
 
-#[path = "review0821_check_tests.rs"]
+#[path = "check_probe_validation_tests.rs"]
 mod review0821;
 
-#[path = "review1118_check_tests.rs"]
+#[path = "check_provider_safety_tests.rs"]
 mod review1118;
 
 // MP-08 / MP-10 / MP-11: a later partial Check cannot extend prerequisite evidence.

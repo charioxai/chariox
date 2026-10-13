@@ -26,7 +26,7 @@ pub(super) fn read(path: &Path) -> Result<Option<Vec<u8>>, DaemonError> {
     };
     match capacity(&mut file)? {
         Some(capacity) => Ok(Some(latest(&mut file, capacity)?.bytes)),
-        None => legacy_latest(&mut file).map(|(bytes, _)| Some(bytes)),
+        None => Err(environment_error("invalid Check journal")),
     }
 }
 
@@ -45,8 +45,7 @@ pub(super) fn append(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
         Err(_) => return Err(environment_error("Check journal write failed")),
     };
     let Some(capacity) = capacity(&mut file)? else {
-        legacy_latest(&mut file)?;
-        return publish(path, bytes, 1);
+        return Err(environment_error("invalid Check journal"));
     };
     let prior = latest(&mut file, capacity)?;
     let sequence = prior
@@ -201,39 +200,6 @@ fn latest(file: &mut File, capacity: u64) -> Result<Snapshot, DaemonError> {
     best.ok_or_else(|| environment_error("invalid Check journal"))
 }
 
-fn legacy_latest(file: &mut File) -> Result<(Vec<u8>, u64), DaemonError> {
-    let len = file
-        .metadata()
-        .map_err(|_| environment_error("Check journal unavailable"))?
-        .len();
-    if len == 0 || len > LIMIT + 1 {
-        return Err(environment_error("Check journal exceeds bounds"));
-    }
-    let mut window = len.min(64 * 1024);
-    loop {
-        let offset = len - window;
-        file.seek(SeekFrom::Start(offset))
-            .map_err(|_| environment_error("Check journal unavailable"))?;
-        let mut tail = Vec::with_capacity(window as usize);
-        (&mut *file)
-            .take(window)
-            .read_to_end(&mut tail)
-            .map_err(|_| environment_error("Check journal unavailable"))?;
-        if let Some(end) = tail.iter().rposition(|byte| *byte == b'\n') {
-            let start = tail[..end].iter().rposition(|byte| *byte == b'\n');
-            if start.is_some() || offset == 0 {
-                return Ok((
-                    tail[start.map_or(0, |p| p + 1)..end].to_vec(),
-                    offset + end as u64 + 1,
-                ));
-            }
-        }
-        if window == len {
-            return Err(environment_error("invalid Check journal"));
-        }
-        window = (window * 2).min(len);
-    }
-}
 
 fn open(path: &Path, write: bool) -> std::io::Result<File> {
     #[cfg(unix)]

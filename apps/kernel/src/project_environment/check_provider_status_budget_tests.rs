@@ -2,7 +2,7 @@
 use super::*;
 #[cfg(unix)]
 #[test]
-fn review1118_account_check_settles_with_remaining_budget() {
+fn check_provider_status_budget_check_settles_with_remaining_budget() {
     use std::{os::unix::fs::PermissionsExt, time::Duration};
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();

@@ -200,3 +200,13 @@ fn check_journal_imports_legacy_snapshot_and_rejects_symlinks() {
         assert_eq!(std::fs::read(outside).unwrap(), b"unchanged");
     }
 }
+
+// MP-08 / MP-10 / MP-11: unshipped formats must not silently migrate into the journal.
+#[test]
+fn rejects_unrecognized_journal_format() {
+    let root = crate::test_support::TestWorktree::new("journal-format");
+    let path = root.path().join("checks.wal");
+    std::fs::write(&path, b"{}\n").unwrap();
+    assert!(super::check_journal::read(&path).is_err());
+    assert!(super::check_journal::write(&path, b"{}").is_err());
+}

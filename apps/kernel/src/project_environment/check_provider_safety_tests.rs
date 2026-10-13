@@ -285,7 +285,7 @@ fn review1301_mcp_notification_202_reaches_tools_list_in_check() {
     assert_eq!(observation.status, EnvironmentObservationStatus::Ready);
 }
 
-#[path = "review1118_account_tests.rs"]
+#[path = "check_provider_status_budget_tests.rs"]
 mod account;
-#[path = "review1118_mcp_dns_tests.rs"]
+#[path = "check_mcp_dns_budget_tests.rs"]
 mod dns;

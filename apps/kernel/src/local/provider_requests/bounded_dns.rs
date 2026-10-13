@@ -2,6 +2,16 @@
 use std::path::PathBuf;
 use std::time::Duration;
 use zeroize::Zeroizing;
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
+
+// MP-08 / MP-10 / MP-11: public address results have a short bounded cache.
+// Validate the selected resolver before reuse, including workspace roots.
+type DnsCache = std::collections::BTreeMap<(String, PathBuf), (Instant, Vec<std::net::IpAddr>)>;
+fn dns_cache() -> &'static Mutex<DnsCache> {
+    static CACHE: OnceLock<Mutex<DnsCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(DnsCache::new()))
+}
 
 pub(crate) fn resolve_bounded_host(
     host: &str,
@@ -40,8 +50,16 @@ pub(crate) fn resolve_bounded_host(
     {
         let path = crate::project_environment::check_inventory::executable(name)
             .ok_or("resolver_unavailable")?;
+        let path = path.canonicalize().map_err(|_| "resolver_unavailable")?;
         if roots.iter().any(|root| path.starts_with(root)) {
             return Err("resolver_unavailable");
+        }
+        let key = (host.to_ascii_lowercase(), path.clone());
+        if let Some(addresses) = dns_cache().lock().ok().and_then(|cache| {
+            cache.get(&key).filter(|(at, _)| at.elapsed() < Duration::from_secs(30))
+                .map(|(_, addresses)| addresses.clone())
+        }) {
+            return Ok(addresses);
         }
         let mut command = std::process::Command::new(path);
         command
@@ -85,6 +103,13 @@ pub(crate) fn resolve_bounded_host(
                 if !addresses.contains(&ip) {
                     addresses.push(ip);
                 }
+            }
+        }
+        if !addresses.is_empty() {
+            if let Ok(mut cache) = dns_cache().lock() {
+                cache.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(30));
+                if cache.len() >= 64 { cache.clear(); }
+                cache.insert(key, (Instant::now(), addresses.clone()));
             }
         }
         Ok(addresses)

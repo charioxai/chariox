@@ -2,7 +2,7 @@
 use super::*;
 #[cfg(unix)]
 #[test]
-fn review1301_inventory_and_health_use_selected_script_runtime() {
+fn check_interpreter_trust_and_health_use_selected_script_runtime() {
     crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     use std::os::unix::fs::PermissionsExt;

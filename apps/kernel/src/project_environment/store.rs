@@ -378,18 +378,24 @@ impl ProjectEnvironmentStore {
         project: &str,
         deadline: std::time::Instant,
     ) -> Result<ProjectEnvironmentLock, DaemonError> {
-        let file = self.lock_file(project, "lock")?;
+        self.lock_extension_until(project, "lock", deadline)
+    }
+    pub(super) fn lock_extension_until(
+        &self,
+        project: &str,
+        extension: &str,
+        deadline: std::time::Instant,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        let file = self.lock_file(project, extension)?;
         loop {
-            if std::time::Instant::now() >= deadline {
-                return Err(environment_error(
-                    "Check budget exceeded while waiting for Project lock",
-                ));
-            }
             match fs2::FileExt::try_lock_exclusive(&file) {
                 Ok(()) => return Ok(ProjectEnvironmentLock { _file: file }),
                 Err(error) if error.kind() != std::io::ErrorKind::WouldBlock => {
                     return Err(environment_error("environment refresh lock failed"))
                 }
+                Err(_) if std::time::Instant::now() >= deadline => return Err(environment_error(
+                    "Check budget exceeded while waiting for Project lock",
+                )),
                 Err(_) => std::thread::sleep(std::time::Duration::from_millis(1)),
             }
         }

@@ -11,7 +11,7 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::time::timeout;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 
 use chariox_relay::protocol::{
     RelayEnvelope, RelayKernelPresence, RelayMachinePresence, RelayMetadataQuery,

@@ -81,12 +81,12 @@ mod detect_tests;
 mod check_tests;
 
 #[cfg(test)]
-mod review1118_metadata_tests;
+mod revision_exclusion_validation_tests;
 
 #[cfg(test)]
-mod review1301_inventory_tests;
+mod check_interpreter_trust_tests;
 #[cfg(test)]
-mod review1301_metadata_tests;
+mod revision_service_reference_tests;
 
 #[cfg(test)]
 mod check_journal_tests;
