@@ -583,12 +583,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(snapshot) = crate::provider::claude_status_line_usage_snapshot(&value) else {
             return Ok(());
         };
-        self.app.provider_account_profiles.update_usage(
+        self.app.provider_account_profiles.record_observed_usage(
             provider_run.owner_user_id(),
             provider_run.provider(),
             provider_run.account_profile(),
             snapshot,
-        )?;
+        );
         Ok(())
     }
 

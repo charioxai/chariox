@@ -1447,6 +1447,29 @@ impl ProviderAccountProfileRegistry {
         Ok(result)
     }
 
+    /// Records usage observed in provider output. Usage is advisory account
+    /// metadata: a leased worker run carries the home kernel's profile, which
+    /// this registry may not contain, and must never drop the output with it.
+    pub(crate) fn record_observed_usage(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+        usage: ProviderAccountUsageSnapshot,
+    ) {
+        if let Err(error) = self.update_usage(owner_user_id, provider, profile_id, usage) {
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "observed provider usage not recorded",
+                serde_json::json!({
+                    "provider": provider,
+                    "account_profile": profile_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+
     pub(crate) fn acquire_usage_refresh_attempt(
         &self,
         owner_user_id: &str,
