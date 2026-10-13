@@ -327,6 +327,28 @@ impl KernelRuntimeState {
                 "App view closed",
             ));
         }
+        if let super::app_view_runtime::ViewCaller::Agent(agent) = &caller {
+            let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+            if !self
+                .user_domain_owner_aliases(&user)
+                .iter()
+                .any(|alias| alias == owner)
+            {
+                return Err(super::app_view_runtime::agent_not_granted());
+            }
+            let grant = self
+                .owned
+                .kernel_browser_host
+                .retain_resource_grant(
+                    &user,
+                    agent.id(),
+                    UserDomainResource::AppView {
+                        view_id: view_id.into(),
+                    },
+                )
+                .map_err(|_| super::app_view_runtime::agent_not_granted())?;
+            tracked.retain_browser_grant(grant);
+        }
         if method == "chariox.panel" {
             return Ok(serde_json::json!({"placement": "none", "minimized": false}));
         }

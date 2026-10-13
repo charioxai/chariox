@@ -769,14 +769,19 @@ impl KernelRuntimeState {
         let unavailable = || view_error("APP_UNAVAILABLE", "The App is not running");
         // MP-08/MP-11: an agent's call needs its own App grant before any lease,
         // tool or host action (clipboard, links) runs.
-        let granted = self.view_agent_grant(&caller, binding);
-        if let Some((agents, check)) = &granted {
-            if !check(&agents.read()) {
-                return Err(agent_not_granted());
-            }
-        }
+        let authority = crate::runtime::app_view_authority::AppViewAuthority::new(
+            self.owned.agent_store.clone(),
+            match &caller {
+                ViewCaller::Agent(agent) => Some(*agent),
+                ViewCaller::Owner(_) => None,
+            },
+            &binding.installation,
+            tracked.browser_grant(),
+        );
+        authority.check()?;
         let leased = tokio::select! {
             result = self.app_lease_on_demand(&binding.owner, &binding.installation) => result,
+            () = authority.cancelled() => return Err(agent_not_granted()),
             () = tracked.cancelled() => return Err(view_error("CANCELLED", "The calling view went away")),
         };
         let lease = match leased {
@@ -793,6 +798,7 @@ impl KernelRuntimeState {
         if tracked.is_cancelled() {
             return Err(view_error("CANCELLED", "The calling view went away"));
         }
+        authority.check()?;
         if lease.catalog().generation() != binding.generation {
             return Err(view_error(
                 "APP_VIEW_STALE",
@@ -800,15 +806,17 @@ impl KernelRuntimeState {
             ));
         }
         if matches!(tool, "host.clipboard_write" | "host.open_link") {
-            return crate::runtime::app_host_broker::AppHostBroker::new(
+            let result = crate::runtime::app_host_broker::AppHostBroker::new(
                 self.owned.durable_state_store.clone(),
                 binding.owner.clone(),
                 lease.catalog().clone(),
                 self.app_control().admission(),
             )
-            .request(tool, input)
+            .request_view(tool, input, authority.clone(), tracked.operation_budget())
             .await
             .map_err(|error| view_error(&error.code, &error.message));
+            authority.check()?;
+            return result;
         }
         let tool = view_call_tool(lease.catalog(), binding.generation, tool)?;
         let slot = lease
@@ -828,25 +836,20 @@ impl KernelRuntimeState {
         let caller = view_caller(binding, caller, turn);
         let tool_name = tool;
         let operation_budget = tracked.operation_budget();
-        let still_granted = granted.clone();
+        let still_granted = authority.clone();
         let response = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            // MP-08/MP-11: hold the agent store across the check and enqueue.
-            let agents = still_granted.as_ref().map(|(agents, _)| agents.read());
-            if let (Some(agents), Some((_, check))) = (&agents, &still_granted) {
-                if !check(agents) {
-                    return Ok(Err(agent_not_granted()));
-                }
-            }
-            store
-                .enqueue_app_tool(slot, &tool_name, input, caller, operation_budget)
-                .map(Ok)
+            still_granted.enqueue(|| {
+                store
+                    .enqueue_app_tool(slot, &tool_name, input, caller, operation_budget)
+                    .map_err(|error| coded(app_call_errors::enqueue_error(&error)))
+            })
         })
         .await
-        .map_err(|_| unavailable())?
-        .map_err(|error| coded(app_call_errors::enqueue_error(&error)))??;
+        .map_err(|_| unavailable())??;
         // Dropping the pending reply makes the worker peer send `cancel`.
         let reply = tokio::select! {
+            () = authority.cancelled() => return Err(agent_not_granted()),
             reply = response.receive() => reply
                 .map_err(|error| coded(app_call_errors::worker_call_error(&error)))?,
             () = tracked.cancelled() => {
@@ -861,43 +864,10 @@ impl KernelRuntimeState {
         let store = self.owned.durable_state_store.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            // A revoked agent's late reply is not recorded as its result.
-            let agents = granted.as_ref().map(|(agents, _)| agents.read());
-            if let (Some(agents), Some((_, check))) = (&agents, &granted) {
-                if !check(agents) {
-                    return Err(agent_not_granted());
-                }
-            }
-            store.accept_app_tool_reply(reply).map_err(app_error)
+            authority.commit(|| store.accept_app_tool_reply(reply).map_err(app_error))
         })
         .await
         .map_err(|_| unavailable())?
-    }
-
-    /// The agent store check an agent's view call keeps until its reply.
-    fn view_agent_grant(
-        &self,
-        caller: &ViewCaller<'_>,
-        binding: &AppViewBinding,
-    ) -> Option<(crate::agent::AgentServiceStore, AgentGrantCheck)> {
-        let ViewCaller::Agent(agent) = caller else {
-            return None;
-        };
-        let (id, session, owner) = (
-            agent.id().to_owned(),
-            agent.session_id().to_owned(),
-            agent.owner_user_id().to_owned(),
-        );
-        let installation = binding.installation.clone();
-        let check: AgentGrantCheck = std::sync::Arc::new(move |agents| {
-            agents.get_agent(&id).is_ok_and(|current| {
-                current.session_id() == session
-                    && current.owner_user_id() == owner
-                    && current
-                        .has_extension_grant(crate::extension::ExtensionKind::App, &installation)
-            })
-        });
-        Some((self.owned.agent_store.clone(), check))
     }
 
     /// The agent's running turn, when it has one the App context can carry.
@@ -951,13 +921,8 @@ fn view_caller(
     }
 }
 
-type AgentGrantCheck = std::sync::Arc<dyn Fn(&crate::agent::AgentService) -> bool + Send + Sync>;
-
 pub(super) fn agent_not_granted() -> BrowserAppViewError {
-    view_error(
-        "AGENT_APP_NOT_GRANTED",
-        "This agent has no grant for this App; the owner can grant it the App",
-    )
+    crate::runtime::app_view_authority::not_granted()
 }
 
 /// The App's own error (e.g. CONFLICT from a stale edit) reaches its view;
@@ -1251,3 +1216,7 @@ pub(super) fn browser_recovery_downtime(message: &str) -> bool {
 #[cfg(test)]
 #[path = "app_view_cold_start_tests.rs"]
 mod cold_start_tests;
+
+#[cfg(test)]
+#[path = "app_view_grant_epoch_tests.rs"]
+mod grant_epoch_tests;

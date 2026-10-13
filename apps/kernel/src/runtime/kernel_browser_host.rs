@@ -56,6 +56,40 @@ pub(crate) struct KernelBrowserAdmission {
     elevated: bool,
 }
 
+/// MP-08/MP-11: exact resource authority retained by an asynchronous App call.
+#[derive(Clone)]
+pub(crate) struct KernelBrowserResourceGrant {
+    host: KernelBrowserHost,
+    user: String,
+    agent: String,
+    resource: UserDomainResource,
+    epoch: Arc<BrowserCancellation>,
+    expires_at: Option<std::time::Instant>,
+}
+impl KernelBrowserResourceGrant {
+    /// Safe in a durable queue budget even while commit holds the host lock.
+    pub(crate) fn cancelled(&self) -> bool {
+        self.epoch.requested()
+            || self
+                .expires_at
+                .is_some_and(|at| std::time::Instant::now() >= at)
+    }
+    pub(crate) fn commit<T>(&self, call: impl FnOnce() -> T) -> Result<T, ()> {
+        let state = self.host.inner.lock().map_err(|_| ())?;
+        let grant = state
+            .access
+            .grant(&self.user, &self.agent)
+            .map_err(|_| ())?;
+        if self.cancelled()
+            || !Arc::ptr_eq(&grant.epoch, &self.epoch)
+            || !grant.resources.contains(&self.resource)
+        {
+            return Err(());
+        }
+        Ok(call())
+    }
+}
+
 impl KernelBrowserAdmission {
     pub(crate) fn is_agent(&self) -> bool {
         self.agent.is_some()
