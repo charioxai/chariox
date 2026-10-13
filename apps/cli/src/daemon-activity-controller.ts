@@ -3,6 +3,7 @@ export type DaemonActivityControllerDeps = {
   daemonDisconnected: () => boolean
   setDaemonDisconnected: (disconnected: boolean) => void
   updateSessionChrome: () => void
+  onRecovered?: () => void
 }
 
 export function createDaemonActivityController(deps: DaemonActivityControllerDeps) {
@@ -13,6 +14,7 @@ export function createDaemonActivityController(deps: DaemonActivityControllerDep
         return
       }
       deps.setDaemonDisconnected(false)
+      deps.onRecovered?.()
       deps.updateSessionChrome()
     },
   }

@@ -30,3 +30,16 @@ test("daemon activity clears stale disconnected state once activity resumes", ()
 
   assert.deepEqual(calls, ["activity", "disconnected:false", "chrome"])
 })
+
+test("MP-08/MP-10 fresh kernel activity invokes shared connection recovery", () => {
+  let disconnected = true
+  let recovered = 0
+  const dependencies = {
+    recordConnectionActivity: () => {}, daemonDisconnected: () => disconnected,
+    setDaemonDisconnected: (value: boolean) => { disconnected = value }, updateSessionChrome: () => {},
+    onRecovered: () => { recovered++ },
+  }
+  createDaemonActivityController(dependencies).record("heartbeat")
+  assert.equal(disconnected, false)
+  assert.equal(recovered, 1)
+})

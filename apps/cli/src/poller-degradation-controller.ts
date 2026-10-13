@@ -9,7 +9,8 @@ export type PollerDegradationControllerDeps = {
   setDaemonDisconnected: (value: boolean) => void
   setStatusLine: (value: string) => void
   updateSessionChrome: () => void
-  appendNotice: (message: string, tone?: "warning" | "muted") => void
+  onTransportClosed?: (message: string) => void
+  onTransportRecovered?: () => void
 }
 
 export type PollerDegradationController = {
@@ -25,17 +26,16 @@ export function createPollerDegradationController(
 
   return {
     markDegraded(operation, message) {
-      const wasHealthy = degradedPollers.size === 0
       degradedPollers.add(operation)
-      deps.setDaemonDisconnected(true)
       deps.logger?.warn("poller entered degraded mode", {
         operation,
         degraded_pollers: [...degradedPollers],
       })
-      deps.setStatusLine(message)
-      deps.updateSessionChrome()
-      if (wasHealthy) {
-        deps.appendNotice(message, "warning")
+      if (deps.onTransportClosed) deps.onTransportClosed(message)
+      else {
+        deps.setDaemonDisconnected(true)
+        deps.setStatusLine(message)
+        deps.updateSessionChrome()
       }
     },
 
@@ -52,10 +52,12 @@ export function createPollerDegradationController(
         })
       }
       if (wasDegraded && degradedPollers.size === 0) {
-        deps.setDaemonDisconnected(false)
-        deps.setStatusLine(deps.connectedStatusLine)
-        deps.updateSessionChrome()
-        deps.appendNotice("Reconnected to the Chariox daemon.")
+        if (deps.onTransportRecovered) deps.onTransportRecovered()
+        else {
+          deps.setDaemonDisconnected(false)
+          deps.setStatusLine(deps.connectedStatusLine)
+          deps.updateSessionChrome()
+        }
       }
     },
 

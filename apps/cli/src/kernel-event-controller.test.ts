@@ -312,8 +312,8 @@ test("runtime notices and transport lifecycle update the kernel connection state
     "daemon-disconnected:true",
     "status:Reconnecting to the Chariox kernel…",
     "update-session-chrome",
-    "activity:kernel_transport_resumed",
     "daemon-disconnected:false",
+    "activity:kernel_transport_resumed",
     "status:Connected to the Chariox kernel.",
     "update-session-chrome",
   ])

@@ -192,7 +192,8 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     setDaemonDisconnected: deps.setDaemonDisconnected,
     setStatusLine: deps.setStatusLine,
     updateSessionChrome: deps.updateSessionChrome,
-    appendNotice: deps.appendNotice,
+    onTransportClosed: (message) => kernelEventController.applyTransportClosed(message),
+    onTransportRecovered: () => kernelEventController.applyTransportResumed(),
   })
   const markPollerDegraded = pollerDegradationController.markDegraded
   const markPollerRecovered = pollerDegradationController.markRecovered
@@ -226,6 +227,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
 
   const daemonActivityController = createDaemonActivityController({
     recordConnectionActivity: () => connectionHealthWatchdogController.recordActivity(),
+    onRecovered: () => kernelEventController.applyTransportResumed(),
     daemonDisconnected: deps.daemonDisconnected,
     setDaemonDisconnected: deps.setDaemonDisconnected,
     updateSessionChrome: deps.updateSessionChrome,

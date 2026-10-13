@@ -294,8 +294,8 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
   }
 
   const applyTransportResumed = () => {
-    deps.recordDaemonActivity("kernel_transport_resumed")
     deps.setDaemonDisconnected(false)
+    deps.recordDaemonActivity("kernel_transport_resumed")
     connectionDisplay.resumed()
   }
 
