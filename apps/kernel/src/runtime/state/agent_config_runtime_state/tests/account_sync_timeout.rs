@@ -6,6 +6,7 @@ async fn remote_profile_account_sync_waits_off_lock_past_the_ordinary_deadline()
     let mut config = crate::config::DaemonConfig::for_tests();
     let worker = crate::config::DaemonConfig::for_tests();
     config.relay_url = Some("ws://127.0.0.1:1".into());
+    config.relay_token = Some("account-sync-fixture-admission".into());
     config.relay_request_timeout_ms = 50;
     let home_public_key = config.relay_public_key.clone();
     let (app, runtime, _, _) = agent_config_runtime_with_config(config.clone()).await;
@@ -54,6 +55,10 @@ async fn remote_profile_account_sync_waits_off_lock_past_the_ordinary_deadline()
         panic!("expected encrypted account sync");
     };
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        app.try_lock().is_ok(),
+        "profile account sync held the app mutex"
+    );
     let reply = crate::transport::relay_peer::RelayPeerResponse::RemoteProviderAccountEnsured {
         provider: "opencode".into(),
         account_profile: "go".into(),
@@ -71,10 +76,6 @@ async fn remote_profile_account_sync_waits_off_lock_past_the_ordinary_deadline()
         encrypted,
     )
     .await;
-    assert!(
-        app.try_lock().is_ok(),
-        "profile account sync held the app mutex"
-    );
     assert!(matches!(
         task.await.unwrap().unwrap(),
         crate::transport::relay_peer::RelayPeerResponse::RemoteProviderAccountEnsured { .. }

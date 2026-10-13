@@ -2180,6 +2180,7 @@ mod tests {
         let mut config = crate::config::DaemonConfig::for_tests();
         let worker = crate::config::DaemonConfig::for_tests();
         config.relay_url = Some("ws://127.0.0.1:1".into());
+        config.relay_token = Some("account-sync-fixture-admission".into());
         config.relay_request_timeout_ms = 50;
         let home_public_key = config.relay_public_key.clone();
         let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
