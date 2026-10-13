@@ -4,41 +4,84 @@ use std::fs;
 
 #[tokio::test]
 async fn native_context_rejection_keeps_the_run_idle_and_allows_retry() {
-    rejection_scenario(false, false, false, false, false).await;
+    rejection_scenario(NativeContextScenario::default()).await;
 }
 
 #[tokio::test]
 async fn native_context_rejection_survives_subscription_mailbox_interleaving() {
-    rejection_scenario(true, false, true, false, false).await;
+    rejection_scenario(NativeContextScenario {
+        subscription: true,
+        before_submit: true,
+        ..Default::default()
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn native_context_rejection_notifies_metaagent_once() {
-    rejection_scenario(false, true, false, false, false).await;
+    rejection_scenario(NativeContextScenario {
+        with_meta: true,
+        ..Default::default()
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn native_context_rejection_survives_subscription_failure_interleaving() {
-    rejection_scenario(true, false, false, false, false).await;
+    rejection_scenario(NativeContextScenario {
+        subscription: true,
+        ..Default::default()
+    })
+    .await;
 }
 
 #[tokio::test]
-async fn r5_review_home_projection_drain_pumps_the_leased_native_hook() {
-    rejection_scenario(false, false, false, true, false).await;
+async fn home_projection_drain_pumps_leased_native_hooks() {
+    rejection_scenario(NativeContextScenario {
+        leased: true,
+        ..Default::default()
+    })
+    .await;
 }
 
 #[tokio::test]
-async fn r5_review_headless_prompt_fails_on_recent_split_terminal_error() {
-    rejection_scenario(false, false, false, false, true).await;
+async fn headless_native_prompt_fails_on_recent_terminal_error() {
+    rejection_scenario(NativeContextScenario {
+        recent_failure: true,
+        ..Default::default()
+    })
+    .await;
 }
 
-async fn rejection_scenario(
+#[tokio::test]
+async fn home_projection_drain_leaves_hook_for_a_busy_provider_lane() {
+    rejection_scenario(NativeContextScenario {
+        leased: true,
+        hold_provider_lane: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[derive(Default)]
+struct NativeContextScenario {
     subscription: bool,
     with_meta: bool,
     before_submit: bool,
     leased: bool,
     recent_failure: bool,
-) {
+    hold_provider_lane: bool,
+}
+
+async fn rejection_scenario(scenario: NativeContextScenario) {
+    let NativeContextScenario {
+        subscription,
+        with_meta,
+        before_submit,
+        leased,
+        recent_failure,
+        hold_provider_lane,
+    } = scenario;
     let worktree = crate::test_support::TestWorktree::new("native-context-failure");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.accept_remote_leases = leased;
@@ -210,6 +253,28 @@ async fn rejection_scenario(
             !fs::read_to_string(&events).unwrap().is_empty(),
             "subscription consumed the native hook mailbox"
         );
+    }
+    if hold_provider_lane {
+        let permit = runtime.provider_runtime_lanes.acquire(run.id()).await;
+        runtime
+            .drain_relay_leased_runtime_projection(
+                leased_id.as_ref().unwrap(),
+                run.id(),
+                true,
+                false,
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(
+            fs::read_to_string(&context).unwrap().is_empty(),
+            "a home drain consumed the native hook while another pump owned the provider lane"
+        );
+        assert!(
+            !fs::read_to_string(&events).unwrap().is_empty(),
+            "a busy provider lane must leave its hook mailbox for the lane owner"
+        );
+        drop(permit);
     }
     if let Some(leased_id) = &leased_id {
         runtime

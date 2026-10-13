@@ -54,7 +54,8 @@ impl KernelRuntimeState {
         worker_kernel_id: &str,
         request: RelayPeerRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let response_timeout = remote_profile_response_timeout(config, &request);
+        let response_timeout =
+            request.off_lock_response_timeout(remote_profile_response_timeout(config, &request));
         let target = ClientTarget {
             daemon_id: Some(worker_kernel_id.to_string()),
             daemon_alias: None,

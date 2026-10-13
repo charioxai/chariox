@@ -219,7 +219,7 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn r5_review_brief_utility_receives_the_remaining_deadline() {
+    async fn brief_utility_obeys_the_remaining_deadline() {
         use crate::provider::{
             AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult,
             ProviderUtilityExecutionPolicy, RuntimeProviderRun,
@@ -265,8 +265,14 @@ mod tests {
             .terminate_run_provider_only(run.session_id(), run.id())
             .unwrap();
         assert!(
-            result.is_err(),
-            "a utility must time out before its one-second reply: {result:?}"
+            matches!(
+                &result,
+                Err(crate::error::DaemonError::ProviderProtocol {
+                    operation: "claude_utility_timeout",
+                    ..
+                })
+            ),
+            "the remaining deadline must reach the Claude utility runner: {result:?}"
         );
         assert!(started.elapsed() < std::time::Duration::from_millis(900));
     }
