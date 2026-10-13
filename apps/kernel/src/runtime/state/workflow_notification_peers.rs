@@ -49,10 +49,7 @@ impl KernelRuntimeState {
         }
         let config = self.owned.config_projection.snapshot();
         // A private relay asserts its own identities, never the Cloud owner.
-        if !crate::runtime::cloud_relay_control::cloud_relay_transport_selected(&config) {
-            return None;
-        }
-        let profile = config.cloud_relay.as_ref()?;
+        let profile = crate::runtime::cloud_relay_control::active_cloud_profile(&config)?;
         if identity.realm_id != profile.realm_id
             || identity.user_id.as_deref() != Some(profile.user_id.as_str())
         {

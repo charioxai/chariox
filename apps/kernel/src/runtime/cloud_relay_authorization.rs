@@ -116,11 +116,7 @@ pub(crate) fn kernel_cloud_owner(config: &DaemonConfig, command: &KernelCommand)
 }
 
 pub(crate) fn cloud_relay_caller_owner(config: &DaemonConfig, caller: &KernelCaller) -> bool {
-    if let Some(profile) = config
-        .cloud_relay
-        .as_ref()
-        .filter(|_| crate::runtime::cloud_relay_control::cloud_relay_transport_selected(config))
-    {
+    if let Some(profile) = crate::runtime::cloud_relay_control::active_cloud_profile(config) {
         if caller.caller_kind == KernelCallerKind::RemoteClient
             && caller.user_id.as_deref() == Some(profile.user_id.as_str())
             && caller.realm_id.as_deref() == Some(profile.realm_id.as_str())

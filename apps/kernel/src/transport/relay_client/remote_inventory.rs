@@ -90,9 +90,8 @@ pub(crate) async fn refresh_remote_inventory_projection(
         .min(REMOTE_INVENTORY_RELAY_TIMEOUT_MS);
 
     let visible_kernel_ids = if let Some(profile) =
-        runtime_config.cloud_relay.as_ref().filter(|_| {
-            crate::runtime::cloud_relay_control::cloud_relay_transport_selected(&runtime_config)
-        }) {
+        crate::runtime::cloud_relay_control::active_cloud_profile(&runtime_config)
+    {
         relay_discovery::authorization::visible_targets(profile).await?
     } else {
         None

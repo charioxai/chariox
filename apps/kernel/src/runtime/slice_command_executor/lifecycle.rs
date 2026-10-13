@@ -1184,13 +1184,10 @@ fn local_docker_slice_relay_for_config(
                 // The home kernel's Cloud profile contains machine credentials and
                 // session tokens. It must never be copied into a provider-visible slice.
                 cloud_relay_config_json: None,
-                worker_machine_id: config
-                    .cloud_relay
-                    .as_ref()
-                    .filter(|_| {
-                        crate::runtime::cloud_relay_control::cloud_relay_transport_selected(config)
-                    })
-                    .and_then(|profile| profile.machine_id.clone()),
+                worker_machine_id: crate::runtime::cloud_relay_control::active_cloud_profile(
+                    config,
+                )
+                .and_then(|profile| profile.machine_id.clone()),
             };
         }
     }

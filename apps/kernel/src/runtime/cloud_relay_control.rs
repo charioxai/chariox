@@ -29,6 +29,14 @@ pub(crate) fn cloud_relay_transport_selected(config: &DaemonConfig) -> bool {
             .is_none_or(|url| config.relay_url_uses_cloud_profile(url))
 }
 
+/// The Cloud profile, only while its relay is the selected transport.
+pub(crate) fn active_cloud_profile(config: &DaemonConfig) -> Option<&PersistedCloudRelayProfile> {
+    config
+        .cloud_relay
+        .as_ref()
+        .filter(|_| cloud_relay_transport_selected(config))
+}
+
 pub(crate) fn cloud_relay_token_refresh_due(config: &DaemonConfig, now_ms: u64) -> bool {
     let Some(profile) = config.cloud_relay.as_ref() else {
         return false;

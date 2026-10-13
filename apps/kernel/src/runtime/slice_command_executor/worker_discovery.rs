@@ -28,11 +28,7 @@ pub(super) async fn provision_and_prepare_worker_discovery(
         ensure_cloud_relay_connection(runtime_state, config_projection).await?;
     }
     let mut config = relay.worker_discovery_config(config_projection.snapshot());
-    if let Some(profile) = config
-        .cloud_relay
-        .as_ref()
-        .filter(|_| crate::runtime::cloud_relay_control::cloud_relay_transport_selected(&config))
-    {
+    if let Some(profile) = crate::runtime::cloud_relay_control::active_cloud_profile(&config) {
         let discovery_token =
             issue_cloud_slice_discovery_token(profile, &config.daemon_id, worker_kernel_ref)
                 .await?;
