@@ -81,15 +81,23 @@ fn context_failure_case(scenario: ContextFailureScenario) {
     if managed {
         let active = match app
             .record_native_prompt_started_with_attachments(
-                session.id(), attachment.id(), agent.id(),
-                "retry audit", "retry audit", Vec::new(),
-            ).unwrap()
+                session.id(),
+                attachment.id(),
+                agent.id(),
+                "retry audit",
+                "retry audit",
+                Vec::new(),
+            )
+            .unwrap()
         {
             crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
             other => panic!("unexpected managed admission: {other:?}"),
         };
         let path = context.display().to_string();
-        write_claude_native_marker(&path, &format!("submit-wait:{}:{}", active.id(), unix_epoch_ms()));
+        write_claude_native_marker(
+            &path,
+            &format!("submit-wait:{}:{}", active.id(), unix_epoch_ms()),
+        );
         write_claude_headless_submit_retry(&path, active.id(), 0, unix_epoch_ms(), "retry audit");
     }
     let submit = serde_json::json!({"hook_event_name":"UserPromptSubmit", "prompt":"retry audit",
@@ -107,8 +115,10 @@ fn context_failure_case(scenario: ContextFailureScenario) {
         return;
     }
     assert!(active.is_some());
-    assert!(context.with_extension("txt.context-delivery").exists(),
-        "expired managed hook lost the binding needed to settle its already admitted prompt");
+    assert!(
+        context.with_extension("txt.context-delivery").exists(),
+        "expired managed hook lost the binding needed to settle its already admitted prompt"
+    );
     // A stale failure must not fail this current native turn.
     fs::write(
         &events,

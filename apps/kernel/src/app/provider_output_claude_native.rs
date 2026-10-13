@@ -501,6 +501,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             }
             if event_name == "UserPromptSubmit" {
                 if context_delivery::request_expired(&event) {
+                    self.bind_expired_managed_context_failure(
+                        session_id,
+                        &agent_id,
+                        provider_run_id,
+                        context_file,
+                        &event,
+                    )?;
                     continue;
                 }
                 clear_claude_hook_permission_tombstone(context_file);
