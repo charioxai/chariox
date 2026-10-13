@@ -3,6 +3,7 @@ import test from "node:test"
 import { BoxRenderable, MarkdownRenderable, SyntaxStyle } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { createTranscriptMarkdownNodeRenderer } from "./transcript-hyperlinks.js"
+import { readApplyPatchFiles } from "@chariox/tool-display"
 import { buildApplyPatchDiffContent } from "./transcript-diff-render.js"
 
 // MP-08 / MP-10 (PANE-09, R16): Codex-style diffs in the terminal.
@@ -49,5 +50,19 @@ test("tool patches show verb, per-file rows, gutter and hunk gaps", async () => 
       "  └ new.txt (+1 −0)",
       "1 + hello",
     ].join("\n"))
+  } finally { harness.renderer.destroy() }
+})
+
+// MP-08 / MP-10: exercise the actual range-free apply_patch producer.
+test("apply_patch text retains hunk gaps without invented gutter numbers", async () => {
+  const harness = await createTestRenderer({ width: 60, height: 12, useThread: false })
+  const body = new BoxRenderable(harness.renderer, { width: "100%" })
+  harness.renderer.root.add(body)
+  try {
+    const files = readApplyPatchFiles({ id: "patch", tool: "apply_patch", status: "completed", input: {
+      patchText: "*** Begin Patch\n*** Update File: a.py\n@@\n keep\n-old\n+new\n@@ later\n other\n-x\n+y\n*** End Patch",
+    } })
+    buildApplyPatchDiffContent(harness.renderer, body, files)
+    assert.equal(await frame(harness), ["• Edited a.py (+2 −2)", "   keep", " - old", " + new", " ⋮", "   other", " - x", " + y"].join("\n"))
   } finally { harness.renderer.destroy() }
 })

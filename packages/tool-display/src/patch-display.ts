@@ -414,9 +414,8 @@ function buildUnifiedHunks(body: string[]) {
       return
     }
     const normalized = normalizeApplyPatchHunkLines(current)
-    const oldCount = normalized.filter((line) => !line.startsWith("+")).length
-    const newCount = normalized.filter((line) => !line.startsWith("-")).length
-    hunks.push(`@@ -1,${Math.max(oldCount, 0)} +1,${Math.max(newCount, 0)} @@`)
+    // apply_patch context anchors carry no absolute source line positions.
+    hunks.push("@@")
     hunks.push(...normalized)
     current = []
   }
@@ -430,7 +429,7 @@ function buildUnifiedHunks(body: string[]) {
   }
 
   flush()
-  return hunks.length > 0 ? hunks : ["@@ -1,0 +1,0 @@"]
+  return hunks.length > 0 ? hunks : ["@@"]
 }
 
 function normalizeApplyPatchHunkLines(lines: string[]) {

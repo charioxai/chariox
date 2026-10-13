@@ -271,7 +271,7 @@ test("buildApplyPatchNewPreview hides old-side lines", () => {
   })
   assert.ok(file)
   assert.deepEqual(buildApplyPatchNewPreview(file), [
-    { kind: "meta", text: "@@ -1,2 +1,2 @@" },
+    { kind: "meta", text: "@@" },
     { kind: "added", text: "after()" },
     { kind: "context", text: "context()" },
   ])
