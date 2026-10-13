@@ -135,8 +135,6 @@ export class TranscriptFenceRenderable extends BoxRenderable {
   set drawUnstyledText(value: boolean) { if (this.code) this.code.drawUnstyledText = value }
   set streaming(value: boolean) { if (this.code) this.code.streaming = value }
 
-  get codeRenderable(): TranscriptCodeRenderable | null { return this.code }
-
   private sync(): void {
     if (isDiffFiletype(this.fenceLanguage)) {
       if (this.code) {

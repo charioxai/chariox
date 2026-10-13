@@ -117,7 +117,6 @@ export function buildTranscriptEntryRenderable(
         body,
         nextEntry,
         transcriptSyntax,
-        surfaceTone,
         onQueuedPromptAction,
       )
       textRenderable = expanded.textRenderable
@@ -191,7 +190,6 @@ function buildExpandedTranscriptContent(
   body: BoxRenderable,
   entry: TranscriptEntry,
   transcriptSyntax: SyntaxStyle,
-  surfaceTone: TranscriptSurfaceTone,
   onQueuedPromptAction?: (entry: TranscriptEntry, action: QueuedPromptAction) => void,
 ) {
   if (entry.queuedPrompt) {
