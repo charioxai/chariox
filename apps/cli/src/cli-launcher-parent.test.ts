@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test, { mock } from "node:test"
 import childProcess from "node:child_process"
-import { watchCliLauncherParent } from "./cli-launcher-parent.js"
+import { watchCliLauncherParent, registerCliLauncherParentExit } from "./cli-launcher-parent.js"
 
 test("launcher parent watch exits after parent death without signalling another PID", async () => {
   let parent = 12345
@@ -195,4 +195,37 @@ test("an inconclusive inspection retries and confirmed death exits only once", a
     assert.equal(probes, 2)
     assert.equal(exits, 1)
   } finally { stop() }
+})
+
+// MP-08/MP-11: exercise the default parent-death exit with terminal teardown.
+test("default parent-death exit restores terminal modes before process exit", async () => {
+  const { createTerminalExitController } = await import("./terminal-exit-controller.js")
+  const events: string[] = []
+  const exit = mock.method(process, "exit", (code?: number | string | null) => {
+    events.push(`exit:${code}`)
+    return undefined as never
+  })
+  const stderr = mock.method(process.stderr, "write", () => true)
+  const controller = createTerminalExitController({
+    renderer: {
+      disableKittyKeyboard: () => { events.push("kitty") },
+      disableStdoutInterception: () => { events.push("stdout") },
+      destroy: () => { events.push("destroy") },
+    },
+    sleep: async () => { events.push("flush") },
+    exitProcess: (code) => process.exit(code),
+    onRendererDestroyFailed: () => assert.fail("renderer teardown failed"),
+  })
+  const unregister = registerCliLauncherParentExit(() => { void controller.restoreAndExit(1) })
+  const stop = watchCliLauncherParent("12345", { inspect: () => false, platform: "darwin" })
+  try {
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.deepEqual(events, ["kitty", "stdout", "destroy", "flush", "exit:1"])
+    assert.match(String(stderr.mock.calls[0]?.arguments[0]), /launcher parent exited/)
+  } finally {
+    stop()
+    unregister()
+    exit.mock.restore()
+    stderr.mock.restore()
+  }
 })
