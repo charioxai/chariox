@@ -15,6 +15,7 @@ import type { LocalIpcClient } from "./ipc.js"
 import type { CharioxLogger } from "./logging.js"
 import {
   getProviderAuthStatusRequest,
+  getProviderAccountProfileRequest,
   getProviderLoginStatusRequest,
   sendProviderLoginInputRequest,
   setProviderAccountCredentialRequest,
@@ -305,6 +306,12 @@ export async function logoutProvider(
 export async function listProviderAccountProfiles(client: LocalIpcClient, provider?: string | null): Promise<ProviderAccountProfile[]> {
   const response = await client.send<Record<string, unknown>>(listProviderAccountProfilesRequest(provider))
   return expectVariant<{ profiles: ProviderAccountProfile[] }>(response, "ProviderAccountProfilesListed").profiles
+}
+
+/** MP-08/MP-11: saved enrollment observation; never starts a paid verification turn. */
+export async function getProviderAccountProfile(client: LocalIpcClient, provider: string, accountProfile = "default"): Promise<ProviderAccountProfile> {
+  const response = await client.send<Record<string, unknown>>(getProviderAccountProfileRequest(provider, accountProfile))
+  return expectVariant<{ profile: ProviderAccountProfile }>(response, "ProviderAccountProfile").profile
 }
 
 export async function createProviderAccountProfile(client: LocalIpcClient, provider: string, label: string): Promise<ProviderAccountProfile> {

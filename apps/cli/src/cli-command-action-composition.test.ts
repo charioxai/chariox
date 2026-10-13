@@ -7,6 +7,7 @@ import { createCliCommandActionComposition, type CliCommandActionCompositionDeps
 import { CloudClient } from "./cloud-client.js"
 import type { CloudClientCredentialStore, CloudClientCredential } from "./cloud-client-credential-store.js"
 import { cloudClientCallerScope } from "./cloud-client-collaboration-scope.js"
+import { buildDetachedSessionState } from "./session-state.js"
 import { makeCommandDeps, makeSession } from "./command-actions-test-support.js"
 
 // MP-08 / MP-11: actual composition + slash handler, with both authority profiles.
@@ -252,5 +253,31 @@ for (const caller of ["owner", "relay-owner", "collaborator"] as const) {
     assert.match(text, /relay=not connected/)
     assert.match(text, /machine=machine-1/)
     assert.match(text, /kernel=offline in Cloud/)
+  })
+}
+
+for (const reference of ["Fresh-Claude", "opaque-claude-id"]) for (const attached of [false, true]) {
+  test(`MP-08 / MP-10 / MP-11 Claude login ${attached ? "attached" : "waiting-room"} via ${reference} submits only a live session context`, async () => {
+    const requests: Record<string, any>[] = []
+    const profile = { provider: "claude", profile_id: "opaque-claude-id", label: "Fresh-Claude" }
+    const session = attached ? { ...makeSession(), id: "live-session" } : buildDetachedSessionState({ clientId: "fixture", model: "default", accountProfile: "default", effort: "high" })
+    const client = { send: async (request: Record<string, any>) => {
+      requests.push(request)
+      if ("ListProviderAccountProfiles" in request) return { ProviderAccountProfilesListed: { profiles: [profile] } }
+      if ("SetProviderAccountCredential" in request) return { ProviderLoginStarted: { login: {
+        provider: "claude", account_profile: profile.profile_id, login_kind: "terminal_setup_token", login_id: "own-login",
+      } } }
+      throw new Error(`unexpected request ${Object.keys(request)[0]}`)
+    } }
+    const base = { ...makeCommandDeps(), client, options: {}, preferencesState: () => ({}), sessionState: () => session,
+      isAttached: () => attached, appendNotice: () => {}, flashFooter: () => {} }
+    const deps = new Proxy(base, { get: (target, key) => key in target ? target[key as keyof typeof target] : () => {} })
+    await createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps)
+      .handleProviderCommand({ kind: "provider", raw: `/provider login claude ${reference}`, value: `login claude ${reference}` })
+    const request = requests.find(request => "SetProviderAccountCredential" in request)!.SetProviderAccountCredential
+    assert.deepEqual(request, {
+      provider: "claude", account_profile: profile.profile_id, value: "", overwrite: true, run: true,
+      ...(attached ? { session_id: "live-session" } : {}),
+    })
   })
 }

@@ -7,6 +7,26 @@ import {
   type FocusedInteractionChoiceControllerDeps,
 } from "./focused-interaction-choice-controller.js"
 
+test("MP-08/MP-11 detached provider login clears masked input before sending through the login endpoint", async () => {
+  const interaction = loginInteractionFixture()
+  const sent: unknown[] = []
+  const h = createHarness({ attached: false, interaction, providerLogin: {
+    stripState: () => ({ view: { url: "https://claude.com/cai/oauth/authorize" } }),
+    codeSent: () => true, openLink: async () => {}, copyLink: async () => {},
+    respondSessionless: async (current, choice, reply) => {
+      assert.equal(h.customReplies.has(current.id), false)
+      sent.push({ id: current.id, choice, reply })
+    },
+  } })
+  h.selectedIndexes.set(interaction.id, interaction.choices.length)
+  h.customReplies.set(interaction.id, "sensitive-code")
+  assert.equal(await h.controller.submitChoice(), true)
+  assert.deepEqual(sent, [{ id: interaction.id, choice: "provider-response", reply: "sensitive-code" }])
+  assert.deepEqual(h.responses(), [], "no fake session ID is sent")
+  assert.deepEqual(h.appliedSessions(), [])
+  assert.equal(await createHarness({ attached: false }).controller.submitChoice(), false, "ordinary detached interactions remain unavailable")
+})
+
 test("focused interaction choice submit ignores unavailable state", async () => {
   const harness = createHarness({ interaction: null })
 

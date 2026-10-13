@@ -12,6 +12,7 @@ import { isBackendProviderId } from "./provider-catalog.js"
 import {
   providerAccountDisplayLabel,
   providerAccountsForProvider,
+  resolveProviderAccountSelection,
   selectedProviderAccount,
 } from "./waiting-room-provider-accounts.js"
 
@@ -448,13 +449,11 @@ export async function resolveProviderAccountAlias(
     deps.flashFooter("provider account management is unavailable", "error")
     return null
   }
-  const profile = findProviderAccountByAlias(
-    await deps.listProviderAccountProfiles(provider),
-    provider,
-    alias,
-  )
-  if (profile) return profile.profile_id
-  deps.flashFooter(`provider account alias ${alias.trim()} was not found for ${provider}`, "error")
+  const selection = resolveProviderAccountSelection(await deps.listProviderAccountProfiles(provider), provider, alias)
+  if (selection.kind === "resolved") return selection.profile.profile_id
+  deps.flashFooter(selection.kind === "ambiguous"
+    ? `provider account alias ${alias.trim()} is ambiguous for ${provider}: ${selection.aliases.join(", ")}. Use an exact label or profile ID.`
+    : `provider account alias ${alias.trim()} was not found for ${provider}`, "error")
   return null
 }
 
@@ -517,7 +516,7 @@ function formatProviderLoginNotice(
 }
 
 async function presentLoginLink(deps: ProviderCommandHandlerDeps, login: ProviderLoginStart, signIn = true): Promise<void> {
-  if (signIn && login.login_id) deps.trackProviderLogin?.({ login_id: login.login_id, provider: login.provider, account_profile: login.account_profile })
+  if (signIn && login.login_id) deps.trackProviderLogin?.({ ...login, login_id: login.login_id })
   const url = login.verification_url ?? login.auth_url
   if (!url || !providerLoginUrl(url)) return
   await presentUrl(deps, url, { userCode: login.user_code, autoOpen: true })
@@ -577,21 +576,6 @@ function credentialKindLabel(profile: {
   }
 }
 
-function findProviderAccountByAlias(
-  profiles: Awaited<ReturnType<NonNullable<ProviderCommandHandlerDeps["listProviderAccountProfiles"]>>>,
-  provider: string,
-  alias: string,
-) {
-  const normalizedAlias = alias.trim()
-  const candidates = providerAccountsForProvider(profiles, provider)
-  const exactMatch = candidates.find((candidate) => candidate.label === normalizedAlias)
-  if (exactMatch) return exactMatch
-  const foldedMatches = candidates.filter(
-    (candidate) => candidate.label.localeCompare(normalizedAlias, undefined, { sensitivity: "accent" }) === 0,
-  )
-  return foldedMatches.length === 1 ? foldedMatches[0] : undefined
-}
-
 async function resolveProviderAccountReference(
   deps: ProviderCommandHandlerDeps,
   provider: string,
@@ -603,10 +587,7 @@ async function resolveProviderAccountReference(
     deps.flashFooter("provider account selection is unavailable", "error")
     return null
   }
-  const profile = findProviderAccountByAlias(await deps.listProviderAccountProfiles(provider), provider, normalizedAlias)
-  if (profile) return profile.profile_id
-  deps.flashFooter(`provider account alias ${normalizedAlias} was not found for ${provider}`, "error")
-  return null
+  return resolveProviderAccountAlias(deps, provider, normalizedAlias)
 }
 
 async function providerAccountPublicLabel(
