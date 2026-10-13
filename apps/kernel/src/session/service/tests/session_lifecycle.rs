@@ -2052,3 +2052,52 @@ fn borrowed_session_scans_preserve_durable_and_retry_scope() {
         BTreeSet::from([hidden.id().to_string(), ephemeral.id().to_string()])
     );
 }
+
+#[test]
+fn kernel_restart_reconciliation_clears_agent_decisions_without_authorizing_them() {
+    use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
+    let mut service = SessionService::new(&test_config());
+    let mut session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("create session");
+    let decision = RuntimeInteraction::for_kernel_operation(
+        "kernel-decision",
+        "install-app",
+        "Install App?",
+        "Reviewed release",
+        vec![RuntimeInteractionChoice::new(
+            "deny", "Cancel", "deny", None,
+        )],
+    );
+    let agent_approval = RuntimeInteraction::new(
+        "agent-approval",
+        "agent-1",
+        crate::session::RuntimeInteractionKind::Permission,
+        crate::session::RuntimeInteractionLevel::Warning,
+        Some("Command approval required".into()),
+        "Read public source",
+        vec![RuntimeInteractionChoice::new("deny", "Deny", "deny", None)],
+        None,
+        None,
+        None,
+    );
+    session.add_active_interaction(decision.clone());
+    session.add_active_interaction(agent_approval);
+    let persisted = serde_json::to_value(&session).expect("persist actual session shape");
+    let mut restored: RuntimeSession = serde_json::from_value(persisted).expect("restore session");
+    assert_eq!(restored.active_interactions().len(), 2);
+    let reconciliation = restored.reconcile_after_kernel_restart();
+    assert!(
+        restored.active_interaction_for_agent("agent-1").is_none(),
+        "a restored agent approval with no receiver still blocks Vault management"
+    );
+    assert_eq!(restored.active_interactions(), &[decision]);
+    assert!(
+        reconciliation.changed(),
+        "interaction cleanup must be saved even without a run or attachment"
+    );
+    assert!(
+        !restored.reconcile_after_kernel_restart().changed(),
+        "restart cleanup is idempotent"
+    );
+}

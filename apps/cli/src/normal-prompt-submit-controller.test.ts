@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { PromptAttachmentPart, RuntimeAttachment, RuntimeSession } from "./cli-types.js"
+import { createPromptSubmitCoordinator } from "./prompt-submit-coordinator.js"
 import { NO_FOCUS_AGENT_MESSAGE } from "./cli-runtime-tuning.js"
 import {
   createNormalPromptSubmitController,
@@ -343,7 +344,65 @@ test("normal prompt submit failure preserves active session runtime state", asyn
   assert.equal(harness.workingValues().at(-1), true)
 })
 
+for (const pending of ["focus", "attachments"] as const) {
+  test(`rapid Enter captures separate drafts while ${pending} preparation is pending`, async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let draft = "first task"
+    let attachments = [{ ...pendingAttachment("first"), filename: "first.txt" }]
+    const harness = createHarness({
+      getPendingAttachments: () => attachments,
+      waitForPendingAgentFocusTransition: () => pending === "focus" ? gate : Promise.resolve(),
+      preparePromptAttachmentsForSubmit: async (parts) => {
+        if (pending === "attachments") await gate
+        return parts
+      },
+      beginSubmittedPromptUi: (rawPrompt) => {
+        const snapshot = { rawPrompt, attachments, sessionId: "session-1" }
+        draft = ""
+        attachments = []
+        return snapshot
+      },
+    })
+    const coordinator = createPromptSubmitCoordinator({
+      getPromptText: () => draft,
+      ensureBackgroundPollersStarted: () => {},
+      getPendingAttachmentCount: () => attachments.length,
+      clearPromptText: () => { draft = "" },
+      workflowScreenShowing: () => false,
+      submitWorkspaceShellCommand: async () => {},
+      workflowNodeInstructionsEditorOpen: () => false,
+      submitSlashCommand: async () => false,
+      submitProviderNamespacePrompt: async () => false,
+      isAttached: () => true,
+      submitWorkflowPrompt: async () => {},
+      submitNormalPrompt: (rawPrompt) => harness.controller.submit(rawPrompt),
+      flashFooter: () => {},
+    })
+    const first = coordinator.submit()
+    assert.equal(draft, "", "Enter consumes its draft before any asynchronous routing")
+    draft = "genuine queued task"
+    attachments = [{ ...pendingAttachment("second"), filename: "second.txt" }]
+    const second = coordinator.submit()
+    draft = "new unsent draft"
+    release()
+    await Promise.all([first, second])
+    assert.equal(draft, "new unsent draft", "completion preserves the next draft")
+    assert.deepEqual(harness.submissions().map(({ prompt, attachments }) => ({
+      prompt, attachments: attachments.map((part) => part.filename),
+    })), [
+      { prompt: "first task\n", attachments: ["first.txt"] },
+      { prompt: "genuine queued task\n", attachments: ["second.txt"] },
+    ])
+    assert.deepEqual(harness.recordedHistory().map((entry) => entry.rawPrompt), ["first task", "genuine queued task"])
+  })
+}
+
 function createHarness(options: {
+  getPendingAttachments?: NormalPromptSubmitControllerDeps["getPendingAttachments"]
+  waitForPendingAgentFocusTransition?: NormalPromptSubmitControllerDeps["waitForPendingAgentFocusTransition"]
+  preparePromptAttachmentsForSubmit?: NormalPromptSubmitControllerDeps["preparePromptAttachmentsForSubmit"]
+  beginSubmittedPromptUi?: NormalPromptSubmitControllerDeps["beginSubmittedPromptUi"]
   promptBlockReason?: NormalPromptSubmitControllerDeps["promptBlockReason"]
   onPromptRejected?: NormalPromptSubmitControllerDeps["onPromptRejected"]
   attachment?: RuntimeAttachment | null
@@ -386,8 +445,8 @@ function createHarness(options: {
   const controller = createNormalPromptSubmitController({
     ...(options.promptBlockReason ? { promptBlockReason: options.promptBlockReason } : {}),
     ...(options.onPromptRejected ? {onPromptRejected: options.onPromptRejected} : {}),
-    getPendingAttachments: () => options.pendingAttachments ?? [],
-    waitForPendingAgentFocusTransition: async () => {},
+    getPendingAttachments: options.getPendingAttachments ?? (() => options.pendingAttachments ?? []),
+    waitForPendingAgentFocusTransition: options.waitForPendingAgentFocusTransition ?? (async () => {}),
     getFocusedAgentId: () => options.focusedAgentId === undefined ? "agent-1" : options.focusedAgentId,
     getSession: () => options.session ?? runtimeSession("session-1", null, { agents: [agent("agent-1")] }),
     hasAgent: options.hasAgent ?? ((agentId) => agentId === "agent-1"),
@@ -402,9 +461,10 @@ function createHarness(options: {
     shouldInlineLocalFiles: () => options.inlineLocalFiles ?? false,
     preparePromptAttachmentsForSubmit: async (attachments, transferOptions) => {
       preparedAttachments.push({ attachments, inlineLocalFiles: transferOptions.inlineLocalFiles })
+      if (options.preparePromptAttachmentsForSubmit) return options.preparePromptAttachmentsForSubmit(attachments, transferOptions)
       return attachments.map((attachment) => ({ ...attachment, contents_base64: "ZmlsZQ==" }))
     },
-    beginSubmittedPromptUi: (rawPrompt) => ({ rawPrompt, attachments: [], sessionId: "session-1" }),
+    beginSubmittedPromptUi: options.beginSubmittedPromptUi ?? ((rawPrompt) => ({ rawPrompt, attachments: [], sessionId: "session-1" })),
     renderPromptTranscript: (prompt) => prompt,
     appendUserPrompt: (text, agentId, metadata) => {
       appendedPrompts.push({

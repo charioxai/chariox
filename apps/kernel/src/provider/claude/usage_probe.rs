@@ -69,6 +69,19 @@ pub(crate) enum ClaudeCredentialCheckError {
     Inconclusive(String),
 }
 
+impl ClaudeCredentialCheckError {
+    pub(crate) fn into_daemon_error(self) -> DaemonError {
+        let message = match self {
+            ClaudeCredentialCheckError::Rejected => "Claude rejected the setup token: invalid, expired or revoked. Choose Log in in Provider Accounts to authorize a replacement.".into(),
+            ClaudeCredentialCheckError::Inconclusive(reason) => format!("Claude verification was inconclusive: {reason}. Check the network and Claude CLI, then retry Status or Refresh."),
+        };
+        DaemonError::LocalTransport {
+            operation: "verify Claude setup token",
+            message,
+        }
+    }
+}
+
 /// Verifies a Claude credential with one minimal model turn. Claude only
 /// checks a `CLAUDE_CODE_OAUTH_TOKEN` when it calls the API: `auth status`
 /// and local commands such as `/usage` report success for any token.
@@ -83,7 +96,7 @@ pub(crate) fn verify_claude_account_credential(
     )
 }
 
-fn verify_claude_account_credential_with_timeout(
+pub(super) fn verify_claude_account_credential_with_timeout(
     executable: &Path,
     environment: &BTreeMap<String, String>,
     timeout: Duration,
@@ -91,7 +104,15 @@ fn verify_claude_account_credential_with_timeout(
     let (status, result) = run_claude_print(
         executable,
         environment,
-        &["Reply with OK.", "--model", "haiku"],
+        &[
+            "Reply with exactly CHARIOX_AUTH_OK.",
+            "--model",
+            "haiku",
+            "--max-turns",
+            "1",
+            "--system-prompt",
+            "Reply only with the requested authentication marker.",
+        ],
         timeout,
         "Claude credential check",
     )
@@ -137,13 +158,25 @@ fn verify_claude_account_credential_with_timeout(
     {
         return Err(ClaudeCredentialCheckError::Rejected);
     }
-    let succeeded = result.get("type").and_then(serde_json::Value::as_str) == Some("result")
-        && result.get("is_error").and_then(serde_json::Value::as_bool) == Some(false);
-    if status.success() && succeeded {
+    let single_turn = super::auth_probe::validate_auth_result(&result).is_ok();
+    if status.success() && single_turn {
         Ok(())
     } else {
+        // Only harness metadata is projected. Provider result/error text may
+        // contain account details or secrets and never belongs in a diagnostic.
+        let http = result
+            .get("api_error_status")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|code| (100..600).contains(code))
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "unreported".into());
+        let turns = result
+            .get("num_turns")
+            .and_then(serde_json::Value::as_u64)
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "unreported".into());
         Err(ClaudeCredentialCheckError::Inconclusive(format!(
-            "Claude did not complete the check ({status})"
+            "Claude did not complete verification ({status}; HTTP={http}; turns={turns}; valid_single_turn={single_turn})"
         )))
     }
 }
@@ -593,7 +626,43 @@ process.stdout.write(JSON.stringify({
                 "{result}: {checked:?}"
             );
             if exit == 0 {
-                assert_eq!(checked, Ok(()));
+                assert!(matches!(checked, Err(ClaudeCredentialCheckError::Inconclusive(_))),
+                    "MP-08/MP-11: a quoted 401 is not rejection, and a non-marker reply is not verification");
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn credential_check_requires_verified_single_turn_and_redacts_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile_fixture_root();
+        let executable = root.join("claude");
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+        for valid in [true, false] {
+            let result = serde_json::json!({"type":"result", "subtype":"success", "is_error":false,
+                "num_turns":1, "result": if valid { "CHARIOX_AUTH_OK" } else { "synthetic-private-provider-detail" },
+                "usage":{"output_tokens":7}});
+            fs::write(
+                &executable,
+                format!("#!/bin/sh\nprintf '%s\\n' '{result}'\n"),
+            )
+            .unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+            let checked = verify_claude_account_credential_with_timeout(
+                &executable,
+                &environment,
+                Duration::from_secs(2),
+            );
+            assert_eq!(checked.is_ok(), valid);
+            if let Err(error) = checked {
+                let message = error.into_daemon_error().to_string();
+                assert!(message.contains("turns=1; valid_single_turn=false"));
+                assert!(!message.contains("synthetic-private-provider-detail"));
             }
         }
         fs::remove_dir_all(root).unwrap();

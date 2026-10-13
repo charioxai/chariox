@@ -1160,10 +1160,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
 
         self.terminate_backing_provider_runtime(&leased_agent);
         let backing_agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
-        let resume_state = backing_agent
-            .provider_resume_state()
-            .without_provider_session_id(backing_agent.provider())
-            .without_provider_session_id(&provider);
+        let resume_state = backing_agent.provider_resume_state().after_profile_change(
+            backing_agent.provider(),
+            backing_agent.provider_account_profile(),
+            &provider,
+            &account_profile,
+        );
         self.app
             .agents
             .set_agent_runtime_profile_with_account_profile(

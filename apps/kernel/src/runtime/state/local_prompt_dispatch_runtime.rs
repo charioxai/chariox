@@ -136,6 +136,7 @@ impl KernelRuntimeOwnedState {
 
 #[cfg(test)]
 pub(in crate::runtime::state) mod tests {
+    mod native_origin_handoff_review;
     use super::*;
     use crate::agent::CreateAgentRequest;
     use crate::app::KernelSessionService;
@@ -3669,9 +3670,10 @@ impl KernelRuntimeState {
             let prompt_with_handoff = owned.prompt_with_pending_context_handoff(
                 &dispatch.session_id,
                 &dispatch.agent_id,
-                &dispatch.source_attachment_id,
                 &provider_run,
+                &dispatch.prompt_id,
                 &dispatch.prompt,
+                dispatch.steering,
             );
             let granted_skill_context = owned.granted_skill_hidden_context(
                 &dispatch.session_id,
@@ -3731,13 +3733,23 @@ impl KernelRuntimeState {
                 Err(error) => return Err(error),
             }
         }
-        let prompt_with_handoff = owned.prompt_with_pending_context_handoff(
+        let uses_claude_native_bridge =
+            crate::provider::provider_run_uses_claude_native_bridge(&provider_run);
+        let context_handoff = owned.context_handoff_for_dispatch(
             &dispatch.session_id,
             &dispatch.agent_id,
-            &dispatch.source_attachment_id,
             &provider_run,
-            &dispatch.prompt,
+            &dispatch.prompt_id,
+            dispatch.steering,
         );
+        // Claude native turns carry the handoff as hidden context, sized to
+        // the room the turn's other hidden context leaves.
+        let prompt_with_handoff = match &context_handoff {
+            Some(handoff) if !uses_claude_native_bridge => {
+                super::context_handoff::inject_context_handoff(&dispatch.prompt, handoff)
+            }
+            _ => dispatch.prompt.clone(),
+        };
         let prompt_with_hidden_context =
             join_hidden_context(&hidden_system_context, &prompt_with_handoff);
         let provider_prompt = owned.apply_granted_skill_summary(
@@ -3745,8 +3757,6 @@ impl KernelRuntimeState {
             &dispatch.agent_id,
             &prompt_with_hidden_context,
         )?;
-        let uses_claude_native_bridge =
-            crate::provider::provider_run_uses_claude_native_bridge(&provider_run);
         let provider_pty_input =
             crate::app::terminal_input::provider_prompt_input(&provider_prompt);
         if !internal_recovery {
@@ -3822,7 +3832,7 @@ impl KernelRuntimeState {
             return Ok(true);
         }
         if uses_claude_native_bridge {
-            let dispatch_with_handoff = crate::app::KernelPromptDispatch {
+            let native_dispatch = crate::app::KernelPromptDispatch {
                 session_id: dispatch.session_id.clone(),
                 provider_run_id: dispatch.provider_run_id.clone(),
                 agent_id: dispatch.agent_id.clone(),
@@ -3830,12 +3840,7 @@ impl KernelRuntimeState {
                 target_active_prompt_id: dispatch.target_active_prompt_id.clone(),
                 source_attachment_id: dispatch.source_attachment_id.clone(),
                 prompt: dispatch.prompt.clone(),
-                hidden_system_context: owned.hidden_context_with_pending_context_handoff(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &provider_run,
-                    &hidden_system_context,
-                ),
+                hidden_system_context: hidden_system_context.clone(),
                 attachments: dispatch.attachments.clone(),
                 prompt_origin: dispatch.prompt_origin,
                 external_provider: dispatch.external_provider.clone(),
@@ -3843,7 +3848,8 @@ impl KernelRuntimeState {
                 external_provider_turn_id: dispatch.external_provider_turn_id.clone(),
                 steering: dispatch.steering,
             };
-            let provider_run = provider_run.clone();
+            let mut provider_run = provider_run.clone();
+            let mut context_handoff = context_handoff;
             // Claude-headless confirms injection asynchronously via the
             // context-file marker; retry with the app lock released between
             // attempts so a slow provider cannot stall the whole daemon.
@@ -3862,17 +3868,58 @@ impl KernelRuntimeState {
                                 message: "prompt changed before native dispatch".into(),
                             });
                         }
+                        // SessionStart can reset the native session before its
+                        // first transcript row exists. Refresh its official hook
+                        // metadata before preparing hidden context or PTY input.
+                        let current = app
+                            .refresh_claude_native_session_for_runtime(&dispatch.provider_run_id)?;
+                        if super::context_handoff::native_session_id(&current)
+                            != super::context_handoff::native_session_id(&provider_run)
+                        {
+                            context_handoff = owned.context_handoff_for_dispatch(
+                                &dispatch.session_id,
+                                &dispatch.agent_id,
+                                &current,
+                                &dispatch.prompt_id,
+                                dispatch.steering,
+                            );
+                        }
+                        provider_run = current;
                         app.process_claude_native_prompt_dispatch_attempt_for_runtime(
                             &dispatch.session_id,
                             &dispatch.provider_run_id,
                             &provider_run,
-                            &dispatch_with_handoff,
+                            &native_dispatch,
+                            &|room| {
+                                context_handoff
+                                    .as_ref()
+                                    .map(|handoff| handoff.render_hidden(room))
+                                    .unwrap_or_default()
+                            },
                         )
                     })
                     .await?;
                 match attempt {
                     crate::app::ClaudeNativeDispatchAttempt::Completed => break,
                     crate::app::ClaudeNativeDispatchAttempt::AwaitingInjection => {
+                        // Workflow/native dispatch must service the same official
+                        // hook bridge even with no terminal client polling output.
+                        // The bridge writes the fresh response and waits for its
+                        // delivery receipt; PTY injection is not acceptance.
+                        if provider_run
+                            .pty_env()
+                            .get("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS")
+                            .is_some_and(|v| v == "1")
+                        {
+                            Box::pin(self.pump_owned_provider_output(
+                                &dispatch.session_id,
+                                &dispatch.provider_run_id,
+                                Vec::new(),
+                                true,
+                            ))
+                            .await?;
+                        }
+
                         if let Some(message) =
                             claude_native_dispatch_terminal_failure(&provider_run)
                         {

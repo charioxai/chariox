@@ -1067,6 +1067,7 @@ impl DaemonApp {
                     "session_id": session.id(),
                     "cleared_active_provider_run": reconciliation.cleared_active_provider_run,
                     "cleared_attachment_count": reconciliation.cleared_attachment_count,
+                    "cleared_agent_interaction_count": reconciliation.cleared_agent_interaction_count,
                     "recoverable_prompt_count": reconciliation.recoverable_prompt_count,
                     "recoverable_workflow_run_count": reconciliation.recoverable_workflow_run_count,
                     "repaired_workflow_prompt_count": reconciliation.repaired_workflow_prompt_count,

@@ -96,12 +96,20 @@ impl<'a> KernelAgentService<'a> {
                 crate::app::provider_runtime::ProviderProcessTracker::new(self.app)
                     .remove_run(&provider_run_id)?;
             } else {
+                let input = if active_prompt.delivery_pending() {
+                    crate::app::provider_output_claude_native::claude_native_pending_prompt_cancel_input(
+                        &provider_run,
+                        active_prompt.id(),
+                    )
+                } else {
+                    b"\x03".as_slice()
+                };
                 crate::app::terminal_input::ProviderTerminalInput::new(self.app)
                     .send_provider_input(
                         session_id,
                         &provider_run_id,
                         attachment_id.unwrap_or(active_prompt.source_attachment_id()),
-                        b"\x03",
+                        input,
                     )?;
             }
         }

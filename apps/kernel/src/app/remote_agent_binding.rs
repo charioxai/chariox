@@ -71,7 +71,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
             &worker_kernel_ref,
         )
         .await?;
-        discovery_config.relay_token = Some(token.token);
+        discovery_config = relay_discovery::with_metadata_token(&discovery_config, token.token);
     }
 
     let machine_ref =
@@ -1705,7 +1705,7 @@ impl DaemonApp {
     fn remote_worker_discovery_config(
         &self,
         kernel_ref: &str,
-        mut config: DaemonConfig,
+        config: DaemonConfig,
     ) -> Result<DaemonConfig, DaemonError> {
         if !self.hosted_shared_slice_uses_connected_relay(kernel_ref) {
             return self.block_on_relay_future(async move {
@@ -1729,8 +1729,7 @@ impl DaemonApp {
             )
             .await
         })?;
-        config.relay_token = Some(token.token);
-        Ok(config)
+        Ok(relay_discovery::with_metadata_token(&config, token.token))
     }
 
     fn send_remote_binding_request(

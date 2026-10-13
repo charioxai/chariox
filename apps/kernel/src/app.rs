@@ -75,9 +75,13 @@ pub(crate) use prompt_lifecycle::{
     KernelQueuedPromptCancellation, KernelQueuedPromptSteer, KernelQueuedPromptUpdate,
     KernelRemotePromptDispatch, KernelRemotePromptDispatchIntent,
 };
+pub(crate) use provider_output_claude_native::clear_claude_context_delivery_for_settled_prompt;
+#[cfg(test)]
+pub(crate) use provider_output_claude_native::tests::{startup_readiness_run, StartupTrustBridge};
 pub(crate) use provider_output_claude_native::{
     claude_native_recent_terminal_failure, format_claude_permission_message,
-    ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
+    ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome, NativePromptHandoffPolicy,
+    CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
@@ -340,6 +344,7 @@ impl DaemonApp {
         crate::publication_provider_accounts::materialize_publication_provider_accounts(
             &provider_account_profiles,
             crate::session::DEFAULT_LOCAL_USER_ID,
+            &config,
         )?;
         let provider_home = std::env::var_os("HOME")
             .filter(|value| !value.is_empty())

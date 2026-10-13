@@ -80,11 +80,11 @@ test("prompt submit coordinator allows slash commands on workflow screen", async
 })
 
 test("prompt submit coordinator routes provider namespace prompts before attached checks", async () => {
-  const harness = createHarness({ promptText: "@codex hello", providerHandled: true, attached: false })
+  const harness = createHarness({ promptText: "/codex help", providerHandled: true, attached: false })
 
   await harness.coordinator.submit()
 
-  assert.deepEqual(harness.calls(), ["ensure", "slash:@codex hello", "provider:@codex hello"])
+  assert.deepEqual(harness.calls(), ["ensure", "provider:/codex help"])
   assert.deepEqual(harness.footerMessages(), [])
 })
 
@@ -110,7 +110,7 @@ test("prompt submit coordinator bootstraps detached waiting-room prompts once", 
 
   await harness.coordinator.submit()
 
-  assert.deepEqual(harness.calls(), ["ensure", "slash:hello", "provider:hello", "bootstrap:hello", "normal:hello"])
+  assert.deepEqual(harness.calls(), ["ensure", "bootstrap:hello", "normal:hello"])
   assert.equal(harness.clearCount(), 0)
 })
 
@@ -123,7 +123,7 @@ test("prompt submit coordinator keeps detached prompt draft when bootstrap handl
 
   await harness.coordinator.submit()
 
-  assert.deepEqual(harness.calls(), ["ensure", "slash:hello", "provider:hello", "bootstrap:hello"])
+  assert.deepEqual(harness.calls(), ["ensure", "bootstrap:hello"])
   assert.equal(harness.clearCount(), 0)
 })
 
@@ -138,7 +138,7 @@ test("prompt submit coordinator blocks detached attachments without bootstrappin
   await harness.coordinator.submit()
 
   assert.equal(harness.footerMessages().at(-1)?.message, "attachments require an open session")
-  assert.deepEqual(harness.calls(), ["ensure", "slash:hello", "provider:hello"])
+  assert.deepEqual(harness.calls(), ["ensure"])
   assert.equal(harness.clearCount(), 0)
 })
 
@@ -157,11 +157,11 @@ test("prompt submit coordinator lets detached slash policy stop routing", async 
 test("prompt submit coordinator routes attached workflow and normal prompts", async () => {
   const workflowHarness = createHarness({ promptText: "run workflow", workflowScreen: true })
   await workflowHarness.coordinator.submit()
-  assert.deepEqual(workflowHarness.calls(), ["ensure", "slash:run workflow", "provider:run workflow", "workflow:run workflow"])
+  assert.deepEqual(workflowHarness.calls(), ["ensure", "workflow:run workflow"])
 
   const normalHarness = createHarness({ promptText: "hello" })
   await normalHarness.coordinator.submit()
-  assert.deepEqual(normalHarness.calls(), ["ensure", "slash:hello", "provider:hello", "normal:hello"])
+  assert.deepEqual(normalHarness.calls(), ["ensure", "normal:hello"])
 })
 
 function createHarness(options: {

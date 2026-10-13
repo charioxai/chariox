@@ -23,6 +23,7 @@ mod events;
 mod input;
 mod process;
 mod runtime_tool_wait;
+mod session_restart;
 mod state;
 mod tool_transcript;
 pub(crate) mod usage;
@@ -470,10 +471,6 @@ fn restart_claude_runtime(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     stop_child(&mut state.child);
-    let resume_session_id = state
-        .session_id
-        .as_deref()
-        .or_else(|| run.resume_state().claude_session_id());
     let base_args = claude_args_with_execution_config(
         &claude_args_without_resume(&state.args),
         run.execution_mode(),
@@ -481,8 +478,10 @@ fn restart_claude_runtime(
         state.mcp_config_file.is_some() && run.runtime_mcp_auth_token().is_some(),
     );
     let mut args = base_args.clone();
-    if let Some(session_id) = resume_session_id {
-        args.extend(["--resume".to_string(), session_id.to_string()]);
+    if let Some((argument, session_id)) =
+        session_restart::claude_restart_session_argument(run, state)
+    {
+        args.extend([argument.to_string(), session_id.to_string()]);
     }
     let env = run.pty_env().clone();
     let env_remove = claude_env_remove(run);
@@ -592,6 +591,7 @@ fn write_claude_hidden_context(
 
 #[cfg(test)]
 mod tests {
+    mod model_observation;
     #[cfg(target_os = "linux")]
     mod sandbox_lifetime;
     mod tool_results;
@@ -1738,3 +1738,7 @@ done
             .contains("archive.bin"));
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "claude_runtime/tests/cold_restart.rs"]
+mod cold_restart;

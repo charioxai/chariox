@@ -1,3 +1,4 @@
+import { claudeNativeRunPaths, waitForClaudeNativePrompts } from "./lib/claude-native-drill-runtime.mjs"
 import { spawn, execFile } from "node:child_process"
 import net from "node:net"
 import os from "node:os"
@@ -90,37 +91,6 @@ async function screen(name, args) {
 
 async function screenQuit(name) {
   await screen(name, ["-X", "quit"]).catch(() => {})
-}
-
-function nativeTempRootForScreen(screenName) {
-  const suffix = screenName.replace(/^chariox-claude-/, "")
-  return path.join(os.tmpdir(), `chariox-claude-native-${suffix}`)
-}
-
-async function waitForNativeEvents(eventsFile, expectedPrompts, timeoutMs = 120_000) {
-  const deadline = Date.now() + timeoutMs
-  let raw = ""
-  while (Date.now() < deadline) {
-    raw = await readFile(eventsFile, "utf8").catch(() => "")
-    const events = raw
-      .split("\n")
-      .filter((line) => line.trim())
-      .map((line) => {
-        try {
-          return JSON.parse(line)
-        } catch {
-          return null
-        }
-      })
-      .filter(Boolean)
-    const prompts = events
-      .filter((event) => event.hook_event_name === "UserPromptSubmit")
-      .map((event) => event.prompt ?? "")
-      .join("\n")
-    if (expectedPrompts.every((prompt) => prompts.includes(prompt))) return events
-    await sleep(500)
-  }
-  throw new Error(`timed out waiting for native Claude hook prompts in ${eventsFile}\n${raw}`)
 }
 
 async function automationRequest(socketPath, request, timeoutMs = 20_000) {
@@ -325,7 +295,7 @@ async function main() {
     ], process.env)
     sessionId = (await waitForFileMatch(logs.a, /chariox session:\s+([^\s(]+)/)).match[1]
     innerA = (await waitForFileMatch(logs.a, /screen:\s+([^\s]+)/)).match[1]
-    logs.aEvents = path.join(nativeTempRootForScreen(innerA), "events.jsonl")
+
 
     await startScreen(screenB, logs.bDir, "bun", [
       cliPath,
@@ -348,9 +318,11 @@ async function main() {
       `Reply with exactly ${markers.tuiB} and nothing else.`,
     ], process.env)
     innerB = (await waitForFileMatch(logs.b, /screen:\s+([^\s]+)/)).match[1]
-    logs.bEvents = path.join(nativeTempRootForScreen(innerB), "events.jsonl")
+
 
     client = new LocalIpcClient(kernelUrl)
+    const nativeA = await claudeNativeRunPaths(client, logs.a)
+    const nativeB = await claudeNativeRunPaths(client, logs.b)
     const attachment = unwrap(
       await client.send(attachToSessionRequest(sessionId, `claude-native-drill-${process.pid}`)),
       "SessionAttached",
@@ -417,8 +389,8 @@ async function main() {
       throw new Error("agent claude-b history was contaminated with claude-a markers")
     }
 
-    await waitForNativeEvents(logs.aEvents, [markers.tuiA, markers.charioxA])
-    await waitForNativeEvents(logs.bEvents, [markers.tuiB, markers.charioxB])
+    await waitForClaudeNativePrompts(nativeA, [markers.tuiA, markers.charioxA])
+    await waitForClaudeNativePrompts(nativeB, [markers.tuiB, markers.charioxB])
     const stateResponse = await client.send(getSessionStateRequest(sessionId))
     const state = (stateResponse.SessionState ?? stateResponse.SessionStateLoaded).session
     console.log(JSON.stringify({
@@ -449,12 +421,8 @@ async function main() {
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    const innerRoots = {
-      "claude-a": innerA ? nativeTempRootForScreen(innerA) : null,
-      "claude-b": innerB ? nativeTempRootForScreen(innerB) : null,
-    }
     if (passed && process.env.CHARIOX_KEEP_NATIVE_PROXY_DRILL_ARTIFACTS === "1") {
-      console.log(JSON.stringify({ status: "kept-artifacts", root, automationSocket, innerRoots }))
+      console.log(JSON.stringify({ status: "kept-artifacts", root, automationSocket }))
     } else {
       await finalizeDrillArtifacts({
         rootDir: root,
@@ -475,17 +443,13 @@ async function main() {
             "claude-a": innerA,
             "claude-b": innerB,
           },
-          innerRoots,
           agentAliases: agents.map((agent) => agent.alias),
           observerSawAgents: snapshot?.session?.agentCount ?? null,
           daemonStdoutTail: tailLines(daemonStdout),
           daemonStderrTail: tailLines(daemonStderr),
         },
       })
-      if (passed) {
-        if (innerA) await rm(nativeTempRootForScreen(innerA), { recursive: true, force: true }).catch(() => {})
-        if (innerB) await rm(nativeTempRootForScreen(innerB), { recursive: true, force: true }).catch(() => {})
-      }
+
     }
     await rm(automationSocket, { force: true }).catch(() => {})
   }

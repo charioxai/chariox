@@ -62,6 +62,16 @@ impl KernelRuntimeState {
         Ok(request.with_provider_credential_env(credentials))
     }
 
+    pub(super) async fn prepare_leased_provider_launch_request_with_vault(
+        &self,
+        request: crate::provider::LaunchProviderRequest,
+        operation: &'static str,
+    ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        let request = self.owned.prepare_leased_provider_launch_account(request)?;
+        self.prepare_provider_launch_request_with_vault(request, operation)
+            .await
+    }
+
     async fn ensure_provider_account_vault_unlocked_for_launch(
         &self,
         request: &crate::provider::LaunchProviderRequest,
@@ -100,12 +110,10 @@ impl KernelRuntimeState {
             &request.provider,
             &request.account_profile,
         )?;
-        if !crate::provider::launch_uses_vault_credential(
-            &self.owned.provider_account_profiles,
+        if !crate::provider::provider_account_credential_uses_vault(
             &account_owner_user_id,
             &request.provider,
             &profile.profile_id,
-            request.client_interface,
         )? {
             return Ok(VaultUnlockGuard::not_required());
         }

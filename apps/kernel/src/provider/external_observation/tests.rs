@@ -401,3 +401,29 @@ fn text_from_content_extracts_provider_content_shapes() {
         Some("object content".to_string())
     );
 }
+
+#[test]
+fn native_claude_auto_compaction_is_internal_control() {
+    let continuation = "This session is being continued from a previous conversation that ran out of context.\n\nThe summary below covers the earlier portion of the conversation.\n\nSummary:\nContinue the accepted audit without another user submission.";
+    let policy = ExternalProviderObservationPolicy::for_provider("claude");
+    assert!(policy.user_prompt_is_internal_control(continuation));
+    assert!(policy.user_prompt_is_internal_control(&compact_whitespace(continuation)));
+    assert!(!ExternalProviderObservationPolicy::for_provider("codex")
+        .user_prompt_is_internal_control(continuation));
+    assert!(!ExternalProviderObservationPolicy::for_provider("opencode")
+        .user_prompt_is_internal_control(continuation));
+}
+
+#[test]
+fn native_claude_auto_compaction_requires_the_generated_envelope() {
+    let policy = ExternalProviderObservationPolicy::for_provider("claude");
+    assert!(!policy.user_prompt_is_internal_control(
+        "Explain this sentence: This session is being continued from a previous conversation that ran out of context."
+    ));
+    assert!(!policy.user_prompt_is_internal_control(
+        "This session is being continued from a previous conversation that ran out of context. Please audit the queue."
+    ));
+    assert!(!policy.user_prompt_is_internal_control(
+        "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation. Please audit the queue."
+    ));
+}
