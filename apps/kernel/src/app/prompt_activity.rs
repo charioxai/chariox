@@ -128,6 +128,8 @@ pub(crate) struct ActiveTurnState {
     pub(crate) phase: ActiveTurnPhase,
     pub(crate) settlement_requested: bool,
     pub(crate) interruption_requested_at_ms: Option<u64>,
+    pub(crate) interruption_retry_sent_at_ms: Option<u64>,
+    pub(crate) native_interruption_confirmed: bool,
     pub(crate) native_prompt_hook_request_id: Option<String>,
     // A durable completion failed after authoritative completion was accepted.
     // Unlike assistant-message completion, this allows retry without another
@@ -157,6 +159,8 @@ impl ActiveTurnState {
             phase: ActiveTurnPhase::Accepted,
             settlement_requested: false,
             interruption_requested_at_ms: None,
+            interruption_retry_sent_at_ms: None,
+            native_interruption_confirmed: false,
             native_prompt_hook_request_id: None,
             completion_retry_observed_at_ms: None,
             completion_retry_attempt: 0,
@@ -286,6 +290,37 @@ impl ActiveTurnStore {
         {
             if turn.prompt_id == prompt_id {
                 turn.interruption_requested_at_ms = Some(requested_at_ms);
+            }
+        }
+    }
+
+    pub(crate) fn note_native_interruption_delivery(
+        &self,
+        provider_run_id: &str,
+        prompt_id: &str,
+        sent_at_ms: u64,
+    ) {
+        if let Some(turn) = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(provider_run_id)
+        {
+            if turn.prompt_id == prompt_id {
+                turn.interruption_retry_sent_at_ms = Some(sent_at_ms);
+            }
+        }
+    }
+
+    pub(crate) fn confirm_native_interruption(&self, provider_run_id: &str, prompt_id: &str) {
+        if let Some(turn) = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(provider_run_id)
+        {
+            if turn.prompt_id == prompt_id {
+                turn.native_interruption_confirmed = true;
             }
         }
     }
@@ -445,6 +480,10 @@ fn merge_active_turn_start(
         incoming.interruption_requested_at_ms = incoming
             .interruption_requested_at_ms
             .or(existing.interruption_requested_at_ms);
+        incoming.interruption_retry_sent_at_ms = incoming
+            .interruption_retry_sent_at_ms
+            .or(existing.interruption_retry_sent_at_ms);
+        incoming.native_interruption_confirmed |= existing.native_interruption_confirmed;
         if existing.completion_retry_observed_at_ms.is_some() {
             incoming.completion_retry_observed_at_ms = existing.completion_retry_observed_at_ms;
             incoming.completion_retry_attempt = existing.completion_retry_attempt;

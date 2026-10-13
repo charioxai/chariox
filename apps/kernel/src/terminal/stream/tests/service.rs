@@ -1248,23 +1248,54 @@ fn changed_external_snapshot_advances_the_native_settlement_boundary() {
     let mut terminal = TerminalStreamService::new();
     let (key, metadata, source) = external_observed_metadata("assistant-final");
     let recipients = vec!["native".to_string(), "slow".to_string()];
-    terminal.fan_out_external_observed_output("session", "run-a", Some("agent-a"),
-        TerminalOutputKind::ProviderOutput, Some(key.clone()), recipients.clone(),
-        b"initial", metadata.clone(), source.clone());
+    terminal.fan_out_external_observed_output(
+        "session",
+        "run-a",
+        Some("agent-a"),
+        TerminalOutputKind::ProviderOutput,
+        Some(key.clone()),
+        recipients.clone(),
+        b"initial",
+        metadata.clone(),
+        source.clone(),
+    );
     let initial = terminal.drain_output_records("session", "native");
     for index in 0..12 {
-        terminal.fan_out_output("session", "run-b", Some("agent-b"),
-            TerminalOutputKind::ProviderOutput, Some(format!("sibling-{index}")),
-            vec!["native".to_string()], b"sibling");
+        terminal.fan_out_output(
+            "session",
+            "run-b",
+            Some("agent-b"),
+            TerminalOutputKind::ProviderOutput,
+            Some(format!("sibling-{index}")),
+            vec!["native".to_string()],
+            b"sibling",
+        );
     }
     let before = terminal.output_watermark("session");
-    terminal.fan_out_external_observed_output("session", "run-a", Some("agent-a"),
-        TerminalOutputKind::ProviderOutput, Some(key), recipients, b"final", metadata, source);
+    terminal.fan_out_external_observed_output(
+        "session",
+        "run-a",
+        Some("agent-a"),
+        TerminalOutputKind::ProviderOutput,
+        Some(key),
+        recipients,
+        b"final",
+        metadata,
+        source,
+    );
     let boundary = terminal.output_watermark("session");
-    assert!(boundary > before, "revised final output must advance the snapshot boundary");
+    assert!(
+        boundary > before,
+        "revised final output must advance the snapshot boundary"
+    );
     let records = terminal.drain_output_records("session", "native");
-    let final_record = records.iter().find(|record| record.bytes == b"final").unwrap();
+    let final_record = records
+        .iter()
+        .find(|record| record.bytes == b"final")
+        .unwrap();
     assert!(final_record.record_id > initial[0].record_id);
     assert_eq!(final_record.record_id, Some(boundary - 1));
-    assert!(records.windows(2).all(|pair| pair[0].record_id < pair[1].record_id));
+    assert!(records
+        .windows(2)
+        .all(|pair| pair[0].record_id < pair[1].record_id));
 }

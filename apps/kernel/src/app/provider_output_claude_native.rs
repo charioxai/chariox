@@ -18,6 +18,8 @@ use crate::session::{
 use crate::terminal::TerminalOutputKind;
 
 mod attachments;
+#[cfg(test)]
+mod cancellation_tests;
 mod interruption;
 mod permission;
 #[cfg(test)]
@@ -63,6 +65,7 @@ use transcript::{
 const CLAUDE_ATTACHMENT_CONTEXT_BYTES: usize = 64 * 1024;
 const CLAUDE_TRANSCRIPT_STOP_DRAIN_MS: u64 = 300;
 const CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX: &str = "stop-draining:";
+pub(super) const CLAUDE_CANCELLATION_EXIT_FAILURE: &str = "Claude exited before acknowledging cancellation; the run was ended. Send another prompt to restart it.";
 const CLAUDE_WORKSPACE_TRUST_DENIED: &str =
     "Claude Code workspace trust was denied before the queued task was dispatched.";
 const CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED: &str =
@@ -374,6 +377,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let events_path = std::path::Path::new(events_file);
         let raw = fs::read_to_string(events_path).unwrap_or_default();
         if raw.trim().is_empty() {
+            // A closed hook may never publish another event after Esc. Poll the
+            // bounded cancellation resolver even when its mailbox stays quiet.
+            interruption::resolve_pending_cancellation(
+                self.app,
+                session_id,
+                provider_run_id,
+                context_file,
+            )?;
             return Ok(outcome);
         }
         let _ = fs::write(events_path, "");
@@ -562,6 +573,31 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .app
                     .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
                 {
+                    if event
+                        .get("native_prompt_id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| id != active_prompt.id())
+                    {
+                        continue;
+                    }
+                    if event_name == "SessionEnd"
+                        && crate::provider::provider_run_is_claude_native_tui(provider_run)
+                        && active_prompt.status() == crate::session::PromptStatus::Cancelling
+                        && !self
+                            .app
+                            .active_turns
+                            .get(provider_run_id)
+                            .is_some_and(|turn| turn.native_interruption_confirmed)
+                    {
+                        interruption::fail_cancellation(
+                            self.app,
+                            session_id,
+                            provider_run_id,
+                            context_file,
+                            CLAUDE_CANCELLATION_EXIT_FAILURE,
+                        )?;
+                        continue;
+                    }
                     write_claude_native_marker(
                         context_file,
                         &format!(
@@ -590,6 +626,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
         outcome.terminal_failure =
             self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
+        if outcome.terminal_failure.is_none() {
+            interruption::resolve_pending_cancellation(
+                self.app,
+                session_id,
+                provider_run_id,
+                context_file,
+            )?;
+        }
         Ok(outcome)
     }
 
@@ -717,7 +761,21 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             .app
             .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
         {
-            if prompt.status() == crate::session::PromptStatus::Cancelling {
+            let confirmed_native_interruption = self
+                .app
+                .active_turns
+                .get(provider_run_id)
+                .is_some_and(|turn| {
+                    turn.prompt_id == prompt.id() && turn.native_interruption_confirmed
+                });
+            let native_run = self
+                .app
+                .providers
+                .get_run(provider_run_id)
+                .is_ok_and(|run| crate::provider::provider_run_is_claude_native_tui(&run));
+            if prompt.status() == crate::session::PromptStatus::Cancelling
+                && (!native_run || confirmed_native_interruption)
+            {
                 self.app.finalize_active_prompt_cancellation(
                     session_id,
                     agent_id,
@@ -950,6 +1008,35 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     self.app,
                     provider_run_id,
                 );
+                // MP-08 / MP-10 / MP-11: a protected, fresh official terminal
+                // transcript can win the cancellation race even without Stop.
+                // Preserve its final output and settle Completed after draining.
+                if crate::provider::provider_run_is_claude_native_tui(&provider_run) {
+                    if let Some(prompt) = self.app.prompt_owner_active_prompt_for_agent(
+                        session_id,
+                        provider_run.agent_instance_id().unwrap_or_default(),
+                    )? {
+                        if prompt.status() == crate::session::PromptStatus::Cancelling
+                            && self
+                                .app
+                                .active_turns
+                                .get(provider_run_id)
+                                .is_some_and(|turn| {
+                                    turn.prompt_id == prompt.id()
+                                        && !turn.native_interruption_confirmed
+                                })
+                        {
+                            write_claude_native_marker(
+                                context_file,
+                                &format!(
+                                    "{CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX}{}:{}",
+                                    prompt.id(),
+                                    unix_epoch_ms()
+                                ),
+                            );
+                        }
+                    }
+                }
             }
         }
         if let Some(failure) = terminal_failure.as_deref() {

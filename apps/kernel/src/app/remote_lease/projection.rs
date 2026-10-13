@@ -1129,7 +1129,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
             if !saw_completion && !workflow_output_ready {
                 return Ok(outcome);
             }
-            let intentionally_cancelled = active_prompt.status() == PromptStatus::Cancelling;
+            // MP-08 / MP-10 / MP-11: a worker's definitive cancellation failure
+            // follows the ordinary failure path, including agent/workflow state.
+            let intentionally_cancelled = active_prompt.status() == PromptStatus::Cancelling
+                && !projected_termination.as_ref().is_some_and(|termination| {
+                    termination.category
+                        == crate::provider::ProviderRunTerminationCategory::RuntimeFailure
+                });
             if !intentionally_cancelled
                 && active_prompt.workflow_run_id().is_some()
                 && !workflow_output_ready

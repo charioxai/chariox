@@ -2,6 +2,8 @@ import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import type { RuntimeProviderRun } from "../cli-types.js"
+import type { AgentRuntimeActivity } from "../cli-types.js"
+import { getSessionStateRequest } from "../ipc-requests.js"
 import { LocalIpcClient } from "../ipc.js"
 import {
   getNativeProviderRun,
@@ -65,6 +67,7 @@ export async function waitForClaudeProviderRunReady(
 export async function waitForClaudeRemoteRenderedRunExit(
   client: LocalIpcClient,
   providerRunId: string,
+  context?: { sessionId: string, agentId: string },
 ): Promise<void> {
   let sawProviderRun = false
   while (true) {
@@ -77,7 +80,18 @@ export async function waitForClaudeRemoteRenderedRunExit(
       continue
     }
     sawProviderRun = true
-    if (run.state === "Ended") return
+    if (run.state === "Ended") {
+      // MP-08 / MP-10 / MP-11: the kernel's exact turn record supplies the
+      // error outcome. A native PTY exit alone cannot manufacture Cancelled.
+      if (context) {
+        const state = await client.send<{ SessionState?: { agent_activity?: Record<string, AgentRuntimeActivity> } }>(getSessionStateRequest(context.sessionId))
+        const turn = state.SessionState?.agent_activity?.[context.agentId]?.last_completed_turn
+        if (turn?.provider_run_id === providerRunId && turn.settlement_status === "failed") {
+          throw new Error(turn.provider_termination?.reason ?? "Claude provider run failed.")
+        }
+      }
+      return
+    }
     await sleep(1_000)
   }
 }

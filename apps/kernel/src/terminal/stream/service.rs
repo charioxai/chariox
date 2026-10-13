@@ -485,10 +485,10 @@ impl TerminalStreamService {
             // stable merge identity, but enqueue this generation after every
             // older record so native settlement has an exact output barrier.
             for attachment_id in &pending_recipients {
-                if let Some(queue) = self.pending_output_by_attachment.get_mut(&(
-                    record.session_id.clone(),
-                    attachment_id.clone(),
-                )) {
+                if let Some(queue) = self
+                    .pending_output_by_attachment
+                    .get_mut(&(record.session_id.clone(), attachment_id.clone()))
+                {
                     queue.retain(|pending_id| *pending_id != record_id);
                 }
             }

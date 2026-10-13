@@ -101,6 +101,8 @@ pub(super) fn mark_native_interruption_for_cancellation(
     {
         return Ok(());
     }
+    app.active_turns
+        .confirm_native_interruption(provider_run_id, prompt.id());
     write_claude_native_marker(
         context_file,
         &format!(
@@ -109,6 +111,164 @@ pub(super) fn mark_native_interruption_for_cancellation(
             unix_epoch_ms()
         ),
     );
+    Ok(())
+}
+
+const CANCELLATION_RETRY_MS: u64 = 2_000;
+const CANCELLATION_DEADLINE_MS: u64 = 10_000;
+const CANCELLATION_FAILURE: &str =
+    "Claude stopped responding to cancel; the run was ended. Send another prompt to restart it.";
+
+pub(super) fn fail_cancellation(
+    app: &mut DaemonApp,
+    session_id: &str,
+    provider_run_id: &str,
+    context_file: &str,
+    reason: &str,
+) -> Result<(), DaemonError> {
+    let run = app.providers.get_run(provider_run_id)?;
+    let Some(agent_id) = run.agent_instance_id() else {
+        return Ok(());
+    };
+    let Some(prompt) = app.prompt_owner_active_prompt_for_agent(session_id, agent_id)? else {
+        return Ok(());
+    };
+    if !crate::provider::provider_run_is_claude_native_tui(&run)
+        || prompt.status() != crate::session::PromptStatus::Cancelling
+        || !app.active_turns.get(provider_run_id).is_some_and(|turn| {
+            turn.prompt_id == prompt.id()
+                && turn.session_id == session_id
+                && turn.agent_id == agent_id
+                && !turn.native_interruption_confirmed
+        })
+        || !app
+            .providers
+            .get_run_for_agent(session_id, agent_id)
+            .is_some_and(|current| current.id() == provider_run_id)
+    {
+        return Ok(());
+    }
+    // Project the bounded error while this exact prompt still owns output,
+    // before the common failure path can promote a queued successor.
+    ProviderOutputFanout::new(app).fan_out(
+        session_id,
+        provider_run_id,
+        TerminalOutputKind::ProviderError,
+        Some(format!("native-cancel-error:{}", prompt.id())),
+        app.attachments.list_session_attachment_ids(session_id),
+        reason.as_bytes(),
+    );
+    app.end_agent_provider_run(session_id, agent_id)?;
+    let providers = app.providers.clone();
+    let turns = app.active_turn_store();
+    let activity = app.prompt_activity_store();
+    let projection = app.agent_runtime_projection_store();
+    super::super::provider_output_prompt_settlement::ProviderOutputPromptSettlement::new(
+        app, providers, turns, activity, projection,
+    )
+    .fail_for_terminal_failure_if_matches(
+        session_id,
+        provider_run_id,
+        Some(prompt.id()),
+        Some(crate::provider::ProviderRunTermination::runtime_failure(
+            reason,
+            unix_epoch_ms(),
+        )),
+        reason,
+    )?;
+    let _ = fs::write(context_file, "");
+    write_claude_native_marker(context_file, "");
+    Ok(())
+}
+
+// MP-08 / MP-10 / MP-11: called after draining protected official artifacts.
+// Re-delivery is not acknowledgement. Only a receipt cancels; an unusable
+// run reaches the shared error/termination path before admitting more work.
+pub(super) fn resolve_pending_cancellation(
+    app: &mut DaemonApp,
+    session_id: &str,
+    provider_run_id: &str,
+    context_file: &str,
+) -> Result<(), DaemonError> {
+    let run = app.providers.get_run(provider_run_id)?;
+    if !crate::provider::provider_run_is_claude_native_tui(&run) {
+        return Ok(());
+    }
+    let Some(agent_id) = run.agent_instance_id() else {
+        return Ok(());
+    };
+    let Some(prompt) = app.prompt_owner_active_prompt_for_agent(session_id, agent_id)? else {
+        return Ok(());
+    };
+    let Some(turn) = app.active_turns.get(provider_run_id) else {
+        return Ok(());
+    };
+    let Some(requested_at_ms) = turn.interruption_requested_at_ms else {
+        return Ok(());
+    };
+    if prompt.status() != crate::session::PromptStatus::Cancelling
+        || turn.prompt_id != prompt.id()
+        || turn.session_id != session_id
+        || turn.agent_id != agent_id
+        || turn.native_interruption_confirmed
+        || !app
+            .providers
+            .get_run_for_agent(session_id, agent_id)
+            .is_some_and(|current| current.id() == provider_run_id)
+        || claude_transcript_stop_drain_marker(context_file).is_some()
+    {
+        return Ok(());
+    }
+    let now = unix_epoch_ms();
+    if now.saturating_sub(requested_at_ms) >= CANCELLATION_DEADLINE_MS {
+        // End only this owned run, then settle with an explicit, bounded reason.
+        // Queue advancement and next-run recovery stay in the normal kernel path.
+        fail_cancellation(
+            app,
+            session_id,
+            provider_run_id,
+            context_file,
+            CANCELLATION_FAILURE,
+        )?;
+        return Ok(());
+    }
+    if now.saturating_sub(
+        turn.interruption_retry_sent_at_ms
+            .unwrap_or(requested_at_ms),
+    ) < CANCELLATION_RETRY_MS
+    {
+        return Ok(());
+    }
+    // A successor hook belongs to a different provider prompt. Never send it
+    // an interrupt for the previous canonical prompt.
+    if let Some(request_id) = turn.native_prompt_hook_request_id.as_deref() {
+        if fs::read_to_string(format!("{context_file}.hook-batch.json"))
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .is_some_and(|batch| {
+                batch.get("id").and_then(serde_json::Value::as_str) != Some(request_id)
+            })
+        {
+            return Ok(());
+        }
+    }
+    app.active_turns
+        .note_native_interruption_delivery(provider_run_id, prompt.id(), now);
+    if app
+        .write_provider_pty_input_for_runtime(
+            provider_run_id,
+            crate::provider::provider_prompt_abort_input(&run),
+        )
+        .is_err()
+    {
+        fail_cancellation(
+            app,
+            session_id,
+            provider_run_id,
+            context_file,
+            CANCELLATION_FAILURE,
+        )?;
+    }
     Ok(())
 }
 

@@ -467,7 +467,7 @@ async function runClaudeRemoteRendered(
         readiness,
       })
     }
-    await waitForClaudeRemoteRenderedRunExit(client, run.id)
+    await waitForClaudeRemoteRenderedRunExit(client, run.id, { sessionId: session.id, agentId: agent.id })
   } finally {
     restoreResize?.()
     restoreStdin?.()

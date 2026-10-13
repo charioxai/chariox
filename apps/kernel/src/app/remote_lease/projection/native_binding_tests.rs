@@ -5,10 +5,11 @@ use crate::provider::ProviderClientInterface;
 
 #[test]
 fn mp08_mp10_native_completion_retains_only_a_running_worker_binding() {
-    for (interface, ended, retained) in [
-        (ProviderClientInterface::NativeTui, false, true),
-        (ProviderClientInterface::NativeTui, true, false),
-        (ProviderClientInterface::Chariox, false, false),
+    for (interface, ended, retained, cancel_failed) in [
+        (ProviderClientInterface::NativeTui, false, true, false),
+        (ProviderClientInterface::NativeTui, true, false, false),
+        (ProviderClientInterface::Chariox, false, false, false),
+        (ProviderClientInterface::NativeTui, true, false, true),
     ] {
         let mut app = crate::app::DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -83,6 +84,10 @@ fn mp08_mp10_native_completion_retains_only_a_running_worker_binding() {
         if ended {
             run.mark_ended();
         }
+        if cancel_failed {
+            app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
+                .unwrap();
+        }
         let completion = project(
             &mut app,
             "run",
@@ -92,10 +97,30 @@ fn mp08_mp10_native_completion_retains_only_a_running_worker_binding() {
                 message_id: "complete-A".into(),
                 completed_at_ms: crate::session::unix_epoch_ms(),
                 home_prompt_id: Some("native-A".into()),
-                provider_termination: None,
+                provider_termination: cancel_failed.then(|| {
+                    crate::provider::ProviderRunTermination::runtime_failure(
+                        "Claude stopped responding to cancel; the run was ended.",
+                        crate::session::unix_epoch_ms(),
+                    )
+                }),
             }],
         );
         assert_eq!(completion.completions.len(), 1);
+        if cancel_failed {
+            let settled = app
+                .completed_git_turn_snapshot_store()
+                .latest_projection_for_agent(session.id(), agent.id())
+                .unwrap();
+            assert_eq!(
+                settled.settlement_status,
+                crate::git_observer::CompletedTurnSettlementStatus::Failed
+            );
+            assert!(settled
+                .provider_termination
+                .unwrap()
+                .reason
+                .contains("stopped responding to cancel"));
+        }
         let binding = app
             .agents
             .get_agent(agent.id())

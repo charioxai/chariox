@@ -230,7 +230,12 @@ fn claude_transcript_is_interruption(value: &Value) -> bool {
     else {
         return false;
     };
-    let interrupted = |text: &str| text.trim() == "[Request interrupted by user]";
+    let interrupted = |text: &str| {
+        matches!(
+            text.trim(),
+            "[Request interrupted by user]" | "[Request interrupted by user for tool use]"
+        )
+    };
     content.as_str().is_some_and(interrupted)
         || content.as_array().is_some_and(|parts| {
             parts.len() == 1
