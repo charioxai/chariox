@@ -171,17 +171,23 @@ fn walk(
     }
     Ok(())
 }
-fn ignored(root: &Path, path: &str) -> Option<bool> {
-    let status = std::process::Command::new("git")
+fn ignored(root: &Path, path: &str, roots: &[std::path::PathBuf]) -> Option<bool> {
+    let executable = super::check_inventory::executable("git")?;
+    let mut command = super::check_executable::command(&executable, roots).ok()?;
+    command
         .arg("-C")
         .arg(root)
         .args(["check-ignore", "--quiet", "--no-index", "--", path])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .ok()?;
-    match status.code() {
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null");
+    let output = crate::local::provider_requests::capture_inventory_probe(
+        command,
+        std::time::Duration::from_millis(500),
+    )
+    .ok()?;
+    let _stdout = Zeroizing::new(output.stdout);
+    let _stderr = Zeroizing::new(output.stderr);
+    match output.status.code() {
         Some(0) => Some(true),
         Some(1) => Some(false),
         _ => None,
@@ -207,6 +213,16 @@ fn verify_files(
     git_metadata: bool,
     deadline: Option<std::time::Instant>,
 ) -> Result<(), DaemonError> {
+    let roots: Vec<_> = current
+        .folders
+        .iter()
+        .filter(|folder| !folder.local_workspace_binding.is_empty())
+        .filter_map(|folder| {
+            Path::new(&folder.local_workspace_binding)
+                .canonicalize()
+                .ok()
+        })
+        .collect();
     let mut total_bytes = 0;
     let mut total_count = 0;
     for requirement in draft
@@ -311,7 +327,7 @@ fn verify_files(
             total_bytes = selection.bytes;
             total_count = selection.count;
             if git_metadata {
-                entry.git_ignored = ignored(path, &entry.relative_path);
+                entry.git_ignored = ignored(path, &entry.relative_path, &roots);
             }
             entry.secret_looking = selection.protected;
             if selection.protected {

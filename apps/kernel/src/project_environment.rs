@@ -90,3 +90,7 @@ mod revision_service_reference_tests;
 
 #[cfg(test)]
 mod check_journal_tests;
+
+#[cfg(test)]
+#[path = "project_environment/review_environment_tests.rs"]
+mod review_environment_tests;

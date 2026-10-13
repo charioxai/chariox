@@ -433,7 +433,23 @@ impl ProjectEnvironmentStore {
                     )
                 })
                 .collect();
+            let mut additions: Vec<_> = snapshot
+                .folders
+                .iter()
+                .filter(|folder| {
+                    !saved
+                        .folders
+                        .iter()
+                        .any(|saved| saved.folder_id == folder.folder_id)
+                })
+                .cloned()
+                .collect();
+            // Live additions are editable, but enter the immutable specification only on Save.
+            for folder in &mut additions {
+                folder.requirements.clear();
+            }
             snapshot.folders = saved.folders.clone();
+            snapshot.folders.extend(additions);
             for folder in &mut snapshot.folders {
                 folder.local_workspace_binding =
                     bindings.get(&folder.folder_id).cloned().unwrap_or_default();

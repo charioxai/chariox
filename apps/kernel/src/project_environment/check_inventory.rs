@@ -123,6 +123,8 @@ pub(super) fn version_until(
     roots: &[PathBuf],
     deadline: Instant,
 ) -> Result<Option<String>, &'static str> {
+    // The manifest runtime identity stays portable; the host compiler has a fixed probe.
+    let name = if name == "rust" { "rustc" } else { name };
     let Some(args) = inventory_args(name) else {
         return Err("unsupported_inventory");
     };
