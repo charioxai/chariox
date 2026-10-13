@@ -832,6 +832,7 @@ async fn check_agent_app_input(
     observed: &chariox_app_runtime::worker_process::test_fixture::Observation,
     root: &std::path::Path,
 ) {
+    let calls = observed.tool_invocations() + 1;
     let LocalDaemonResponse::UserAppViewOpened { view, .. } = request(
         router,
         "alice",
@@ -844,7 +845,6 @@ async fn check_agent_app_input(
     .unwrap() else {
         panic!("App open for the agent drill")
     };
-    let calls = observed.tool_invocations() + 1;
     Box::pin(check_browser_page(router, &view, observed, calls)).await;
     let browser = view.browser.as_ref().unwrap();
     let workspace = root.join("agent-app-workspace");
