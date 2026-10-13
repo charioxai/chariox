@@ -84,6 +84,7 @@ mod kernel_access;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_browser;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_restore;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_runtime;

@@ -6,6 +6,8 @@ use super::KernelRuntimeState;
 use crate::local::{AppRequestErrorCode, UserAppViewHost};
 
 const FILE: &str = "app-tabs.json";
+/// One read-modify-write of an `app-tabs.json` at a time: a user's aliases share it.
+static SAVING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct Saved {
@@ -58,6 +60,7 @@ impl KernelRuntimeState {
     /// Record which Apps the owner keeps open, beside its browser profile.
     pub(super) fn remember_user_app_tabs(&self, owner: &str) {
         self.seed_user_app_tabs(owner);
+        let _saving = SAVING.lock().unwrap_or_else(|e| e.into_inner());
         let path = self.app_tabs_path(owner);
         let mut saved = self.saved_app_tabs(owner);
         saved.apps.retain(|app| app.owner != owner);
@@ -72,7 +75,7 @@ impl KernelRuntimeState {
                 }),
         );
         let Some(parent) = path.parent() else { return };
-        let temporary = path.with_extension("json.tmp");
+        let temporary = path.with_extension(format!("{:016x}.tmp", rand::random::<u64>()));
         let written = std::fs::create_dir_all(parent)
             .and_then(|()| {
                 std::fs::write(&temporary, serde_json::to_vec(&saved).unwrap_or_default())

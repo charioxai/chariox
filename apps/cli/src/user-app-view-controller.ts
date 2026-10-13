@@ -85,7 +85,7 @@ export function createUserAppViewController(deps: {
     if (active?.view.view_id === bound.view.view_id && active.client === bound.client) { active = undefined; hide() }
     deps.notify("App view closed")
   }
-  async function handle(args: string[], _sessionId?: string): Promise<boolean> {
+  async function handle(args: string[]): Promise<boolean> {
     // MP-08/MP-11: an attached Room does not change the App's browser host.
     const appOpen = args[0] === "open" && args.length === 2
     if (!appOpen && args[0] !== "view" && args[0] !== "views") return false

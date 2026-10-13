@@ -197,7 +197,7 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
-  userAppViews?: { handle(args: string[], sessionId?: string): Promise<boolean> }
+  userAppViews?: { handle(args: string[]): Promise<boolean> }
   cloudClient?: CloudClient
   kernelConnected?: () => boolean
   appHostTerminal?: AppHostTerminal
