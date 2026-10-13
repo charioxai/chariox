@@ -37,7 +37,7 @@ async fn live_native_tui_downshift_preserves_the_session_without_structured_usag
 }
 
 #[tokio::test]
-async fn live_headless_downshift_preserves_the_session_without_structured_usage() {
+async fn r5_review_live_headless_downshift_preserves_the_session_without_structured_usage() {
     check_unknown_native_downshift(false, "claude-headless", true).await;
 }
 
@@ -100,7 +100,7 @@ async fn check_unknown_native_downshift(ended: bool, provider: &str, native_live
         .with_resume_state(ProviderResumeState::from_claude_session_id(
             "large-native-session",
         ));
-        let request = if native_live {
+        let request = if native_live && provider != "claude-headless" {
             request.with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
         } else {
             request
@@ -124,6 +124,19 @@ async fn check_unknown_native_downshift(ended: bool, provider: &str, native_live
             cold.mark_running();
         }
         assert!(cold.usage().context_tokens.is_none());
+        if native_live && provider == "claude-headless" {
+            assert_eq!(
+                cold.client_interface(),
+                crate::provider::ProviderClientInterface::Chariox,
+                "real headless runs use the Chariox interface"
+            );
+            assert!(crate::provider::provider_run_uses_claude_native_bridge(
+                &cold
+            ));
+            assert!(!crate::provider::provider_run_uses_structured_prompt_io(
+                &cold
+            ));
+        }
         runtime
             .owned
             .provider_store

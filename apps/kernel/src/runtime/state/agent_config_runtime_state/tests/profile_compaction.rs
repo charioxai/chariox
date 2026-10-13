@@ -1253,3 +1253,103 @@ async fn assert_failed_source_compaction_starts_fresh(leased: bool) {
         "exercise the actual native utility failure"
     );
 }
+
+// MP-08 / MP-10 / MP-11: real launches keep selection default, not the resolved id.
+#[tokio::test]
+async fn r5_review_implicit_default_downshift_preserves_the_compacted_native_session() {
+    let (root, _app, runtime, session, agent, mut run) = compact_fixture().await;
+    run.set_provider_session_id(Some("implicit-default-native".into()));
+    runtime
+        .owned
+        .provider_store
+        .write()
+        .insert_run_for_test(run.clone());
+    runtime
+        .owned
+        .agent_store
+        .set_agent_runtime_profile_with_account_profile(
+            &agent,
+            "claude",
+            Some(run.model().into()),
+            None,
+            Some("default".into()),
+            ProviderResumeState::from_claude_session_id("implicit-default-native"),
+        )
+        .unwrap();
+    std::fs::write(root.path().join("release"), "").unwrap();
+    let updated = runtime
+        .update_agent_profile(
+            &session,
+            &agent,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
+            None,
+            Some("haiku".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        root.path().join("started").exists(),
+        "default-selected source must compact"
+    );
+    assert_eq!(
+        updated
+            .provider_resume_state()
+            .provider_session_id("claude"),
+        Some("implicit-default-native")
+    );
+}
+
+#[tokio::test]
+async fn r5_review_implicit_default_cold_downshift_records_the_recovery_boundary() {
+    let (_root, _app, runtime, session, agent, run) = compact_fixture().await;
+    runtime
+        .owned
+        .provider_store
+        .terminate_run_provider_only(&session, run.id())
+        .unwrap();
+    runtime
+        .owned
+        .agent_store
+        .set_agent_runtime_profile_with_account_profile(
+            &agent,
+            "claude",
+            Some(run.model().into()),
+            None,
+            Some("default".into()),
+            ProviderResumeState::from_claude_session_id("implicit-default-native"),
+        )
+        .unwrap();
+    let snapshot = runtime.owned.agent_store.get_agent(&agent).unwrap();
+    runtime
+        .compact_before_window_downshift(
+            &session,
+            &snapshot,
+            Some("claude"),
+            Some(run.account_profile()),
+            Some("haiku"),
+        )
+        .await
+        .unwrap();
+    let recovered = runtime.owned.agent_store.get_agent(&agent).unwrap();
+    assert!(
+        recovered
+            .provider_resume_state()
+            .provider_session_id("claude")
+            .is_none(),
+        "cold default source must use protected recovery"
+    );
+    assert!(runtime
+        .owned
+        .operational_history_store
+        .load_agent_compaction_boundary(
+            &session,
+            &agent,
+            "claude",
+            run.account_profile(),
+            Some("implicit-default-native"),
+        )
+        .unwrap()
+        .is_some());
+}

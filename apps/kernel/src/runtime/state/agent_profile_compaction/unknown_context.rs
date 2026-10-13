@@ -12,9 +12,9 @@ impl KernelRuntimeState {
         target_model: &str,
     ) -> Result<bool, crate::error::DaemonError> {
         let source_provider = run.map_or(agent.provider(), RuntimeProviderRun::provider);
-        let source_account = run.map_or(
-            agent.provider_account_profile(),
-            RuntimeProviderRun::account_profile,
+        let source_account = run.map_or_else(
+            || self.owned.agent_profile_source_account(agent),
+            |run| run.account_profile().to_string(),
         );
         let Some(source_model) = run.map(RuntimeProviderRun::model).or(agent.model()) else {
             return Ok(false);
@@ -64,7 +64,7 @@ impl KernelRuntimeState {
                 agent.id(),
                 source_provider,
                 source_model,
-                source_account,
+                &source_account,
                 Some(native_session),
             )?;
         let outcome = self

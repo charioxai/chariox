@@ -37,6 +37,36 @@ pub(super) struct ValidatedAgentProfile {
 }
 
 impl KernelRuntimeOwnedState {
+    /// MP-08 / MP-10 / MP-11: selections and resolved run identities compare in
+    /// the same namespace before deciding whether a native session survives.
+    pub(super) fn agent_profile_source_account(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> String {
+        if let Some(run) = self
+            .provider_store
+            .get_run_for_agent(agent.session_id(), agent.id())
+        {
+            if crate::account_profile::provider_account_selection_for_run(&run)
+                == agent.provider_account_profile()
+                && crate::provider::canonical_provider_family(run.provider())
+                    .unwrap_or(run.provider())
+                    == crate::provider::canonical_provider_family(agent.provider())
+                        .unwrap_or(agent.provider())
+            {
+                return run.account_profile().to_string();
+            }
+        }
+        let owner = crate::account_profile::provider_account_authority_owner_user_id(
+            &self.config_projection.snapshot(),
+            agent.owner_user_id(),
+        );
+        self.provider_account_profiles
+            .get(&owner, agent.provider(), agent.provider_account_profile())
+            .map(|profile| profile.profile_id)
+            .unwrap_or_else(|_| agent.provider_account_profile().to_string())
+    }
+
     pub(super) fn validate_agent_profile_update(
         &self,
         session_id: &str,
@@ -156,9 +186,10 @@ impl KernelRuntimeOwnedState {
         let target_account_profile = validated.account_profile;
         let target_model = validated.model;
         let target_effort = validated.effort.as_deref();
+        let source_account = self.agent_profile_source_account(&agent);
         let provider_model_or_account_changed = target_provider != agent.provider()
             || target_model.as_deref() != agent.model()
-            || target_account_profile != agent.provider_account_profile();
+            || target_account_profile != source_account;
         if !provider_model_or_account_changed && target_effort == agent.effort() {
             return Ok(owned::OwnedAgentProfileUpdate {
                 agent,
@@ -209,7 +240,7 @@ impl KernelRuntimeOwnedState {
         } else {
             let resume_state = agent.provider_resume_state().after_profile_change(
                 agent.provider(),
-                agent.provider_account_profile(),
+                &source_account,
                 &target_provider,
                 &target_account_profile,
             );
@@ -300,9 +331,10 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
+        let source_account = self.agent_profile_source_account(&agent);
         let resume_state = agent.provider_resume_state().after_profile_change(
             agent.provider(),
-            agent.provider_account_profile(),
+            &source_account,
             &provider,
             &account_profile,
         );
