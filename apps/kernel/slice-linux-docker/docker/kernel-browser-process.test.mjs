@@ -5,6 +5,17 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {HostChromium} from './kernel-browser-process.mjs';
 import {OwnedDisplay,ownsDisplay} from './kernel-browser-owned-display.mjs';
+test('MP-08/MP-10 production Chromium exposes its shared desktop to native capture',async()=>{
+ const root=await mkdtemp(tmpdir()+'/chariox-desktop-native-binding-'),getuid=process.getuid;
+ process.getuid=()=>1000;
+ const host=new HostChromium(root,{environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/bin/false'}});
+ let linked=false;
+ const desktop={runtime:root,binding:()=>({environment:{PATH:process.env.PATH}}),start:async()=>({environment:{PATH:process.env.PATH}}),
+  recordOwned:async()=>{linked=host.display===desktop},stop:async()=>{},close:async()=>{}};
+ host.desktop=desktop;
+ try{await assert.rejects(host.start(),/did not become ready/);assert(linked,'native capture must use the desktop that launched Chromium');}
+ finally{process.getuid=getuid;await host.stop();await rm(root,{recursive:true,force:true});}
+});
 test('MD-DISPLAY recovering an exited browser closes the previous X server before a failed restart',async()=>{
  const root=await mkdtemp(tmpdir()+'/chariox-md-recovery-');
  const host=new HostChromium(root,{environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/nonexistent/md-browser',CHARIOX_KERNEL_BROWSER_DISPLAY:'1'}});
