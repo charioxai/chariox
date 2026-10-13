@@ -48,5 +48,24 @@ export async function isOwnedAlive(item) {
   return Boolean(current && current.started===item.started && current.state!=='Z');
 }
 
-// MP-08/MP-10/MP-11: RED observation-only API initially uses global discovery.
-export const observedDescendants = descendants;
+// MP-08/MP-10/MP-11: conservative observation-only subset; never use for cleanup.
+// Linux task children can omit entries during exits. Unknown windows remain masked.
+export async function observedDescendants(roots, { read = readFile, list = readdir } = {}) {
+ const owned=new Map(),queue=[];
+ const discard=pid=>{const removed=new Set([pid]);for(let changed=true;changed;){changed=false;for(const item of owned.values())if(removed.has(item.parent)&&!removed.has(item.pid)){removed.add(item.pid);changed=true}}for(const id of removed)owned.delete(id)};
+ const matches=(current,item)=>current&&current.started===item.started&&(current.parent===item.parent||(item.parent>1&&current.parent===1));
+ for(const root of roots){const current=await identity(root?.pid, read);if(matches(current,root)){owned.set(current.pid,current);queue.push(current)}}
+ for(let index=0;index<queue.length;index++){
+  const parent=queue[index];if(!owned.has(parent.pid))continue;let tasks;
+  try{tasks=(await list(`/proc/${parent.pid}/task`)).filter(name=>/^\d+$/.test(name))}catch(error){if(['ENOENT','ESRCH','ENOTDIR'].includes(error.code)){discard(parent.pid);continue;}throw error}
+  if(tasks.length>1024||owned.size>8192)throw Error('MP-11 observation process bound');
+  const childLists=await Promise.all(tasks.map(async tid=>{try{return await read(`/proc/${parent.pid}/task/${tid}/children`,'utf8')}catch(error){if(['ENOENT','ESRCH','ENOTDIR'].includes(error.code))return '';throw error}}));
+  if(!matches(await identity(parent.pid, read),parent)){discard(parent.pid);continue;}
+  const ids=[...new Set(childLists.flatMap(list=>list.trim().split(/\s+/).map(Number)).filter(validOwnedPid))];
+  if(ids.length>8192-owned.size)throw Error('MP-11 observation process bound');
+  const children=await Promise.all(ids.map(pid=>identity(pid, read)));
+  if(!matches(await identity(parent.pid, read),parent)){discard(parent.pid);continue;}
+  for(const child of children)if(child&&child.parent===parent.pid&&!owned.has(child.pid)){owned.set(child.pid,child);queue.push(child)}
+ }
+ return [...owned.values()].reverse();
+}

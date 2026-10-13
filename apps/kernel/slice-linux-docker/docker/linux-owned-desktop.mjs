@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { desktopApplication } from './desktop-applications.mjs';
-import { processIdentity, settleOwned, descendants } from './linux-owned-process.mjs';
+import { processIdentity, settleOwned, descendants, observedDescendants } from './linux-owned-process.mjs';
 const readyDesktops = new WeakSet();
 export const ownsDesktopDisplay = desktop => readyDesktops.has(desktop) && Boolean(desktop.binding()) &&
   Number.isSafeInteger(desktop.child?.pid) && desktop.child.pid > 1 && desktop.child.exitCode === null && desktop.child.signalCode === null;
@@ -87,6 +87,13 @@ export class LinuxOwnedDesktop {
     finally {signal?.removeEventListener('abort',stop);}
 
   }
+  async renderProcesses() {
+    const roots=this.children.filter(({child,identity})=>identity&&child.exitCode===null&&child.signalCode===null);
+    const processes=await observedDescendants(roots.map(({identity})=>identity));
+    const browserIds=new Set(roots.filter(({browser})=>browser).map(({identity})=>identity.pid));
+    for(let changed=true;changed;){changed=false;for(const item of processes)if(!browserIds.has(item.pid)&&browserIds.has(item.parent)){browserIds.add(item.pid);changed=true}}
+    return {processes,browser_processes:processes.filter(item=>browserIds.has(item.pid))};
+  }
   async ownedProcesses() {
     const roots=this.children.filter(({child,identity})=>identity && child.exitCode===null && child.signalCode===null).map(({identity})=>identity);
     const current=await descendants(roots);
@@ -160,7 +167,7 @@ export class LinuxOwnedDesktop {
       await delay(100);
       const failed=this.children.find(({child,core}) => core && (child.exitCode !== null || child.signalCode !== null));
       if(failed)throw new Error(`MP-08: desktop failed to become ready (${failed.name}, exit ${failed.child.exitCode ?? 'signal'})`);
-      this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), ownedProcesses: () => this.ownedProcesses(), browserProcesses: () => this.browserProcesses(), browser: () => this.browser?.() ?? null, width: 1280, height: 800, environment: Object.freeze(env) });
+      this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), ownedProcesses: () => this.ownedProcesses(), browserProcesses: () => this.browserProcesses(), renderProcesses: () => this.renderProcesses(), browser: () => this.browser?.() ?? null, width: 1280, height: 800, environment: Object.freeze(env) });
       readyDesktops.add(this);
       return this.current;
     } catch (error) { await this.stop(); throw error; }

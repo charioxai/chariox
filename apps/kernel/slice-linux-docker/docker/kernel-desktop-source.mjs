@@ -49,11 +49,12 @@ export class DesktopSource {
   subscribe(fn) { this.listeners.add(fn);return()=>this.listeners.delete(fn); }
   sample() { return this.closed?null:this.latest; }
   async scope() {
-    return { processes:identities(await this.binding.ownedProcesses()), browser_processes:identities(await this.binding.browserProcesses()),
-      browser_protection:this.gate.protection, serial:this.gate.protectionSerial,
-      // Owner 2026-10-09: Vault values never black out the desktop; the oracle masks
-      // only their currently plain filled fields.
-      mask:this.policy.unknown, values:[...this.policy.values] };
+    const at=Date.now();
+    // MP-08/MP-10/MP-11: one conservative observation traversal; input
+    // admission and process cleanup keep their complete ownership discovery.
+    const tree=this.binding.renderProcesses?await this.binding.renderProcesses():{processes:await this.binding.ownedProcesses(),browser_processes:await this.binding.browserProcesses()};
+    this.timing('desktop_process_tree',at);
+    return {processes:identities(tree.processes),browser_processes:identities(tree.browser_processes),browser_protection:this.gate.protection,serial:this.gate.protectionSerial,mask:this.policy.unknown,values:[...this.policy.values]};
   }
   async start() {
     try { if(this.native)await this.startNative();else await this.startHelper(); }
@@ -225,18 +226,25 @@ export class DesktopSource {
       await delay(!this.gate.protectionSerial?50:this.withheld&&!this.pending.length&&!this.next?250:4);
     }
   }
-  async wake() {
-    try{
-      const scope=await this.scope();
-      if(this.closed)return;
-      if(this.worker){
-        // A new scope retires earlier snapshots; an unchanged one keeps them.
-        const key=value=>JSON.stringify([value.processes,value.browser_processes,value.serial,value.mask]);
-        if(key(scope)!==key(this.current))this.current=scope;
-        this.worker.notify({refresh:true},true);return;
-      }
-      this.child?.stdin.write(JSON.stringify({refresh:true,processes:scope.processes,browser_processes:scope.browser_processes,browser_protection:scope.browser_protection,protection_serial:scope.serial,values:scope.values})+'\n');
-    }catch{await this.close();}
+  wake() {
+    // MP-08/MP-10/MP-11: coalesce capture hints while one ownership refresh
+    // is running; the final hint still obtains a fresh scope.
+    if(this.closed)return Promise.resolve();
+    this.wakePending=true;
+    if(this.waking)return this.waking;
+    this.waking=(async()=>{
+      do {
+        this.wakePending=false;
+        const scope=await this.scope();
+        if(this.closed)return;
+        if(this.worker){
+          const key=value=>JSON.stringify([value.processes,value.browser_processes,value.serial,value.mask]);
+          if(key(scope)!==key(this.current))this.current=scope;
+          this.worker.notify({refresh:true},true);
+        }else this.child?.stdin.write(JSON.stringify({refresh:true,processes:scope.processes,browser_processes:scope.browser_processes,browser_protection:scope.browser_protection,protection_serial:scope.serial,values:scope.values})+'\n');
+      }while(this.wakePending&&!this.closed);
+    })().catch(()=>this.close()).finally(()=>{this.waking=null});
+    return this.waking;
   }
   async close() {
     if(this.closed&&!this.child&&!this.oracle)return;
