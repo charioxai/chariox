@@ -49,12 +49,11 @@ pub(crate) async fn ensure_cloud_relay_connection(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
 ) -> Result<(), DaemonError> {
-    let config = config_projection.snapshot();
     // MP-08 / MP-10 / MP-11: automatic refresh cannot undo a private override.
     // ConnectCloudRelay remains the explicit operation that selects Cloud again.
-    if config.cloud_relay.is_some()
-        && !crate::runtime::cloud_relay_control::cloud_relay_transport_selected(&config)
-    {
+    if !crate::runtime::cloud_relay_control::cloud_relay_transport_selected(
+        &config_projection.snapshot(),
+    ) {
         return Ok(());
     }
     migrate_legacy_kernel_profile(runtime_state, config_projection).await?;

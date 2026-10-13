@@ -38,6 +38,7 @@ pub(crate) fn cloud_relay_token_refresh_due(config: &DaemonConfig, now_ms: u64) 
     {
         return false;
     }
+    // Selected transport: only a missing URL or a non-canonical spelling differ.
     config.relay_url.as_deref() != Some(profile.relay_url.as_str())
         || config.relay_token.is_none()
         || !cloud_relay_token_matches_runtime_key(config)
