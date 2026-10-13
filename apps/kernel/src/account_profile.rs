@@ -1207,8 +1207,10 @@ impl ProviderAccountProfileRegistry {
         // MP-08/MP-10/MP-11: a registered Claude token is admitted to the
         // kernel's first-use check. Unknown/expired observations must not ask
         // the user to replace a potentially valid token before that check.
-        let deferred_claude_check = profile.auth_state != ProviderAccountAuthState::Authenticated
-            && profile.provider == "claude"
+        let deferred_claude_check = matches!(
+            profile.auth_state,
+            ProviderAccountAuthState::Unknown | ProviderAccountAuthState::Expired
+        ) && profile.provider == "claude"
             && crate::provider::provider_account_credential_registered(
                 owner_user_id,
                 "claude",

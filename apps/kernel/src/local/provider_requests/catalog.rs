@@ -1794,6 +1794,20 @@ mod tests {
                 .auth_state,
             "authenticated"
         );
+        registry
+            .require_authenticated("local", "claude", "default", None, "MP-11 logout fence")
+            .expect_err("explicit logout must fence the retained Vault token");
+        for state in [
+            crate::account_profile::ProviderAccountAuthState::Unknown,
+            crate::account_profile::ProviderAccountAuthState::Expired,
+        ] {
+            registry
+                .update_observation("local", "claude", "default", state, None, None, None, None)
+                .unwrap();
+            registry
+                .require_authenticated("local", "claude", "default", None, "MP-11 first-use check")
+                .expect("unknown/expired token still reaches the first-use verifier");
+        }
         for state in [
             crate::account_profile::ProviderAccountAuthState::Expired,
             crate::account_profile::ProviderAccountAuthState::Error,
