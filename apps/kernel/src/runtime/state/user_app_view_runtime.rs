@@ -237,6 +237,31 @@ impl KernelRuntimeState {
         installation: &str,
         host: Option<UserAppViewHost>,
     ) -> Result<Result<(UserAppView, AppFrontendBundle), AppRequestErrorCode>, DaemonError> {
+        self.open_user_app_view_selected(owner, installation, host, false)
+            .await
+    }
+
+    pub(super) async fn restore_user_app_view(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<Result<(UserAppView, AppFrontendBundle), AppRequestErrorCode>, DaemonError> {
+        self.open_user_app_view_selected(
+            owner,
+            installation,
+            Some(UserAppViewHost::KernelBrowser),
+            true,
+        )
+        .await
+    }
+
+    async fn open_user_app_view_selected(
+        &self,
+        owner: &str,
+        installation: &str,
+        host: Option<UserAppViewHost>,
+        restoring: bool,
+    ) -> Result<Result<(UserAppView, AppFrontendBundle), AppRequestErrorCode>, DaemonError> {
         let instances = self.app_control().user_views();
         if host == Some(UserAppViewHost::KernelBrowser) {
             self.seed_user_app_tabs(owner);
@@ -254,7 +279,10 @@ impl KernelRuntimeState {
             .views()
             .register(&view.view_id, &view.view_id, binding.clone());
         if host == Some(UserAppViewHost::KernelBrowser) {
-            match self.open_user_app_browser(owner, &view, &frontend).await {
+            match self
+                .open_user_app_browser(owner, &view, &frontend, restoring)
+                .await
+            {
                 Ok(opened) => view = opened,
                 Err(error) => {
                     self.forget_user_app_view(owner, &view.view_id);
@@ -268,7 +296,8 @@ impl KernelRuntimeState {
             .await
             || instances.get(owner, &view.view_id).is_none()
         {
-            self.close_user_app_view(owner, &view.view_id).await;
+            self.retire_user_app_browser(owner, &view.view_id, restoring)
+                .await;
             return Ok(Err(AppRequestErrorCode::Conflict));
         }
         Ok(Ok((view, frontend)))

@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 /// The pump's idle poll cadence (`AppViewPoll`), which busy refusals keep.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-struct Cleanup(std::path::PathBuf);
+pub(super) struct Cleanup(std::path::PathBuf);
 impl Drop for Cleanup {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -21,6 +21,10 @@ impl Drop for Cleanup {
 }
 
 fn fixture() -> (KernelRuntimeState, String, Cleanup) {
+    fixture_for_owner("local")
+}
+
+pub(super) fn fixture_for_owner(owner: &str) -> (KernelRuntimeState, String, Cleanup) {
     let root =
         std::env::temp_dir().join(format!("chariox-cold-pump-{:016x}", rand::random::<u64>()));
     std::fs::create_dir(&root).unwrap();
@@ -37,7 +41,9 @@ fn fixture() -> (KernelRuntimeState, String, Cleanup) {
     config.user_config.credential_vault.path = root.join("vault.json").display().to_string();
     let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, _) = KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("cold-pump", "cold-pump"))
+        .create_session(
+            CreateSessionRequest::new("cold-pump", "cold-pump").with_owner_user_id(owner),
+        )
         .unwrap();
     let session = session.id().to_owned();
     let runtime =
@@ -504,7 +510,10 @@ async fn mp11_an_ungranted_agent_reaches_no_app_host_action() {
         logical_tab: None,
     };
     for tool in ["host.clipboard_write", "host.open_link"] {
-        let mut tracked = runtime.app_control().views().track_call("view", "view", None);
+        let mut tracked = runtime
+            .app_control()
+            .views()
+            .track_call("view", "view", None);
         let refused = runtime
             .invoke_app_view_tool(
                 ViewCaller::Agent(&agent),
@@ -562,5 +571,74 @@ fn mp08_an_app_reopened_before_seeding_settles_one_saved_tab() {
         )
         .unwrap();
     runtime.remember_user_app_tabs(owner);
-    assert_eq!(views.take_restore(owner), vec!["todo".to_string()]);
+    assert_eq!(views.restore_batch(owner), vec!["todo".to_string()]);
+}
+
+/// MP-08/MP-10/MP-11 #992: shutdown/restart while the second App is opening.
+#[test]
+fn mp08_inflight_restore_intent_survives_kernel_shutdown_and_restart() {
+    let (runtime, _, _cleanup) = fixture();
+    let owner = "local";
+    let path = runtime
+        .owned
+        .kernel_browser_host
+        .profile_root(owner)
+        .join("app-tabs.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, br#"{"apps":[{"owner":"local","installation_id":"todo"},{"owner":"local","installation_id":"documents"}]}"#).unwrap();
+    let views = runtime.app_control().user_views();
+    runtime.remember_user_app_tabs(owner);
+    assert!(views.begin_restore(owner));
+    let batch = views.restore_batch(owner);
+    assert_eq!(batch, vec!["todo", "documents"]);
+    let first = views
+        .open(
+            owner,
+            AppViewBinding {
+                owner: owner.into(),
+                installation: "todo".into(),
+                generation: 1,
+                panel: Default::default(),
+                logical_tab: None,
+            },
+            "a",
+        )
+        .unwrap();
+    views
+        .bind_browser(
+            owner,
+            &first.view_id,
+            "target".into(),
+            crate::local::UserAppViewBrowser {
+                tab_id: "host-tab-first".into(),
+                generation: 1,
+            },
+        )
+        .unwrap();
+    runtime.remember_user_app_tabs(owner);
+    let during = std::fs::read(&path).unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&during).unwrap();
+    assert_eq!(
+        saved["apps"].as_array().unwrap().len(),
+        2,
+        "the second App remains durable while opening"
+    );
+    views.shutdown();
+    runtime.remember_user_app_tabs(owner); // A late restore task's final save.
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        during,
+        "shutdown fences late saves"
+    );
+    let restarted = crate::runtime::user_app_views::UserAppViews::default();
+    restarted.seed_restore(
+        owner,
+        saved["apps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|app| app["installation_id"].as_str().unwrap().to_owned())
+            .collect(),
+    );
+    assert_eq!(restarted.restore_batch(owner), vec!["todo", "documents"]);
 }
