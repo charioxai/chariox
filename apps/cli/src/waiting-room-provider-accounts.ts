@@ -31,8 +31,10 @@ export function waitingRoomOfferedBackendProviderIds(
   const placement = waitingRoomLaunchPlacement(state, remote)
   const local = placement.kernelRef === "local"
     && !placement.managedEnvironmentId && !placement.newManagedEnvironment
-  const installed = local ? remote.installedProviders
-    : remote.kernels?.find((kernel) => kernel.kernel_id === placement.kernelRef)?.available_providers
+    && (!remote.homeKernelId || !remote.relay?.daemon_id || remote.homeKernelId === remote.relay.daemon_id)
+  const connected = placement.kernelRef === remote.relay?.daemon_id
+  const installed = local || connected ? remote.installedProviders
+    : remote.kernels?.find((kernel) => kernel.kernel_id === (placement.kernelRef === "local" ? remote.homeKernelId : placement.kernelRef))?.available_providers
   return offeredBackendProviderIds(installed)
 }
 

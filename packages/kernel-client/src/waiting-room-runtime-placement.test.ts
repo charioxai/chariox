@@ -204,3 +204,21 @@ for (const observedState of ["stopped", "starting", "ready"] as const) {
     assert.equal(waitingRoomSelectedLaunchKernelRef(state, { managedEnvironments: [{ ...environment, contextManifestDigest: null }], kernels: [] }), "")
   })
 }
+
+test("MP-08/MP-11 an active worker stays selected when its inventory excludes itself", () => {
+  const remote = {
+    machines: [{ machine_id: "home-machine" }],
+    kernels: [{ kernel_id: "home-kernel", machine_id: "home-machine" }],
+    relay: { connected: true, machine_id: "worker-machine", daemon_id: "worker-kernel" },
+  }
+  const state = { selectedMachineRef: "worker-machine", selectedKernelRef: "worker-kernel" }
+  assert.equal(waitingRoomLaunchPlacement(state, remote).machineRef, "worker-machine")
+  assert.equal(waitingRoomLaunchPlacement(state, remote).kernelRef, "worker-kernel")
+  assert.equal(waitingRoomLaunchMachineOptions(remote).filter(o => o.id === "worker-machine").length, 1)
+  assert.equal(waitingRoomLaunchKernelOptions(remote, "worker-machine").filter(o => o.id === "worker-kernel").length, 1)
+})
+
+test("MP-08/MP-11 the connected home does not duplicate local placement", () => {
+  const remote = { homeKernelId: "home-kernel", relay: { connected: true, machine_id: "home-machine", daemon_id: "home-kernel" } }
+  assert.deepEqual(waitingRoomLaunchMachineOptions(remote).map(o => o.id), ["local"])
+})

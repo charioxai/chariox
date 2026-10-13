@@ -7,6 +7,7 @@ import type {
 } from "@chariox/kernel-client"
 import {
   defaultProviderAccountProfileId,
+  waitingRoomOfferedBackendProviderIds,
   normalizeProviderAccountProfileId,
   providerAccountFamily,
   providerAccountDisplayLabel,
@@ -218,4 +219,14 @@ test("exhausted selected account exposes reset and a usable alternative", () => 
   assert.match(providerAccountDisplayLabel(exhausted, "codex/gpt-6.1-sol"), /exhausted.*resets.*UTC/)
   assert.match(selectedProviderAccountStartBlockReason([exhausted, good], "codex", exhausted.profile_id, null, "codex/gpt-6.1-sol") ?? "", /exhausted.*resets.*available/)
   assert.equal(selectedProviderAccountStartBlockReason([exhausted], "codex", exhausted.profile_id, null, "codex/gpt-5.3-codex-spark"), null)
+})
+
+test("MP-08/MP-11 inventory belongs to the connected kernel while local still denotes home", () => {
+  const relay = { configured: true, connected: true, machine_id: "worker-machine", daemon_id: "worker-kernel" }
+  const remote = { homeKernelId: "home-kernel", relay, installedProviders: ["opencode"],
+    machines: [{ machine_id: "home-machine", kernel_count: 1 }],
+    kernels: [{ machine_id: "home-machine", kernel_id: "home-kernel", available_providers: ["codex"] }] }
+  const state = { selectedMachineRef: "worker-machine", selectedKernelRef: "worker-kernel" } as import("./waiting-room-types.js").WaitingRoomState
+  assert.deepEqual(waitingRoomOfferedBackendProviderIds(state, remote), ["opencode"])
+  assert.deepEqual(waitingRoomOfferedBackendProviderIds({ ...state, selectedMachineRef: "local", selectedKernelRef: "local" }, remote), ["codex"])
 })

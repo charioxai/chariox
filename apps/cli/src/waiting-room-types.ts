@@ -143,6 +143,8 @@ export type WaitingRoomRemoteKernel = {
 }
 
 export type WaitingRoomRemoteState = {
+  /** MP-08/MP-11: local placement denotes the original home, even while a worker is connected. */
+  homeKernelId?: string | null
   workspaceId?: string
   worktreeId?: string
   inventoryStatus?: "loading" | "ready" | "error"

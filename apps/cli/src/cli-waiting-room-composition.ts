@@ -264,6 +264,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
       inventoryStatus: deps.waitingRoomInventoryStatus(),
       loadingFrame: deps.waitingRoomState().introStep,
+      homeKernelId,
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
@@ -697,6 +698,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     getRemoteState: () => ({
       ...managedWaitingRoomRemote(),
       inventoryStatus: deps.waitingRoomInventoryStatus(),
+      homeKernelId,
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
@@ -951,6 +953,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
       inventoryStatus: deps.waitingRoomInventoryStatus(),
       loadingFrame: deps.waitingRoomState().introStep,
+      homeKernelId,
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
