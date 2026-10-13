@@ -1415,7 +1415,11 @@ mod mp11_always_tests {
         let executable = root.join("claude");
         std::fs::write(&executable, r##"#!/bin/sh
 if [ "$1" = "-p" ]; then
-  printf '%s' '{"type":"result","subtype":"success","is_error":false,"result":"Subscription usage is unavailable for this token","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0},"num_turns":0,"total_cost_usd":0,"duration_api_ms":0}'
+  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "synthetic-valid" ]; then
+    printf '%s' '{"type":"result","subtype":"success","is_error":false,"result":"CHARIOX_AUTH_OK","usage":{"output_tokens":7},"num_turns":1}'
+  else
+    printf '%s' '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"synthetic authentication refusal","usage":{"output_tokens":0},"num_turns":0}'; exit 1
+  fi
 elif [ "$1" = "auth" ]; then
   if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "synthetic-valid" ]; then
     printf '%s' '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstParty"}'

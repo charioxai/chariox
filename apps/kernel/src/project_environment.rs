@@ -12,7 +12,7 @@ mod check_assets;
 mod check_executable;
 mod check_gui_identity;
 mod check_health;
-mod check_inventory;
+pub(crate) mod check_inventory;
 mod check_journal;
 mod check_package_inventory;
 mod check_platform;

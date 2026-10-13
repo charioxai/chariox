@@ -311,3 +311,34 @@ fn review1301_partial_check_dependency_expires_on_snapshot() {
         "dependent and transitive evidence must expire with their prerequisite"
     );
 }
+
+#[test]
+fn check_project_lock_wait_respects_the_absolute_deadline() {
+    let (_root, store, env) = environment();
+    let _detect = store.lock(&env.local_project_id).unwrap();
+    let started = std::time::Instant::now();
+    let result = store.lock_until(
+        &env.local_project_id,
+        started + std::time::Duration::from_millis(30),
+    );
+    assert!(result.is_err());
+    assert!(started.elapsed() < std::time::Duration::from_millis(160));
+}
+
+#[test]
+#[cfg(unix)]
+fn named_host_probe_keeps_its_symlink_invocation_name() {
+    let root = crate::test_support::TestWorktree::new("named-shim");
+    let alias = root.path().join("named-tool");
+    std::os::unix::fs::symlink("/bin/sh", &alias).unwrap();
+    let output = super::check_executable::command(&alias, &[])
+        .unwrap()
+        .args(["-c", "printf '%s' \"$0\""])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        alias.to_string_lossy()
+    );
+}

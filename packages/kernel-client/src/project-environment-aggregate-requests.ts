@@ -38,6 +38,6 @@ export function isProjectEnvironmentRequest(request: unknown): boolean {
   return request !== null && typeof request === "object" && names.some(name => name in request)
 }
 export function requireProjectEnvironmentProtocol(request: unknown, version: number | null | undefined): void {
-  const minimum = (request as {GetProjectEnvironment?:{view?:unknown}})?.GetProjectEnvironment?.view ? 505 : 471
+  const minimum = (request as {GetProjectEnvironment?:{view?:unknown}})?.GetProjectEnvironment?.view ? 505 : 487
   if (isProjectEnvironmentRequest(request) && (version == null || !Number.isInteger(version) || version < minimum)) throw new Error(`Project Environment requires protocol ${minimum} or newer (this kernel: ${version ?? "unknown"}). Upgrade the kernel and reconnect.`)
 }

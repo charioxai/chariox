@@ -88,14 +88,14 @@ pub(super) fn inventory_args(name: &str) -> Option<&'static [&'static str]> {
         _ => None,
     }
 }
-pub(super) fn executable(name: &str) -> Option<PathBuf> {
+pub(crate) fn executable(name: &str) -> Option<PathBuf> {
     if name.contains(['/', '\\']) || name.is_empty() {
         return None;
     }
     std::env::split_paths(&std::env::var_os("PATH")?)
         .filter(|p| p.is_absolute())
         .find_map(|p| {
-            let p = p.join(name).canonicalize().ok()?;
+            let p = p.join(name);
             let m = p.metadata().ok()?;
             #[cfg(unix)]
             {

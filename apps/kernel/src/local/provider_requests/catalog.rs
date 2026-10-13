@@ -526,21 +526,10 @@ fn claude_profile_auth_status(
         }
         Ok(())
     })();
-    if let Err(error) = verified {
-        // A timeout/transport failure is not proof of revocation. Error closes
-        // admission without falsely declaring the token expired or logged out.
-        registry.update_observation(
-            owner_user_id,
-            provider,
-            &profile.profile_id,
-            crate::account_profile::ProviderAccountAuthState::Error,
-            None,
-            None,
-            None,
-            None,
-        )?;
-        return Err(error);
-    }
+    // MP-08 / MP-10 / MP-11: locked Vaults, interrupted probes and credential
+    // replacement are not authentication observations. The caller receives
+    // the bounded failure; retain the last verified profile observation.
+    verified?;
     Ok(ProviderAuthStatus {
         provider: provider.to_string(),
         account_profile: profile.profile_id.clone(),

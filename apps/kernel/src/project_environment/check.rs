@@ -107,9 +107,9 @@ pub(crate) fn check_requirement(
             }
         }
         match &r.spec {
-            RequirementSpec::Files { .. } => {
-                super::check_assets::check_assets(ctx, env, r, target, baseline, &mut facts)
-            }
+            RequirementSpec::Files { .. } => super::check_assets::check_assets(
+                ctx, env, r, target, baseline, &mut facts, deadline,
+            ),
             RequirementSpec::Software { .. } => {
                 super::check_platform::check_platform(ctx, env, r, &roots, &mut facts, deadline)
             }
@@ -135,12 +135,12 @@ pub(crate) fn check_requirement(
                 };
                 match inventory::health_until(p,health_expectation,&roots,deadline){Ok(true)=>outcome(Ready,"service_healthy","Named service health probe passed; Check does not start or restart services"),Ok(false)=>outcome(Missing,"service_unhealthy","Service health probe failed; no repair performed"),Err("worker_required")=>outcome(NeedsYourInput,"worker_required","Executable health script requires confirmed disposable-worker execution; no host command ran"),Err(_)=>outcome(NeedsYourInput,"probe_unproven","Named health probe is unavailable or invalid; review its target and probe")}
             }
-            RequirementSpec::Variables { .. } => {
-                super::check_assets::check_assets(ctx, env, r, target, baseline, &mut facts)
-            }
-            RequirementSpec::Secrets { .. } => {
-                super::check_assets::check_assets(ctx, env, r, target, baseline, &mut facts)
-            }
+            RequirementSpec::Variables { .. } => super::check_assets::check_assets(
+                ctx, env, r, target, baseline, &mut facts, deadline,
+            ),
+            RequirementSpec::Secrets { .. } => super::check_assets::check_assets(
+                ctx, env, r, target, baseline, &mut facts, deadline,
+            ),
             RequirementSpec::MachineNeeds { .. } => {
                 super::check_platform::check_platform(ctx, env, r, &roots, &mut facts, deadline)
             }

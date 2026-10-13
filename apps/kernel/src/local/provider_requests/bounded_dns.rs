@@ -2,25 +2,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
 use zeroize::Zeroizing;
-fn executable(name: &str) -> Option<PathBuf> {
-    if name.contains(['/', '\\']) || name.is_empty() {
-        return None;
-    }
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .filter(|p| p.is_absolute())
-        .find_map(|p| {
-            let p = p.join(name).canonicalize().ok()?;
-            let m = p.metadata().ok()?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if m.permissions().mode() & 0o111 == 0 {
-                    return None;
-                }
-            }
-            m.is_file().then_some(p)
-        })
-}
 
 pub(crate) fn resolve_bounded_host(
     host: &str,
@@ -41,7 +22,7 @@ pub(crate) fn resolve_bounded_host(
         || host.starts_with('-')
         || !host
             .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || b".-".contains(&c))
+            .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
     {
         return Err("invalid_probe_host");
     }
@@ -51,11 +32,14 @@ pub(crate) fn resolve_bounded_host(
     let name = "getent";
     #[cfg(target_os = "macos")]
     let name = "dscacheutil";
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    return Err("resolver_unavailable");
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(windows)]
+    let name = "powershell.exe";
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    let name = "getent";
+
     {
-        let path = executable(name).ok_or("resolver_unavailable")?;
+        let path = crate::project_environment::check_inventory::executable(name)
+            .ok_or("resolver_unavailable")?;
         if roots.iter().any(|root| path.starts_with(root)) {
             return Err("resolver_unavailable");
         }
@@ -65,8 +49,16 @@ pub(crate) fn resolve_bounded_host(
             .env_clear()
             .env("LANG", "C")
             .env("PATH", "/usr/bin:/bin");
-        #[cfg(target_os = "linux")]
+        #[cfg(not(any(target_os = "macos", windows)))]
         command.args(["ahosts", host]);
+        #[cfg(windows)]
+        {
+            if let Some(root) = std::env::var_os("SystemRoot") {
+                command.env("SystemRoot", root);
+            }
+            // Host input is separately bound and restricted above; no profile or startup script.
+            command.args(["-NoProfile", "-NonInteractive", "-Command", "& { param([string]$n) [System.Net.Dns]::GetHostAddresses($n) | ForEach-Object { $_.IPAddressToString } }", host]);
+        }
         #[cfg(target_os = "macos")]
         command.args(["-q", "host", "-a", "name", host]);
         let Ok(output) =
@@ -81,7 +73,7 @@ pub(crate) fn resolve_bounded_host(
         let text = Zeroizing::new(String::from_utf8_lossy(&bytes).into_owned());
         let mut addresses = vec![];
         for line in text.lines().take(64) {
-            #[cfg(target_os = "linux")]
+            #[cfg(not(target_os = "macos"))]
             let value = line.split_whitespace().next().unwrap_or("");
             #[cfg(target_os = "macos")]
             let value = line

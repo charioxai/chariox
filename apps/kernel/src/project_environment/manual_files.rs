@@ -14,6 +14,18 @@ struct Selection {
     bytes: u64,
     count: usize,
     protected: bool,
+    deadline: Option<std::time::Instant>,
+}
+impl Selection {
+    fn check_budget(&self) -> Result<(), DaemonError> {
+        if self
+            .deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            return Err(environment_error("Check file measurement budget exceeded"));
+        }
+        Ok(())
+    }
 }
 fn protected_path(path: &str) -> bool {
     !safe_metadata(path)
@@ -31,6 +43,7 @@ fn stream(
     path: &str,
     selection: &mut Selection,
 ) -> Result<Option<String>, DaemonError> {
+    selection.check_budget()?;
     if protected_path(path) {
         selection.protected = true;
         return Ok(None);
@@ -55,6 +68,7 @@ fn stream(
     let mut overlap = Zeroizing::new(Vec::<u8>::new());
     let mut bytes = 0u64;
     loop {
+        selection.check_budget()?;
         let n = file
             .read(&mut buffer)
             .map_err(|_| environment_error("selected File read failed"))?;
@@ -106,6 +120,7 @@ fn walk(
     if depth > 32 {
         return Err(environment_error("selected folder exceeds depth capacity"));
     }
+    selection.check_budget()?;
     if protected_path(path) {
         selection.protected = true;
         return Ok(());
@@ -116,6 +131,7 @@ fn walk(
         .map_err(|_| environment_error("selected folder unavailable"))?
         .take(MAX_ENTRIES + 1)
     {
+        selection.check_budget()?;
         let entry = entry.map_err(|_| environment_error("selected folder entry unavailable"))?;
         let name = entry
             .file_name()
@@ -175,19 +191,21 @@ pub(crate) fn verify_manual_files(
     current: &ProjectEnvironment,
     draft: &mut EnvironmentRevisionDraft,
 ) -> Result<(), DaemonError> {
-    verify_files(current, draft, true)
+    verify_files(current, draft, true, None)
 }
 // MP-08 / MP-10 / MP-11: Check measures protected content without Save-only Git metadata.
 pub(super) fn verify_check_files(
     current: &ProjectEnvironment,
     draft: &mut EnvironmentRevisionDraft,
+    deadline: std::time::Instant,
 ) -> Result<(), DaemonError> {
-    verify_files(current, draft, false)
+    verify_files(current, draft, false, Some(deadline))
 }
 fn verify_files(
     current: &ProjectEnvironment,
     draft: &mut EnvironmentRevisionDraft,
     git_metadata: bool,
+    deadline: Option<std::time::Instant>,
 ) -> Result<(), DaemonError> {
     let mut total_bytes = 0;
     let mut total_count = 0;
@@ -280,6 +298,7 @@ fn verify_files(
                 bytes: total_bytes,
                 count: total_count,
                 protected: false,
+                deadline,
             };
             let file_digest = match entry.kind {
                 EnvironmentFileKind::File => stream(&root, &entry.relative_path, &mut selection)?,

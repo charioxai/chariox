@@ -51,6 +51,12 @@ impl ProjectEnvironmentStore {
         project: &str,
     ) -> Result<EnvironmentChecks, crate::error::DaemonError> {
         let _publication = self.check_journal_lock(project)?;
+        self.load_checks_locked(project)
+    }
+    fn load_checks_locked(
+        &self,
+        project: &str,
+    ) -> Result<EnvironmentChecks, crate::error::DaemonError> {
         let bytes =
             match super::check_journal::read(&self.path(project).with_extension("checks.wal"))? {
                 Some(bytes) => bytes,
@@ -98,12 +104,19 @@ impl ProjectEnvironmentStore {
         project: &str,
         checks: &EnvironmentChecks,
     ) -> Result<(), crate::error::DaemonError> {
+        let _publication = self.check_journal_lock(project)?;
+        self.save_checks_locked(project, checks)
+    }
+    fn save_checks_locked(
+        &self,
+        project: &str,
+        checks: &EnvironmentChecks,
+    ) -> Result<(), crate::error::DaemonError> {
         let bytes = serde_json::to_vec(checks)
             .map_err(|_| environment_error("Check journal encoding failed"))?;
         if bytes.len() > 8 * 1024 * 1024 {
             return Err(environment_error("Check journal exceeds bounds"));
         }
-        let _publication = self.check_journal_lock(project)?;
         super::check_journal::append(&self.path(project).with_extension("checks.wal"), &bytes)
     }
     pub(crate) fn attach_checks(
@@ -134,6 +147,35 @@ impl ProjectEnvironmentStore {
                 .last()
                 .map(|o| project_check_operation(o, target)),
         );
+        Ok(())
+    }
+    pub(crate) fn settle_failed_check(
+        &self,
+        project: &str,
+        operation: &str,
+        validate: impl FnOnce() -> bool,
+    ) -> Result<(), crate::error::DaemonError> {
+        let _identity = self.identity_lock(project)?;
+        if !validate() {
+            return Ok(());
+        }
+        let _publication = self.check_journal_lock(project)?;
+        let mut checks = self.load_checks_locked(project)?;
+        if let Some(op) = checks
+            .operations
+            .iter_mut()
+            .find(|op| op.operation_id == operation)
+        {
+            if matches!(
+                op.phase,
+                EnvironmentOperationPhase::Requested | EnvironmentOperationPhase::Running
+            ) {
+                op.phase = EnvironmentOperationPhase::Failed;
+                op.updated_at_ms = crate::session::unix_epoch_ms();
+                op.recovery_state = EnvironmentRecoveryState::Settled;
+                self.save_checks_locked(project, &checks)?;
+            }
+        }
         Ok(())
     }
     pub(crate) fn check_operation(

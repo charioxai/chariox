@@ -104,6 +104,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// A v70 worker cannot decode these controller variants; reject it before dispatch.
 /// Version 113 pairs with local 505 for Environment compact reads and shared
 /// relay receipt credit (MP-08 / MP-10 / MP-11); no second transport authority.
+/// Version 101 binds the embedded local response union to local protocol 491,
+/// restores owner-private workflow notifications to the Browser/Computer peer
+/// union and pairs exact home-prompt cancellation admission (MP-08/MP-10/MP-11).
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 113;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";

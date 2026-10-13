@@ -550,7 +550,7 @@ async fn query_relay_once_inner(
     let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
     let (mut socket, _) = timeout(
         request_timeout,
-        connect_async(chariox_relay::frame_transport::transport_url(&relay_url)),
+        chariox_relay::socket::connect_relay_socket(&relay_url),
     )
     .await
     .map_err(|_| {

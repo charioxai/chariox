@@ -25,6 +25,7 @@ pub(super) fn command(
     roots: &[PathBuf],
 ) -> Result<std::process::Command, &'static str> {
     let mut executable = trusted(path, roots)?;
+    let mut invocation = path.to_path_buf();
     let mut arguments = Vec::<std::ffi::OsString>::new();
     let mut directories = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
@@ -51,6 +52,11 @@ pub(super) fn command(
             .map_err(|_| "interpreter_unavailable")?;
         if !bytes.starts_with(b"#!") {
             let mut command = std::process::Command::new(executable);
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                command.arg0(&invocation);
+            }
             directories.extend([
                 PathBuf::from("/usr/local/bin"),
                 PathBuf::from("/usr/bin"),
@@ -118,6 +124,7 @@ pub(super) fn command(
         interpreter_arguments.push(executable.into_os_string());
         interpreter_arguments.extend(arguments);
         arguments = interpreter_arguments;
+        invocation = interpreter.clone();
         executable = interpreter;
     }
     Err("interpreter_chain_exceeds_bounds")

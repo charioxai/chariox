@@ -159,7 +159,7 @@ pub(super) async fn run_writer<S>(
             let ordered = !request || !earlier_request;
             earlier_request |= request;
             control(message)
-                || ((active.is_some() || !window.is_empty())
+                || (active.is_some()
                     && window.can_send_small(message.len())
                     && independent_small(message)
                     && ordered)

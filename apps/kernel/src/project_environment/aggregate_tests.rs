@@ -351,12 +351,60 @@ fn envp04_independent_check_is_delivered_for_unsaved_legacy() {
 }
 #[path = "review0212_excluded_tests.rs"]
 mod review0212_excluded;
-#[path = "review0212_platform_tests.rs"]
-mod review0212_platform;
 #[path = "review0212_metadata_tests.rs"]
 mod review0212_metadata;
+#[path = "review0212_platform_tests.rs"]
+mod review0212_platform;
 
-#[path = "review0821_platform_tests.rs"]
-mod review0821_platform;
 #[path = "review0821_metadata_tests.rs"]
 mod review0821_metadata;
+#[path = "review0821_platform_tests.rs"]
+mod review0821_platform;
+
+// MP-08 / MP-10 / MP-11: repeat edits cannot exhaust a cumulative snapshot file.
+#[test]
+fn revision_index_keeps_only_current_snapshot_and_preserves_immutable_archives() {
+    let root = crate::test_support::TestWorktree::new("revision-archives");
+    let project = RuntimeProject::new(
+        "archives",
+        "owner",
+        root.path().to_str().unwrap(),
+        "Archives",
+        RuntimeProjectKind::Named,
+    );
+    let store = ProjectEnvironmentStore::new(root.path());
+    let mut current = store.snapshot(&project).unwrap();
+    for _ in 0..12 {
+        let request = crate::local::SaveProjectEnvironmentRevisionRequest {
+            project_id: project.id().into(),
+            expected_revision: current.revision,
+            expected_content_digest: current.content_digest.clone(),
+            draft: environment_draft(&current),
+            accepted_proposal_ids: vec![],
+            excluded_proposal_ids: vec![],
+        };
+        current = store
+            .save_revision_locked(&current, &request, "owner")
+            .unwrap()
+            .0;
+    }
+    let index: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(store.path(project.id()).with_extension("revisions.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(index["revisions"].as_array().unwrap().len(), 1);
+    assert!(store
+        .path(project.id())
+        .with_extension("revision-0.json")
+        .exists());
+    assert!(store
+        .path(project.id())
+        .with_extension("revision-12.json")
+        .exists());
+    assert_eq!(store.snapshot(&project).unwrap().revision, 12);
+    store.remove(project.id()).unwrap();
+    assert!(!store
+        .path(project.id())
+        .with_extension("revision-0.json")
+        .exists());
+}
