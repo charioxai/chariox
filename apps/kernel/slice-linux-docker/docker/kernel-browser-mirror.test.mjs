@@ -230,6 +230,13 @@ test('MP-08/MP-10/MP-11: idle tile credit refines with full native readback afte
  host.inputEpochs.set('t',1);await service.next(next(s.subscription_id,2),'a');assert(clips[2]);
 });
 
+test('MP-08/MP-10/MP-11: typing defers full-frame refinement until input is quiet',async()=>{
+ const {service,state,host}=fixture(),clips=[];state.snapshot.nodes[1]={id:'n2',parent:'n1',children:[],kind:'tile',tag:'img',box:{x:10,y:10,width:20,height:10},reason:'native_control'};host.inputEpochs=new Map([['t',1]]);host.inputChangedAt=new Map([['t',performance.now()]]);const screenshot=host.screenshot;host.screenshot=async(tab,clip)=>{clips.push(clip);return screenshot(tab,clip)};
+ const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:2},'a');const first=await service.next(next(s.subscription_id),'a');const second=await service.next(next(s.subscription_id,first.sequence),'a');
+ assert(clips[0]);assert(clips[1],'a caret blink while typing keeps the crop');
+ host.inputChangedAt.set('t',performance.now()-2000);await service.next(next(s.subscription_id,second.sequence),'a');assert.equal(clips[2],null,'settled input refines');
+});
+
 test('MP-08/MP-11: kernel refuses overlapping credits instead of racing private observer bases',async()=>{
  const {service}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');let unblock;const held=new Promise(resolve=>{unblock=resolve}),world=service.world.bind(service);service.world=async(...args)=>{await held;return world(...args)};
  const first=service.next(next(s.subscription_id),'a');await assert.rejects(service.next(next(s.subscription_id),'a'),/credit already outstanding/);unblock();assert.equal((await first).sequence,1);assert.equal(service.streams.get(s.subscription_id).busy,false);

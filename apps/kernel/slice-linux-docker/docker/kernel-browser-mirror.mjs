@@ -12,7 +12,7 @@ import { assertCurrentDocument,assertNotCancelled } from './browser-controller-a
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
 import { decodePng,maskPixels } from './kernel-browser-pixels.mjs';
 
-const lifetime=60000,maxWire=4*1024*1024;
+const lifetime=60000,maxWire=4*1024*1024,refineQuietMs=1000;
 const videoSnapshot=()=>({root:'n9007199254740991',nodes:[{id:'n9007199254740991',parent:null,children:['n9007199254740988','n9007199254740990'],kind:'element',tag:'html',style:{margin:'0px'}},{id:'n9007199254740988',parent:'n9007199254740991',children:[],kind:'element',tag:'head'},{id:'n9007199254740990',parent:'n9007199254740991',children:['n9007199254740989'],kind:'element',tag:'body',style:{margin:'0px'}},{id:'n9007199254740989',parent:'n9007199254740990',children:[],kind:'tile',tag:'div',box:{x:0,y:0,width:geometry.width,height:geometry.height},reason:'observer_bounds_or_unavailable'}],resources:[],fonts:[],scroll:{x:0,y:0},focused:null,selection:null});
 // Trusted admission error: never constructed from page/CDP error strings.
 export class MirrorInputEpochRefusal extends Error {
@@ -165,8 +165,10 @@ export class MirrorService {
       // MP-08/MP-10: motion uses the negotiated PNG crop; the next idle
       // credit performs native full-frame verification/refinement, as display
       // does. Chromium's DPR2 cropped raster can differ at glyph/shape edges.
-      const inputEpoch=this.host.inputEpochs?.get(tab.tab_id)??0;
-      const refine=stream.refinePending&&stream.tileRevision===sourceRevision&&stream.tileInputEpoch===inputEpoch;
+      // While the user types, a blinking caret must not turn every other read into
+      // a full-frame refinement that the next echo queues behind: refine once input settles.
+      const inputEpoch=this.host.inputEpochs?.get(tab.tab_id)??0,typedAt=this.host.inputChangedAt?.get(tab.tab_id)??-Infinity;
+      const refine=stream.refinePending&&stream.tileRevision===sourceRevision&&stream.tileInputEpoch===inputEpoch&&performance.now()-typedAt>=refineQuietMs;
       const clip=refine?{x:0,y:0,width:geometry.width,height:geometry.height,scale:1}:{x:x0,y:y0,width:x1-x0,height:y1-y0,scale:1};
       const masks=await captureRegionMasks(world.connection,world.sessionId);
       mark('tile_masks_before');
