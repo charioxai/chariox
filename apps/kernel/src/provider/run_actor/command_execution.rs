@@ -29,6 +29,11 @@ pub(super) fn execute_submit_command(
     prompt_id: &str,
 ) -> Result<ProviderPromptSubmitAcknowledgement, DaemonError> {
     let run_id = run.id().to_string();
+    crate::logging::debug_with_fields(
+        "daemon.provider.prompt_timing",
+        "provider prompt dispatch started",
+        serde_json::json!({"provider_run_id": run_id, "prompt_id": prompt_id}),
+    );
     if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
         thread::sleep(Duration::from_millis(750));
         return Ok(ProviderPromptSubmitAcknowledgement {
@@ -84,6 +89,12 @@ pub(super) fn execute_submit_command(
         });
     }
     let result = submit_opencode_prompt(&run, &mut state, &envelope);
+    crate::logging::debug_with_fields(
+        "daemon.provider.prompt_timing",
+        "provider prompt dispatch finished",
+        serde_json::json!({"provider_run_id": run_id, "prompt_id": prompt_id,
+            "success": result.is_ok()}),
+    );
     let resume_state = ProviderResumeState::from_opencode_session_id(state.session_id());
     runtime_registry.restore_opencode_runtime_if_live(&run_id, &slot, state);
     result.map(|_| ProviderPromptSubmitAcknowledgement { resume_state })

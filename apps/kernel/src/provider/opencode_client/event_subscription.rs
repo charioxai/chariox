@@ -79,6 +79,8 @@ impl OpenCodeClient {
         thread::spawn(move || {
             let mut reader = BufReader::new(Cursor::new(buffered_body).chain(stream));
             let mut data_lines = Vec::new();
+            let mut last_text_message = String::new();
+            let mut last_part_message = String::new();
 
             loop {
                 if stop_for_thread.load(Ordering::SeqCst) {
@@ -98,6 +100,34 @@ impl OpenCodeClient {
                             let payload = data_lines.join("\n");
                             data_lines.clear();
                             if let Some(event) = parse_sse_event(&payload, &provider_run_id) {
+                                // MP-08 / MP-10: first-part/first-text timestamps at
+                                // the reader, before the output pump. No content.
+                                let first = match &event {
+                                    OpenCodeEvent::MessagePartUpdated { part }
+                                        if part.message_id != last_part_message =>
+                                    {
+                                        last_part_message.clone_from(&part.message_id);
+                                        Some(("first part received", &part.message_id, &part.id))
+                                    }
+                                    OpenCodeEvent::MessagePartDelta {
+                                        message_id,
+                                        part_id,
+                                        delta,
+                                        ..
+                                    } if !delta.is_empty() && *message_id != last_text_message => {
+                                        last_text_message.clone_from(message_id);
+                                        Some(("first text delta received", message_id, part_id))
+                                    }
+                                    _ => None,
+                                };
+                                if let Some((stage, message_id, part_id)) = first {
+                                    crate::logging::debug_with_fields(
+                                        "daemon.provider.opencode.timing",
+                                        stage,
+                                        serde_json::json!({"provider_run_id": provider_run_id,
+                                            "message_id": message_id, "part_id": part_id}),
+                                    );
+                                }
                                 if notifier.send(&tx, event).is_err() {
                                     break;
                                 }
