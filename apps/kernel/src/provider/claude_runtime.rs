@@ -1568,9 +1568,9 @@ done
 
     #[test]
     fn claude_context_uses_the_last_api_call_across_batches() {
-        let (mut state, mut batch) = parser_state();
+        let (mut state, _) = parser_state();
         for context in [371_000, 372_000] {
-            batch = ProviderPromptSignalBatch::default();
+            let mut batch = ProviderPromptSignalBatch::default();
             apply_claude_message(
                 "run-1",
                 &mut state,
@@ -1580,7 +1580,7 @@ done
                 &mut batch,
             );
         }
-        batch = ProviderPromptSignalBatch::default();
+        let mut batch = ProviderPromptSignalBatch::default();
         apply_claude_message(
             "run-1",
             &mut state,

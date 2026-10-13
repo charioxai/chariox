@@ -28,6 +28,14 @@ impl owned::OwnedRemoteAgentProfileUpdate {
     }
 }
 
+#[derive(Clone)]
+pub(super) struct AgentProfileSelections {
+    pub(super) provider: Option<String>,
+    pub(super) account_profile: Option<String>,
+    pub(super) model: Option<String>,
+    pub(super) effort: Option<Option<String>>,
+}
+
 pub(super) struct ValidatedAgentProfile {
     pub(super) agent: crate::agent::AgentInstance,
     pub(super) provider: String,
@@ -81,11 +89,14 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: &str,
         caller_user_id: &str,
-        provider: Option<String>,
-        account_profile: Option<String>,
-        model: Option<String>,
-        effort: Option<Option<String>>,
+        selections: AgentProfileSelections,
     ) -> Result<ValidatedAgentProfile, DaemonError> {
+        let AgentProfileSelections {
+            provider,
+            account_profile,
+            model,
+            effort,
+        } = selections;
         let provider = provider
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
@@ -176,20 +187,10 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: &str,
         caller_user_id: &str,
-        provider: Option<String>,
-        account_profile: Option<String>,
-        model: Option<String>,
-        effort: Option<Option<String>>,
+        selections: AgentProfileSelections,
     ) -> Result<owned::OwnedAgentProfileUpdate, DaemonError> {
-        let validated = self.validate_agent_profile_update(
-            session_id,
-            agent_id,
-            caller_user_id,
-            provider,
-            account_profile,
-            model,
-            effort,
-        )?;
+        let validated =
+            self.validate_agent_profile_update(session_id, agent_id, caller_user_id, selections)?;
         let agent = validated.agent;
         let target_provider = validated.provider;
         let target_account_profile = validated.account_profile;

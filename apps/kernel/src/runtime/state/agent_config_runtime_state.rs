@@ -1012,16 +1012,19 @@ impl KernelRuntimeState {
                 &self.owned.session_store.get_session(session_id)?,
                 agent_id,
             )?;
+        let selections = super::agent_profile_owned_state::AgentProfileSelections {
+            provider,
+            account_profile,
+            model,
+            effort,
+        };
         let result = async {
             // All owned checks precede the irreversible provider session command.
             let target = self.owned.validate_agent_profile_update(
                 session_id,
                 agent_id,
                 caller_user_id,
-                provider.clone(),
-                account_profile.clone(),
-                model.clone(),
-                effort.clone(),
+                selections.clone(),
             )?;
             if original.remote_execution().is_none() {
                 self.compact_before_window_downshift(
@@ -1038,10 +1041,7 @@ impl KernelRuntimeState {
                 session_id,
                 agent_id,
                 caller_user_id,
-                provider,
-                account_profile,
-                model,
-                effort,
+                selections,
             )?;
             for provider_run_id in update.terminated_run_ids {
                 let (_, process_key) = self
