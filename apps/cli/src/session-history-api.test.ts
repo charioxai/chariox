@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { LocalIpcClient } from "./ipc.js"
-import { getSessionHistoryOutline } from "./session-history-api.js"
+import { getSessionHistoryOutline, getSessionHistoryBlobContents } from "./session-history-api.js"
 
 // MP-08 / MP-10 (panes Phase-1 drill, PANE-01/PANE-03): the TUI loads the
 // prefetched blobs with the outline in one batch per agent, so assistant rows
@@ -45,4 +45,25 @@ test("session history outline loads the prefetch batch with the outline", async 
 
   const fallback = await getSessionHistoryOutline(client("unsupported"), "session-1", ["agent-1"])
   assert.deepEqual(fallback.agents[0]?.loadedBlobs, [])
+})
+
+// MP-08 / MP-10, #987: explicit detail loading is bounded at 64 rows.
+test("detail batches are bounded and preserve legacy sequential loading", async () => {
+  const requests: Record<string, any>[] = []
+  const ids = Array.from({ length: 130 }, (_, i) => "blob-" + i)
+  const client = { send: async (request: Record<string, any>) => {
+    requests.push(request)
+    if (request.GetSessionHistoryBlobContents) return { SessionHistoryBlobContents: { blobs: request.GetSessionHistoryBlobContents.blob_ids.map((blob_id: string) => ({ blob_id, entries: [] })) } }
+    return { SessionHistoryBlobContent: { blob_id: request.GetSessionHistoryBlobContent.blob_id, entries: [] } }
+  } } as unknown as LocalIpcClient
+  assert.equal((await getSessionHistoryBlobContents(client, "s", "a", ids, true)).length, 130)
+  assert.deepEqual(requests.map(r => r.GetSessionHistoryBlobContents.blob_ids.length), [64, 64, 2])
+  requests.length = 0
+  const legacy = { send: async (request: Record<string, any>) => {
+    requests.push(request)
+    if (request.GetSessionHistoryBlobContents) throw new Error("unknown variant")
+    return { SessionHistoryBlobContent: { blob_id: request.GetSessionHistoryBlobContent.blob_id, entries: [] } }
+  } } as unknown as LocalIpcClient
+  assert.equal((await getSessionHistoryBlobContents(legacy, "s", "a", ids.slice(0, 3), true)).length, 3)
+  assert.equal(requests.length, 4)
 })

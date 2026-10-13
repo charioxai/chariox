@@ -345,16 +345,38 @@ export function replaceSessionHistoryBlobPlaceholder(
   if (!placeholder?.historyBlobId) {
     return entries
   }
+  const hydrated = hydrateHistoryPlaceholder(placeholder, content)
+  const activeTurnId = transcriptHistoryTurnIsOpen(placeholder) ? placeholder.turnId ?? null : null
+  const replaced = entries.flatMap((entry) => entry.id === entryId ? hydrated : [entry])
+  return applyTranscriptDisplayState(
+    reindexTranscriptEntries(replaced, 0),
+    collapsedTurnIds,
+    activeTurnId,
+  ) as SessionHistoryTranscriptEntry[]
+}
+
+// MP-08 / MP-10: materialize a batch in one pass, with one final reindex and
+// display projection. Stable blob identities survive replacement of siblings.
+export function replaceSessionHistoryBlobPlaceholders(
+  entries: SessionHistoryTranscriptEntry[],
+  contents: readonly { agentId: string; content: SessionHistoryBlobContent }[],
+  collapsedTurnIds: readonly number[],
+): SessionHistoryTranscriptEntry[] {
+  const byBlob = new Map(contents.map(({ agentId, content }) => [agentId + ":" + content.blob_id, content]))
+  const replaced = entries.flatMap((entry) => {
+    const content = byBlob.get(entry.historyBlobAgentId + ":" + entry.historyBlobId)
+    return content ? hydrateHistoryPlaceholder(entry, content) : [entry]
+  })
+  return applyTranscriptDisplayState(reindexTranscriptEntries(replaced, 0), collapsedTurnIds) as SessionHistoryTranscriptEntry[]
+}
+
+function hydrateHistoryPlaceholder(placeholder: SessionHistoryTranscriptEntry, content: SessionHistoryBlobContent): SessionHistoryTranscriptEntry[] {
   const turnId = placeholder.turnId
   const externalMetadata = transcriptEntryExternalMetadata(placeholder) ?? {}
   const promptMetadata: SessionHistoryOutlineTurnPromptMetadata = {
     ...(placeholder.promptOrigin !== undefined ? { promptOrigin: placeholder.promptOrigin } : {}),
     ...(placeholder.sourceAttachmentId !== undefined ? { sourceAttachmentId: placeholder.sourceAttachmentId } : {}),
   }
-  const activeTurnId = transcriptHistoryTurnIsOpen(placeholder)
-    && typeof turnId === "number"
-    ? turnId
-    : null
   const hydrated = hydrateSessionHistoryPageEntriesForTurn(content.entries, turnId, placeholder.promptId ?? null).map((entry) => {
     const next: SessionHistoryTranscriptEntry = {
       ...entry,
@@ -373,12 +395,7 @@ export function replaceSessionHistoryBlobPlaceholder(
       promptMetadata,
     )
   })
-  const replaced = entries.flatMap((entry) => entry.id === entryId ? hydrated : [entry])
-  return applyTranscriptDisplayState(
-    reindexTranscriptEntries(replaced, 0),
-    collapsedTurnIds,
-    activeTurnId,
-  ) as SessionHistoryTranscriptEntry[]
+  return hydrated
 }
 
 export function markSessionHistoryBlobLoading(

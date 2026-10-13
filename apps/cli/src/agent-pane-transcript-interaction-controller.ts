@@ -1,3 +1,4 @@
+import { toggleTranscriptDetails } from "./transcript-details-controller.js"
 import type {
   SessionHistoryBlobContent,
   TranscriptEntry,
@@ -28,6 +29,7 @@ export type AgentPaneTranscriptInteractionControllerDeps = {
   ) => void
   retainPromptFocus: () => void
   loadHistoryBlobContent?: (agentId: string, blobId: string) => Promise<SessionHistoryBlobContent>
+  loadHistoryBlobContents?: (agentId: string, blobIds: readonly string[]) => Promise<SessionHistoryBlobContent[]>
   formatError?: (error: unknown) => string
 }
 
@@ -99,7 +101,15 @@ export function createAgentPaneTranscriptInteractionController(
     commitAndRefocus(deps, agentId, currentEntries, projection.entries)
   }
 
+  const toggleAllBlobs = (agentId: string) => toggleTranscriptDetails({
+    entries: () => deps.currentAgentPaneEntries(agentId),
+    collapsedTurns: () => deps.collapsedTurnIdsForAgent(agentId),
+    load: deps.loadHistoryBlobContents,
+    formatError: deps.formatError,
+    commit: (current, next) => commitAndRefocus(deps, agentId, current, next),
+  })
   return {
+    toggleAllBlobs,
     toggleBlob,
     toggleTurn,
   }

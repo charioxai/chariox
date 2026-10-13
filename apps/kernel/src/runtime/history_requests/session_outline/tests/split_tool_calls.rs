@@ -30,7 +30,9 @@ async fn tool_call_split_by_a_sentence_stays_one_blob() {
                 Some("agent-1"),
                 TerminalOutputKind::ProviderTool,
                 Some(call.to_string()),
-                format!(r#"{{"id":"{call}","tool":"read","status":"{status}","input":{{"filePath":"README.md"}}}}"#),
+                format!(
+                    r#"{{"id":"{call}","tool":"read","status":"{status}","input":{{"filePath":"README.md"}}}}"#
+                ),
             ),
             context.clone(),
         )

@@ -230,3 +230,13 @@ function entry(
     ...overrides,
   } as TranscriptEntry
 }
+
+// MP-08 / MP-10, #987: one detail action commits one projection.
+test("Ctrl+O projects all loaded rows once", () => {
+  const harness = transcriptHarness({ entries: [
+    entry(1, "tool", "a", { blobCollapsible: true, blobCollapsed: true }),
+    entry(2, "reasoning", "b", { blobCollapsible: true, blobCollapsed: true }),
+  ] })
+  harness.controller.toggleAllBlobs()
+  assert.equal(harness.reconciled.length, 1)
+})

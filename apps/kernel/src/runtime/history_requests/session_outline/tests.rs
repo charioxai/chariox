@@ -4,7 +4,7 @@ use crate::history::{
 };
 use crate::terminal::TerminalOutputKind;
 
-mod pagination_and_promptless;
-mod turn_lifecycle;
 mod batch_blob_contents;
+mod pagination_and_promptless;
 mod split_tool_calls;
+mod turn_lifecycle;

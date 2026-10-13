@@ -132,8 +132,8 @@ fn outline_blob_event_groups(
             continue;
         }
         let identity = outline_blob_identity(event);
-        if let Some(index) = outline_blob_tool_call_id(&identity)
-            .and_then(|call_id| tool_call_groups.get(call_id))
+        if let Some(index) =
+            outline_blob_tool_call_id(&identity).and_then(|call_id| tool_call_groups.get(call_id))
         {
             groups[*index].push(event);
             open_group = *index == groups.len() - 1;

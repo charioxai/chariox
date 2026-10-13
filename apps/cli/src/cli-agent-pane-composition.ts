@@ -16,6 +16,7 @@ import { clampScrollTop } from "./history-viewport.js"
 import { formatTranscriptPreview } from "@chariox/kernel-client/session-history-preview"
 import { buildEmptyTranscriptRenderable, buildLoadingTranscriptRenderable } from "./workspace-renderables.js"
 import {
+  getSessionHistoryBlobContents,
   getSessionHistoryBlobContent,
   getSessionHistoryOutline,
 } from "./session-history-api.js"
@@ -131,6 +132,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
       reconcileMountedAuxiliaryTranscript(agentId, currentEntries, nextEntries)
     },
     retainPromptFocus: deps.retainPromptFocus,
+    loadHistoryBlobContents: (agentId, ids) => getSessionHistoryBlobContents(deps.client, deps.sessionState().id, agentId, ids, true),
     loadHistoryBlobContent: (agentId, blobId) => getSessionHistoryBlobContent(
       deps.client,
       deps.sessionState().id,
@@ -280,6 +282,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
     hasTrailingUserPrompt,
     toggleAuxiliaryPaneTurn,
     toggleAuxiliaryPaneBlob,
+    toggleAuxiliaryPaneDetails: agentPaneTranscriptInteractionController.toggleAllBlobs,
     syncVisibleTranscriptPreview,
     appendAgentPanePreview,
     appendTranscriptEntryToAgentPane,

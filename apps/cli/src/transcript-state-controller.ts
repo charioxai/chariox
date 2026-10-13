@@ -1,3 +1,4 @@
+import { toggleTranscriptDetails } from "./transcript-details-controller.js"
 import type { TranscriptEntry } from "./cli-types.js"
 import type { SessionHistoryBlobContent } from "./cli-types.js"
 import {
@@ -32,6 +33,7 @@ export type TranscriptStateControllerDeps = {
   retainPromptFocus: () => void
   enforceTranscriptRetention: () => void
   loadHistoryBlobContent?: (agentId: string, blobId: string) => Promise<SessionHistoryBlobContent>
+  loadHistoryBlobContents?: (agentId: string, blobIds: readonly string[]) => Promise<SessionHistoryBlobContent[]>
   formatError?: (error: unknown) => string
 }
 
@@ -158,16 +160,19 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
 
   // Ctrl+O: expand every collapsed tool / thought row, or collapse them all
   // when none is collapsed — the keyboard path when app mouse is off.
-  const toggleAllBlobs = () => {
-    const blobs = compactTranscriptDisplayEntries(deps.entries())
-      .filter((entry) => entry.blobCollapsible && entry.role !== "turn_toggle" && !entry.hidden)
-    const expand = blobs.some((entry) => entry.blobCollapsed !== false)
-    for (const entry of blobs) {
-      if ((entry.blobCollapsed !== false) === expand) {
-        toggleBlob(entry.id, !expand)
-      }
-    }
-  }
+  const toggleAllBlobs = () => toggleTranscriptDetails({
+    entries: deps.entries,
+    collapsedTurns: () => deps.collapsedTurnIdsForAgent(deps.visibleTranscriptAgentId()),
+    load: deps.loadHistoryBlobContents,
+    formatError: deps.formatError,
+    commit: (current, next) => {
+      deps.setEntries(next)
+      deps.setEntryCounter(computeMaxTranscriptEntryId(next))
+      deps.persistVisibleTranscriptEntries(next)
+      deps.reconcileMountedTranscript(current, next)
+      deps.retainPromptFocus()
+    },
+  })
 
   return {
     appendEntry,

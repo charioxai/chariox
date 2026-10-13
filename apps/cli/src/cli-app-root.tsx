@@ -1,3 +1,4 @@
+import { toggleFocusedTranscriptDetails } from "./transcript-details-controller.js"
 import { createProviderLoginLinkOpener, localDesktopAvailable } from "./provider-login-link.js"
 import { createProviderLoginInteractionController } from "./provider-login-interaction-controller.js"
 import { getRelayStatus } from "./relay-api.js"
@@ -827,7 +828,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     clearAllAuxiliaryAgentPanes, clearAuxiliaryAgentPane, rebuildAuxiliaryAgentPane, rebuildEmptyAuxiliaryAgentPanes,
     persistVisibleTranscriptEntries,
     setAgentPanePreview, setAgentTranscriptEntries, currentAgentPaneEntries, hasTrailingUserPrompt,
-    toggleAuxiliaryPaneTurn, toggleAuxiliaryPaneBlob, syncVisibleTranscriptPreview, appendAgentPanePreview,
+    toggleAuxiliaryPaneTurn, toggleAuxiliaryPaneBlob, toggleAuxiliaryPaneDetails, syncVisibleTranscriptPreview, appendAgentPanePreview,
     appendTranscriptEntryToAgentPane, appendProviderChunkToAgentPane, appendToolUpdateToAgentPane, refreshAgentPanes,
     refreshAgentHistories,
     shouldRefreshAgentPanesForSessionChange,
@@ -1053,7 +1054,10 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     openProjectEnvironment, handleProjectEnvironmentKey,
     handleManagedMachineDialogKey, openManagedMachineDialog,
     toggleWorkspaceScreen: workflowActions.toggleWorkspaceScreen,
-    toggleTranscriptDetails: toggleAllBlobs,
+    toggleTranscriptDetails: () => toggleFocusedTranscriptDetails({
+      focusedAgentId, visibleAgentId: visibleTranscriptAgentId,
+      primary: toggleAllBlobs, auxiliary: toggleAuxiliaryPaneDetails,
+    }),
     cycleWorkflowCanvasNode: workflowActions.cycleWorkflowCanvasNode,
     copyPromptSelection, removePromptAttachmentsForEdit, removeLastPendingPromptAttachment,
   })

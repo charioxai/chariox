@@ -271,7 +271,7 @@ export function sessionHistoryOutlineBlobDisplay(
 ): { readonly title: string; readonly summary: string; readonly icon?: ToolDisplayIcon } {
   const preview = blob.preview?.trim()
   if (preview && blob.kind === "provider_reasoning") {
-    return { title: "Thought", summary: preview }
+    return { title: "Thought", summary: preview.replace(/\*\*/g, "") }
   }
   if (preview && blob.kind === "provider_tool") {
     try {

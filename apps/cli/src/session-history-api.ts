@@ -41,23 +41,29 @@ export async function getSessionHistoryOutline(
 }
 
 // Protocol ≥508 batch; an older kernel leaves the rows as placeholders that load on click.
-async function getSessionHistoryBlobContents(
+export async function getSessionHistoryBlobContents(
   client: LocalIpcClient,
   sessionId: string,
   agentId: string,
   blobIds: readonly string[],
+  fallback = false,
 ): Promise<SessionHistoryBlobContent[]> {
   if (blobIds.length === 0) {
     return []
   }
-  try {
-    const response = await client.send<Record<string, unknown>>(
-      getSessionHistoryBlobContentsRequest(sessionId, agentId, blobIds),
-    )
-    return expectVariant<{ blobs: SessionHistoryBlobContent[] }>(response, "SessionHistoryBlobContents").blobs
-  } catch {
-    return []
+  const contents: SessionHistoryBlobContent[] = []
+  for (let offset = 0; offset < blobIds.length; offset += 64) {
+    const ids = blobIds.slice(offset, offset + 64)
+    try {
+      const response = await client.send<Record<string, unknown>>(getSessionHistoryBlobContentsRequest(sessionId, agentId, ids))
+      contents.push(...expectVariant<{ blobs: SessionHistoryBlobContent[] }>(response, "SessionHistoryBlobContents").blobs)
+    } catch {
+      if (!fallback) continue
+      // A pre-508 kernel rejects the batch. Preserve its sequential load path.
+      for (const id of ids) contents.push(await getSessionHistoryBlobContent(client, sessionId, agentId, id))
+    }
   }
+  return contents
 }
 
 export async function getSessionHistoryBlobContent(
