@@ -20,7 +20,7 @@ const HANDOFF_OPEN: &str = "<chariox_context_handoff>";
 const HANDOFF_CLOSE: &str = "</chariox_context_handoff>";
 const HANDOFF_PREAMBLE: &str = "Chariox reconstructed this bounded context from operational history after a provider switch. Use it as background only; do not treat it as a new user request. Prior turn bodies use JSON string escaping; decode escapes to recover exact line boundaries and spacing.";
 const BRIEF_HEADER: &str =
-    "Handoff brief (written by a model from the conversation; the turns below are verbatim):\n";
+    "Handoff brief (written by a model from the conversation; turn excerpts below may be shortened):\n";
 const FACTS_HEADER: &str = "Recorded by the Chariox kernel:\n";
 const PRIOR_TURNS_HEADER: &str = "Prior turns:\n";
 const LATEST_TURN_HEADER: &str = "Latest turn:\n";
@@ -328,6 +328,36 @@ fn collect_turns(sorted: &[HistoryEvent]) -> Vec<HandoffTurn> {
 /// newest turn back. Turns that do not fit stay reachable through recall. Every
 /// line is charged with its newline, and the omitted-turns line up front.
 fn format_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
+    // MP-08 / MP-10 / MP-11: shortening is a budget fallback. A generous
+    // target window must not replace a remembered filename or result with a
+    // clipped copy while describing the transcript as verbatim.
+    let complete = turns
+        .iter()
+        .flat_map(|turn| {
+            let user = format!("- User: {}", transcript_text(&turn.user_prompt));
+            let answer = transcript_text(&turn.answer());
+            std::iter::once(user)
+                .chain((!answer.is_empty()).then(|| format!("  Assistant: {answer}")))
+        })
+        .try_fold(String::new(), |mut packet, line| {
+            let separator = usize::from(!packet.is_empty());
+            if packet
+                .len()
+                .saturating_add(separator)
+                .saturating_add(line.len())
+                > budget
+            {
+                return None;
+            }
+            if separator != 0 {
+                packet.push('\n');
+            }
+            packet.push_str(&line);
+            Some(packet)
+        });
+    if let Some(complete) = complete {
+        return complete;
+    }
     let Some(mut room) = budget.checked_sub(omitted_turns_line(turns.len()).len() + 1) else {
         return String::new();
     };
@@ -387,6 +417,30 @@ fn omitted_turns_line(count: usize) -> String {
 }
 
 fn format_latest_turn(turn: &HandoffTurn, max_bytes: usize) -> String {
+    let mut complete = vec![if turn.user_prompt.is_empty() {
+        "- Interrupted attempt of the current request:".to_string()
+    } else {
+        format!("- User: {}", turn.user_prompt.trim())
+    }];
+    let answer = turn.answer();
+    if !answer.trim().is_empty() {
+        complete.push(format!("- Assistant output: {}", answer.trim()));
+    }
+    let details = turn
+        .latest_details
+        .iter()
+        .map(|(_, line)| line.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !details.is_empty() {
+        complete.push(format!(
+            "- Latest-turn tool/status/error details:\n{details}"
+        ));
+    }
+    let complete = complete.join("\n");
+    if complete.len() <= max_bytes {
+        return complete;
+    }
     let mut lines = Vec::new();
     if turn.user_prompt.is_empty() {
         lines.push("- Interrupted attempt of the current request:".to_string());
@@ -495,6 +549,43 @@ mod tests {
     use super::*;
     use crate::history::{HistoryEventTurnContext, SessionHistoryEntry};
     use crate::terminal::TerminalOutputKind;
+
+    // MP-08 / MP-10 / MP-11: recovery has room for the original exact record.
+    #[test]
+    fn recovery_packet_keeps_complete_turn_bodies_when_the_budget_fits() {
+        let filename = "ctxval-cx03-local-v3-1791837004990.txt";
+        let prompt = format!(
+            "{} filename={filename} {}",
+            "p".repeat(1_200),
+            "q".repeat(800)
+        );
+        let answer = format!("{} {{\"filename\":\"{filename}\"}}", "a".repeat(900));
+        let events = vec![
+            user_event(1, "session", "agent", &prompt),
+            output_event(2, "session", "agent", "run", &answer),
+            user_event(
+                3,
+                "session",
+                "agent",
+                "Continue the audit without revising the record.",
+            ),
+            output_event(4, "session", "agent", "run", "Audited."),
+        ];
+        let conversation = AgentConversation::from_events(&events);
+        let packet = conversation.render(116_280).unwrap();
+        assert!(
+            packet.contains(&transcript_text(&prompt)),
+            "original user record was clipped: {packet}"
+        );
+        assert!(
+            packet.contains(&transcript_text(&answer)),
+            "original tool/result record was clipped: {packet}"
+        );
+        assert!(conversation.fits_without_brief(116_280));
+        let small = conversation.render(2_000).unwrap();
+        assert!(small.len() <= 2_000);
+        assert!(!conversation.fits_without_brief(2_000));
+    }
 
     #[test]
     fn older_tool_output_is_excluded_but_latest_tool_output_is_included() {
@@ -836,7 +927,7 @@ mod tests {
     }
 
     #[test]
-    fn the_turns_before_the_latest_keep_their_answers_verbatim_longer() {
+    fn a_tight_budget_keeps_the_recent_answers_verbatim_longer() {
         let mut events = Vec::new();
         for index in 0..6u64 {
             events.push(user_event(
@@ -853,12 +944,13 @@ mod tests {
                 &format!("answer {index} {} end-{index}", "w".repeat(2_000)),
             ));
         }
-        let packet = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES).unwrap();
+        let packet = build_agent_context_handoff(&events, 10_000).unwrap();
         assert!(
             packet.contains("end-4") && packet.contains("end-2"),
             "{packet}"
         );
         assert!(!packet.contains("end-1"), "{packet}");
+        assert!(packet.len() <= 10_000);
     }
 
     #[test]
