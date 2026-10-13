@@ -932,7 +932,10 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   } = createCliSessionLifecycleComposition({
     client, options, appLogger, renderer,
     onKernelTransportRecovered: () => settleKernelConnectionDisplay(),
-    onKernelTransportClosed: (message) => markKernelConnectionClosed(message),
+    onKernelTransportClosed: (message) => {
+      markKernelConnectionClosed(message)
+      void recoverAttachedSessionAfterKernelRestart()
+    },
     drainAppInstall: async () => { await Promise.all([appDevLoop.dispose(), appFileInstaller.dispose(), appPublisherEnrollment.dispose()]) },
     sleep, formatError, supportsKernelEventStream, kernelConnected, closingStateController,
     isAttached, daemonDisconnected, attachmentState, sessionState,

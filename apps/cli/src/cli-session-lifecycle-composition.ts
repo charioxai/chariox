@@ -212,7 +212,15 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
     applyAttachment: deps.setAttachmentState,
     applySession: deps.applySessionState,
     resetKernelEventSubscription: kernelEventSubscriptionController.reset,
-    syncKernelEventSubscription,
+    syncKernelEventSubscription: async () => {
+      await syncKernelEventSubscription()
+      if (!deps.supportsKernelEventStream) return
+      const binding = kernelEventSubscriptionController.state()
+      if (binding.scope !== "session" || binding.sessionId !== deps.sessionState().id
+        || binding.attachmentId !== deps.attachmentState()?.id) {
+        throw new Error("Session event binding has not recovered")
+      }
+    },
     refreshAgentPanes: () => deps.refreshAgentPanes(deps.sessionState()),
     clearLocalBusyStateForAuthoritativeIdle: () => {
       deps.clearLocalBusyStateForAuthoritativeIdle(deps.sessionState())

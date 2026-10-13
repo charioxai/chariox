@@ -75,7 +75,7 @@ test("attached restart recovery uses shared connection chrome without agent noti
   const values = {
     client: { send: async (request: Record<string, unknown>) => "GetSessionState" in request
       ? { SessionState: { session: { id: "session", agents: [] } } }
-      : { SessionAttached: { attachment: { attachment_id: "attachment" } } }, subscribeToKernelEvents: async () => {} },
+      : { SessionAttached: { attachment: { id: "attachment", session_id: "session" } } }, subscribeToKernelEvents: async () => {} },
     options: { clientId: "client" }, renderer: {}, appLogger: { debug: () => {}, error: () => {} }, supportsKernelEventStream: true,
     sleep: async () => { throw Error("unexpected recovery retry") },
     closingStateController: { isClosing: () => false, setClosing: () => {} },
@@ -110,4 +110,38 @@ test("MP-08/MP-10 attached subscription failures stay in shared chrome", async (
   await createCliSessionLifecycleComposition(deps).syncKernelEventSubscription()
   assert.equal(closed, 1)
   assert.deepEqual(notices, [])
+})
+
+test("MP-08/MP-10 recovery retries a failed session subscription before declaring recovery", async () => {
+  let disconnected = true
+  let attachment = { id: "old", session_id: "session" }
+  let subscriptions = 0
+  let repairs = 0
+  let recovered = 0
+  let retries = 0
+  const values = {
+    client: {
+      send: async (request: Record<string, unknown>) => "GetSessionState" in request
+        ? { SessionState: { session: { id: "session", agents: [] } } }
+        : { SessionAttached: { attachment: { id: `repair-${++repairs}`, session_id: "session" } } },
+      subscribeToKernelEvents: async () => {
+        if (++subscriptions === 1) throw Error("event lane has not recovered")
+      },
+    },
+    options: { clientId: "client" }, renderer: {},
+    appLogger: { debug: () => {}, error: () => {} }, supportsKernelEventStream: true,
+    closingStateController: { isClosing: () => false, setClosing: () => {} },
+    kernelConnected: () => true, isAttached: () => true,
+    daemonDisconnected: () => disconnected, sessionState: () => ({ id: "session" }),
+    attachmentState: () => attachment,
+    setAttachmentState: (next: typeof attachment) => { attachment = next },
+    providerRunState: () => null, formatError: (error: Error) => error.message,
+    setDaemonDisconnected: (value: boolean) => { disconnected = value },
+    onKernelTransportClosed: () => { disconnected = true },
+    onKernelTransportRecovered: () => { recovered++; disconnected = false },
+    sleep: async () => { retries++ },
+  }
+  const deps = new Proxy(values, { get: (target, key) => key in target ? target[key as keyof typeof target] : () => {} }) as unknown as CliSessionLifecycleCompositionDeps
+  await createCliSessionLifecycleComposition(deps).recoverAttachedSessionAfterKernelRestart()
+  assert.deepEqual({ subscriptions, repairs, recovered, retries }, { subscriptions: 2, repairs: 2, recovered: 1, retries: 1 })
 })
