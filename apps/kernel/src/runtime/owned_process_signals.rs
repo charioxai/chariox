@@ -144,6 +144,17 @@ impl OwnedProcessSignals {
         self.kill_owned_with(snapshot, send_signal)
     }
 
+    pub(crate) fn kill_owned_descendants(&mut self) -> io::Result<()> {
+        let root = self.root;
+        self.kill_owned_with(snapshot, |pid| {
+            if pid == root as i32 {
+                Ok(())
+            } else {
+                send_signal(pid)
+            }
+        })
+    }
+
     fn kill_owned_with(
         &mut self,
         mut inspect: impl FnMut() -> io::Result<Vec<ProcessIdentity>>,

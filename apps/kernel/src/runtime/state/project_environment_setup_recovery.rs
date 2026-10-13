@@ -314,23 +314,12 @@ fn validate_live_child_identity(identity: &ValidationProcessIdentity) -> Result<
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 fn process_group_is_absent(process_group_id: u32) -> Result<bool, String> {
-    if process_group_id <= 1 || process_group_id > i32::MAX as u32 {
-        return Err("validation process group identity is invalid".to_string());
-    }
-    let result = unsafe { libc::kill(-(process_group_id as libc::pid_t), 0) };
-    if result == 0 {
-        return Ok(false);
-    }
-    match std::io::Error::last_os_error().raw_os_error() {
-        Some(libc::ESRCH) => Ok(true),
-        Some(libc::EPERM) => Ok(false),
-        _ => Err("validation process group could not be inspected".to_string()),
-    }
+    validation_session_is_absent(process_group_id)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), test))]
 fn process_group_is_absent(_process_group_id: u32) -> Result<bool, String> {
     Err("durable validation process recovery is unsupported on this platform".to_string())
 }
@@ -596,21 +585,65 @@ fn kill_stopped_process_group(identity: &ValidationProcessIdentity) -> Result<()
 
 #[cfg(target_os = "linux")]
 fn kill_owned_validation_session(identity: &ValidationProcessIdentity) -> Result<(), String> {
-    // GNU timeout and job-control shells create subgroups without leaving setsid's
-    // exclusive session. Signal each captured birth, never a numeric foreign group.
-    let mut signals =
-        crate::runtime::owned_process_signals::OwnedProcessSignals::for_linux_session_identity(
-            identity.pid,
-            identity.start_time_ticks,
-        )
-        .map_err(|error| error.to_string())?;
-    signals
-        .kill_owned_processes()
-        .map_err(|error| error.to_string())
+    // Keep the exact leader stopped and unreaped while draining descendants.
+    // Forking tools can add a child after any one snapshot, including in another
+    // process group. The retained leader birth proves ownership on every pass.
+    validate_live_child_identity(identity)?;
+    let pidfd = open_pidfd(identity.pid)?;
+    send_pidfd_signal(&pidfd, libc::SIGSTOP)?;
+    let stopped_deadline = Instant::now() + STOP_TIMEOUT;
+    let result = (|| {
+        loop {
+            let current = read_proc_identity(identity.pid)?;
+            if !matches_identity(&current, identity) {
+                return Err("validation leader identity changed during session cleanup".to_string());
+            }
+            if matches!(current.state, 'T' | 't' | 'Z' | 'X') {
+                break;
+            }
+            if Instant::now() >= stopped_deadline {
+                return Err("validation leader did not stop before cleanup deadline".to_string());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut signals =
+            crate::runtime::owned_process_signals::OwnedProcessSignals::for_linux_session_identity(
+                identity.pid,
+                identity.start_time_ticks,
+            )
+            .map_err(|error| error.to_string())?;
+        let deadline = Instant::now() + GROUP_SETTLE_TIMEOUT;
+        loop {
+            validate_live_child_identity(identity)?;
+            signals
+                .kill_owned_descendants()
+                .map_err(|error| error.to_string())?;
+            if validation_session_is_absent_except(identity.session_id, Some(identity.pid))? {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(
+                    "validation descendants did not settle before cleanup deadline".to_string(),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    })();
+    // A failed inspection must not leave our leader stopped indefinitely.
+    send_pidfd_signal(&pidfd, libc::SIGKILL)?;
+    result
 }
 
 #[cfg(target_os = "linux")]
 fn validation_session_is_absent(session_id: u32) -> Result<bool, String> {
+    validation_session_is_absent_except(session_id, None)
+}
+
+#[cfg(target_os = "linux")]
+fn validation_session_is_absent_except(
+    session_id: u32,
+    except_pid: Option<u32>,
+) -> Result<bool, String> {
     if session_id <= 1 || session_id > i32::MAX as u32 {
         return Err("validation session identity is invalid".to_string());
     }
@@ -619,7 +652,7 @@ fn validation_session_is_absent(session_id: u32) -> Result<bool, String> {
         let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
             continue;
         };
-        if pid <= 1 {
+        if pid <= 1 || Some(pid) == except_pid {
             continue;
         }
         let stat = match fs::read_to_string(entry.path().join("stat")) {
@@ -679,9 +712,8 @@ pub(in crate::runtime::state::project_environment_setup) fn wait_for_process_gro
 ) -> Result<(), String> {
     let deadline = Instant::now() + GROUP_SETTLE_TIMEOUT;
     loop {
-        if process_group_is_absent(process_group_id)?
-            && validation_session_is_absent(process_group_id)?
-        {
+        // Dead/zombie children have no descriptors and cannot mutate scratch.
+        if validation_session_is_absent(process_group_id)? {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -1442,6 +1474,36 @@ mod tests {
             .expect("the intent should be cleared after the gated child was reaped");
         assert!(final_event.payload["entry"]["validation_command_lease"].is_null());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn exited_validation_zombies_do_not_block_session_settlement() {
+        use std::os::unix::process::CommandExt;
+        let mut command = Command::new("/bin/sleep");
+        command.arg("30");
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().unwrap();
+        let pid = child.id();
+        assert!(pid > 1 && pid <= i32::MAX as u32);
+        child.kill().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !read_proc_identity(pid).is_ok_and(|p| p.state == 'Z') && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let result = wait_for_process_group_absence(pid);
+        child.wait().unwrap();
+        assert!(
+            result.is_ok(),
+            "a zombie has no descriptors or ability to mutate scratch: {result:?}"
+        );
     }
 
     // MP-08/MP-10/MP-11: GNU timeout creates a subgroup inside our setsid session.
