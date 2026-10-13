@@ -31,7 +31,9 @@ const INSTALLED_HARNESS_CACHE_TTL: Duration = Duration::from_secs(5);
 pub(crate) fn cached_installed_provider_harnesses() -> Vec<String> {
     static CACHE: OnceLock<Mutex<Option<(Instant, Vec<String>)>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(None));
-    let mut cached = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cached = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some((observed_at, installed)) = cached.as_ref() {
         if observed_at.elapsed() < INSTALLED_HARNESS_CACHE_TTL {
             return installed.clone();
@@ -44,13 +46,18 @@ pub(crate) fn cached_installed_provider_harnesses() -> Vec<String> {
 
 /// Keeps adapter ids whose family harness is installed. Ids outside the three
 /// official families (for example the dev stub) follow their own policy.
-pub(crate) fn retain_installed_harness_providers(providers: &mut Vec<String>, installed: &[String]) {
-    providers.retain(|provider| match super::canonical_provider_family(provider) {
-        Some(family @ ("claude" | "codex" | "opencode")) => {
-            installed.iter().any(|candidate| candidate == family)
-        }
-        _ => true,
-    });
+pub(crate) fn retain_installed_harness_providers(
+    providers: &mut Vec<String>,
+    installed: &[String],
+) {
+    providers.retain(
+        |provider| match super::canonical_provider_family(provider) {
+            Some(family @ ("claude" | "codex" | "opencode")) => {
+                installed.iter().any(|candidate| candidate == family)
+            }
+            _ => true,
+        },
+    );
 }
 
 #[cfg(test)]
@@ -87,7 +94,12 @@ mod tests {
     #[test]
     fn mp08_advertised_providers_drop_uninstalled_harness_families() {
         let mut providers = [
-            "dev-stub", "claude", "claude-headless", "claude-p", "codex", "opencode",
+            "dev-stub",
+            "claude",
+            "claude-headless",
+            "claude-p",
+            "codex",
+            "opencode",
         ]
         .map(str::to_string)
         .to_vec();

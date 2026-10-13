@@ -40,10 +40,10 @@ mod managed_fs;
 #[cfg(test)]
 #[path = "account_profile_materialization_tests.rs"]
 mod materialization_tests;
-#[path = "account_profile_replica_refresh.rs"]
-mod replica_refresh;
 #[path = "account_profile_native_discovery.rs"]
 mod native_discovery;
+#[path = "account_profile_replica_refresh.rs"]
+mod replica_refresh;
 pub(crate) const MAX_MANAGED_CONTEXT_MATERIALIZATION_BYTES: usize = 16 * 1024 * 1024;
 #[cfg(test)]
 thread_local! {

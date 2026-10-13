@@ -28,7 +28,11 @@ impl ProviderAccountProfileRegistry {
     /// Claims the next discovery pass unless one is running or ran recently.
     pub(crate) fn begin_native_discovery_pass(&self, interval: Duration) -> bool {
         let mut state = self.native_discovery_state();
-        if state.in_flight || state.last_pass.is_some_and(|last| last.elapsed() < interval) {
+        if state.in_flight
+            || state
+                .last_pass
+                .is_some_and(|last| last.elapsed() < interval)
+        {
             return false;
         }
         state.in_flight = true;
@@ -66,11 +70,15 @@ impl ProviderAccountProfileRegistry {
         if self.native_discovery_state().observed.get(&key) == Some(&fingerprint) {
             return Ok(None);
         }
-        let dismissed = self.read_document()?.dismissed_native_scopes.iter().any(|scope| {
-            scope.owner_user_id == owner_user_id
-                && scope.provider == provider
-                && scope.locator == locator
-        });
+        let dismissed = self
+            .read_document()?
+            .dismissed_native_scopes
+            .iter()
+            .any(|scope| {
+                scope.owner_user_id == owner_user_id
+                    && scope.provider == provider
+                    && scope.locator == locator
+            });
         if dismissed {
             return Ok(None);
         }
@@ -86,9 +94,10 @@ impl ProviderAccountProfileRegistry {
         provider: &str,
         fingerprint: String,
     ) {
-        self.native_discovery_state()
-            .observed
-            .insert((owner_user_id.to_string(), provider.to_string()), fingerprint);
+        self.native_discovery_state().observed.insert(
+            (owner_user_id.to_string(), provider.to_string()),
+            fingerprint,
+        );
     }
 
     /// Makes a signed-in profile the provider default when the current default
@@ -118,7 +127,8 @@ impl ProviderAccountProfileRegistry {
                     && profile.public.is_default
             })
             .any(|profile| authenticated(&profile));
-        let promote = candidate.is_some_and(|profile| authenticated(&profile) && !profile.public.is_default)
+        let promote = candidate
+            .is_some_and(|profile| authenticated(&profile) && !profile.public.is_default)
             && !default_ready;
         drop(document);
         if promote {
@@ -134,7 +144,10 @@ impl ProviderAccountProfileRegistry {
     }
 }
 
-pub(super) fn dismiss_native_scope(document: &mut RegistryDocument, removed: &StoredProviderAccountProfile) {
+pub(super) fn dismiss_native_scope(
+    document: &mut RegistryDocument,
+    removed: &StoredProviderAccountProfile,
+) {
     if removed.public.origin != ProviderAccountProfileOrigin::Default {
         return;
     }
@@ -166,7 +179,9 @@ pub(super) fn restore_native_scope(
 /// read here.
 fn native_login_fingerprint(locator: &ProviderAccountLocator) -> Option<String> {
     match locator {
-        ProviderAccountLocator::Codex { codex_home } => file_fingerprint(&codex_home.join("auth.json")),
+        ProviderAccountLocator::Codex { codex_home } => {
+            file_fingerprint(&codex_home.join("auth.json"))
+        }
         ProviderAccountLocator::Claude {
             claude_config_dir,
             ambient_default,
@@ -213,7 +228,10 @@ fn claude_keychain_fingerprint(claude_config_dir: &Path, ambient_default: bool) 
 }
 
 #[cfg(not(target_os = "macos"))]
-fn claude_keychain_fingerprint(_claude_config_dir: &Path, _ambient_default: bool) -> Option<String> {
+fn claude_keychain_fingerprint(
+    _claude_config_dir: &Path,
+    _ambient_default: bool,
+) -> Option<String> {
     None
 }
 
@@ -241,12 +259,21 @@ mod tests {
         ));
         let home = root.join("home");
         fs::create_dir_all(&home).expect("fixture home");
-        for name in ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_DATA_HOME", "XDG_CONFIG_HOME"] {
+        for name in [
+            "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR",
+            "XDG_DATA_HOME",
+            "XDG_CONFIG_HOME",
+        ] {
             std::env::remove_var(name);
         }
         let registry = ProviderAccountProfileRegistry::open(root.join("profiles.json"))
             .expect("fixture registry");
-        Fixture { root, home, registry }
+        Fixture {
+            root,
+            home,
+            registry,
+        }
     }
 
     fn write_codex_login(home: &Path, contents: &str) {
@@ -270,7 +297,10 @@ mod tests {
             .native_scope_needing_observation("local", "codex", &fixture.home)
             .unwrap()
             .is_none());
-        assert_eq!(fixture.registry.list("local", Some("codex")).unwrap().len(), 1);
+        assert_eq!(
+            fixture.registry.list("local", Some("codex")).unwrap().len(),
+            1
+        );
 
         write_codex_login(&fixture.home, "{}");
         let (native, fingerprint) = fixture
@@ -279,7 +309,10 @@ mod tests {
             .unwrap()
             .expect("a native login is registered without an import step");
         assert_eq!(native.origin, ProviderAccountProfileOrigin::Default);
-        assert!(!native.is_default, "an existing default is kept until auth is observed");
+        assert!(
+            !native.is_default,
+            "an existing default is kept until auth is observed"
+        );
         assert_ne!(native.profile_id, managed.profile_id);
         fixture
             .registry
@@ -297,7 +330,10 @@ mod tests {
             .unwrap()
             .expect("a changed native login is observed again");
         assert_eq!(again.profile_id, native.profile_id);
-        assert_eq!(fixture.registry.list("local", Some("codex")).unwrap().len(), 2);
+        assert_eq!(
+            fixture.registry.list("local", Some("codex")).unwrap().len(),
+            2
+        );
     }
 
     #[test]
@@ -323,10 +359,13 @@ mod tests {
             .is_none());
         let reopened = ProviderAccountProfileRegistry::open(fixture.root.join("profiles.json"))
             .expect("reopen");
-        assert!(reopened
-            .native_scope_needing_observation("local", "codex", &fixture.home)
-            .unwrap()
-            .is_none(), "the removal is durable");
+        assert!(
+            reopened
+                .native_scope_needing_observation("local", "codex", &fixture.home)
+                .unwrap()
+                .is_none(),
+            "the removal is durable"
+        );
 
         let imported = reopened
             .import_native_default("local", "codex", &fixture.home)
@@ -354,10 +393,13 @@ mod tests {
             .native_scope_needing_observation("local", "codex", &fixture.home)
             .unwrap()
             .expect("native scope");
-        assert!(!fixture
-            .registry
-            .prefer_authenticated_default("local", "codex", &native.profile_id)
-            .unwrap(), "an unobserved native account is not promoted");
+        assert!(
+            !fixture
+                .registry
+                .prefer_authenticated_default("local", "codex", &native.profile_id)
+                .unwrap(),
+            "an unobserved native account is not promoted"
+        );
         let observe = |profile_id: &str| {
             fixture
                 .registry
@@ -389,9 +431,12 @@ mod tests {
             .set_default("local", "codex", &managed.profile_id)
             .unwrap();
         observe(&managed.profile_id);
-        assert!(!fixture
-            .registry
-            .prefer_authenticated_default("local", "codex", &native.profile_id)
-            .unwrap(), "a signed-in default chosen by the user is kept");
+        assert!(
+            !fixture
+                .registry
+                .prefer_authenticated_default("local", "codex", &native.profile_id)
+                .unwrap(),
+            "a signed-in default chosen by the user is kept"
+        );
     }
 }

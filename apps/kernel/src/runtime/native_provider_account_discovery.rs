@@ -79,9 +79,11 @@ pub(crate) fn discover_native_provider_accounts(
             &profile.profile_id,
         ) {
             Ok(_) => {
-                if let Err(error) =
-                    registry.prefer_authenticated_default(owner_user_id, provider, &profile.profile_id)
-                {
+                if let Err(error) = registry.prefer_authenticated_default(
+                    owner_user_id,
+                    provider,
+                    &profile.profile_id,
+                ) {
                     log_discovery_error(provider, "default", &error);
                 }
             }
@@ -142,7 +144,11 @@ mod tests {
         .unwrap();
         let managed = registry.create_managed("local", "claude", "work").unwrap();
 
-        assert!(super::discover_native_provider_accounts(&registry, "local", &["claude".to_string()]));
+        assert!(super::discover_native_provider_accounts(
+            &registry,
+            "local",
+            &["claude".to_string()]
+        ));
 
         let profiles = registry.list("local", Some("claude")).unwrap();
         let native = profiles
@@ -153,12 +159,22 @@ mod tests {
             native.auth_state,
             crate::account_profile::ProviderAccountAuthState::Authenticated
         );
-        assert_eq!(native.identity_summary.as_deref(), Some("native@example.test"));
-        assert!(native.is_default, "the signed-in native account replaces the unusable default");
+        assert_eq!(
+            native.identity_summary.as_deref(),
+            Some("native@example.test")
+        );
+        assert!(
+            native.is_default,
+            "the signed-in native account replaces the unusable default"
+        );
         assert!(
             !super::discover_native_provider_accounts(&registry, "local", &["claude".to_string()]),
             "an unchanged native login is not probed again"
         );
-        assert!(!super::discover_native_provider_accounts(&registry, "local", &[]));
+        assert!(!super::discover_native_provider_accounts(
+            &registry,
+            "local",
+            &[]
+        ));
     }
 }
