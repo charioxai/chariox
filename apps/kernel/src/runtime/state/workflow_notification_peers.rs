@@ -651,7 +651,7 @@ mod tests {
         panic!("MP-08 / MP-10: fixture kernel did not register");
     }
     #[test]
-    fn local_relay_98_subscribe_offline_retry_ack_loss_dedup_queue_and_unsubscribe() {
+    fn local_relay_current_subscribe_offline_retry_ack_loss_dedup_queue_and_unsubscribe() {
         std::thread::Builder::new()
             .stack_size(32 * 1024 * 1024)
             .spawn(|| {

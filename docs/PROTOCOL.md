@@ -3562,7 +3562,14 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
 
-### Workflow completion notifications — local 452 / relay peer 82 (main: local 491 / relay peer 101; MP-08 / MP-10 / MP-11)
+MP-08 / MP-10 / MP-11: a human's direct endpoint invocation records the authenticated
+invoking user atomically with queued admission in kernel-private durable metadata.
+Private run reads, snapshots and updates recognize that immutable creator proof;
+room ownership alone does not expose another user's or agent's private runs.
+The proof survives kernel restart and endpoint edits without adding a client or
+relay field. Legacy runs without creator proof remain fail-closed.
+
+### Workflow completion notifications (MP-08 / MP-10 / MP-11)
 
 Private same-user workflows are a second notification source kind beside Apps.
 The kernel emits successful final output or failure bare status once per run, with
@@ -3572,9 +3579,12 @@ and receipts generalize `app_automations` / `app_outbox` with source kinds `app_
 and `workflow_completion`; both use the existing App pump and ordinary durable queue
 handoff. App-specific signature/capability admission remains in the App adapter.
 
-Peer 82 adds owner-bound `ListWorkflowNotificationSources`,
+These owner-bound messages use the shared current relay peer protocol version:
+`ListWorkflowNotificationSources`,
 `SubscribeWorkflowNotifications`, `UnsubscribeWorkflowNotifications` and
-`DeliverWorkflowNotification` over the existing E2EE channel. Picker discovery reuses
+`DeliverWorkflowNotification` over the existing E2EE channel. The original
+452/82 contract is included in the integrated 506/114 union; those introduction
+versions are not the current admission floor. Picker discovery reuses
 waiting-room kernel inventory; Cloud stores no workflow directory or event data.
 ACK means durable target acceptance, not run completion. Seven-day default / 1–30-day
 TTL and kernel-derived ancestry apply. Repeated target workflow identities drop
