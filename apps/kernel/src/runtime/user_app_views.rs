@@ -20,6 +20,34 @@ struct Registry {
     restoring: HashMap<String, (bool, std::time::Instant)>,
 }
 
+impl Registry {
+    fn hosted(&self, owner: &str) -> Vec<String> {
+        self.views
+            .values()
+            .filter(|(b, v)| b.owner == owner && v.browser.is_some())
+            .map(|(b, _)| b.installation.clone())
+            .collect()
+    }
+
+    /// Pending restores minus Apps the owner already reopened (#992 review F3).
+    fn pending(&self, owner: &str) -> Vec<String> {
+        let mut hosted = self.hosted(owner);
+        self.restore
+            .get(owner)
+            .into_iter()
+            .flatten()
+            .filter(|installation| match hosted.iter().position(|open| open == *installation) {
+                Some(index) => {
+                    hosted.swap_remove(index);
+                    false
+                }
+                None => true,
+            })
+            .cloned()
+            .collect()
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct UserAppViews {
     registry: Arc<Mutex<Registry>>,
@@ -187,15 +215,10 @@ impl UserAppViews {
     /// Installations to reopen: hosted instances, then pending restores.
     pub(crate) fn restore_intent(&self, owner: &str) -> Vec<String> {
         let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-        let hosted = registry
-            .views
-            .values()
-            .filter(|(b, v)| b.owner == owner && v.browser.is_some())
-            .map(|(b, _)| b.installation.clone());
-        hosted
-            .chain(registry.restore.get(owner).into_iter().flatten().cloned())
-            .take(32)
-            .collect()
+        let mut intent = registry.hosted(owner);
+        intent.extend(registry.pending(owner));
+        intent.truncate(32);
+        intent
     }
 
     /// Seed restore intent persisted by an earlier kernel (first use only).
@@ -240,11 +263,11 @@ impl UserAppViews {
 
     pub(crate) fn take_restore(&self, owner: &str) -> Vec<String> {
         let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-        registry
-            .restore
-            .get_mut(owner)
-            .map(std::mem::take)
-            .unwrap_or_default()
+        let pending = registry.pending(owner);
+        if let Some(restore) = registry.restore.get_mut(owner) {
+            restore.clear();
+        }
+        pending
     }
 
     pub(crate) fn return_restore(&self, owner: &str, installations: Vec<String>) {
@@ -314,6 +337,32 @@ mod tests {
         assert_eq!(views.shutdown(), vec![view.view_id.clone()]);
         assert!(views.get("alice", &view.view_id).is_none());
         assert!(views.open("alice", binding("alice"), "a").is_err());
+    }
+    /// #992 review F3: an App the owner reopens by hand after its browser went
+    /// away is not restored a second time, nor saved twice.
+    #[test]
+    fn an_explicit_reopen_settles_the_pending_restore() {
+        let views = UserAppViews::default();
+        let hosted = |views: &UserAppViews| {
+            let view = views.open("alice", binding("alice"), "a").unwrap();
+            views
+                .bind_browser(
+                    "alice",
+                    &view.view_id,
+                    format!("target-{}", view.view_id),
+                    crate::local::UserAppViewBrowser {
+                        tab_id: format!("host-tab-{}", view.view_id),
+                        generation: 1,
+                    },
+                )
+                .unwrap();
+            view
+        };
+        let first = hosted(&views);
+        assert!(views.suspend("alice", &first.view_id));
+        hosted(&views);
+        assert_eq!(views.restore_intent("alice"), vec!["todo".to_string()]);
+        assert!(views.take_restore("alice").is_empty());
     }
     fn binding(owner: &str) -> AppViewBinding {
         AppViewBinding {
