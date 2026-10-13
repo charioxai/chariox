@@ -126,7 +126,11 @@ impl KernelRuntimeState {
     /// The browser went away (stop, crash or restart): end the instance and
     /// keep the owner's intent, so the App reopens with the browser.
     pub(super) fn suspend_user_app_view(&self, owner: &str, id: &str) {
-        self.app_control().user_views().suspend(owner, id);
+        // MP-08/MP-11: shutdown already retired this instance. A late pump
+        // result must not replace the saved intent with the empty registry.
+        if !self.app_control().user_views().suspend(owner, id) {
+            return;
+        }
         self.app_control().views().forget_session(id);
         self.app_control().views().keep_pumping(id);
         self.remember_user_app_tabs(owner);

@@ -45,6 +45,54 @@ fn fixture() -> (KernelRuntimeState, String, Cleanup) {
     (runtime, session, cleanup)
 }
 
+#[test]
+fn mp08_late_browser_pump_failure_keeps_saved_app_tabs() {
+    let (runtime, _, _cleanup) = fixture();
+    let owner = "local";
+    let views = runtime.app_control().user_views();
+    let view = views
+        .open(
+            owner,
+            AppViewBinding {
+                owner: owner.into(),
+                installation: "todo".into(),
+                generation: 1,
+                panel: Default::default(),
+                logical_tab: None,
+            },
+            "a",
+        )
+        .unwrap();
+    views
+        .bind_browser(
+            owner,
+            &view.view_id,
+            "target".into(),
+            crate::local::UserAppViewBrowser {
+                tab_id: "host-tab-saved".into(),
+                generation: 1,
+            },
+        )
+        .unwrap();
+    runtime.remember_user_app_tabs(owner);
+    let path = runtime
+        .owned
+        .kernel_browser_host
+        .profile_root(&runtime.provider_account_authority_owner_user_id(owner))
+        .join("app-tabs.json");
+    let saved = std::fs::read(&path).unwrap();
+    assert!(String::from_utf8_lossy(&saved).contains("todo"));
+    // Shutdown retires instances before stopping the controller. A poll
+    // already in flight then reports its failed drain against the old view.
+    views.shutdown();
+    runtime.suspend_user_app_view(owner, &view.view_id);
+    assert_eq!(
+        std::fs::read(path).unwrap(),
+        saved,
+        "a late pump result cannot overwrite the owner's durable Tab intent"
+    );
+}
+
 #[tokio::test]
 async fn running_slice_start_does_not_spend_restore_or_poll_failure_budgets() {
     let (runtime, session, _cleanup) = fixture();
