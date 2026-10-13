@@ -14,6 +14,10 @@ use crate::transport::relay_peer::{
 
 use super::*;
 
+#[cfg(test)]
+#[path = "relay_peer_runtime_state/provider_account_tests.rs"]
+mod remote_provider_account_tests;
+
 impl KernelRuntimeState {
     async fn update_relay_leased_prompt_admission_receipt(
         &self,
@@ -1018,13 +1022,41 @@ impl KernelRuntimeState {
         context: crate::transport::relay_peer::RemoteProviderAccountSyncContext,
         materialization: crate::account_profile::ProviderAccountMaterialization,
     ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
-        let lease_id = context.execution_lease_id.clone();
-        self.with_app_side_effect(move |app| {
-            let mut runtime = RemoteLeaseRuntime::new(app);
-            runtime.consume_execution_lease_authorization(&lease_id)?;
-            runtime.ensure_remote_provider_account(context, materialization)
+        // Native probes may take a full network deadline. Serialize this
+        // owner's account family without holding the shared kernel app lock.
+        let owner = &materialization.profile.owner_user_id;
+        let provider =
+            crate::provider::canonical_provider_family(&materialization.profile.provider)
+                .unwrap_or(&materialization.profile.provider);
+        let operation_key = format!("provider-account:{}:{owner}:{provider}", owner.len());
+        let permit = self.leased_agent_operations.lock(&operation_key).await;
+        let task_context = context.clone();
+        let task = self
+            .with_app_side_effect(|app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_execution_lease_authorization(&context.execution_lease_id)?;
+                runtime.prepare_remote_provider_account(task_context, owner)
+            })
+            .await?;
+        let profile = tokio::task::spawn_blocking(move || {
+            // Keep the family lane until native cleanup ends even if the
+            // requesting peer disconnects and drops its awaiting future.
+            let _permit = permit;
+            task.run(materialization)
         })
         .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "ensure remote provider account",
+            message: format!("provider-account provisioning task failed: {error}"),
+        })??;
+        // A lease may have been removed while its native utility was running.
+        // The account is worker-owned; never acknowledge it for a stale lease.
+        self.with_app_side_effect(|app| {
+            RemoteLeaseRuntime::new(app)
+                .validate_remote_provider_account_context(&context, &profile.owner_user_id)
+        })
+        .await?;
+        Ok(profile)
     }
 
     pub(crate) async fn check_relay_remote_mcp_availability(
@@ -1647,7 +1679,7 @@ mod relay_native_provider_launch_tests {
         }
     }
 
-    fn runtime_state_from_app(app: crate::app::DaemonApp) -> KernelRuntimeState {
+    pub(super) fn runtime_state_from_app(app: crate::app::DaemonApp) -> KernelRuntimeState {
         let config_projection = app.config_projection_store();
         let session_store = app.session_state_store();
         let agent_store = app.agents().clone();
