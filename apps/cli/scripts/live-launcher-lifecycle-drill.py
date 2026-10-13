@@ -256,10 +256,12 @@ def main():
         send(interrupt.pid, signal.SIGINT, owned, pid_signals)
         check('launcher-SIGINT', wait_for(lambda: interrupt.poll() is not None and not alive(tui), 2))
         hup, tui = start('terminal-hup', path)
-        hup_launch = group_signals.record(hup.group)
+        hup_launch = group_signals.record(hup.group, expected_start=owned[hup.group].start)
         members = [pid for pid, _, group in processes() if group == hup.group]
-        if hup.group <= 1 or not members or any(pid not in owned for pid in members):
+        if hup.group <= 1 or not members:
             raise RuntimeError('refusing group signal without exclusive ownership')
+        # The guard checks every current member by ancestry and start identity,
+        # including short-lived watcher probes created since start().
         group_signals.group(hup_launch, signal.SIGHUP)
         check('terminal-SIGHUP', wait_for(lambda: hup.poll() is not None and not alive(tui), 2))
     finally:
