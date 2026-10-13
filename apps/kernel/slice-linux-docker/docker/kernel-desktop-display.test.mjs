@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import { DesktopSource } from './kernel-desktop-source.mjs';
+import { encodePng } from './kernel-browser-pixels.mjs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -15,6 +16,37 @@ function fixture(){
  return {host,display,counts:()=>({captures,closed})};
 }
 const command={op:'display_subscribe',...target,codecs:['avc1.420033'],bitrate:8000000,device_scale_factor:1};
+test('MP-08/MP-10 ACK-gated desktop exact frames do not pay a second link delay',async()=>{
+ for(const push of [undefined,{reset:false,congested:false}]){
+  const {host}=fixture();let now=0;
+  const pixels=Buffer.alloc(target.width*target.height*4,255);
+  for(let i=0;i<128*128;i++)for(let channel=0;channel<3;channel++)pixels[i*4+channel]=(i*37+(i>>8)*19+channel*71)%256;
+  const frames=[{width:target.width,height:target.height,serial:1,native_exact:true,motion:false,force_lossless:true,data_base64:encodePng(target.width,target.height,pixels)}];
+  const source={closed:false,sample:()=>null,close:async()=>{},valid:()=>true};
+  const display=new DesktopDisplay(host,{createSource:async()=>source,createProducer:()=>({waitReady:async()=>{},take:()=>frames.shift()??null,invalidate(){},retireUnsent(){},feedback(){},close:async()=>{}})});
+  try{
+   const subscription=await display.subscribe({...command,bitrate:500000},'human');
+   const stream=host.displays.get(subscription.subscription_id);
+   stream.now=()=>now;stream.refillAt=0;stream.tokens=0;stream.wait=async ms=>{now+=ms};
+   const reply=await display.request({op:'screenshot',display_subscription_id:subscription.subscription_id,generation:1,after_sequence:0,push},'human');
+   assert.equal(reply.display_frame.kind,'png');
+   if(push)assert.equal(now,0,'the kernel ACK pump already gates these exact bytes');
+   else assert(now>0,'legacy display credits retain byte pacing');
+  }finally{await display.close();}
+ }
+});
+test('MP-08/MP-10 desktop motion receives ACK congestion and legacy credit lag',async()=>{
+ for(const [push,expected] of [[{reset:false,congested:true},8],[{reset:false,congested:false},0],[undefined,3]]){
+  const {host}=fixture(),feedback=[];
+  const source={closed:false,sample:()=>null,close:async()=>{},valid:()=>true};
+  const display=new DesktopDisplay(host,{createSource:async()=>source,createProducer:()=>({waitReady:async()=>{},take:()=>null,feedback:lag=>feedback.push(lag),invalidate(){},close:async()=>{}})});
+  try{
+   const subscription=await display.subscribe(command,'human');host.displays.get(subscription.subscription_id).sequence=3;
+   await display.request({op:'screenshot',display_subscription_id:subscription.subscription_id,generation:1,after_sequence:0,push},'human');
+   assert.deepEqual(feedback,[expected]);
+  }finally{await display.close();}
+ }
+});
 test('MP-11 stale desktop, agent video and unsupported codec fail before capture',async()=>{
  const {display,counts}=fixture();
  for(const request of [{...command,generation:'old'}, {...command,_agent_input:true}, {...command,codecs:['png']}, {...command,device_scale_factor:3}])await assert.rejects(display.subscribe(request,'terminal'));
