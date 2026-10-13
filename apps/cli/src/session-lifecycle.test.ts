@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { RuntimeProviderRun, RuntimeSession } from "./cli-types.js"
+import type { RuntimeAttachment, RuntimeProviderRun, RuntimeSession } from "./cli-types.js"
 import { LocalIpcError } from "./ipc.js"
 import { createSessionLifecycleController } from "./session-lifecycle.js"
 import { createBaseDeps } from "./session-lifecycle.test-support.js"
@@ -96,6 +96,7 @@ test("rollbackAttachedSession detaches and clears only the exact target binding"
 
 test("attachBinding reattaches and hydrates the attached session before restoring the attached state", async () => {
   const events: string[] = []
+  let currentAttachment: RuntimeAttachment | null = null
   const attachedSession: RuntimeSession = {
     id: "session-2",
     project_id: "project-default",
@@ -115,7 +116,8 @@ test("attachBinding reattaches and hydrates the attached session before restorin
   }
 
   const { deps } = createBaseDeps({
-    attachmentState: () => null,
+    attachmentState: () => currentAttachment,
+    sessionState: () => attachedSession,
     clearPendingPromptAttachments: () => events.push("clearPendingPromptAttachments"),
     clearWorkflows: () => events.push("clearWorkflows"),
     bumpHistoryLoadGeneration: () => events.push("bumpHistoryLoadGeneration"),
@@ -158,7 +160,7 @@ test("attachBinding reattaches and hydrates the attached session before restorin
       events.push("hydrateAttachedSessionBinding")
       return attachedSession
     },
-    setAttachmentState: () => events.push("setAttachmentState"),
+    setAttachmentState: (value: RuntimeAttachment) => { currentAttachment = value; events.push("setAttachmentState") },
     setCreatedSessionState: () => events.push("setCreatedSessionState"),
     setSessionState: () => events.push("setSessionState"),
     setCenterMode: () => events.push("setCenterMode"),
@@ -189,7 +191,8 @@ test("attachBinding reattaches and hydrates the attached session before restorin
 
   await controller.attachBinding({ id: "session-2" }, false)
 
-  assert.deepEqual(events, [
+  assert.equal(events.filter((event) => event === "setProviderCatalogState").length, 1)
+  assert.deepEqual(events.filter((event) => event !== "setProviderCatalogState"), [
     "clearPendingPromptAttachments",
     "bumpHistoryLoadGeneration",
     "setSessionHydratingState",
@@ -222,7 +225,6 @@ test("attachBinding reattaches and hydrates the attached session before restorin
     "setProviderRunState",
     "syncCliProviderSelection",
     "getProviderCatalog",
-    "setProviderCatalogState",
     "reconcileWaitingRoom",
     "hydrateAttachedSessionBinding",
     "setMultiAgentResponseLayout",
@@ -955,6 +957,7 @@ test("attachBinding syncs CLI provider selection from an existing active provide
 
 test("attachBinding keeps the CLI attached when post-attach refresh steps fail", async () => {
   const events: string[] = []
+  let currentAttachment: RuntimeAttachment | null = null
   const warnings: string[] = []
   const attachedSession: RuntimeSession = {
     id: "session-2",
@@ -975,7 +978,8 @@ test("attachBinding keeps the CLI attached when post-attach refresh steps fail",
   }
 
   const { deps } = createBaseDeps({
-    attachmentState: () => null,
+    attachmentState: () => currentAttachment,
+    sessionState: () => attachedSession,
     attachToSession: async () => ({ id: "att-2", session_id: "session-2" }),
     getSessionState: async () => attachedSession,
     tryGetProviderRun: async () => ({
@@ -990,7 +994,7 @@ test("attachBinding keeps the CLI attached when post-attach refresh steps fail",
       usage_tokens_total: null,
       state: "Running",
     }),
-    setAttachmentState: () => events.push("setAttachmentState"),
+    setAttachmentState: (value: RuntimeAttachment) => { currentAttachment = value; events.push("setAttachmentState") },
     resetWorkspaceScreen: () => events.push("resetWorkspaceScreen"),
     setCreatedSessionState: () => events.push("setCreatedSessionState"),
     setSessionState: () => events.push("setSessionState"),
@@ -1163,4 +1167,30 @@ test("attachBinding adopts the attached session response layout immediately", as
 
   assert.deepEqual(appliedLayouts, ["split", "split"])
   assert.deepEqual(repaintCalls, ["refresh", "refresh"])
+})
+
+// MP-08 / MP-10, PANE-15: model/help catalog latency must not hold the attach command busy.
+test("attachment completes while provider and command catalogs are still pending", async () => {
+  let releaseProvider!: (value: never) => void
+  let releaseCommands!: (value: never) => void
+  const provider = new Promise<never>((resolve) => { releaseProvider = resolve })
+  const commands = new Promise<never>((resolve) => { releaseCommands = resolve })
+  const { deps } = createBaseDeps({
+    attachmentState: () => null,
+    attachToSession: async () => ({ id: "catalog-attachment", session_id: "session-catalog-latency" }),
+    getSessionState: async () => ({ ...createBaseDeps().deps.sessionState(), id: "session-catalog-latency" }),
+    getProviderCatalog: () => provider,
+    getTerminalCommandCatalog: () => commands,
+  })
+  const controller = createSessionLifecycleController(deps as never)
+  let completed = false
+  const attaching = controller.attachBinding({ id: "session-catalog-latency" }, false).then(() => { completed = true })
+  for (let i = 0; i < 100; i++) await Promise.resolve()
+  try {
+    assert.equal(completed, true)
+  } finally {
+    releaseProvider({} as never)
+    releaseCommands({} as never)
+    await attaching
+  }
 })

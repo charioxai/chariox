@@ -17,6 +17,7 @@ import {
   type SessionLifecycleLaunchSelection,
 } from "@chariox/kernel-client/session-lifecycle-state"
 import { settleAttachProviderRun } from "./attach-provider-run.js"
+import { refreshAttachedCatalogs } from "./attached-catalog-refresh.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { SessionListEntry } from "./sessions.js"
@@ -379,22 +380,15 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         }
       }
 
-      try {
-        deps.setProviderCatalogState(await deps.getProviderCatalog())
-      } catch (error) {
-        deps.logWarning?.("failed to refresh provider catalog after attach", {
-          session_id: session.id,
-          error: formatError(error),
-        })
-      }
-      try {
-        deps.setTerminalCommandCatalogState(await deps.getTerminalCommandCatalog())
-      } catch (error) {
-        deps.logWarning?.("failed to refresh terminal command catalog after attach", {
-          session_id: session.id,
-          error: formatError(error),
-        })
-      }
+      void refreshAttachedCatalogs({ sessionId: session.id, attachmentId: attachment.id }, {
+        isCurrent: () => deps.sessionState().id === session.id && deps.attachmentState()?.id === attachment.id,
+        getProviderCatalog: deps.getProviderCatalog,
+        setProviderCatalog: deps.setProviderCatalogState,
+        getCommandCatalog: deps.getTerminalCommandCatalog,
+        setCommandCatalog: deps.setTerminalCommandCatalogState,
+        formatError,
+        ...(deps.logWarning ? { logWarning: deps.logWarning } : {}),
+      })
 
       deps.reconcileWaitingRoom(deps.waitingRoomState())
 
