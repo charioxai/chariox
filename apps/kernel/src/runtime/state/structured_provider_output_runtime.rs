@@ -560,18 +560,29 @@ impl KernelRuntimeState {
                 .agent_instance_id()
                 .filter(|_| projected_provider_run.turn_substitute().is_none())
             {
-                owned.agent_store.set_agent_runtime_profile_durably(
-                    &owned.durable_state_store,
-                    agent_id,
-                    projected_provider_run.provider(),
-                    Some(projected_provider_run.model().to_string()),
-                    projected_provider_run.variant().map(str::to_string),
-                    Some(projected_provider_run.account_profile().to_string()),
-                    resume_state.clone(),
-                    Some(projected_provider_run.id()),
-                    None,
+                // MP-08/MP-10/MP-11: a retired run can still finish a poll.
+                // Linearize profile writes with retirement so its metadata
+                // cannot undo a provider/account/model switch.
+                let updated = owned.provider_store.with_current_live_launch(
+                    &projected_provider_run,
+                    |_| {
+                        owned.agent_store.set_agent_runtime_profile_durably(
+                            &owned.durable_state_store,
+                            agent_id,
+                            projected_provider_run.provider(),
+                            Some(projected_provider_run.model().to_string()),
+                            projected_provider_run.variant().map(str::to_string),
+                            Some(projected_provider_run.account_profile().to_string()),
+                            resume_state.clone(),
+                            Some(projected_provider_run.id()),
+                            None,
+                        )?;
+                        Ok(())
+                    },
                 )?;
-                let _ = owned.session_snapshot(projected_provider_run.session_id())?;
+                if updated.is_some() {
+                    let _ = owned.session_snapshot(projected_provider_run.session_id())?;
+                }
             }
         }
         Ok(poll_result)

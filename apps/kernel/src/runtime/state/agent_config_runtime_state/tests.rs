@@ -203,6 +203,131 @@ async fn mp08_mp10_mp11_provider_switch_selects_target_family_default() {
 }
 
 #[tokio::test]
+async fn mp08_mp10_mp11_retired_provider_metadata_preserves_selected_profile() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("retired-provider-profile");
+    std::env::set_var("CHARIOX_HOME", root.path().join("home"));
+    let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    let old_provider = runtime
+        .owned
+        .agent_store
+        .get_agent(&agent_id)
+        .unwrap()
+        .provider()
+        .to_string();
+    let started = runtime
+        .owned
+        .start_provider_launch(
+            crate::provider::LaunchProviderRequest::new(
+                &session_id,
+                "dev-stub",
+                &old_provider,
+                "default",
+                "source-model",
+            )
+            .with_agent_id(&agent_id),
+        )
+        .unwrap();
+    runtime
+        .owned
+        .finish_provider_launch_success(&started, None)
+        .unwrap();
+    let live_resume = crate::provider::ProviderResumeState::from_external_provider_session(
+        "opencode",
+        "live-thread",
+    );
+    Box::pin(runtime.apply_owned_structured_output_batch(
+        &session_id,
+        started.run.id(),
+        Vec::new(),
+        crate::provider::ProviderPromptSignalBatch {
+            resolved_resume_state: Some(live_resume.clone()),
+            ..Default::default()
+        },
+    ))
+    .await
+    .unwrap();
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .unwrap()
+            .provider_resume_state(),
+        &live_resume,
+        "current live metadata must still update the resume"
+    );
+    let registry = app.lock().await.provider_account_profile_registry();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let profile = registry.create_managed(owner, "codex", "Target").unwrap();
+    registry
+        .set_default(owner, "codex", &profile.profile_id)
+        .unwrap();
+    runtime
+        .update_agent_profile(
+            &session_id,
+            &agent_id,
+            owner,
+            Some("codex".into()),
+            None,
+            Some("target-model".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(started.run.id())
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Ended
+    );
+    let selected = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+    let resume = crate::provider::ProviderResumeState::from_external_provider_session(
+        "opencode",
+        "late-old-thread",
+    );
+    Box::pin(runtime.apply_owned_structured_output_batch(
+        &session_id,
+        started.run.id(),
+        Vec::new(),
+        crate::provider::ProviderPromptSignalBatch {
+            resolved_resume_state: Some(resume.clone()),
+            ..Default::default()
+        },
+    ))
+    .await
+    .unwrap();
+    let after = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+    assert_eq!(
+        after.provider(),
+        selected.provider(),
+        "retired metadata must not revert the provider switch"
+    );
+    assert_eq!(after.model(), selected.model());
+    assert_eq!(
+        after.provider_account_profile(),
+        selected.provider_account_profile()
+    );
+    assert_eq!(
+        after.provider_resume_state(),
+        selected.provider_resume_state()
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(started.run.id())
+            .unwrap()
+            .resume_state(),
+        &resume,
+        "retired run metadata still belongs to its own history"
+    );
+}
+
+#[tokio::test]
 async fn cloud_owner_agent_profile_update_resolves_host_account_namespace() {
     let cloud_owner = "cloud-owner";
     let mut config = crate::config::DaemonConfig::for_tests();
