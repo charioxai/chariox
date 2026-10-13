@@ -105,6 +105,9 @@ Owner direction: an App is a Tab of the owner's kernel browser, projected like
 any Tab (DOM mirror under the same observation protection, display stream,
 screenshots). Web and TUI open Apps with `host: "kernel_browser"`; the web
 client shows that Tab in its browser modal and needs no isolated App origin.
+With the App-view feature enabled, `/app open` uses this host both from the
+waiting room and while a Room is attached. The TUI projects the same Tab as
+text and sends its input through the kernel browser.
 A focused or granted agent may input in, navigate within the App origin and
 close an App Tab after the kernel claimed `UserDomainResource::AppView` in its
 own grant; the host refuses agent mutations without that claim. Each page call
@@ -113,7 +116,8 @@ carries who drove the Tab. An agent-driven call runs as that agent
 still holds the App view and its own App grant (rechecked at enqueue and
 reply; otherwise `AGENT_APP_NOT_GRANTED`); it never borrows the owner's App
 authority. Critical effects still need the owner's validation and passkey.
-Room views keep the Room rule below.
+Existing Room-hosted instances keep the Room rule below; opening an App from
+a client no longer selects that host merely because a Room is attached.
 
 ## Agent access and migration
 
@@ -144,7 +148,8 @@ user-domain authority.
 
 Existing `OpenAppView` and Room tab identities keep their behavior and wire
 shape. Room views do not silently move to the user domain. A client opening an
-App without a session explicitly chooses `OpenUserAppView`; moving a view
+App explicitly chooses `OpenUserAppView` when the App-view feature is enabled;
+moving an existing Room view
 means opening a new instance in the destination and closing the old one. App
 backend/data remain installation-scoped; transient frontend state remains
 per instance. Human/agent simultaneous frontend editing remains deferred.
