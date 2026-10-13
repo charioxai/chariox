@@ -495,8 +495,22 @@ pub(crate) fn provider_reported_transcript_on_kernel(
     run: &RuntimeProviderRun,
     reported_path: &str,
 ) -> Option<super::reported_transcript_file::ProviderReportedTranscript> {
-    let (path, confined) = provider_reported_path_binding(run, reported_path)?;
-    super::reported_transcript_file::ProviderReportedTranscript::open(path, confined)
+    provider_reported_transcript_result_on_kernel(run, reported_path).ok()
+}
+
+// MP-08 / MP-10 / MP-11: diagnostics expose a class, never paths or file contents.
+pub(crate) fn provider_reported_transcript_result_on_kernel(
+    run: &RuntimeProviderRun, reported_path: &str,
+) -> Result<super::reported_transcript_file::ProviderReportedTranscript, &'static str> {
+    let (path, confined) = provider_reported_path_binding(run, reported_path).ok_or("outside_binding")?;
+    super::reported_transcript_file::ProviderReportedTranscript::open_with_error(path, confined).map_err(|error| {
+        match error.kind() {
+            std::io::ErrorKind::NotFound => "not_found",
+            std::io::ErrorKind::PermissionDenied => "permission_denied",
+            std::io::ErrorKind::InvalidInput => "invalid_path",
+            _ => "open_failed",
+        }
+    })
 }
 
 fn provider_reported_path_binding(
