@@ -94,12 +94,13 @@ impl KernelRuntimeState {
         command: &crate::runtime::command::KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Self {
-        let state = self.with_external_command_authority(
+        let mut state = self.with_external_command_authority(
             command
                 .external_grant_id()
                 .as_deref()
                 .map(|id| (id, request)),
         );
+        state.terminal_caller = command.is_terminal_caller();
         if !command.is_sudo_command() {
             return state;
         }
@@ -109,6 +110,13 @@ impl KernelRuntimeState {
                 .clone()
                 .map(|run| (command.correlation_id.clone(), run)),
         )
+    }
+
+    /// MP-08 / MP-11: the caller's user id when the transport admitted a
+    /// terminal caller; only that caller may claim the owner-only stop of
+    /// pre-proof history (the live owner is rechecked at commit).
+    pub(crate) fn terminal_stop_user<'a>(&self, caller_user_id: &'a str) -> Option<&'a str> {
+        self.terminal_caller.then_some(caller_user_id)
     }
 
     /// The submitting turn a sudo command is bound to, carried across lanes.

@@ -10,7 +10,6 @@ impl KernelRuntimeState {
         &self,
         request: ControlRoomWorkflowRunsRequest,
         caller_user_id: &str,
-        caller_agent_id: Option<&str>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
@@ -69,7 +68,7 @@ impl KernelRuntimeState {
                         &initial,
                         &run,
                         request.action != RoomWorkflowRunAction::Stop,
-                        caller_agent_id.is_none().then_some(caller_user_id),
+                        self.terminal_stop_user(caller_user_id),
                     ) {
                         result.error = Some(error.to_string());
                     } else if run.status().is_terminal()
@@ -88,7 +87,7 @@ impl KernelRuntimeState {
                                     &request.session_id,
                                     run_id,
                                     false,
-                                    caller_agent_id.is_none().then_some(caller_user_id),
+                                    self.terminal_stop_user(caller_user_id),
                                 )
                                 .await
                                 .map(|_| ()),
