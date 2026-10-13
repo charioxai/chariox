@@ -1,4 +1,5 @@
-// Exercise Bun's real parent metadata after an owned launcher exits.
+// MP-08/MP-11: exercise the macOS fallback with real Bun processes on any host.
+// Linux Rust PR_SET_PDEATHSIG is exercised by the native launcher/live drill.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
@@ -11,7 +12,7 @@ test('Bun parent watch settles after its real launcher is killed', { timeout: 10
   const module = new URL('../dist/cli-launcher-parent.js', import.meta.url).href
   const entry = `;(async () => {
     const { watchCliLauncherParent } = await import(${JSON.stringify(module)})
-    watchCliLauncherParent(process.env.CHARIOX_CLI_LAUNCHER_PID)
+    watchCliLauncherParent(process.env.CHARIOX_CLI_LAUNCHER_PID, { platform: "darwin" })
     setInterval(() => {}, 1000)
     console.log(JSON.stringify({ pid: process.pid, ppid: process.ppid }))
   })()`
@@ -46,8 +47,8 @@ test('Bun parent watch settles after its real launcher is killed', { timeout: 10
     guard.pid(parentIdentity, 'SIGKILL')
     await parentExited
     const deadline = Date.now() + 2000
-    while (Date.now() < deadline && guard.refresh().some(row => row.pid === child.pid)) await delay(25)
-    assert.equal(guard.refresh().some(row => row.pid === child.pid), false,
+    while (Date.now() < deadline && guard.refresh().some(row => row.pid === child.pid && row.state !== 'Z')) await delay(25)
+    assert.equal(guard.refresh().some(row => row.pid === child.pid && row.state !== 'Z'), false,
       'Bun child survived its launcher by more than 2 seconds')
   } finally {
     for (const identity of guard.processes(parentIdentity)) guard.pid(identity, 'SIGKILL')
@@ -63,8 +64,8 @@ test('Bun parent watch rejects an unreaped zombie launcher', { timeout: 10000 },
   const module = new URL('../dist/cli-launcher-parent.js', import.meta.url).href
   const entry = `;(async () => {
     const { watchCliLauncherParent } = await import(${JSON.stringify(module)})
-    // Bun on macOS caches ppid. Force that same metadata seam on Linux too.
-    watchCliLauncherParent(process.env.CHARIOX_CLI_LAUNCHER_PID, () => Number(process.env.CHARIOX_CLI_LAUNCHER_PID))
+    // The fallback ignores cached ppid and inspects real ancestry/state.
+    watchCliLauncherParent(process.env.CHARIOX_CLI_LAUNCHER_PID, { platform: "darwin" })
     setInterval(() => {}, 1000)
     console.log(JSON.stringify({ pid: process.pid, ppid: process.ppid }))
   })()`

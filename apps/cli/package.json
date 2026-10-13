@@ -168,7 +168,7 @@
     "native-tui:claude-spike": "node scripts/live-claude-native-tui-spike.mjs",
     "compile": "bun scripts/compile.mjs",
     "test:compile": "node --test scripts/compile.test.mjs",
-    "test:launcher-parent": "node --test scripts/launcher-parent-native.test.mjs"
+    "test:launcher-parent": "node --test scripts/launcher-parent-native.test.mjs && python3 -B scripts/live-launcher-lifecycle-drill.test.py"
   },
   "dependencies": {
     "@opentui/core": "0.1.87",

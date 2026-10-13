@@ -238,18 +238,18 @@ def main():
             send(tui, signal.SIGTERM, owned, pid_signals)
             wait_for(lambda: not alive(tui), 2)
         first, tui = start('sigkill-old', path)
+        started = time.monotonic()
         send(first.pid, signal.SIGKILL, owned, pid_signals)
-        first.wait(timeout=2)
-        replacement, new_tui = start('sigkill-replacement', path)
-        parent_death_settled = wait_for(lambda: not alive(tui), 2)
-        check('launcher-SIGKILL-parent-death', parent_death_settled, childPid=tui)
+        parent_death_settled = wait_for(lambda: first.poll() is not None and not alive(tui), 2)
+        check('launcher-SIGKILL-parent-death', parent_death_settled,
+              elapsedMs=round((time.monotonic()-started)*1000), launcherPid=first.pid, childPid=tui)
         if alive(tui):
-            # Drive the orphan's real quit flow after replacement has bound.
-            os.write(terminals[-2][0], b'\x03')  # Ctrl-C
+            send(tui, signal.SIGTERM, owned, pid_signals)
             wait_for(lambda: not alive(tui), 2)
-        wait_for(lambda: not alive(tui), 2)
-        time.sleep(.2)
-        check('replacement-socket-survives-old-exit', ready(path), childPid=new_tui)
+        replacement, new_tui = start('sigkill-replacement', path)
+        # This checks availability after the old child settled. The deterministic
+        # automation-server test covers cleanup racing a live replacement socket.
+        check('replacement-socket-after-settled-old-exit', parent_death_settled and ready(path), childPid=new_tui)
         os.write(terminals[-1][0], b'\x03')
         check('normal-quit', wait_for(lambda: replacement.poll() is not None and not alive(new_tui), 2))
         interrupt, tui = start('launcher-interrupt', path)
