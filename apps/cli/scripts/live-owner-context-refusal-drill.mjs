@@ -23,7 +23,7 @@ for (const dir of [E, state, work]) { assert(path.isAbsolute(dir) && !dir.starts
 const scratch = await mkdtemp(path.join(state, 'owner-refusal-')), workspace = await mkdtemp(path.join(work, 'public-project-'))
 const children = [], privateLogs = [], confidential = [], cells = [], resources = [], api = []
 let browser, network, proxy, mode, contextId, socket, tuiLog, fault, source, target
-const report = {mpItems:['MP-08','MP-10','MP-11'], area:'apps-byom/BY-05', source:{oss:required('BYOM_OSS_HEAD'), cloud:required('BYOM_CLOUD_HEAD')}, started:new Date().toISOString(), cells, api, resources, scope:'Real hosted Cloud and encrypted WSS; actual API boundary replay/revocation/short-TTL expiry; refusal before packaging; this does not establish signed C6 installed-target acceptance.'}
+const report = {mpItems:['MP-08','MP-10','MP-11'], area:'apps-byom/BY-05', source:{oss:required('BYOM_OSS_HEAD'), cloud:required('BYOM_CLOUD_HEAD')}, started:new Date().toISOString(), cells, api, resources, networkDisposals:[], scope:'Real hosted Cloud and encrypted WSS; actual API boundary replay/revocation/short-TTL expiry; refusal before packaging; this does not establish signed C6 installed-target acceptance.'}
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 const safe = text => confidential.reduce((value, secret) => value.replaceAll(secret, '[redacted]'), String(text))
 async function save() { await writeFile(path.join(E,'RESULT.json'), JSON.stringify(report,null,2)) }
@@ -131,7 +131,9 @@ try {
   socket=path.join(scratch,'tui.sock');tuiLog=path.join(scratch,'tui.log');const log=await open(tuiLog,'w',0o600)
   spawn('python3',[path.join(repo,'apps/cli/scripts/lib/owner-context-terminal.py'),cli,'--kernel-url',source.url,'--automation-socket',socket,'--session',session.id,'--workspace',publicRepo,'--worktree',publicRepo,'--provider','codex','--account-profile',linked.profile_id,'--model','codex/gpt-6.1-sol'],source.env,['pipe',log.fd,log.fd]);await log.close()
   await until(async()=>{try{return (await automation({action:'snapshot'})).session?.id}catch{return false}},'real TUI ready')
-  await first.close()
+  report.networkDisposals.push({stage:'before-enrollment-context-close',snapshot:await network.snapshot()})
+  await first.close();await pause(150)
+  report.networkDisposals.push({stage:'after-enrollment-context-close',snapshot:await network.snapshot()})
   const before=(await rpc(target,{ListProjects:{}})).ProjectsListed.projects
   for(const dpr of [1,2]) {
     const ctx=await browser.newContext({deviceScaleFactor:dpr,viewport:{width:1440,height:1000}}), page=await ctx.newPage();network.attach(page)
@@ -161,17 +163,20 @@ try {
       const terminal=path.join(E,`dpr${dpr}-${reason}-tui.log`);await writeFile(terminal,safe(await readFile(tuiLog,'utf8')))
       await run('python3',[path.join(repo,'apps/cli/scripts/lib/owner-context-terminal.py'),'--render',terminal,path.join(E,`dpr${dpr}-${reason}-tui.png`)])
       cell.failureCodeSpecific=status.failureCode==='owner_context_authorization_'+reason
+      cell.network=await network.snapshot()
       cell.status=cell.webSpecific&&cell.tuiSpecific&&cell.failureCodeSpecific?'PASS':'FAIL';await save()
       console.log('MP-08 / MP-10 / MP-11 BY-05',reason,'DPR'+dpr,cell.status)
       await dialog.getByRole('button',{name:'Close',exact:true}).click()
     }
-    await ctx.close()
+    report.networkDisposals.push({stage:'before-dpr-context-close',dpr,snapshot:await network.snapshot()})
+    await ctx.close();await pause(150)
+    report.networkDisposals.push({stage:'after-dpr-context-close',dpr,snapshot:await network.snapshot()})
   }
   report.network=await network.snapshot();assert(report.network.authenticated && report.network.calibration.passed && report.network.hostedRelayObserved)
   report.status=cells.every(cell=>cell.status==='PASS')?'PASS':'FAIL';if(report.status==='FAIL')process.exitCode=1
 } catch(error) {report.status='FAIL';report.error=safe(error.message).split('Call log:')[0].slice(0,1200);process.exitCode=1}
 finally {
-  if(browser)await browser.close();if(network)await network.close()
+  if(browser)await browser.close();if(network)report.networkCleanup=await network.close()
   for(const child of children.reverse())await stop(child)
   if(proxy){proxy.server.closeAllConnections();await new Promise(resolve=>proxy.server.close(resolve))}
   confidential.length=0
