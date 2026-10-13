@@ -522,6 +522,9 @@ pub(super) fn claude_rendered_permission_details(text: &str) -> String {
 /// Select Yes using the rendered selector, including an explicit highlighted
 /// row. Without a highlight, Claude starts on the first displayed choice.
 pub(super) fn claude_workspace_trust_approval_input(text: &str) -> Option<&'static [u8]> {
+    if !claude_headless_workspace_trust_visible(text) {
+        return None;
+    }
     let compact = normalize_claude_rendered_permission_text(text)
         .to_ascii_lowercase()
         .replace(' ', "");
@@ -760,5 +763,42 @@ mod approval_lifetime_tests {
             take_claude_permission_inputs(&context_file),
             vec![b"\r".to_vec()]
         );
+    }
+}
+
+#[cfg(test)]
+mod workspace_trust_selection_tests {
+    use super::claude_workspace_trust_approval_input;
+    #[test]
+    fn approval_selects_affirmative_choice_for_current_and_legacy_dialogs() {
+        for (choices, input) in [
+            (
+                "❯ No, exit\n  Yes, I trust this folder",
+                b"\x1b[B".as_slice(),
+            ),
+            (
+                "  Yes, I trust this folder\n❯ No, exit",
+                b"\x1b[A".as_slice(),
+            ),
+            (
+                "❯ 1. Yes, I trust this folder\n  2. No, exit",
+                b"\r".as_slice(),
+            ),
+            ("❯ Yes, I trust this folder\n  No, exit", b"\r".as_slice()),
+        ] {
+            let frame = format!("Quick safety check\nDo you trust this folder?\n{choices}");
+            assert_eq!(claude_workspace_trust_approval_input(&frame), Some(input));
+        }
+    }
+    #[test]
+    fn unknown_or_incomplete_choice_never_accepts_a_default() {
+        for frame in [
+            "Quick safety check Do you trust this folder? Yes, I trust this folder",
+            "Quick safety check ❯ No, exit",
+            "Quick safety check Do you trust this folder? ❯ Different choice Yes, I trust this folder",
+            "❯ No, exit Yes, I trust this folder",
+        ] {
+            assert!(claude_workspace_trust_approval_input(frame).is_none());
+        }
     }
 }
