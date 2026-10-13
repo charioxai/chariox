@@ -151,3 +151,31 @@ fn context_failure_case(scenario: ContextFailureScenario) {
         "matched hook rejection must remove its pending delivery without failing the provider"
     );
 }
+
+#[test]
+fn managed_prompt_matching_accepts_the_official_paste_wrapper_only() {
+    let expected = "Review native handoff.\nPreserve the accepted decision.";
+    let wrapped =
+        format!("<pasted_content id=\"5dad\">\n{expected}\n</pasted_content id=\"5dad\">");
+    assert!(claude_headless_prompt_matches(expected, &wrapped));
+    assert!(claude_headless_prompt_matches(
+        expected,
+        &wrapped.replace('\n', "\r\n")
+    ));
+    assert!(!claude_headless_prompt_matches(
+        "different prompt",
+        &wrapped
+    ));
+    assert!(!claude_headless_prompt_matches(
+        expected,
+        &wrapped.replace(
+            "</pasted_content id=\"5dad\">",
+            "</pasted_content id=\"other\">"
+        )
+    ));
+    assert!(!claude_headless_prompt_matches(
+        expected,
+        &format!("{wrapped}\nextra instructions")
+    ));
+    assert!(claude_headless_prompt_matches(&wrapped, &wrapped));
+}
