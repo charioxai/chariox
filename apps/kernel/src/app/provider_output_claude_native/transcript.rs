@@ -72,6 +72,31 @@ pub(super) fn save_claude_transcript_cursor(context_file: &str, cursor: &ClaudeT
     }
 }
 
+// MP-08 / MP-10 / MP-11: hooks can precede the first transcript flush.
+// A bounded hint grants no read authority: every retry still passes through
+// provider_reported_transcript_on_kernel and its managed no-symlink checks.
+pub(super) fn remember_claude_transcript_path(context_file: &str, reported_path: &str) -> bool {
+    let path = std::path::Path::new(reported_path);
+    if reported_path.len() > 4096
+        || !path.is_absolute()
+        || path
+            .extension()
+            .is_none_or(|extension| extension != "jsonl")
+    {
+        return false;
+    }
+    let mut cursor = load_claude_transcript_cursor(context_file);
+    if cursor.files.contains_key(reported_path) || cursor.files.len() >= 16 {
+        return false;
+    }
+    cursor.files.insert(
+        reported_path.to_string(),
+        ClaudeTranscriptFileCursor::default(),
+    );
+    save_claude_transcript_cursor(context_file, &cursor);
+    true
+}
+
 pub(super) fn known_claude_transcript_paths(context_file: &str) -> Vec<String> {
     load_claude_transcript_cursor(context_file)
         .files

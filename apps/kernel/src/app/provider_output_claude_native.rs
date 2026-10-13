@@ -59,7 +59,7 @@ use permission::{
 use transcript::{drain_claude_transcript_file, drain_claude_transcript_file_since};
 use transcript::{
     drain_claude_transcript_raw_since, known_claude_transcript_paths,
-    load_claude_transcript_cursor, save_claude_transcript_cursor,
+    load_claude_transcript_cursor, remember_claude_transcript_path, save_claude_transcript_cursor,
 };
 
 const CLAUDE_ATTACHMENT_CONTEXT_BYTES: usize = 64 * 1024;
@@ -850,17 +850,20 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         transcript_path: &str,
     ) -> Result<Option<String>, DaemonError> {
         let provider_run = self.app.providers.get_run(provider_run_id)?;
+        let newly_reported = remember_claude_transcript_path(context_file, transcript_path);
         let Some(transcript_path) =
             crate::provider::provider_reported_transcript_on_kernel(&provider_run, transcript_path)
         else {
-            crate::logging::warn_with_fields(
-                "daemon.claude_headless",
-                "provider transcript unavailable or outside managed bindings",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "provider_run_id": provider_run_id,
-                }),
-            );
+            if newly_reported {
+                crate::logging::warn_with_fields(
+                    "daemon.claude_headless",
+                    "provider transcript unavailable or outside managed bindings",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "provider_run_id": provider_run_id,
+                    }),
+                );
+            }
             return Ok(None);
         };
         let path = transcript_path.path.to_string_lossy().into_owned();

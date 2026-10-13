@@ -3406,6 +3406,8 @@ fn native_claude_cancel_settles_only_from_a_fresh_exact_run_interruption() {
         }
         app.active_turns
             .mark_interruption_requested(run.id(), prompt.id(), requested_at_ms);
+        // Receipt fences are independent of delivery errors from this fixture's absent PTY.
+        app.active_turns.note_native_interruption_delivery(run.id(), prompt.id(), unix_epoch_ms());
         if !matching_prompt {
             app.active_turns.clear(run.id());
         }
@@ -3466,8 +3468,8 @@ fn native_claude_cancel_settles_only_from_a_fresh_exact_run_interruption() {
         }
         assert_eq!(
             cancellation_requested,
-            hook_receipt && cancelling && current_run && matching_prompt,
-            "decline request must belong to the exact current cancelled turn"
+            hook_receipt && cancelling && current_run && matching_prompt && !matching_request,
+            "a resolved exact hook removes its decline marker; a foreign receipt cannot remove it"
         );
         assert_eq!(
             active.is_none(),

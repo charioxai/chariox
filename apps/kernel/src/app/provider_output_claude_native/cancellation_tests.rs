@@ -496,3 +496,43 @@ fn native_claude_abort_replay_cannot_extend_the_hard_deadline() {
         crate::git_observer::CompletedTurnSettlementStatus::Failed
     );
 }
+
+#[test]
+fn native_claude_cancel_observes_a_transcript_created_after_its_hook() {
+    let mut f = CancellationFixture::new(0);
+    let transcript = f.root.0.join("late-session.jsonl");
+    let context = f.root.0.join("context").display().to_string();
+    fs::write(
+        f.root.0.join("events.jsonl"),
+        serde_json::json!({
+            "hook_event_name":"SessionStart", "transcript_path":transcript.display().to_string()
+        })
+        .to_string()
+            + "\n",
+    )
+    .unwrap();
+    f.process();
+    assert!(
+        known_claude_transcript_paths(&context).contains(&transcript.display().to_string()),
+        "reported transcript must remain discoverable before its first flush"
+    );
+    fs::write(
+        &transcript,
+        serde_json::json!({
+            "type":"user", "uuid":"late-interrupt", "timestamp":chrono::Utc::now().to_rfc3339(),
+            "message":{"role":"user", "content":"[Request interrupted by user]"}
+        })
+        .to_string()
+            + "\n",
+    )
+    .unwrap();
+    f.process();
+    ProviderOutputClaudeNativeBridge::new(&mut f.app)
+        .finish_deferred_stop(&f.session_id, f.run.id(), &f.run)
+        .unwrap();
+    assert!(f.active().is_none());
+    assert_eq!(
+        f.settled().settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Cancelled
+    );
+}

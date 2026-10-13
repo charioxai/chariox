@@ -275,3 +275,14 @@ admission, encrypted event queue, receiver arrival/decryption and browser paint
 timestamps for cross-client visibility; require P95 at most 150 ms. Keep every
 run's source and binary hashes separate. Source checks and successful setup
 never substitute for these live verdicts.
+
+
+MP-08 / MP-10 / MP-11: include a fresh native provider session whose first
+transcript file appears after SessionStart/UserPromptSubmit. The kernel must
+observe the later official interruption receipt without another hook event;
+retained path hints must pass the existing account binding and no-symlink checks
+on every read. For the leased idle Ctrl-C drill, record each keystroke's enqueue,
+send and acknowledgement times. The normal connected home-worker relay path
+must preserve rapid key delivery without opening a connection for every key.
+Record provider-scoped catalogue response bytes during the WAN visibility drill;
+a Claude account model query must not carry unrelated OpenCode/Codex models.

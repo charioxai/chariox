@@ -101,6 +101,10 @@ pub(super) fn relay_error(code: &str, message: &str, retryable: bool) -> RelayEr
 
 pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
     match request {
+        LocalDaemonRequest::GetProviderRun(_) => "provider.run.get",
+        LocalDaemonRequest::PumpTerminalOutput(_) => "terminal.output.pump",
+        LocalDaemonRequest::SendTerminalInput(_) => "terminal.input.send",
+        LocalDaemonRequest::ResizeTerminal(_) => "terminal.resize",
         LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
         LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
         LocalDaemonRequest::GetTerminalCommandCatalog(_) => "terminal.command_catalog.get",
