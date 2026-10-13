@@ -176,3 +176,31 @@ test("MP-08 MP-10 exact cancellation checks attached kernel capability on Unix a
     assert.deepEqual(requests.slice(-2), [{ RelayStatus: null }, request])
   }
 })
+
+// MP-08 / MP-10 / MP-11: native launch has no local presence on a relay or Unix attachment.
+test("MP-08 MP-10 native settlement checks the attached kernel before launch", async context => {
+  const sent: unknown[] = []
+  let capabilities: string[] = []
+  context.mock.method(KernelClient.prototype, "send", async (request: unknown) => {
+    sent.push(request)
+    if (request && typeof request === "object" && "RelayStatus" in request) return { RelayStatus: { status: { capabilities } } }
+    return { ProviderRunLaunched: {} }
+  })
+  for (const endpoint of ["ws+unix:///lane/kernel.sock", "wss://relay.example.test"]) {
+    const client = new LocalIpcClient(endpoint)
+    context.after(() => client.close())
+    for (const request of [
+      { LaunchProviderRun: { native_tui: true } },
+      { LaunchProviderRuns: { launches: [{ native_tui: true }] } },
+    ]) {
+      capabilities = ["exact_prompt_cancellation_v499"]
+      sent.length = 0
+      await assert.rejects(client.send(request), /Native turn settlement needs protocol ≥510/)
+      assert.deepEqual(sent, [{ RelayStatus: null }], "unsupported kernels must be probed without admitting the launch")
+      capabilities = ["native_turn_settlement_v510"]
+      sent.length = 0
+      await client.send(request)
+      assert.deepEqual(sent, [{ RelayStatus: null }, request], "the attached kernel capability admits the normal launch")
+    }
+  }
+})

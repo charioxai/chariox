@@ -28,7 +28,8 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "disposable_worker_control_v1",
             "managed_environment_keep_running_v1",
             "terminal_relay_authorization_renewal_v1",
-            "exact_prompt_cancellation_v499"
+            "exact_prompt_cancellation_v499",
+            "native_turn_settlement_v510"
         ])
     );
     assert_eq!(
@@ -36,7 +37,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "4df417e7ef783a4e615cb33bd246da04c38601335e5fec574e1329990faa2bb2"
+        "ad98e3d8242aafbc83397f8d862b2c344eb2f398758b15f2026a67ba909d8605"
     );
 }
 

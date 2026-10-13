@@ -2,7 +2,7 @@ export * from "@chariox/kernel-client/ipc"
 export type * from "@chariox/kernel-client/ipc"
 
 import { LocalIpcClient as KernelClient } from "@chariox/kernel-client/ipc"
-import { exactPromptCancellationCapability, exactPromptCancellationMinimumProtocolVersion } from "@chariox/kernel-client/ipc-requests"
+import { exactPromptCancellationCapability, exactPromptCancellationMinimumProtocolVersion, nativeTurnSettlementCapability, nativeTurnSettlementMinimumProtocolVersion } from "@chariox/kernel-client/ipc-requests"
 import { kernelFeatureMinimum, requireKernelFeatureProtocol } from "./kernel-feature-minimum.js"
 import { loadLocalKernelPresences, localKernelEndpoint, localKernelPresenceFreshnessMs } from "./local-kernel-presence.js"
 
@@ -20,12 +20,13 @@ export class LocalIpcClient extends KernelClient {
     const feature = kernelFeatureMinimum(request)
     if (feature) {
       let version = (await this.kernelProtocol()).version
-      if (version === undefined && feature.feature === "Exact prompt cancellation") {
+      if (version === undefined && (feature.feature === "Exact prompt cancellation" || feature.feature === "Native turn settlement")) {
         // Unix and remote relay attachments have no local version advertisement.
         // Probe the attached kernel's existing status, never the relay issuer.
         const response = await super.send<{ RelayStatus?: { status?: { capabilities?: string[] } } }>({ RelayStatus: null })
-        if (response.RelayStatus?.status?.capabilities?.includes(exactPromptCancellationCapability)) {
-          version = exactPromptCancellationMinimumProtocolVersion
+        const capability = feature.feature === "Native turn settlement" ? nativeTurnSettlementCapability : exactPromptCancellationCapability
+        if (response.RelayStatus?.status?.capabilities?.includes(capability)) {
+          version = feature.feature === "Native turn settlement" ? nativeTurnSettlementMinimumProtocolVersion : exactPromptCancellationMinimumProtocolVersion
         }
       }
       requireKernelFeatureProtocol(request, version)
