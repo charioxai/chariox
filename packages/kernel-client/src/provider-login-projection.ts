@@ -101,7 +101,12 @@ export function providerLoginStatusInteraction(
 ): RuntimeInteraction | null {
   if (status.state !== "running" || !status.interaction) return null
   const template = status.interaction as RuntimeInteraction
-  return { ...template, provider_login: template.provider_login ?? projection }
+  // The kernel's attached driver omits setup-token terminal output: only
+  // its template carries the link, and Vault phases must stay readable.
+  const fallback = projection.login.login_kind === "terminal_setup_token"
+    ? { ...projection, terminal_output_base64: "" }
+    : projection
+  return { ...template, provider_login: template.provider_login ?? fallback }
 }
 
 /** Human response adapter for a sessionless login's existing kernel endpoint.

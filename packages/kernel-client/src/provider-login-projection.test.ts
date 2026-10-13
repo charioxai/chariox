@@ -49,3 +49,11 @@ test("MP-08/MP-11 sessionless replies preserve the kernel's code and Vault choic
   assert.throws(() => providerLoginInteractionReplyRequest(interaction, "invented", "value"), /unavailable/)
   assert.equal(providerLoginStatusInteraction({ ...status, state: "cancelled" }, projection), null)
 })
+
+
+test("MP-08/MP-11 detached setup-token Vault phases suppress the previous terminal screen like the attached workflow", () => {
+  const interaction = { id: "login", agent_id: "provider-account:claude:fresh", kind: "choice", level: "critical", title: "Unlock Chariox Vault", message: "Enter the Vault passphrase", requested_at_ms: 42, choices: [], custom_choice: { id: "passphrase", label: "Vault passphrase", input_kind: "secret" } }
+  const projection = { kernel_id: "kernel", login: { provider: "claude", account_profile: "fresh", login_id: "login", login_kind: "terminal_setup_token" }, terminal_output_base64: Buffer.from("Old authorization screen should stay out of the vault prompt").toString("base64") }
+  const status = { provider: "claude", account_profile: "fresh", login_id: "login", state: "running" as const, interaction, started_at_ms: 42, updated_at_ms: 45, terminal_output_base64: projection.terminal_output_base64 }
+  assert.equal(providerLoginStatusInteraction(status, projection)?.provider_login?.terminal_output_base64, "")
+})
