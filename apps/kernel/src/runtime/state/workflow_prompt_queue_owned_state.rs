@@ -634,7 +634,7 @@ impl KernelRuntimeOwnedState {
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
         self.workflow_reconcile_live_orphans(&plan.session_id);
         if plan.enqueue_prompt {
-            self.workflow_admit_prompt_transaction(
+            self.workflow_admit_prompt_transaction_with_invoker(
                 &plan.session_id,
                 "workflow_watchdog_prompt_enqueued",
                 |sessions| {
@@ -646,7 +646,10 @@ impl KernelRuntimeOwnedState {
                     {
                         return Ok(None);
                     }
-                    sessions.enqueue_workflow_prompt(
+                    let owner = sessions.resolve_workflow_endpoint_ref(
+                        &plan.session_id, &plan.workflow_id, &plan.endpoint_id,
+                    )?.owner_user_id().to_string();
+                    let queued = sessions.enqueue_workflow_prompt(
                         &plan.session_id,
                         &plan.workflow_id,
                         &plan.endpoint_id,
@@ -656,7 +659,11 @@ impl KernelRuntimeOwnedState {
                         Some(plan.watchdog_id.clone()),
                     )?;
                     sessions.mark_workflow_watchdog_queued(&plan.session_id, &plan.watchdog_id)?;
-                    Ok(Some(()))
+                    // MP-08/MP-10/MP-11: the endpoint owner is captured at admission,
+                    // not inferred from a mutable workflow when the run is read.
+                    Ok(Some(((), Some(crate::durable_state::workflow_invocation_provenance::WorkflowUserInvocation {
+                        queue_item_id: queued.id().to_string(), user_id: owner,
+                    }))))
                 },
                 None,
             )?;
@@ -689,21 +696,6 @@ impl KernelRuntimeOwnedState {
     /// durable transition and session write locks prevent a failed append rollback
     /// from erasing an unrelated successful session change. `None` is a no-op and
     /// deliberately records neither activity nor a projection change.
-    fn workflow_admit_prompt_transaction<T>(
-        &self,
-        session_id: &str,
-        reason: &str,
-        admit: impl FnOnce(&mut crate::session::SessionService) -> Result<Option<T>, DaemonError>,
-        committed: Option<&mut bool>,
-    ) -> Result<Option<T>, DaemonError> {
-        self.workflow_admit_prompt_transaction_with_invoker(
-            session_id,
-            reason,
-            |sessions| admit(sessions).map(|value| value.map(|value| (value, None))),
-            committed,
-        )
-    }
-
     fn workflow_admit_prompt_transaction_with_invoker<T>(
         &self,
         session_id: &str,

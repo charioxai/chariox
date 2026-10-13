@@ -134,6 +134,10 @@ pub(crate) fn commit_in(tx: &Transaction<'_>, p: &PreparedNotification) -> Resul
         &p.encoded,
         "workflow_notification_queued",
         &p.subscription.subscription_id,
+        crate::durable_state::workflow_invocation_provenance::WorkflowUserInvocation {
+            queue_item_id: p.queued_id.clone(),
+            user_id: p.subscription.owner_user_id.clone(),
+        },
     )?;
     tx.execute("UPDATE app_outbox SET state='queued',queued_prompt_id=?4,queued_session_id=?5,invocation_json=?6 WHERE source_kind='workflow_completion' AND automation_id=?1 AND installation_id=?2 AND occurrence_id=?3",params![p.subscription.subscription_id,p.envelope.source_id,p.envelope.occurrence_id,p.queued_id,p.subscription.session_id,encode(&serde_json::json!({"ancestry":p.envelope.ancestry}))?]).map_err(sql)?;
     Ok(())
