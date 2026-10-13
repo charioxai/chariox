@@ -1,9 +1,9 @@
 //! MP-08 / MP-10 / MP-11: owned OS DNS resolution, shared by health and MCP adapters.
 use std::path::PathBuf;
-use std::time::Duration;
-use zeroize::Zeroizing;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use std::time::Instant;
+use zeroize::Zeroizing;
 
 // MP-08 / MP-10 / MP-11: public address results have a short bounded cache.
 // Validate the selected resolver before reuse, including workspace roots.
@@ -56,7 +56,9 @@ pub(crate) fn resolve_bounded_host(
         }
         let key = (host.to_ascii_lowercase(), path.clone());
         if let Some(addresses) = dns_cache().lock().ok().and_then(|cache| {
-            cache.get(&key).filter(|(at, _)| at.elapsed() < Duration::from_secs(30))
+            cache
+                .get(&key)
+                .filter(|(at, _)| at.elapsed() < Duration::from_secs(30))
                 .map(|(_, addresses)| addresses.clone())
         }) {
             return Ok(addresses);
@@ -108,7 +110,9 @@ pub(crate) fn resolve_bounded_host(
         if !addresses.is_empty() {
             if let Ok(mut cache) = dns_cache().lock() {
                 cache.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(30));
-                if cache.len() >= 64 { cache.clear(); }
+                if cache.len() >= 64 {
+                    cache.clear();
+                }
                 cache.insert(key, (Instant::now(), addresses.clone()));
             }
         }

@@ -349,17 +349,17 @@ fn envp04_independent_check_is_delivered_for_unsaved_legacy() {
         .enabled_environment_operations
         .contains(&EnvironmentCapability::Check));
 }
+#[path = "revision_disjoint_platform_tests.rs"]
+mod revision_disjoint_platform;
 #[path = "revision_excluded_files_tests.rs"]
 mod revision_excluded_files;
 #[path = "revision_filename_privacy_tests.rs"]
 mod revision_filename_privacy;
-#[path = "revision_disjoint_platform_tests.rs"]
-mod revision_disjoint_platform;
 
-#[path = "revision_setup_source_privacy_tests.rs"]
-mod revision_setup_source_privacy;
 #[path = "revision_platform_compatibility_tests.rs"]
 mod revision_platform_compatibility;
+#[path = "revision_setup_source_privacy_tests.rs"]
+mod revision_setup_source_privacy;
 
 // MP-08 / MP-10 / MP-11: repeat edits cannot exhaust a cumulative snapshot file.
 #[test]
@@ -388,8 +388,13 @@ fn revision_index_keeps_only_current_snapshot_and_preserves_immutable_archives()
             .save_revision_locked(&current, &request, "owner")
             .unwrap()
             .0;
-        let bytes = std::fs::read(store.path(project.id()).with_extension("revision-0.json")).unwrap();
-        if let Some(first) = &first_archive { assert_eq!(&bytes, first); } else { first_archive = Some(bytes); }
+        let bytes =
+            std::fs::read(store.path(project.id()).with_extension("revision-0.json")).unwrap();
+        if let Some(first) = &first_archive {
+            assert_eq!(&bytes, first);
+        } else {
+            first_archive = Some(bytes);
+        }
     }
     let index: serde_json::Value = serde_json::from_slice(
         &std::fs::read(store.path(project.id()).with_extension("revisions.json")).unwrap(),
@@ -417,13 +422,31 @@ fn revision_index_keeps_only_current_snapshot_and_preserves_immutable_archives()
 fn check_project_and_identity_locks_share_the_operation_deadline() {
     let root = crate::test_support::TestWorktree::new("check-lock-budget");
     let store = ProjectEnvironmentStore::new(root.path());
-    let project = RuntimeProject::new("locks", "owner", root.path().to_string_lossy(), "Locks", crate::session::RuntimeProjectKind::Named);
+    let project = RuntimeProject::new(
+        "locks",
+        "owner",
+        root.path().to_string_lossy(),
+        "Locks",
+        crate::session::RuntimeProjectKind::Named,
+    );
     for extension in ["lock", "identity.lock"] {
-        let held = if extension == "lock" { store.lock(project.id()).unwrap() } else { store.identity_lock(project.id()).unwrap() };
+        let held = if extension == "lock" {
+            store.lock(project.id()).unwrap()
+        } else {
+            store.identity_lock(project.id()).unwrap()
+        };
         let began = std::time::Instant::now();
-        assert!(store.lock_extension_until(project.id(), extension, began + std::time::Duration::from_millis(25)).is_err());
+        assert!(store
+            .lock_extension_until(
+                project.id(),
+                extension,
+                began + std::time::Duration::from_millis(25)
+            )
+            .is_err());
         assert!(began.elapsed() < std::time::Duration::from_millis(250));
         drop(held);
-        assert!(store.lock_extension_until(project.id(), extension, std::time::Instant::now()).is_ok());
+        assert!(store
+            .lock_extension_until(project.id(), extension, std::time::Instant::now())
+            .is_ok());
     }
 }

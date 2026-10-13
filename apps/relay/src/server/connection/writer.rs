@@ -659,4 +659,67 @@ mod tests {
         let _ = task.await;
         let _ = client.close(None).await;
     }
+    // MP-08 / MP-10 / MP-11: outstanding receipts alone cannot reorder small events.
+    #[tokio::test]
+    async fn completed_bulk_preserves_small_event_response_order_before_final_receipts() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let connect = tokio::spawn(async move {
+            tokio_tungstenite::connect_async(format!("ws://{address}"))
+                .await
+                .unwrap()
+                .0
+        });
+        let (stream, _) = listener.accept().await.unwrap();
+        let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let mut client = connect.await.unwrap();
+        let (tx, rx) = mpsc::channel(8);
+        let (ack_tx, ack_rx) = mpsc::channel(8);
+        let (_control_tx, control_rx) = mpsc::channel(8);
+        let bulk = serde_json::json!({"kind":"daemon_peer_response","payload":"x".repeat(20000)})
+            .to_string();
+        tx.send(Message::Text(bulk.into())).await.unwrap();
+        let task = tokio::spawn(run_writer(socket, rx, true, ack_rx, control_rx));
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        let mut acknowledgements = vec![];
+        loop {
+            let Message::Text(text) = client.next().await.unwrap().unwrap() else {
+                panic!("chunk expected")
+            };
+            let (complete, ack) = receiver.receive(&text).unwrap();
+            acknowledgements.push(ack.unwrap());
+            if complete.is_some() {
+                break;
+            }
+        }
+        // This single-threaded task enqueues both before the writer can run.
+        let event = r#"{"kind":"client_event","payload":"first"}"#;
+        tx.try_send(Message::Text(event.into())).unwrap();
+        tx.try_send(Message::Text(
+            r#"{"kind":"daemon_peer_response","request_id":"later"}"#.into(),
+        ))
+        .unwrap();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(first, Message::Text(event.into()));
+        for ack in acknowledgements {
+            let TransportFrame::TransportAck {
+                transfer_id,
+                offset,
+            } = serde_json::from_str(&ack).unwrap()
+            else {
+                panic!("receipt expected")
+            };
+            ack_tx.send((transfer_id, offset)).await.unwrap();
+        }
+        drop(tx);
+        tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        let _ = client.close(None).await;
+    }
 }

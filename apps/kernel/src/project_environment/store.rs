@@ -393,9 +393,11 @@ impl ProjectEnvironmentStore {
                 Err(error) if error.kind() != std::io::ErrorKind::WouldBlock => {
                     return Err(environment_error("environment refresh lock failed"))
                 }
-                Err(_) if std::time::Instant::now() >= deadline => return Err(environment_error(
-                    "Check budget exceeded while waiting for Project lock",
-                )),
+                Err(_) if std::time::Instant::now() >= deadline => {
+                    return Err(environment_error(
+                        "Check budget exceeded while waiting for Project lock",
+                    ))
+                }
                 Err(_) => std::thread::sleep(std::time::Duration::from_millis(1)),
             }
         }

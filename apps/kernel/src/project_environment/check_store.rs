@@ -56,7 +56,9 @@ impl ProjectEnvironmentStore {
         &self,
         project: &str,
     ) -> Result<EnvironmentChecks, crate::error::DaemonError> {
-        let Some(bytes) = super::check_journal::read(&self.path(project).with_extension("checks.wal"))? else {
+        let Some(bytes) =
+            super::check_journal::read(&self.path(project).with_extension("checks.wal"))?
+        else {
             return Ok(EnvironmentChecks::default());
         };
         let checks: EnvironmentChecks = serde_json::from_slice(&bytes)
