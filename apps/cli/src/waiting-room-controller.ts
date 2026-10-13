@@ -1,4 +1,9 @@
 import {
+  accountRowOpensProviderAccounts,
+  providerAccountAddChoices,
+  providerFamilyLabel,
+} from "./provider-accounts-popup.js"
+import {
   catalogModelOptions,
   selectConfiguredVariant,
   type BackendProviderId,
@@ -98,6 +103,8 @@ export type WaitingRoomControlActivationDecision =
   | { action: "error"; message: string }
   | { action: "open-terminal-pairing" }
   | { action: "open-session-browser" }
+  | { action: "open-provider-accounts" }
+  | { action: "run-command"; command: string; message: string }
   | { action: "load-older-external-sessions" }
   | { action: "none" }
 
@@ -521,6 +528,15 @@ export function deriveWaitingRoomControlActivationDecision(options: {
           : "Create the session first, then use /relay invite create. Chariox Cloud adds saved collaborators and pre-session invites.",
       }
     case "account": {
+      if (options.state.accountAddSelected) {
+        const add = providerAccountAddChoices(options.state.providerId)[0]?.command
+        return add?.kind === "run"
+          ? { action: "run-command", command: add.command, message: `Adding a new ${providerFamilyLabel(options.state.providerId)} account` }
+          : { action: "open-provider-accounts" }
+      }
+      if (accountRowOpensProviderAccounts(remote.providerAccounts, options.state.providerId)) {
+        return { action: "open-provider-accounts" }
+      }
       const account = selectedProviderAccount(
         remote.providerAccounts,
         options.state.providerId,

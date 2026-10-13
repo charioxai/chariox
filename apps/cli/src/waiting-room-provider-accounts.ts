@@ -4,8 +4,22 @@ import {
   providerAccountCapacityResetLabel,
   type ProviderAccountProfile,
 } from "@chariox/kernel-client"
+import { BACKEND_PROVIDER_IDS, type BackendProviderId } from "./provider-catalog.js"
 
 export { providerAccountCapacity }
+
+/**
+ * MP-08: providers the waiting room offers. A protocol-511 kernel reports the
+ * harness families installed on its host. A remote worker runs its own
+ * harnesses and an older kernel reports none, so neither narrows the list.
+ */
+export function offeredBackendProviderIds(
+  installedProviders: readonly string[] | undefined,
+  localExecution = true,
+): readonly BackendProviderId[] {
+  if (!installedProviders || !localExecution) return BACKEND_PROVIDER_IDS
+  return BACKEND_PROVIDER_IDS.filter((id) => installedProviders.includes(providerAccountFamily(id)))
+}
 
 export function providerAccountFamily(provider: string): string {
   return provider === "claude-headless" || provider === "claude-p" ? "claude" : provider

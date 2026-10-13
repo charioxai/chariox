@@ -636,6 +636,31 @@ test("deriveWaitingRoomControlActivationDecision resolves Claude adapter account
   })
 })
 
+test("MP-08 Account row opens Provider Accounts without a signed-in account and adds from its add value", () => {
+  const unsigned = {
+    owner_user_id: "local",
+    provider: "codex",
+    profile_id: "codex-1",
+    label: "codex-1",
+    origin: "default" as const,
+    is_default: true,
+    auth_state: "not_configured" as const,
+    usage: { profile_id: "codex-1", provider: "codex", availability: "unavailable" as const, source: "test" },
+  }
+  assert.deepEqual(deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({ focus: "account", providerId: "codex", accountProfileId: "codex-1" }),
+    workspacePath: "/repo",
+    worktreePath: "/repo",
+    remote: { providerAccounts: [unsigned] },
+  }), { action: "open-provider-accounts" })
+  assert.deepEqual(deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({ focus: "account", providerId: "codex", accountProfileId: "codex-1", accountAddSelected: true }),
+    workspacePath: "/repo",
+    worktreePath: "/repo",
+    remote: { providerAccounts: [{ ...unsigned, auth_state: "authenticated" as const }] },
+  }), { action: "run-command", command: "/provider accounts add codex --method device_code", message: "Adding a new Codex account" })
+})
+
 test("deriveWaitingRoomControlActivationDecision handles machine activation", () => {
   const approved = deriveWaitingRoomControlActivationDecision({
     state: waitingRoomState({ focus: "machine" }),

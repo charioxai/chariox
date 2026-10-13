@@ -121,6 +121,8 @@ export function createCliAppState(options: {
   // MP-08 / MP-11: An account inventory that has not arrived is unknown.
   // The kernel remains authoritative for a prompt submitted during hydration.
   const [providerAccountsState, setProviderAccountsState] = createSignal<import("./cli-types.js").ProviderAccountProfile[]>()
+  // MP-08: Undefined until a protocol-511 kernel reports its installed harnesses.
+  const [installedProvidersState, setInstalledProvidersState] = createSignal<readonly string[]>()
   const [slicesState, setSlicesState] = createSignal<SliceRecord[]>([])
   const [terminalsState, setTerminalsState] = createSignal<TerminalView[]>([])
   const [externalProviderSessionsState, setExternalProviderSessionsState] = createSignal<ExternalProviderSessionRecord[]>([])
@@ -270,6 +272,8 @@ export function createCliAppState(options: {
     remoteKernelsState,
     setRemoteKernelsState,
     providerAccountsState,
+    installedProvidersState,
+    setInstalledProvidersState,
     setProviderAccountsState,
     slicesState,
     setSlicesState,

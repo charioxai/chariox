@@ -21,7 +21,10 @@ import {
   waitingRoomRemoteKernels,
   waitingRoomRemoteMachines,
 } from "./waiting-room-remote-rows.js"
-import { normalizeWaitingRoomLaunchPlacement } from "@chariox/kernel-client/waiting-room-runtime-placement"
+import {
+  normalizeWaitingRoomLaunchPlacement,
+  waitingRoomLaunchPlacement,
+} from "@chariox/kernel-client/waiting-room-runtime-placement"
 import {
   waitingRoomPreviewSessions,
   waitingRoomSessions,
@@ -44,7 +47,7 @@ import {
   waitingRoomConfiguresNewManagedMachine,
   waitingRoomProjectRepositoryOptions,
 } from "./waiting-room-managed-environments.js"
-import { normalizeProviderAccountProfileId } from "./waiting-room-provider-accounts.js"
+import { normalizeProviderAccountProfileId, offeredBackendProviderIds } from "./waiting-room-provider-accounts.js"
 
 export function createWaitingRoomState(
   sessions: SessionListEntry[],
@@ -120,7 +123,10 @@ export function normalizeWaitingRoomState(
     selectedMachineRef: placement.selectedMachineRef,
     selectedKernelRef: placement.selectedKernelRef,
   })
-  const providerId = normalizeBackendProvider(state.providerId)
+  const providerId = offeredProvider(
+    normalizeBackendProvider(state.providerId),
+    offeredBackendProviderIds(remote.installedProviders, !waitingRoomLaunchPlacement(state, remote).workerKernelRef),
+  )
   const accountProfileId = normalizeProviderAccountProfileId(remote.providerAccounts, providerId, state.accountProfileId)
   const selected = selectConfiguredModel(catalog, state.modelId, providerId)
   const configuredModelPending = catalog.source === "local_fallback"
@@ -167,6 +173,7 @@ export function normalizeWaitingRoomState(
     focus,
     providerId,
     accountProfileId,
+    accountAddSelected: focus === "account" ? state.accountAddSelected : undefined,
     sessionIndex: visibleSessions.length === 0 ? 0 : modulo(state.sessionIndex, visibleSessions.length),
     projectIndex: projects.length === 0 ? 0 : modulo(state.projectIndex ?? 0, projects.length),
     showArchivedProjects: Boolean(state.showArchivedProjects),
@@ -230,6 +237,10 @@ function normalizeWorkspaceLiveSyncMode(value: WaitingRoomState["workspaceLiveSy
 
 function normalizeBackendProvider(value: string): BackendProviderId {
   return normalizeBackendProviderId(value)
+}
+
+function offeredProvider(providerId: BackendProviderId, offered: readonly BackendProviderId[]): BackendProviderId {
+  return offered.length === 0 || offered.includes(providerId) ? providerId : offered[0]!
 }
 
 function modulo(value: number, size: number) {

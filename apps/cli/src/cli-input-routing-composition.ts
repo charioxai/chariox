@@ -199,6 +199,7 @@ export type CliInputRoutingCompositionDeps = {
   remoteMachinesState: AnyFn
   remoteKernelsState: AnyFn
   providerAccountsState: AnyFn
+  installedProvidersState: AnyFn
   terminalsState: AnyFn
   slicesState: AnyFn
   themeRegistryState: AnyFn
@@ -619,6 +620,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
       providerAccounts: deps.providerAccountsState(),
+      installedProviders: deps.installedProvidersState(),
       terminals: deps.terminalsState(),
       slices: deps.slicesState(),
       projects: deps.waitingRoomProjects(),

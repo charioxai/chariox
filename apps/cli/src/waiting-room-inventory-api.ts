@@ -45,6 +45,7 @@ export type WaitingRoomInventory = {
   externalProviderSessionsHasMore?: boolean
   externalProviderSessionsNextCursor?: string | null
   providerAccounts?: ProviderAccountProfile[]
+  installedProviders?: readonly string[]
   gitCredentials?: WaitingRoomGitCredentialSummary[]
   managedEnvironmentCatalog?: ManagedEnvironmentCatalog
 }
@@ -95,6 +96,7 @@ export async function getWaitingRoomInventory(client: LocalIpcClient, getManaged
     externalProviderSessionsHasMore: externalProviderSessions.hasMore,
     externalProviderSessionsNextCursor: externalProviderSessions.nextCursor,
     providerAccounts: payload.provider_accounts ?? [],
+    ...(payload.installed_providers ? { installedProviders: payload.installed_providers } : {}),
     gitCredentials: payload.git_credentials ?? [],
     ...(managedEnvironmentCatalog ? { managedEnvironmentCatalog } : {}),
   }

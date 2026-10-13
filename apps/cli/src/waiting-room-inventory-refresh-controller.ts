@@ -49,6 +49,7 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   setTerminals: (terminals: TerminalView[]) => void
   setSlices: (slices: SliceRecord[]) => void
   setProviderAccounts?: (profiles: ProviderAccountProfile[]) => void
+  setInstalledProviders?: (providers: readonly string[] | undefined) => void
   setManagedEnvironmentCatalog?: (catalog: ManagedEnvironmentCatalog | undefined) => void
   getManagedEnvironmentCatalogScope?: (inventory: WaitingRoomInventory) => string
   shouldApplyWorkspaceInventory?: (inventory: WaitingRoomInventory) => boolean
@@ -237,6 +238,7 @@ export function createWaitingRoomInventoryRefreshController(
     options.setTerminals(snapshot.terminals)
     options.setSlices(snapshot.slices)
     options.setProviderAccounts?.(snapshot.providerAccounts ?? [])
+    options.setInstalledProviders?.(snapshot.installedProviders)
     const nextManagedEnvironmentCatalogScope = options.getManagedEnvironmentCatalogScope?.(snapshot)
       ?? snapshot.kernelId
     if (snapshot.managedEnvironmentCatalog !== undefined) {

@@ -1,3 +1,4 @@
+import { providerFamilyLabel } from "./provider-accounts-popup.js"
 import {
   backendProviderLabel,
   type BackendProviderId,
@@ -66,6 +67,7 @@ export function waitingRoomStartRows(
     | "managedCustomIdleDelaySeconds"
     | "providerId"
     | "accountProfileId"
+    | "accountAddSelected"
     | "modelId"
   >,
   choice: WaitingRoomStartRowsChoice,
@@ -192,7 +194,9 @@ export function waitingRoomStartRows(
     {
       id: "account",
       title: "Account",
-      value: formatAccountValue(choice.accountProfile ?? null, choice.model?.id),
+      value: state.accountAddSelected
+        ? `+ Add new ${providerFamilyLabel(state.providerId)} account`
+        : formatAccountValue(choice.accountProfile ?? null, choice.model?.id),
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "account",

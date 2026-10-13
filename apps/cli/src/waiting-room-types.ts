@@ -103,6 +103,8 @@ export type WaitingRoomState = {
   sliceDisplayMode?: "headless" | "headed"
   providerId: BackendProviderId
   accountProfileId?: string
+  /** MP-08: the Account row shows its trailing "Add new <provider> account" value. */
+  accountAddSelected?: boolean | undefined
   modelId: string
   effort: string
   executionMode?: "build" | "plan"
@@ -163,6 +165,8 @@ export type WaitingRoomRemoteState = {
   externalProviderSessionsNextCursor?: string | null
   projects?: WaitingRoomProjectSummary[]
   providerAccounts?: ProviderAccountProfile[]
+  /** Protocol 511: provider families installed on the kernel host; absent from older kernels. */
+  installedProviders?: readonly string[]
   gitCredentials?: import("@chariox/kernel-client").WaitingRoomGitCredentialSummary[]
   managedComputeClasses?: readonly ManagedEnvironmentComputeClassOption[]
   managedContextSources?: readonly ManagedEnvironmentContextSourceOption[]
