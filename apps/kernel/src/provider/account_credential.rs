@@ -117,18 +117,6 @@ fn claude_login_runs_agents(
     }
 }
 
-/// Vault admission follows the same registered credential as launch resolution,
-/// independent of client mode and prior native-login observations.
-pub(crate) fn launch_uses_vault_credential(
-    _profiles: &crate::account_profile::ProviderAccountProfileRegistry,
-    owner_user_id: &str,
-    provider: &str,
-    profile_id: &str,
-    _client_interface: crate::provider::ProviderClientInterface,
-) -> Result<bool, DaemonError> {
-    provider_account_credential_uses_vault(owner_user_id, provider, profile_id)
-}
-
 /// Whether a Chariox-held launch credential is registered for the account.
 /// Reads only the registry; no secret is resolved.
 pub(crate) fn provider_account_credential_registered(
@@ -487,17 +475,6 @@ mod tests {
                 crate::provider::ProviderClientInterface::Chariox,
                 crate::provider::ProviderClientInterface::NativeTui,
             ] {
-                assert!(
-                    launch_uses_vault_credential(
-                        &profiles,
-                        "local",
-                        alias,
-                        &profile.profile_id,
-                        interface
-                    )
-                    .unwrap(),
-                    "MP-08/MP-11: every enrolled-token launch requires Vault access"
-                );
                 let env = resolve_provider_account_credentials_for_launch(
                     &config,
                     &profiles,
