@@ -37,6 +37,9 @@ pub(crate) struct OpenCodeRuntimeState {
     pub(super) base_url: String,
     pub(super) session_id: String,
     pub(super) emitted_text_by_part: BTreeMap<String, String>,
+    // SSE cumulative position is independent of snapshots: HTTP can observe
+    // text that is still queued in the event subscription.
+    pub(super) streamed_text_by_part: BTreeMap<String, String>,
     pub(super) emitted_tool_summaries: BTreeMap<String, String>,
     pub(super) buffered_text_deltas: BTreeMap<String, Vec<String>>,
     pub(super) message_roles: BTreeMap<String, String>,
@@ -66,6 +69,7 @@ impl OpenCodeRuntimeState {
             base_url,
             session_id,
             emitted_text_by_part: BTreeMap::new(),
+            streamed_text_by_part: BTreeMap::new(),
             emitted_tool_summaries: BTreeMap::new(),
             buffered_text_deltas: BTreeMap::new(),
             message_roles: BTreeMap::new(),
@@ -159,6 +163,7 @@ impl OpenCodeRuntimeState {
         self.session_errors_require_prompt_match = true;
         while self.event_subscription.receiver.try_recv().is_ok() {}
         self.emitted_text_by_part.clear();
+        self.streamed_text_by_part.clear();
         self.emitted_tool_summaries.clear();
         self.buffered_text_deltas.clear();
         self.message_roles.clear();

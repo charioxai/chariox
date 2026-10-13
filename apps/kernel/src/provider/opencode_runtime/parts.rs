@@ -136,6 +136,15 @@ fn emit_part_text(
     if !is_assistant {
         return;
     }
+    // Only the SSE cumulative update establishes the event stream's position.
+    // A snapshot may already have published a later prefix of this same block.
+    let streamed = state
+        .streamed_text_by_part
+        .entry(part.id.clone())
+        .or_default();
+    if !streamed.starts_with(&part.text) {
+        *streamed = part.text.clone();
+    }
     emit_authoritative_part_text(state, &part.id, &part.text, kind, chunks);
 }
 
@@ -198,7 +207,7 @@ fn emit_part_delta(
     kind: TerminalOutputKind,
     chunks: &mut Vec<OpenCodeOutputChunk>,
 ) {
-    let Some(emitted) = state.emitted_text_by_part.get_mut(&part_id) else {
+    let Some(streamed) = state.streamed_text_by_part.get_mut(&part_id) else {
         state
             .buffered_text_deltas
             .entry(part_id)
@@ -206,12 +215,17 @@ fn emit_part_delta(
             .push(delta);
         return;
     };
-    emitted.push_str(&delta);
-    chunks.push(OpenCodeOutputChunk {
-        kind,
-        merge_key: Some(part_id),
-        bytes: delta.into_bytes(),
-    });
+    streamed.push_str(&delta);
+    let cumulative = streamed.clone();
+    if !state.emitted_text_by_part.contains_key(&part_id) {
+        state
+            .buffered_text_deltas
+            .entry(part_id)
+            .or_default()
+            .push(delta);
+        return;
+    }
+    emit_authoritative_part_text(state, &part_id, &cumulative, kind, chunks);
 }
 
 fn emit_tool_summary(
