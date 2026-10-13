@@ -8,6 +8,9 @@ import os from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { desktopApplication } from './desktop-applications.mjs';
 import { processIdentity, settleOwned, descendants } from './linux-owned-process.mjs';
+const readyDesktops = new WeakSet();
+export const ownsDesktopDisplay = desktop => readyDesktops.has(desktop) && Boolean(desktop.binding()) &&
+  Number.isSafeInteger(desktop.child?.pid) && desktop.child.pid > 1 && desktop.child.exitCode === null && desktop.child.signalCode === null;
 
 export function desktopEnvironment(source, runtime, uid = process.getuid?.()) {
   if (!Number.isInteger(uid) || uid <= 0) throw new Error('MP-11: owned desktop requires a non-root kernel user');
@@ -42,6 +45,8 @@ export class LinuxOwnedDesktop {
     this.children = []; this.known = new Map(); this.current = null; this.starting = null;
   }
   binding() { return this.current; }
+  get child() { return this.children.find(item => item.name === 'bwrap')?.child ?? null; }
+  get environment() { return this.current?.environment; }
   async launch(name, args, env, stdio = ['ignore', 'ignore', 'ignore']) {
     const core = ['Xvfb', 'bwrap', 'openbox', 'dbus-daemon'].includes(name);
     const command = core ? desktopCommand(this.commands[name] ?? name, args)
@@ -156,14 +161,17 @@ export class LinuxOwnedDesktop {
       const failed=this.children.find(({child,core}) => core && (child.exitCode !== null || child.signalCode !== null));
       if(failed)throw new Error(`MP-08: desktop failed to become ready (${failed.name}, exit ${failed.child.exitCode ?? 'signal'})`);
       this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), ownedProcesses: () => this.ownedProcesses(), browserProcesses: () => this.browserProcesses(), browser: () => this.browser?.() ?? null, width: 1280, height: 800, environment: Object.freeze(env) });
+      readyDesktops.add(this);
       return this.current;
     } catch (error) { await this.stop(); throw error; }
   }
   async stop() {
+    readyDesktops.delete(this);
     this.current = null;
     await settleOwned(this.children.filter(({child}) => child.pid), [...this.known.values()]);
     this.children = [];this.known.clear();
     if (this.runtime) await rm(this.runtime, { recursive: true, force: true });
     this.runtime = null;
   }
+  close() { return this.stop(); }
 }

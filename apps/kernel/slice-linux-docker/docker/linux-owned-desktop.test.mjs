@@ -6,8 +6,16 @@ import { mkdtemp, rm, stat } from 'node:fs/promises';
 import readline from 'node:readline';
 import os from 'node:os';
 import path from 'node:path';
-import { LinuxOwnedDesktop, desktopEnvironment, desktopBusAddress } from './linux-owned-desktop.mjs';
+import { LinuxOwnedDesktop, desktopEnvironment, desktopBusAddress, ownsDesktopDisplay } from './linux-owned-desktop.mjs';
 import { validOwnedPid, processIdentity, descendants, signalOwned, settleOwned } from './linux-owned-process.mjs';
+
+test('MP-11 a fabricated desktop binding and live PID cannot mint display ownership',()=>{
+ const desktop=new LinuxOwnedDesktop('/unstarted');
+ desktop.current={environment:{DISPLAY:':0'}};
+ desktop.children.push({name:'bwrap',child:{pid:process.pid,exitCode:null,signalCode:null}});
+ assert.equal(ownsDesktopDisplay(desktop),false);
+ assert.equal(ownsDesktopDisplay({binding:()=>desktop.current,child:desktop.child}),false);
+});
 
 test('MP-11 rejects root and inherited desktop authority', () => {
   assert.throws(() => desktopEnvironment({ DISPLAY: ':0' }, '/tmp/x', 0), /non-root/);

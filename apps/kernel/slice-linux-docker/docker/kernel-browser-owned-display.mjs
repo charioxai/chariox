@@ -4,8 +4,9 @@ import {randomBytes} from 'node:crypto';
 import {writeFile,unlink} from 'node:fs/promises';
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
+import { ownsDesktopDisplay } from './linux-owned-desktop.mjs';
 const owned=new WeakSet();
-export const ownsDisplay=d=>owned.has(d)&&Number.isSafeInteger(d.child?.pid)&&d.child.pid>1&&d.child.exitCode===null&&d.child.signalCode===null;
+export const ownsDisplay=d=>ownsDesktopDisplay(d)||(owned.has(d)&&Number.isSafeInteger(d.child?.pid)&&d.child.pid>1&&d.child.exitCode===null&&d.child.signalCode===null);
 export class OwnedDisplay {
  constructor(root){this.root=root;this.child=null;}
  async start(){

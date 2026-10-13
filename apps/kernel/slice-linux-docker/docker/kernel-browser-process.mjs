@@ -4,7 +4,6 @@ import { spawn } from "node:child_process";
 import { access, mkdir, readlink, open } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import {OwnedDisplay} from "./kernel-browser-owned-display.mjs";
 import * as linux from "./kernel-browser-linux.mjs";
 import * as macos from "./kernel-browser-macos.mjs";
 import { LinuxOwnedDesktop, desktopCommand } from './linux-owned-desktop.mjs';
@@ -90,6 +89,7 @@ export class HostChromium {
     const binary = await executable(environment);
     if (this.desktop && environment.CHARIOX_KERNEL_BROWSER_HEADLESS !== "1") {
       environment = (await this.desktop.start()).environment;
+      this.display = this.desktop;
     }
     if (process.platform === 'linux') {
       this.temporaryDirectory = await open(this.desktop?.runtime ?? this.root, 'r');
@@ -142,6 +142,7 @@ export class HostChromium {
     if (!exited()) await new Promise(resolve => child.once("exit", resolve));
     await connection?.close();
     await this.desktop?.stop();
+    this.display = null;
     await this.temporaryDirectory?.close(); this.temporaryDirectory = null;
   }
 }

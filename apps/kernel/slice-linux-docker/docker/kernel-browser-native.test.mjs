@@ -105,7 +105,7 @@ test('MP-11 Python capture stays available across planning credits and uses fenc
   }};
   const browser={resolvePageTarget:async()=>({connection,sessionId:'s'}),inputCapture:{run:async(_c,_s,fn)=>fn()}};
   let dispatched=0;
-  await inputHostTab(browser,{target_id:'t',document_id:'d'},{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120},{nativeWheel:(...args)=>source.wheel(...args),onDispatch:()=>dispatched++});
+  await inputHostTab(browser,{target_id:'t',document_id:'d'},{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120},{nativeWheel:(...args)=>source.wheel(...args),onDispatch:()=>{dispatched++;}});
   assert.equal(source.closed,false);assert.deepEqual(writes,[]);assert.equal(dispatched,1);
   assert.equal(sent.filter(call=>call.method==='Input.dispatchMouseEvent'&&call.params.type==='mouseWheel').length,1);
   source.wake();assert.deepEqual(writes,[{wake:true}]);
