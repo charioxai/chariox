@@ -100,13 +100,38 @@ impl KernelRuntimeState {
         self.ensure_notification_home_role()?;
         self.ensure_notification_profile_owner(owner)?;
         let projection = self.owned.notification_inventory_projection.clone();
+        let stale_after_ms = self
+            .owned
+            .config_projection
+            .snapshot()
+            .relay_heartbeat_ms
+            .saturating_mul(2)
+            .max(1_000);
+        // Reuse the same heartbeat-bounded presence used by kernel attachment.
+        // Repeating discovery for every picker can exhaust the read deadline
+        // even though the shared projection already has a live, authorized peer.
+        if projection.is_fresh(crate::session::unix_epoch_ms(), stale_after_ms) {
+            return self
+                .refresh_notification_sources_from_inventory(owner, true)
+                .await;
+        }
         // Refresh uses the same Cloud inventory credential as the waiting room.
         // No workflow data is sent to Cloud. A picker failure retains cache offline.
         let refresh = crate::transport::relay_client::refresh_remote_inventory_projection(
             self.owned.config_projection.clone(),
             projection.clone(),
         );
-        let fresh = matches!(tokio::time::timeout(TIMEOUT, refresh).await, Ok(Ok(())));
+        let refresh_result = tokio::time::timeout(TIMEOUT, refresh).await;
+        let fresh = matches!(refresh_result, Ok(Ok(())));
+        if !fresh {
+            crate::logging::debug_with_fields(
+                "daemon.workflow_notifications",
+                "notification source discovery unavailable",
+                serde_json::json!({
+                    "timeout": refresh_result.is_err(),
+                }),
+            );
+        }
         self.refresh_notification_sources_from_inventory(owner, fresh)
             .await
     }
@@ -146,7 +171,7 @@ impl KernelRuntimeState {
                     let kernel = peer.kernel_id.clone();
                     let owner = owner.to_owned();
                     set.spawn(async move {
-                        let response = tokio::time::timeout_at(
+                        let result = tokio::time::timeout_at(
                             deadline,
                             runtime.notification_peer(
                                 &owner,
@@ -156,9 +181,18 @@ impl KernelRuntimeState {
                                 },
                             ),
                         )
-                        .await
-                        .ok()
-                        .and_then(Result::ok);
+                        .await;
+                        if !matches!(&result, Ok(Ok(_))) {
+                            crate::logging::debug_with_fields(
+                                "daemon.workflow_notifications",
+                                "notification source peer query unavailable",
+                                serde_json::json!({
+                                    "kernel_id": kernel,
+                                    "timeout": result.is_err(),
+                                }),
+                            );
+                        }
+                        let response = result.ok().and_then(Result::ok);
                         (kernel, response)
                     });
                 }
@@ -830,7 +864,7 @@ mod tests {
             .unwrap();
         assert!(!target.store.notification_cached_sources("local").unwrap()[0].available);
         target_runtime
-            .refresh_notification_sources_from_inventory("local", true)
+            .refresh_notification_sources("local")
             .await
             .unwrap();
         assert!(target.store.notification_cached_sources("local").unwrap()[0].available);
