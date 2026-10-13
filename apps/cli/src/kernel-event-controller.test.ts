@@ -558,3 +558,16 @@ test("MP-08/MP-10 connection recovery never writes into agent scrollback", () =>
   controller.applyTransportResumed()
   assert.deepEqual(notices, [])
 })
+
+
+test("MP-08/MP-10 generic resumed traffic cannot settle an in-flight session repair", () => {
+  const { deps, calls } = createDeps({ sessionBindingRepairInFlight: () => true })
+  const controller = createKernelEventController(deps as never)
+  controller.applyTransportClosed("subscription failed")
+  calls.length = 0
+  controller.applyTransportResumed()
+  assert.equal(calls.length, 0)
+  controller.applyTransportResumed(true)
+  assert(calls.includes("daemon-disconnected:false"))
+  controller.disposeConnectionDisplay()
+})

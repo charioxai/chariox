@@ -56,7 +56,7 @@ test("waiting-room subscription failure retains rows and marks them reconnecting
     setStatusLine: (value: string) => calls.push(`status:${value}`),
     appendNotice: () => calls.push("notice-replaces-list"),
     applyWaitingRoomTransportClosed: () => calls.push("retain-offline-rows"),
-    onKernelTransportClosed: undefined,
+    onKernelTransportClosed: () => calls.push("disconnected:true", "retain-offline-rows", "chrome"),
     updateSessionChrome: () => calls.push("chrome"),
   }
   // The other lifecycle operations are outside this subscription scenario.

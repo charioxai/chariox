@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import { createKernelConnectionDisplay } from "./kernel-connection-display.js"
 import { createDaemonActivityController } from "./daemon-activity-controller.js"
 
 test("daemon activity records connection activity without repainting healthy state", () => {
@@ -42,4 +43,36 @@ test("MP-08/MP-10 fresh kernel activity invokes shared connection recovery", () 
   createDaemonActivityController(dependencies).record("heartbeat")
   assert.equal(disconnected, false)
   assert.equal(recovered, 1)
+})
+
+
+test("MP-08/MP-10 control activity cannot reset a session binding repair deadline", () => {
+  let disconnected = true
+  let repairing = true
+  const statuses: string[] = []
+  const timers = new Map<number, () => void>()
+  let next = 0
+  const display = createKernelConnectionDisplay({
+    daemonDisconnected: () => disconnected,
+    setStatusLine: (s: string) => statuses.push(s), updateSessionChrome: () => {}, connectedStatusLine: "Connected",
+    timer: { setTimeout: (callback: () => void) => { timers.set(++next, callback); return next }, clearTimeout: (id: number) => { timers.delete(id) } },
+  } as never)
+  const activity = createDaemonActivityController({
+    recordConnectionActivity: () => {}, daemonDisconnected: () => disconnected,
+    setDaemonDisconnected: (value: boolean) => { disconnected = value }, updateSessionChrome: () => {},
+    canRecoverConnection: () => !repairing,
+    onRecovered: () => display.resumed(),
+  } as never)
+  display.closed()
+  activity.record("control heartbeat")
+  assert.equal(disconnected, true)
+  assert.deepEqual(statuses, ["Reconnecting to the Chariox kernel…"])
+  display.closed()
+  assert.equal(next, 1, "failed resubscribe keeps the original deadline")
+  timers.get(1)!()
+  assert.match(statuses.at(-1)!, /^Disconnected/)
+  repairing = false
+  activity.record("binding recovered")
+  assert.equal(disconnected, false)
+  assert.equal(statuses.at(-1), "Connected")
 })

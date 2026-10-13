@@ -55,6 +55,8 @@ type KernelEventControllerDeps = {
   previewLineForTerminalRecord: (kind: TerminalOutputRecord["kind"], text: string) => string
   trimSingleTrailingNewline: (text: string) => string
   setDaemonDisconnected: (value: boolean) => void
+  daemonDisconnected?: () => boolean
+  sessionBindingRepairInFlight?: () => boolean
   setStatusLine: (value: string) => void
   updateSessionChrome: () => void
   isAttached: () => boolean
@@ -280,8 +282,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     }
   }
 
-  const applyTransportClosed = (message: string) => {
-    deps.setDaemonDisconnected(true)
+  const applyTransportClosed = (_message: string) => {
     connectionDisplay.closed()
     if (!deps.isAttached()) {
       // Control and event closes share this signal. Replace the event binding
@@ -290,10 +291,10 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
       deps.onWaitingRoomTransportClosed()
       return
     }
-
   }
 
-  const applyTransportResumed = () => {
+  const applyTransportResumed = (bindingRecovered = false) => {
+    if (!bindingRecovered && deps.sessionBindingRepairInFlight?.()) return
     deps.setDaemonDisconnected(false)
     deps.recordDaemonActivity("kernel_transport_resumed")
     connectionDisplay.resumed()

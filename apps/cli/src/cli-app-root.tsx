@@ -926,7 +926,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   let settleKernelConnectionDisplay: () => void = () => {}
   let markKernelConnectionClosed: (message: string) => void = () => {}
   const {
-    hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart,
+    hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart, sessionBindingRepairInFlight,
     transitionToNoSession, detachCurrentAttachment, rollbackAttachedSession, attachBinding, recoverProviderRun,
     requestExit, requestWaitingRoom,
   } = createCliSessionLifecycleComposition({
@@ -1125,7 +1125,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     queueTerminalOutputRecords, drainTerminalOutputRecords, scheduleSharedPromptInputHistoryRefresh,
     handleWaitingRoomRefresh: refreshWaitingRoomData,
     applyWaitingRoomTransportClosed, applyWaitingRoomRowsChanged, applyRelayStatusChanged, applyRemoteMachinesChanged, applyProviderCatalogChanged,
-    applySlicesChanged, recoverAttachedSessionAfterKernelRestart, setFatalError,
+    applySlicesChanged, recoverAttachedSessionAfterKernelRestart, sessionBindingRepairInFlight, setFatalError,
     pumpTerminalOutput: (sessionId: string, attachmentId: string) => pumpTerminalOutput(client, sessionId, attachmentId),
     pollRuntimeNotices: (sessionId: string, attachmentId: string) => pollRuntimeNotices(client, sessionId, attachmentId),
     promptInputRefController, transcriptScrollboxRefController, primaryTranscriptRuntimeStore, syncPromptPlaceholder,
@@ -1133,7 +1133,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     sessionChromeUpdateController, promptInputHistoryRefreshController, transcriptHistoryAutoloadController, setWorkingAnimationFrame,
     sessionStatusMode, workspaceLiveSyncStatus, renderSplitPaneFooters, hydrateCurrentAttachedSession,
   })
-  settleKernelConnectionDisplay = runtimeApplyKernelTransportResumed
+  settleKernelConnectionDisplay = () => runtimeApplyKernelTransportResumed(true)
   markKernelConnectionClosed = runtimeApplyKernelTransportClosed
   recordDaemonActivity = runtimeRecordDaemonActivity
   setKernelTerminalOutputRecordProcessor(runtimeProcessKernelTerminalOutputRecord)

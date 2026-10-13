@@ -2,7 +2,7 @@ export type WaitingRoomRowFreshness = "cached/refreshing" | "reconnecting"
 const reconnectGraceMs = 30_000
 
 export function createWaitingRoomRetainedRows<T extends object>(key: (row: T) => string, nowMs: () => number) {
-  const rows = new Map<string, { row: T; missingSinceMs?: number; cached: boolean }>()
+  const rows = new Map<string, { row: T; missingSinceMs?: number; stale?: boolean; cached: boolean }>()
   return {
     clear() { rows.clear() },
     restore(cached: readonly T[]): Array<T & { displayFreshness?: WaitingRoomRowFreshness }> {
@@ -17,7 +17,7 @@ export function createWaitingRoomRetainedRows<T extends object>(key: (row: T) =>
         if (!authoritative) {
           // A failed read proves no deletion. Keep last known rows as stale
           // until a fresh authoritative list can reconcile them.
-          if (!item.cached) item.missingSinceMs ??= nowMs()
+          item.stale = true
           continue
         }
         item.missingSinceMs ??= nowMs()
@@ -26,7 +26,7 @@ export function createWaitingRoomRetainedRows<T extends object>(key: (row: T) =>
       for (const row of live) rows.set(key(row), { row, cached: false })
       return [...rows.values()].map(item => item.cached
         ? { ...item.row, displayFreshness: "cached/refreshing" }
-        : item.missingSinceMs === undefined
+        : item.missingSinceMs === undefined && !item.stale
         ? item.row as T & { displayFreshness?: WaitingRoomRowFreshness } : { ...item.row, displayFreshness: "reconnecting" })
     },
   }

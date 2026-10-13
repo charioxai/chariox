@@ -4,13 +4,9 @@ export type PollerDegradationLogger = {
 }
 
 export type PollerDegradationControllerDeps = {
-  connectedStatusLine: string
   logger?: PollerDegradationLogger | null
-  setDaemonDisconnected: (value: boolean) => void
-  setStatusLine: (value: string) => void
-  updateSessionChrome: () => void
-  onTransportClosed?: (message: string) => void
-  onTransportRecovered?: () => void
+  onTransportClosed: (message: string) => void
+  onTransportRecovered: () => void
 }
 
 export type PollerDegradationController = {
@@ -31,12 +27,7 @@ export function createPollerDegradationController(
         operation,
         degraded_pollers: [...degradedPollers],
       })
-      if (deps.onTransportClosed) deps.onTransportClosed(message)
-      else {
-        deps.setDaemonDisconnected(true)
-        deps.setStatusLine(message)
-        deps.updateSessionChrome()
-      }
+      deps.onTransportClosed(message)
     },
 
     markRecovered(operation, failureCount) {
@@ -52,12 +43,7 @@ export function createPollerDegradationController(
         })
       }
       if (wasDegraded && degradedPollers.size === 0) {
-        if (deps.onTransportRecovered) deps.onTransportRecovered()
-        else {
-          deps.setDaemonDisconnected(false)
-          deps.setStatusLine(deps.connectedStatusLine)
-          deps.updateSessionChrome()
-        }
+        deps.onTransportRecovered()
       }
     },
 

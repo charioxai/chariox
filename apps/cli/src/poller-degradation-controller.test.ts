@@ -80,7 +80,6 @@ test("poller degradation controller clears disconnected state after the last deg
 function createHarness() {
   const calls: string[] = []
   const dependencies = {
-    connectedStatusLine: "Connected to Chariox daemon.",
     logger: {
       warn: (message: string, fields?: Record<string, unknown>) => {
         calls.push(`warn:${message}:${String(fields?.operation)}`)
@@ -89,17 +88,11 @@ function createHarness() {
         calls.push(`info:${message}:${String(fields?.operation)}:${String(fields?.prior_failures)}`)
       },
     },
-    setDaemonDisconnected: (value: boolean) => {
-      calls.push(`disconnected:${value}`)
+    onTransportClosed: (message: string) => {
+      calls.push("disconnected:true", `status:${message}`, "chrome")
     },
-    setStatusLine: (value: string) => {
-      calls.push(`status:${value}`)
-    },
-    updateSessionChrome: () => {
-      calls.push("chrome")
-    },
-    appendNotice: (message: string, tone?: "warning" | "muted") => {
-      calls.push(`notice:${message}:${tone ?? "default"}`)
+    onTransportRecovered: () => {
+      calls.push("disconnected:false", "status:Connected to Chariox daemon.", "chrome")
     },
   }
   const controller = createPollerDegradationController(dependencies)

@@ -8,6 +8,8 @@ export function createKernelConnectionDisplay(deps: {
   setStatusLine(message: string): void
   updateSessionChrome(): void
   connectedStatusLine: string
+  daemonDisconnected?: () => boolean
+  setDaemonDisconnected?: (value: boolean) => void
   timer?: KernelConnectionDisplayTimer
 }) {
   const timer = deps.timer ?? { setTimeout, clearTimeout }
@@ -19,13 +21,22 @@ export function createKernelConnectionDisplay(deps: {
   }
   return {
     closed() {
+      // A switch/attach may restore the shared signal without a resumed event.
+      if (deps.daemonDisconnected?.() === false) {
+        clear()
+        disconnected = false
+      }
+      deps.setDaemonDisconnected?.(true)
       if (disconnected) return
       disconnected = true
       deps.setStatusLine("Reconnecting to the Chariox kernel…")
       deps.updateSessionChrome()
       deadline = timer.setTimeout(() => {
         deadline = null
-        if (!disconnected) return
+        if (!disconnected || deps.daemonDisconnected?.() === false) {
+          disconnected = false
+          return
+        }
         deps.setStatusLine("Disconnected from the Chariox kernel · showing last known data")
         deps.updateSessionChrome()
       }, 10_000)

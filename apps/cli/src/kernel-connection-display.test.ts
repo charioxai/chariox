@@ -23,3 +23,25 @@ test("MP-08/MP-10 only sustained loss escalates shared chrome; duplicate closes 
   assert.equal(statuses.at(-1), "Disconnected from the Chariox kernel · showing last known data")
   display.dispose()
 })
+
+
+test("MP-08/MP-10 a direct healthy kernel switch cancels stale deadline effects", () => {
+  let disconnected = true
+  const statuses: string[] = []
+  const timers: Array<() => void> = []
+  const display = createKernelConnectionDisplay({
+    daemonDisconnected: () => disconnected,
+    setStatusLine: (s: string) => statuses.push(s), updateSessionChrome: () => {}, connectedStatusLine: "Connected",
+    timer: { setTimeout: (callback: () => void) => { timers.push(callback); return timers.length }, clearTimeout: () => {} },
+  } as never)
+  display.closed()
+  disconnected = false
+  statuses.push("Connected to new kernel")
+  timers[0]!()
+  assert.equal(statuses.at(-1), "Connected to new kernel")
+  disconnected = true
+  display.closed()
+  assert.equal(timers.length, 2, "the next loss must start a new deadline")
+  timers[1]!()
+  assert.match(statuses.at(-1)!, /^Disconnected/)
+})

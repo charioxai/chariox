@@ -135,6 +135,7 @@ export type CliBackgroundRuntimeCompositionDeps = {
   applySlicesChanged: AnyFn
   flashFooter: AnyFn
   recoverAttachedSessionAfterKernelRestart: AnyFn
+  sessionBindingRepairInFlight: () => boolean
   setFatalError: AnyFn
   pumpTerminalOutput: AnyFn
   pollRuntimeNotices: AnyFn
@@ -187,11 +188,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   const onResize = terminalResizeController.handleResize
 
   const pollerDegradationController = createPollerDegradationController({
-    connectedStatusLine: DEFAULT_CONNECTED_STATUS,
     logger: deps.appLogger,
-    setDaemonDisconnected: deps.setDaemonDisconnected,
-    setStatusLine: deps.setStatusLine,
-    updateSessionChrome: deps.updateSessionChrome,
     onTransportClosed: (message) => kernelEventController.applyTransportClosed(message),
     onTransportRecovered: () => kernelEventController.applyTransportResumed(),
   })
@@ -228,6 +225,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   const daemonActivityController = createDaemonActivityController({
     recordConnectionActivity: () => connectionHealthWatchdogController.recordActivity(),
     onRecovered: () => kernelEventController.applyTransportResumed(),
+    canRecoverConnection: () => !deps.sessionBindingRepairInFlight(),
     daemonDisconnected: deps.daemonDisconnected,
     setDaemonDisconnected: deps.setDaemonDisconnected,
     updateSessionChrome: deps.updateSessionChrome,
@@ -268,6 +266,8 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   }
 
   const kernelEventController = createKernelEventController({
+    daemonDisconnected: deps.daemonDisconnected,
+    sessionBindingRepairInFlight: deps.sessionBindingRepairInFlight,
     isAttached: deps.isAttached,
     restartWaitingRoomEventStream: () => {
       void deps.client.restartKernelEventStream().catch((error: unknown) => {
