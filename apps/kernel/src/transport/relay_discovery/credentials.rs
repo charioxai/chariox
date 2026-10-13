@@ -2,7 +2,6 @@
 
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
-use crate::runtime::cloud_api_client::issue_cloud_relay_inventory_discovery_token;
 
 /// A transport-only snapshot for an already issued metadata credential. Never
 /// persist it: the original Cloud pairing and kernel peer token stay intact.
@@ -18,25 +17,7 @@ pub(crate) fn with_metadata_token(config: &DaemonConfig, token: String) -> Daemo
 pub(crate) async fn metadata_discovery_config(
     config: &DaemonConfig,
 ) -> Result<DaemonConfig, DaemonError> {
-    let Some(profile) = config.cloud_relay.as_ref().filter(|_| {
-        config
-            .relay_url
-            .as_deref()
-            .is_some_and(|url| config.relay_url_uses_cloud_profile(url))
-    }) else {
-        // Self-hosted relays retain their configured opaque credential.
-        return Ok(config.clone());
-    };
-    let issued = tokio::time::timeout(
-        std::time::Duration::from_millis(config.relay_request_timeout_ms),
-        issue_cloud_relay_inventory_discovery_token(profile, &config.daemon_id),
-    )
-    .await
-    .map_err(|_| DaemonError::LocalTransport {
-        operation: "issue relay metadata credential",
-        message: "Cloud metadata credential request timed out".into(),
-    })??;
-    Ok(with_metadata_token(config, issued.token))
+    crate::runtime::cloud_api_client::relay_metadata_discovery_config(config).await
 }
 
 #[cfg(test)]
