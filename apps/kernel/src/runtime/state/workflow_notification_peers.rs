@@ -116,7 +116,8 @@ impl KernelRuntimeState {
                 .await;
         }
         // Refresh uses the same Cloud inventory credential as the waiting room.
-        // No workflow data is sent to Cloud. A picker failure retains cache offline.
+        // No workflow data is sent to Cloud. A failed read keeps the last-known
+        // cache, while the error tells clients that it is not a fresh inventory.
         let refresh = crate::transport::relay_client::refresh_remote_inventory_projection(
             self.owned.config_projection.clone(),
             projection.clone(),
@@ -131,6 +132,9 @@ impl KernelRuntimeState {
                     "timeout": refresh_result.is_err(),
                 }),
             );
+            return Err(store::error(
+                "notification source discovery unavailable; retry refresh",
+            ));
         }
         self.refresh_notification_sources_from_inventory(owner, fresh)
             .await
@@ -857,7 +861,7 @@ mod tests {
         target_runtime
             .owned
             .notification_inventory_projection
-            .update(vec![], vec![presence]);
+            .update(vec![], vec![presence.clone()]);
         target_runtime
             .refresh_notification_sources_from_inventory("local", false)
             .await
@@ -868,6 +872,22 @@ mod tests {
             .await
             .unwrap();
         assert!(target.store.notification_cached_sources("local").unwrap()[0].available);
+        // A failed directory read is not an authoritative offline answer.
+        target_runtime
+            .owned
+            .notification_inventory_projection
+            .clear();
+        let mut unavailable = tc.clone();
+        unavailable.relay_url = Some("ws://127.0.0.1:1".into());
+        target_runtime.owned.config_projection.update(unavailable);
+        let failed_refresh = target_runtime.refresh_notification_sources("local").await;
+        target_runtime.owned.config_projection.update(tc.clone());
+        assert!(failed_refresh.is_err());
+        assert!(target.store.notification_cached_sources("local").unwrap()[0].available);
+        target_runtime
+            .owned
+            .notification_inventory_projection
+            .update(vec![], vec![presence]);
         let LocalDaemonResponse::WorkflowNotificationAttached { subscription } = target_runtime
             .execute_workflow_notification_command(
                 LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
