@@ -1374,8 +1374,13 @@ impl KernelRuntimeState {
             })
             .await?;
         if let Some((session_id, recipients)) = native_target {
-            self.pump_owned_provider_output(&session_id, &provider_run_id, recipients, false)
-                .await?;
+            Box::pin(self.pump_owned_provider_output(
+                &session_id,
+                &provider_run_id,
+                recipients,
+                false,
+            ))
+            .await?;
         }
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);

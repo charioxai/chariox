@@ -28,7 +28,7 @@ async fn r5_review_home_projection_drain_pumps_the_leased_native_hook() {
 }
 
 #[tokio::test]
-async fn r5_review_queued_native_prompt_fails_on_recent_split_terminal_error() {
+async fn r5_review_headless_prompt_fails_on_recent_split_terminal_error() {
     rejection_scenario(false, false, false, false, true).await;
 }
 
@@ -146,12 +146,20 @@ async fn rejection_scenario(
     let request = crate::provider::LaunchProviderRequest::new(
         session.id(),
         "claude",
-        "claude",
+        if recent_failure {
+            "claude-headless"
+        } else {
+            "claude"
+        },
         "default",
         "haiku",
     )
-    .with_agent_id(agent.id())
-    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    .with_agent_id(agent.id());
+    let request = if recent_failure {
+        request
+    } else {
+        request.with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
+    };
     let mut run = crate::provider::RuntimeProviderRun::new(
         "context-failure-run",
         &request,
