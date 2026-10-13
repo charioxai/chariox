@@ -88,7 +88,7 @@ export type ProviderSelectionController = {
   applyModelSelection(modelId: string): Promise<void>
   applyVariantSelection(variant: string): Promise<void>
   applyProviderSelection(providerId: string): Promise<void>
-  applyAccountSelection(accountProfile: string): Promise<void>
+  applyAccountSelection(accountProfile: string, target?: {sessionId: string; agentId: string}): Promise<void>
   applyModeSelection(mode: string): Promise<void>
   applyPermissionSelection(permission: string): Promise<void>
 }
@@ -262,8 +262,13 @@ export function createProviderSelectionController(
       }
       deps.flashFooter(selectionMessage(`${backendProviderLabel(providerId)} selected`, localFallback), "info")
     },
-    async applyAccountSelection(accountProfile) {
-      const current = deps.currentProviderSelection()
+    async applyAccountSelection(accountProfile, target) {
+      const targetAgent = target && deps.sessionState().id === target.sessionId
+        ? deps.sessionState().agents.find(agent => agent.id === target.agentId) : undefined
+      if (target && !targetAgent) { deps.flashFooter("account recovery target is no longer available", "error"); return }
+      const current = targetAgent
+        ? {provider: targetAgent.provider, accountProfile: targetAgent.account_profile ?? undefined, model: targetAgent.model ?? "", effort: targetAgent.effort ?? ""}
+        : deps.currentProviderSelection()
       const provider = normalizeBackendProviderId(current.provider)
       const selection = resolveProviderAccountSelection(providerAccounts(), provider, accountProfile)
       if (selection.kind === "ambiguous") {
@@ -282,7 +287,7 @@ export function createProviderSelectionController(
         deps.flashFooter(formatError(error), "error")
         return
       }
-      deps.setProviderCatalog?.(catalog)
+      if (!target) deps.setProviderCatalog?.(catalog)
       const selected = selectConfiguredModel(catalog, current.model, provider)
       if (!selected) {
         deps.flashFooter(`${profile.label} has no available ${backendProviderLabel(provider)} models`, "error")
@@ -294,6 +299,16 @@ export function createProviderSelectionController(
         accountProfile: profile.profile_id,
         model: selected.id,
         effort,
+      }
+      if (target) {
+        if (deps.sessionState().id !== target.sessionId || !deps.sessionState().agents.some(agent => agent.id === target.agentId)) return
+        try {
+          const payload = await deps.updateAgentProfile(target.sessionId, target.agentId, nextSelection)
+          if (deps.sessionState().id === target.sessionId) deps.applySessionState(payload.session)
+          if (deps.focusedAgentId() === target.agentId) deps.clearProviderRunState()
+          deps.flashFooter(`account set to ${profile.label}`, "info")
+        } catch (error) { deps.flashFooter(formatError(error), "error") }
+        return
       }
       deps.setDefaults(nextSelection)
       deps.reconcileWaitingRoom({

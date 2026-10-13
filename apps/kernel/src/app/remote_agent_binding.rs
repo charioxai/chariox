@@ -578,6 +578,11 @@ impl DaemonApp {
         &self,
         agent: &AgentInstance,
     ) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteMcp>, DaemonError> {
+        // Home grants execute through the same home proxy in every client mode.
+        // Worker-local definitions are admitted separately by RequiredRemoteMcp.
+        if agent.remote_execution().is_some() {
+            return Ok(Vec::new());
+        }
         let mcp_grants = agent.mcp_grants();
         if mcp_grants.is_empty() {
             return Ok(Vec::new());
@@ -653,7 +658,7 @@ impl DaemonApp {
             return Ok((
                 self.required_remote_mcps_for_native_provider_launch(agent)?,
                 Some(self.required_remote_skills_for_native_provider_launch(agent)?),
-                manifest.without_mcp_tools(),
+                manifest,
             ));
         }
         Ok((Vec::new(), None, manifest))
@@ -1704,7 +1709,7 @@ impl DaemonApp {
     ) -> Result<DaemonConfig, DaemonError> {
         if !self.hosted_shared_slice_uses_connected_relay(kernel_ref) {
             return self.block_on_relay_future(async move {
-                relay_discovery::metadata_discovery_config(&config).await
+                crate::runtime::cloud_api_client::relay_metadata_discovery_config(&config).await
             });
         }
         let profile = config
@@ -2291,8 +2296,13 @@ mod tests {
             ..legacy.clone()
         };
         assert!(!pre_artifact.relay_peer_protocol_compatible());
+        let previous = RemoteAgentBinding {
+            relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION - 1),
+            ..legacy.clone()
+        };
+        assert!(!previous.relay_peer_protocol_compatible());
         let current = RemoteAgentBinding {
-            relay_peer_protocol_version: Some(73),
+            relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
             ..legacy
         };
         assert!(current.relay_peer_protocol_compatible());
@@ -2305,6 +2315,9 @@ mod tests {
 
     fn cloud_relay_profile(relay_url: &str) -> PersistedCloudRelayProfile {
         PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url: "https://cloud.example.test".to_string(),
             email: "user@example.test".to_string(),
             account_id: "account-1".to_string(),
@@ -2388,7 +2401,7 @@ mod tests {
     }
 
     #[test]
-    fn native_remote_prompt_routes_granted_mcp_as_worker_requirement_only() {
+    fn native_remote_prompt_keeps_granted_mcp_on_home() {
         let workspace = std::env::temp_dir().join(format!(
             "chariox-native-remote-prompt-capabilities-{}-{}",
             std::process::id(),
@@ -2480,10 +2493,12 @@ mod tests {
         let (required_mcps, required_skills, manifest) = app
             .remote_prompt_capabilities_for_agent(&agent)
             .expect("native prompt capabilities should resolve");
-        assert_eq!(required_mcps.len(), 1);
-        assert_eq!(required_mcps[0].config.name, mcp_name);
+        assert!(required_mcps.is_empty());
         assert!(required_skills.is_some_and(|skills| skills.is_empty()));
-        assert!(manifest.home_proxy_mcp_server_names().next().is_none());
+        assert_eq!(
+            manifest.home_proxy_mcp_server_names().collect::<Vec<_>>(),
+            vec![mcp_name.as_str()]
+        );
 
         std::fs::remove_dir_all(workspace).expect("workspace should clean up");
     }
@@ -2829,7 +2844,25 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_hosted_worker_discovery_uses_metadata_scope_without_replacing_runtime_token() {
+    fn ordinary_self_hosted_worker_discovery_preserves_its_token() {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_token = Some("kernel-registration-token".to_string());
+        config.cloud_relay = Some(cloud_relay_profile("wss://relay.example.test"));
+        let app = DaemonApp::bootstrap(config).unwrap();
+        let mut local_relay = app.config().clone();
+        local_relay.relay_url = Some("ws://127.0.0.1:9".to_string());
+        local_relay.relay_token = Some("self-hosted-token".to_string());
+        let discovery = app
+            .remote_worker_discovery_config("worker", local_relay.clone())
+            .unwrap();
+        assert_eq!(discovery.relay_url, local_relay.relay_url);
+        assert_eq!(discovery.relay_token, local_relay.relay_token);
+    }
+
+    // MP-08 / MP-10 / MP-11: ordinary hosted workers use client metadata scope.
+    #[test]
+    fn ordinary_hosted_worker_discovery_uses_scoped_metadata_token() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let fixture = std::thread::spawn(move || {
@@ -2837,22 +2870,18 @@ mod tests {
                 accept_cloud_request(&listener, std::time::Duration::from_secs(30)).unwrap();
             let request = read_http_request(&mut stream);
             let body = r#"{"token":"worker-metadata-token","expiresAt":"2099-01-01T00:00:00Z"}"#;
-            stream.write_all(format!(
-                "HTTP/1.1 201 Created\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                body.len(), body
-            ).as_bytes()).unwrap();
+            stream.write_all(format!("HTTP/1.1 201 Created\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}", body.len(), body).as_bytes()).unwrap();
             request
         });
         let mut config = DaemonConfig::for_tests();
-        config.relay_url = Some("wss://relay.example.test".into());
-        config.relay_token = Some("home-runtime-token".into());
+        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_token = Some("kernel-registration-token".to_string());
         let mut profile = cloud_relay_profile("wss://relay.example.test");
         profile.api_url = format!("http://{address}");
         config.cloud_relay = Some(profile);
         let app = DaemonApp::bootstrap(config).unwrap();
-
         let discovery = app
-            .remote_worker_discovery_config("kernel-ordinary-worker", app.config().clone())
+            .remote_worker_discovery_config("ordinary-worker", app.config().clone())
             .unwrap();
         assert_eq!(
             discovery.relay_token.as_deref(),
@@ -2860,7 +2889,7 @@ mod tests {
         );
         assert_eq!(
             app.config().relay_token.as_deref(),
-            Some("home-runtime-token")
+            Some("kernel-registration-token")
         );
         let request = fixture.join().unwrap();
         assert!(request.starts_with("POST /relay/token HTTP/1.1"));
@@ -2868,10 +2897,8 @@ mod tests {
             r#""subject":"relay-inventory:{}""#,
             app.config().daemon_id
         )));
-        assert!(request.contains(r#""allowedActions":["client.metadata.read"]"#));
         assert!(request.contains(r#""subjectKind":"client""#));
-        assert!(request.contains(r#""machineCredential":"machine-secret""#));
-        assert!(!request.contains("sessionToken"));
+        assert!(request.contains(r#""allowedActions":["client.metadata.read"]"#));
     }
 
     #[test]

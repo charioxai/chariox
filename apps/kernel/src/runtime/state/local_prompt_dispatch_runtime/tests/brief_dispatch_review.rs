@@ -228,6 +228,7 @@ async fn cancellation_during_brief_promotes_followup_through_shared_preparation(
         .finalize_local_prompt_cancellation_with_queued_advance(
             &fixture.session_id,
             &fixture.agent_id,
+            &fixture.prompt_id,
             Some(fixture.run.id()),
         )
         .unwrap();

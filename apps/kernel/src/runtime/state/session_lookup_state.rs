@@ -124,6 +124,10 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let session = self.owned.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::SessionState {
+            room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
+                &session,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+            ),
             agent_activity: self.agent_activity_for_session(&session),
             agent_activity_revision: self.owned.session_projection.change_sequence(),
             session,

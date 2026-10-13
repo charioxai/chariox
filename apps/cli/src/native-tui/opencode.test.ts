@@ -30,14 +30,22 @@ for (const [placement, flags] of [
   ["local", []], ["home-worker", ["--machine", "selected-worker"]], ["slice", ["--slice", "selected-slice"]],
 ] as const) {
   test(`MP-08/MP-10 OpenCode ${placement} attach waits for the home run readiness projection`, async (t) => {
-    const h = nativeLaunchHarness(t)
+    const workerDirectory = placement === "local" ? "/fixture" : "/workspace"
+    const h = nativeLaunchHarness(t, "ready", workerDirectory)
     await runOpenCodeNativeTui([...h.args, ...flags])
     assert.equal(h.reads(), 3)
     assert.equal(h.launches(), 1)
     assert.deepEqual(h.attachedSessions, ["official-session"])
+    assert.deepEqual(h.attachedDirectories, [workerDirectory])
     assert.equal(h.closes(), 1)
   })
 }
+
+test("MP-08/MP-10 OpenCode attach retains the worktree fallback for older run projections", async (t) => {
+  const h = nativeLaunchHarness(t)
+  await runOpenCodeNativeTui(h.args)
+  assert.deepEqual(h.attachedDirectories, ["/fixture"])
+})
 
 test("MP-08/MP-10 OpenCode remote attach fails when the projected run ends before readiness", async (t) => {
   const h = nativeLaunchHarness(t, "ended")
@@ -57,15 +65,17 @@ test("MP-08/MP-10 OpenCode slice attach has bounded readiness failure", async (t
 
 // Exercise the real launcher, request builders, readiness loop and proxy lifecycle.
 // Only kernel transport replies and the provider executable are synthetic.
-function nativeLaunchHarness(t: TestContext, outcome: "ready" | "ended" | "timeout" = "ready") {
+function nativeLaunchHarness(t: TestContext, outcome: "ready" | "ended" | "timeout" = "ready", workingDirectory?: string) {
   let reads = 0
   let launches = 0
   let closes = 0
   const attachedSessions: string[] = []
+  const attachedDirectories: string[] = []
   const agent = { id: "agent-1", session_id: "home-session", provider: "opencode", alias: "A1", extension_grants: [] }
   const run = {
     id: "home-projected-run", session_id: "home-session", agent_instance_id: agent.id,
     provider: "opencode", adapter_key: "opencode", client_interface: "native_tui",
+    working_directory: workingDirectory,
     state: "Running", structured_endpoint: "http://127.0.0.1:1", provider_session_id: null,
   }
   t.mock.method(LocalIpcClient.prototype, "send", async (request: Record<string, unknown>) => {
@@ -95,6 +105,7 @@ function nativeLaunchHarness(t: TestContext, outcome: "ready" | "ended" | "timeo
     assert.equal(args[0], "attach")
     assert.equal(reads, 3, "provider attach must follow kernel readiness")
     attachedSessions.push(args[args.indexOf("--session") + 1]!)
+    attachedDirectories.push(args[args.indexOf("--dir") + 1]!)
     const child = new EventEmitter()
     setImmediate(() => child.emit("exit", 0, null))
     return child
@@ -104,6 +115,6 @@ function nativeLaunchHarness(t: TestContext, outcome: "ready" | "ended" | "timeo
   t.mock.method(process.stderr, "write", () => true)
   return {
     args: ["--kernel-url", "ws://127.0.0.1:1/kernel", "--workspace", "/fixture", "--worktree", "/fixture"],
-    attachedSessions, reads: () => reads, launches: () => launches, closes: () => closes,
+    attachedSessions, attachedDirectories, reads: () => reads, launches: () => launches, closes: () => closes,
   }
 }

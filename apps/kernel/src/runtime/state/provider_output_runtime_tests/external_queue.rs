@@ -804,11 +804,10 @@ async fn losing_queue_claim_does_not_release_the_winning_workflow_workspace_clai
     let loser = runtime
         .owned
         .prompt_state_owner
-        .try_activate_next_queued_prompt_with_prompt_id(
+        .try_activate_next_queued_prompt_for_dispatch(
             &session,
             agent.id(),
             observed.id(),
-            "losing-dispatch".to_string(),
             |prompt| {
                 loser_prepared = true;
                 runtime

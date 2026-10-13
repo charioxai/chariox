@@ -120,6 +120,7 @@ impl RemoteLeaseRuntime<'_> {
                 &lease.owner_user_id,
                 &profile.provider,
                 &profile.profile_id,
+                self.app.config(),
             )?;
             let observed =
                 registry.get(&lease.owner_user_id, &profile.provider, &profile.profile_id)?;
@@ -162,7 +163,25 @@ impl RemoteLeaseRuntime<'_> {
             self.app
                 .provider_account_profile_registry()
                 .materialize_replica_with_rollback_state(&lease.owner_user_id, &materialization)?;
-        let profile = match self.validate_remote_provider_account(profile) {
+        let profile = match self
+            .validate_remote_provider_account(profile)
+            .and_then(|profile| {
+                if profile.provider == "opencode" {
+                    let environment = self
+                        .app
+                        .provider_account_profile_registry()
+                        .resolve_environment(
+                            &profile.owner_user_id,
+                            &profile.provider,
+                            &profile.profile_id,
+                        )?;
+                    crate::local::provider_requests::prepare_opencode_model_cache(
+                        &environment,
+                        &profile.services,
+                    )?;
+                }
+                Ok(profile)
+            }) {
             Ok(profile) => profile,
             Err(error) => {
                 if let Err(rollback_error) = self
@@ -226,6 +245,7 @@ impl RemoteLeaseRuntime<'_> {
             &profile.owner_user_id,
             &profile.provider,
             &profile.profile_id,
+            self.app.config(),
         )?;
         registry.require_authenticated(
             &profile.owner_user_id,
@@ -289,6 +309,10 @@ if [ "$#" -ge 2 ] && [ "$1" = "auth" ] && [ "$2" = "list" ]; then
   else
     printf '%s\n' 'No credentials'
   fi
+  exit 0
+fi
+if [ "$#" -eq 2 ] && [ "$1" = "models" ] && [ "$2" = "--refresh" ]; then
+  printf '%s\n' 'openai/gpt-6.1-sol' 'opencode-go/claude-haiku-5-5' 'opencode/claude-haiku-5-5'
   exit 0
 fi
 if [ "$#" -ge 1 ] && [ "$1" = "--version" ]; then

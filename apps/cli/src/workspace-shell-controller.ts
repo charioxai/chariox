@@ -38,6 +38,7 @@ export function deriveWorkspaceShellContextForSession(
 type WorkspaceShellSubmitDeps = {
   client: LocalIpcClient
   clientId?: string | undefined
+  cloudAccountClient?: ShellExecutorDeps["cloudAccountClient"]
   executeShellLine?: typeof executeShellLine
   openRoomViewer?: ShellExecutorDeps["openRoomViewer"]
   readSecret?: ShellExecutorDeps["readSecret"]
@@ -83,6 +84,7 @@ export async function submitWorkspaceShellCommand(
   const result = await runShellLine(command, context, {
     client: deps.client,
     clientId: deps.clientId,
+    cloudAccountClient: deps.cloudAccountClient,
     ...(deps.openRoomViewer ? { openRoomViewer: deps.openRoomViewer } : {}),
     ...(deps.readSecret ? { readSecret: deps.readSecret } : {}),
   }, (text) => output.push(text))

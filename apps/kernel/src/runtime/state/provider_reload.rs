@@ -399,7 +399,7 @@ pub(super) fn policy_reload_launch_request(
     agent_id: &str,
     durable_resume_state: crate::provider::ProviderResumeState,
 ) -> crate::provider::LaunchProviderRequest {
-    let request = crate::provider::LaunchProviderRequest::new(
+    let mut request = crate::provider::LaunchProviderRequest::new(
         run.session_id(),
         run.adapter_key(),
         run.provider(),
@@ -412,6 +412,7 @@ pub(super) fn policy_reload_launch_request(
     .with_remote_extension_manifest(run.remote_extension_manifest().clone())
     .with_variant(run.variant().map(str::to_string))
     .with_resume_state(durable_resume_state);
+    crate::account_profile::copy_provider_account_selection(run, &mut request);
     if let Some((home, path)) = run.preparation_environment() {
         request.with_preparation_environment(home, path)
     } else {

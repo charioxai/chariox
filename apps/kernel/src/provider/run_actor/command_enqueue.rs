@@ -90,6 +90,7 @@ impl ProviderRunActorMailbox {
         &self,
         session_id: String,
         provider_run_id: String,
+        prompt_id: String,
         run: RuntimeProviderRun,
     ) -> Result<(), DaemonError> {
         self.utility_cancellations.cancel(&provider_run_id);
@@ -98,6 +99,7 @@ impl ProviderRunActorMailbox {
         match sender.try_send(ProviderRunActorCommand::Abort {
             session_id,
             provider_run_id: provider_run_id.clone(),
+            prompt_id,
             run,
         }) {
             Ok(()) => {
@@ -310,6 +312,14 @@ impl ProviderRunActorMailbox {
             push_finished_submit(&finished_submits, finished);
             completion_signal.record_completion(&provider_run_id);
         });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_finished_abort_for_test(&self, finished: FinishedProviderPromptAbortJob) {
+        crate::provider::run_actor::finished_jobs::push_finished_abort(
+            &self.finished_aborts,
+            finished,
+        );
     }
 
     pub(crate) fn drain_finished_aborts(&self) -> Vec<FinishedProviderPromptAbortJob> {
@@ -622,6 +632,7 @@ mod tests {
             .spawn_abort(
                 "session-1".to_string(),
                 "run-1".to_string(),
+                "prompt-1".to_string(),
                 runtime_run("run-1"),
             )
             .expect_err("full provider actor queue should reject abort");

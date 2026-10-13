@@ -14,8 +14,13 @@ import socket
 import struct
 import subprocess
 import sys
+sys.dont_write_bytecode = True
 import tempfile
 import time
+
+from owned_process_signals import OwnedProcesses
+
+owned_signals = OwnedProcesses()
 
 import aiohttp
 
@@ -91,11 +96,11 @@ async def check_endpoints(process):
 def terminate(process):
     """TERM only our process group, then bounded forced cleanup on failure."""
     if process.poll() is None:
-        os.killpg(process.pid, signal.SIGTERM)
+        owned_signals.group(process.owned_signal_handle, signal.SIGTERM)
     try:
         process.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
+        owned_signals.group(process.owned_signal_handle, signal.SIGKILL)
         process.wait(timeout=5)
         raise AssertionError(f"Process {process.pid} required forced shutdown")
 
@@ -178,6 +183,7 @@ def main():
                     ["Xvfb", ":91", "-screen", "0", "640x480x24", "-nolisten", "tcp", "-ac"],
                     env=environment, stdout=xlog, stderr=subprocess.STDOUT, start_new_session=True,
                 )
+                xvfb.owned_signal_handle = owned_signals.record(xvfb.pid, watch=True, fresh_launch=True)
                 processes.append(xvfb)
                 for attempt in range(100):
                     probe = subprocess.run(["xdpyinfo"], env=environment, capture_output=True)
@@ -199,6 +205,7 @@ def main():
                     "--webcam-enabled=false", "--microphone-enabled=false",
                     "--enable-resize=false", "--enable-clipboard=false",
                 ], env=environment, stdout=slog, stderr=subprocess.STDOUT, start_new_session=True)
+                server.owned_signal_handle = owned_signals.record(server.pid, watch=True, fresh_launch=True)
                 processes.append(server)
                 try:
                     frame = asyncio.run(check_endpoints(server))

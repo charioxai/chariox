@@ -11,12 +11,7 @@ impl DaemonApp {
         operation: &'static str,
     ) -> Result<(), DaemonError> {
         self.provider_account_profiles
-            .require_agent_authenticated_in_scope(
-                &self.config,
-                agent,
-                operation,
-                self.provider_account_launch_scope_for_agent(agent),
-            )
+            .require_agent_authenticated(&self.config, agent, operation)
     }
 
     pub(crate) fn ensure_prompt_provider_run_for_agent(
@@ -26,7 +21,11 @@ impl DaemonApp {
     ) -> Result<String, DaemonError> {
         self.retire_finished_turn_substitute_run(session_id, agent_id)?;
         let (agent, turn_substitute) = self.agent_launch_profile(self.agents.get_agent(agent_id)?);
-        self.require_prompt_agent_authenticated(&agent, "ensure prompt provider run for agent")?;
+        self.provider_account_profiles.require_agent_authenticated(
+            &self.config,
+            &agent,
+            "ensure prompt provider run for agent",
+        )?;
 
         if agent.remote_execution().is_some() {
             return Err(DaemonError::LocalTransport {

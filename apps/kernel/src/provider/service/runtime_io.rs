@@ -23,6 +23,10 @@ pub(crate) enum ProviderRuntimeBinding {
 }
 
 impl ProviderProcessService {
+    pub(crate) fn structured_submit_epoch(&self) -> u64 {
+        self.run_actor_mailbox.submit_epoch
+    }
+
     pub fn initialize_runtime(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
         if let Some(binding) = Self::initialize_runtime_binding(run)? {
             self.apply_runtime_binding(run.id(), binding)?;
@@ -321,6 +325,7 @@ impl ProviderProcessService {
         &mut self,
         session_id: String,
         provider_run_id: String,
+        prompt_id: String,
     ) -> Result<(), DaemonError> {
         let run = self.get_run(&provider_run_id)?;
         if !self.run_uses_structured_prompt_io(&run) {
@@ -332,7 +337,7 @@ impl ProviderProcessService {
             });
         }
         self.run_actor_mailbox
-            .spawn_abort(session_id, provider_run_id, run)
+            .spawn_abort(session_id, provider_run_id, prompt_id, run)
     }
 
     pub(crate) fn drain_finished_structured_prompt_submit_jobs(
@@ -371,6 +376,12 @@ impl ProviderProcessService {
     ) {
         self.run_actor_mailbox
             .schedule_finished_output_poll_retry(finished);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_finished_abort_for_test(&self, finished: FinishedProviderPromptAbortJob) {
+        self.run_actor_mailbox
+            .inject_finished_abort_for_test(finished);
     }
 
     pub(crate) fn drain_finished_structured_prompt_abort_jobs(

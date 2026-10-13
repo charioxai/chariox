@@ -99,7 +99,6 @@ struct PromptStateOwnerState {
     states: BTreeMap<PromptStateKey, OwnedAgentPromptState>,
     profile_transitions: BTreeMap<PromptStateKey, Arc<()>>,
     queue_promotions: BTreeSet<PromptStateKey>,
-    next_pending_prompt_number: u64,
 }
 
 impl PromptStateOwner {
@@ -925,13 +924,24 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
     ) -> Option<PromptQueueItem> {
+        self.finalize_active_prompt_cancellation_if_matches(session, agent_id, None)
+    }
+
+    pub(crate) fn finalize_active_prompt_cancellation_if_matches(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        expected_prompt_id: Option<&str>,
+    ) -> Option<PromptQueueItem> {
         let mut owner = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
-        let active_status = state.active_prompt.as_ref()?.status();
-        if active_status != PromptStatus::Cancelling {
+        let active = state.active_prompt.as_ref()?;
+        if active.status() != PromptStatus::Cancelling
+            || expected_prompt_id.is_some_and(|expected| active.id() != expected)
+        {
             return None;
         }
         let mut cancelled = state.take_active_prompt()?;
@@ -1085,12 +1095,11 @@ impl PromptStateOwner {
         Ok(Some(active))
     }
 
-    pub(crate) fn activate_next_queued_prompt_with_prompt_id(
+    pub(crate) fn activate_next_queued_prompt_for_dispatch(
         &self,
         session: &RuntimeSession,
         agent_id: &str,
         expected_prompt_id: Option<&str>,
-        prompt_id: String,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         let mut owner = self
             .state
@@ -1103,7 +1112,7 @@ impl PromptStateOwner {
             return Ok(None);
         }
         let state = owner.ensure_agent_state(session, agent_id);
-        Self::activate_owned_queued_prompt(state, agent_id, expected_prompt_id, prompt_id)
+        Self::activate_owned_queued_prompt(state, agent_id, expected_prompt_id)
     }
 
     /// Opportunistic queue dispatch claims only the head it observed, while idle.
@@ -1111,12 +1120,11 @@ impl PromptStateOwner {
     /// not reenter the prompt owner. This keeps workspace claims with the winner.
     /// Another admission or completion may win between the caller's peek and
     /// this lock; that is deferred work, not a provider initialization failure.
-    pub(crate) fn try_activate_next_queued_prompt_with_prompt_id(
+    pub(crate) fn try_activate_next_queued_prompt_for_dispatch(
         &self,
         session: &RuntimeSession,
         agent_id: &str,
         expected_prompt_id: &str,
-        prompt_id: String,
         prepare: impl FnOnce(&PromptQueueItem) -> Result<(), DaemonError>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         let mut owner = self
@@ -1143,14 +1151,13 @@ impl PromptStateOwner {
             .expect("eligible head checked above");
         validate_prompt_target_agent("activate queued prompt", agent_id, front)?;
         prepare(front)?;
-        Self::activate_owned_queued_prompt(state, agent_id, Some(expected_prompt_id), prompt_id)
+        Self::activate_owned_queued_prompt(state, agent_id, Some(expected_prompt_id))
     }
 
     fn activate_owned_queued_prompt(
         state: &mut OwnedAgentPromptState,
         agent_id: &str,
         expected_prompt_id: Option<&str>,
-        prompt_id: String,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         if let Some(active_prompt) = state.active_prompt.as_ref() {
             return Err(DaemonError::LocalTransport {
@@ -1180,11 +1187,12 @@ impl PromptStateOwner {
             }
         }
         validate_prompt_target_agent("activate queued prompt", agent_id, front)?;
+        let queued_id = front.id().to_string();
         let mut active = state
             .queued_prompts
             .pop_front()
             .expect("queue front checked above")
-            .with_id(prompt_id);
+            .with_id(queued_id);
         active.set_status(PromptStatus::Dispatching);
         state.set_active_prompt(Some(active.clone()));
         Ok(Some(active))
@@ -1549,12 +1557,10 @@ impl PromptStateOwnerState {
         agent_ids
     }
 
-    fn next_pending_prompt_id(&mut self) -> String {
-        self.next_pending_prompt_number = self.next_pending_prompt_number.wrapping_add(1);
-        format!(
-            "pending-prompt-{:016x}",
-            crate::session::unix_epoch_ms() ^ self.next_pending_prompt_number.rotate_left(17)
-        )
+    fn next_pending_prompt_id(&self) -> String {
+        // These identities survive promotion and persistence; independent
+        // owners and restarts must not reuse a time/counter-derived value.
+        format!("pending-prompt-{:032x}", rand::random::<u128>())
     }
 
     fn ensure_agent_state(
@@ -1808,7 +1814,7 @@ mod tests {
     }
 
     #[test]
-    fn opportunistic_queue_claim_defers_busy_and_consumed_heads_without_losing_successors() {
+    fn mp08_mp10_queue_promotion_preserves_identity_and_claim_fences() {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
@@ -1837,11 +1843,10 @@ mod tests {
         }
         assert_eq!(queued_ids.len(), 2);
         assert!(owner
-            .try_activate_next_queued_prompt_with_prompt_id(
+            .try_activate_next_queued_prompt_for_dispatch(
                 &session,
                 "agent-1",
                 &queued_ids[0],
-                "busy-claim".to_string(),
                 |_| Ok(()),
             )
             .expect("busy is ordinary contention")
@@ -1850,24 +1855,23 @@ mod tests {
             .complete_active_prompt_only(&session, "agent-1")
             .expect("complete active turn");
         let first = owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                "agent-1",
-                Some(&queued_ids[0]),
-                "rival-first".to_string(),
-            )
+            .activate_next_queued_prompt_for_dispatch(&session, "agent-1", Some(&queued_ids[0]))
             .expect("another dispatcher claims the first head")
             .expect("first queued turn");
         assert_eq!(first.prompt(), "first");
+        assert_eq!(
+            first.id(),
+            queued_ids[0],
+            "promotion keeps the native display binding"
+        );
         owner
             .complete_active_prompt_only(&session, "agent-1")
             .expect("complete rival turn");
         assert!(owner
-            .try_activate_next_queued_prompt_with_prompt_id(
+            .try_activate_next_queued_prompt_for_dispatch(
                 &session,
                 "agent-1",
                 &queued_ids[0],
-                "stale-claim".to_string(),
                 |_| Ok(()),
             )
             .expect("consumed head is ordinary contention")
@@ -1880,16 +1884,20 @@ mod tests {
             queued_ids[1]
         );
         let second = owner
-            .try_activate_next_queued_prompt_with_prompt_id(
+            .try_activate_next_queued_prompt_for_dispatch(
                 &session,
                 "agent-1",
                 &queued_ids[1],
-                "second-dispatch".to_string(),
                 |_| Ok(()),
             )
             .expect("current idle head can progress")
             .expect("second queued turn");
         assert_eq!(second.prompt(), "second");
+        assert_eq!(
+            second.id(),
+            queued_ids[1],
+            "each queued turn retains its own identity"
+        );
         assert!(owner.peek_next_queued_prompt(&session, "agent-1").is_none());
     }
 
@@ -2134,16 +2142,11 @@ mod tests {
         assert_eq!(completed.id(), "draft-active");
 
         let started = owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                "agent-1",
-                Some(&pending_prompt_id),
-                "prompt-real-2".to_string(),
-            )
+            .activate_next_queued_prompt_for_dispatch(&session, "agent-1", Some(&pending_prompt_id))
             .expect("queued prompt should activate")
             .expect("queued prompt should exist");
 
-        assert_eq!(started.id(), "prompt-real-2");
+        assert_eq!(started.id(), pending_prompt_id);
         assert_eq!(started.pending_prompt_id(), None);
         assert_eq!(started.prompt(), "queued");
         assert_eq!(started.status(), PromptStatus::Dispatching);
@@ -2152,7 +2155,7 @@ mod tests {
         let running = owner
             .mark_active_prompt_running(&session, "agent-1")
             .expect("dispatching prompt should become running");
-        assert_eq!(running.id(), "prompt-real-2");
+        assert_eq!(running.id(), pending_prompt_id);
         assert_eq!(running.status(), PromptStatus::Running);
     }
 
@@ -2234,11 +2237,10 @@ mod tests {
                 completion_owner
                     .complete_active_prompt_only(completion_session, "agent-1")
                     .expect("active prompt should complete after reservation commits");
-                completion_owner.activate_next_queued_prompt_with_prompt_id(
+                completion_owner.activate_next_queued_prompt_for_dispatch(
                     completion_session,
                     "agent-1",
                     Some(completion_queued.id()),
-                    "prompt-real-2".to_string(),
                 )
             });
             activation_start.wait();
@@ -2271,16 +2273,11 @@ mod tests {
         );
         assert_eq!(
             owner
-                .activate_next_queued_prompt_with_prompt_id(
-                    &session,
-                    "agent-1",
-                    Some(queued.id()),
-                    "prompt-real-2".to_string(),
-                )
+                .activate_next_queued_prompt_for_dispatch(&session, "agent-1", Some(queued.id()),)
                 .expect("released prompt should be activatable")
                 .expect("queued prompt should remain in place")
                 .id(),
-            "prompt-real-2"
+            queued.id()
         );
     }
 
@@ -2330,12 +2327,7 @@ mod tests {
             .complete_active_prompt_if_matches(&session, "agent-1", Some("prompt-first"))
             .expect("the matching first prompt should complete");
         owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                "agent-1",
-                Some(&pending_prompt_id),
-                "prompt-second".to_string(),
-            )
+            .activate_next_queued_prompt_for_dispatch(&session, "agent-1", Some(&pending_prompt_id))
             .expect("queued prompt activation should succeed")
             .expect("queued prompt should promote");
 
@@ -2346,7 +2338,7 @@ mod tests {
             owner
                 .active_prompt_for_agent(&session, "agent-1")
                 .map(|prompt| prompt.id().to_string()),
-            Some("prompt-second".to_string())
+            Some(pending_prompt_id)
         );
     }
 
@@ -2752,11 +2744,10 @@ mod tests {
             );
 
         let error = owner
-            .activate_next_queued_prompt_with_prompt_id(
+            .activate_next_queued_prompt_for_dispatch(
                 &session,
                 "agent-1",
                 Some("prompt-wrong-agent"),
-                "prompt-real-1".to_string(),
             )
             .expect_err("mismatched queued prompt target must be rejected");
 

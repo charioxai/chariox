@@ -11,7 +11,6 @@ type SlashCommand<K extends ParsedSlashCommand["kind"]> = Extract<ParsedSlashCom
 export type SlashCommandSubmitControllerDeps = {
   isAttached: () => boolean
   getSessionId: () => string
-  getPromptText?: () => string
   recordPromptAreaHistoryEntry: (sessionId: string, rawPrompt: string) => void
   clearPromptText: () => void
   setPromptHistoryIndex: (index: number | null) => void
@@ -91,8 +90,7 @@ export function createSlashCommandSubmitController(
     }
   }
 
-  const clearHandledCommandUi = (command: ParsedSlashCommand, submittedPrompt: string) => {
-    if (deps.getPromptText && deps.getPromptText() !== submittedPrompt) return
+  const clearHandledCommandUi = (command: ParsedSlashCommand) => {
     deps.clearPromptText()
     deps.setPromptHistoryIndex(null)
     deps.setPromptHistoryDraft(null)
@@ -111,21 +109,19 @@ export function createSlashCommandSubmitController(
       if (slashCommand && deps.isAttached()) {
         deps.recordPromptAreaHistoryEntry(deps.getSessionId(), rawPrompt)
       }
+      if (slashCommand) {
+        // Consume this command before awaiting it; a user may type the next draft.
+        clearHandledCommandUi(slashCommand)
+      }
       if (slashCommand && slashCommand.kind !== "approvals" && deps.handleSharedShellCommand) {
         try {
           if (await deps.handleSharedShellCommand(rawPrompt)) {
-            clearHandledCommandUi(slashCommand, rawPrompt)
             return slashCommand
           }
         } catch (error) {
           reportCommandError("shared shell command failed", trimmed, error)
-          clearHandledCommandUi(slashCommand, rawPrompt)
           return slashCommand
         }
-      }
-      const clearBeforeHandler = slashCommand?.kind === "exit" || slashCommand?.kind === "approvals"
-      if (clearBeforeHandler) {
-        clearHandledCommandUi(slashCommand, rawPrompt)
       }
       const handledCommand = await executeSlashCommand(rawPrompt, {
         onExit: deps.onExit,
@@ -194,9 +190,6 @@ export function createSlashCommandSubmitController(
       })
       if (!handledCommand) {
         return null
-      }
-      if (!clearBeforeHandler) {
-        clearHandledCommandUi(handledCommand, rawPrompt)
       }
       return handledCommand
     },

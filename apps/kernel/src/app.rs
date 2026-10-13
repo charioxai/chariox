@@ -344,6 +344,7 @@ impl DaemonApp {
         crate::publication_provider_accounts::materialize_publication_provider_accounts(
             &provider_account_profiles,
             crate::session::DEFAULT_LOCAL_USER_ID,
+            &config,
         )?;
         let provider_home = std::env::var_os("HOME")
             .filter(|value| !value.is_empty())
