@@ -110,7 +110,7 @@ fn inspect_repository_features(
     )? == "true"
     {
         return Err(context_error(format!(
-            "repository `{}` is shallow; shallow repositories are not supported in development context version 1",
+            "repository `{}` is a shallow clone; fetch its full history with `git fetch --unshallow`, then copy again",
             worktree.display()
         )));
     }

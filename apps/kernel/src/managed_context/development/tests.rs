@@ -650,7 +650,10 @@ fn rejects_in_repository_outputs_shallow_sources_and_oversized_index_blobs() {
     );
     let shallow_error =
         one_repo_export(&root, &shallow, "shallow").expect_err("shallow source should fail");
-    assert!(shallow_error.to_string().contains("is shallow"));
+    // MP-08 / MP-11 BY-03: Copy shows this refusal; it must say how to recover.
+    assert!(shallow_error.to_string().contains(
+        "is a shallow clone; fetch its full history with `git fetch --unshallow`, then copy again"
+    ));
 
     let oversized = vec![b'x'; MAX_OVERLAY_FILE_BYTES as usize + 1];
     fs::write(repository.join("oversized.bin"), oversized).expect("write oversized file");
