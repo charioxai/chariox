@@ -17,11 +17,9 @@ import {
 import type { TranscriptEntry } from "./cli-types.js"
 import { transcriptEntryPadding } from "./transcript-entry-style.js"
 import { theme, TranscriptSeparatorBorder } from "./theme.js"
-import {
-  normalizeMarkdownFenceInfoStrings,
-  shouldRenderTranscriptAsMarkdown,
-} from "./transcript.js"
-import { buildApplyPatchTranscriptContent } from "./transcript-apply-patch-render.js"
+import { shouldRenderTranscriptAsMarkdown } from "./transcript.js"
+import { prepareTranscriptMarkdown } from "./transcript-rich-markdown.js"
+import { buildApplyPatchDiffContent } from "./transcript-diff-render.js"
 import {
   buildBlobToggleLabel,
   buildCollapsedTranscriptBlob,
@@ -119,7 +117,6 @@ export function buildTranscriptEntryRenderable(
         body,
         nextEntry,
         transcriptSyntax,
-        surfaceTone,
         onQueuedPromptAction,
       )
       textRenderable = expanded.textRenderable
@@ -142,7 +139,7 @@ export function buildTranscriptEntryRenderable(
     }
 
     if (currentMode === "markdown" && markdownRenderable) {
-      markdownRenderable.content = normalizeMarkdownFenceInfoStrings(nextEntry.text)
+      markdownRenderable.content = prepareTranscriptMarkdown(nextEntry.text)
       markdownRenderable.requestRender()
       wrapper.requestRender()
       return true
@@ -193,7 +190,6 @@ function buildExpandedTranscriptContent(
   body: BoxRenderable,
   entry: TranscriptEntry,
   transcriptSyntax: SyntaxStyle,
-  surfaceTone: TranscriptSurfaceTone,
   onQueuedPromptAction?: (entry: TranscriptEntry, action: QueuedPromptAction) => void,
 ) {
   if (entry.queuedPrompt) {
@@ -203,13 +199,13 @@ function buildExpandedTranscriptContent(
 
   const patch = readTranscriptApplyPatch(entry)
   if (patch) {
-    buildApplyPatchTranscriptContent(renderer, body, patch, surfaceTone)
+    buildApplyPatchDiffContent(renderer, body, patch)
     return { textRenderable: null, markdownRenderable: null }
   }
 
   if (shouldRenderTranscriptAsMarkdown(entry.role, entry.text)) {
     const markdown = new MarkdownRenderable(renderer, {
-      content: normalizeMarkdownFenceInfoStrings(entry.text),
+      content: prepareTranscriptMarkdown(entry.text),
       syntaxStyle: transcriptSyntax,
       conceal: true,
       concealCode: false,

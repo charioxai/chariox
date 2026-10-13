@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { CodeRenderable, MarkdownRenderable, SyntaxStyle, TextRenderable, getLinkId } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
+import { prepareTranscriptMarkdown } from "./transcript-rich-markdown.js"
 import { applyTranscriptTextContent } from "./transcript-text-render.js"
 import type { TranscriptEntry } from "./cli-types.js"
 import { createTranscriptMarkdownNodeRenderer, linkifyTranscriptChunks } from "./transcript-hyperlinks.js"
@@ -142,4 +143,28 @@ test("MP-08 / MP-11 Markdown targets obey URL admission and cannot spoof visible
   assert.equal(spoof[0]!.link?.url, "https://github.com/charioxai/chariox")
   const safe = linkifyTranscriptChunks([{__isChunk:true, text:"docs", link:{url:"https://developer.mozilla.org"}}])
   assert.equal(safe[0]!.link?.url, "https://developer.mozilla.org")
+})
+
+// MP-08 / MP-10: assert the displayed frame, not escaped preprocessor bytes.
+test("rich math and image placeholders conceal escapes while code keeps exact bytes", async () => {
+  const harness = await createTestRenderer({width:100,height:14,useThread:false})
+  const syntax = SyntaxStyle.fromStyles({})
+  const node = new MarkdownRenderable(harness.renderer, {
+    content: prepareTranscriptMarkdown("$0 < x < 1$ · $|x|$ · $a * b$ · $x_{\\text{best}}$\n\n![plot](./out/plot[1].png)\n\n`literal \\* \\_`"),
+    syntaxStyle:syntax,conceal:true,streaming:true,
+    renderNode:createTranscriptMarkdownNodeRenderer(harness.renderer),
+  })
+  harness.renderer.root.add(node)
+  try {
+    let captured = ""
+    for (let i=0;i<100;i++) {
+      await harness.renderOnce()
+      captured = harness.captureCharFrame()
+      if (captured.includes("inline; open") || captured.includes("literal \\*")) break
+      await new Promise(resolve=>setTimeout(resolve,20))
+    }
+    assert.match(captured, /0 < x < 1 · \|x\| · a \* b · x_\(best\)/)
+    assert.ok(captured.includes("./out/plot[1].png"),captured)
+    assert.ok(captured.includes("literal \\* \\_"),"code span must remain literal")
+  } finally {harness.renderer.destroy();syntax.destroy()}
 })
