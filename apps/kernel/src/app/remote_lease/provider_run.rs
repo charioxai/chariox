@@ -257,6 +257,25 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     ),
                 });
             }
+            // MP-08/MP-10/MP-11: only HOME can relaunch a run that holds its
+            // Claude credential, so never queue a prompt for changed Project
+            // inputs behind such a busy run; HOME retries once it is idle.
+            if active
+                && !environment_matches
+                && crate::account_profile::ProviderAccountLaunchScope::lease_run_holds_home_claude_credential(
+                    &agent,
+                    Some(run),
+                    self.app.provider_run_projection.is_leased_provider_run(run.id()),
+                )
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "remote Project environment reload",
+                    message: format!(
+                        "remote worker provider run `{}` holds HOME's Claude credential and has an active turn with changed Project inputs; retry after the active turn completes",
+                        run.id()
+                    ),
+                });
+            }
             // Provider tools/list is a run-level snapshot. If only the
             // event capability differs, let a busy run finish its
             // already-admitted prompt and rotate it on the next idle boundary.

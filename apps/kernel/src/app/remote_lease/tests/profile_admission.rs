@@ -513,7 +513,10 @@ async fn assert_leased_claude_home_credential(environment_changed: bool) {
     if environment_changed {
         request.project_environment_revision = Some("old-project-revision".into());
     }
-    let run = worker.providers_mut().launch_run_detached(request).unwrap();
+    let run = worker
+        .providers_mut()
+        .launch_run_detached(request.clone())
+        .unwrap();
     worker
         .provider_run_projection
         .mark_leased_provider_run(run.id());
@@ -542,10 +545,15 @@ async fn assert_leased_claude_home_credential(environment_changed: bool) {
                 true,
             )
             .unwrap();
+        // Two pump ticks: queue recovery, then the HOME-bound projection drain.
+        // (The stub run has no process, so the pump's liveness probe is skipped.)
         let mut deferrals = 0;
         for _ in 0..2 {
-            for (_, event) in RemoteLeaseRuntime::new(&mut worker)
-                .pump_leased_runtime_projections()
+            let mut runtime = RemoteLeaseRuntime::new(&mut worker);
+            // The stub completes an activated prompt at once; only deferral matters.
+            let _ = runtime.recover_idle_leased_prompt_queue(&lease.id);
+            if let Some((_, event)) = runtime
+                .drain_leased_runtime_projection(&lease.id, run.id(), false)
                 .unwrap()
             {
                 let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
@@ -560,24 +568,52 @@ async fn assert_leased_claude_home_credential(environment_changed: bool) {
         }
         assert_eq!(deferrals, 0, "the pump must not re-defer the queued prompt");
         assert!(worker
-            .prompt_owner_active_prompt_for_agent(&lease.backing_session_id, &lease.backing_agent_id)
+            .prompt_owner_peek_next_queued_prompt(
+                &lease.backing_session_id,
+                &lease.backing_agent_id
+            )
             .unwrap()
-            .is_some());
-        assert_eq!(
-            worker
-                .providers
-                .get_run_for_agent(&lease.backing_session_id, &lease.backing_agent_id)
-                .unwrap()
-                .id(),
-            run.id()
+            .is_none());
+        // A new prompt for the changed inputs is refused while such a run is
+        // busy, so it never queues behind a run the worker cannot relaunch.
+        // (The stub ended the first run when its prompt completed.)
+        let run = worker.providers_mut().launch_run_detached(request).unwrap();
+        worker
+            .provider_run_projection
+            .mark_leased_provider_run(run.id());
+        worker
+            .prompt_owner_sync_external_active_prompt(
+                &lease.backing_session_id,
+                &lease.backing_agent_id,
+                Some(crate::session::PromptQueueItem::new(
+                    "active-prompt",
+                    &lease.backing_attachment_id,
+                    &lease.backing_agent_id,
+                    "active prompt",
+                    crate::session::PromptStatus::Running,
+                )),
+            )
+            .unwrap();
+        let admitted = worker.leased_agents.get(&lease.id).cloned().unwrap();
+        let busy = RemoteLeaseRuntime::new(&mut worker).prepare_leased_provider_run_matches_mcps(
+            &admitted,
+            &[],
+            &crate::extension::RemoteExtensionManifest::default(),
         );
-        drop(worker);
-        // A new prompt for the changed inputs is refused while that run is busy,
-        // so it never queues behind a run the worker cannot relaunch.
-        let busy = submit().await.unwrap_err().to_string();
         assert!(
-            busy.contains("retry after the active turn completes"),
-            "{busy}"
+            matches!(
+                busy,
+                Err(DaemonError::LocalTransport {
+                    operation: "remote Project environment reload",
+                    ..
+                })
+            ),
+            "{:?}",
+            busy.err()
+        );
+        assert_eq!(
+            worker.providers.get_run(run.id()).unwrap().state(),
+            crate::provider::ProviderRunState::Running
         );
         return;
     }
