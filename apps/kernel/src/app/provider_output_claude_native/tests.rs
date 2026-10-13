@@ -19,6 +19,165 @@ fn claude_native_usage_rejects_foreign_account_authority() {
     claude_native_usage_authority_case("collaborator", "local", false);
 }
 
+#[cfg(unix)]
+#[test]
+fn native_claude_closed_hook_interrupt_retries_without_targeting_a_successor_hook() {
+    // MP-08 / MP-10 / MP-11: capture actual PTY bytes, not synthetic receipts.
+    let worktree = crate::test_support::TestWorktree::new("native-closed-hook-interrupt");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "native-retry",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "native-interrupt-retry-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context = root.join("context");
+    fs::write(&context, "").unwrap();
+    fs::write(root.join("events.jsonl"), "").unwrap();
+    let input = root.join("input.bin");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude",
+        "default",
+        "haiku",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        "closed-hook-run",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "closed-hook-input".into(),
+            pty_target: Some("closed-hook-input".into()),
+            pty_program: Some("/bin/sh".into()),
+            pty_args: vec![
+                "-c".into(),
+                format!("stty raw -echo; cat > '{}'", input.display()),
+            ],
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".into(),
+                    context.display().to_string(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".into(),
+                    root.join("events.jsonl").display().to_string(),
+                ),
+            ]),
+            pty_env_remove: vec![],
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().into()))
+        .unwrap();
+    let prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "Read public documentation",
+            vec![],
+        )
+        .unwrap()
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("{other:?}"),
+    };
+    app.active_turns
+        .bind_native_prompt_hook_request(run.id(), prompt.id(), "current-hook");
+    app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
+        .unwrap();
+    app.active_turns
+        .mark_interruption_requested(run.id(), prompt.id(), unix_epoch_ms());
+    let batch = PathBuf::from(format!("{}.hook-batch.json", context.display()));
+    fs::write(&batch, r#"{"id":"current-hook","closed":true,"pid":2}"#).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(110));
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    for _ in 0..100 {
+        if fs::read(&input).unwrap_or_default() == b"\x1b" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        fs::read(&input).unwrap_or_default(),
+        b"\x1b",
+        "an ignored initial Esc must get another delivery after its admission hook closes"
+    );
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    assert_eq!(
+        fs::read(&input).unwrap(),
+        b"\x1b",
+        "retries must be rate limited"
+    );
+    fs::write(&batch, r#"{"id":"successor-hook","closed":true,"pid":2}"#).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(
+        fs::read(&input).unwrap(),
+        b"\x1b",
+        "a new native hook fences retries even before the kernel admits its successor prompt"
+    );
+    assert_eq!(
+        app.prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .unwrap()
+            .unwrap()
+            .status(),
+        crate::session::PromptStatus::Cancelling,
+        "delivery is not a settlement receipt"
+    );
+    // A receipt already present in this pump pass must win over another
+    // delivery attempt, so Esc is not replayed into the provider's idle UI.
+    fs::write(&batch, r#"{"id":"current-hook","closed":true,"pid":2}"#).unwrap();
+    fs::write(
+        root.join("events.jsonl"),
+        serde_json::json!({
+            "hook_event_name":"UserPromptSubmitInterrupted",
+            "hook_context_request_id":"current-hook", "decision":"block",
+            "at":chrono::Utc::now().to_rfc3339(),
+        })
+        .to_string()
+            + "\n",
+    )
+    .unwrap();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(
+        fs::read(&input).unwrap(),
+        b"\x1b",
+        "observed interruption receipts must prevent a second idle Esc"
+    );
+    drop(app); // The PTY manager reaps only this owned fixture process.
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn claude_native_usage_authority_case(runtime_owner: &str, account_owner: &str, allowed: bool) {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     app.config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
