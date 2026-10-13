@@ -81,7 +81,7 @@ test('MP-11 canceling one credit preserves producer lifetime, retiring policy cl
  const {host}=fixture();let valid,closed=0;
  const source={closed:false,sample:()=>null,close:async()=>{source.closed=true},valid:()=>!source.closed};
  const display=new DesktopDisplay(host,{createSource:async()=>source,createProducer:(_source,_encoder,options)=>{
-  valid=options.valid;return {waitReady:async()=>{},take:()=>null,close:async()=>{closed++}};
+  valid=options.valid;return {feedback(){},waitReady:async()=>{},take:()=>null,close:async()=>{closed++}};
  }});
  const subscription=await display.subscribe(command,'a'),controller=new AbortController();
  const request={op:'screenshot',display_subscription_id:subscription.subscription_id,generation:1,after_sequence:0};
@@ -96,7 +96,7 @@ test('MP-08/MP-10 a quiet lossy desktop refines to exact repair tiles of the sam
  const sample={raw,serial:7,width:1280,height:800,motion:true,data_base64:'masked-7'};
  const source={closed:false,changedAt:performance.now()-2000,sample:()=>sample,subscribe:()=>()=>{},close:async()=>{},valid:()=>true};
  const frames=[{...sample,encoded:{key:true,data_base64:'AAAA'}}];
- const display=new DesktopDisplay(host,{createSource:async()=>source,createProducer:()=>({waitReady:async()=>{},take:()=>frames.shift()??null,retireUnsent(){},invalidate(){},close:async()=>{}})});
+ const display=new DesktopDisplay(host,{createSource:async()=>source,createProducer:()=>({waitReady:async()=>{},take:()=>frames.shift()??null,feedback(){},retireUnsent(){},invalidate(){},close:async()=>{}})});
  const subscription=await display.subscribe(command,'a');
  const credit=after=>display.request({op:'screenshot',display_subscription_id:subscription.subscription_id,generation:1,after_sequence:after},'a');
  assert.equal((await credit(0)).display_frame.kind,'video');
@@ -113,7 +113,7 @@ test('MP-08/MP-10/MP-11 idle caret updates permit exact refinement while recent 
  const sample={raw,serial:7,width:1280,height:800,motion:true,data_base64:'masked-7'};
  const source={closed:false,changedAt:performance.now()-300,sample:()=>sample,wake(){},subscribe:()=>()=>{},close:async()=>{},valid:()=>true};
  const frames=[{...sample,encoded:{key:true,data_base64:'AAAA'}}];
- const display=new DesktopDisplay(host,{createSource:async()=>source,createProducer:()=>({waitReady:async()=>{},take:()=>frames.shift()??null,retireUnsent(){},invalidate(){},close:async()=>{}})});
+ const display=new DesktopDisplay(host,{createSource:async()=>source,createProducer:()=>({waitReady:async()=>{},take:()=>frames.shift()??null,feedback(){},retireUnsent(){},invalidate(){},close:async()=>{}})});
  try{
   const subscription=await display.subscribe(command,'a');
   const credit=after=>display.request({op:'screenshot',display_subscription_id:subscription.subscription_id,generation:1,after_sequence:after},'a');
@@ -135,7 +135,7 @@ test('MP-08/MP-10 refinement waits for fresh motion to settle and a newer sample
  let current=make(7);
  const source={closed:false,changedAt:performance.now(),sample:()=>current,subscribe:()=>()=>{},close:async()=>{},valid:()=>true};
  const frames=[{...current,encoded:{key:true,data_base64:'AAAA'}}];
- const display=new DesktopDisplay(host,{createSource:async()=>source,createProducer:()=>({waitReady:async()=>{},take:()=>frames.shift()??null,retireUnsent(){},invalidate(){},close:async()=>{}})});
+ const display=new DesktopDisplay(host,{createSource:async()=>source,createProducer:()=>({waitReady:async()=>{},take:()=>frames.shift()??null,feedback(){},retireUnsent(){},invalidate(){},close:async()=>{}})});
  const subscription=await display.subscribe({...command,bitrate:500000},'a');
  const credit=after=>display.request({op:'screenshot',display_subscription_id:subscription.subscription_id,generation:1,after_sequence:after},'a');
  await credit(0);
@@ -173,7 +173,7 @@ test('MP-08/MP-10/MP-11 desktop sparse video uses only the negotiated shared str
  for(const [codecs,expected] of [[['avc1.420033','chariox-stripes-v1'],true],[['avc1.420033'],false],[['vp8','chariox-stripes-v1'],true],[['vp09.00.10.08','chariox-stripes-v1'],false]]) {
   const {host}=fixture();let options;
   const source={closed:false,sample:()=>null,close:async()=>{},valid:()=>true};
-  const display=new DesktopDisplay(host,{createSource:async()=>source,createProducer:(_source,_encoder,value)=>{options=value;return {waitReady:async()=>{},take:()=>null,invalidate(){},close:async()=>{}}}});
+  const display=new DesktopDisplay(host,{createSource:async()=>source,createProducer:(_source,_encoder,value)=>{options=value;return {waitReady:async()=>{},take:()=>null,feedback(){},invalidate(){},close:async()=>{}}}});
   const sub=await display.subscribe({...command,codecs},'human');
   await display.request({op:'screenshot',display_subscription_id:sub.subscription_id,generation:1,after_sequence:0},'human');
   assert.equal(options.stripes,expected);

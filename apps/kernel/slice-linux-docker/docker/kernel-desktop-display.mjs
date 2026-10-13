@@ -58,13 +58,16 @@ export class DesktopDisplay {
     // MP-08/MP-10: a protocol 475 push credit may ask for a key and waits
     // briefly for the next frame (the kernel pump paces the stream).
     if(command.push?.reset)stream.invalidate();
+    stream.producer.feedback(command.push?(command.push.congested?8:0):Math.max(0,stream.sequence-command.after_sequence));
     await stream.producer.waitReady(command.push?100:20,signal);
     if(!valid())throw new UserDomainRefusal('not_granted');
     const encoded=stream.producer.take(),sample=encoded??this.refine(stream,source,policy,lifetimeValid);
     if(!sample)return {generation:this.host.generation,frame_sent:false,display_frame:null};
     // A newer published sample abandons a link-paced repair batch (motion first).
     const published=source.sample(),current=encoded?valid:()=>valid()&&source.sample()===published;
-    const frame=await stream.frame({...sample,generation:this.host.generation},binding.generation,command.after_sequence,async()=>current(),current);
+    // MP-08/MP-10: the shared kernel ACK pump bounds pushed bytes. Legacy
+    // display credits keep the stream's byte pacing, as Browser does.
+    const frame=await stream.frame({...sample,generation:this.host.generation,push_delivery:Boolean(command.push)},binding.generation,command.after_sequence,async()=>current(),current);
     if(frame)this.host.timing.event?.('desktop_frame_out',{at:sample.captured_ms??sample.raw?.captured_ms,sequence:frame.sequence,serial:sample.serial,captured_ms:sample.captured_ms??sample.raw?.captured_ms,published_ms:sample.published_ms,encoded_ms:sample.encoded_ms});
     return {generation:this.host.generation,frame_sent:frame!==null,display_frame:frame};
   }
