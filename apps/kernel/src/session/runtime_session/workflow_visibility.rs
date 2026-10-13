@@ -11,6 +11,20 @@ impl RuntimeSession {
         user_id: &str,
         history: Option<&DurableKernelStateStore>,
     ) -> Result<bool, DaemonError> {
+        if let Some(store) = history {
+            if store.workflow_run_predates_ownership_tracking(
+                self.host_daemon_id(),
+                self.id(),
+                run,
+            )? {
+                return Ok(store.workflow_history_is_kernel_owner(self.host_daemon_id(), user_id));
+            }
+        }
+        // A projection without the provenance store cannot establish an autonomous
+        // run's invoker or the kernel-owner historical exception. Fail closed.
+        if history.is_none() && run.created_by_agent_id().is_none() {
+            return Ok(false);
+        }
         if self
             .collaboration_level_for_user(user_id)
             .is_some_and(|level| level.can_view_agent_trace())
@@ -46,6 +60,27 @@ impl RuntimeSession {
         Ok(true)
     }
 
+    pub(crate) fn project_workflow_run_for_user(
+        &self,
+        mut run: WorkflowRun,
+        user_id: &str,
+        history: Option<&DurableKernelStateStore>,
+    ) -> Result<Option<WorkflowRun>, DaemonError> {
+        if !self.workflow_run_visible_for_user(&run, user_id, history)? {
+            return Ok(None);
+        }
+        if let Some(store) = history {
+            if store.workflow_run_predates_ownership_tracking(
+                self.host_daemon_id(),
+                self.id(),
+                &run,
+            )? {
+                run.mark_created_before_ownership_tracking();
+            }
+        }
+        Ok(Some(run))
+    }
+
     pub(crate) fn visible_workflow_runs_for_user(
         &self,
         user_id: &str,
@@ -53,8 +88,8 @@ impl RuntimeSession {
     ) -> Result<Vec<WorkflowRun>, DaemonError> {
         let mut visible = Vec::new();
         for run in self.workflow_runs() {
-            if self.workflow_run_visible_for_user(run, user_id, history)? {
-                visible.push(run.clone());
+            if let Some(run) = self.project_workflow_run_for_user(run.clone(), user_id, history)? {
+                visible.push(run);
             }
         }
         Ok(visible)
