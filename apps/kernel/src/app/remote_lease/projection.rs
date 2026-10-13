@@ -87,6 +87,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .and_then(|completion| completion.home_prompt_id.clone())
         });
         let home_prompt_started_at_ms = leased_agent.active_home_prompt_started_at_ms;
+        // The provider pump settles a turn only after fanning out its output.
+        // A turn that settles while this drain runs may leave its tail behind,
+        // so completions are released only for a turn settled before output.
+        let backing_prompt_active_at_output = self
+            .app
+            .prompt_owner_active_prompt_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
+            .is_some();
         let mut pumped_output_records = Vec::new();
         let mut settled_quiet = false;
         if pump_output {
@@ -411,6 +421,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
         let backing_prompt_active = backing_active_prompt.is_some();
+        let completion_prompt_active = backing_prompt_active || backing_prompt_active_at_output;
         let completion_waits_for_runtime_tools = backing_active_prompt
             .as_ref()
             .is_some_and(|prompt| prompt.status() != PromptStatus::Cancelling)
@@ -480,7 +491,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             || history_cursor.output_prompt_key.as_deref()
                 == Some(leased_home_prompt_projection_key(&leased_agent).as_str());
         let native_prompt_has_settled =
-            completion_waits_for_native_prompt_settlement && !backing_prompt_active;
+            completion_waits_for_native_prompt_settlement && !completion_prompt_active;
         let mut deferred_explicit_completion = false;
         let completion_waits_for_output = !completions.is_empty()
             && requires_explicit_completion
@@ -490,13 +501,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
             && !provider_run_failed;
         let completion_waits_for_native_stop = !completions.is_empty()
             && completion_waits_for_native_prompt_settlement
-            && backing_prompt_active
+            && completion_prompt_active
             && !provider_run_failed;
         if completion_waits_for_output
             || completion_waits_for_native_stop
             || (completion_waits_for_runtime_tools && !completions.is_empty())
         {
-            if let Some(completion) = completions.last() {
+            // Prefer the provider message identity over a generic
+            // prompt-settlement record drained in the same batch.
+            if let Some(completion) = completions
+                .iter()
+                .rev()
+                .find(|completion| !completion.message_id.starts_with("prompt-complete:"))
+                .or(completions.last())
+            {
                 if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
                     agent.replayable_completion =
                         Some(crate::execution_lease::LeasedCompletionReplay {
@@ -523,7 +541,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .is_some_and(|replay| replay.provider_run_id == provider_run_id));
         let explicit_completion_waiting_for_prompt_settlement =
             completion_waits_for_native_prompt_settlement
-                && backing_prompt_active
+                && completion_prompt_active
                 && !provider_run_failed
                 && leased_agent
                     .replayable_completion
@@ -594,7 +612,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         if completions.is_empty()
             && !completion_waits_for_runtime_tools
-            && !backing_prompt_active
+            && !completion_prompt_active
             && !explicit_completion_waiting
             && !((requires_explicit_completion || provider_run_failed || provider_run_ended)
                 && completion_already_projected)
@@ -683,7 +701,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         if replay_settled_completion
             && completions.is_empty()
-            && !backing_prompt_active
+            && !completion_prompt_active
             && !explicit_completion_waiting
         {
             if let Some(replay) = leased_agent
