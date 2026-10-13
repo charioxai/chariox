@@ -65,6 +65,8 @@ impl PausedBrief {
         let started = root.path().join("brief-started");
         let release = root.path().join("brief-release");
         let captured = root.path().join("final-provider-envelope");
+        let hidden_context = root.path().join("provider-hidden-context");
+        std::fs::write(&hidden_context, "").unwrap();
         let utility_inputs = root.path().join("brief-utility-inputs");
         let answer = serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":BRIEF}]}}).to_string();
         let script = format!(
@@ -86,7 +88,10 @@ impl PausedBrief {
                 pty_target: None,
                 pty_program: Some(executable.display().to_string()),
                 pty_args: vec![],
-                pty_env: Default::default(),
+                pty_env: std::collections::BTreeMap::from([(
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".into(),
+                    hidden_context.display().to_string(),
+                )]),
                 pty_env_remove: vec![],
                 working_directory: None,
                 structured_endpoint: None,
@@ -115,7 +120,14 @@ impl PausedBrief {
         }
     }
     async fn prepare(&self) {
-        let dispatch = dispatch(
+        self.prepare_with_inputs(String::new(), Vec::new()).await;
+    }
+    async fn prepare_with_inputs(
+        &self,
+        hidden: String,
+        attachments: Vec<crate::session::PromptAttachment>,
+    ) {
+        let mut dispatch = dispatch(
             &self.session_id,
             &self.agent_id,
             &self.attachment_id,
@@ -125,6 +137,8 @@ impl PausedBrief {
             None,
             false,
         );
+        dispatch.hidden_system_context = hidden;
+        dispatch.attachments = attachments;
         self.runtime
             .enqueue_prompt_dispatch(&dispatch)
             .await
@@ -145,6 +159,15 @@ impl PausedBrief {
     }
     fn envelope(&self) -> String {
         std::fs::read_to_string(self.root.path().join("final-provider-envelope")).unwrap()
+    }
+    fn provider_inputs(&self) -> String {
+        // Claude delivers hidden context through its hook file, separately from
+        // the visible stdin message. Inspect both actual provider input surfaces.
+        format!(
+            "{}\n{}",
+            self.envelope(),
+            std::fs::read_to_string(self.root.path().join("provider-hidden-context")).unwrap(),
+        )
     }
 }
 impl Drop for PausedBrief {
@@ -172,6 +195,89 @@ async fn final_handoff_envelope_rechecks_room_registration_during_brief() {
     assert!(
         !fixture.envelope().contains(SECRET),
         "final provider envelope replayed history captured before Room registration"
+    );
+}
+
+#[tokio::test]
+async fn final_handoff_envelope_protects_failed_request_note_during_brief() {
+    let fixture = PausedBrief::new(false, false).await;
+    fixture
+        .runtime
+        .owned
+        .agent_store
+        .record_failed_request_durably(
+            &fixture.runtime.owned.durable_state_store,
+            &fixture.agent_id,
+            crate::agent::FailedRequest::new(
+                "failed-before-switch",
+                SECRET,
+                "provider error".into(),
+            ),
+        )
+        .unwrap();
+    fixture.prepare().await;
+    fixture
+        .runtime
+        .owned
+        .room_secret_observations
+        .register(&fixture.session_id, SECRET)
+        .unwrap();
+    fixture.release();
+    fixture.wait_for("final-provider-envelope").await;
+    let envelope = fixture.provider_inputs();
+    assert!(envelope.contains("Your previous request"));
+    assert!(
+        !envelope.contains(SECRET),
+        "retained failed-request note leaked in the actual provider envelope"
+    );
+}
+
+#[tokio::test]
+async fn final_handoff_envelope_protects_scheduled_hidden_context_during_brief() {
+    let fixture = PausedBrief::new(false, false).await;
+    fixture
+        .prepare_with_inputs(format!("scheduled-context-marker {SECRET}"), Vec::new())
+        .await;
+    fixture
+        .runtime
+        .owned
+        .room_secret_observations
+        .register(&fixture.session_id, SECRET)
+        .unwrap();
+    fixture.release();
+    fixture.wait_for("final-provider-envelope").await;
+    let envelope = fixture.provider_inputs();
+    assert!(envelope.contains("scheduled-context-marker"));
+    assert!(
+        !envelope.contains(SECRET),
+        "retained scheduled context leaked in the actual provider envelope"
+    );
+}
+
+#[tokio::test]
+async fn final_handoff_envelope_protects_attachments_during_brief() {
+    let fixture = PausedBrief::new(false, false).await;
+    let attachment = crate::session::PromptAttachment::new(
+        format!("https://example.com/{SECRET}"),
+        "text/plain",
+        Some(format!("attachment-marker-{SECRET}.txt")),
+    );
+    fixture
+        .prepare_with_inputs(String::new(), vec![attachment])
+        .await;
+    fixture
+        .runtime
+        .owned
+        .room_secret_observations
+        .register(&fixture.session_id, SECRET)
+        .unwrap();
+    fixture.release();
+    fixture.wait_for("final-provider-envelope").await;
+    let envelope = fixture.provider_inputs();
+    assert!(envelope.contains("attachment-marker"));
+    assert!(
+        !envelope.contains(SECRET),
+        "retained attachment leaked in the actual provider envelope"
     );
 }
 

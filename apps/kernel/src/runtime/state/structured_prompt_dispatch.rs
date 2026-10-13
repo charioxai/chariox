@@ -115,6 +115,17 @@ impl KernelRuntimeState {
         )?;
         let hidden_system_context =
             join_hidden_context(hidden_system_context, &granted_skill_context);
+        // Preparation can outlive a Room policy change. Protect every retained
+        // input, including failed-request and skill context, at final admission.
+        let (prompt_with_handoff, hidden_system_context, attachments) =
+            owned.room_secret_observations.scrub(
+                &dispatch.session_id,
+                (
+                    prompt_with_handoff,
+                    hidden_system_context,
+                    dispatch.attachments.clone(),
+                ),
+            )?;
         let (source_client_id, _source_user_id) =
             owned.active_prompt_source_attribution(&dispatch.session_id, &dispatch.agent_id)?;
         let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
@@ -141,7 +152,7 @@ impl KernelRuntimeState {
             provider_run,
             &prompt_with_handoff,
             &hidden_system_context,
-            &dispatch.attachments,
+            &attachments,
             mode,
             dispatch.steering,
         );
