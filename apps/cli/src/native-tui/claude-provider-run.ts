@@ -86,7 +86,8 @@ export async function waitForClaudeRemoteRenderedRunExit(
       if (context) {
         const state = await client.send<{ SessionState?: { agent_activity?: Record<string, AgentRuntimeActivity> } }>(getSessionStateRequest(context.sessionId))
         const turn = state.SessionState?.agent_activity?.[context.agentId]?.last_completed_turn
-        if (turn?.provider_run_id === providerRunId && turn.settlement_status === "failed") {
+        if (turn?.provider_run_id === providerRunId && turn.settlement_status === "failed"
+          && turn.provider_termination?.category === "runtime_failure") {
           throw new Error(turn.provider_termination?.reason ?? "Claude provider run failed.")
         }
       }
