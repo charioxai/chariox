@@ -452,6 +452,7 @@ fn run_drill(stall: bool, browser: bool) {
                     assert!(browser_request(&router, KernelBrowserCommand::State).await["tabs"].as_array().unwrap().is_empty());
                     Box::pin(check_focused_browser_tab(&router, &root, view.browser.as_ref().unwrap().generation)).await;
                     Box::pin(check_agent_app_input(&router, &observed, &root)).await;
+                    Box::pin(check_app_tab_restore(&router, &observed)).await;
                 }
                 })).catch_unwind().await;
                 if browser { Box::pin(router.runtime_state.shutdown_cleanup()).await.unwrap(); }
@@ -1004,4 +1005,108 @@ async fn check_agent_app_input(
     )
     .await
     .unwrap();
+}
+
+fn listed_views(
+    router: &CommandRouter,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<UserAppView>> + Send + '_>> {
+    Box::pin(async move {
+        let LocalDaemonResponse::UserAppViewsListed { views } = request(
+            router,
+            "alice",
+            LocalDaemonRequest::ListUserAppViews(ListUserAppViewsRequest {}),
+        )
+        .await
+        .unwrap() else {
+            panic!("list")
+        };
+        views
+    })
+}
+
+// MP-08/MP-10/MP-11: an App Tab left open comes back when the owner's browser
+// restarts, as a new instance; an explicit close ends that intent.
+async fn check_app_tab_restore(
+    router: &CommandRouter,
+    observed: &chariox_app_runtime::worker_process::test_fixture::Observation,
+) {
+    let calls = observed.tool_invocations() + 1;
+    let LocalDaemonResponse::UserAppViewOpened { view, .. } = request(
+        router,
+        "alice",
+        LocalDaemonRequest::OpenUserAppView(OpenUserAppViewRequest {
+            installation_id: "installed".into(),
+            host: Some(UserAppViewHost::KernelBrowser),
+        }),
+    )
+    .await
+    .unwrap() else {
+        panic!("App open for the restore drill")
+    };
+    Box::pin(check_browser_page(router, &view, observed, calls)).await;
+    browser_request(router, KernelBrowserCommand::Stop).await;
+    assert!(
+        listed_views(router).await.is_empty(),
+        "stop ends the instance"
+    );
+    let opened = browser_request(
+        router,
+        KernelBrowserCommand::Open {
+            url: "about:blank".into(),
+        },
+    )
+    .await;
+    let restored = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            browser_request(router, KernelBrowserCommand::State).await;
+            if let Some(view) = listed_views(router)
+                .await
+                .into_iter()
+                .find(|view| view.browser.is_some())
+            {
+                break view;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("the App Tab reopens with the browser");
+    assert_ne!(
+        restored.view_id, view.view_id,
+        "an old instance never returns"
+    );
+    assert_eq!(restored.installation_id, view.installation_id);
+    let browser = restored.browser.as_ref().unwrap();
+    assert_eq!(browser.generation, opened["generation"].as_u64().unwrap());
+    Box::pin(check_browser_page(router, &restored, observed, calls + 1)).await;
+    let state = browser_request(router, KernelBrowserCommand::State).await;
+    assert!(state["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tab| tab["tab_id"] == browser.tab_id));
+    request(
+        router,
+        "alice",
+        LocalDaemonRequest::CloseUserAppView(UserAppViewRequest {
+            view_id: restored.view_id.clone(),
+        }),
+    )
+    .await
+    .unwrap();
+    browser_request(router, KernelBrowserCommand::Stop).await;
+    browser_request(
+        router,
+        KernelBrowserCommand::Open {
+            url: "about:blank".into(),
+        },
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+    browser_request(router, KernelBrowserCommand::State).await;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    assert!(
+        listed_views(router).await.is_empty(),
+        "a closed App stays closed"
+    );
 }

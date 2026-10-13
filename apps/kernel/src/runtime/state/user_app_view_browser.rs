@@ -79,6 +79,7 @@ impl KernelRuntimeState {
                 "App opening cancelled or host identity changed",
             ));
         };
+        self.remember_user_app_tabs(owner);
         if instances.begin_browser_pump(owner) {
             let state = self.clone();
             let owner = owner.to_owned();
@@ -115,9 +116,20 @@ impl KernelRuntimeState {
     }
 
     pub(super) fn forget_user_app_view(&self, owner: &str, id: &str) {
-        self.app_control().user_views().close(owner, id);
+        if self.app_control().user_views().close(owner, id) {
+            self.remember_user_app_tabs(owner);
+        }
         self.app_control().views().forget_session(id);
         self.app_control().views().keep_pumping(id);
+    }
+
+    /// The browser went away (stop, crash or restart): end the instance and
+    /// keep the owner's intent, so the App reopens with the browser.
+    pub(super) fn suspend_user_app_view(&self, owner: &str, id: &str) {
+        self.app_control().user_views().suspend(owner, id);
+        self.app_control().views().forget_session(id);
+        self.app_control().views().keep_pumping(id);
+        self.remember_user_app_tabs(owner);
     }
 
     pub(super) async fn close_user_app_view(&self, owner: &str, id: &str) {
@@ -167,14 +179,14 @@ impl KernelRuntimeState {
                 }) {
                 Ok(batch) => batch,
                 Err(_) => {
-                    // Browser loss invalidates these instances; ordinary tabs may
-                    // restore, App instances never gain authority on restoration.
+                    // Browser loss invalidates these instances; an old instance
+                    // never regains authority. The App reopens as a new one.
                     for view in polled.iter().filter(|v| {
                         v.browser
                             .as_ref()
                             .is_some_and(|b| b.generation == generation)
                     }) {
-                        self.close_user_app_view(&owner, &view.view_id).await;
+                        self.suspend_user_app_view(&owner, &view.view_id);
                     }
                     cadence.failed();
                     continue;
