@@ -128,6 +128,7 @@ type SessionLifecycleDeps = {
 }
 
 export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
+  let attachGeneration = 0
   const formatError = deps.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
 
   const applyAttachedState = (session: RuntimeSession, attachment: RuntimeAttachment, createdSession: boolean) => {
@@ -208,7 +209,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       return
     }
     await deps.detachAttachment(attachment.id)
-    deps.setAttachmentState(null)
+    if (deps.attachmentState()?.id === attachment.id) deps.setAttachmentState(null)
   }
 
   const rollbackAttachedSession = async (
@@ -241,8 +242,11 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     if (currentAttachment?.session_id === session.id) {
       return
     }
+    const generation = ++attachGeneration
+    const isCurrent = () => generation === attachGeneration
     if (currentAttachment) {
       await detachCurrentAttachment()
+      if (!isCurrent()) return
     }
     deps.clearPendingPromptAttachments()
     deps.bumpHistoryLoadGeneration()
@@ -255,11 +259,15 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         return
       }
       sessionHydratingCleared = true
-      deps.setSessionHydratingState(false)
+      if (isCurrent()) deps.setSessionHydratingState(false)
     }
     deps.setSessionHydratingState(true)
     try {
       const attachment = await deps.attachToSession(session.id, deps.cliOptions.clientId)
+      if (!isCurrent()) {
+        await deps.detachAttachment(attachment.id)
+        return
+      }
 
       const provisionalSession = isCompleteSessionSnapshot(session)
         ? session
@@ -269,6 +277,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       }
 
       let attachedSession = await deps.getSessionState(session.id)
+      if (!isCurrent()) return
 
       applyAttachedState(attachedSession, attachment, createdSession)
 
@@ -281,6 +290,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
           error: formatError(error),
         })
       }
+      if (!isCurrent()) return
       clearSessionHydrating()
 
       try {
@@ -293,6 +303,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         })
       }
 
+      if (!isCurrent()) return
       let postHydrationStatusLine: string | null = null
       const providerSettlement = await settleAttachProviderRun(
         attachedSession,
@@ -305,6 +316,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
           tryGetProviderRun: deps.tryGetProviderRun,
         },
       )
+      if (!isCurrent()) return
       attachedSession = providerSettlement.session
       switch (providerSettlement.action) {
         case "launched": {
@@ -410,6 +422,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         })
       }
 
+      if (!isCurrent()) return
       applyAttachedState(hydratedSession, attachment, createdSession)
       if (postHydrationStatusLine) {
         deps.setStatusLine(postHydrationStatusLine)

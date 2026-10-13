@@ -1209,3 +1209,36 @@ test("reattach invalidates the previous agent cursor before publishing the new s
   })
   await createSessionLifecycleController(deps as never).attachBinding({ id: "new-room" }, false)
 })
+
+test("MP-08 / MP-10 an old attach hydration cannot restore the Room after a newer attach", async () => {
+  const base = createBaseDeps().deps.sessionState()
+  const room = (id: string): RuntimeSession => ({ ...base, id })
+  let current = room("initial")
+  let binding: RuntimeAttachment | null = null
+  let release!: (session: RuntimeSession) => void
+  let primed!: () => void
+  const oldReachedHydration = new Promise<void>(resolve => { primed = resolve })
+  const oldHydration = new Promise<RuntimeSession>(resolve => { release = resolve })
+  const { deps } = createBaseDeps({
+    attachmentState: () => binding,
+    sessionState: () => current,
+    setAttachmentState: (value: RuntimeAttachment | null) => { binding = value },
+    setSessionState: (value: RuntimeSession) => { current = value },
+    detachAttachment: async () => {},
+    attachToSession: async (id: string) => ({ id: "att-" + id, session_id: id }),
+    getSessionState: async (id: string) => room(id),
+    hydrateAttachedSessionBinding: async (id: string) => {
+      if (id === "old") { primed(); return oldHydration }
+      return room(id)
+    },
+  })
+  const controller = createSessionLifecycleController(deps as never)
+  const old = controller.attachBinding({ id: "old" }, false)
+  await oldReachedHydration
+  await controller.attachBinding({ id: "new" }, false)
+  assert.equal(current.id, "new")
+  release(room("old"))
+  await old
+  assert.equal(current.id, "new")
+  assert.equal((binding as RuntimeAttachment | null)?.session_id, "new")
+})
