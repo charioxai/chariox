@@ -93,15 +93,23 @@ async function signedInContext(dpr) {
 }
 async function newPage(context) {
   const page = await context.newPage(); network.attach(page)
-  // The Web kernel transport reports each relay lane connect/close; track lanes from those events.
+  // Playwright WebSocket instances distinguish target, lane and reconnect
+  // generation without asynchronously decoding credential-bearing console data.
   page.relayEvents = []
-  page.on('console', message => {
-    const event = /^\[chariox:kernel-transport\] relay_websocket_(connected|closed)/.exec(message.text())?.[1]
-    if (!event) return
-    const at = Date.now(), handle = message.args()[1]
-    void handle?.evaluate(value => ({lane: value?.lane ?? null, relayOrigin: typeof value?.relayUrl === 'string' ? new URL(value.relayUrl).origin : null})).catch(() => ({})).then(fields => page.relayEvents.push({event, at, ...fields}))
+  const sockets = new Map()
+  page.on('websocket', socket => {
+    const url = new URL(socket.url())
+    if (url.origin !== new URL(relay).origin) return
+    const connectionId = sockets.size + 1
+    const fields = {connectionId, relayOrigin: url.origin}
+    sockets.set(connectionId, true)
+    page.relayEvents.push({event: 'connected', at: Date.now(), ...fields})
+    socket.on('close', () => {
+      sockets.set(connectionId, false)
+      page.relayEvents.push({event: 'closed', at: Date.now(), ...fields})
+    })
   })
-  page.openRelayLanes = () => { const open = new Map(); for (const e of [...page.relayEvents].sort((a, b) => a.at - b.at)) open.set(e.lane, e.event === 'connected'); return [...open].filter(([, value]) => value).map(([lane]) => lane) }
+  page.openRelayConnections = () => [...sockets].filter(([, open]) => open).map(([id]) => id)
   page.on('pageerror', () => { report.pageErrors = (report.pageErrors ?? 0) + 1 })
   return page
 }
@@ -212,8 +220,10 @@ try {
       const peerList = await tab.evaluate(async () => (await (await fetch('/v1/owner-managed-context-tickets/peers', {headers: {'x-chariox-browser-session': sessionStorage.getItem('chariox-browser-cloud-session') ?? ''}})).json()).peers)
       await copy.getByLabel('Source kernel', {exact: true}).selectOption(peerList.find(p => p.peer.kernelId === source.identity.kernelId).targetId)
       await copy.getByLabel('Project to copy').waitFor({timeout: 90000})
-      await until(() => tab.openRelayLanes().length > 0, 'tab relay WSS', 90000)
+      await until(() => tab.openRelayConnections().length >= 2, 'both target and source relay WSS', 90000)
     }
+    const observedConnections = tabs[0].openRelayConnections()
+    signout.otherTabConnectionsBefore = observedConnections.length
     const tokens = await Promise.all(tabs.map(tab => tab.evaluate(() => sessionStorage.getItem('chariox-browser-cloud-session'))))
     signout.distinctCloudSessions = Boolean(tokens[0] && tokens[1] && tokens[0] !== tokens[1]); confidential.push(...tokens.filter(Boolean))
     // A transient network error is recorded and retried; only HTTP 401 counts as rejection.
@@ -230,17 +240,18 @@ try {
     else signout.endpointStatus = await signing.evaluate(async () => { const csrf = (await (await fetch('/auth/csrf')).json()).csrfToken; return (await fetch('/auth/browser-logout', {method: 'POST', headers: {'content-type': 'application/json', 'csrf-token': csrf, 'x-chariox-browser-session': sessionStorage.getItem('chariox-browser-cloud-session') ?? ''}, body: '{}'})).status })
     await shot(signing, `dpr${dpr}-signout-after`)
     const deadline = startedAt + 90000; let rejectedAt = null
-    while (Date.now() < deadline && (rejectedAt === null || tabs[0].openRelayLanes().length)) {
+    while (Date.now() < deadline && (rejectedAt === null || tabs[0].openRelayConnections().length)) {
       if (rejectedAt === null && await peersStatus(tabs[0]) === 401) rejectedAt = Date.now()
       await pause(1000)
     }
     signout.otherTabApiRejectedMs = rejectedAt && rejectedAt - startedAt
-    signout.otherTabRelayEvents = tabs[0].relayEvents.map(e => ({event: e.event, lane: e.lane, relayOrigin: e.relayOrigin, msAfterSignOut: e.at - startedAt}))
-    signout.otherTabOpenSocketsAfterWindow = tabs[0].openRelayLanes().length
+    signout.otherTabRelayEvents = tabs[0].relayEvents.map(e => ({event: e.event, connectionId: e.connectionId, relayOrigin: e.relayOrigin, msAfterSignOut: e.at - startedAt}))
+    signout.otherTabOpenSocketsAfterWindow = tabs[0].openRelayConnections().length
+    signout.everyObservedConnectionClosed = observedConnections.every(id => tabs[0].relayEvents.some(e => e.connectionId === id && e.event === 'closed'))
     signout.sessionAfter = await tabs[0].evaluate(async () => (await (await fetch('/auth/session')).json()).authenticated)
     await tabs[0].bringToFront(); await shot(tabs[0], `dpr${dpr}-signout-other-tab`)
     await myKernels(tabs[0]).catch(() => {}); await shot(tabs[0], `dpr${dpr}-signout-other-tab-my-kernels`)
-    signout.status = signout.distinctCloudSessions && signout.otherTabBefore === 200 && signout.usedVisibleControl && rejectedAt && signout.otherTabOpenSocketsAfterWindow === 0 && signout.sessionAfter === false ? 'PASS' : 'FAIL'
+    signout.status = signout.distinctCloudSessions && signout.otherTabBefore === 200 && signout.usedVisibleControl && rejectedAt && signout.otherTabOpenSocketsAfterWindow === 0 && signout.everyObservedConnectionClosed && signout.sessionAfter === false ? 'PASS' : 'FAIL'
     await save(); console.log('MP-08 / MP-10 / MP-11 BY-03 signout DPR' + dpr, signout.status)
     await login.close()
   }
