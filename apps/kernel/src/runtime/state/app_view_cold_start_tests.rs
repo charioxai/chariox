@@ -483,3 +483,38 @@ async fn successful_poll_rearms_a_new_bounded_viewport_window() {
     }
     assert!(views.next_cold_start_attempt("room").is_none());
 }
+
+/// #992 review F5: an agent without its own App grant reaches no App host action
+/// (clipboard, links) either; the grant check runs before the host broker.
+#[tokio::test]
+async fn mp11_an_ungranted_agent_reaches_no_app_host_action() {
+    let (runtime, session, _cleanup) = fixture();
+    let agent = runtime
+        .owned
+        .agent_store
+        .list_agents()
+        .into_iter()
+        .find(|agent| agent.session_id() == session)
+        .unwrap();
+    let binding = AppViewBinding {
+        owner: agent.owner_user_id().into(),
+        installation: "todo".into(),
+        generation: 1,
+        panel: Default::default(),
+        logical_tab: None,
+    };
+    for tool in ["host.clipboard_write", "host.open_link"] {
+        let mut tracked = runtime.app_control().views().track_call("view", "view", None);
+        let refused = runtime
+            .invoke_app_view_tool(
+                ViewCaller::Agent(&agent),
+                &binding,
+                tool,
+                serde_json::json!({}),
+                &mut tracked,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, "AGENT_APP_NOT_GRANTED", "{tool}");
+    }
+}

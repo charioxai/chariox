@@ -767,6 +767,14 @@ impl KernelRuntimeState {
         tracked: &mut ViewCall,
     ) -> Result<Value, BrowserAppViewError> {
         let unavailable = || view_error("APP_UNAVAILABLE", "The App is not running");
+        // MP-08/MP-11: an agent's call needs its own App grant before any lease,
+        // tool or host action (clipboard, links) runs.
+        let granted = self.view_agent_grant(&caller, binding);
+        if let Some((agents, check)) = &granted {
+            if !check(&agents.read()) {
+                return Err(agent_not_granted());
+            }
+        }
         let leased = tokio::select! {
             result = self.app_lease_on_demand(&binding.owner, &binding.installation) => result,
             () = tracked.cancelled() => return Err(view_error("CANCELLED", "The calling view went away")),
@@ -813,7 +821,6 @@ impl KernelRuntimeState {
             .try_admit()
             .map_err(|_| coded(app_call_errors::admission_busy()))?;
         let store = self.owned.durable_state_store.clone();
-        let granted = self.view_agent_grant(&caller, binding);
         let turn = match &caller {
             ViewCaller::Agent(agent) => self.view_agent_turn(agent),
             ViewCaller::Owner(_) => None,
