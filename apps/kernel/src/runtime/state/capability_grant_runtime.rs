@@ -273,6 +273,23 @@ impl AppPromptDelivery {
             source_user_id: prompt.source_user_id().map(str::to_string),
         }
     }
+    // MP-08/MP-11 D1: home durable delivery stores the raw worker run;
+    // authenticated forwarding carries its projected home run identity.
+    pub(super) fn belongs_to_agent_run(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        run: &str,
+    ) -> bool {
+        let Some(binding) = agent.remote_execution() else {
+            return self.belongs_to(run);
+        };
+        let Some(worker_run) = binding.active_worker_provider_run_id.as_deref() else {
+            return false;
+        };
+        crate::provider::projected_leased_provider_run_id(&binding.leased_agent_id, worker_run)
+            == run
+            && self.belongs_to(worker_run)
+    }
     pub(super) fn belongs_to(&self, run: &str) -> bool {
         use crate::session::DurablePromptDeliveryPhase::{Accepted, Delivered, Dispatching};
         // Native/legacy turns may lack a delivery run ID. Preserve their exact
