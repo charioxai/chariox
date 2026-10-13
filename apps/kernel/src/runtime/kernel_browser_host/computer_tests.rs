@@ -181,6 +181,22 @@ fn mp11_fast_close_reopen_and_second_viewer_keep_desktop_ownership_correct() {
 
 #[test]
 fn mp10_desktop_display_wait_does_not_block_input_or_cross_responses() {
+    held_observation_allows_desktop_input(
+        "host.computer",
+        json!({"op":"screenshot","surface_id":"s","generation":"g","display_subscription_id":"view"}),
+    );
+}
+
+#[test]
+fn mp10_desktop_mirror_wait_does_not_block_input_or_cross_responses() {
+    held_observation_allows_desktop_input(
+        "host.browser",
+        json!({"op":"mirror_next","subscription_id":"view","generation":1}),
+    );
+}
+
+// MP-08/MP-10/MP-11: exercise the actual Rust backend lock and reply registry.
+fn held_observation_allows_desktop_input(method: &str, observation: Value) {
     use std::time::Instant;
     let root = std::env::temp_dir().join(format!(
         "culinux-desktop-wait-{:032x}",
@@ -195,12 +211,12 @@ while IFS= read -r request; do
  case "$request" in
  *'"method":"health"'*) printf 'health\n' >> "$root/health"; result='{"state":"ready","process_id":'$$'}' ;;
  *'"method":"host.protect"'*) printf 'policy\n' >> "$root/policy"; result='{}' ;;
- *'"method":"host.browser"'*) result='{"generation":1,"tabs":[]}' ;;
- *'"op":"state"'*) result='{"surface_id":"s","generation":"g"}' ;;
- *'"op":"screenshot"'*)
+ *'"op":"screenshot"'*|*'"op":"mirror_next"'*)
    printf 'started\n' > "$root/capture"
    (while ! test -f "$root/release"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"frame_sent":false}}\n' "$id") &
    continue ;;
+ *'"method":"host.browser"'*) result='{"generation":1,"tabs":[]}' ;;
+ *'"op":"state"'*) result='{"surface_id":"s","generation":"g"}' ;;
  *'"op":"input"'*) result='{"input_completed":true}' ;;
  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id"; exit 0 ;;
  esac
@@ -219,7 +235,8 @@ done
     let policy = json!({"values":[],"targets":[],"unknown":false});
     let (tx, rx) = std::sync::mpsc::channel();
     let early = std::thread::scope(|scope| {
-        let capture=scope.spawn(|| host.protected_request("alice",None,"host.computer",json!({"op":"screenshot","surface_id":"s","generation":"g","display_subscription_id":"view"}),policy.clone()));
+        let capture = scope
+            .spawn(|| host.protected_request("alice", None, method, observation, policy.clone()));
         let deadline = Instant::now() + Duration::from_secs(2);
         while !root.join("capture").exists() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));

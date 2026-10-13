@@ -41,9 +41,13 @@ export const nativeRetryDelayMs = attempts => Math.min(60_000, 1_000 * 2 ** (att
 export function scheduleHostRequest(request) {
   // MP-08/MP-10/MP-11: scoped desktop credits share the browser wait lane;
   // mutation/lifecycle/policy commands keep their existing barriers.
-  return ['host.browser','host.computer'].includes(request.method) && request.params?.op === 'screenshot' &&
-    typeof request.params.display_subscription_id === 'string'
-    ? {kind:'bridge'} : {kind:'barrier'};
+  const display = ['host.browser','host.computer'].includes(request.method) && request.params?.op === 'screenshot' &&
+    typeof request.params.display_subscription_id === 'string';
+  // MP-08/MP-10/MP-11: mirror reads retain per-stream credit and final
+  // document/policy checks while awaiting resources; input must keep moving.
+  const mirror = request.method === 'host.browser' && request.params?.op === 'mirror_next' &&
+    typeof request.params.subscription_id === 'string';
+  return display || mirror ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
 const inputKinds = { click: 1, text: 2, key: 3, scroll: 4 };

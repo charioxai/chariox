@@ -584,19 +584,24 @@ impl KernelBrowserHost {
         let display = method == "host.browser"
             && params["op"] == "screenshot"
             && params["display_subscription_id"].is_string();
-        let mut result = if display || (method == "host.browser" && params["op"] == "input") {
-            let signal = cancellation
-                .clone()
-                .unwrap_or_else(|| Arc::new(BrowserCancellation::default()));
-            let pending = backend.begin_cancellable_mutation(method, &params, &signal)?;
-            drop(backend);
-            pending
-                .wait(&signal)
-                .map_err(crate::error::HostFailure::Other)
-                .and_then(|response| response.into_host_result(method))
-        } else {
-            backend.host_request_cancellable(method, params, cancellation.clone())
-        };
+        // MP-08/MP-10/MP-11: resource-backed mirror observation can await
+        // CDP/network work. Its policy/document fences and scoped credit live
+        // in the host; do not hold the backend mutex across that wait.
+        let mirror = method == "host.browser" && params["op"] == "mirror_next";
+        let mut result =
+            if display || mirror || (method == "host.browser" && params["op"] == "input") {
+                let signal = cancellation
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(BrowserCancellation::default()));
+                let pending = backend.begin_cancellable_mutation(method, &params, &signal)?;
+                drop(backend);
+                pending
+                    .wait(&signal)
+                    .map_err(crate::error::HostFailure::Other)
+                    .and_then(|response| response.into_host_result(method))
+            } else {
+                backend.host_request_cancellable(method, params, cancellation.clone())
+            };
         if let Some(action) = action {
             let terminal = if cancellation
                 .as_ref()
@@ -1029,12 +1034,33 @@ mod tests {
         assert_eq!(host.focused_agent("owner").as_deref(), Some("local-agent"));
         assert!(!host.is_loaded("owner", "leased-agent"));
         assert!(host.load("owner", "leased-agent").is_err());
-        let admission = host.admit_for("owner", "leased-agent", KernelBrowserCapability::Computer).unwrap();
-        assert!(host.claim_resource(Some(&admission), UserDomainResource::Desktop { surface_id: "desktop".into() }, false).is_ok());
-        assert!(host.claim_resource(Some(&admission), UserDomainResource::Desktop { surface_id: "foreign".into() }, false).is_err());
+        let admission = host
+            .admit_for("owner", "leased-agent", KernelBrowserCapability::Computer)
+            .unwrap();
+        assert!(host
+            .claim_resource(
+                Some(&admission),
+                UserDomainResource::Desktop {
+                    surface_id: "desktop".into()
+                },
+                false
+            )
+            .is_ok());
+        assert!(host
+            .claim_resource(
+                Some(&admission),
+                UserDomainResource::Desktop {
+                    surface_id: "foreign".into()
+                },
+                false
+            )
+            .is_err());
         host.revoke_agent("leased-agent");
         host.grant_desktop("owner", "leased-agent", "desktop");
-        assert!(host.check_admission(Some(&admission)).is_err(), "MP-11: regrant cannot revive a queued old action");
+        assert!(
+            host.check_admission(Some(&admission)).is_err(),
+            "MP-11: regrant cannot revive a queued old action"
+        );
     }
     #[test]
     fn mdaccess_focus_switch_keeps_existing_grant_and_admission() {
