@@ -110,9 +110,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: version 111 carries local protocol 503 kernel-browser shapes
 /// (per-document mirror fragments) and includes main's 101 union.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 111;
-/// MP-08/MP-10/MP-11: peer96 and peer111 change only negotiated transport and
-/// kernel-browser shapes. Runtime admission requires main's peer101 union.
-pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = 101;
+/// MP-08/MP-10/MP-11: like main, runtime admission requires the current peer
+/// contract, independently of a relay's ability to downgrade its binary transport.
+pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -2135,16 +2135,15 @@ mod notes_protocol_probe_tests {
 #[cfg(test)]
 mod mp08_transport_compatibility_tests {
     #[test]
-    fn mp08_peer_runtime_admission_requires_main_peer101_union() {
+    fn mp08_peer_runtime_admission_requires_the_current_peer_contract() {
         assert_eq!(super::RELAY_PEER_PROTOCOL_VERSION, 111);
-        // MP-08/MP-10/MP-11: real remote-binding admission requires main's peer101
-        // union; transport-only peer96 and kernel-browser peer111 add no floor.
+        // MP-08/MP-10/MP-11: real remote-binding admission requires the current
+        // peer contract; transport negotiation never lowers it.
         for (version, compatible) in [
             (None, false),
             (Some(90), false),
-            (Some(100), false),
-            (Some(101), true),
-            (Some(110), true),
+            (Some(96), false),
+            (Some(110), false),
             (Some(111), true),
         ] {
             let binding: crate::agent::RemoteAgentBinding =
