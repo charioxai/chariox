@@ -633,7 +633,12 @@ export class Mirror2 {
     const changed = ['click', 'scroll'].includes(action.kind) ? stream.attrSequence : stream.identity ?? new Map();
     for (const id of [action.node_id, action.anchor_id, action.focus_id]) if (id && (changed.get(id) ?? 0) > input.sequence) throw new Error('MP-11: changed mirror input target');
     stream.inputAt = Date.now();
-    const world = await this.world(tab, stream);
+    // MP-08/MP-10/MP-11: the applied snapshot owns this isolated world. Reuse
+    // it only on the same live connection/document; every call still fences the
+    // document, and the final guard rechecks the live target after capture.
+    const cached = stream.world;
+    const world = cached && cached.connection === this.host.browser.connection && cached.connection.isOpen() && cached.frame?.loaderId === tab.document_id
+      ? cached : await this.world(tab, stream);
     const assertEpoch = () => { if (this.service.require(input.subscription_id, scope, generation) !== stream || stream.policy !== this.host.protection || stream.document_id !== tab.document_id || stream.fallback) throw new Error('MP-11: stale mirror protection policy or admitted input'); };
     const call = async expression => { assertNotCancelled(signal); assertEpoch(); await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id); assertEpoch(); const value = await this.evaluate(world, expression); assertEpoch(); return value; };
     const m = world.ref;

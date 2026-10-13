@@ -262,3 +262,26 @@ test(`MP-08/MP-11: an admitted click pairs its release after ${fault} without re
   assert.deepEqual(sent.filter(x => x.method === 'Input.dispatchMouseEvent').map(x => x.params.type), ['mousePressed', 'mouseReleased']);
   assert(releaseSettled, 'the input lane holds ownership until the paired release settles');
 });
+
+test('MP-08/MP-10/MP-11: a fenced mirror click leaves its document fence to the live guard, the last call before the press; an unfenced one keeps the input fence', async () => {
+  for (const fenced of [true, false]) {
+    const { browser, sent } = fixture();
+    let captured = false, guardAt = -1;
+    browser.inputCapture.run = async (_c, _s, operation) => { captured = true; return operation(); };
+    await inputHostTab(browser, tab, { kind: 'mirror' }, { resolveMirror: async () => ({ input: { kind: 'click', x: 10, y: 20 }, fenced, guard: async () => { assert(captured); guardAt = sent.length; } }) });
+    const first = sent.findIndex(call => call.method === 'Input.dispatchMouseEvent');
+    assert.equal(guardAt, first, 'nothing separates the guard from the press');
+    assert.equal(sent.slice(0, first).filter(call => call.method === 'Page.getFrameTree').length, fenced ? 0 : 2);
+  }
+});
+
+test('MP-08/MP-11: a mirror click without a guard still fences navigation during capture before press', async () => {
+  const { browser, sent } = fixture();
+  const { connection } = await browser.resolvePageTarget();
+  const send = connection.send;
+  let captured = false;
+  browser.inputCapture.run = async (_c, _s, operation) => { captured = true; return operation(); };
+  connection.send = (method, params) => method === 'Page.getFrameTree' && captured ? Promise.resolve({ frameTree: { frame: { loaderId: 'new' } } }) : send(method, params);
+  await assert.rejects(inputHostTab(browser, tab, { kind: 'mirror' }, { resolveMirror: async () => ({ input: { kind: 'click', x: 10, y: 20 } }) }), { code: 'stale_document_reference' });
+  assert.equal(sent.filter(call => call.method === 'Input.dispatchMouseEvent').length, 0);
+});

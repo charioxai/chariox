@@ -222,7 +222,8 @@ export class MirrorService {
   }
   async resolveInput(tab,input,scope,signal) {
     this.assertWebTab(tab);const stream=this.require(input.subscription_id,scope,this.host.generation);
-    if(stream.wire===2)return this.v2.resolveInput(stream,tab,input,scope,signal);
+    // MP-08/MP-11: every v2 page call, its guard included, fences the document itself.
+    if(stream.wire===2)return {...await this.v2.resolveInput(stream,tab,input,scope,signal),fenced:true};
     if(stream.tab_id!==tab.tab_id||stream.document_id!==tab.document_id)throw new Error('MP-11: stale mirror input document');
     if(stream.policy!==this.host.protection)throw new Error('MP-11: stale mirror protection policy');
     stream.epochs=stream.epochs.filter(e=>this.now()-e.issuedAt<=2000).slice(-8);

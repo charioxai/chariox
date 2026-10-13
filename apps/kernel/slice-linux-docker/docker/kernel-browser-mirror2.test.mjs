@@ -248,3 +248,37 @@ test('MP-08/MP-11: a DOM echo is fenced by the page session\'s navigation events
   const unknown = await run(undefined);
   assert.deepEqual([unknown.frameTrees.length, unknown.packet.code], [1, 'stale_document_reference']);
 });
+
+// MP-08/MP-10/MP-11: the applied snapshot already owns an isolated world. A
+// click reuses that document binding, but still queries the document and live
+// hit target immediately before dispatch (including after focus emulation).
+test('MP-08/MP-10/MP-11: mirror input reuses the snapshot world and keeps the final document/hit fence', async () => {
+  const calls = [], policy = {}, world = { contextId: 7, sessionId: 's', frame: { id: 'f', loaderId: 'doc' }, ref: 'm' };
+  let loader = 'doc', resolutions = 0;
+  const connection = { isOpen: () => true, send: async method => { calls.push(method); return { frameTree: { frame: { loaderId: loader } } }; } };
+  world.connection = connection;
+  const tab = { tab_id: 't', target_id: 'target', document_id: 'doc' };
+  const stream = { id: 's', world, tab_id: 't', document_id: 'doc', policy, issued: 1, resetAt: 1, attrSequence: new Map(), frameSlots: new Map() };
+  const host = { generation: 1, protection: policy, browser: { connection } };
+  const mirror = new Mirror2({ host, assertWebTab() {}, require: () => stream });
+  mirror.world = async () => { resolutions++; return world; };
+  mirror.evaluate = async (_world, expr) => { calls.push(expr); return expr.includes('.point(') ? { x: 10, y: 20 } : true; };
+  const input = { subscription_id: 's', sequence: 1, action: { kind: 'click', node_id: 'n1', x: 1, y: 1 } };
+  const resolved = await mirror.resolveInput(stream, tab, input, 'scope');
+  assert.equal(resolutions, 0, 'a second target/world lookup is unnecessary before the final live fence');
+  calls.length = 0;
+  await resolved.guard();
+  assert.equal(calls[0], 'Page.getFrameTree'); assert.match(calls[1], /hitCheck/);
+  const stale = await mirror.resolveInput(stream, tab, input, 'scope');
+  loader = 'new'; calls.length = 0;
+  await assert.rejects(stale.guard(), { code: 'stale_document_reference' });
+  assert.deepEqual(calls, ['Page.getFrameTree'], 'navigation is refused before the hit check or any physical input');
+  loader = 'doc';
+  for (const cache of [null, { ...world, frame: { loaderId: 'old' } }, { ...world, connection: {} }]) {
+    stream.world = cache;
+    const before = resolutions;
+    await mirror.resolveInput(stream, tab, input, 'scope');
+    assert.equal(resolutions, before + 1, 'a missing, navigated or foreign-connection cache resolves afresh');
+  }
+});
+

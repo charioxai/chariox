@@ -97,11 +97,16 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
     let resolved;
     if(input.kind==='mirror') {
       if(!resolveMirror)throw new Error('MP-11: mirror input resolver unavailable');
-      await check();resolved=await resolveMirror(input);
+      // MP-08/MP-10/MP-11: resolvers fence the document before their first
+      // page call (point, ancestry, focus), so no separate query here.
+      resolved=await resolveMirror(input);
       observedFrameInput=resolved.observedFrameInput===true;
     }
     return browser.inputCapture.run(connection, sessionId, async () => {
-      await check();
+      // MP-08/MP-10/MP-11: a fenced (v2) resolution has its final document
+      // fence in perform/sendInput/its guard below. No mutation or await
+      // separates this redundant query from that final fence.
+      if (!resolved?.fenced) await check();
       if(resolved) {
         mirrorGuard=resolved.guard;
         if(resolved.perform) {await check();await resolved.perform(sendInput,onDispatch);await check();return;}
@@ -149,7 +154,9 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           // MP-08/MP-10: CDP pointer coordinates are in the emulated view's
           // space: a DPR1 page on a scale-2 window has view scale 1/2.
           const x = input.x * viewScale, y = input.y * viewScale;
-          await check(); await mirrorGuard?.();
+          // MP-11: a fenced mirror click's guard is the final document and
+          // live hit fence (fenced evaluate) immediately before the press.
+          if (resolved?.fenced) await mirrorGuard(); else { await check(); await mirrorGuard?.(); }
           // MP-08/MP-10/MP-11: CDP orders commands on this session. Queue the
           // matching release before awaiting the frame-paced press reply. Once
           // admitted, navigation/cancellation must not strand a pressed button.
