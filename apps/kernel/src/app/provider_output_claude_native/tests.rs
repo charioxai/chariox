@@ -1,6 +1,101 @@
 use super::transcript::ClaudeTranscriptCursor;
 use super::*;
 
+// MP-08 / MP-10 / MP-11: hosted owner ids and selected account namespaces
+// differ. A status-line update must neither abort native hook processing nor
+// write usage into a different user's account.
+#[test]
+fn claude_native_usage_follows_resolved_home_account_authority() {
+    claude_native_usage_authority_case("cloud-owner", "local", true);
+}
+
+#[test]
+fn claude_native_usage_keeps_collaborator_account_authority() {
+    claude_native_usage_authority_case("collaborator", "collaborator", true);
+}
+
+#[test]
+fn claude_native_usage_rejects_foreign_account_authority() {
+    claude_native_usage_authority_case("collaborator", "local", false);
+}
+
+fn claude_native_usage_authority_case(runtime_owner: &str, account_owner: &str, allowed: bool) {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    app.config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "cloud-owner".to_string(),
+        ..Default::default()
+    });
+    let profile = app
+        .provider_account_profiles
+        .create_managed(account_owner, "claude", "native-usage-authority")
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-native-usage-authority-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let usage_path = root.join("usage.json");
+    fs::write(
+        &usage_path,
+        r#"{"rate_limits":{"five_hour":{"used_percentage":17}}}"#,
+    )
+    .unwrap();
+    let mut request = crate::provider::LaunchProviderRequest::new(
+        "session-native-usage",
+        "claude",
+        "claude-headless",
+        &profile.profile_id,
+        "haiku",
+    )
+    .with_owner_user_id(runtime_owner);
+    crate::account_profile::bind_provider_account_authority(
+        &mut request,
+        account_owner.to_string(),
+        profile.profile_id.clone(),
+    );
+    let run = RuntimeProviderRun::new(
+        "run-native-usage",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "native-usage-authority".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([(
+                "CHARIOX_CLAUDE_USAGE_FILE".to_string(),
+                usage_path.display().to_string(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    let result = ProviderOutputClaudeNativeBridge::new(&mut app).process_claude_account_usage(&run);
+    let usage = app
+        .provider_account_profiles
+        .get(account_owner, "claude", &profile.profile_id)
+        .unwrap()
+        .usage;
+    fs::remove_dir_all(root).unwrap();
+    if allowed {
+        result.expect("selected account usage must not abort native hook processing");
+        assert_eq!(usage.meters.len(), 1);
+        assert_eq!(usage.meters[0].used_percent, Some(17.0));
+        assert_eq!(usage.profile_id, profile.profile_id);
+    } else {
+        assert!(
+            result.is_err(),
+            "a collaborator cannot select the home owner's usage namespace"
+        );
+        assert!(
+            usage.meters.is_empty(),
+            "foreign account usage must remain unchanged"
+        );
+    }
+}
+
 #[derive(Clone, Default)]
 struct RecordingPermissionBridge {
     interaction_ids: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
