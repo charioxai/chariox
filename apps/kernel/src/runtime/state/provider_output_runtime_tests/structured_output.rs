@@ -1,5 +1,114 @@
 use super::*;
 
+#[tokio::test]
+async fn panes_stream_ready_structured_output_survives_an_unrelated_app_lock() {
+    // MP-08 / MP-10: a slow inventory/maintenance request must not hold an
+    // already-read official-provider batch before its terminal record exists.
+    let worktree = crate::test_support::TestWorktree::new("panes-stream-app-lock");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "panes-stream-lock-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "opencode-go/gpt-6-luna",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-panes-stream-app-lock",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "panes-stream-lock-fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("http://127.0.0.1:1".into()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run.clone());
+    spawn_inert_pty_for_run(&mut app, run.id());
+    app.structured_output_record_store()
+        .mark_poll_enqueued(run.id(), None);
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            run.id().to_string(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("text-1".into()),
+                    bytes: b"CHECK:".to_vec(),
+                }],
+                ..Default::default()
+            })),
+        );
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let runtime_for_watch = runtime.clone();
+    let terminal = runtime.owned.terminal_stream.clone();
+    let before = terminal.attachment_change_sequence(session.id(), attachment.id());
+    let cleanup = InertPtyCleanup {
+        app: app.clone(),
+        provider_run_id: run.id().to_string(),
+    };
+    let held = app.lock().await;
+    let session_id = session.id().to_string();
+    let run_id = run.id().to_string();
+    let recipient = attachment.id().to_string();
+    let pump = tokio::spawn(async move {
+        runtime
+            .pump_owned_provider_output(&session_id, &run_id, vec![recipient], false)
+            .await
+    });
+    let ready = tokio::time::timeout(std::time::Duration::from_millis(150), async {
+        while terminal.attachment_change_sequence(session.id(), attachment.id()) == before {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    let delivered = tokio::time::timeout(
+        std::time::Duration::from_millis(150),
+        runtime_for_watch.watch_relay_subscription_state(
+            session.id(),
+            attachment.id(),
+            false,
+            None,
+            0,
+        ),
+    )
+    .await;
+    drop(held);
+    let records = pump.await.unwrap().unwrap();
+    drop(cleanup);
+    assert!(records.iter().any(|record| record.bytes == b"CHECK:"));
+    assert!(
+        ready.is_ok(),
+        "ready provider output waited for an unrelated app lock"
+    );
+    assert!(
+        matches!(delivered,
+            Ok(crate::runtime_transport::WatchResult::Ok { records, .. })
+                if records.iter().any(|record| record.bytes == b"CHECK:")
+        ),
+        "terminal subscriber waited for an unrelated app lock after the record was ready"
+    );
+}
+
 #[test]
 fn publication_output_rejects_opencode_model_substitution_before_run_mutation() {
     let request = crate::provider::LaunchProviderRequest::new(

@@ -366,6 +366,13 @@ pub(super) fn execute_output_poll_command(
     if run.adapter_key() != "opencode" {
         return Ok(None);
     }
+    // MP-08 / MP-10: separate actor/HTTP time from pump and app-lock time.
+    let poll_started = std::time::Instant::now();
+    crate::logging::debug_with_fields(
+        "daemon.provider.opencode.timing",
+        "output poll started",
+        serde_json::json!({"provider_run_id": run_id}),
+    );
     let (slot, mut state) = match runtime_registry.take_opencode_runtime(run_id) {
         Ok((slot, state)) => (slot, state),
         Err(_) => return Ok(None),
@@ -375,6 +382,14 @@ pub(super) fn execute_output_poll_command(
     }
     let drain = drain_opencode_events(run, &mut state, native_interaction_bridge.read());
     runtime_registry.restore_opencode_runtime_if_live(run_id, &slot, state);
+    crate::logging::debug_with_fields(
+        "daemon.provider.opencode.timing",
+        "output poll finished",
+        serde_json::json!({"provider_run_id": run_id,
+            "elapsed_us": poll_started.elapsed().as_micros(),
+            "success": drain.is_ok(),
+            "chunks": drain.as_ref().ok().map(|batch| batch.chunks.len())}),
+    );
     let drain = drain?;
     let explicit_provider_error = drain.explicit_provider_error;
     Ok(Some(ProviderPromptSignalBatch {

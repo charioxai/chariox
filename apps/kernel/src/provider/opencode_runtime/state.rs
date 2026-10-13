@@ -47,6 +47,7 @@ pub(crate) struct OpenCodeRuntimeState {
     pub(super) message_parent_ids: BTreeMap<String, Option<String>>,
     pub(super) preexisting_message_ids: BTreeSet<String>,
     pub(super) event_subscription: OpenCodeEventSubscription,
+    pub(super) pending_event: Option<crate::provider::OpenCodeEvent>,
     pub(super) last_status: Option<OpenCodeSessionStatus>,
     pub(super) completed_assistant_message_ids: BTreeSet<String>,
     pub(super) active_terminal_assistant_message_id: Option<String>,
@@ -78,6 +79,7 @@ impl OpenCodeRuntimeState {
             message_parent_ids: BTreeMap::new(),
             preexisting_message_ids: BTreeSet::new(),
             event_subscription,
+            pending_event: None,
             last_status: None,
             completed_assistant_message_ids: BTreeSet::new(),
             active_terminal_assistant_message_id: None,
@@ -168,6 +170,7 @@ impl OpenCodeRuntimeState {
     }
 
     pub(in crate::provider) fn settle_aborted_turn(&mut self, messages: &[OpenCodeMessage]) {
+        self.pending_event = None;
         self.session_errors_require_prompt_match = true;
         self.live_text_from_start = false;
         while self.event_subscription.receiver.try_recv().is_ok() {}

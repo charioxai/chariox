@@ -663,6 +663,12 @@ where
     tokio::pin!(shutdown);
 
     let pump_router = Arc::clone(&router);
+    // MP-08 / MP-10: maintenance and one agent's settlement cannot hold every
+    // provider's already-readable output. Mutations still use the same lanes.
+    let provider_output_pump_task = {
+        let runtime = router.runtime_state().clone();
+        tokio::spawn(async move { runtime.run_provider_output_pump().await })
+    };
     let pump_task = tokio::spawn(async move {
         let pump_state = pump_router.runtime_state();
         loop {
@@ -731,6 +737,7 @@ where
                 }
                 drop(_restart_recovery_task);
                 pump_task.abort();
+                provider_output_pump_task.abort();
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 app_wake_task.abort();
                 if let Some(task) = durable_snapshot_task.take() {

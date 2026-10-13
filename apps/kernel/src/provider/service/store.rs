@@ -615,6 +615,14 @@ impl ProviderProcessServiceStore {
         self.write().drain_finished_structured_output_poll_jobs()
     }
 
+    pub(crate) fn drain_finished_structured_output_poll_jobs_for_run(
+        &self,
+        run_id: &str,
+    ) -> Vec<FinishedProviderOutputPollJob> {
+        self.write()
+            .drain_finished_structured_output_poll_jobs_for_run(run_id)
+    }
+
     pub(crate) fn apply_structured_output_metadata(
         &self,
         provider_run_id: &str,

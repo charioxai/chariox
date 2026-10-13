@@ -7,6 +7,8 @@ mod permission;
 mod retry_status_tests;
 mod snapshot;
 mod state;
+#[cfg(test)]
+mod streaming_latency_tests;
 mod transcript;
 
 pub(in crate::provider) use drain::drain_opencode_events;

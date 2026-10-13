@@ -21,14 +21,11 @@ impl KernelRuntimeState {
             owned.provider_run_projection.update(provider_run.clone());
         }
         if provider_run.endpoint_mode() != crate::provider::AgentEndpointMode::External {
-            if let Err(error) = self
-                .with_app_side_effect(|app| {
-                    app.drain_provider_pty_output_for_runtime(provider_run_id)
-                })
-                .await
-            {
+            if let Some(Err(error)) = self.try_with_app_side_effect(|app| {
+                app.drain_provider_pty_output_for_runtime(provider_run_id)
+            }) {
                 if self
-                    .reconcile_provider_run_exit(session_id, provider_run_id)
+                    .reconcile_provider_run_exit_for_output(session_id, provider_run_id)
                     .await?
                 {
                     return Ok(owned
@@ -44,7 +41,7 @@ impl KernelRuntimeState {
         let now_ms = crate::session::unix_epoch_ms();
         for finished in owned
             .provider_store
-            .drain_finished_structured_output_poll_jobs()
+            .drain_finished_structured_output_poll_jobs_for_run(provider_run_id)
         {
             let settlement_retry_attempt = finished.settlement_retry_attempt;
             let finished_run_id = finished.provider_run_id.clone();
@@ -79,13 +76,16 @@ impl KernelRuntimeState {
                 }
                 Err(error) => {
                     let reconcile_result = if is_requested_run {
-                        self.reconcile_provider_run_exit(session_id, provider_run_id)
+                        self.reconcile_provider_run_exit_for_output(session_id, provider_run_id)
                             .await
                     } else {
                         match owned.provider_store.get_run(&finished_run_id) {
                             Ok(run) => {
-                                self.reconcile_provider_run_exit(run.session_id(), &finished_run_id)
-                                    .await
+                                self.reconcile_provider_run_exit_for_output(
+                                    run.session_id(),
+                                    &finished_run_id,
+                                )
+                                .await
                             }
                             Err(run_error) => Err(run_error),
                         }
@@ -744,7 +744,7 @@ impl KernelRuntimeState {
             return Ok(records);
         }
         if !self
-            .reconcile_provider_run_exit(session_id, provider_run_id)
+            .reconcile_provider_run_exit_for_output(session_id, provider_run_id)
             .await?
         {
             let _ = self
