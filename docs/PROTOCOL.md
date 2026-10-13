@@ -3487,3 +3487,20 @@ their values except snapshots that explicitly serialize a peer protocol number.
 The focused real Web/TUI Copy/restart drill must use the exact C5 kernel and
 client, through hosted WSS, and record receiving protocol and owner binding.
 Signing input checks do not establish installed-target or multi-hour acceptance.
+
+### MP-08 / MP-11 BY-05 owner-copy refusal projection
+
+Owner-context ticket consumption returns distinct Cloud error codes
+`owner_context_ticket_revoked`, `authorization_expired`, and
+`owner_context_ticket_already_used` after admitting the exact owner/source.
+The source kernel maps these to `owner_context_authorization_revoked`,
+`owner_context_authorization_expired`, and
+`owner_context_authorization_already_used` in the existing string-valued
+`failureCode`, with a bounded actionable `failureMessage` and no retry.
+Revoked or consumed status takes precedence over the original ticket TTL.
+Reauthorization of the consumed operation for transfer recovery remains distinct
+from replay of the one-use capability. Clients cannot supply that capability.
+Web Copy and TUI `/kernel copy-status <context-id>` project the same authoritative
+outcome. Refusals occur before packaging or publication; no bytes are copied.
+The existing C5 allocation remains local 509 / peer 117: this correction changes
+error strings and client rendering, with no new serialized fields or variants.

@@ -1,3 +1,4 @@
+import { getManagedContextTransferStatus } from "./managed-environment-api.js"
 import { getCloudClientControlProfile } from "./cloud-client-control.js"
 import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
 import { getAppInstallationRequest } from "@chariox/kernel-client/ipc-requests"
@@ -527,6 +528,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     deleteSessionByRef: (reference, workspace) => deleteSessionByRef(client, reference, workspace),
     deleteKernel: () => deleteKernel(client),
     getDaemonHealth: () => getDaemonHealth(client),
+    getContextTransferStatus: contextId => getManagedContextTransferStatus(client, contextId),
     listKernelAccessGrants: () => listKernelAccessGrants(client),
     revokeKernelAccessGrant: (id) => revokeKernelAccessGrant(client, id),
     exportDebugBundle: (sessionId, label) => exportDebugBundle(client, sessionId, label),

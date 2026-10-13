@@ -687,6 +687,13 @@
         ]
       },
       {
+        "id": "kernel-copy-status",
+        "label": "copy-status",
+        "description": "Show a kernel copy outcome and any required action",
+        "value": "/kernel copy-status ",
+        "surfaces": ["session"]
+      },
+      {
         "id": "kernel-health",
         "label": "health",
         "description": "Open runtime health, remote readiness, and invariants",

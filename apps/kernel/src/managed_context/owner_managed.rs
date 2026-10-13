@@ -264,6 +264,8 @@ pub(crate) fn admission_error(message: impl Into<String>) -> DaemonError {
 pub(crate) fn cloud_admission_error(error: DaemonError) -> DaemonError {
     let reason = match crate::runtime::cloud_api_client::cloud_error_code(&error) {
         Some("authorization_expired") => "authorization_expired",
+        Some("owner_context_ticket_revoked") => "owner_context_ticket_revoked",
+        Some("owner_context_ticket_already_used") => "owner_context_ticket_already_used",
         Some("authorization_denied") => "authorization_denied",
         Some("session_invalid") => "session_invalid",
         Some("dependency_unavailable") => "dependency_unavailable",
@@ -279,27 +281,57 @@ pub(crate) fn cloud_admission_error(error: DaemonError) -> DaemonError {
         match crate::runtime::cloud_api_client::cloud_error_code(&error) {
             Some("authorization_expired") => (
                 "owner_context_authorization_expired",
-                "Owner-managed context authorization expired; start a new copy",
+                "This copy approval expired. Start a new copy to request approval.",
                 false,
+            ),
+            Some("owner_context_ticket_revoked") => (
+                "owner_context_authorization_revoked",
+                "This copy approval was revoked by the owner. Ask for a new approval.",
+                false,
+            ),
+            Some("owner_context_ticket_already_used") => (
+                "owner_context_authorization_already_used",
+                "This copy approval was already used. Start a new copy to request approval.",
+                false,
+            ),
+            Some("authorization_denied") => (
+                "owner_context_authorization_denied",
+                "Copy authorization was denied. Check that both kernels belong to your user and account, then request a new approval.",
+                false,
+            ),
+            Some("session_invalid") => (
+                "owner_context_session_invalid",
+                "Your copy session is no longer authorized. Sign in again, then request a new approval.",
+                false,
+            ),
+            Some("invalid_request") => (
+                "owner_context_invalid_request",
+                "The copy request is invalid. Refresh the source and target selections, then start a new copy.",
+                false,
+            ),
+            Some("dependency_unavailable") => (
+                "owner_context_authorization_unavailable",
+                "Copy authorization is temporarily unavailable. Check Cloud availability, then try again.",
+                true,
             ),
             Some("source_offline" | "source_stale") => (
                 "owner_context_source_offline",
-                "Source kernel is offline or stale",
+                "Source kernel is offline or stale. Reconnect it before copying.",
                 true,
             ),
             Some("source_user_mismatch") => (
                 "owner_context_foreign_user",
-                "This source kernel belongs to another user",
+                "This source kernel belongs to another user. Select a source owned by your user, then request a new approval.",
                 false,
             ),
             Some("source_account_mismatch") => (
                 "owner_context_foreign_account",
-                "This source kernel belongs to another account",
+                "This source kernel belongs to another account. Select a source in your account, then request a new approval.",
                 false,
             ),
             Some("target_offline" | "target_stale") => (
                 "owner_context_target_offline",
-                "Target kernel is offline or stale",
+                "Target kernel is offline or stale. Reconnect it before copying.",
                 true,
             ),
             _ => (
@@ -496,20 +528,23 @@ mod tests {
     #[test]
     fn mp08_mp11_cloud_refusals_preserve_safe_reasons_and_retryability() {
         for (cloud_code, expected, retryable) in [
-            ("source_stale", "Source kernel is offline or stale", true),
+            ("owner_context_ticket_revoked", "This copy approval was revoked by the owner. Ask for a new approval.", false),
+            ("authorization_expired", "This copy approval expired. Start a new copy to request approval.", false),
+            ("owner_context_ticket_already_used", "This copy approval was already used. Start a new copy to request approval.", false),
+            ("source_stale", "Source kernel is offline or stale. Reconnect it before copying.", true),
             (
                 "source_user_mismatch",
-                "This source kernel belongs to another user",
+                "This source kernel belongs to another user. Select a source owned by your user, then request a new approval.",
                 false,
             ),
             (
                 "source_account_mismatch",
-                "This source kernel belongs to another account",
+                "This source kernel belongs to another account. Select a source in your account, then request a new approval.",
                 false,
             ),
             (
                 "dependency_unavailable",
-                "Cloud refused owner-managed source/target authorization",
+                "Copy authorization is temporarily unavailable. Check Cloud availability, then try again.",
                 true,
             ),
         ] {
