@@ -127,13 +127,38 @@ impl ProviderProcessServiceStore {
         expected: &RuntimeProviderRun,
         action: impl FnOnce(&RuntimeProviderRun) -> Result<T, DaemonError>,
     ) -> Result<Option<T>, DaemonError> {
+        self.with_current_matching_run(expected, true, action)
+    }
+
+    /// A current parked run still owns its profile; an ended or replaced run does not.
+    /// Callbacks must not call back into this store.
+    pub(crate) fn with_current_profile_run<T>(
+        &self,
+        expected: &RuntimeProviderRun,
+        action: impl FnOnce(&RuntimeProviderRun) -> Result<T, DaemonError>,
+    ) -> Result<Option<T>, DaemonError> {
+        self.with_current_matching_run(expected, false, action)
+    }
+
+    fn with_current_matching_run<T>(
+        &self,
+        expected: &RuntimeProviderRun,
+        require_live_launch: bool,
+        action: impl FnOnce(&RuntimeProviderRun) -> Result<T, DaemonError>,
+    ) -> Result<Option<T>, DaemonError> {
         let service = self.read();
         let current = service.get_run(expected.id())?;
-        if !matches!(
-            expected.state(),
-            crate::provider::ProviderRunState::Starting
-                | crate::provider::ProviderRunState::Running
-        ) || current.state() != expected.state()
+        let valid_state = if require_live_launch {
+            matches!(
+                expected.state(),
+                crate::provider::ProviderRunState::Starting
+                    | crate::provider::ProviderRunState::Running
+            ) && current.state() == expected.state()
+        } else {
+            expected.state() != crate::provider::ProviderRunState::Ended
+                && current.state() != crate::provider::ProviderRunState::Ended
+        };
+        if !valid_state
             || current.started_at_ms() != expected.started_at_ms()
             || current.agent_instance_id() != expected.agent_instance_id()
             || expected.agent_instance_id().is_some_and(|agent| {

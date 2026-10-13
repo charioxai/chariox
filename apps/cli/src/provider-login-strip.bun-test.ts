@@ -30,7 +30,7 @@ test("MP-08/MP-11 a login strip shows steps, a countdown, the focused code field
   const clicks: string[] = []
   const logins = createProviderLoginInteractionController({
     getKernelId: async () => "fleet",
-    getLoginStatus: () => new Promise(() => {}), getAuthStatus: async () => { throw Error("unused") },
+    getLoginStatus: () => new Promise(() => {}), getAccountProfile: async () => { throw Error("unused") },
     accountLabel: () => "disposable-claude", localDesktop: () => false, openUrl: async () => false,
     copyUrl: async () => "",
     appendNotice: () => {}, flashFooter: () => {}, render: () => {}, setTimer: () => null, clearTimer: () => {},

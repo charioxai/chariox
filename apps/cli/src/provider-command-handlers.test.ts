@@ -413,7 +413,7 @@ test("provider account alias resolution rejects ambiguous folded labels", async 
   assert.equal(await resolveProviderAccountAlias(deps, "codex", "Validation"), "uppercase-id")
   assert.equal(await resolveProviderAccountAlias(deps, "codex", "validation"), "lowercase-id")
   assert.equal(await resolveProviderAccountAlias(deps, "codex", "VALIDATION"), null)
-  assert.deepEqual(footers, ["provider account alias VALIDATION was not found for codex"])
+  assert.deepEqual(footers, ["provider account alias VALIDATION is ambiguous for codex: Validation, validation. Use an exact label or profile ID."])
 })
 
 test("provider account actions reject unknown aliases with public-label errors and no mutation", async () => {
@@ -762,3 +762,18 @@ test("MP-08/MP-10/MP-11 Claude reauth opens OAuth without logging out", async ()
   }, {kind: "provider", raw: "/provider reauth claude", value: "reauth claude"})
   assert.deepEqual(calls, ["oauth:default:true"])
 })
+
+for (const replace of [false, true]) {
+  test(`MP-08 / MP-10 / MP-11 setup-token profile ID reaches hidden input and storage (replace=${replace})`, async () => {
+    const calls: unknown[] = []
+    const deps: ProviderCommandHandlerDeps = {
+      currentProviderId: () => "claude-p", flashFooter: () => {}, appendNotice: () => {},
+      listProviderAccountProfiles: async () => [{ owner_user_id: "local", provider: "claude", profile_id: "opaque-profile", label: "Work", origin: "chariox_created", is_default: false, auth_state: "not_configured", materializations: [], usage: { provider: "claude", profile_id: "opaque-profile", availability: "unavailable", meters: [], source: "not_observed" } }],
+      readSecret: async () => { calls.push("hidden-input"); return "synthetic-token" },
+      storeProviderSetupToken: async (...args) => { calls.push(args); return { replaced: replace } },
+    }
+    const value = `setup-token claude opaque-profile --paste${replace ? " --replace" : ""}`
+    await handleProviderSlashCommand(deps, { kind: "provider", raw: `/provider ${value}`, value })
+    assert.deepEqual(calls, ["hidden-input", ["opaque-profile", "synthetic-token", replace]])
+  })
+}
