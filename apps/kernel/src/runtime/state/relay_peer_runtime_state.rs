@@ -1388,11 +1388,32 @@ impl KernelRuntimeState {
     ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let provider_run_id = provider_run_id.to_string();
+        let target_leased_id = leased_agent_id.clone();
+        let target_run_id = provider_run_id.clone();
+        let native_target = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                if require_authorization {
+                    runtime.consume_leased_agent_authorization(&target_leased_id)?;
+                }
+                if pump_output {
+                    runtime.leased_native_output_pump_target(&target_leased_id, &target_run_id)
+                } else {
+                    Ok(None)
+                }
+            })
+            .await?;
+        if let Some((session_id, recipients)) = native_target {
+            Box::pin(self.pump_owned_provider_output(
+                &session_id,
+                &provider_run_id,
+                recipients,
+                false,
+            ))
+            .await?;
+        }
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
-            if require_authorization {
-                runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-            }
             runtime.drain_leased_runtime_projection_with_recovery(
                 &leased_agent_id,
                 &provider_run_id,

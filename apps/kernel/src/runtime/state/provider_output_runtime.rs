@@ -189,6 +189,11 @@ impl KernelRuntimeState {
                 .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                 .collect::<String>(),
         );
+        let terminal_failure = terminal_failure.or_else(|| {
+            crate::provider::provider_run_uses_claude_native_bridge(&provider_run)
+                .then(|| crate::app::claude_native_recent_terminal_failure(&provider_run))
+                .flatten()
+        });
         let has_active_prompt = owned.provider_run_has_active_prompt(session_id, &provider_run)?;
         if !crate::app::provider_output::should_project_pty_output(
             has_active_prompt,

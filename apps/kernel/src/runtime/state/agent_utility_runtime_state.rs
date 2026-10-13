@@ -218,4 +218,56 @@ mod tests {
             "expected busy rejection, got {error}"
         );
     }
+    #[tokio::test]
+    async fn r5_review_brief_utility_receives_the_remaining_deadline() {
+        use crate::provider::{
+            AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult,
+            ProviderUtilityExecutionPolicy, RuntimeProviderRun,
+        };
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap(),
+        ));
+        let runtime = owned_runtime_state(&app).await;
+        let request = LaunchProviderRequest::new("s", "claude", "claude", "default", "sonnet");
+        let mut run = RuntimeProviderRun::new("short-utility", &request, ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed, process_label: "deadline-fixture".into(),
+            pty_target: None, pty_program: Some("/bin/sh".into()),
+            pty_args: vec!["-c".into(), r#"while IFS= read -r line; do sleep 1; printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"brief"}]}}' '{"type":"result","subtype":"success"}'; done"#.into()],
+            pty_env: Default::default(), pty_env_remove: vec![], working_directory: None, structured_endpoint: None,
+        });
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime
+            .owned
+            .provider_store
+            .initialize_runtime(&run)
+            .unwrap();
+        let started = std::time::Instant::now();
+        let result = crate::runtime::agent_utility_executor::run_provider_utility_prompt(
+            &runtime,
+            run.clone(),
+            crate::runtime::agent_utility_executor::AgentUtilityPromptParts {
+                visible_user_prompt: "brief".into(),
+                hidden_system_context: String::new(),
+            },
+            "test remaining deadline",
+            ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
+            std::time::Duration::from_millis(100),
+        )
+        .await;
+        runtime
+            .owned
+            .provider_store
+            .terminate_run_provider_only(run.session_id(), run.id())
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "a utility must time out before its one-second reply: {result:?}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_millis(900));
+    }
 }

@@ -4,30 +4,83 @@ use std::fs;
 
 #[tokio::test]
 async fn native_context_rejection_keeps_the_run_idle_and_allows_retry() {
-    rejection_scenario(false, false, false).await;
+    rejection_scenario(false, false, false, false, false).await;
 }
 
 #[tokio::test]
 async fn native_context_rejection_survives_subscription_mailbox_interleaving() {
-    rejection_scenario(true, false, true).await;
+    rejection_scenario(true, false, true, false, false).await;
 }
 
 #[tokio::test]
 async fn native_context_rejection_notifies_metaagent_once() {
-    rejection_scenario(false, true, false).await;
+    rejection_scenario(false, true, false, false, false).await;
 }
 
 #[tokio::test]
 async fn native_context_rejection_survives_subscription_failure_interleaving() {
-    rejection_scenario(true, false, false).await;
+    rejection_scenario(true, false, false, false, false).await;
 }
 
-async fn rejection_scenario(subscription: bool, with_meta: bool, before_submit: bool) {
+#[tokio::test]
+async fn r5_review_home_projection_drain_pumps_the_leased_native_hook() {
+    rejection_scenario(false, false, false, true, false).await;
+}
+
+#[tokio::test]
+async fn r5_review_headless_prompt_fails_on_recent_split_terminal_error() {
+    rejection_scenario(false, false, false, false, true).await;
+}
+
+async fn rejection_scenario(
+    subscription: bool,
+    with_meta: bool,
+    before_submit: bool,
+    leased: bool,
+    recent_failure: bool,
+) {
     let worktree = crate::test_support::TestWorktree::new("native-context-failure");
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.accept_remote_leases = leased;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (mut session, mut agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .unwrap();
+    let leased_id = if leased {
+        let mut worker = crate::app::RemoteLeaseRuntime::new(&mut app);
+        let lease = worker
+            .create_execution_lease(
+                "home-kernel",
+                "home-session",
+                "home-agent",
+                false,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+            )
+            .unwrap();
+        let binding = worker
+            .create_leased_agent_from_base_directory(
+                worktree.path(),
+                &lease.id,
+                "claude",
+                "default",
+                Some("haiku".into()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        session = app
+            .sessions()
+            .get_session(&binding.backing_session_id)
+            .unwrap();
+        agent = app.agents().get_agent(&binding.backing_agent_id).unwrap();
+        Some(binding.id)
+    } else {
+        None
+    };
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
@@ -93,12 +146,20 @@ async fn rejection_scenario(subscription: bool, with_meta: bool, before_submit: 
     let request = crate::provider::LaunchProviderRequest::new(
         session.id(),
         "claude",
-        "claude",
+        if recent_failure {
+            "claude-headless"
+        } else {
+            "claude"
+        },
         "default",
         "haiku",
     )
-    .with_agent_id(agent.id())
-    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    .with_agent_id(agent.id());
+    let request = if recent_failure {
+        request
+    } else {
+        request.with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
+    };
     let mut run = crate::provider::RuntimeProviderRun::new(
         "context-failure-run",
         &request,
@@ -150,10 +211,17 @@ async fn rejection_scenario(subscription: bool, with_meta: bool, before_submit: 
             "subscription consumed the native hook mailbox"
         );
     }
-    runtime
-        .pump_owned_provider_output(session.id(), run.id(), vec![], true)
-        .await
-        .unwrap();
+    if let Some(leased_id) = &leased_id {
+        runtime
+            .drain_relay_leased_runtime_projection(leased_id, run.id(), true, false, false)
+            .await
+            .unwrap();
+    } else {
+        runtime
+            .pump_owned_provider_output(session.id(), run.id(), vec![], true)
+            .await
+            .unwrap();
+    }
     let hidden = fs::read_to_string(&context).unwrap();
     assert!(
         hidden.contains("amber-kestrel"),
@@ -176,7 +244,16 @@ async fn rejection_scenario(subscription: bool, with_meta: bool, before_submit: 
         .unwrap()
         .active_prompt_for_agent(agent.id())
         .is_some());
-    fs::write(&events, serde_json::json!({"hook_event_name":"CharioxContextFailed", "hook_context_request_id":"failed-request"}).to_string()).unwrap();
+    if recent_failure {
+        // The visible error arrived in earlier PTY chunks; this poll has no new bytes.
+        fs::write(
+            worktree.path().join("permission-recent.txt"),
+            "Credit balance is too low",
+        )
+        .unwrap();
+    } else {
+        fs::write(&events, serde_json::json!({"hook_event_name":"CharioxContextFailed", "hook_context_request_id":"failed-request"}).to_string()).unwrap();
+    }
     if subscription {
         let mut locked = app.lock().await;
         crate::runtime_transport::watch_subscription_state(
@@ -203,8 +280,12 @@ async fn rejection_scenario(subscription: bool, with_meta: bool, before_submit: 
             .get_run(run.id())
             .unwrap()
             .state(),
-        crate::provider::ProviderRunState::Running,
-        "a blocked hook killed healthy Claude"
+        if recent_failure {
+            crate::provider::ProviderRunState::Ended
+        } else {
+            crate::provider::ProviderRunState::Running
+        },
+        "native failure must settle without confusing hook rejection with a provider failure"
     );
     assert!(runtime
         .owned
@@ -221,6 +302,9 @@ async fn rejection_scenario(subscription: bool, with_meta: bool, before_submit: 
             .state(),
         crate::agent::AgentState::Idle
     );
+    if recent_failure {
+        return;
+    }
     if let Some(meta) = &metaagent {
         let failures =
             runtime

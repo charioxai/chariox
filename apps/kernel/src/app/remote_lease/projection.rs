@@ -37,6 +37,43 @@ pub(crate) struct RemoteRuntimeProjectionOutcome {
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {
+    // MP-08 / MP-10 / MP-11: native hook rows need the runtime-owned policy.
+    pub(crate) fn leased_native_output_pump_target(
+        &self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+    ) -> Result<Option<(String, Vec<String>)>, DaemonError> {
+        let leased = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.into(),
+            }
+        })?;
+        if !self.app.execution_leases.contains_key(&leased.lease_id) {
+            return Err(DaemonError::ExecutionLeaseNotFound {
+                lease_id: leased.lease_id.clone(),
+            });
+        }
+        let Some(run) = self.app.providers.get_run(provider_run_id).ok() else {
+            return Ok(None);
+        };
+        if run.session_id() != leased.backing_session_id
+            || run.agent_instance_id() != Some(leased.backing_agent_id.as_str())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "pump leased native output",
+                message: "provider run is not owned by the leased agent".into(),
+            });
+        }
+        Ok(
+            crate::provider::provider_run_uses_claude_native_bridge(&run).then(|| {
+                (
+                    leased.backing_session_id.clone(),
+                    vec![leased.backing_attachment_id.clone()],
+                )
+            }),
+        )
+    }
+
     pub(crate) fn drain_leased_runtime_projection(
         &mut self,
         leased_agent_id: &str,

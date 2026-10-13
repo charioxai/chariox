@@ -308,7 +308,7 @@ async fn run_project_environment_setup_utility(
         prompt.into(),
         "run project environment setup utility",
         ProviderUtilityExecutionPolicy::ReadOnlyDiscovery,
-        AGENT_UTILITY_TIMEOUT,
+        agent_utility_timeout(ProviderUtilityExecutionPolicy::ReadOnlyDiscovery),
     )
     .await?;
     let definition = if allow_definition_revision {
@@ -343,7 +343,6 @@ pub(crate) async fn run_provider_utility_prompt(
     policy: ProviderUtilityExecutionPolicy,
     timeout: Duration,
 ) -> Result<String, DaemonError> {
-    let timeout = agent_utility_timeout(policy);
     let provider_run = if policy.is_read_only_discovery() {
         let mut read_only_run = provider_run;
         read_only_run.set_execution_config(
