@@ -1,6 +1,5 @@
 use super::*;
 // MP-08 / MP-10 / MP-11: bind migration fixtures to the operation schema.
-use crate::durable_state::app_installation_operations::initialize;
 use crate::durable_state::app_state::{fixture_event_catalog, fixture_event_package};
 use chariox_app_package::{verify, VerificationPolicy};
 
