@@ -338,34 +338,6 @@ pub(in crate::runtime) async fn check(
     .unwrap_or_else(|error| Err(ClaudeCredentialCheckError::Inconclusive(error.to_string())))
 }
 
-pub(super) async fn verify_account_token(
-    runtime_state: &KernelRuntimeState,
-    owner_user_id: &str,
-    account_profile: &str,
-    token: &Zeroizing<String>,
-) -> Result<(), DaemonError> {
-    let registry = runtime_state.provider_account_profile_registry().clone();
-    let owner_user_id = owner_user_id.to_string();
-    let account_profile = account_profile.to_string();
-    let token = token.clone();
-    tokio::task::spawn_blocking(move || {
-        let mut environment =
-            registry.resolve_environment(&owner_user_id, "claude", &account_profile)?;
-        let executable = crate::provider::resolve_claude_executable()?;
-        environment.insert(
-            crate::provider::CLAUDE_OAUTH_TOKEN_ENV.to_string(),
-            token.to_string(),
-        );
-        let verified = crate::provider::verify_claude_setup_token(&executable, &environment);
-        if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
-            zeroize::Zeroize::zeroize(value);
-        }
-        verified
-    })
-    .await
-    .map_err(|_| login_error("Claude verification worker failed"))?
-}
-
 /// Records a verified, stored setup token: the account can run agents.
 pub(super) async fn record_verified_token(
     runtime_state: &KernelRuntimeState,
