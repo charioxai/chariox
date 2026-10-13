@@ -14,7 +14,12 @@ export function createWaitingRoomRetainedRows<T extends object>(key: (row: T) =>
       const liveIds = new Set(live.map(key))
       for (const [id, item] of rows) {
         if (liveIds.has(id)) continue
-        if (item.cached && !authoritative) continue
+        if (!authoritative) {
+          // A failed read proves no deletion. Keep last known rows as stale
+          // until a fresh authoritative list can reconcile them.
+          if (!item.cached) item.missingSinceMs ??= nowMs()
+          continue
+        }
         item.missingSinceMs ??= nowMs()
         if (item.cached || nowMs() - item.missingSinceMs >= reconnectGraceMs) rows.delete(id)
       }
