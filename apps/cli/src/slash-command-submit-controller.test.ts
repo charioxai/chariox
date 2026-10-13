@@ -8,6 +8,25 @@ import {
   type SlashCommandSubmitControllerDeps,
 } from "./slash-command-submit-controller.js"
 
+test("MP-08/MP-10/MP-11 a delayed slice command preserves the next agent spawn draft", async () => {
+  let draft = "/slice start own-slice"
+  let finish!: () => void
+  const pending = new Promise<void>(resolve => { finish = resolve })
+  const harness = createHarness({ attached: true, clearPromptText: () => { draft = "" } })
+  Object.assign(harness.deps, { getPromptText: () => draft })
+  harness.deps.handleSliceCommand = () => pending
+  const controller = createSlashCommandSubmitController(harness.deps)
+  const submitted = controller.submit(draft, { allowSlashCommandSubmission: true })
+  await Promise.resolve()
+  draft = "/agent spawn leased-editor opencode-go/gpt-5.6-luna --slice own-slice"
+  finish()
+  assert.equal((await submitted)?.kind, "slice")
+  assert.equal(draft, "/agent spawn leased-editor opencode-go/gpt-5.6-luna --slice own-slice")
+  assert.equal(harness.clearPromptCount(), 0)
+  assert.equal(harness.commandCenterClearCount(), 0)
+  assert.deepEqual(harness.promptHistoryIndexes(), [])
+})
+
 test("slash command submit records attached history and clears selector-backed command UI", async () => {
   const harness = createHarness({ attached: true })
   const controller = createSlashCommandSubmitController(harness.deps)
