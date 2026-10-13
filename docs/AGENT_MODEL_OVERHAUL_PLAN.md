@@ -1192,18 +1192,50 @@ another Room member has Full collaboration. Project
 `created_before_ownership_tracking=true` and label it **Created before ownership
 tracking · read-only**. New admissions keep their atomic immutable proof.
 
+Coordinator amendment (2026-10-13 17:12): only the authenticated kernel owner may
+stop/cancel a non-terminal historical run. Pause and Resume remain denied to
+everyone; other users and terminal history still deny all controls. The run
+retains its historical marker and is never assigned a reconstructed invoker.
+Tabs containing historical runs close without stopping them. Canvas notices name
+only unfinished historical runs in the selected runtime copy, independently of
+new runs' normal controls.
+
 Required focused live cells (in addition to source regressions):
 
 | Cell | Real user flow and required outcome |
 | --- | --- |
 | HW-01 | On the pre-proof source, use the real TUI and official provider to schedule a real repository review. Reproduce hidden owner List/Get/history. Upgrade the same product state; the same run ID, content and status become visible to its kernel owner with the historical label in real TUI and Web DPR 1/2 over hosted WSS. Repeat the read after restart. |
 | HW-02 | Join the same Room as a distinct authenticated collaborator, including Full collaboration. Historical List/Get, snapshots, updates and history remain denied; current proven invocations retain their normal visibility. A fixture caller test is supplementary, never live acceptance. |
-| HW-03 | For the real historical run, attempt individual pause, resume and stop plus captured Room controls through real clients. All are rejected before mutation, including terminal/idempotent controls. New proven runs retain ordinary controls. |
+| HW-04 | Produce an unproven run through the real pre-fix TUI/provider admission, preserve its product state across a kernel upgrade, and show the base denying owner Stop. The upgraded owner sees the label, closes its historical canvas tab without stopping the run, cannot Pause/Resume, and can Stop the still-active run through actual controls in Web DPR 1/2. Retain final status/marker and source negatives for other users; their real hosted matrix remains HW-02. |
+| HW-03 | For the real historical run, attempt individual pause, resume and stop plus captured Room controls through real clients. Pause and Resume are rejected for everyone. Only the kernel owner may stop a non-terminal historical run; other callers and terminal/idempotent historical controls remain rejected. New proven runs retain ordinary controls. |
 
 These cells close only the historical admission correction. They do not close
 A11's legacy task/index migration, the provider/platform matrix, signing review
 or unrelated Browser/Computer acceptance. A missing second authenticated hosted
 identity is a coordinator bootstrap prerequisite, not provider-login work.
+
+### MP-08 / MP-10 / MP-11 — queued schedule and display error review (2026-10-13)
+
+A Queue-policy schedule firing while its entry agent is busy must admit the
+queued prompt and immutable endpoint-owner record in the same durable
+transaction as the idle path. Collection emits an enqueue-only plan; the
+kernel runtime owns admission, rollback and later dispatch. A new queued run
+must retain ordinary owner visibility and controls, never the historical label.
+
+A pairing read or revocation failure during display subscription is a definitive
+error for that subscription. Send its request error without unwinding the relay
+connection or aborting other subscriptions. These are implementation changes
+within the allocated local513/peer121 contracts; no serialized shape changes.
+
+| Cell | Required focused real live flow |
+| --- | --- |
+| BQ-01 | In the real TUI, keep an official provider busy on an actual repository/public GitHub review while a Queue schedule fires. Record the busy state and queued item before dispatch. After the original turn settles, owner List/Get and real TUI/Web DPR 1/2 show the scheduled run with ordinary controls over shaped hosted WSS. Show failure on the base and success after the fix. |
+| DS-01 | On the supported paired hosted desktop path, revoke or fail pairing admission during a real Web display subscribe. Show a definitive subscription error, no new display registration and continued delivery on an unrelated subscription over the same live kernel-relay connection. Show the base disconnect/error propagation and corrected isolation. Pairing fixtures and direct handler calls are supplementary. |
+
+These cells close only the two review corrections. Current security-anchor
+review and the wider MP-10 provider, fresh-machine, real-site, latency and
+stability matrices remain separate. A missing supported paired desktop bootstrap
+blocks DS-01; it cannot be replaced with a mock or an internal-only call.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — A11 migration and retirement
 

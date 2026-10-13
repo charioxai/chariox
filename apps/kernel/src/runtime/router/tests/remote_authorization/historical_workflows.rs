@@ -63,6 +63,10 @@ async fn historical_workflows_inner() {
         crate::session::WorkflowRunStatus::Running,
     ));
     snapshot.create_workflow_run(make_run(
+        "old-paused",
+        crate::session::WorkflowRunStatus::Paused,
+    ));
+    snapshot.create_workflow_run(make_run(
         "old-archive",
         crate::session::WorkflowRunStatus::Completed,
     ));
@@ -97,7 +101,7 @@ async fn historical_workflows_inner() {
         if user == "kernel-owner" {
             assert_eq!(
                 workflow_runs.len(),
-                2,
+                3,
                 "MP-11: kernel owner sees pre-proof history"
             );
             for run in &workflow_runs {
@@ -129,16 +133,16 @@ async fn historical_workflows_inner() {
             panic!("snapshot");
         };
         if user == "kernel-owner" {
-            assert_eq!(session.workflow_runs().len(), 2);
+            assert_eq!(session.workflow_runs().len(), 3);
             assert!(session
                 .workflow_runs()
                 .iter()
                 .all(|run| serde_json::to_value(run).unwrap()
                     ["created_before_ownership_tracking"]
                     == true));
-            assert_eq!(room_workflows.workflows[0].runs.len(), 1);
+            assert_eq!(room_workflows.workflows[0].runs.len(), 2);
             let run = &room_workflows.workflows[0].runs[0];
-            assert!(!run.can_pause && !run.can_resume && !run.can_stop);
+            assert!(!run.can_pause && !run.can_resume && run.can_stop);
         } else {
             assert!(session.workflow_runs().is_empty());
             assert!(room_workflows.workflows[0].runs.is_empty());
@@ -162,10 +166,6 @@ async fn historical_workflows_inner() {
                 session_id: id.clone(),
                 workflow_run_ref: "old-active".into(),
             }),
-            LocalDaemonRequest::CancelWorkflowRun(crate::local::CancelWorkflowRunRequest {
-                session_id: id.clone(),
-                workflow_run_ref: "old-active".into(),
-            }),
             LocalDaemonRequest::ResumeWorkflowRun(crate::local::ResumeWorkflowRunRequest {
                 session_id: id.clone(),
                 workflow_run_ref: "old-active".into(),
@@ -180,6 +180,17 @@ async fn historical_workflows_inner() {
                 "MP-11: legacy mutation denied by provenance for {user}: {error}"
             );
         }
+        if user == "kernel-owner" {
+            continue;
+        }
+        let req = LocalDaemonRequest::CancelWorkflowRun(crate::local::CancelWorkflowRunRequest {
+            session_id: id.clone(),
+            workflow_run_ref: "old-active".into(),
+        });
+        assert!(router
+            .dispatch(remote_command_for_request(&req, Some(user)), req)
+            .await
+            .is_err());
         let req = LocalDaemonRequest::ControlRoomWorkflowRuns(
             crate::local::ControlRoomWorkflowRunsRequest {
                 session_id: id.clone(),
@@ -200,16 +211,59 @@ async fn historical_workflows_inner() {
             crate::local::RoomWorkflowRunControlOutcome::Failed
         );
     }
+    let req =
+        LocalDaemonRequest::ControlRoomWorkflowRuns(crate::local::ControlRoomWorkflowRunsRequest {
+            session_id: id.clone(),
+            workflow_id: workflow.id().into(),
+            action: crate::local::RoomWorkflowRunAction::Stop,
+            run_ids: vec!["old-paused".into()],
+        });
+    let LocalDaemonResponse::RoomWorkflowRunsControlled { results, .. } = router
+        .dispatch(remote_command_for_request(&req, Some("kernel-owner")), req)
+        .await
+        .unwrap()
+    else {
+        panic!("captured stop")
+    };
     assert_eq!(
-        app.lock()
-            .await
-            .session_state_store()
-            .get_session(&id)
-            .unwrap()
-            .workflow_runs()[0]
-            .status(),
-        crate::session::WorkflowRunStatus::Running
+        results[0].outcome,
+        crate::local::RoomWorkflowRunControlOutcome::Applied
     );
+    let req = LocalDaemonRequest::CancelWorkflowRun(crate::local::CancelWorkflowRunRequest {
+        session_id: id.clone(),
+        workflow_run_ref: "old-active".into(),
+    });
+    assert!(matches!(
+        router
+            .dispatch(remote_command_for_request(&req, Some("kernel-owner")), req)
+            .await
+            .unwrap(),
+        LocalDaemonResponse::WorkflowRunCancelled { .. }
+    ));
+    let req = LocalDaemonRequest::GetWorkflowRun(crate::local::GetWorkflowRunRequest {
+        session_id: id.clone(),
+        workflow_run_ref: "old-active".into(),
+    });
+    let LocalDaemonResponse::WorkflowRun { workflow_run } = router
+        .dispatch(remote_command_for_request(&req, Some("kernel-owner")), req)
+        .await
+        .unwrap()
+    else {
+        panic!("get")
+    };
+    assert_eq!(
+        workflow_run.status(),
+        crate::session::WorkflowRunStatus::Stopped
+    );
+    assert!(workflow_run.created_before_ownership_tracking());
+    let req = LocalDaemonRequest::CancelWorkflowRun(crate::local::CancelWorkflowRunRequest {
+        session_id: id,
+        workflow_run_ref: "old-archive".into(),
+    });
+    assert!(router
+        .dispatch(remote_command_for_request(&req, Some("kernel-owner")), req)
+        .await
+        .is_err());
 }
 
 // MP-08 / MP-10 / MP-11: completed history is pruned from hot state but remains readable.

@@ -461,7 +461,11 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
                 level.can_view_agent_trace(),
                 "MP-11 deleted foreign workflow history visibility at {level:?}"
             );
-            for canary in ["synthetic-unknown-history", "synthetic-no-creator-history"] {
+            assert!(
+                representation.contains("synthetic-no-creator-history"),
+                "MP-11 kernel owner can read unproven history at {level:?}"
+            );
+            for canary in ["synthetic-unknown-history"] {
                 assert_eq!(
                     representation.contains(canary),
                     level.can_view_agent_trace(),
@@ -471,7 +475,7 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
         }
         assert_eq!(
             structured["workflow_runs"].as_array().unwrap().len(),
-            if level.can_view_agent_trace() { 8 } else { 3 }
+            if level.can_view_agent_trace() { 8 } else { 4 }
         );
     }
 }

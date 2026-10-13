@@ -178,8 +178,25 @@ impl KernelRuntimeState {
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
+        self.execute_workflow_cancel_run_request_for_user(request, None)
+            .await
+    }
+
+    pub(super) async fn execute_workflow_cancel_run_request_for_user(
+        &self,
+        request: crate::local::CancelWorkflowRunRequest,
+        stop_user: Option<&str>,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
         let result = self
-            .execute_workflow_interrupt_run(&request.session_id, &request.workflow_run_ref, false)
+            .execute_workflow_interrupt_run_for_user(
+                &request.session_id,
+                &request.workflow_run_ref,
+                false,
+                stop_user,
+            )
             .await
             .map(
                 |(workflow_run, session)| LocalDaemonResponse::WorkflowRunCancelled {
@@ -217,6 +234,17 @@ impl KernelRuntimeState {
         workflow_run_ref: &str,
         pause: bool,
     ) -> Result<(crate::session::WorkflowRun, crate::session::RuntimeSession), DaemonError> {
+        self.execute_workflow_interrupt_run_for_user(session_id, workflow_run_ref, pause, None)
+            .await
+    }
+
+    pub(super) async fn execute_workflow_interrupt_run_for_user(
+        &self,
+        session_id: &str,
+        workflow_run_ref: &str,
+        pause: bool,
+        stop_user: Option<&str>,
+    ) -> Result<(crate::session::WorkflowRun, crate::session::RuntimeSession), DaemonError> {
         self.authorize_current_external_command()?;
         let owned = &self.owned;
         let session = owned.session_store.get_session(session_id)?;
@@ -234,7 +262,12 @@ impl KernelRuntimeState {
                 session_id: session_id.to_string(),
                 workflow_run_id: workflow_run_ref.to_string(),
             })?;
-        owned.ensure_workflow_run_has_control_provenance(&session, &resolved_workflow_run)?;
+        owned.ensure_workflow_run_interrupt_allowed(
+            &session,
+            &resolved_workflow_run,
+            pause,
+            stop_user,
+        )?;
         let workflow_run_id = resolved_workflow_run.id().to_string();
         let expected_status = if pause {
             crate::session::WorkflowRunStatus::Paused
@@ -274,6 +307,24 @@ impl KernelRuntimeState {
                 self.authorize_current_external_command()?;
                 let mut sessions = owned.session_store.write();
                 let session_before_interrupt = sessions.get_session(session_id)?;
+                let current_run = sessions
+                    .resolve_workflow_run_ref(session_id, &workflow_run_id)
+                    .ok()
+                    .or(durable_state_store.resolve_workflow_run(
+                        session_before_interrupt.host_daemon_id(),
+                        session_id,
+                        &workflow_run_id,
+                    )?)
+                    .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                        session_id: session_id.into(),
+                        workflow_run_id: workflow_run_id.clone(),
+                    })?;
+                owned.ensure_workflow_run_interrupt_allowed(
+                    &session_before_interrupt,
+                    &current_run,
+                    pause,
+                    stop_user,
+                )?;
                 // Prompt records of every agent holding this run's queued prompts commit in
                 // the interrupt's SQLite transaction; the live prompt owner is untouched
                 // until that write succeeds, so a rejected write needs no owner restore.

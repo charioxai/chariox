@@ -95,7 +95,8 @@ impl RoomWorkflowInventory {
                                         .and_then(|envelope| envelope.rendered_prompt())
                                         .is_some()
                             }),
-                        can_stop: !run.created_before_ownership_tracking(),
+                        // Historical visibility already requires the live kernel owner.
+                        can_stop: true,
                     })
                     .collect::<Vec<_>>();
                 let paused_count = runs

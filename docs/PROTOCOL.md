@@ -605,8 +605,11 @@ is visible only to the authenticated kernel owner, even when another member
 has Full collaboration. List, Get, snapshots and updates mark it with
 `created_before_ownership_tracking=true`; current endpoint/Room ownership never
 reassigns it. Web/TUI label it **Created before ownership tracking · read-only**.
-All individual and captured Room pause/resume/stop requests reject it below
-clients, including already-terminal/idempotent requests. New admissions retain
+Coordinator decision of 2026-10-13 17:12: the authenticated kernel owner may
+stop/cancel a non-terminal historical run, including a captured Room Stop.
+Pause and Resume remain denied for everyone; other callers and all controls of
+terminal historical records remain denied before idempotent shortcuts. Stop
+never creates invoker proof or removes the historical label. New admissions retain
 the transactional immutable proof. Managed upgrade policy retains 506 as an
 explicit predecessor; the consuming web floor is 513.
 

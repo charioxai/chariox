@@ -668,6 +668,9 @@ impl KernelRuntimeOwnedState {
                 None,
             )?;
         }
+        if plan.enqueue_only {
+            return Ok(WorkflowPromptDispatches::default());
+        }
         let should_start = self
             .session_store
             .read()
@@ -814,7 +817,7 @@ impl KernelRuntimeOwnedState {
             queue_ref,
             publication_invocation,
             None,
-            None,
+            Some(crate::session::DEFAULT_LOCAL_USER_ID),
             None,
         )
     }

@@ -264,6 +264,8 @@ pub struct WorkflowWatchdogTickPlan {
     pub queue_id: Option<String>,
     pub invocation_prompt: String,
     pub enqueue_prompt: bool,
+    /// Busy Queue admissions enqueue durably without starting a second run.
+    pub enqueue_only: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
