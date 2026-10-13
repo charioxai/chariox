@@ -99,6 +99,9 @@ impl KernelRuntimeOwnedState {
         &self,
         mut request: crate::provider::LaunchProviderRequest,
     ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        if crate::provider::canonical_provider_family(&request.provider).is_none() {
+            return Ok(request);
+        }
         let session = self.session_store.get_session(&request.session_id)?;
         request.owner_user_id = request.agent_id.as_deref()
             .map(|id| self.agent_store.get_agent(id).map(|agent| agent.owner_user_id().to_string()))
