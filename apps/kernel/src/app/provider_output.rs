@@ -22,9 +22,8 @@ mod tests;
 
 use background::pump_session_active_prompt_outputs;
 pub(crate) use structured_store::{
-    structured_output_batch_should_poll_immediately, structured_output_empty_poll_backoff_ms,
-    StructuredOutputRecordStore, STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS,
-    STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT,
+    structured_output_batch_should_poll_immediately, StructuredOutputRecordStore,
+    STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS, STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT,
 };
 
 pub(crate) struct ProviderOutputPumpRequest<'a> {
@@ -554,11 +553,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
                     self.pending_structured_output_records
                         .mark_poll_succeeded(&provider_run_id);
                     self.pending_structured_output_records
-                        .schedule_after_empty_poll_for_activity(
-                            provider_run_id,
-                            now_ms,
-                            polled_prompt_id.is_some(),
-                        );
+                        .schedule_after_empty_poll(provider_run_id, now_ms);
                     continue;
                 }
                 Err(error) => {
@@ -780,9 +775,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 if structured_output_batch_should_poll_immediately(&poll_result) {
                     now_ms
                 } else {
-                    now_ms.saturating_add(structured_output_empty_poll_backoff_ms(
-                        active_prompt_id.is_some(),
-                    ))
+                    now_ms.saturating_add(STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS)
                 };
             let retry_poll_result = poll_result.clone();
             let poll_result = match self.prepare_structured_output_batch(

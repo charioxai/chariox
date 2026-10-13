@@ -74,11 +74,7 @@ impl KernelRuntimeState {
                         .mark_poll_succeeded(&finished_run_id);
                     owned
                         .structured_output_records
-                        .schedule_after_empty_poll_for_activity(
-                            finished_run_id,
-                            now_ms,
-                            polled_prompt_id.is_some(),
-                        );
+                        .schedule_after_empty_poll(finished_run_id, now_ms);
                     continue;
                 }
                 Err(error) => {
@@ -315,9 +311,7 @@ impl KernelRuntimeState {
                     now_ms
                 } else {
                     now_ms.saturating_add(
-                        crate::app::provider_output::structured_output_empty_poll_backoff_ms(
-                            polled_prompt_id.is_some(),
-                        ),
+                        crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS,
                     )
                 };
             let run_session_id = run.session_id().to_string();

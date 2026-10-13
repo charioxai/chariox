@@ -1803,10 +1803,10 @@ fn app_side_duplicate_completion_before_promoted_workflow_dispatch_is_ignored() 
     assert_eq!(active_prompt_id, promoted_prompt_id);
 }
 
-// MP-08 / MP-10 / PANE-11: exercise actual pump publication for both
-// empty native drains. A running prompt must not inherit the idle delay.
+// MP-08 / MP-10: readiness owns first-output wakeups. Empty native
+// drains retain the same maintenance fallback for active and idle prompts.
 #[test]
-fn panes_stream_active_empty_poll_retries_within_first_output_budget() {
+fn panes_stream_active_empty_poll_retains_readiness_and_maintenance_fallback() {
     for empty_batch in [
         None,
         Some(crate::provider::ProviderPromptSignalBatch::default()),
@@ -1855,9 +1855,16 @@ fn panes_stream_active_empty_poll_retries_within_first_output_budget() {
             .poll_due_at_ms(&run_id)
             .expect("empty active drain must retain a retry");
         assert!(
-            due <= before.saturating_add(100),
-            "active empty drain exceeds reader-to-emission budget: {} ms",
+            due >= before.saturating_add(500),
+            "empty drain advertises a fallback the background pump cannot honor: {} ms",
             due.saturating_sub(before)
+        );
+        let store = app.structured_output_record_store();
+        assert!(!store.poll_due(&run_id, before));
+        store.mark_output_ready(run_id.clone());
+        assert!(
+            store.poll_due(&run_id, before),
+            "native readiness must bypass the empty fallback"
         );
     }
 }
