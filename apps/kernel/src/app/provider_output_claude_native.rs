@@ -1842,7 +1842,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 {
                     claude_permission_recent_file(&context_file)
                         .and_then(|path| fs::read_to_string(path).ok())
-                        .and_then(|text| claude_workspace_trust_approval_input(&text).map(|input| input.to_vec()))
+                        .and_then(|text| {
+                            claude_workspace_trust_approval_input(&text).map(|input| input.to_vec())
+                        })
                         .unwrap_or_default()
                 }
                 Ok(_) => vec![0x03],
