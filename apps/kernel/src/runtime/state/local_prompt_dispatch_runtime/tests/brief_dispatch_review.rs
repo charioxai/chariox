@@ -499,7 +499,7 @@ async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_inp
                     &session_id,
                     &prior,
                     &agent_id,
-                    &format!(
+                    format!(
                         "retire-this-transcript {index} {}",
                         "historical review record ".repeat(100)
                     ),
