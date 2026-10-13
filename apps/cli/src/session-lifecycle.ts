@@ -244,15 +244,6 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     }
     const generation = ++attachGeneration
     const isCurrent = () => generation === attachGeneration
-    if (currentAttachment) {
-      await detachCurrentAttachment()
-      if (!isCurrent()) return
-    }
-    deps.clearPendingPromptAttachments()
-    deps.bumpHistoryLoadGeneration()
-    // The mounted transcript still belongs to the previous Room until prime
-    // completes. Its cursor must not page that agent through the new binding.
-    deps.setNextHistoryCursor(null)
     let sessionHydratingCleared = false
     const clearSessionHydrating = () => {
       if (sessionHydratingCleared) {
@@ -263,6 +254,19 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     }
     deps.setSessionHydratingState(true)
     try {
+      if (currentAttachment) {
+        try {
+          await detachCurrentAttachment()
+        } catch (error) {
+          if (isCurrent()) await transitionToNoSession("Could not switch Rooms. Reconnect and try again.")
+          throw error
+        }
+        if (!isCurrent()) return
+      }
+      deps.clearPendingPromptAttachments()
+      deps.bumpHistoryLoadGeneration()
+      // Clear the previous Room's history cursor before publishing this binding.
+      deps.setNextHistoryCursor(null)
       const attachment = await deps.attachToSession(session.id, deps.cliOptions.clientId)
       if (!isCurrent()) {
         await deps.detachAttachment(attachment.id)

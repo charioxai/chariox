@@ -193,9 +193,9 @@ test("attachBinding reattaches and hydrates the attached session before restorin
 
   assert.equal(events.filter((event) => event === "setProviderCatalogState").length, 1)
   assert.deepEqual(events.filter((event) => event !== "setProviderCatalogState"), [
+    "setSessionHydratingState",
     "clearPendingPromptAttachments",
     "bumpHistoryLoadGeneration",
-    "setSessionHydratingState",
     "attachToSession",
     "getSessionState",
     "setMultiAgentResponseLayout",
@@ -1241,6 +1241,36 @@ test("MP-08 / MP-10 an old attach hydration cannot restore the Room after a newe
   await old
   assert.equal(current.id, "new")
   assert.equal((binding as RuntimeAttachment | null)?.session_id, "new")
+})
+
+test("MP-08 / MP-10 rejected detach during a switch clears the abandoned hydration", async () => {
+  const base = createBaseDeps().deps.sessionState()
+  const room = (id: string): RuntimeSession => ({ ...base, id })
+  let current = room("initial")
+  let binding: RuntimeAttachment | null = null
+  let hydrating = false
+  let release!: (session: RuntimeSession) => void
+  let reached!: () => void
+  const pending = new Promise<RuntimeSession>(resolve => { release = resolve })
+  const requested = new Promise<void>(resolve => { reached = resolve })
+  const { deps } = createBaseDeps({
+    attachmentState: () => binding, sessionState: () => current,
+    setAttachmentState: (value: RuntimeAttachment | null) => { binding = value },
+    setSessionState: (value: RuntimeSession) => { current = value },
+    setSessionHydratingState: (value: boolean) => { hydrating = value },
+    detachAttachment: async () => { throw new Error("relay lost") },
+    attachToSession: async (id: string) => ({ id: "att-" + id, session_id: id }),
+    getSessionState: async (id: string) => room(id),
+    hydrateAttachedSessionBinding: async (id: string) => { reached(); return pending },
+  })
+  const controller = createSessionLifecycleController(deps as never)
+  const old = controller.attachBinding({ id: "old" }, false)
+  await requested
+  await assert.rejects(controller.attachBinding({ id: "new" }, false), /relay lost/)
+  release(room("old"))
+  await old
+  assert.equal(hydrating, false)
+  assert.equal(binding, null)
 })
 
 // MP-08 / MP-10: a partial Room snapshot has not published its attachment yet.
