@@ -42,10 +42,28 @@ def pid_of(d,w):
         if data:free(data)
 def children(d,w):
     root=L();parent=L();values=c.POINTER(L)();n=U()
-    if not query_tree(d,w,c.byref(root),c.byref(parent),c.byref(values),c.byref(n)):return []
+    if not query_tree(d,w,c.byref(root),c.byref(parent),c.byref(values),c.byref(n)):raise ValueError('owned window tree unavailable')
     try:return list(values[:n.value])
     finally:
         if values:free(values)
+def owned_windows(d, root, owner, width, height):
+    # MP-08/MP-11: reparenting never grants the WM frame's pixels. Complete
+    # the bounded search and require one exact-PID client, as the native worker.
+    pending = [(root, 0)]; matches = []; remaining = 2048
+    while pending:
+        parent, depth = pending.pop()
+        descendants = children(d, parent)
+        if len(descendants) > remaining or descendants and depth >= 8:
+            raise ValueError('owned window tree bound')
+        remaining -= len(descendants)
+        for window in descendants:
+            if pid_of(d, window) == owner:
+                w, h = dims(d, window)
+                if w == width and height <= h <= height + 400:
+                    matches.append(window); continue
+            pending.append((window, depth + 1))
+    return matches
+
 def dims(d,w):
     r=L();xx=I();yy=I();width=U();height=U();border=U();dep=U()
     if not geometry(d,w,c.byref(r),c.byref(xx),c.byref(yy),c.byref(width),c.byref(height),c.byref(border),c.byref(dep)):raise ValueError('window unavailable')
@@ -72,7 +90,7 @@ try:
     if desktop:
         spec=importlib.util.spec_from_file_location('native_accessibility',Path(__file__).with_name('native-accessibility.py'))
         accessibility=importlib.util.module_from_spec(spec);spec.loader.exec_module(accessibility)
-    windows=[w for w in children(d,root_window(d)) if pid_of(d,w)==owner and dims(d,w)[0]==width and dims(d,w)[1]>=height]
+    windows=[] if desktop else owned_windows(d,root_window(d),owner,width,height)
     if desktop:windows=[root_window(d)]
     if len(windows)!=1:raise ValueError('owned browser window ambiguous')
     window=windows[0];ww,hh=dims(d,window);offset=hh-height
@@ -82,7 +100,8 @@ try:
         if dims(d,window)!=(width,height):raise ValueError('owned desktop geometry')
         pixmap=window
     else:
-        redirect(d,window,0);sync(d,0);pixmap=name_pixmap(d,window);sync(d,0)
+        redirect_mode=1 if os.environ.get('CHARIOX_OWNED_VIRTUAL_DISPLAY')=='1' else 0
+        redirect(d,window,redirect_mode);sync(d,0);pixmap=name_pixmap(d,window);sync(d,0)
     if not pixmap:raise ValueError('window backing unavailable')
     stage='image'
     image=create_image(d,visual(d,0),depth(d,0),2,None,c.byref(shm),width,height)
@@ -192,7 +211,7 @@ try:
 except Exception:
     sys.stderr.write('MD-DISPLAY: native stage '+stage+'\n');sys.exit(1)
 finally:
-    if d and pixmap and not config.get('desktop'):free_pixmap(d,pixmap);unredirect(d,window,0)
+    if d and pixmap and not config.get('desktop'):free_pixmap(d,pixmap);unredirect(d,window,redirect_mode)
     if d and dam:destroy_damage(d,dam)
     if d and attached:detach(d,c.byref(shm));sync(d,0)
     if image:image.contents.data=None;destroy_image(image)

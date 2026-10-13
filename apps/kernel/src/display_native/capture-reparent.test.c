@@ -25,6 +25,10 @@ int main(void) {
  XChangeProperty(d,duplicate,XInternAtom(d,"_NET_WM_PID",False),XA_CARDINAL,32,PropModeReplace,(unsigned char*)&pid,1);XMapWindow(d,duplicate);XSync(d,False);
  assert(!cx_capture_open_mode(pid,128,128,1));assert(!cx_capture_open_mode(pid+100000,128,128,1));
  XDestroyWindow(d,duplicate);
+ Window deep=XCreateSimpleWindow(d,root,0,0,1,1,0,0,0),parent=deep;
+ for(int i=0;i<9;i++)parent=XCreateSimpleWindow(d,parent,0,0,1,1,0,0,0);
+ XSync(d,False);assert(!cx_capture_open_mode(pid,128,128,1));
+ XDestroyWindow(d,deep);
 #endif
  XDestroyWindow(d,frame);XCloseDisplay(d);
  puts("MP-08/MP-10/MP-11 reparented owned client capture, root visibility and foreign/ambiguous refusal PASS");

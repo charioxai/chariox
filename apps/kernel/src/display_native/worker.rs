@@ -178,6 +178,8 @@ pub(super) fn run() -> Result<(), String> {
         return Err("MP-11: native root owner".into());
     }
     let owner = if config.desktop { 0 } else { config.pid };
+    // MP-08/MP-10: the existing owned-desktop environment presents the root.
+    let automatic = i32::from(std::env::var("CHARIOX_OWNED_VIRTUAL_DISPLAY").as_deref() == Ok("1"));
     super::probe_codec()?;
     // MP-08/MP-10: a viewer at the other density resizes the window just
     // before this start; X applies it asynchronously. Wait up to one second.
@@ -186,7 +188,8 @@ pub(super) fn run() -> Result<(), String> {
         if attempt > 0 {
             std::thread::sleep(Duration::from_millis(50));
         }
-        capture = Capture(unsafe { ffi::cx_capture_open(owner as libc::c_ulong, w, h) });
+        capture =
+            Capture(unsafe { ffi::cx_capture_open_mode(owner as libc::c_ulong, w, h, automatic) });
         if !capture.0.is_null() {
             break;
         }

@@ -88,15 +88,36 @@ static int redirect_window(struct Capture *c,int mode) {
 /* MP-08/MP-10: fixed-label refusal stage plus owned-window geometry on the
  * worker's private stderr channel. Sizes only; no titles, pixels or IDs. */
 static void open_refused(const char *stage) {fprintf(stderr,"MD-DISPLAY: native stage %s\n",stage);}
-struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
+/* MP-08/MP-10/MP-11: a window manager reparents the owned client beneath
+ * its frame. Search a bounded tree; capture only the exact PID/geometry,
+ * never the manager frame. A partial/ambiguous search grants no capture. */
+struct ClientSearch {struct Capture *capture;unsigned remaining,found,owned;int failed;char seen[256];};
+static void find_client_windows(struct ClientSearch *search,Window parent,unsigned depth) {
+    Window root,ancestor,*children=NULL;unsigned count=0;
+    if(!XQueryTree(search->capture->display,parent,&root,&ancestor,&children,&count)){search->failed=1;return;}
+    if(count>search->remaining||(count&&depth>=8)){search->failed=1;if(children)XFree(children);return;}
+    search->remaining-=count;
+    for(unsigned i=0;i<count&&!search->failed;i++) {
+        unsigned w,h;
+        if(window_pid(search->capture->display,children[i])==search->capture->owner&&dimensions(search->capture->display,children[i],&w,&h)) {
+            if(search->owned++<8){size_t n=strlen(search->seen);snprintf(search->seen+n,sizeof(search->seen)-n,"%s%ux%u",n?",":"",w,h);}
+            if(w==(unsigned)search->capture->width&&h>=(unsigned)search->capture->height&&h-search->capture->height<=400) {
+                search->capture->window=children[i];search->capture->window_height=h;search->found++;
+                continue; /* Its nested controls are part of this same client. */
+            }
+        }
+        find_client_windows(search,children[i],depth+1);
+    }
+    if(children)XFree(children);
+}
+struct Capture *cx_capture_open_mode(unsigned long owner, int width, int height, int automatic) {
     struct Capture *c = calloc(1,sizeof(*c));
     if (!c) return NULL;
     c->shm.shmid = -1; c->owner=owner; c->width=width; c->height=height;
     c->display=XOpenDisplay(NULL);
     int error;
     if (!c->display || !XShmQueryExtension(c->display) || !XDamageQueryExtension(c->display,&c->event,&error)) {open_refused("x_extensions");goto fail;}
-    Window root,parent,*children=NULL; unsigned count=0, found=0, owned=0;
-    char seen[256]="";
+    struct ClientSearch search={.capture=c,.remaining=2048};
     if (!owner) {
         /* MP-08/MP-11: the whole owned desktop; its root is never redirected. */
         unsigned w,h;
@@ -105,24 +126,17 @@ struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
         c->window_height=height;c->pixmap=c->window;
         goto image;
     }
-    if (!XQueryTree(c->display,DefaultRootWindow(c->display),&root,&parent,&children,&count)) {open_refused("x_tree");goto fail;}
-    for (unsigned i=0;i<count;i++) {
-        unsigned w,h;
-        if (window_pid(c->display,children[i])!=owner || !dimensions(c->display,children[i],&w,&h)) continue;
-        if (owned++<8) {size_t n=strlen(seen);snprintf(seen+n,sizeof(seen)-n,"%s%ux%u",n?",":"",w,h);}
-        if (w==(unsigned)width && h>=(unsigned)height && h-height<=400) {
-            c->window=children[i]; c->window_height=h; found++;
-        }
-    }
-    if (children) XFree(children);
-    if (found!=1) {
-        fprintf(stderr,"MD-DISPLAY: native geometry requested %dx%d owned %s\n",width,height,owned?seen:"none");
-        open_refused(found?"window_ambiguous":"window_not_found");goto fail;
+    find_client_windows(&search,DefaultRootWindow(c->display),0);
+    if(search.failed){open_refused("window_tree_bound");goto fail;}
+    if(search.found!=1) {
+        fprintf(stderr,"MD-DISPLAY: native geometry requested %dx%d owned %s\n",width,height,search.owned?search.seen:"none");
+        open_refused(search.found?"window_ambiguous":"window_not_found");goto fail;
     }
     c->offset=c->window_height-height;
-    /* The kernel owns a private X server; its root is never presented. Manual
-     * keeps the named owned-window pixmap without compositing an unused root. */
-    if(!redirect_window(c,CompositeRedirectManual)&&!redirect_window(c,CompositeRedirectAutomatic)){open_refused("composite_redirect");goto fail;}
+    /* MP-08/MP-10: the shared Computer desktop presents the root, so its
+     * browser client must remain automatically composited while captured. */
+    if(!(automatic?redirect_window(c,CompositeRedirectAutomatic):
+        (redirect_window(c,CompositeRedirectManual)||redirect_window(c,CompositeRedirectAutomatic)))){open_refused("composite_redirect");goto fail;}
     c->pixmap=XCompositeNameWindowPixmap(c->display,c->window); XSync(c->display,False);
     if (!c->pixmap) {open_refused("composite_pixmap");goto fail;}
 image:
@@ -146,6 +160,10 @@ fail:
     cx_capture_close(c); return NULL;
 }
 void cx_capture_cpu(struct Capture *c,double *out) {memcpy(out,c->cpu,sizeof(c->cpu));}
+struct Capture *cx_capture_open(unsigned long owner,int width,int height) {
+    return cx_capture_open_mode(owner,width,height,0);
+}
+
 int cx_capture_fd(struct Capture *c) { return ConnectionNumber(c->display); }
 int cx_capture_damage(struct Capture *c) {
     int dirty=0;
