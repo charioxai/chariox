@@ -103,3 +103,14 @@ test("file tool summaries skip the provider's relative copy of the path", () => 
   assert.doesNotMatch(display.summary, /\.\.\//)
   assert.equal(formatToolDisplay({ id: "m1", tool: "search_docs", title: "context7", input: { q: "x" } }).summary, "context7")
 })
+
+test("MP-08 / MP-10 shell titles keep explicit search patterns and ordinary listing flags", () => {
+  for (const [command, expected] of [
+    ["rg -e TODO src", "Searched for TODO in src"],
+    ["grep --regexp TODO src", "Searched for TODO in src"],
+    ["rg --regexp=TODO src", "Searched for TODO in src"],
+    ["ls -A src", "Listed src"],
+    ["ls -t src", "Listed src"],
+    ["cat -A README.md", "Read README.md"],
+  ]) assert.equal(toolDisplayTitle({id:"review-search",tool:"bash",status:"completed",input:{command:command!}}), expected)
+})

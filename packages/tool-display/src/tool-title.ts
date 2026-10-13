@@ -214,10 +214,8 @@ function toolTitleShellCommand(command: string, verb: (done: string, running: st
   const script = toolTitleUnwrapShell(command)
   const firstLine = script.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? script
   const simple = /^[^|;&<>`$()]+$/.test(firstLine) && !script.includes("\n")
-  const words = firstLine.split(/\s+/)
-  const operands = words.slice(1).filter((word, index, rest) => (
-    !word.startsWith("-") && !TOOL_TITLE_VALUE_OPTIONS.has(rest[index - 1] ?? "")
-  ))
+  const words = firstLine.match(/'[^']*'|"(?:\\.|[^"])*"|[^\s]+/g) ?? []
+  const operands = words.slice(1).filter((word) => !word.startsWith("-"))
   if (simple) {
     const program = words[0]!.split("/").pop()
     if ((program === "cat" || program === "bat" || program === "less") && operands.length > 0) {
@@ -226,8 +224,25 @@ function toolTitleShellCommand(command: string, verb: (done: string, running: st
     if (program === "ls" || program === "tree") {
       return `${verb("Listed", "Listing")} ${operands.length > 0 ? operands.map(toolTitleUnquote).join(", ") : "files"}`
     }
-    if ((program === "rg" || program === "grep") && operands.length > 0) {
-      const [pattern, ...paths] = operands.map(toolTitleUnquote)
+    if (program === "rg" || program === "grep") {
+      const explicitPatterns: string[] = []
+      const positional: string[] = []
+      for (let index = 1; index < words.length; index += 1) {
+        const word = words[index]!
+        if (word === "-e" || word === "--regexp") {
+          if (words[index + 1]) explicitPatterns.push(toolTitleUnquote(words[++index]!))
+        } else if (word.startsWith("--regexp=")) {
+          explicitPatterns.push(toolTitleUnquote(word.slice(9)))
+        } else if (TOOL_TITLE_VALUE_OPTIONS.has(word)) {
+          index += 1
+        } else if (!word.startsWith("-")) {
+          positional.push(toolTitleUnquote(word))
+        }
+      }
+      const [pattern, ...paths] = explicitPatterns.length
+        ? [explicitPatterns.join(", "), ...positional]
+        : positional
+      if (!pattern) return `${verb("Ran", "Running")} ${toolTitleShort(firstLine)}`
       return `${verb("Searched", "Searching")} for ${toolTitleShort(pattern!)}${paths.length > 0 ? ` in ${paths.join(", ")}` : ""}`
     }
   }
