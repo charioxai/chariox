@@ -2428,6 +2428,19 @@ mod receipt_reconciliation {
             Some(agent.id()),
             "MP-08 MP-10 remote echo must retain its home agent scope"
         );
+        let prompt_row = runtime
+            .owned
+            .operational_history_store
+            .load_latest_user_prompt_events(session.id(), agent.id(), None, 8)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.prompt_id.as_deref() == Some(active.id()))
+            .map(|event| event.sequence);
+        assert!(prompt_row.is_some(), "recovered prompt should be stored");
+        assert_eq!(
+            echoes[0].sequence, prompt_row,
+            "MP-08 MP-10 (chariox#987 review) remote echo carries its prompt row's history sequence"
+        );
         assert_eq!(
             echoes[0].provider_run_id,
             crate::provider::projected_leased_provider_run_id(

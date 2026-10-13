@@ -1193,6 +1193,17 @@ impl KernelRuntimeOwnedState {
                         .map(|_| agent.id().to_string())
                 })
         });
+        // Ordinary and promoted prompts were stored before their echo; name
+        // that history row so clients place the echo by sequence.
+        let sequence = sequence.or_else(|| {
+            self.operational_history_store
+                .load_latest_user_prompt_events(session_id, agent_id.as_deref()?, None, 8)
+                .ok()?
+                .into_iter()
+                .rev()
+                .find(|event| event.prompt_id.as_deref() == Some(prompt_id))
+                .map(|event| event.sequence)
+        });
         let prompt_origin = prompt_origin_override.or_else(|| {
             agent_id.as_deref().and_then(|agent_id| {
                 self.session_store

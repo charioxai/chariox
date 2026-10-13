@@ -81,6 +81,14 @@ pub(super) fn terminal_output_record_scoped_json_bytes(
         "record_id",
         json_u64_len(u64::MAX),
     );
+    if let Some(sequence) = record.sequence {
+        add_json_field(
+            &mut total,
+            &mut field_count,
+            "sequence",
+            json_u64_len(sequence),
+        );
+    }
     add_json_field(
         &mut total,
         &mut field_count,

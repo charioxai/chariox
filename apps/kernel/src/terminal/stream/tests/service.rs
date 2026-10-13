@@ -526,7 +526,8 @@ fn output_polling_keeps_large_drains_batched() {
 fn output_drain_size_estimator_bounds_scoped_json() {
     let record = TerminalOutputRecord {
         record_id: None,
-        sequence: None,
+        // MP-08 / MP-10 (chariox#987 review): the history sequence counts too.
+        sequence: Some(u64::MAX),
         timestamp_ms: 1_700,
         session_id: "session-\n1".to_string(),
         provider_run_id: "provider-run-1".to_string(),
@@ -1244,4 +1245,46 @@ fn workflow_run_updates_are_bounded_per_attachment() {
         vec![second, third]
     );
     assert!(terminal.workflow_run_update_records.is_empty());
+}
+
+// MP-08 / MP-10 (panes R5, chariox#987 review): each persisted row retains
+// its own sequence, even when successive chunks share a merge key.
+#[test]
+fn output_records_preserve_distinct_history_sequences() {
+    let append = |sequence: Option<u64>, bytes: &[u8]| TerminalOutputAppend {
+        session_id: "session-1".to_string(),
+        provider_run_id: "provider-run-1".to_string(),
+        agent_id: Some("agent-1".to_string()),
+        prompt_origin: None,
+        source_attachment_id: None,
+        kind: TerminalOutputKind::ProviderOutput,
+        merge_key: Some("codex:item-1".to_string()),
+        sequence,
+        recipient_attachment_ids: vec!["attachment-1".to_string()].into(),
+        bytes: bytes.to_vec(),
+    };
+    let mut terminal = TerminalStreamService::new();
+    terminal.fan_out_outputs(vec![append(Some(10), b"hello ")]);
+    terminal.fan_out_outputs(vec![append(Some(11), b"big ")]);
+    terminal.fan_out_outputs(vec![append(Some(12), b"world")]);
+    terminal.fan_out_outputs(vec![append(None, b"live-only")]);
+
+    let records = terminal.drain_output_records("session-1", "attachment-1");
+    assert_eq!(records.len(), 4);
+    assert_eq!(
+        records.iter().map(|r| r.sequence).collect::<Vec<_>>(),
+        vec![Some(10), Some(11), Some(12), None]
+    );
+    assert_eq!(
+        records
+            .iter()
+            .map(|r| r.bytes.as_slice())
+            .collect::<Vec<_>>(),
+        vec![
+            b"hello ".as_slice(),
+            b"big ".as_slice(),
+            b"world".as_slice(),
+            b"live-only".as_slice()
+        ]
+    );
 }

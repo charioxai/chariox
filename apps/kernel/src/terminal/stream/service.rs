@@ -525,6 +525,7 @@ impl TerminalStreamService {
             || previous.record.recipient_attachment_ids != record.recipient_attachment_ids
             || previous.record.pending_recipient_attachment_ids
                 != record.pending_recipient_attachment_ids
+            || previous.record.sequence != record.sequence
         {
             return false;
         }
