@@ -131,3 +131,15 @@ function session(): RuntimeSession {
     agents: [{ id: "agent-1" }, { id: "agent-2" }],
   } as unknown as RuntimeSession
 }
+
+// MP-08/MP-11: delayed RPC/timer completion can update chrome after TUI exit.
+test("session chrome ignores updates after its renderer is destroyed", () => {
+  const calls: string[] = []
+  const renderer = { isDestroyed: false }
+  const controller = createSessionChromeRenderController({ ...createDeps({ calls }), renderer })
+  controller.apply()
+  const beforeExit = [...calls]
+  renderer.isDestroyed = true
+  controller.apply()
+  assert.deepEqual(calls, beforeExit)
+})
