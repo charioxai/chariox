@@ -90,7 +90,10 @@ impl KernelRuntimeState {
                         return Ok(false);
                     }
                     crate::app::ProviderLaunchProcessRuntime::new(app)
-                        .spawn_for_launch(&started.run)
+                        .spawn_for_launch_with_credentials(
+                            &started.run,
+                            &started.provider_credential_env,
+                        )
                         .map(|_| true)
                 })
                 .await;
@@ -111,8 +114,12 @@ impl KernelRuntimeState {
                 return;
             }
             let run = started.run.clone();
+            let provider_credential_env = started.provider_credential_env.clone();
             let binding = tokio::task::spawn_blocking(move || {
-                crate::provider::ProviderProcessService::initialize_runtime_binding(&run)
+                crate::provider::ProviderProcessService::initialize_runtime_binding_with_credentials(
+                    &run,
+                    &provider_credential_env,
+                )
             })
             .await
             .map_err(|error| DaemonError::LocalTransport {
@@ -219,6 +226,197 @@ mod tests {
             metaagent_events,
             workspace_coordinator,
         )
+    }
+
+    // MP-08 / MP-10 / MP-11: credentials stay transient across catalog,
+    // policy and auth-recovery replacement launches for every provider.
+    #[tokio::test]
+    async fn mp08_mp10_mp11_relaunch_delivers_credentials_to_spawn_and_binding() {
+        for provider in ["claude", "codex", "opencode"] {
+            let worktree = crate::test_support::TestWorktree::new(provider);
+            let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(worktree.session_request())
+                .unwrap();
+            let app = Arc::new(Mutex::new(app));
+            let runtime = owned_runtime_state(&app).await;
+            let mut credentials = crate::provider::ProviderCredentialEnvironment::default();
+            credentials.insert(
+                "SYNTHETIC_CREDENTIAL",
+                zeroize::Zeroizing::new("relaunch-secret".into()),
+            );
+            // Hold process admission until the replacement run has a probe;
+            // this exercises both seams without a timing-dependent provider spawn.
+            let held = app.lock().await;
+            runtime.spawn_provider_relaunch(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    provider,
+                    "default",
+                    "model",
+                )
+                .with_agent_id(agent.id())
+                .with_provider_credential_env(credentials),
+                0,
+                None,
+                0,
+            );
+            let run = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if let Some(run) = runtime
+                        .owned
+                        .provider_store
+                        .get_run_for_agent(session.id(), agent.id())
+                    {
+                        break run;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let probe = crate::provider::ProviderCredentialDeliveryProbe::install(
+                run.id(),
+                &[("SYNTHETIC_CREDENTIAL", "relaunch-secret")],
+            );
+            drop(held);
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while runtime
+                    .owned
+                    .provider_store
+                    .get_run(run.id())
+                    .unwrap()
+                    .state()
+                    == crate::provider::ProviderRunState::Starting
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let serialized =
+                serde_json::to_string(&runtime.owned.provider_store.get_run(run.id()).unwrap())
+                    .unwrap();
+            assert!(!serialized.contains("relaunch-secret"));
+            assert!(!serialized.contains("SYNTHETIC_CREDENTIAL"));
+            assert!(
+                probe.observed_exactly("pty_spawn"),
+                "{provider} replacement lost spawn credentials"
+            );
+            assert!(
+                probe.observed_exactly("runtime_binding"),
+                "{provider} replacement lost binding credentials"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mp08_mp10_mp11_fork_binding_receives_prepared_credentials() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("fork-launch-credentials");
+        std::env::set_var("CHARIOX_HOME", root.path().join("home"));
+        std::env::set_var("CHARIOX_CLAUDE_BIN", "/bin/true");
+        std::env::set_var("CHARIOX_TEST_CLAUDE_SETUP_TOKEN", "fork-secret");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.provider_runtime_init_delay_ms = 500;
+        let _mcp = crate::test_support::TestRuntimeMcp::serve(&mut config);
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(root.session_request())
+            .unwrap();
+        let registry = app.provider_account_profile_registry();
+        let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+        let profile = registry
+            .create_managed(owner, "claude", "Fork account")
+            .unwrap();
+        crate::test_support::authenticate_provider_account(
+            &registry,
+            owner,
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap();
+        crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .upsert(crate::config::UserCredentialConfig {
+                id: crate::provider::provider_account_credential_id(
+                    owner,
+                    "claude",
+                    &profile.profile_id,
+                ),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Env {
+                    name: "CHARIOX_TEST_CLAUDE_SETUP_TOKEN".into(),
+                },
+                allowed_hosts: Vec::new(),
+                allowed_uses: vec![crate::config::UserCredentialUse::Provider],
+                injection: crate::config::UserCredentialInjectionConfig::Provider,
+                metadata: None,
+            })
+            .unwrap();
+        let source = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "claude")
+                    .with_model("haiku")
+                    .with_account_profile(profile.profile_id.clone()),
+            )
+            .unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let request = runtime
+            .prepare_provider_launch_request_with_vault(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "claude",
+                    "claude",
+                    &profile.profile_id,
+                    "haiku",
+                )
+                .with_agent_id(source.id()),
+                "test fork source",
+            )
+            .await
+            .unwrap();
+        let started = runtime.owned.start_provider_launch(request).unwrap();
+        runtime
+            .owned
+            .provider_store
+            .mark_run_running(started.run.id())
+            .unwrap();
+        let (_, _, forked_run, _) = runtime
+            .fork_agent(
+                crate::local::ForkAgentRequest {
+                    session_id: session.id().into(),
+                    source_agent_ref: Some(source.id().into()),
+                    alias: Some("forked".into()),
+                },
+                owner.into(),
+            )
+            .await
+            .unwrap();
+        let probe = crate::provider::ProviderCredentialDeliveryProbe::install(
+            forked_run.id(),
+            &[("CLAUDE_CODE_OAUTH_TOKEN", "fork-secret")],
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while runtime
+                .owned
+                .provider_store
+                .get_run(forked_run.id())
+                .unwrap()
+                .state()
+                == crate::provider::ProviderRunState::Starting
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            probe.observed_exactly("runtime_binding"),
+            "fork lost the selected account credential during binding"
+        );
     }
 
     #[tokio::test]

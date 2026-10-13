@@ -78,9 +78,15 @@ impl KernelRuntimeOwnedState {
         )?;
         let target_provider = provider.as_deref().unwrap_or(agent.provider()).to_string();
         let target_model = model.as_deref().or(agent.model()).map(str::to_string);
-        let requested_account_profile = account_profile
-            .as_deref()
-            .unwrap_or(agent.provider_account_profile());
+        let target_family = crate::provider::canonical_provider_family(&target_provider);
+        let default_account = if target_family.is_some()
+            && target_family != crate::provider::canonical_provider_family(agent.provider())
+        {
+            "default"
+        } else {
+            agent.provider_account_profile()
+        };
+        let requested_account_profile = account_profile.as_deref().unwrap_or(default_account);
         let target_account_profile = if crate::provider::canonical_provider_family(&target_provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
