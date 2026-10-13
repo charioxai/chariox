@@ -2,6 +2,9 @@
 
 use super::*;
 
+// MP-08 / MP-10 / MP-11: native-origin activity and exit are interactive state.
+pub(super) const LEASED_PROJECTION_INTERVAL: Duration = Duration::from_millis(50);
+
 pub(super) async fn pump_leased_projection_events(
     router: &Arc<CommandRouter>,
     state: &Arc<RwLock<RelayClientState>>,

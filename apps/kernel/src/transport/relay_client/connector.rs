@@ -994,6 +994,9 @@ async fn run_daemon_relay_connector_inner(
                 token_refresh_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
                 let mut token_refresh_task = None;
                 let mut leased_projection_pump_task = None;
+                let mut leased_projection_interval =
+                    tokio::time::interval(super::peer_events::LEASED_PROJECTION_INTERVAL);
+                leased_projection_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
                 let mut heartbeat_tick: u64 = 0;
 
                 let reconnect_reason = loop {
@@ -1182,6 +1185,17 @@ async fn run_daemon_relay_connector_inner(
                                     break "relay configuration changed";
                             }
                         }
+                        _ = leased_projection_interval.tick() => {
+                            if should_start_leased_projection_pump(
+                                leased_projection_pump_task.as_ref(),
+                            ) {
+                                leased_projection_pump_task = Some(spawn_leased_projection_pump(
+                                    Arc::clone(&router),
+                                    Arc::clone(&state),
+                                    outgoing_tx.clone(),
+                                ));
+                            }
+                        }
                         _ = heartbeat_interval.tick() => {
                             heartbeat_tick = heartbeat_tick.wrapping_add(1);
                             let mut heartbeat_registration = None;
@@ -1257,15 +1271,6 @@ async fn run_daemon_relay_connector_inner(
                                 clear_remote_inventory_projection(&router);
                                 disconnect_relay(&router, &state, "relay heartbeat send failed", static_relay.is_none()).await;
                                 break "relay heartbeat send failed";
-                            }
-                            if should_start_leased_projection_pump(
-                                leased_projection_pump_task.as_ref(),
-                            ) {
-                                leased_projection_pump_task = Some(spawn_leased_projection_pump(
-                                    Arc::clone(&router),
-                                    Arc::clone(&state),
-                                    outgoing_tx.clone(),
-                                ));
                             }
                             if static_relay.is_none()
                                 && cloud_presence_schedule.claim_publish_if_due(

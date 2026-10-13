@@ -285,4 +285,6 @@ on every read. For the leased idle Ctrl-C drill, record each keystroke's enqueue
 send and acknowledgement times. The normal connected home-worker relay path
 must preserve rapid key delivery without opening a connection for every key.
 Record provider-scoped catalogue response bytes during the WAN visibility drill;
-a Claude account model query must not carry unrelated OpenCode/Codex models.
+a Claude account model query must keep backend choices and default models while
+omitting complete unrelated OpenCode/Codex model sets. Native-origin state and
+provider exit must publish independently of relay heartbeat cadence.
