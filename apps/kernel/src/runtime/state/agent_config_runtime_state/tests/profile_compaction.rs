@@ -1353,3 +1353,44 @@ async fn r5_review_implicit_default_cold_downshift_records_the_recovery_boundary
         .unwrap()
         .is_some());
 }
+
+#[tokio::test]
+async fn r5_review_cold_default_without_a_source_binding_does_not_assume_resume_ownership() {
+    let (_root, _app, runtime, session, agent, run) = compact_fixture().await;
+    runtime
+        .owned
+        .provider_store
+        .terminate_run_provider_only(&session, run.id())
+        .unwrap();
+    runtime
+        .owned
+        .agent_store
+        .set_agent_runtime_profile_with_account_profile(
+            &agent,
+            "claude",
+            Some("haiku".into()),
+            None,
+            Some("default".into()),
+            ProviderResumeState::from_claude_session_id("unbound-cold-native"),
+        )
+        .unwrap();
+    let updated = runtime
+        .update_agent_profile(
+            &session,
+            &agent,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
+            None,
+            Some("sonnet".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        updated
+            .provider_resume_state()
+            .provider_session_id("claude")
+            .is_none(),
+        "the current default is not evidence of an unbound native session's source account"
+    );
+}

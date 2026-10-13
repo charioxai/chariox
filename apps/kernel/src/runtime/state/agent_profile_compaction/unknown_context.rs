@@ -16,6 +16,21 @@ impl KernelRuntimeState {
             || self.owned.agent_profile_source_account(agent),
             |run| run.account_profile().to_string(),
         );
+        // Unknown-context recovery clears the identity before commit. Resolve a
+        // cold default for that fresh-session boundary, never to resume it.
+        let source_account = if source_account == "default" {
+            let owner = crate::account_profile::provider_account_authority_owner_user_id(
+                &self.owned.config_projection.snapshot(),
+                agent.owner_user_id(),
+            );
+            self.owned
+                .provider_account_profiles
+                .get(&owner, source_provider, "default")
+                .map(|profile| profile.profile_id)
+                .unwrap_or(source_account)
+        } else {
+            source_account
+        };
         let Some(source_model) = run.map(RuntimeProviderRun::model).or(agent.model()) else {
             return Ok(false);
         };

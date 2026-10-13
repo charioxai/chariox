@@ -46,9 +46,22 @@ impl KernelRuntimeOwnedState {
         if let Some(run) = self
             .provider_store
             .get_run_for_agent(agent.session_id(), agent.id())
+            .or_else(|| {
+                self.provider_store
+                    .get_latest_run_for_agent(agent.session_id(), agent.id())
+            })
         {
-            if crate::account_profile::provider_account_selection_for_run(&run)
+            let native_session = agent
+                .provider_resume_state()
+                .provider_session_id(run.adapter_key());
+            let owns_native_session = native_session.is_some()
+                && run
+                    .provider_session_id()
+                    .or_else(|| run.resume_state().provider_session_id(run.adapter_key()))
+                    == native_session;
+            if (crate::account_profile::provider_account_selection_for_run(&run)
                 == agent.provider_account_profile()
+                || owns_native_session)
                 && crate::provider::canonical_provider_family(run.provider())
                     .unwrap_or(run.provider())
                     == crate::provider::canonical_provider_family(agent.provider())
@@ -56,6 +69,12 @@ impl KernelRuntimeOwnedState {
             {
                 return run.account_profile().to_string();
             }
+        }
+        // A cold default may have been changed since this native session ran.
+        // Without a source binding, retain the previous fail-safe reset rather
+        // than assuming the current default owns the old native session.
+        if agent.provider_account_profile() == "default" {
+            return "default".to_string();
         }
         let owner = crate::account_profile::provider_account_authority_owner_user_id(
             &self.config_projection.snapshot(),
