@@ -50,6 +50,7 @@ impl PausedBrief {
             agent_id,
             attachment_id,
             prompt_id,
+            "sonnet",
         )
     }
     fn from_history(
@@ -59,6 +60,7 @@ impl PausedBrief {
         agent_id: String,
         attachment_id: String,
         prompt_id: String,
+        model: &str,
     ) -> Self {
         let started = root.path().join("brief-started");
         let release = root.path().join("brief-release");
@@ -74,7 +76,7 @@ impl PausedBrief {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
         let request =
-            LaunchProviderRequest::new(&session_id, "claude", "claude", "default", "sonnet")
+            LaunchProviderRequest::new(&session_id, "claude", "claude", "default", model)
                 .with_agent_id(&agent_id);
         let mut run = crate::provider::RuntimeProviderRun::new(
             "review-brief-run",
@@ -518,6 +520,8 @@ async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_inp
         agent_id,
         attachment_id,
         prompt_id,
+        // Haiku has a stable 200k window; default Sonnet grows to 1M in #919.
+        "haiku",
     );
     fixture.prepare().await;
     {
