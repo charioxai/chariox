@@ -123,6 +123,7 @@ fn assert_stale_worker_snapshot_preserves_selected_profile(active_worker_run: Op
                     message_id: "old-completion".into(),
                     completed_at_ms: crate::session::unix_epoch_ms(),
                     home_prompt_id: Some("previous-home-prompt".into()),
+                    settlement_status: None,
                     provider_termination: None,
                 }],
             },
@@ -314,6 +315,7 @@ fn remote_workflow_completion_preserves_worker_provider_failure_diagnostic() {
                     message_id: "failed-turn-1".into(),
                     completed_at_ms: crate::session::unix_epoch_ms(),
                     home_prompt_id: Some(prompt.id().into()),
+                    settlement_status: None,
                     provider_termination: None,
                 }],
             },
@@ -415,6 +417,7 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
         message_id: "assistant-msg-1".to_string(),
         completed_at_ms,
         home_prompt_id: Some(prompt.id().to_string()),
+        settlement_status: None,
         provider_termination: None,
     };
 
@@ -585,6 +588,7 @@ fn remote_runtime_projection_preserves_authoritative_provider_termination() {
                     message_id: "provider-exit-1".to_string(),
                     completed_at_ms: 9_999,
                     home_prompt_id: Some(prompt.id().to_string()),
+                    settlement_status: None,
                     provider_termination: Some(termination.clone()),
                 }],
             },
@@ -646,6 +650,7 @@ fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
         message_id: "assistant-msg-1".to_string(),
         completed_at_ms: 1234,
         home_prompt_id: Some(first.id().to_string()),
+        settlement_status: None,
         provider_termination: None,
     };
     bind_projection_test_worker(&app, agent.id(), "remote:worker:provider-run-1");
@@ -756,6 +761,7 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
                     message_id: "prior-native-completion".to_string(),
                     completed_at_ms: 1234,
                     home_prompt_id: None,
+                    settlement_status: None,
                     provider_termination: None,
                 }],
             },
@@ -788,6 +794,7 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
                     message_id: "current-home-completion".to_string(),
                     completed_at_ms: 5678,
                     home_prompt_id: Some(prompt.id().to_string()),
+                    settlement_status: None,
                     provider_termination: None,
                 }],
             },
@@ -823,6 +830,7 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
                     message_id: "native-completion".to_string(),
                     completed_at_ms: 6789,
                     home_prompt_id: None,
+                    settlement_status: None,
                     provider_termination: None,
                 }],
             },

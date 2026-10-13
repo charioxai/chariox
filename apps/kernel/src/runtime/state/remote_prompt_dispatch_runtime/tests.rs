@@ -1093,6 +1093,7 @@ mod receipt_reconciliation {
                             message_id: "cancel-claimed-completion".to_string(),
                             completed_at_ms: 1,
                             home_prompt_id: Some(prompt_id.clone()),
+                            settlement_status: None,
                             provider_termination: None,
                         }],
                     }),
@@ -1509,6 +1510,7 @@ mod receipt_reconciliation {
                             message_id: "completed-receipt-assistant-message".to_string(),
                             completed_at_ms: 1,
                             home_prompt_id: Some(listener_prompt_id),
+                            settlement_status: None,
                             provider_termination: None,
                         }],
                     }),
@@ -2276,6 +2278,7 @@ mod receipt_reconciliation {
                 message_id: "assistant-message-1".to_string(),
                 completed_at_ms: 1,
                 home_prompt_id: Some(dispatch.prompt_id.clone()),
+                settlement_status: None,
                 provider_termination: None,
             }],
         };
@@ -2296,6 +2299,7 @@ mod receipt_reconciliation {
                 message_id: "assistant-message-other".to_string(),
                 completed_at_ms: 2,
                 home_prompt_id: Some("another-home-prompt".to_string()),
+                settlement_status: None,
                 provider_termination: None,
             }],
         };
@@ -2609,6 +2613,7 @@ fn completed_worker_projection(
             message_id: "assistant-completed".to_string(),
             completed_at_ms: crate::session::unix_epoch_ms(),
             home_prompt_id: Some(home_prompt_id.to_string()),
+            settlement_status: None,
             provider_termination: None,
         }],
     }

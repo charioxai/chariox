@@ -1272,6 +1272,8 @@ pub struct RelayProjectedCompletion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_prompt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_status: Option<crate::git_observer::CompletedTurnSettlementStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_termination: Option<crate::provider::ProviderRunTermination>,
 }
 
@@ -1369,11 +1371,13 @@ mod tests {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
             home_prompt_id: Some("home-prompt-1".to_string()),
+            settlement_status: Some(crate::git_observer::CompletedTurnSettlementStatus::Failed),
             provider_termination: Some(crate::provider::ProviderRunTermination::process_exit(
                 137, 1_234,
             )),
         };
         let snapshot = serde_json::to_value(completion).expect("completion should serialize");
+        assert_eq!(snapshot["settlement_status"], "failed");
         assert_eq!(
             snapshot.pointer("/provider_termination/category"),
             Some(&serde_json::json!("process_exit")),
@@ -1392,8 +1396,32 @@ mod tests {
         let hash = Sha256::digest(serialized.as_bytes());
         assert_eq!(
             format!("{hash:x}"),
-            "33a761cae057a2577bc65fad2c73a002d42cabd29919aff086cea248f156a238",
+            "8fba15f21a774a111df62197c97cb4bbdfc955b563b44c225675712ecc9b4e13",
         );
+    }
+
+    #[test]
+    fn mp08_mp10_completion_510_118_legacy_omission_is_compatible() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 118);
+        let old = serde_json::json!({"message_id":"message", "completed_at_ms":42,
+            "home_prompt_id":"prompt"});
+        let completion: RelayProjectedCompletion = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(completion.settlement_status, None);
+        assert_eq!(serde_json::to_value(completion).unwrap(), old);
+        // The old shape ignores the additive field; peer-generation admission
+        // remains responsible for incompatible peers before projection.
+        #[derive(Deserialize)]
+        struct OldCompletion {
+            message_id: String,
+            completed_at_ms: u64,
+        }
+        for status in ["completed", "cancelled", "failed"] {
+            let mut wire = old.clone();
+            wire["settlement_status"] = serde_json::json!(status);
+            let previous: OldCompletion = serde_json::from_value(wire).unwrap();
+            assert_eq!(previous.message_id, "message");
+            assert_eq!(previous.completed_at_ms, 42);
+        }
     }
 
     #[test]
@@ -1417,6 +1445,7 @@ mod tests {
                 message_id: "assistant-msg-1".to_string(),
                 completed_at_ms: provider_termination.timestamp_ms,
                 home_prompt_id: Some("home-prompt-1".to_string()),
+                settlement_status: None,
                 provider_termination: Some(provider_termination),
             };
             let snapshot = serde_json::to_value(completion)

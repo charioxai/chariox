@@ -319,6 +319,7 @@ fn remote_completion_dispatches_prompts_queued_by_detached_clients() {
                 message_id: "first-remote-turn-completed".to_string(),
                 completed_at_ms: crate::session::unix_epoch_ms(),
                 home_prompt_id: Some(first.id().to_string()),
+                settlement_status: None,
                 provider_termination: None,
             }],
         };

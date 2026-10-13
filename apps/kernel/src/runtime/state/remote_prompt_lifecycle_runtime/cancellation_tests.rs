@@ -1362,6 +1362,7 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
                         message_id: "cancel-ack-completion".to_string(),
                         completed_at_ms: 1,
                         home_prompt_id: Some(prompt_id.clone()),
+                        settlement_status: None,
                         provider_termination: None,
                     }],
                 },

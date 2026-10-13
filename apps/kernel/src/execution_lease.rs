@@ -114,6 +114,8 @@ pub struct LeasedCompletionReplay {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_prompt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_status: Option<crate::git_observer::CompletedTurnSettlementStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_termination: Option<crate::provider::ProviderRunTermination>,
 }
 

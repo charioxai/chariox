@@ -3375,3 +3375,12 @@ for existing recipients do not create output or requeue consumed records.
 Native `LaunchProviderRun(s)` requests require protocol510; ordinary launches
 retain their existing minimums. These source contracts do not close MP-10 live
 acceptance.
+
+MP-08 / MP-10 / MP-11: peer118 `RelayProjectedCompletion.settlement_status`
+is an optional definitive `completed`, `cancelled` or `failed` outcome. The
+worker reads the exact prompt/run outcome from its bounded 20-turn settlement
+store, including deferred and replayed completions. Home cancellation intent
+does not override an explicit Completed race winner or Failed result. Omitted
+legacy outcomes retain the prior home-intent behavior; unknown outcomes reject
+deserialization. This additive change uses the reserved unpublished510/118
+allocation and its completion hash/compatibility fixtures.

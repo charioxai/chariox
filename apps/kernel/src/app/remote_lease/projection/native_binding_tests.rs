@@ -97,6 +97,7 @@ fn mp08_mp10_native_completion_retains_only_a_running_worker_binding() {
                 message_id: "complete-A".into(),
                 completed_at_ms: crate::session::unix_epoch_ms(),
                 home_prompt_id: Some("native-A".into()),
+                settlement_status: None,
                 provider_termination: cancel_failed.then(|| {
                     crate::provider::ProviderRunTermination::runtime_failure(
                         "Claude stopped responding to cancel; the run was ended.",
@@ -184,6 +185,7 @@ fn mp08_mp10_native_completion_retains_only_a_running_worker_binding() {
                 message_id: "cancel-B".into(),
                 completed_at_ms: crate::session::unix_epoch_ms(),
                 home_prompt_id: Some("native-B".into()),
+                settlement_status: None,
                 provider_termination: None,
             }],
         );
@@ -327,6 +329,7 @@ fn mp11_worker_completion_preserves_unrelated_local_turn_activity() {
             message_id: "complete-A".into(),
             completed_at_ms: crate::session::unix_epoch_ms(),
             home_prompt_id: Some("native-A".into()),
+            settlement_status: None,
             provider_termination: None,
         }],
     );

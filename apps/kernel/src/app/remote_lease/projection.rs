@@ -298,22 +298,28 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     && binding.provider_run_id == provider_run_id
                     && home_prompt_id.as_deref() == Some(binding.home_prompt_id.as_str())
             })
-            .map(|binding| binding.backing_prompt_id.as_str())
-            .or(home_prompt_id.as_deref());
-        let provider_termination = self
-            .app
-            .completed_git_turn_snapshot_store()
-            .latest_projection_for_agent(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_agent_id,
-            )
+            .map(|binding| binding.backing_prompt_id.clone())
+            .or_else(|| home_prompt_id.clone());
+        let worker_settlement = termination_prompt_id
+            .as_deref()
+            .and_then(|prompt_id| {
+                self.app
+                    .completed_git_turn_snapshot_store()
+                    .projection_for_prompt(
+                        &leased_agent.backing_session_id,
+                        &leased_agent.backing_agent_id,
+                        prompt_id,
+                    )
+            })
             .filter(|turn| {
                 turn.provider_run_id == provider_run_id
                     && termination_prompt_id
                         .as_deref()
                         .is_none_or(|prompt_id| turn.prompt_id == prompt_id)
-            })
-            .and_then(|turn| turn.provider_termination);
+            });
+        let provider_termination = worker_settlement
+            .as_ref()
+            .and_then(|turn| turn.provider_termination.clone());
         let mut completions = self
             .app
             .terminal
@@ -331,6 +337,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 message_id: record.message_id,
                 completed_at_ms: record.completed_at_ms,
                 home_prompt_id: home_prompt_id.clone(),
+                settlement_status: worker_settlement
+                    .as_ref()
+                    .map(|turn| turn.settlement_status),
                 provider_termination: provider_termination.clone(),
             })
             .collect::<Vec<_>>();
@@ -515,6 +524,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             message_id: completion.message_id.clone(),
                             completed_at_ms: completion.completed_at_ms,
                             home_prompt_id: completion.home_prompt_id.clone(),
+                            settlement_status: completion.settlement_status,
                             provider_termination: completion.provider_termination.clone(),
                         });
                 }
@@ -600,6 +610,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         message_id: replay.message_id.clone(),
                         completed_at_ms: replay.completed_at_ms,
                         home_prompt_id: replay.home_prompt_id.clone(),
+                        settlement_status: replay.settlement_status,
                         provider_termination: replay.provider_termination.clone(),
                     });
                 }
@@ -648,6 +659,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     message_id,
                     completed_at_ms: crate::session::unix_epoch_ms(),
                     home_prompt_id: home_prompt_id.clone(),
+                    settlement_status: worker_settlement
+                        .as_ref()
+                        .map(|turn| turn.settlement_status),
                     provider_termination: None,
                 });
             }
@@ -659,6 +673,26 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     &leased_agent.backing_agent_id,
                     Some(provider_run_id),
                 )?;
+            }
+            // MP-08 / MP-10 / MP-11: deferred message receipts may predate the
+            // official stop hook. Read this exact turn again after settlement.
+            if let Some(turn) = termination_prompt_id
+                .as_deref()
+                .and_then(|prompt_id| {
+                    self.app
+                        .completed_git_turn_snapshot_store()
+                        .projection_for_prompt(
+                            &leased_agent.backing_session_id,
+                            &leased_agent.backing_agent_id,
+                            prompt_id,
+                        )
+                })
+                .filter(|turn| turn.provider_run_id == provider_run_id)
+            {
+                for completion in &mut completions {
+                    completion.settlement_status = Some(turn.settlement_status);
+                    completion.provider_termination = turn.provider_termination.clone();
+                }
             }
             let completion_keys = completions
                 .iter()
@@ -687,6 +721,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             message_id: completion.message_id.clone(),
                             completed_at_ms: completion.completed_at_ms,
                             home_prompt_id: completion.home_prompt_id.clone(),
+                            settlement_status: completion.settlement_status,
                             provider_termination: completion.provider_termination.clone(),
                         });
                 }
@@ -724,6 +759,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     message_id: replay.message_id.clone(),
                     completed_at_ms: replay.completed_at_ms,
                     home_prompt_id: replay.home_prompt_id.clone(),
+                    settlement_status: replay.settlement_status,
                     provider_termination: replay.provider_termination.clone(),
                 });
             }
@@ -1097,6 +1133,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .filter_map(|completion| completion.provider_termination.as_ref())
             .max_by_key(|termination| termination.timestamp_ms)
             .cloned();
+        let projected_settlement_status = matching_completions
+            .iter()
+            .filter(|completion| completion.settlement_status.is_some())
+            .max_by_key(|completion| completion.completed_at_ms)
+            .and_then(|completion| completion.settlement_status);
         for completion in &matching_completions {
             self.app.record_assistant_message_completion_for_agent(
                 session_id,
@@ -1131,11 +1172,22 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
             // MP-08 / MP-10 / MP-11: a worker's definitive cancellation failure
             // follows the ordinary failure path, including agent/workflow state.
-            let intentionally_cancelled = active_prompt.status() == PromptStatus::Cancelling
-                && !projected_termination.as_ref().is_some_and(|termination| {
-                    termination.category
-                        == crate::provider::ProviderRunTerminationCategory::RuntimeFailure
-                });
+            let settlement_status = projected_settlement_status.unwrap_or_else(|| {
+                if active_prompt.status() == PromptStatus::Cancelling
+                    && !projected_termination.as_ref().is_some_and(|termination| {
+                        termination.category
+                            == crate::provider::ProviderRunTerminationCategory::RuntimeFailure
+                    })
+                {
+                    crate::git_observer::CompletedTurnSettlementStatus::Cancelled
+                } else if projected_termination.is_some() {
+                    crate::git_observer::CompletedTurnSettlementStatus::Failed
+                } else {
+                    crate::git_observer::CompletedTurnSettlementStatus::Completed
+                }
+            });
+            let intentionally_cancelled =
+                settlement_status == crate::git_observer::CompletedTurnSettlementStatus::Cancelled;
             if !intentionally_cancelled
                 && active_prompt.workflow_run_id().is_some()
                 && !workflow_output_ready
@@ -1211,6 +1263,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         provider_run_id,
                         projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                         projected_termination.clone(),
+                        settlement_status,
                     );
                     let completed = self
                         .app
@@ -1229,8 +1282,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 }
                 return Ok(outcome);
             }
-            // Completion is the worker's stop acknowledgement. Preserve the
-            // home cancellation intent instead of turning that receipt into success.
+            // MP-08 / MP-10 / MP-11: a definitive worker outcome wins the
+            // cancel race; legacy omitted outcomes retain home intent above.
             let completed = if intentionally_cancelled {
                 crate::app::workflow_runtime::cancel_workflow_prompt_from_runtime(
                     self.app,
@@ -1250,6 +1303,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 provider_run_id,
                 projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                 projected_termination.clone(),
+                settlement_status,
             );
             // A matching worker completion settles the same flow-control turn
             // started by native prompt projection. Clear it before publishing
@@ -1418,17 +1472,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
         provider_run_id: &str,
         settled_at_ms: u64,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
+        settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
     ) {
-        let settlement_status = if matches!(
-            prompt.status(),
-            PromptStatus::Cancelling | PromptStatus::Cancelled
-        ) {
-            crate::git_observer::CompletedTurnSettlementStatus::Cancelled
-        } else if provider_termination.is_some() {
-            crate::git_observer::CompletedTurnSettlementStatus::Failed
-        } else {
-            crate::git_observer::CompletedTurnSettlementStatus::Completed
-        };
         self.app
             .operational_history_store()
             .record_prompt_settlement(
@@ -3155,6 +3200,7 @@ mod explicit_completion_tests {
                         message_id: "active-prompt-complete".to_string(),
                         completed_at_ms: crate::session::unix_epoch_ms(),
                         home_prompt_id: Some(active_prompt_id),
+                        settlement_status: None,
                         provider_termination: None,
                     }],
                 },
@@ -3225,6 +3271,7 @@ mod explicit_completion_tests {
                         message_id: "ordinary-prompt-complete".to_string(),
                         completed_at_ms: crate::session::unix_epoch_ms(),
                         home_prompt_id: Some(ordinary.id().to_string()),
+                        settlement_status: None,
                         provider_termination: None,
                     }],
                 },
@@ -3298,93 +3345,113 @@ mod mp11_projection_admission_tests {
     use super::*;
     #[test]
     fn mp08_mp10_worker_completion_preserves_home_cancellation_settlement() {
-        let mut app =
-            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
-        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new("home", "home"))
-            .unwrap();
-        app.agents
-            .bind_remote_execution(
+        use crate::git_observer::CompletedTurnSettlementStatus as Status;
+        for status in [
+            None,
+            Some(Status::Completed),
+            Some(Status::Cancelled),
+            Some(Status::Failed),
+        ] {
+            let mut app =
+                crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(crate::session::CreateSessionRequest::new("home", "home"))
+                .unwrap();
+            app.agents
+                .bind_remote_execution(
+                    agent.id(),
+                    crate::agent::RemoteAgentBinding {
+                        worker_kernel_id: "worker-kernel-1".into(),
+                        worker_machine_id: "worker-machine".into(),
+                        execution_lease_id: "lease".into(),
+                        leased_agent_id: "leased".into(),
+                        active_worker_provider_run_id: Some("run".into()),
+                        relay_url: None,
+                        relay_token: None,
+                        relay_peer_protocol_version: Some(
+                            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                        ),
+                    },
+                )
+                .unwrap();
+            let attachment = crate::app::KernelSessionService::new(&mut app)
+                .attach(crate::attachment::AttachRequest::new(
+                    session.id(),
+                    "cancellation-test",
+                    crate::attachment::ClientCapabilityLevel::FullTerminal,
+                ))
+                .unwrap();
+            let prompt = PromptQueueItem::new(
+                "cancelled-home-turn",
+                attachment.id(),
                 agent.id(),
-                crate::agent::RemoteAgentBinding {
-                    worker_kernel_id: "worker-kernel-1".into(),
-                    worker_machine_id: "worker-machine".into(),
-                    execution_lease_id: "lease".into(),
-                    leased_agent_id: "leased".into(),
-                    active_worker_provider_run_id: Some("run".into()),
-                    relay_url: None,
-                    relay_token: None,
-                    relay_peer_protocol_version: Some(
-                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-                    ),
-                },
-            )
-            .unwrap();
-        let attachment = crate::app::KernelSessionService::new(&mut app)
-            .attach(crate::attachment::AttachRequest::new(
-                session.id(),
-                "cancellation-test",
-                crate::attachment::ClientCapabilityLevel::FullTerminal,
-            ))
-            .unwrap();
-        let prompt = PromptQueueItem::new(
-            "cancelled-home-turn",
-            attachment.id(),
-            agent.id(),
-            "research",
-            PromptStatus::Queued,
-        );
-        let crate::session::PromptSubmissionOutcome::Started { prompt } = app
-            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
-            .unwrap()
-        else {
-            panic!("first prompt must start");
-        };
-        app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
-            .unwrap();
-        app.agents
-            .set_remote_execution_active_worker_provider_run_id(agent.id(), Some("run".into()))
-            .unwrap();
-        crate::transport::flow_control::note_prompt_started(
-            &mut app,
-            &crate::provider::projected_leased_provider_run_id("leased", "run"),
-        );
-        let projected = RemoteLeaseRuntime::new(&mut app)
-            .project_remote_runtime_projection(
-                crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
-                crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
-                    home_session_id: session.id().into(),
-                    home_agent_id: agent.id().into(),
-                    provider_run_id: "run".into(),
-                    provider_run: None,
-                    prompts: vec![],
-                    output_chunks: vec![],
-                    notices: vec![],
-                    completions: vec![RelayProjectedCompletion {
-                        message_id: "prompt-complete:worker-turn".into(),
-                        completed_at_ms: crate::session::unix_epoch_ms(),
-                        home_prompt_id: Some(prompt.id().into()),
-                        provider_termination: None,
-                    }],
-                },
-            )
-            .unwrap();
-        assert_eq!(projected.completions.len(), 1);
-        assert_eq!(
-            projected.completions[0].completed.status(),
-            PromptStatus::Cancelled
-        );
-        assert!(app
-            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
-            .unwrap()
-            .is_none());
-        assert_eq!(
-            app.completed_git_turn_snapshot_store()
-                .latest_projection_for_agent(session.id(), agent.id())
+                "research",
+                PromptStatus::Queued,
+            );
+            let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+                .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
                 .unwrap()
-                .settlement_status,
-            crate::git_observer::CompletedTurnSettlementStatus::Cancelled
-        );
+            else {
+                panic!("first prompt must start");
+            };
+            app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
+                .unwrap();
+            app.agents
+                .set_remote_execution_active_worker_provider_run_id(agent.id(), Some("run".into()))
+                .unwrap();
+            crate::transport::flow_control::note_prompt_started(
+                &mut app,
+                &crate::provider::projected_leased_provider_run_id("leased", "run"),
+            );
+            let projected = RemoteLeaseRuntime::new(&mut app)
+                .project_remote_runtime_projection(
+                    crate::runtime::relay_peer_authority::test_projection_authority(
+                        "worker-kernel-1",
+                    ),
+                    crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                        home_session_id: session.id().into(),
+                        home_agent_id: agent.id().into(),
+                        provider_run_id: "run".into(),
+                        provider_run: None,
+                        prompts: vec![],
+                        output_chunks: vec![],
+                        notices: vec![],
+                        completions: vec![RelayProjectedCompletion {
+                            message_id: "prompt-complete:worker-turn".into(),
+                            completed_at_ms: crate::session::unix_epoch_ms(),
+                            home_prompt_id: Some(prompt.id().into()),
+                            settlement_status: status,
+                            provider_termination: (status == Some(Status::Failed)).then(|| {
+                                crate::provider::ProviderRunTermination::runtime_failure(
+                                    "Claude stopped responding to cancel; the run was ended.",
+                                    crate::session::unix_epoch_ms(),
+                                )
+                            }),
+                        }],
+                    },
+                )
+                .unwrap();
+            assert_eq!(projected.completions.len(), 1);
+            assert_eq!(
+                projected.completions[0].completed.status(),
+                if status == Some(Status::Completed) || status == Some(Status::Failed) {
+                    PromptStatus::Completed
+                } else {
+                    PromptStatus::Cancelled
+                }
+            );
+            assert!(app
+                .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                .unwrap()
+                .is_none());
+            assert_eq!(
+                app.completed_git_turn_snapshot_store()
+                    .latest_projection_for_agent(session.id(), agent.id())
+                    .unwrap()
+                    .settlement_status,
+                status.unwrap_or(Status::Cancelled)
+            );
+        }
     }
 
     #[test]

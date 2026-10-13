@@ -152,7 +152,7 @@ impl CompletedTurnSettlementStatus {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CompletedGitTurnSnapshotStore {
     inner: Arc<Mutex<BTreeMap<String, VecDeque<CompletedGitTurnSnapshot>>>>,
-    settled_turns: Arc<Mutex<BTreeMap<String, CompletedGitTurnActionProjection>>>,
+    settled_turns: Arc<Mutex<BTreeMap<String, VecDeque<CompletedGitTurnActionProjection>>>>,
 }
 
 impl CompletedGitTurnSnapshotStore {
@@ -231,7 +231,8 @@ impl CompletedGitTurnSnapshotStore {
             .settled_turns
             .lock()
             .expect("settled prompt turn mutex poisoned");
-        if let Some(existing) = settled_turns.get(&key).filter(|existing| {
+        let turns = settled_turns.entry(key).or_default();
+        if let Some(existing) = turns.iter().find(|existing| {
             existing.prompt_id == projection.prompt_id
                 && existing.settlement_status != CompletedTurnSettlementStatus::Completed
                 && projection.settlement_status == CompletedTurnSettlementStatus::Completed
@@ -241,11 +242,20 @@ impl CompletedGitTurnSnapshotStore {
                 projection.provider_termination = existing.provider_termination.clone();
             }
         }
-        let replace = settled_turns
-            .get(&key)
+        let replace = turns
+            .iter()
+            .find(|existing| existing.prompt_id == projection.prompt_id)
             .is_none_or(|existing| completed_turn_projection_is_newer(&projection, existing));
         if replace {
-            settled_turns.insert(key, projection);
+            turns.retain(|existing| existing.prompt_id != projection.prompt_id);
+            let position = turns
+                .iter()
+                .position(|existing| completed_turn_projection_is_newer(existing, &projection))
+                .unwrap_or(turns.len());
+            turns.insert(position, projection);
+            while turns.len() > Self::MAX_TURNS_PER_AGENT {
+                turns.pop_front();
+            }
         }
     }
 
@@ -312,7 +322,7 @@ impl CompletedGitTurnSnapshotStore {
             .lock()
             .expect("settled prompt turn mutex poisoned")
             .get(&completed_turn_agent_key(session_id, agent_id))
-            .cloned();
+            .and_then(|turns| turns.back().cloned());
         match (observed, settled) {
             (Some(observed), Some(settled)) if observed.prompt_id == settled.prompt_id => {
                 Some(CompletedGitTurnActionProjection {
@@ -332,6 +342,25 @@ impl CompletedGitTurnSnapshotStore {
             (None, Some(settled)) => Some(settled),
             (None, None) => None,
         }
+    }
+
+    pub(crate) fn projection_for_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Option<CompletedGitTurnActionProjection> {
+        // MP-08 / MP-10 / MP-11: exact identity, never the latest turn or a prefix.
+        self.settled_turns
+            .lock()
+            .expect("settled prompt turn mutex poisoned")
+            .get(&completed_turn_agent_key(session_id, agent_id))
+            .and_then(|turns| {
+                turns
+                    .iter()
+                    .find(|turn| turn.prompt_id == prompt_id)
+                    .cloned()
+            })
     }
 }
 
