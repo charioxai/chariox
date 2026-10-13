@@ -83,3 +83,100 @@ fn review1301_script_runtime_rejects_workspace_interpreters_and_cycles() {
     );
     std::env::set_var("PATH", previous);
 }
+
+// MP-08 / MP-10 / MP-11: env chains must retain each shim's invocation name.
+#[cfg(unix)]
+#[test]
+fn env_shebang_chain_preserves_symlink_runtime_name() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    use std::os::unix::fs::PermissionsExt;
+    let tools = crate::test_support::TestWorktree::new("env-shim-chain");
+    let workspace = crate::test_support::TestWorktree::new("env-shim-workspace");
+    std::os::unix::fs::symlink("/bin/bash", tools.path().join("sh")).unwrap();
+    let prior = std::env::var_os("PATH").unwrap();
+    std::env::set_var("PATH", tools.path());
+    for shebang in [
+        "#!/usr/bin/env sh",
+        "#!/usr/bin/env -S sh -e",
+        "#!/usr/bin/env node",
+    ] {
+        std::fs::write(
+            tools.path().join("node"),
+            "#!/usr/bin/env sh\nif shopt -oq posix; then printf '98.7.6\\n'; else exit 1; fi\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            tools.path().join("node"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::fs::write(
+            tools.path().join("npm"),
+            format!("{shebang}\nif shopt -oq posix; then printf '98.7.6\\n'; else exit 1; fi\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            tools.path().join("npm"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let result = super::check_inventory::version("npm", &[workspace.path().to_path_buf()]);
+        assert_eq!(result, Ok(Some("98.7.6".into())), "{shebang}");
+    }
+    std::env::set_var("PATH", prior);
+}
+
+#[cfg(unix)]
+#[test]
+fn font_and_apt_inventory_reject_canonical_workspace_executables() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    use std::os::unix::fs::PermissionsExt;
+    let tools = crate::test_support::TestWorktree::new("inventory-trust-tools");
+    let workspace = crate::test_support::TestWorktree::new("inventory-trust-workspace");
+    let marker = workspace.path().join("executed");
+    for name in ["fc-list", "dpkg-query"] {
+        std::fs::write(
+            workspace.path().join(name),
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            workspace.path().join(name),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(workspace.path().join(name), tools.path().join(name)).unwrap();
+    }
+    let prior = std::env::var_os("PATH").unwrap();
+    std::env::set_var("PATH", tools.path());
+    for source in ["font", "apt"] {
+        assert_eq!(
+            super::check_inventory::software_version(
+                "public-tool",
+                Some(source),
+                None,
+                &[workspace.path().canonicalize().unwrap()]
+            ),
+            Err("untrusted_executable"),
+            "{source}"
+        );
+        assert!(!marker.exists(), "untrusted probe must not run");
+    }
+    // A PATH-directory alias must also fail before executing anything.
+    std::os::unix::fs::symlink(workspace.path(), tools.path().join("alias")).unwrap();
+    std::env::set_var("PATH", tools.path().join("alias"));
+    for source in ["font", "apt"] {
+        assert_eq!(
+            super::check_inventory::software_version(
+                "public-tool",
+                Some(source),
+                None,
+                &[workspace.path().canonicalize().unwrap()]
+            ),
+            Err("untrusted_executable")
+        );
+    }
+    std::env::set_var("PATH", prior);
+}

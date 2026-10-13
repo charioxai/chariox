@@ -115,7 +115,7 @@ pub(crate) fn command(
             }
             PathBuf::from(name)
         };
-        let interpreter = trusted(&interpreter, roots)?;
+        let resolved = trusted(&interpreter, roots)?;
         if let Some(directory) = interpreter.parent() {
             if !directories.iter().any(|path| path == directory) {
                 directories.push(directory.to_path_buf());
@@ -124,8 +124,8 @@ pub(crate) fn command(
         interpreter_arguments.push(executable.into_os_string());
         interpreter_arguments.extend(arguments);
         arguments = interpreter_arguments;
-        invocation = interpreter.clone();
-        executable = interpreter;
+        invocation = interpreter;
+        executable = resolved;
     }
     Err("interpreter_chain_exceeds_bounds")
 }

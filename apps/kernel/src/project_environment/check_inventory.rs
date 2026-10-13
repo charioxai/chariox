@@ -314,10 +314,7 @@ pub(super) fn software_version_until(
             let Some(path) = executable("fc-list") else {
                 return Err("font_inventory_unavailable");
             };
-            if roots.iter().any(|r| path.starts_with(r)) {
-                return Err("untrusted_executable");
-            }
-            let mut c = std::process::Command::new(path);
+            let mut c = super::check_executable::command(&path, roots)?;
             c.args(["--format", "%{family}\n"])
                 .current_dir("/")
                 .env_clear()
@@ -351,10 +348,7 @@ pub(super) fn software_version_until(
             let Some(path) = executable("dpkg-query") else {
                 return Err("package_inventory_unavailable");
             };
-            if roots.iter().any(|r| path.starts_with(r)) {
-                return Err("untrusted_executable");
-            }
-            let mut c = std::process::Command::new(path);
+            let mut c = super::check_executable::command(&path, roots)?;
             c.args(["--show", "--showformat=${Status}\t${Version}", "--", name])
                 .current_dir("/")
                 .env_clear()
