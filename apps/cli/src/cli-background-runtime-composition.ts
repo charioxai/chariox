@@ -136,6 +136,8 @@ export type CliBackgroundRuntimeCompositionDeps = {
   flashFooter: AnyFn
   recoverAttachedSessionAfterKernelRestart: AnyFn
   sessionBindingRepairInFlight: () => boolean
+  currentSessionEventBindingReady: () => boolean
+  syncValidatedKernelEventSubscription: () => Promise<void>
   setFatalError: AnyFn
   pumpTerminalOutput: AnyFn
   pollRuntimeNotices: AnyFn
@@ -225,7 +227,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   const daemonActivityController = createDaemonActivityController({
     recordConnectionActivity: () => connectionHealthWatchdogController.recordActivity(),
     onRecovered: () => kernelEventController.applyTransportResumed(),
-    canRecoverConnection: () => !deps.sessionBindingRepairInFlight(),
+    canRecoverConnection: () => !deps.sessionBindingRepairInFlight() && deps.currentSessionEventBindingReady(),
     daemonDisconnected: deps.daemonDisconnected,
     setDaemonDisconnected: deps.setDaemonDisconnected,
     updateSessionChrome: deps.updateSessionChrome,
@@ -268,6 +270,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   const kernelEventController = createKernelEventController({
     daemonDisconnected: deps.daemonDisconnected,
     sessionBindingRepairInFlight: deps.sessionBindingRepairInFlight,
+    currentSessionEventBindingReady: deps.currentSessionEventBindingReady,
     isAttached: deps.isAttached,
     restartWaitingRoomEventStream: () => {
       void deps.client.restartKernelEventStream().catch((error: unknown) => {
@@ -403,9 +406,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     },
     onResyncComplete: (reason) => {
       recordDaemonActivity(`kernel_resync_${reason}`)
-      deps.setDaemonDisconnected(false)
-      deps.setStatusLine(DEFAULT_CONNECTED_STATUS)
-      deps.updateSessionChrome()
+      kernelEventController.applyTransportResumed()
     },
     onResyncFailed: (reason, error) => {
       deps.appLogger?.warn?.("attached kernel resync failed", {
@@ -529,14 +530,12 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     projectSession: applyProviderRunProfileToSession,
     applySession: deps.applySessionState,
     resetKernelEventSubscription: deps.kernelEventSubscriptionController.reset,
-    syncKernelEventSubscription: deps.syncKernelEventSubscription,
+    syncKernelEventSubscription: deps.syncValidatedKernelEventSubscription,
     refreshAgentPanes: deps.refreshAgentPanes,
     clearLocalBusyStateForAuthoritativeIdle: deps.clearLocalBusyStateForAuthoritativeIdle,
     recordDaemonActivity,
     onRecovered: () => {
-      deps.setDaemonDisconnected(false)
-      deps.setStatusLine(DEFAULT_CONNECTED_STATUS)
-      deps.updateSessionChrome()
+      kernelEventController.applyTransportResumed(true)
     },
     onStateLookupFailed: (sessionId, message, error) => {
       deps.appLogger?.debug?.("session unavailable recovery lookup failed", {

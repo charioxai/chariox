@@ -926,7 +926,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   let settleKernelConnectionDisplay: () => void = () => {}
   let markKernelConnectionClosed: (message: string) => void = () => {}
   const {
-    hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart, sessionBindingRepairInFlight,
+    hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart, sessionBindingRepairInFlight, currentSessionEventBindingReady, syncValidatedKernelEventSubscription,
     transitionToNoSession, detachCurrentAttachment, rollbackAttachedSession, attachBinding, recoverProviderRun,
     requestExit, requestWaitingRoom,
   } = createCliSessionLifecycleComposition({
@@ -1125,7 +1125,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     queueTerminalOutputRecords, drainTerminalOutputRecords, scheduleSharedPromptInputHistoryRefresh,
     handleWaitingRoomRefresh: refreshWaitingRoomData,
     applyWaitingRoomTransportClosed, applyWaitingRoomRowsChanged, applyRelayStatusChanged, applyRemoteMachinesChanged, applyProviderCatalogChanged,
-    applySlicesChanged, recoverAttachedSessionAfterKernelRestart, sessionBindingRepairInFlight, setFatalError,
+    applySlicesChanged, recoverAttachedSessionAfterKernelRestart, sessionBindingRepairInFlight, currentSessionEventBindingReady, syncValidatedKernelEventSubscription, setFatalError,
     pumpTerminalOutput: (sessionId: string, attachmentId: string) => pumpTerminalOutput(client, sessionId, attachmentId),
     pollRuntimeNotices: (sessionId: string, attachmentId: string) => pollRuntimeNotices(client, sessionId, attachmentId),
     promptInputRefController, transcriptScrollboxRefController, primaryTranscriptRuntimeStore, syncPromptPlaceholder,

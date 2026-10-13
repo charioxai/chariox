@@ -88,7 +88,7 @@ export type CliSessionLifecycleCompositionDeps = {
   refreshWaitingRoomData: AnyFn
   applyWaitingRoomTransportClosed: AnyFn
   onKernelTransportClosed: (message: string) => void
-  onKernelTransportRecovered?: () => void
+  onKernelTransportRecovered: () => void
   requestRootRender: AnyFn
   clearPromptInput: AnyFn
   blurPromptInput: AnyFn
@@ -187,6 +187,16 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
     },
   })
   const syncKernelEventSubscription = () => kernelEventSubscriptionController.sync()
+  const currentSessionEventBindingReady = () => {
+    if (!deps.supportsKernelEventStream || !deps.isAttached()) return true
+    const binding = kernelEventSubscriptionController.state()
+    return binding.scope === "session" && binding.sessionId === deps.sessionState().id
+      && binding.attachmentId === deps.attachmentState()?.id
+  }
+  const syncValidatedKernelEventSubscription = async () => {
+    await syncKernelEventSubscription()
+    if (!currentSessionEventBindingReady()) throw new Error("Session event binding has not recovered")
+  }
 
   const kernelRestartRecoveryController = createKernelRestartRecoveryController({
     isClosing: deps.closingStateController.isClosing,
@@ -199,25 +209,14 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
     applyAttachment: deps.setAttachmentState,
     applySession: deps.applySessionState,
     resetKernelEventSubscription: kernelEventSubscriptionController.reset,
-    syncKernelEventSubscription: async () => {
-      await syncKernelEventSubscription()
-      if (!deps.supportsKernelEventStream) return
-      const binding = kernelEventSubscriptionController.state()
-      if (binding.scope !== "session" || binding.sessionId !== deps.sessionState().id
-        || binding.attachmentId !== deps.attachmentState()?.id) {
-        throw new Error("Session event binding has not recovered")
-      }
-    },
+    syncKernelEventSubscription: syncValidatedKernelEventSubscription,
     refreshAgentPanes: () => deps.refreshAgentPanes(deps.sessionState()),
     clearLocalBusyStateForAuthoritativeIdle: () => {
       deps.clearLocalBusyStateForAuthoritativeIdle(deps.sessionState())
     },
     onRecovered: () => {
-      deps.recordDaemonActivity("kernel_restart_recovered")
-      deps.setDaemonDisconnected(false)
-      deps.setStatusLine(DEFAULT_CONNECTED_STATUS)
-      deps.updateSessionChrome()
-      deps.onKernelTransportRecovered?.()
+      if (!currentSessionEventBindingReady()) throw new Error("Session event binding changed during recovery")
+      deps.onKernelTransportRecovered()
     },
     onAttemptFailed: (sessionId, error) => {
       deps.appLogger?.debug("kernel restart recovery attempt failed", {
@@ -482,6 +481,8 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
     syncKernelEventSubscription,
     recoverAttachedSessionAfterKernelRestart,
     sessionBindingRepairInFlight: kernelRestartRecoveryController.isInFlight,
+    currentSessionEventBindingReady,
+    syncValidatedKernelEventSubscription,
     transitionToNoSession,
     detachCurrentAttachment,
     rollbackAttachedSession,

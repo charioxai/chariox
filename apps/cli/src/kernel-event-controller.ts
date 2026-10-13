@@ -57,6 +57,7 @@ type KernelEventControllerDeps = {
   setDaemonDisconnected: (value: boolean) => void
   daemonDisconnected?: () => boolean
   sessionBindingRepairInFlight?: () => boolean
+  currentSessionEventBindingReady?: () => boolean
   setStatusLine: (value: string) => void
   updateSessionChrome: () => void
   isAttached: () => boolean
@@ -294,7 +295,8 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
   }
 
   const applyTransportResumed = (bindingRecovered = false) => {
-    if (!bindingRecovered && deps.sessionBindingRepairInFlight?.()) return
+    if (deps.currentSessionEventBindingReady?.() === false
+      || !bindingRecovered && deps.sessionBindingRepairInFlight?.()) return
     deps.setDaemonDisconnected(false)
     deps.recordDaemonActivity("kernel_transport_resumed")
     connectionDisplay.resumed()

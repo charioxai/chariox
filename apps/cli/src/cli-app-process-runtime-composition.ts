@@ -179,6 +179,8 @@ export function createCliAppProcessRuntimeComposition(
     flashFooter: deps.flashFooter,
     recoverAttachedSessionAfterKernelRestart: deps.recoverAttachedSessionAfterKernelRestart,
     sessionBindingRepairInFlight: deps.sessionBindingRepairInFlight,
+    currentSessionEventBindingReady: deps.currentSessionEventBindingReady,
+    syncValidatedKernelEventSubscription: deps.syncValidatedKernelEventSubscription,
     setFatalError: deps.setFatalError,
     pumpTerminalOutput: deps.pumpTerminalOutput,
     pollRuntimeNotices: deps.pollRuntimeNotices,
