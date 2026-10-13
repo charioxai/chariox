@@ -10,7 +10,8 @@ impl DaemonApp {
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
-        self.provider_account_profiles.require_agent_authenticated(&self.config, agent, operation)
+        self.provider_account_profiles
+            .require_agent_authenticated(&self.config, agent, operation)
     }
 
     pub(crate) fn ensure_prompt_provider_run_for_agent(

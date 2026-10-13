@@ -103,11 +103,20 @@ impl KernelRuntimeOwnedState {
             return Ok(request);
         }
         let session = self.session_store.get_session(&request.session_id)?;
-        request.owner_user_id = request.agent_id.as_deref()
-            .map(|id| self.agent_store.get_agent(id).map(|agent| agent.owner_user_id().to_string()))
-            .transpose()?.unwrap_or_else(|| session.owner_user_id().to_string());
+        request.owner_user_id = request
+            .agent_id
+            .as_deref()
+            .map(|id| {
+                self.agent_store
+                    .get_agent(id)
+                    .map(|agent| agent.owner_user_id().to_string())
+            })
+            .transpose()?
+            .unwrap_or_else(|| session.owner_user_id().to_string());
         let profile = self.provider_account_profiles.get(
-            &request.owner_user_id, &request.provider, &request.account_profile,
+            &request.owner_user_id,
+            &request.provider,
+            &request.account_profile,
         )?;
         let selection = request.account_profile.clone();
         request.account_profile = profile.profile_id;
