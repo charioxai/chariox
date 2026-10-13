@@ -506,6 +506,35 @@ impl WaitingRoomInventoryEventProjection {
     }
 }
 
+// MP-08 / MP-10 / MP-11: admission may precede output; settlement never does.
+pub(crate) fn prompt_admission_activity_event(
+    snapshot: &SessionSnapshotProjection,
+    previous: Option<&SessionSnapshotProjection>,
+) -> Option<KernelEvent> {
+    let previous = previous?;
+    if snapshot.room_workflows != previous.room_workflows
+        || snapshot.agent_activity.iter().any(|(id, activity)| {
+            previous
+                .agent_activity
+                .get(id)
+                .is_none_or(|old| old.last_completed_turn != activity.last_completed_turn)
+        })
+    {
+        return None;
+    }
+    let admitted = snapshot.agent_activity.iter().any(|(id, activity)| {
+        activity.active_prompt_count > 0
+            && previous.agent_activity.get(id).is_some_and(|old| {
+                activity.active_prompt_count > old.active_prompt_count
+                    || activity.active_turn.as_ref().map(|turn| &turn.prompt_id)
+                        != old.active_turn.as_ref().map(|turn| &turn.prompt_id)
+            })
+    });
+    admitted
+        .then(|| agent_activity_changed_event(snapshot, Some(previous)))
+        .flatten()
+}
+
 pub(crate) fn agent_activity_changed_event(
     snapshot: &SessionSnapshotProjection,
     previous_snapshot: Option<&SessionSnapshotProjection>,

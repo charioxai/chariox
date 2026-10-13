@@ -489,6 +489,20 @@ fn prompt_runtime_activity_changes_can_skip_session_snapshot() {
     let event = agent_activity_changed_event(&current, Some(&previous))
         .expect("prompt runtime activity change should produce agent activity delta");
 
+    assert!(
+        prompt_admission_activity_event(&current, Some(&previous)).is_some(),
+        "MP-08 MP-10 newly admitted work must bypass prior output backlog"
+    );
+    assert!(prompt_admission_activity_event(&previous, Some(&previous)).is_none());
+    let mut completing = current.clone();
+    completing.agent_activity.get_mut("agent-a").unwrap().last_completed_turn = Some(serde_json::from_value(serde_json::json!({
+        "turn_id":"prior", "prompt_id":"prior", "provider_run_id":"run", "agent_id":"agent-a", "completed_at_ms":9
+    })).unwrap());
+    assert!(
+        prompt_admission_activity_event(&completing, Some(&previous)).is_none(),
+        "MP-08 MP-10 settlement must retain its output boundary"
+    );
+
     match event {
         KernelEvent::AgentActivityChanged {
             session_id,
