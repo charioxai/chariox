@@ -11,6 +11,7 @@ type KernelEventSubscriptionState = {
 }
 
 type KernelEventSubscriptionControllerOptions = {
+  kernelConnected: () => boolean
   supportsKernelEventStream: () => boolean
   getAttachment: () => KernelEventSubscriptionAttachment | null
   getSessionId: () => string
@@ -48,7 +49,7 @@ export function createKernelEventSubscriptionController(
 
   return {
     async sync() {
-      if (!options.supportsKernelEventStream()) {
+      if (!options.kernelConnected() || !options.supportsKernelEventStream()) {
         return
       }
 

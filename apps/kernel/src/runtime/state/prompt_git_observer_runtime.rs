@@ -8,6 +8,12 @@ impl KernelRuntimeState {
         dispatch: &crate::app::KernelPromptDispatch,
         provider_run: &crate::provider::RuntimeProviderRun,
     ) {
+        // MP-08/MP-10/MP-11: Steering changes the existing provider turn.
+        // Its input identity must not become a separate completed Git turn and
+        // replace the original prompt settlement observed by native clients.
+        if dispatch.steering {
+            return;
+        }
         if self
             .owned
             .git_turn_snapshots

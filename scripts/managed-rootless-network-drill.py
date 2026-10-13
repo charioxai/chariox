@@ -11,8 +11,18 @@ import socket
 import struct
 import subprocess
 import sys
+sys.dont_write_bytecode = True
 import tempfile
 import threading
+
+# MP-11: load the one repository guard even under Python isolated mode.
+import importlib.util
+from pathlib import Path
+_guard_path = Path(__file__).resolve().parent.parent / "apps/kernel/slice-linux-docker/owned_process_signals.py"
+_guard_spec = importlib.util.spec_from_file_location("owned_process_signals", _guard_path)
+_guard_module = importlib.util.module_from_spec(_guard_spec)
+_guard_spec.loader.exec_module(_guard_module)
+owned_signals = _guard_module.OwnedProcesses()
 
 
 def checked(*args):
@@ -118,13 +128,14 @@ def main():
             ["unshare", "--mount", "--propagation", "private", sys.executable,
              __file__, "--isolated", helper, root], start_new_session=True,
         )
+        child.owned_signal_handle = owned_signals.record(child.pid, watch=True, fresh_launch=True)
         try:
             result = child.wait(timeout=25)
         finally:
             # Includes descendants on failure, even if an intermediate process
             # exited. This group contains only this disposable drill.
             try:
-                os.killpg(child.pid, signal.SIGKILL)
+                owned_signals.group(child.owned_signal_handle, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             child.wait()

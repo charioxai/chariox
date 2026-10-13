@@ -85,3 +85,22 @@ function state(update: Partial<WaitingRoomState>): WaitingRoomState {
     ...update,
   }
 }
+
+
+test("MP-08/MP-11 focus navigation normalizing the default project keeps pending defaults", async () => {
+  const { createWaitingRoomState, normalizeWaitingRoomState } = await import("./waiting-room-state.js")
+  const { fallbackProviderCatalog } = await import("./provider-catalog.js")
+  const { createWaitingRoomBootstrapDefaultsController } = await import("./waiting-room-bootstrap-defaults.js")
+  const catalog = fallbackProviderCatalog({ source: "local_fallback" })
+  let current = createWaitingRoomState([], catalog, "opencode", "default", "high")
+  const tracker = createWaitingRoomLaunchOwnershipTracker(current)
+  const defaults = createWaitingRoomBootstrapDefaultsController({
+    state: () => current, ownershipRevision: tracker.revision, isAttached: () => false,
+    apply: next => { current = next },
+  })
+  current = normalizeWaitingRoomState({ ...current, focus: "launch-machine" }, [], catalog, undefined, { projects: [] })
+  tracker.update(current)
+  defaults.apply({ provider: "codex", model: "gpt-6.1-sol", effort: "high" })
+  assert.equal(tracker.revision(), 0)
+  assert.equal(current.providerId, "codex")
+})

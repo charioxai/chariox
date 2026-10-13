@@ -9,6 +9,15 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: &str,
     ) -> Result<crate::session::PromptQueueItem, DaemonError> {
+        self.cancel_active_prompt_only_for_provider_run(session_id, agent_id, None)
+    }
+
+    pub(super) fn cancel_active_prompt_only_for_provider_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<crate::session::PromptQueueItem, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -23,10 +32,11 @@ impl KernelRuntimeOwnedState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
-        let provider_run_id = self
-            .provider_store
-            .get_run_for_agent(session_id, agent_id)
-            .map(|run| run.id().to_string());
+        let provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
+            self.provider_store
+                .get_run_for_agent(session_id, agent_id)
+                .map(|run| run.id().to_string())
+        });
         self.record_cancelled_prompt_settlement(
             session_id,
             agent_id,
@@ -43,6 +53,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         agent_id: &str,
+        expected_prompt_id: &str,
         provider_run_id: Option<&str>,
     ) -> Result<OwnedPromptCancellation, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
@@ -52,10 +63,17 @@ impl KernelRuntimeOwnedState {
                 agent_id: agent_id.to_string(),
             });
         }
+        // MP-08/MP-10/MP-11: Resume must not observe an empty owner until the
+        // interrupted invocation's claim and activity have also settled.
+        let activity_mutation = self.begin_managed_activity_mutation();
         let session = self.session_store.get_session(session_id)?;
         let prompt = self
             .prompt_state_owner
-            .finalize_active_prompt_cancellation(&session, agent_id)
+            .finalize_active_prompt_cancellation_if_matches(
+                &session,
+                agent_id,
+                Some(expected_prompt_id),
+            )
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
@@ -95,12 +113,28 @@ impl KernelRuntimeOwnedState {
             };
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
-        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
-        let released_claim = cancellation_provider_run_id
-            .as_deref()
-            .map(|provider_run_id| self.clear_prompt_activity(provider_run_id))
-            .unwrap_or(false)
-            || released_workflow_claim;
+        let mirrored = self.session_store.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        self.persist_prompt_session_state(&mirrored, agent_id)?;
+        let released_provider_claim =
+            if let Some(provider_run_id) = cancellation_provider_run_id.as_deref() {
+                self.clear_prompt_activity_at_with_activity_mutation(
+                    provider_run_id,
+                    None,
+                    activity_mutation,
+                )
+            } else {
+                activity_mutation.record();
+                false
+            };
+        let released_claim = released_provider_claim || released_workflow_claim;
+        self.withdraw_stale_agent_interactions();
+        self.provider_process_projection.invalidate();
+        let _ = self.session_snapshot(session_id)?;
         let current_session = self.session_store.get_session(session_id)?;
         let hold_queued_prompts = current_session
             .metaagent_task(agent_id)
@@ -165,11 +199,10 @@ impl KernelRuntimeOwnedState {
                         let activity_mutation = self.begin_managed_activity_mutation();
                         let started_next = self
                             .prompt_state_owner
-                            .activate_next_queued_prompt_with_prompt_id(
+                            .activate_next_queued_prompt_for_dispatch(
                                 &self.session_store.get_session(session_id)?,
                                 agent_id,
                                 Some(next_prompt.id()),
-                                self.session_store.reserve_prompt_id(),
                             )?;
                         if let Some(started_next) = started_next.as_ref() {
                             let (active_prompt, queued_prompts) =
@@ -343,6 +376,21 @@ impl KernelRuntimeOwnedState {
         provider_run_id: Option<&str>,
     ) {
         let settled_at_ms = crate::session::unix_epoch_ms();
+        if let Some(provider_run_id) =
+            provider_run_id.filter(|run_id| !self.prompt_completion_recorded(run_id))
+        {
+            // An acknowledged abort need not produce provider output. Publish
+            // settlement through the same completion stream drained by home.
+            self.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                self.attachment_store
+                    .list_session_attachment_ids(session_id),
+                &format!("prompt-complete:{}", prompt.id()),
+                settled_at_ms,
+            );
+            self.mark_prompt_completion_recorded(provider_run_id);
+        }
         let archive_enabled = self
             .config_projection
             .snapshot()
@@ -371,6 +419,7 @@ impl KernelRuntimeOwnedState {
         );
     }
 
+    #[cfg(test)]
     pub(super) fn cancel_local_prompt(
         &self,
         session_id: &str,
@@ -409,6 +458,11 @@ impl KernelRuntimeOwnedState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
+        if expected.is_some_and(|expected| active_prompt.id() != expected) {
+            return Err(DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            });
+        }
         if active_prompt.status() == crate::session::PromptStatus::Cancelling {
             let session = self.session_snapshot(session_id)?;
             return Ok(Some(crate::app::KernelPromptCancellation {
@@ -463,6 +517,7 @@ impl KernelRuntimeOwnedState {
         );
         let session = self.session_snapshot(session_id)?;
 
+        let prompt_id = prompt.id().to_string();
         Ok(Some(crate::app::KernelPromptCancellation {
             cancellation: crate::session::PromptCancellation {
                 prompt,
@@ -472,6 +527,7 @@ impl KernelRuntimeOwnedState {
             dispatch: Some(crate::app::KernelPromptAbortDispatch {
                 session_id: session_id.to_string(),
                 provider_run_id: provider_run.id().to_string(),
+                prompt_id,
                 source_attachment_id: attachment_id.to_string(),
             }),
         }))

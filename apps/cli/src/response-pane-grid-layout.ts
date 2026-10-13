@@ -1,3 +1,4 @@
+import { TUI_MOUSE_ENABLED } from "./terminal-mouse-policy.js"
 import type { PaneGridModel, PaneGridTone } from "./response-pane-grid.js"
 
 export type ResponsePaneLayoutBox = {
@@ -126,7 +127,7 @@ export function applyResponsePaneGridLayout(options: {
     gridRow.verticals.forEach((segment, segmentIndex) => {
       applyVerticalSegment(
         options.verticalSegments[rowIndex]?.[segmentIndex],
-        segment.visible,
+        segment.visible && (options.split || TUI_MOUSE_ENABLED),
         segment.tone,
         options.theme,
       )

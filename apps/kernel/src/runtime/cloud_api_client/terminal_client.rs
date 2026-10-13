@@ -26,6 +26,39 @@ pub(crate) async fn issue_cloud_terminal_client_token(
     target_daemon_id: &str,
     options: CloudTerminalClientOptions,
 ) -> Result<(String, CloudRuntimeTokenResponse), DaemonError> {
+    if profile.kernel_credential.is_some() {
+        let kernel_id = profile
+            .kernel_id
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| client_scope_error("kernel enrollment identity missing"))?;
+        let key = options
+            .public_key_thumbprint
+            .filter(|v| v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or_else(|| client_scope_error("terminal pivot requires a public key binding"))?;
+        if requested_client_id.trim().is_empty() || target_daemon_id.trim().is_empty() {
+            return Err(client_scope_error(
+                "terminal and exact target identities are required",
+            ));
+        }
+        let client_id = kernel_client_subject(kernel_id, requested_client_id)?;
+        let issued = issue_cloud_runtime_token(
+            profile,
+            &client_id,
+            "client",
+            CloudRuntimeTokenRequestOptions {
+                client_id: Some(client_id.clone()),
+                machine_id: profile.machine_id.clone(),
+                ttl_ms: Some(options.ttl_ms.unwrap_or(300_000).min(300_000)),
+                allow_unpaired_client_subject: true,
+                allowed_targets: Some(vec![target_daemon_id.to_string()]),
+                public_key_thumbprint: Some(key),
+                ..Default::default()
+            },
+        )
+        .await?;
+        return Ok((client_id, issued));
+    }
     let account_authority = profile
         .cloud_session_token
         .as_deref()
@@ -89,6 +122,30 @@ pub(crate) async fn issue_cloud_terminal_client_token(
         issue_cloud_runtime_token(profile, &client_id, "client", token_options).await?
     };
     Ok((client_id, issued))
+}
+
+fn kernel_client_subject(kernel_id: &str, original_client_id: &str) -> Result<String, DaemonError> {
+    let prefix = format!("kernel-client:{:x}:", Sha256::digest(kernel_id.as_bytes()));
+    if original_client_id.starts_with("kernel-client:") {
+        let valid = original_client_id
+            .strip_prefix(&prefix)
+            .is_some_and(|suffix| {
+                suffix.len() == 64
+                    && suffix
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            });
+        if valid {
+            return Ok(original_client_id.to_string());
+        }
+        return Err(client_scope_error(
+            "Terminal client identity is not owned by this kernel",
+        ));
+    }
+    Ok(format!(
+        "{prefix}{:x}",
+        Sha256::digest(original_client_id.as_bytes())
+    ))
 }
 
 pub(crate) fn machine_client_subject(

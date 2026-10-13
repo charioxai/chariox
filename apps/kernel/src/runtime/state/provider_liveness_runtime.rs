@@ -109,20 +109,25 @@ impl KernelRuntimeState {
             return Ok(exit.already_ended);
         }
 
-        let process_exit = self
+        let (process_exit, exit) = self
             .with_app_side_effect(|app| {
-                crate::app::ProviderLaunchProcessRuntime::new(app).poll_exit(provider_run_id)
+                let process_exit = crate::app::ProviderLaunchProcessRuntime::new(app)
+                    .poll_exit(provider_run_id)?;
+                // A rollback may replace the child under this app lock. Settle
+                // this observation before releasing it so an old exit cannot
+                // end the replacement process.
+                let exit = owned.reconcile_provider_run_liveness_provider_phase(
+                    session_id,
+                    provider_run_id,
+                    Some(process_exit.is_none()),
+                )?;
+                Ok((process_exit, exit))
             })
             .await?;
         let process_terminal_diagnostic = process_exit
             .as_ref()
             .and_then(|exit| exit.terminal_diagnostic.clone());
-        let Some(exit) = owned.reconcile_provider_run_liveness_provider_phase(
-            session_id,
-            provider_run_id,
-            Some(process_exit.is_none()),
-        )?
-        else {
+        let Some(exit) = exit else {
             return Ok(false);
         };
         owned.withdraw_stale_agent_interactions();

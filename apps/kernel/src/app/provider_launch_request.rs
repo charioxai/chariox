@@ -68,19 +68,6 @@ fn refresh_provider_usage_before_launch(
 }
 
 impl DaemonApp {
-    pub(crate) fn provider_account_launch_scope_for_agent(
-        &self,
-        agent: &crate::agent::AgentInstance,
-    ) -> crate::account_profile::ProviderAccountLaunchScope {
-        if self.leased_agents.values().any(|leased| {
-            leased.backing_session_id == agent.session_id() && leased.backing_agent_id == agent.id()
-        }) {
-            crate::account_profile::ProviderAccountLaunchScope::LeaseReplica
-        } else {
-            crate::account_profile::ProviderAccountLaunchScope::Home
-        }
-    }
-
     pub(crate) fn prepare_app_provider_launch_request(
         &self,
         mut request: LaunchProviderRequest,
@@ -117,11 +104,12 @@ impl DaemonApp {
         if crate::provider::canonical_provider_family(&request.provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
-            let account_owner_user_id = agent
-                .as_ref()
-                .map(|agent| self.provider_account_launch_scope_for_agent(agent))
-                .unwrap_or(crate::account_profile::ProviderAccountLaunchScope::Home)
-                .owner_user_id(&self.config, &request.owner_user_id);
+            let account_owner_user_id =
+                crate::account_profile::provider_account_authority_for_launch(
+                    &self.config,
+                    &self.provider_account_profiles,
+                    &request,
+                )?;
             let profile = if request.client_interface.is_chariox() {
                 refresh_provider_usage_before_launch(
                     &self.provider_account_profiles,
@@ -172,7 +160,17 @@ impl DaemonApp {
             for (name, value) in provider_credential_env.iter() {
                 launch_environment.insert(name, zeroize::Zeroizing::new(value.to_string()));
             }
+            let selection = request
+                .resolved_provider_account
+                .as_ref()
+                .map(|account| account.selection().to_string())
+                .unwrap_or_else(|| request.account_profile.clone());
             request.account_profile = profile.profile_id;
+            crate::account_profile::bind_provider_account_authority(
+                &mut request,
+                account_owner_user_id,
+                selection,
+            );
             request = request
                 .with_provider_account_env(provider_account_env)
                 .with_provider_credential_env(launch_environment);

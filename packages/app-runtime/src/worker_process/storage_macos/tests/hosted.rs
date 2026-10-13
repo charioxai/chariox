@@ -231,6 +231,7 @@ fn hosted_storage_failed_updates_roll_back_to_the_committed_snapshot() {
     let mut storage = start(5, 5);
     save(&storage.paths()[0].join("todos"), b"committed by 5");
     storage.release_blocking().unwrap();
+    drop(storage);
     // Two failed updates in a row: each starts on 5's data, not on 6's.
     for generation in [6, 7] {
         let mut storage = start(generation, 5);
@@ -244,6 +245,7 @@ fn hosted_storage_failed_updates_roll_back_to_the_committed_snapshot() {
         save(&data.join(format!("only-{generation}")), b"uncommitted");
         assert_eq!(snapshots(&storage), 1, "the committed snapshot is kept");
         storage.release_blocking().unwrap();
+        drop(storage);
     }
     // 7 retrying keeps its own writes.
     let mut storage = start(7, 5);
@@ -252,6 +254,7 @@ fn hosted_storage_failed_updates_roll_back_to_the_committed_snapshot() {
         b"written by 7"
     );
     storage.release_blocking().unwrap();
+    drop(storage);
     // 5 starts again on its own data; nothing 6 or 7 wrote survives.
     let mut storage = start(5, 5);
     let data = &storage.paths()[0];
@@ -259,16 +262,20 @@ fn hosted_storage_failed_updates_roll_back_to_the_committed_snapshot() {
     assert!(!data.join("only-6").exists() && !data.join("only-7").exists());
     assert_eq!(snapshots(&storage), 0);
     storage.release_blocking().unwrap();
+    drop(storage);
     // An update that commits keeps its writes and drops the snapshot.
     let mut storage = start(8, 5);
     save(&storage.paths()[0].join("todos"), b"migrated by 8");
     storage.release_blocking().unwrap();
+    drop(storage);
     let mut storage = start(8, 8);
     assert_eq!(
         fs::read(storage.paths()[0].join("todos")).unwrap(),
         b"migrated by 8"
     );
     assert_eq!(snapshots(&storage), 0);
+    storage.release_blocking().unwrap();
+    drop(storage);
     // Deleting the App's data removes every image, the snapshot a staged
     // update took, and the journal.
     drop(start(9, 8));

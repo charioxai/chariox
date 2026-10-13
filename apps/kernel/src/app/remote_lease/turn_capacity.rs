@@ -182,11 +182,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &dispatch.agent_id,
             Some(&dispatch.provider_run_id),
         )?;
-        self.record_held_turn_settlement(
-            &dispatch.session_id,
-            &dispatch.provider_run_id,
-            &dispatch.prompt_id,
-        );
+        // MP-08/MP-10: finalization publishes the held turn's settlement through
+        // the shared cancellation path, even though no provider was reached.
         Ok(Some(cancellation))
     }
 

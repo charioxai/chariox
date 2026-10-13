@@ -155,7 +155,7 @@ function inventory(
   sessionAlias = "session-a",
 ): WaitingRoomInventory {
   return {
-    schemaVersion: 11,
+    schemaVersion: 13,
     inventoryVersion: `${structuralVersion}:${activityRevision}`,
     structuralVersion,
     activityRevision,
@@ -186,3 +186,12 @@ function inventory(
     slices: [],
   }
 }
+
+test("cache accepts the current kernel public inventory schema 13", () => {
+  const directory = mkdtempSync(join(tmpdir(), "chariox-waiting-room-schema-"))
+  try {
+    const cache = createWaitingRoomInventoryCache(directory, () => 1_000)
+    cache.persist({ ...inventory("kernel-current", "structure", "activity"), schemaVersion: 13 })
+    assert.equal(cache.load()[0]?.kernelId, "kernel-current")
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})

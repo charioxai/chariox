@@ -22,12 +22,18 @@ pub(crate) fn redact_response_for_user(
             session: session.redacted_for_user(caller_user_id),
         },
         LocalDaemonResponse::SessionState {
+            room_workflows: _,
             session,
             agent_activity,
             agent_activity_revision,
         } => {
+            let room_workflows = crate::runtime::projection::RoomWorkflowInventory::project(
+                &session,
+                caller_user_id,
+            );
             let session = session.redacted_for_user(caller_user_id);
             LocalDaemonResponse::SessionState {
+                room_workflows,
                 agent_activity: redact_agent_activity_for_session(agent_activity, &session),
                 agent_activity_revision,
                 session,

@@ -1,10 +1,11 @@
+import { spawnOwned, signalOwnedProcessGroup } from "../apps/kernel/slice-linux-docker/owned-process-signals.mjs"
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { existsSync, readdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { spawn, spawnSync } from "node:child_process"
+import { spawnSync } from "node:child_process"
 import { once } from "node:events"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
@@ -249,11 +250,11 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
     assert.ok(removed >= 0 && removed < alice.out.indexOf("write "), alice.out)
 
     // A kernel holding a runtime generation's shared lease blocks --all before any change.
-    const holder = spawn("flock", ["-s", "-o", p(h, `usr/lib/chariox/app-runtimes/${h.digest}/.runtime-lease`), "sh", "-c", "echo held; exec sleep 30"],
+    const holder = spawnOwned("flock", ["-s", "-o", p(h, `usr/lib/chariox/app-runtimes/${h.digest}/.runtime-lease`), "sh", "-c", "echo held; exec sleep 30"],
       { detached: true })
     await once(holder.stdout, "data")
     const inUse = h.run(["uninstall", "--all"])
-    process.kill(-holder.pid)
+    signalOwnedProcessGroup(holder)
     await once(holder, "exit")
     assert.equal(inUse.status, 1)
     assert.match(inUse.out, /runtime [0-9a-f]{64} is in use/)

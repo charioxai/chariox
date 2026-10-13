@@ -27,6 +27,7 @@ mod managed_activity;
 mod managed_context;
 mod managed_environment;
 mod native_spawn_slice;
+mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
 mod prompt_settings;
@@ -44,6 +45,7 @@ mod slice_disk_quota;
 mod slice_display;
 mod slice_logs;
 mod workflow_code;
+mod workflow_notifications;
 mod workspace_history_external;
 
 fn history_page_entry(
@@ -82,3 +84,5 @@ fn history_page_entry(
         },
     }
 }
+
+mod room_workflows;

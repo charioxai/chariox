@@ -28,6 +28,17 @@ use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::workspace_commit_message_utility::workspace_commit_message_utility_prompt_assembly;
 
 const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
+// Project discovery can need the same bounded budget as setup/validation.
+// Lightweight metadata discovery and ordinary utilities retain their limit.
+const PROJECT_ENVIRONMENT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(300);
+
+fn agent_utility_timeout(policy: ProviderUtilityExecutionPolicy) -> Duration {
+    match policy {
+        ProviderUtilityExecutionPolicy::ReadOnlyDiscovery => PROJECT_ENVIRONMENT_DISCOVERY_TIMEOUT,
+        ProviderUtilityExecutionPolicy::ExistingRun
+        | ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery => AGENT_UTILITY_TIMEOUT,
+    }
+}
 const AGENT_UTILITY_PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) async fn execute_run_agent_utility_request(
@@ -327,6 +338,7 @@ pub(crate) async fn run_provider_utility_prompt(
     operation: &'static str,
     policy: ProviderUtilityExecutionPolicy,
 ) -> Result<String, DaemonError> {
+    let timeout = agent_utility_timeout(policy);
     let provider_run = if policy.is_read_only_discovery() {
         let mut read_only_run = provider_run;
         read_only_run.set_execution_config(
@@ -344,7 +356,7 @@ pub(crate) async fn run_provider_utility_prompt(
                 provider_run,
                 prompt.visible_user_prompt,
                 prompt.hidden_system_context,
-                AGENT_UTILITY_TIMEOUT,
+                timeout,
                 policy,
             )
             .await;
@@ -354,7 +366,7 @@ pub(crate) async fn run_provider_utility_prompt(
             &provider_run,
             &prompt.visible_user_prompt,
             &prompt.hidden_system_context,
-            AGENT_UTILITY_TIMEOUT,
+            timeout,
             operation,
             policy,
         )
@@ -426,6 +438,20 @@ fn current_unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_discovery_budget_does_not_extend_metadata_or_existing_run_utilities() {
+        assert_eq!(
+            agent_utility_timeout(ProviderUtilityExecutionPolicy::ReadOnlyDiscovery),
+            Duration::from_secs(300),
+        );
+        for policy in [
+            ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
+            ProviderUtilityExecutionPolicy::ExistingRun,
+        ] {
+            assert_eq!(agent_utility_timeout(policy), Duration::from_secs(120));
+        }
+    }
 
     #[test]
     fn utility_operations_name_supported_kinds() {

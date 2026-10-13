@@ -195,7 +195,8 @@ pub enum NativeInteractionOrigin {
         provider_run_id: String,
         native_turn_id: String,
     },
-    /// Workspace trust is requested before a task is dispatched.
+    /// Run-scoped interaction: workspace trust before dispatch, or a kernel
+    /// review while the provider is idle.
     ProviderStartup { provider_run_id: String },
 }
 

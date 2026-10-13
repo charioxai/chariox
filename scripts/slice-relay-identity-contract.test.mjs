@@ -35,7 +35,7 @@ async function launch(identity, extraArguments = []) {
     ].map(name => [name, "synthetic-fixture"]))
     const result = spawnSync("bash", ["-c", script], {
       encoding: "utf8", timeout: 5_000,
-      env: { PATH: process.env.PATH, ...variables, ROOT: scratch, DAEMON_ID: identity.workerKernelRef, DAEMON_ALIAS: `slice:${identity.localName}`, MACHINE_ID: identity.machineId, SLICE_OWNER_KERNEL_ID: identity.ownerKernelId, SLICE_OWNER_MACHINE_ID: identity.machineId },
+      env: { PATH: process.env.PATH, ...variables, ROOT: scratch, LOGS: scratch, PRIVATE_RUNTIME_ROOT: join(scratch, "private"), DAEMON_ID: identity.workerKernelRef, DAEMON_ALIAS: `slice:${identity.localName}`, MACHINE_ID: identity.machineId, SLICE_OWNER_KERNEL_ID: identity.ownerKernelId, SLICE_OWNER_MACHINE_ID: identity.machineId },
     })
     assert.equal(result.status, 0, result.stderr)
     return result.stdout.trim().split("\n")
@@ -57,13 +57,13 @@ test("provider isolation probe uses the same canonical slice identity as the per
   ])
 })
 
-test("MP-08/MP-11 canonical signed relay admission is coordinated at local protocol 472 and peer protocol 73", async () => {
+test("MP-08/MP-11 canonical signed relay admission is coordinated at local protocol 491 and peer protocol 101", async () => {
   const [rust, client, peer] = await Promise.all([
     readFile(new URL("apps/kernel/src/local/api/types.rs", root), "utf8"),
     readFile(new URL("packages/kernel-client/src/kernel-types.ts", root), "utf8"),
     readFile(new URL("apps/kernel/src/transport/relay_peer.rs", root), "utf8"),
   ])
-  assert.equal(Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 472)
-  assert.equal(Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1]), 472)
-  assert.equal(Number(peer.match(/RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 73)
+  assert.equal(Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 491)
+  assert.equal(Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1]), 491)
+  assert.equal(Number(peer.match(/RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 101)
 })

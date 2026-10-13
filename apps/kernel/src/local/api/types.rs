@@ -27,6 +27,7 @@ mod kernel_access;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
+mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
 mod prompt_control;
@@ -43,6 +44,7 @@ mod terminal_command_catalog;
 mod terminal_interaction;
 mod waiting_room;
 mod workflow;
+mod workflow_notification;
 mod workspace;
 
 pub use agent_lifecycle::*;
@@ -62,6 +64,7 @@ pub use kernel_access::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
+pub use project_environment_aggregate::*;
 pub use project_environment_manifest::*;
 pub use project_environment_setup::*;
 pub use prompt_control::*;
@@ -78,6 +81,7 @@ pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use waiting_room::*;
 pub use workflow::*;
+pub use workflow_notification::*;
 pub use workspace::*;
 
 /// Version 319 adds Git credential enrollment for an existing managed environment.
@@ -257,4 +261,15 @@ pub use workspace::*;
 /// Version 470 adds structured OS requester identity to access decisions.
 /// Version 472 advertises identity-preserving terminal relay renewal with
 /// explicit capability negotiation and recoverable target-offline handshakes.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 472;
+/// Version 487 adds value-free Project Environment aggregates and reserves the
+/// complete Environment operation contract on top of 472 (developed as 471;
+/// MP-02/MP-03/MP-08/MP-10/MP-11).
+/// Version 490 requires bounded relay response framing and socket-local receipts.
+/// Version 491 adds credential-free Cloud kernel ownership projections, receiving
+/// CLIENT key-bound pivots, Cloud-free terminal pairing and provider account
+/// portability preflight, and requires a distinct relay subscription identity for
+/// every fresh encrypted binding while retaining the logical session replay
+/// cursor. It also restores workflow notifications, Room workflow inventory and
+/// controls, opt-in Cloud device denial and exact home-prompt cancellation
+/// admission (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 491;
