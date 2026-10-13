@@ -75,9 +75,8 @@ impl PausedBrief {
         std::fs::write(&executable, script).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let request =
-            LaunchProviderRequest::new(&session_id, "claude", "claude", "default", model)
-                .with_agent_id(&agent_id);
+        let request = LaunchProviderRequest::new(&session_id, "claude", "claude", "default", model)
+            .with_agent_id(&agent_id);
         let mut run = crate::provider::RuntimeProviderRun::new(
             "review-brief-run",
             &request,
