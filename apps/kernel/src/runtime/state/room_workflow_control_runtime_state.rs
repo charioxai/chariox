@@ -64,7 +64,12 @@ impl KernelRuntimeState {
             };
             match run {
                 Some(run) if run.id() == run_id && run.workflow_id() == request.workflow_id => {
-                    if run.status().is_terminal()
+                    if let Err(error) = self
+                        .owned
+                        .ensure_workflow_run_has_control_provenance(&initial, &run)
+                    {
+                        result.error = Some(error.to_string());
+                    } else if run.status().is_terminal()
                         || (request.action == RoomWorkflowRunAction::Pause
                             && run.status() == crate::session::WorkflowRunStatus::Paused)
                     {

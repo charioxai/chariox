@@ -77,6 +77,7 @@ pub struct DurableKernelStateStore {
     workflow_runtime_transition_lock: Arc<Mutex<()>>,
     app_wake_changed: Arc<tokio::sync::Notify>,
     _owner: Option<Arc<owner::OwnerLease>>,
+    workflow_history_authority: workflow_invocation_provenance::WorkflowHistoryAuthority,
 }
 
 const DURABLE_WRITE_QUEUE_CAPACITY: usize = 4_096;
@@ -444,6 +445,7 @@ impl DurableKernelStateStore {
             workflow_runtime_transition_lock: Arc::new(Mutex::new(())),
             app_wake_changed: Arc::new(tokio::sync::Notify::new()),
             _owner: None,
+            workflow_history_authority: Default::default(),
         })
     }
 

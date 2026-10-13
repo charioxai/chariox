@@ -234,6 +234,7 @@ impl KernelRuntimeState {
                 session_id: session_id.to_string(),
                 workflow_run_id: workflow_run_ref.to_string(),
             })?;
+        owned.ensure_workflow_run_has_control_provenance(&session, &resolved_workflow_run)?;
         let workflow_run_id = resolved_workflow_run.id().to_string();
         let expected_status = if pause {
             crate::session::WorkflowRunStatus::Paused
@@ -399,6 +400,29 @@ impl KernelRuntimeState {
     ) {
         let owned = &self.owned;
         let session_id = request.session_id.clone();
+        let admitted = (|| {
+            let session = owned.session_store.get_session(&request.session_id)?;
+            // MP-08/MP-10/MP-11: history may already be pruned from hot state.
+            // Resolve the same durable archive used by reads before classifying control.
+            let run = owned
+                .session_store
+                .read()
+                .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)
+                .ok()
+                .or(owned.durable_state_store.resolve_workflow_run(
+                    session.host_daemon_id(),
+                    session.id(),
+                    &request.workflow_run_ref,
+                )?)
+                .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                    session_id: request.session_id.clone(),
+                    workflow_run_id: request.workflow_run_ref.clone(),
+                })?;
+            owned.ensure_workflow_run_has_control_provenance(&session, &run)
+        })();
+        if let Err(error) = admitted {
+            return (Err(error), None);
+        }
         if let Err(error) = owned.require_publication_activation() {
             return (Err(error), owned.session_snapshot(&session_id).ok());
         }

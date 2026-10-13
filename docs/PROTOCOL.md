@@ -583,7 +583,7 @@ Those lifecycle semantics belong to PR2.
 ## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
 
 MP-08 / MP-09 / MP-10 / MP-11: the integrated acceptance contract uses local
-protocol **506** and relay peer protocol **114**. It combines the agent-model
+protocol **513** and relay peer protocol **121**. It combines the agent-model
 493/102 task, wake, Goal and leased-watcher contracts; main's local 490 bounded
 relay response framing and socket-local receipts; and the native display,
 App-view, Notes, grant, capture, DOM-mirror and agent-tab contracts integrated
@@ -591,16 +591,30 @@ at local 491. The display history includes bounded stripes (447), binary frames
 with WebP tiles and scroll rectangles (466), and relay display push/ACKs (475).
 Binary transport downgrade does not admit an obsolete worker runtime: remote
 lease creation, restored bindings, Room browser forwarding, context transfer and
-hosted slice receipts require peer 114 or newer. 506/114 also includes main's
+hosted slice receipts require peer 121 or newer. 513/121 also includes main's
 local 491 / relay peer 101 (#974) kernel ownership, waiting-room and Room
 workflow contracts. Client feature floors depend on
 the contracts they use; this entry allocates no new protocol version.
 
-MP-08 / MP-10 / MP-11: local protocol **511** orders a DOM mirror read
+MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
+actor normalization for display metadata/credits and the historical workflow
+read policy. A run with neither immutable agent creator nor invoking-user proof
+is visible only to the authenticated kernel owner, even when another member
+has Full collaboration. List, Get, snapshots and updates mark it with
+`created_before_ownership_tracking=true`; current endpoint/Room ownership never
+reassigns it. Web/TUI label it **Created before ownership tracking · read-only**.
+All individual and captured Room pause/resume/stop requests reject it below
+clients, including already-terminal/idempotent requests. New admissions retain
+the transactional immutable proof. Managed upgrade policy retains 506 as an
+explicit predecessor; the consuming web floor is 513.
+
+MP-08 / MP-10 / MP-11: local protocol **516** orders a DOM mirror read
 (`mirror_next`) behind every earlier `mirror_input` of the same mirror
 subscription and generation that reached the kernel first; the read never holds
-later input. A 511 client writes the read right behind a key, so the key's echo
-arrives in one relay round trip; older clients still read after the input reply.
+later input. A 516 client writes the read right behind a key, so the key's echo
+shares one relay round trip with input; kernels through 515 retain the
+input-reply-then-read path. The target's 513/121 lacked this ordering, so the
+coordinator allocated 516/124 above it; 511 is no longer an ordering floor.
 
 MP-08 / MP-10 / MP-11 G08: legacy recall tools (`chariox.search_recall`,
 `chariox.query_recall`, used while room agent tools are off) keep the
@@ -745,7 +759,7 @@ It never replays a template launch. Completed/cancelled runs stay terminal;
 restart retains the migration receipt, source cursors and finite check-in.
 
 The goal shape, compact task acknowledgements and `completion_check` origin were
-introduced at local protocol 493 and are retained in the integrated 506/114
+introduced at local protocol 493 and are retained in the integrated 513/121
 contract above, with matching snapshots and dependent Goal client gates.
 
 ## 3.4 Workflow Coordination Semantics
@@ -3589,7 +3603,7 @@ These owner-bound messages use the shared current relay peer protocol version:
 `ListWorkflowNotificationSources`,
 `SubscribeWorkflowNotifications`, `UnsubscribeWorkflowNotifications` and
 `DeliverWorkflowNotification` over the existing E2EE channel. The original
-452/82 contract is included in the integrated 506/114 union; those introduction
+452/82 contract is included in the integrated 513/121 union; those introduction
 versions are not the current admission floor. Picker discovery reuses
 waiting-room kernel inventory; Cloud stores no workflow directory or event data.
 ACK means durable target acceptance, not run completion. Seven-day default / 1–30-day

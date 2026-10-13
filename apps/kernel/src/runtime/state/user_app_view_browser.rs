@@ -60,7 +60,7 @@ impl KernelRuntimeState {
                 crate::runtime::user_app_views::UserAppViews::bind_browser
             };
             bind(
-                &instances,
+                instances,
                 owner,
                 &view.view_id,
                 opened.target_id.clone(),

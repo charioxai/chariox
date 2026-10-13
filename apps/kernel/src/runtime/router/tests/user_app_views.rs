@@ -992,7 +992,10 @@ async fn check_agent_app_input(
             .iter()
             .rev()
             .take(3)
-            .map(|r| (r["params"]["input"]["text"].clone(), r["context"]["actor"].clone()))
+            .map(|r| (
+                r["params"]["input"]["text"].clone(),
+                r["context"]["actor"].clone()
+            ))
             .collect::<Vec<_>>()
     );
     assert!(last["context"].get("agent_id").is_none());

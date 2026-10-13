@@ -9,6 +9,10 @@ function update(path, content) {
   } else writeFileSync(url, content)
 }
 update("fixtures/protocol-versions.json", JSON.stringify({ local: localProtocolVersion, relayPeer: relayPeerProtocolVersion }, null, 2) + "\n")
+// MP-08/MP-10/MP-11: keep the historical workflow shape but follow the pair.
+const historyPath = "fixtures/historical-workflow-protocol.json"
+const history = JSON.parse(readFileSync(new URL(historyPath, repositoryRoot), "utf8"))
+update(historyPath, JSON.stringify({ ...history, local: localProtocolVersion, relayPeer: relayPeerProtocolVersion }, null, 2) + "\n")
 const clientPath = "packages/kernel-client/src/kernel-types.ts"
 update(clientPath, readFileSync(new URL(clientPath, repositoryRoot), "utf8").replace(/export const LOCAL_DAEMON_PROTOCOL_VERSION = \d+/, `export const LOCAL_DAEMON_PROTOCOL_VERSION = ${localProtocolVersion}`))
 const versions = [...new Set([...admittedPredecessorProtocols, localProtocolVersion])].sort((a,b) => a-b)
