@@ -20,6 +20,7 @@ use super::remote_kernel_selection::{
     no_remote_kernel_available_message, select_remote_kernel,
 };
 
+mod lease_context;
 mod slice_recovery;
 use slice_recovery::SliceBindingRecovery;
 
@@ -708,6 +709,7 @@ impl DaemonApp {
             worktree_placement,
             relay_override,
             authorize,
+            false,
         );
         if remote_setup.is_err() {
             let mut sessions = session_store.write();
@@ -716,24 +718,7 @@ impl DaemonApp {
         remote_setup
     }
 
-    fn bind_remote_agent_to_worker(
-        &mut self,
-        agent: &AgentInstance,
-        worker_kernel: &RelayKernelPresence,
-        worker_worktree_id: Option<String>,
-        worktree_placement: Option<crate::agent::GitWorktreePlacement>,
-        relay_override: Option<DaemonConfig>,
-    ) -> Result<AgentInstance, DaemonError> {
-        self.bind_remote_agent_to_worker_authorized(
-            agent,
-            worker_kernel,
-            worker_worktree_id,
-            worktree_placement,
-            relay_override,
-            &|| Ok(()),
-        )
-    }
-
+    #[allow(clippy::too_many_arguments)]
     fn bind_remote_agent_to_worker_authorized(
         &mut self,
         agent: &AgentInstance,
@@ -742,6 +727,7 @@ impl DaemonApp {
         worktree_placement: Option<crate::agent::GitWorktreePlacement>,
         relay_override: Option<DaemonConfig>,
         authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+        recreated_context: bool,
     ) -> Result<AgentInstance, DaemonError> {
         authorize()?;
         let relay_config = relay_override
@@ -1022,23 +1008,27 @@ impl DaemonApp {
         }
         let leased_agent_id = leased_agent.id.clone();
         let lease_id = lease.id.clone();
-        let bound = match self.agents.bind_remote_execution(
-            agent.id(),
-            RemoteAgentBinding {
-                worker_kernel_id: worker_kernel.kernel_id.clone(),
-                worker_machine_id: worker_kernel.machine_id.clone(),
-                execution_lease_id: lease.id,
-                leased_agent_id: leased_agent.id,
-                active_worker_provider_run_id: None,
-                relay_url: relay_override
-                    .as_ref()
-                    .and_then(|config| config.relay_url.clone()),
-                relay_token: relay_override
-                    .as_ref()
-                    .and_then(|config| config.relay_token.clone()),
-                relay_peer_protocol_version: Some(relay_peer_protocol_version),
-            },
-        ) {
+        let remote_execution = RemoteAgentBinding {
+            worker_kernel_id: worker_kernel.kernel_id.clone(),
+            worker_machine_id: worker_kernel.machine_id.clone(),
+            execution_lease_id: lease.id,
+            leased_agent_id: leased_agent.id,
+            active_worker_provider_run_id: None,
+            relay_url: relay_override
+                .as_ref()
+                .and_then(|config| config.relay_url.clone()),
+            relay_token: relay_override
+                .as_ref()
+                .and_then(|config| config.relay_token.clone()),
+            relay_peer_protocol_version: Some(relay_peer_protocol_version),
+        };
+        let bound_result = if recreated_context {
+            self.commit_recreated_remote_execution(agent, remote_execution)
+        } else {
+            self.agents
+                .bind_remote_execution(agent.id(), remote_execution)
+        };
+        let bound = match bound_result {
             Ok(bound) => bound,
             Err(error) => {
                 cleanup_remote_setup(
@@ -1140,8 +1130,7 @@ impl DaemonApp {
             );
         }
         let rebound = match self
-            .agents
-            .bind_remote_execution(&refresh.agent_id, refresh.remote_execution.clone())
+            .commit_recreated_remote_execution(&agent, refresh.remote_execution.clone())
         {
             Ok(rebound) => rebound,
             Err(error) => return (Err(error), false),
@@ -1211,6 +1200,7 @@ impl DaemonApp {
             None,
             uses_remote_execution_relay.then_some(relay_config),
             authorize,
+            true,
         )?;
         self.durable_state_store().append_event(
             "agent.updated",
@@ -1268,12 +1258,14 @@ impl DaemonApp {
             &worker_kernel.kernel_id,
             &worker_kernel.machine_id,
         );
-        let rebound = self.bind_remote_agent_to_worker(
+        let rebound = self.bind_remote_agent_to_worker_authorized(
             &agent,
             worker_kernel,
             worker_worktree_id,
             None,
             uses_remote_execution_relay.then_some(relay_config),
+            &|| Ok(()),
+            true,
         )?;
         self.durable_state_store().append_event(
             "agent.updated",
@@ -1354,6 +1346,7 @@ impl DaemonApp {
             None,
             relay_override,
             authorize,
+            false,
         )
     }
 
@@ -3129,5 +3122,62 @@ mod cleanup_tests {
             receipts.is_empty(),
             "rejected replies must not be recorded as cleanup"
         );
+    }
+    // MP-08 / MP-10 / MP-11: exercise the existing refresh commit, including restart durability.
+    #[test]
+    fn review976_binding_refresh_persists_exact_lease_context_marker() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "refresh-workspace",
+                "refresh-worktree",
+            ))
+            .unwrap();
+        let original = RemoteAgentBinding {
+            worker_kernel_id: "refresh-worker".into(),
+            worker_machine_id: "refresh-machine".into(),
+            execution_lease_id: "old-execution".into(),
+            leased_agent_id: "old-leased-agent".into(),
+            active_worker_provider_run_id: None,
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+        };
+        app.agents
+            .bind_remote_execution(agent.id(), original.clone())
+            .unwrap();
+        let mut replacement = original.clone();
+        replacement.execution_lease_id = "new-execution".into();
+        replacement.leased_agent_id = "new-leased-agent".into();
+        let refresh = super::RemoteAgentBindingRefreshResult {
+            agent_id: agent.id().into(),
+            expected_binding: original.clone(),
+            remote_execution: replacement.clone(),
+            relay_config: app.config().clone(),
+            relay_state: app.relay_client_state(),
+            use_connected_relay: false,
+            _slice_recovery: None,
+        };
+        let (result, committed) = app.commit_remote_agent_binding_refresh(&refresh);
+        assert!(committed);
+        assert_eq!(result.unwrap().remote_execution(), Some(&replacement));
+        let history = crate::history::OperationalHistoryStore::open(
+            app.operational_history_store().path().to_path_buf(),
+        )
+        .unwrap();
+        assert!(history
+            .remote_lease_context_pending(session.id(), agent.id(), &replacement)
+            .unwrap());
+        assert!(!history
+            .remote_lease_context_pending(session.id(), agent.id(), &original)
+            .unwrap());
+        let (result, committed) = app.commit_remote_agent_binding_refresh(&refresh);
+        assert!(result.is_err());
+        assert!(!committed);
+        assert!(history
+            .remote_lease_context_pending(session.id(), agent.id(), &replacement)
+            .unwrap());
     }
 }

@@ -17,6 +17,12 @@ The context packet is bounded and prioritized:
 3. Stable facts and status/error details are included only for the latest turn.
 4. Tool use is included only for the latest turn. Older tool output is excluded.
 
+MP-08 / MP-10 / MP-11: when a worker restart recreates its lease, the home reconstructs its protected conversation into the existing hidden prompt context before the first worker submission. Every existing lease refresh path records a private, durable marker for that exact execution lease before publishing the new binding; the first accepted replay-bearing submission consumes it. The marker retains the exact replay-bearing prompt identity so receipt reconciliation applies the same rule after a home restart. Continuing workflow turns replay; only the ordinary workflow fresh-context policy skips replay, leaving the marker for a later ordinary turn. Ordinary follow-up turns and agent moves do not trigger the recreated-lease packet or a full history read. Rejected submissions retain the marker for retry, including across a home restart. The user prompt and home history remain unchanged; fresh workflow turns keep their separate context contract.
+
+MP-08 / MP-10 / MP-11: Claude sizes the optional replay after adding worker instructions. It removes older summaries before latest-turn detail at UTF-8 boundaries and labels omissions with `[truncated]`. Mandatory instructions remain intact. If no replay payload fits, submission rejects instead of silently consuming the conversation.
+
+MP-08 / MP-10 / MP-11: unavailable Room protection withholds optional history replay rather than failing the active prompt. Current hidden context is sent unchanged, preserving workflow node instructions, delivery/acknowledgement contracts, failed-request notes, and steer context. No replay is acknowledged while it is withheld, so the marker remains pending until protection recovers.
+
 ## Phases
 
 ### Phase 1: Deterministic Handoff Builder

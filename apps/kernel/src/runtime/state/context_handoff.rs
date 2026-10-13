@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 use crate::provider::RuntimeProviderRun;
 
 mod builder;
+mod remote;
 use builder::build_agent_context_handoff_from_history;
 
 #[derive(Debug, Clone)]

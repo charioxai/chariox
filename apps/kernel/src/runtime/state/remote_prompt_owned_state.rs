@@ -83,6 +83,10 @@ impl KernelRuntimeOwnedState {
         drop(sessions);
         if settled.is_some() {
             activity_mutation.record();
+            if delivered_run_id.is_some() {
+                // Receipt reconciliation reaches this same durable acknowledgement path.
+                self.clear_accepted_remote_lease_context(dispatch);
+            }
         }
         Ok(match (settled, binding_changed) {
             (Some(prompt), _) => RemotePromptDispatchSettlement::Settled(prompt),

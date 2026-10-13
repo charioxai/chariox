@@ -20,6 +20,7 @@ mod operational_legacy_import;
 mod operational_query;
 mod operational_retention;
 mod operational_session;
+mod remote_lease_context;
 mod session_log;
 
 pub use operational_archive::HistoryArchiveOutboxItem;
@@ -600,6 +601,7 @@ impl OperationalHistoryStore {
             .execute_batch(OPERATIONAL_HISTORY_SCHEMA)
             .map_err(|error| operational_history_error("migrate schema", error))?;
         ensure_operational_history_merge_key_index(&mut connection)?;
+        remote_lease_context::migrate(&connection)?;
         let max_sequence: u64 = connection
             .query_row(
                 "SELECT COALESCE(MAX(sequence), 0) FROM history_events",

@@ -1112,3 +1112,6 @@ async fn remote_workflow_submit_admits_vaulted_token_or_active_worker_run_withou
         assert!(!format!("{error:?}").contains(WORKFLOW_CREDENTIAL_CANARY));
     }
 }
+
+#[path = "remote_prompt_worker_submission_runtime_handoff_tests.rs"]
+mod handoff;

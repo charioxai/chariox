@@ -27,6 +27,15 @@ const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 = 360;
 const _: () =
     assert!(CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS > CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS);
 
+/// The bytes one more section can add to `hidden_context`, separator included,
+/// and still fit the chunked hook delivery. Every chunk but the last closes at
+/// least 5,997 bytes in, because a UTF-8 scalar is at most four bytes.
+pub(crate) fn claude_native_hidden_context_room(hidden_context: &str) -> usize {
+    let used = hidden_context.trim().len();
+    (CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS * (CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES - 3))
+        .saturating_sub(used + if used == 0 { 0 } else { 2 })
+}
+
 pub(crate) fn ensure_claude_native_hidden_context_fits(
     provider_run_id: &str,
     hidden_context: &str,
@@ -56,6 +65,77 @@ pub(crate) fn ensure_claude_native_hidden_context_fits(
             CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES
         ),
     })
+}
+
+// MP-08 / MP-10 / MP-11: optional home replay is sized against the complete worker turn.
+pub(crate) fn fit_claude_native_hidden_context(
+    provider_run_id: &str,
+    hidden_context: String,
+) -> Result<String, DaemonError> {
+    if ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context).is_ok() {
+        return Ok(hidden_context);
+    }
+    let open = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_OPEN;
+    let close = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_CLOSE;
+    let Some(start) = hidden_context.find(open) else {
+        ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context)?;
+        return Ok(hidden_context);
+    };
+    let body_start = start + open.len();
+    let Some(body_end) = hidden_context[body_start..]
+        .find(close)
+        .map(|end| body_start + end)
+    else {
+        ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context)?;
+        return Ok(hidden_context);
+    };
+    let prefix = &hidden_context[..start];
+    let suffix = &hidden_context[body_end + close.len()..];
+    let required = format!("{prefix}{suffix}");
+    // Mandatory origin, skill, attachment and prompt assembly instructions are never truncated.
+    ensure_claude_native_hidden_context_fits(provider_run_id, &required)?;
+    let capacity = CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS * (CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES - 3);
+    let room = capacity.saturating_sub(required.len() + open.len() + close.len());
+    if room == 0 {
+        ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context)?;
+        return Ok(hidden_context);
+    }
+    let body = &hidden_context[body_start..body_end];
+    const TRUNCATED: &str = "[truncated]\n";
+    // Latest turn is last in the home packet. Retain that turn before older
+    // summaries, trimming the start at a UTF-8 boundary and disclosing the cut.
+    let keep = room.saturating_sub(TRUNCATED.len());
+    if keep == 0 {
+        ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context)?;
+        return Ok(hidden_context);
+    }
+    let latest_start = body
+        .find("\nLatest turn:\n")
+        .map(|index| index + 1)
+        .or_else(|| body.starts_with("Latest turn:\n").then_some(0))
+        .unwrap_or(body.len());
+    let (prior, latest) = body.split_at(latest_start);
+    let mut latest_end = latest.len().min(keep);
+    while !latest.is_char_boundary(latest_end) {
+        latest_end -= 1;
+    }
+    if !latest.is_empty() && latest_end <= "Latest turn:\n".len() {
+        // A header without any latest-turn detail is not a usable replay.
+        ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context)?;
+        return Ok(hidden_context);
+    }
+    let prior_room = keep - latest_end;
+    let mut begin = prior.len().saturating_sub(prior_room);
+    while !prior.is_char_boundary(begin) {
+        begin += 1;
+    }
+    let fitted = format!(
+        "{prefix}{open}{TRUNCATED}{}{}{close}{suffix}",
+        &prior[begin..],
+        &latest[..latest_end]
+    );
+    ensure_claude_native_hidden_context_fits(provider_run_id, &fitted)?;
+    Ok(fitted)
 }
 
 pub(super) struct ClaudeNativeTuiFiles {
