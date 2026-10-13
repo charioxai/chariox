@@ -258,6 +258,52 @@ test("MP-08/MP-11 GET /health reads saved accounts without paid verification", a
   }
 })
 
+test("MP-08/MP-11 publication health rejects saved missing and failed authentication", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-saved-auth-"))
+  await writeFile(join(root, "publication.json"), "{}")
+  await writeFile(join(root, "requirements.json"), "{}")
+  try {
+    for (const provider of ["claude", "codex", "opencode"]) {
+      await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+        agents: [{ provider, account_profile: "saved-account" }],
+      }))
+      for (const authState of ["not_configured", "error", "expired", "authenticated"]) {
+        const requests: Record<string, unknown>[] = []
+        const { app } = buildServer({ ...baseConfig, package_root: root }, {
+          invokeWorkflow: async () => ({ accepted: true }),
+          getProviderCliStatus: async (command) => ({ available: true, command, version: "fixture" }),
+          createProviderReadinessClient: () => ({
+            send: async (request) => {
+              requests.push(request)
+              return { ProviderAccountProfile: { profile: {
+                auth_state: authState, profile_id: "saved-account",
+              } } }
+            },
+          }),
+        })
+        try {
+          for (const url of ["/health", "/.well-known/chariox/publication/status"]) {
+            const response = await app.inject({ method: "GET", url })
+            assert.equal(response.statusCode, 200)
+            const [readiness] = response.json().provider_readiness
+            const ready = authState === "authenticated"
+            assert.equal(readiness.ready, ready, `${provider}/${authState}/${url}`)
+            assert.equal(readiness.status, ready ? "provider_ready" : "provider_auth_expired")
+            assert.equal(readiness.auth.status, readiness.status)
+          }
+          assert.deepEqual(requests, Array(2).fill({
+            GetProviderAccountProfile: { provider, account_profile: "saved-account" },
+          }))
+        } finally {
+          await app.close()
+        }
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("GET publication status reports runtime binding", async () => {
   const { app } = buildServer({
     ...baseConfig,
