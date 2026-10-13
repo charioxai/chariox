@@ -208,5 +208,5 @@ fn rejects_unrecognized_journal_format() {
     let path = root.path().join("checks.wal");
     std::fs::write(&path, b"{}\n").unwrap();
     assert!(super::check_journal::read(&path).is_err());
-    assert!(super::check_journal::write(&path, b"{}").is_err());
+    assert!(super::check_journal::append(&path, b"{}").is_err());
 }
