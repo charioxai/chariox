@@ -233,6 +233,15 @@ done
         .unwrap();
     let startup_health = std::fs::read(root.join("health")).unwrap();
     let policy = json!({"values":[],"targets":[],"unknown":false});
+    // MP-11: real Computer viewers initialize the desktop before input.
+    host.protected_request(
+        "alice",
+        None,
+        "host.computer",
+        json!({"op":"state"}),
+        policy.clone(),
+    )
+    .unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let early = std::thread::scope(|scope| {
         let capture = scope
