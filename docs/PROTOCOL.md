@@ -121,6 +121,24 @@ The kernel remains the workspace/runtime authority in all cases.
 
 ## 3.1 Terminal Lane (Provider Output Stream)
 
+MP-08 / MP-10, allocated local protocol 508 / peer 116: persisted terminal
+output carries its history `sequence`. Consecutive output or reasoning rows
+with the same run, merge key and recipient scope may coalesce. `sequence_end`
+is the inclusive last sequence; `sequence_byte_lengths` gives each persisted
+row's UTF-8 byte length, in order. A single row omits both fields. Clients split
+the range at these byte boundaries before replay deduplication, preserving
+unseen rows when history hydration overlaps only part of a range. Gaps and
+unsequenced bytes never join a persisted range.
+
+`GetSessionHistoryOutline.include_prefetched_content=true` returns optional
+`prefetched_blobs` on each requested agent, including an explicit empty array
+when no content is selected. The kernel selects up to 64 latest-turn detail,
+assistant-output and steering blobs per agent, with a shared 1 MiB encoded
+content budget. Other details remain available through the existing blob
+requests. The outline's `steering` flag identifies budgeted steering prompts;
+observed and recovery prompt envelopes retain their collapsed, on-demand role.
+Clients that omit the request flag retain the earlier outline and blob paths.
+
 Purpose:
 
 - user keystrokes to provider PTY

@@ -44,6 +44,7 @@ export type SessionHistoryOutlineAgent = {
   agent_id: string
   turns: SessionHistoryOutlineTurn[]
   next_cursor?: SessionHistoryOutlineCursor | null
+  prefetched_blobs?: SessionHistoryBlobContent[]
 }
 
 export type SessionHistoryOutlineCursor = {
@@ -78,6 +79,7 @@ export type SessionHistoryOutlineBlob = {
   timestamp_ms: number
   /** Protocol ≥508: a tool call's snapshot without output, or a thought's first line. */
   preview?: string | null
+  steering?: boolean
 }
 
 export type SessionHistoryBlobContent = {

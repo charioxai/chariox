@@ -304,6 +304,9 @@ export type TerminalOutputRecord = {
   record_id?: number | null
   /** Protocol ≥508: history sequence of the row this output was stored as. */
   sequence?: number | null
+  sequence_end?: number | null
+  /** UTF-8 byte lengths for every consecutive persisted row in the range. */
+  sequence_byte_lengths?: number[]
   timestamp_ms: number
   agent_id?: string | null
   prompt_id?: string | null

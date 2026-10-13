@@ -1,5 +1,104 @@
 use super::*;
 
+#[tokio::test]
+async fn initial_outline_batches_three_agents_and_marks_budgeted_steers() {
+    // MP-08 / MP-10: source regression only; live Web/TUI acceptance is separate.
+    let path = std::env::temp_dir().join(format!(
+        "chariox-initial-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let store = OperationalHistoryStore::open(path.clone()).unwrap();
+    for (index, agent) in ["a", "b", "c"].iter().enumerate() {
+        let start = index as u64 * 100 + 1;
+        let context = HistoryEventTurnContext {
+            session_id: Some("s".into()),
+            agent_id: Some((*agent).into()),
+            turn_id: Some(format!("turn-{agent}")),
+            prompt_id: Some(format!("prompt-{agent}")),
+            provider_run_id: Some(format!("run-{agent}")),
+            ..HistoryEventTurnContext::default()
+        };
+        store
+            .append(&HistoryEvent::transcript(
+                start,
+                &SessionHistoryEntry::user_prompt("s", "client", agent, "original task"),
+                context.clone(),
+            ))
+            .unwrap();
+        for offset in 1..=40 {
+            store
+                .append(&HistoryEvent::transcript(
+                    start + offset + 2,
+                    &SessionHistoryEntry::provider_output(
+                        "s",
+                        &format!("run-{agent}"),
+                        Some(agent),
+                        TerminalOutputKind::ProviderOutput,
+                        Some(format!("message-{offset}")),
+                        format!("step {offset}"),
+                    ),
+                    context.clone(),
+                ))
+                .unwrap();
+        }
+        store
+            .append(&HistoryEvent::operational(
+                start + 1,
+                HistoryEventKind::UserPrompt,
+                Some(crate::history::HistoryEventRole::User),
+                Some("also run date".into()),
+                BTreeMap::from([(
+                    "merge_key".into(),
+                    serde_json::Value::String(crate::history::steering_prompt_merge_key(&format!(
+                        "queued-{agent}"
+                    ))),
+                )]),
+                context.clone(),
+            ))
+            .unwrap();
+        store.append(&HistoryEvent::transcript(start + 43, &SessionHistoryEntry::provider_output("s", &format!("run-{agent}"), Some(agent), TerminalOutputKind::ProviderTool, Some(format!("call-{agent}")), format!(r#"{{"id":"call-{agent}","tool":"read","status":"completed","output":"source-{agent}"}}"#)), context)).unwrap();
+    }
+    let request = GetSessionHistoryOutlineRequest {
+        session_id: "s".into(),
+        agent_ids: Some(vec!["a".into(), "b".into(), "c".into()]),
+        latest_prompt_count: Some(4),
+        cursor: None,
+        include_prefetched_content: true,
+    };
+    let response = execute_session_history_outline_request(store.clone(), request)
+        .await
+        .unwrap();
+    let LocalDaemonResponse::SessionHistoryOutline { agents } = response else {
+        panic!("wrong response")
+    };
+    assert_eq!(agents.len(), 3);
+    for agent in agents {
+        assert_eq!(agent.turns.len(), 1);
+        let blobs = &agent.turns[0].blobs;
+        let steer = blobs
+            .iter()
+            .find(|blob| blob.steering)
+            .expect("budgeted steer marker");
+        let pages = agent.prefetched_blobs.as_ref().unwrap();
+        assert!(pages
+            .iter()
+            .any(|page| page.blob_id == steer.blob_id
+                && page.entries[0].entry.text == "also run date"));
+        assert!(pages
+            .iter()
+            .flat_map(|page| &page.entries)
+            .any(|entry| entry
+                .entry
+                .text
+                .contains(&format!("source-{}", agent.agent_id))));
+    }
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
 // MP-08 / MP-10 (panes R7, protocol 508): one request returns several blobs of
 // an agent, in request order, and refuses oversized batches.
 #[tokio::test]

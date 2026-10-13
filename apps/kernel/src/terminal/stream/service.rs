@@ -196,6 +196,8 @@ impl TerminalStreamService {
         let record = TerminalOutputRecord {
             record_id: None,
             sequence: None,
+            sequence_end: None,
+            sequence_byte_lengths: Vec::new(),
             timestamp_ms: unix_epoch_ms(),
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
@@ -242,6 +244,8 @@ impl TerminalStreamService {
             let record = TerminalOutputRecord {
                 record_id: None,
                 sequence: output.sequence,
+                sequence_end: None,
+                sequence_byte_lengths: Vec::new(),
                 timestamp_ms: unix_epoch_ms(),
                 session_id: output.session_id,
                 provider_run_id: output.provider_run_id,
@@ -302,6 +306,8 @@ impl TerminalStreamService {
         let record = TerminalOutputRecord {
             record_id: None,
             sequence: None,
+            sequence_end: None,
+            sequence_byte_lengths: Vec::new(),
             timestamp_ms: unix_epoch_ms(),
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
@@ -373,6 +379,8 @@ impl TerminalStreamService {
         let record = TerminalOutputRecord {
             record_id: None,
             sequence,
+            sequence_end: None,
+            sequence_byte_lengths: Vec::new(),
             timestamp_ms: unix_epoch_ms(),
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
@@ -525,9 +533,18 @@ impl TerminalStreamService {
             || previous.record.recipient_attachment_ids != record.recipient_attachment_ids
             || previous.record.pending_recipient_attachment_ids
                 != record.pending_recipient_attachment_ids
-            || previous.record.sequence != record.sequence
         {
             return false;
+        }
+        // Only consecutive persisted rows may share a range.
+        match (previous.record.sequence, record.sequence) {
+            (Some(start), Some(next)) => {
+                if previous.record.sequence_end.unwrap_or(start).checked_add(1) != Some(next) {
+                    return false;
+                }
+            }
+            (None, None) => {}
+            _ => return false,
         }
         let Some(coalesced_len) = previous.record.bytes.len().checked_add(record.bytes.len())
         else {
@@ -535,6 +552,19 @@ impl TerminalStreamService {
         };
         if coalesced_len > self.output_coalesce_byte_limit {
             return false;
+        }
+        if let Some(sequence) = record.sequence {
+            if previous.record.sequence_byte_lengths.is_empty() {
+                previous
+                    .record
+                    .sequence_byte_lengths
+                    .push(previous.record.bytes.len());
+            }
+            previous
+                .record
+                .sequence_byte_lengths
+                .push(record.bytes.len());
+            previous.record.sequence_end = Some(sequence);
         }
         previous.record.bytes.extend_from_slice(&record.bytes);
         true

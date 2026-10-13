@@ -9,6 +9,7 @@ export function getSessionHistoryOutlineRequest(
   agentIds?: readonly string[] | null,
   latestPromptCount?: number | null,
   cursor?: SessionHistoryOutlineCursor | null,
+  includePrefetchedContent = false,
 ) {
   return {
     GetSessionHistoryOutline: {
@@ -16,6 +17,7 @@ export function getSessionHistoryOutlineRequest(
       agent_ids: agentIds ? [...agentIds] : null,
       latest_prompt_count: latestPromptCount ?? null,
       cursor: cursor ?? null,
+      ...(includePrefetchedContent ? { include_prefetched_content: true } : {}),
     },
   }
 }

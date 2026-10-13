@@ -14,6 +14,7 @@ use crate::provider::normalized_observed_prompt_text;
 use crate::provider::ExternalProviderImportMetadata;
 use crate::session::PromptOrigin;
 
+mod prefetch;
 mod projection;
 
 #[cfg(test)]
@@ -62,6 +63,14 @@ pub(crate) async fn execute_scoped_session_history_outline_request(
                 request.cursor.as_ref().map(|cursor| cursor.before_sequence),
                 agent_imports.get(&agent_id),
             )?);
+        }
+        if request.include_prefetched_content {
+            prefetch::prefetch_outline_blobs(
+                &operational_history,
+                &request.session_id,
+                &mut agents,
+                &agent_imports,
+            )?;
         }
         Ok(LocalDaemonResponse::SessionHistoryOutline { agents })
     })
@@ -231,6 +240,7 @@ fn load_scoped_agent_outline(
     if prompts.is_empty() {
         return Ok(SessionHistoryOutlineAgent {
             agent_id: agent_id.to_string(),
+            prefetched_blobs: None,
             turns: Vec::new(),
             next_cursor: None,
         });
@@ -288,6 +298,7 @@ fn load_scoped_agent_outline(
             });
     Ok(SessionHistoryOutlineAgent {
         agent_id: agent_id.to_string(),
+        prefetched_blobs: None,
         turns,
         next_cursor,
     })

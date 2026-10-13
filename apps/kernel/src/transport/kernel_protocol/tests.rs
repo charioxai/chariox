@@ -69,6 +69,8 @@ fn terminal_output_event_batches_stay_under_json_byte_cap() {
         .map(|index| TerminalOutputRecord {
             record_id: Some(index as u64),
             sequence: None,
+            sequence_end: None,
+            sequence_byte_lengths: Vec::new(),
             timestamp_ms: 1_000 + index as u64,
             session_id: "session-1".to_string(),
             provider_run_id: "provider-run-1".to_string(),
@@ -140,6 +142,8 @@ fn terminal_output_event_batch_size_accounting_matches_serialized_json() {
         .map(|index| TerminalOutputRecord {
             record_id: Some(index as u64),
             sequence: None,
+            sequence_end: None,
+            sequence_byte_lengths: Vec::new(),
             timestamp_ms: 2_000 + index as u64,
             session_id: format!("session-{index}"),
             provider_run_id: format!("provider-run-{index}"),

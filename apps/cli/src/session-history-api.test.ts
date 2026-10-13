@@ -4,6 +4,19 @@ import test from "node:test"
 import type { LocalIpcClient } from "./ipc.js"
 import { getSessionHistoryOutline, getSessionHistoryBlobContents } from "./session-history-api.js"
 
+test("MP-08 / MP-10 initial cross-agent content uses one outline RPC", async () => {
+  const calls: string[] = []
+  const contents = ["a", "b", "c"].map((id) => ({ blob_id: `blob-${id}`, entries: [] }))
+  const client = { send: async (request: Record<string, any>) => {
+    calls.push(Object.keys(request)[0]!)
+    assert.equal(request.GetSessionHistoryOutline.include_prefetched_content, true)
+    return { SessionHistoryOutline: { agents: ["a", "b", "c"].map((agent_id, i) => ({ agent_id, turns: [], prefetched_blobs: [contents[i]] })) } }
+  } } as unknown as LocalIpcClient
+  const value = await getSessionHistoryOutline(client, "s", ["a", "b", "c"])
+  assert.deepEqual(calls, ["GetSessionHistoryOutline"])
+  assert.deepEqual(value.agents.map((a) => a.loadedBlobs), contents.map((c) => [c]))
+})
+
 // MP-08 / MP-10 (panes Phase-1 drill, PANE-01/PANE-03): the TUI loads the
 // prefetched blobs with the outline in one batch per agent, so assistant rows
 // read as text; an older kernel leaves them as click-to-load placeholders.

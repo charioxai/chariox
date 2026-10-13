@@ -71,6 +71,7 @@ fn outline_blob_from_event(event: HistoryEvent) -> Option<SessionHistoryOutlineB
     let total_chars = entry.text.chars().count();
     Some(SessionHistoryOutlineBlob {
         blob_id: blob_id(event.sequence, event.sequence),
+        steering: is_steering_prompt_event(&event),
         kind: entry.kind,
         title: blob_title(entry.kind),
         summary: blob_summary(entry.kind, &entry.text),
@@ -190,6 +191,7 @@ fn outline_blob_identity(
     let identity = entry.as_ref().and_then(|entry| match entry.kind {
         SessionHistoryEntryKind::ProviderTool => provider_tool_call_id(entry),
         SessionHistoryEntryKind::ProviderReasoning => entry.merge_key.clone(),
+        SessionHistoryEntryKind::UserPrompt => entry.merge_key.clone(),
         _ => None,
     });
     (entry.map(|entry| entry.kind), identity)
@@ -215,6 +217,7 @@ fn outline_blob_from_event_group(events: &[&HistoryEvent]) -> Option<SessionHist
         .unwrap_or(first_event.timestamp_ms);
     Some(SessionHistoryOutlineBlob {
         blob_id: blob_id(sequence_start, sequence_end),
+        steering: is_steering_prompt_event(first_event),
         kind: first_entry.kind,
         title: grouped_blob_title(
             first_entry.kind,

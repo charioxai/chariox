@@ -9,6 +9,10 @@ import { fileURLToPath } from "node:url"
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
 const kernelTests = [
+  "terminal::stream::tests::service::stalled_attachment_retains_six_thousand_history_deltas",
+  "terminal::stream::tests::service::output_records_preserve_distinct_history_sequences",
+  "runtime::history_requests::session_outline::tests::batch_blob_contents::initial_outline_batches_three_agents_and_marks_budgeted_steers",
+  "local::api::tests::protocol_shapes::panes_history::panes_history_508_range_steering_and_initial_content_snapshot",
   "runtime::state::provider_output_runtime_tests::structured_output::structured_output_batch_persists_one_turn_id_for_all_chunks",
   "runtime::agent_actor::tests::prompt_command_execution::queued_controls::prompt_steer_queued_removes_queue_entry_without_settling_active_prompt",
   "runtime::history_requests::session_outline::projection::tests::tool_blobs_are_one_per_call_and_never_span_inline_text",

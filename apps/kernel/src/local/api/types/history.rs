@@ -9,6 +9,9 @@ pub struct GetSessionHistoryOutlineRequest {
     pub latest_prompt_count: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<SessionHistoryOutlineCursor>,
+    /// Protocol 508: include the bounded initial content for every requested agent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_prefetched_content: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +42,8 @@ pub struct SessionHistoryOutlineAgent {
     pub turns: Vec<SessionHistoryOutlineTurn>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<SessionHistoryOutlineCursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefetched_blobs: Option<Vec<SessionHistoryBlobContentPage>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +99,9 @@ pub struct SessionHistoryOutlineBlob {
     /// tool call's snapshot without its output, or a thought's first line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
+    /// Distinguish a budgeted steer from observed/recovery prompt envelopes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub steering: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

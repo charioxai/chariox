@@ -49,6 +49,7 @@ async fn failed_turn_history_request_preserves_settlement_after_store_reopen() {
         store,
         GetSessionHistoryOutlineRequest {
             session_id: "session-1".into(),
+            include_prefetched_content: false,
             agent_ids: Some(vec!["agent-1".into()]),
             latest_prompt_count: Some(4),
             cursor: None,

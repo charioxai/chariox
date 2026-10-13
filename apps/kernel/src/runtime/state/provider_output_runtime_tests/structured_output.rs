@@ -136,6 +136,8 @@ async fn assert_owned_output_pump_drains_pending_record_after_run_state_change(
     let expected = crate::terminal::TerminalOutputRecord {
         record_id: None,
         sequence: None,
+        sequence_end: None,
+        sequence_byte_lengths: Vec::new(),
         timestamp_ms: 1_000,
         session_id: session.id().to_string(),
         provider_run_id: run.id().to_string(),

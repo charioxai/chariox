@@ -527,7 +527,9 @@ fn output_drain_size_estimator_bounds_scoped_json() {
     let record = TerminalOutputRecord {
         record_id: None,
         // MP-08 / MP-10 (chariox#987 review): the history sequence counts too.
-        sequence: Some(u64::MAX),
+        sequence: Some(u64::MAX - 1),
+        sequence_end: Some(u64::MAX),
+        sequence_byte_lengths: vec![2, 4],
         timestamp_ms: 1_700,
         session_id: "session-\n1".to_string(),
         provider_run_id: "provider-run-1".to_string(),
@@ -1247,8 +1249,43 @@ fn workflow_run_updates_are_bounded_per_attachment() {
     assert!(terminal.workflow_run_update_records.is_empty());
 }
 
-// MP-08 / MP-10 (panes R5, chariox#987 review): each persisted row retains
-// its own sequence, even when successive chunks share a merge key.
+// MP-08 / MP-10: a stalled attachment must retain more than 4096 text deltas.
+#[test]
+fn stalled_attachment_retains_six_thousand_history_deltas() {
+    let mut terminal = TerminalStreamService::new();
+    for sequence in 1..=6000 {
+        terminal.fan_out_outputs(vec![TerminalOutputAppend {
+            session_id: "session-1".into(),
+            provider_run_id: "run-1".into(),
+            agent_id: Some("agent-1".into()),
+            prompt_origin: None,
+            source_attachment_id: None,
+            kind: TerminalOutputKind::ProviderOutput,
+            merge_key: Some("message-1".into()),
+            sequence: Some(sequence),
+            recipient_attachment_ids: vec!["attachment-1".into()].into(),
+            bytes: b"x".to_vec(),
+        }]);
+    }
+    let mut records = Vec::new();
+    loop {
+        let page = terminal.drain_output_records("session-1", "attachment-1");
+        if page.is_empty() {
+            break;
+        }
+        records.extend(page);
+    }
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.bytes.len())
+            .sum::<usize>(),
+        6000
+    );
+    assert_eq!(records.first().and_then(|record| record.sequence), Some(1));
+}
+
+// MP-08 / MP-10: coalescing retains the exact persisted row boundaries.
 #[test]
 fn output_records_preserve_distinct_history_sequences() {
     let append = |sequence: Option<u64>, bytes: &[u8]| TerminalOutputAppend {
@@ -1270,21 +1307,18 @@ fn output_records_preserve_distinct_history_sequences() {
     terminal.fan_out_outputs(vec![append(None, b"live-only")]);
 
     let records = terminal.drain_output_records("session-1", "attachment-1");
-    assert_eq!(records.len(), 4);
+    assert_eq!(records.len(), 2);
     assert_eq!(
         records.iter().map(|r| r.sequence).collect::<Vec<_>>(),
-        vec![Some(10), Some(11), Some(12), None]
+        vec![Some(10), None]
     );
     assert_eq!(
         records
             .iter()
             .map(|r| r.bytes.as_slice())
             .collect::<Vec<_>>(),
-        vec![
-            b"hello ".as_slice(),
-            b"big ".as_slice(),
-            b"world".as_slice(),
-            b"live-only".as_slice()
-        ]
+        vec![b"hello big world".as_slice(), b"live-only".as_slice()]
     );
+    assert_eq!(records[0].sequence_end, Some(12));
+    assert_eq!(records[0].sequence_byte_lengths, vec![6, 4, 5]);
 }

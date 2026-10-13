@@ -15,6 +15,8 @@ pub(super) fn scoped_output_record(
     TerminalOutputRecord {
         record_id: Some(record_id),
         sequence: record.sequence,
+        sequence_end: record.sequence_end,
+        sequence_byte_lengths: record.sequence_byte_lengths.clone(),
         timestamp_ms: record.timestamp_ms,
         session_id: record.session_id.clone(),
         provider_run_id: record.provider_run_id.clone(),
@@ -87,6 +89,29 @@ pub(super) fn terminal_output_record_scoped_json_bytes(
             &mut field_count,
             "sequence",
             json_u64_len(sequence),
+        );
+    }
+    if let Some(sequence_end) = record.sequence_end {
+        add_json_field(
+            &mut total,
+            &mut field_count,
+            "sequence_end",
+            json_u64_len(sequence_end),
+        );
+    }
+    if !record.sequence_byte_lengths.is_empty() {
+        let lengths = &record.sequence_byte_lengths;
+        let value_len = 2
+            + lengths.len().saturating_sub(1)
+            + lengths
+                .iter()
+                .map(|length| json_u64_len(*length as u64))
+                .sum::<usize>();
+        add_json_field(
+            &mut total,
+            &mut field_count,
+            "sequence_byte_lengths",
+            value_len,
         );
     }
     add_json_field(

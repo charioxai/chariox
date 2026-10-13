@@ -16,7 +16,7 @@ import {
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 
-export type SessionHistoryOutlineWithBlobs = SessionHistoryOutline & {
+export type SessionHistoryOutlineWithBlobs = Omit<SessionHistoryOutline, "agents"> & {
   agents: (SessionHistoryOutline["agents"][number] & { loadedBlobs: SessionHistoryBlobContent[] })[]
 }
 
@@ -28,14 +28,14 @@ export async function getSessionHistoryOutline(
   cursor: SessionHistoryOutlineCursor | null = null,
 ): Promise<SessionHistoryOutlineWithBlobs> {
   const response = await client.send<Record<string, unknown>>(
-    getSessionHistoryOutlineRequest(sessionId, agentIds, latestPromptCount, cursor),
+    getSessionHistoryOutlineRequest(sessionId, agentIds, latestPromptCount, cursor, true),
   )
   const outline = expectVariant<SessionHistoryOutline>(response, "SessionHistoryOutline")
   return {
     ...outline,
     agents: await Promise.all(outline.agents.map(async (agent) => ({
       ...agent,
-      loadedBlobs: await getSessionHistoryBlobContents(client, sessionId, agent.agent_id, sessionHistoryOutlinePrefetchBlobIds(agent)),
+      loadedBlobs: agent.prefetched_blobs ?? await getSessionHistoryBlobContents(client, sessionId, agent.agent_id, sessionHistoryOutlinePrefetchBlobIds(agent)),
     }))),
   }
 }

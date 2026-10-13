@@ -290,6 +290,8 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
             crate::terminal::TerminalOutputRecord {
                 record_id: Some(7),
                 sequence: Some(41),
+                sequence_end: None,
+                sequence_byte_lengths: Vec::new(),
                 timestamp_ms: 1_700_000_000_000,
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
@@ -321,6 +323,8 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
             crate::terminal::TerminalOutputRecord {
                 record_id: Some(8),
                 sequence: None,
+                sequence_end: None,
+                sequence_byte_lengths: Vec::new(),
                 timestamp_ms: 1_700_000_000_001,
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
