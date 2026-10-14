@@ -4,6 +4,7 @@ import { kernelBrowserRequest } from "@chariox/kernel-client/ipc-requests"
 import type { UserAppView, KernelBrowserInput } from "@chariox/kernel-client/kernel-types"
 import type { PasskeyPopupKey, PasskeyPopupPaste } from "./passkey-popup-controller.js"
 import { appViewText, formatUserAppViewOutline } from "./user-app-view-outline.js"
+import { appHostOperationId } from "./kernel-approval-controller.js"
 
 export type UserAppViewClient = { send(request: any): Promise<any> }
 export type UserAppViewPanel = { open: boolean; text: string }
@@ -84,6 +85,16 @@ export function createUserAppViewController(deps: {
     for (const item of created) if (item.client === bound.client && item.view.view_id === bound.view.view_id) created.delete(item)
     if (active?.view.view_id === bound.view.view_id && active.client === bound.client) { active = undefined; hide() }
     deps.notify("App view closed")
+  }
+  /** Pending host offers of this owner's App Tabs (detached, sessionless decisions). */
+  async function hostOfferIds(): Promise<string[]> {
+    const client = deps.client()
+    const result = field(await client.send(subscribeUserAppViewsRequest(undefined, 0)), "UserAppViewsChanged")
+    current(client)
+    return (Array.isArray(result.interactions) ? result.interactions : []).flatMap((item: any) => {
+      const operation = appHostOperationId(item)
+      return operation ? [operation] : []
+    })
   }
   async function handle(args: string[]): Promise<boolean> {
     // MP-08/MP-11: an attached Room does not change the App's browser host.
@@ -171,7 +182,7 @@ export function createUserAppViewController(deps: {
     void refresh(active).catch(() => { hide(); deps.notify("App view unavailable; select a view on the current kernel") }).finally(() => { refreshPending = false })
   }, 750)
   timer.unref()
-  return { handle, handleKey, handlePaste, hide, ownsInput: () => open, view: () => ({open,text}),
+  return { handle, hostOfferIds, handleKey, handlePaste, hide, ownsInput: () => open, view: () => ({open,text}),
     async idle() { await work },
     async dispose() {
       disposed = true; clearInterval(timer); hide(); active = undefined

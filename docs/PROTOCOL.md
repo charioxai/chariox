@@ -3548,7 +3548,9 @@ The accepting terminal performs the action on its own machine. TUI users type
 `/app host accept` after closing the approval panel selects the sole pending
 host offer in the attached session only when it matches the last offer displayed
 in that terminal's approval panel. Unviewed/replaced offers require re-opening
-the panel or an explicit ID. Multiple offers require
+the panel or an explicit ID. An offer from an owner's user-domain App Tab is a
+detached owner decision with session `""` (listed by `/app view approvals`);
+the TUI takes it only by explicit ID, sending `session_id: ""`. Multiple offers require
 `/app host accept OPERATION`. Copying uses the renderer-backed OSC 52/native
 clipboard helper and always shows the escaped text as a visible fallback
 because OSC 52 has no acknowledgement; link opening
