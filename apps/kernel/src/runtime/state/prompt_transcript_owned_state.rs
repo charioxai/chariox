@@ -911,6 +911,38 @@ impl KernelRuntimeOwnedState {
         // turn start. Persist the activation time here so history hydration
         // cannot place a promoted prompt inside the preceding active turn.
         let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+        self.append_started_user_prompt_history(
+            session_id,
+            source_attachment_id,
+            prompt,
+            prompt_sent_at_ms,
+        )?;
+        self.note_started_prompt_sent_at(session_id, prompt.target_agent_id(), prompt_sent_at_ms)?;
+        Ok(prompt_sent_at_ms)
+    }
+
+    /// Admission notes a turn start before mirroring its prompt state, so one
+    /// durable prompt-state commit carries both the started prompt and its time.
+    pub(super) fn note_started_prompt_sent_at(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_sent_at_ms: u64,
+    ) -> Result<(), DaemonError> {
+        self.agent_store
+            .note_prompt_sent_at(agent_id, prompt_sent_at_ms)?;
+        self.session_store
+            .note_prompt_sent(session_id, agent_id, prompt_sent_at_ms)?;
+        Ok(())
+    }
+
+    pub(super) fn append_started_user_prompt_history(
+        &self,
+        session_id: &str,
+        source_attachment_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        prompt_sent_at_ms: u64,
+    ) -> Result<(), DaemonError> {
         let prompt_text = crate::prompt_transcript::workflow_prompt_history_text(prompt);
         self.append_user_prompt_history(
             session_id,
@@ -923,15 +955,7 @@ impl KernelRuntimeOwnedState {
             prompt.workflow_run_id(),
             prompt.workflow_node_run_id(),
             Some(prompt_sent_at_ms),
-        )?;
-        self.agent_store
-            .note_prompt_sent_at(prompt.target_agent_id(), prompt_sent_at_ms)?;
-        self.session_store.note_prompt_sent(
-            session_id,
-            prompt.target_agent_id(),
-            prompt_sent_at_ms,
-        )?;
-        Ok(prompt_sent_at_ms)
+        )
     }
 
     pub(super) fn append_steering_prompt_history(
