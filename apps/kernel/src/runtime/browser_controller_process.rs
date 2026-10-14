@@ -2315,6 +2315,19 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
 
 #[cfg(test)]
 mod tests {
+    // MP-08/MP-10/MP-11: safe host causes must survive the Rust RPC boundary.
+    #[test]
+    fn browser_host_specific_reason_survives_rpc_reply() {
+        for reason in ["browser_cdp_timeout Page.captureScreenshot", "mirror_subscription_retired"] {
+            let message = format!("MD-2: browser operation failed: Error {reason}");
+            let response: super::BrowserControllerRpcResponse = serde_json::from_value(serde_json::json!({
+                "id": 1, "ok": false, "error": {"code": "kernel_browser_failed", "message": message}
+            })).unwrap();
+            let error = response.into_result::<serde_json::Value>("host.browser").unwrap_err();
+            assert!(error.contains(&message));
+            assert!(error.contains("failed with kernel_browser_failed:"));
+        }
+    }
     // MP-08/MP-10/MP-11: controller seeds live only as long as their Room lease.
     #[test]
     fn releasing_room_drops_its_scrub_values_without_dropping_other_rooms() {
