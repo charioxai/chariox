@@ -37,3 +37,13 @@ test('MP-11 only a kernel-resolved exact X window may disambiguate owned equal-s
  assert.equal(windowRegionGeometry('browser_chrome',w,rect,800,1).window_region.id,42);
  for(const id of [0,1,-1,NaN,2**32])assert.throws(()=>windowRegionGeometry('browser_chrome',{...w,id},rect,800,1),/window/);
 });
+test('MP-11 async mirror geometry retirement precedes raster publication',async()=>{
+ let checks=0,releases=0,encoded=0;
+ const source=new NativeWindowRegionCapture({surface:'page',window:{id:42,width:1280,height:888},rect:{left:0,top:88,width:100,height:50},contentHeight:800,scale:1,
+  isCurrent:()=>true,validateCurrent:async()=>{checks++;return false;},policy:{},allowed:()=>true});
+ source.valid=()=>!source.closed;source.attested=true;
+ source.regions={guard:{},beforeAt:0,regions:async()=>[],retire(){}};
+ source.pending={width:100,height:50,pixels:Buffer.alloc(100*50*4),captured_ms:1,serial:1,release:()=>{releases++;}};
+ source.subscribe(()=>{encoded++;});await source.publish();await source.close();
+ assert.equal(checks,1);assert.equal(encoded,0);assert.equal(source.latest,null);assert.equal(releases,1);
+});

@@ -147,6 +147,8 @@ mod tests {
             tab_id: "tab".into(),
             generation: 1,
             document_id: "doc".into(),
+            binding_id: None,
+            sequence: None,
             input: crate::local::KernelBrowserInput::Text {
                 text: "public".into(),
             },
@@ -265,6 +267,8 @@ mod tests {
             tab_id: "tab".into(),
             generation: 1,
             document_id: "doc".into(),
+            binding_id: None,
+            sequence: None,
             input: crate::local::KernelBrowserInput::Text {
                 text: "public".into(),
             },

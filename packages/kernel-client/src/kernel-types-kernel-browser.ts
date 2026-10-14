@@ -5,6 +5,10 @@ export type KernelBrowserInput =
   | { kind: "text"; text: string }
   | { kind: "key"; key: string; modifiers?: number }
   | { kind: "scroll"; x: number; y: number; delta_x: number; delta_y: number }
+// MP-08/MP-10/MP-11: 519 references, never client crop geometry.
+export type KernelBrowserDisplayTarget =
+  | { kind: "region"; mirror_subscription_id: string; document_id: string; sequence: number; region_id: string }
+  | { kind: "browser_chrome"; window_generation: number }
 export type KernelBrowserCommand =
   | { op: "list_grants" }
   | { op: "subscribe_grants"; after: number; wait_ms: number }
@@ -15,11 +19,11 @@ export type KernelBrowserCommand =
   | { op: "mirror_input"; tab_id: string; generation: number; document_id: string; subscription_id: string; sequence: number; action: KernelBrowserMirrorAction }
   | { op: "display_capture" | "display_takeover" | "display_release"; tab_id: string; generation: number }
   | { op: "display_actors" }
-  | { op: "display_subscribe"; tab_id: string; generation: number; codecs: string[]; bitrate: number; device_scale_factor: 1 | 2 }
+  | { op: "display_subscribe"; target?: KernelBrowserDisplayTarget; tab_id: string; generation: number; codecs: string[]; bitrate: number; device_scale_factor: 1 | 2 }
   | { op: "display_next"; subscription_id: string; generation: number; after_sequence: number }
   // MP-08/MP-10: protocol 491 push acknowledgement on a relay display subscription.
   | { op: "display_ack"; subscription_id: string; generation: number; sequence: number; lost: boolean }
-  | { op: "display_input"; tab_id: string; generation: number; document_id: string; input: KernelBrowserInput }
+  | { op: "display_input"; binding_id?: string; sequence?: number; tab_id: string; generation: number; document_id: string; input: KernelBrowserInput }
   | { op: "start" | "state" | "stop" }
   | { op: "open"; url: string }
   | { op: "close" | "snapshot" | "screenshot" | "subscribe"; tab_id: string; generation: number }

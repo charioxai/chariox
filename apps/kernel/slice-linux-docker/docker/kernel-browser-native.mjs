@@ -122,6 +122,9 @@ export class LinuxCapture {
  async publish(){
   if(this.publishing)return;this.publishing=true;
   try{while(this.pending&&this.valid()){
+   // MP-11: mirror geometry is live authority, not a cached synchronous epoch.
+   // Refuse a readback before any mask, encoder offer or delivery can consume it.
+   if(this.validateCurrent&&!await this.validateCurrent()){this.fence();break;}
    let raw=this.pending;this.pending=null;this.publishingRaw=raw;
    const revision=this.regionRevision;
    // MP-08/MP-10/MP-11: no per-readback CDP round trip. Navigation and new
@@ -143,7 +146,7 @@ export class LinuxCapture {
    if(raw.captured_ms<this.regions.beforeAt){this.wake(true);raw.release?.();this.publishingRaw=null;continue;}
    at=performance.timeOrigin+performance.now();const masked=maskNativeRaster(raw,regions,this.previousRegions,this.latest?.raw);this.timing('native_mask_copy_hash',at);
    if(masked!==raw){raw.release?.();raw=masked;this.publishingRaw=raw;}
-   if(!this.valid())break;
+   if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())break;
    this.previousRegions=regions;
    this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();
    this.timing('native_xshm_capture',raw.captured_ms); // includes bounded pipe delivery and source fence.

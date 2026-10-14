@@ -31,10 +31,10 @@ export function projectRegionMasks(regions,left,top){
 }
 
 export class NativeWindowRegionCapture extends LinuxCapture {
- constructor({surface,window,rect,contentHeight,isCurrent,...options}){
+ constructor({surface,window,rect,contentHeight,isCurrent,validateCurrent,...options}){
   super(options);
   if(typeof isCurrent!=='function')throw Error('MP-11: admitted region lease required');
-  this.surface=surface;this.isCurrent=isCurrent;
+  this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;
   this.region=windowRegionGeometry(surface,window,rect,contentHeight,this.scale);
  }
  valid(){return super.valid()&&this.isCurrent?.()===true;}
@@ -45,7 +45,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
   if(message.method==='Chariox.browserDisconnected')this.fence();
  }
  async start(){
-  if(!this.valid())throw Error('MP-11: native region lease retired');
+  if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())throw Error('MP-11: native region lease retired');
   this.off=this.connection.subscribe(m=>this.onCdp(m));
   try{
    const region=this.region;
@@ -86,7 +86,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
       throw Error('MP-11: native region attestation mismatch');
     await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);
    }
-   if(!this.valid())throw Error('MP-11: native region lease retired');
+   if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())throw Error('MP-11: native region lease retired');
    this.attested=true;return this;
   }catch(error){await this.close();throw error;}
  }

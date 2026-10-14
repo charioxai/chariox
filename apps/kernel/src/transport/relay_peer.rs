@@ -111,7 +111,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// (MP-08/MP-09/MP-10/MP-11), and includes main's 101 kernel ownership,
 /// waiting-room and Room workflow contracts (#974). Generated consumers follow
 /// this allocated version.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 125;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 127;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

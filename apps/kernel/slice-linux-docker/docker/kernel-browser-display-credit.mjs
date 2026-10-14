@@ -15,7 +15,9 @@ import { DisplayDocumentPending } from './kernel-browser-display-document.mjs';
 
 const frameKinds={video:1,stripes:2,tiles:3,png:4};
 export async function displayCredit(host, stream, command, signal) {
-  const cachedSource=host.compositors.get(stream.tab_id)?.source;
+  const region=stream.regionLease;
+  if(region&&(command.generation!==host.generation||!stream.regionSource.valid()||!await region.isCurrent()))throw Error('MP-11: region lease retired');
+  const cachedSource=stream.regionSource??host.compositors.get(stream.tab_id)?.source;
   const empty=()=>nativeCreditEmpty(stream,cachedSource,host.protection,host.inputEpochs.get(stream.tab_id)??0,
       host.inputChangedAt.get(stream.tab_id)??-Infinity,command.after_sequence);
   if(empty()){
@@ -30,7 +32,7 @@ export async function displayCredit(host, stream, command, signal) {
   }
   const native = cachedSource?.native===true&&cachedSource.attested;
   let tab;
-  try { tab = await host.displayTarget({ tab_id: stream.tab_id, generation: command.generation },native); }
+  try { tab = region ? stream.regionSource.tab : await host.displayTarget({ tab_id: stream.tab_id, generation: command.generation },native); }
   catch(error) {
     // MP-11: pending navigation still refuses old pixels, but does not fail
     // the subscription. The event-bound loader refresh admits a later credit.
@@ -43,7 +45,7 @@ export async function displayCredit(host, stream, command, signal) {
     stream.capture = new DisplayCapture((clip) => {
       return host.displayScreenshot(tab,clip);
     }, stream.device_scale_factor, host.timing);
-  const { connection, sessionId } = native ? host.displayDocuments.connection(tab) : await host.browser.resolvePageTarget(tab.target_id);
+  const { connection, sessionId } = region ? stream.regionSource : native ? host.displayDocuments.connection(tab) : await host.browser.resolvePageTarget(tab.target_id);
   const layoutAt = timestamp();
   // MP-08/MP-10: an attested window supplies the complete viewport. Layout
   // is needed only to select safe CDP crops; a retired native source falls
@@ -148,11 +150,13 @@ export async function displayCredit(host, stream, command, signal) {
   const frame = await stream.frame(source, source.document_id, command.after_sequence, async () => {
     assertNotCancelled(signal);
     if(!source.motion&&(host.inputEpochs.get(tab.tab_id)??0)!==epoch)compositor?.rejected?.('epoch');
-    if(native){
+    if(region){
+      if(!await region.isCurrent()||!stream.regionWindow.isCurrent()||!compositor.valid())return false;
+    }else if(native){
       if(!await host.displayDocuments.validate(tab)){compositor?.rejected?.('stale_document');return false;}
     }else await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
     return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((host.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision))));
-  },()=>(!native||host.displayDocuments.current(tab))&&!compositor?.closed&&compositor?.regionRevision===regionRevision&&host.protection===capturePolicy&&(source.motion||((host.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision)))));
+  },()=>(region?region.isAlive()&&stream.regionWindow.isCurrent():!native||host.displayDocuments.current(tab))&&!compositor?.closed&&compositor?.regionRevision===regionRevision&&host.protection===capturePolicy&&(source.motion||((host.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision)))));
   if(frame)host.timing.event?.('frame_out',{at:source.captured_ms,sequence:frame.sequence,kind:frameKinds[frame.kind]??0,input_triggered:source.input_triggered?1:0,input_epoch:epoch,
     damage_ready_ms:source.raw?.damage_ready_ms,input_wake_ms:source.raw?.input_wake_ms,published_ms:source.published_ms,encode_offered_ms:Number.isFinite(source.offeredAt)?performance.timeOrigin+source.offeredAt:undefined,encode_started_ms:source.encode_started_ms,encoded_ms:source.encoded_ms,native_serial:source.raw?.serial});
   if(frame){stream.compositorMasks=JSON.stringify(source.raw?.[displayMaskRegions]??[]);stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact&&source.raw?.nativeCommit){source.raw.nativeCommit(stream.encoder.nativeSession,!source.moves);stream.compositorCommittedSerial=stream.compositorSerial;}}
@@ -176,7 +180,7 @@ export async function displayPushCredit(host, stream, command, signal, { budgetM
     if (!producer) { await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(now() - (stream.pushedAt ?? -Infinity) < 300 ? 33 : 100, deadline - now())))); if (now() >= deadline) return reply; continue; }
     // Exact repair waits for the end of the quiet window, never past it.
     const quiet = stream.refiner?.quietNativeMs ?? 50;
-    const changed = Math.max(host.compositors.get(stream.tab_id)?.source?.changedAt ?? -Infinity, host.inputChangedAt.get(stream.tab_id) ?? -Infinity);
+    const changed = Math.max((stream.regionSource??host.compositors.get(stream.tab_id)?.source)?.changedAt ?? -Infinity, host.inputChangedAt.get(stream.tab_id) ?? -Infinity);
     const settle = Number.isFinite(changed) && now() - changed < quiet ? changed + quiet - now() + 1 : Infinity;
     const wait = Math.max(1, Math.min(deadline - now(), settle)), at = now();
     await Promise.race([producer.waitReady(wait, signal), refining ?? new Promise(() => {})]);
