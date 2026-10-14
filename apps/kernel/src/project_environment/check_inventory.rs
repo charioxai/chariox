@@ -280,10 +280,12 @@ pub(super) fn constraints_overlap(a: Option<&str>, b: Option<&str>) -> Option<bo
         candidates.insert(bound);
         for i in (0..4).rev() {
             if let Some(next) = bound[i].checked_add(1) {
-                bound[i] = next;
-                bound[i + 1..].fill(0);
-                candidates.insert(bound);
-                break;
+                // Wildcard, caret and tilde operators may start at an upper
+                // prefix boundary (e.g. >22.x starts at 23), not the numeric successor.
+                let mut successor = bound;
+                successor[i] = next;
+                successor[i + 1..].fill(0);
+                candidates.insert(successor);
             }
         }
     }
