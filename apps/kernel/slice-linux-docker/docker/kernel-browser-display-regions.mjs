@@ -68,7 +68,9 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
    generation,subscription_id:`host-display-${randomUUID()}`,codec:'avc1.420033',bitrate:command.bitrate,
    device_scale_factor:scale,css_width:source.region.css_width,css_height:source.region.css_height};
   stream=new DisplayStream({...result,tab_id:tab.tab_id,observed_by:scope,relay_binary:command.codecs.includes('chariox-relay-binary-v96'),
-   dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')},
+   // Crops use whole-video dependencies; an eight-row encoder cannot divide
+   // every valid even crop (including a two-device-pixel opaque tile).
+   dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:false},
    {timing:host.timing,encoder:new PortableEncoder()});
   Object.assign(stream,{regionLease:lease,regionSource:source,regionTarget:target,regionWindow:window,regionOffset:offset,
    regionCurrent:args.validateCurrent??lease.isCurrent});
