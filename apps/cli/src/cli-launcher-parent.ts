@@ -6,11 +6,14 @@ type LauncherParentWatchOptions = {
   platform?: NodeJS.Platform
 }
 
-let launcherParentExit: () => void = () => { process.exit(1) }
+let launcherParentExit: (message: string) => void = (message) => {
+  process.stderr.write(message)
+  process.exit(1)
+}
 
 // Registered synchronously during renderer composition. Before that, no
 // terminal modes have been entered and the entry-point fallback can exit.
-export function registerCliLauncherParentExit(exit: () => void): () => void {
+export function registerCliLauncherParentExit(exit: (message: string) => void): () => void {
   const previous = launcherParentExit
   launcherParentExit = exit
   return () => {
@@ -19,8 +22,7 @@ export function registerCliLauncherParentExit(exit: () => void): () => void {
 }
 
 function exitLauncherChild(reason: string) {
-  process.stderr.write(`chariox: ${reason}; closing TUI\n`)
-  launcherParentExit()
+  launcherParentExit(`chariox: ${reason}; closing TUI\n`)
 }
 
 // MP-08/MP-11: Linux uses the launcher's PR_SET_PDEATHSIG. macOS needs an

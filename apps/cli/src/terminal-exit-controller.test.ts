@@ -190,3 +190,66 @@ test("the fallback resets every mode the TUI enables, in an order that leaves th
     "leave the alternate screen before showing the cursor",
   )
 })
+
+// The alternate screen discards anything written while it is active, so the
+// exit reason must follow the restoration (renderer or fallback) and precede exit.
+for (const destroyFails of [false, true]) {
+  test(`the exit reason is written after restoration and before exit (renderer destroy ${destroyFails ? "fails" : "succeeds"})`, async () => {
+    const events: string[] = []
+    const controller = createTerminalExitController({
+      renderer: {
+        isDestroyed: false,
+        disableKittyKeyboard: () => { events.push("kitty") },
+        disableStdoutInterception: () => { events.push("stdout") },
+        destroy: () => {
+          events.push("destroy")
+          if (destroyFails) throw new Error("destroy failed")
+        },
+      },
+      sleep: async () => { events.push("flush") },
+      exitProcess: () => {
+        events.push("exit")
+        throw new Error("process exit")
+      },
+      onRendererDestroyFailed: () => {},
+      restoreTerminalModes: () => { events.push("modes") },
+      writeMessage: (message) => { events.push(`message:${message}`) },
+    })
+
+    await assert.rejects(() => controller.restoreAndExit(1, "chariox: reason\n"), /process exit/)
+
+    assert.deepEqual(events, [
+      "kitty", "stdout", "destroy", ...(destroyFails ? ["modes"] : []), "message:chariox: reason\n", "flush", "exit",
+    ])
+  })
+}
+
+test("a failed message write cannot keep the process from exiting", async () => {
+  const events: string[] = []
+  const controller = createTerminalExitController({
+    renderer: { isDestroyed: true, disableKittyKeyboard: () => {}, disableStdoutInterception: () => {}, destroy: () => {} },
+    sleep: async () => {},
+    exitProcess: () => {
+      events.push("exit")
+      throw new Error("process exit")
+    },
+    onRendererDestroyFailed: () => {},
+    writeMessage: () => { throw new Error("EIO") },
+  })
+
+  await assert.rejects(() => controller.restoreAndExit(1, "chariox: reason\n"), /process exit/)
+
+  assert.deepEqual(events, ["exit"])
+})
+
+test("restoreAndExit without a reason writes nothing", async () => {
+  const controller = createTerminalExitController({
+    renderer: { isDestroyed: true, disableKittyKeyboard: () => {}, disableStdoutInterception: () => {}, destroy: () => {} },
+    sleep: async () => {},
+    exitProcess: () => { throw new Error("process exit") },
+    onRendererDestroyFailed: () => {},
+    writeMessage: () => assert.fail("wrote a message without a reason"),
+  })
+
+  await assert.rejects(() => controller.restoreAndExit(0), /process exit/)
+})

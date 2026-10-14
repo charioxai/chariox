@@ -29,17 +29,18 @@ type TerminalExitControllerOptions = {
   exitProcess: (exitCode: number) => never
   onRendererDestroyFailed: (error: unknown) => void
   restoreTerminalModes?: () => void
+  writeMessage?: (message: string) => void
 }
 
 export type TerminalExitController = {
-  restoreAndExit(exitCode: number): Promise<never>
+  restoreAndExit(exitCode: number, message?: string): Promise<never>
 }
 
 export function createTerminalExitController(
   options: TerminalExitControllerOptions,
 ): TerminalExitController {
   return {
-    async restoreAndExit(exitCode) {
+    async restoreAndExit(exitCode, message) {
       try {
         options.renderer.disableKittyKeyboard()
       } catch {}
@@ -54,6 +55,12 @@ export function createTerminalExitController(
         options.onRendererDestroyFailed(error)
         try {
           options.restoreTerminalModes?.()
+        } catch {}
+      }
+      // The alternate screen discards output, so the reason follows restoration.
+      if (message !== undefined) {
+        try {
+          options.writeMessage?.(message)
         } catch {}
       }
       await options.sleep(25)

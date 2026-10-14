@@ -375,9 +375,10 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
       })
     },
     restoreTerminalModes: writeTerminalModeRestore,
+    writeMessage: (message) => { process.stderr.write(message) },
   })
   // MP-08/MP-11: macOS parent death must leave the user's shell usable.
-  registerCliLauncherParentExit(() => { void terminalExitController.restoreAndExit(1) })
+  registerCliLauncherParentExit((message) => { void terminalExitController.restoreAndExit(1, message) })
   const restoreTerminalAndExit = terminalExitController.restoreAndExit
 
   const exitController = createCliExitController({

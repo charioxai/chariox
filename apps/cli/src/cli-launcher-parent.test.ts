@@ -215,13 +215,17 @@ test("default parent-death exit restores terminal modes before process exit", as
     sleep: async () => { events.push("flush") },
     exitProcess: (code) => process.exit(code),
     onRendererDestroyFailed: () => assert.fail("renderer teardown failed"),
+    writeMessage: (message) => { events.push(`message:${message}`) },
   })
-  const unregister = registerCliLauncherParentExit(() => { void controller.restoreAndExit(1) })
+  const unregister = registerCliLauncherParentExit((message) => { void controller.restoreAndExit(1, message) })
   const stop = watchCliLauncherParent("12345", { inspect: () => false, platform: "darwin" })
   try {
     await new Promise((resolve) => setImmediate(resolve))
-    assert.deepEqual(events, ["kitty", "stdout", "destroy", "flush", "exit:1"])
-    assert.match(String(stderr.mock.calls[0]?.arguments[0]), /launcher parent exited/)
+    // The reason follows the restoration: the alternate screen would discard it.
+    assert.deepEqual(events, [
+      "kitty", "stdout", "destroy", "message:chariox: launcher parent exited; closing TUI\n", "flush", "exit:1",
+    ])
+    assert.equal(stderr.mock.callCount(), 0, "the reason was written before the screen was restored")
   } finally {
     stop()
     unregister()
