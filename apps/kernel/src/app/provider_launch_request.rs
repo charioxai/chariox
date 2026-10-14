@@ -363,7 +363,8 @@ mod tests {
     }
 
     // MP-08/MP-11: OpenCode usage never gates admission (#1002: OpenCode owns its Go/Zen
-    // fallback), so the shared refresh-before-gate path is exercised with a Codex meter.
+    // fallback), so the shared refresh-before-gate path is exercised with exhausted Codex
+    // usage and credits.
     #[test]
     fn launch_refreshes_unobserved_usage_before_applying_the_capacity_gate() {
         let root = std::env::temp_dir().join(format!(
@@ -411,23 +412,42 @@ mod tests {
                         profile_id: profile.profile_id.clone(),
                         provider: "codex".to_string(),
                         availability: ProviderAccountUsageAvailability::Available,
-                        meters: vec![ProviderAccountUsageMeter {
-                            meter_id: "weekly".to_string(),
-                            label: "Codex weekly".to_string(),
-                            service_id: None,
-                            kind: ProviderAccountUsageMeterKind::RollingLimit,
-                            scope: ProviderAccountUsageMeterScope::Plan,
-                            used_percent: Some(100.0),
-                            used: None,
-                            remaining: None,
-                            total: None,
-                            unit: None,
-                            window_duration_minutes: None,
-                            resets_at_ms: Some(now_ms + 60_000),
-                            state: ProviderAccountUsageMeterState::Exhausted,
-                            source: "test.usage".to_string(),
-                            observed_at_ms: now_ms,
-                        }],
+                        meters: vec![
+                            ProviderAccountUsageMeter {
+                                meter_id: "weekly".to_string(),
+                                label: "Codex weekly".to_string(),
+                                service_id: None,
+                                kind: ProviderAccountUsageMeterKind::RollingLimit,
+                                scope: ProviderAccountUsageMeterScope::Plan,
+                                used_percent: Some(100.0),
+                                used: None,
+                                remaining: None,
+                                total: None,
+                                unit: None,
+                                window_duration_minutes: None,
+                                resets_at_ms: Some(now_ms + 60_000),
+                                state: ProviderAccountUsageMeterState::Exhausted,
+                                source: "test.usage".to_string(),
+                                observed_at_ms: now_ms,
+                            },
+                            ProviderAccountUsageMeter {
+                                meter_id: "credits".to_string(),
+                                label: "Credits".to_string(),
+                                service_id: None,
+                                kind: ProviderAccountUsageMeterKind::CreditBalance,
+                                scope: ProviderAccountUsageMeterScope::Plan,
+                                used_percent: Some(100.0),
+                                used: None,
+                                remaining: None,
+                                total: None,
+                                unit: None,
+                                window_duration_minutes: None,
+                                resets_at_ms: Some(now_ms + 60_000),
+                                state: ProviderAccountUsageMeterState::Exhausted,
+                                source: "test.usage".to_string(),
+                                observed_at_ms: now_ms,
+                            },
+                        ],
                         observed_at_ms: Some(now_ms),
                         source: "test.usage".to_string(),
                         management_url: None,
@@ -447,7 +467,7 @@ mod tests {
                 "test.launch",
             )
             .expect_err("fresh exhausted usage should block the launch");
-        assert!(blocked.to_string().contains("usage is exhausted"));
+        assert!(blocked.to_string().contains("usage allowance and credits are exhausted"));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -510,23 +530,42 @@ mod tests {
                             profile_id: first_profile_id.clone(),
                             provider: "codex".to_string(),
                             availability: ProviderAccountUsageAvailability::Available,
-                            meters: vec![ProviderAccountUsageMeter {
-                                meter_id: "weekly".to_string(),
-                                label: "Codex weekly".to_string(),
-                                service_id: None,
-                                kind: ProviderAccountUsageMeterKind::RollingLimit,
-                                scope: ProviderAccountUsageMeterScope::Plan,
-                                used_percent: Some(100.0),
-                                used: None,
-                                remaining: None,
-                                total: None,
-                                unit: None,
-                                window_duration_minutes: None,
-                                resets_at_ms: Some(now_ms + 60_000),
-                                state: ProviderAccountUsageMeterState::Exhausted,
-                                source: "test.usage".to_string(),
-                                observed_at_ms: now_ms,
-                            }],
+                            meters: vec![
+                                ProviderAccountUsageMeter {
+                                    meter_id: "weekly".to_string(),
+                                    label: "Codex weekly".to_string(),
+                                    service_id: None,
+                                    kind: ProviderAccountUsageMeterKind::RollingLimit,
+                                    scope: ProviderAccountUsageMeterScope::Plan,
+                                    used_percent: Some(100.0),
+                                    used: None,
+                                    remaining: None,
+                                    total: None,
+                                    unit: None,
+                                    window_duration_minutes: None,
+                                    resets_at_ms: Some(now_ms + 60_000),
+                                    state: ProviderAccountUsageMeterState::Exhausted,
+                                    source: "test.usage".to_string(),
+                                    observed_at_ms: now_ms,
+                                },
+                                ProviderAccountUsageMeter {
+                                    meter_id: "credits".to_string(),
+                                    label: "Credits".to_string(),
+                                    service_id: None,
+                                    kind: ProviderAccountUsageMeterKind::CreditBalance,
+                                    scope: ProviderAccountUsageMeterScope::Plan,
+                                    used_percent: Some(100.0),
+                                    used: None,
+                                    remaining: None,
+                                    total: None,
+                                    unit: None,
+                                    window_duration_minutes: None,
+                                    resets_at_ms: Some(now_ms + 60_000),
+                                    state: ProviderAccountUsageMeterState::Exhausted,
+                                    source: "test.usage".to_string(),
+                                    observed_at_ms: now_ms,
+                                },
+                            ],
                             observed_at_ms: Some(now_ms),
                             source: "test.usage".to_string(),
                             management_url: None,

@@ -184,9 +184,13 @@ pub(crate) fn validate_destination_binding(
         {
             Ok(())
         }
-        _ => Err(admission_error(
-            "context transfer requires exactly one destination binding",
-        )),
+        // MP-08/MP-11: a malformed binding is invalid input, not an authorization refusal.
+        _ => Err(DaemonError::ManagedContext {
+            code: "invalid_request",
+            operation: "owner-managed context transfer",
+            message: "context transfer requires exactly one destination binding".to_string(),
+            retryable: false,
+        }),
     }
 }
 
@@ -234,9 +238,6 @@ pub(crate) fn admission_error(message: impl Into<String>) -> DaemonError {
         | "Cloud owner authorization pins changed" => "cloud_peer_binding_changed",
         "Cloud owner authorization selection changed" => "cloud_selection_changed",
         "owner-managed context must exclude all credentials" => "credential_selection_forbidden",
-        "context transfer requires exactly one destination binding" => {
-            "destination_binding_invalid"
-        }
         "credential-free context contains credential-bearing or unclassifiable material" => {
             "credential_free_refused"
         }
