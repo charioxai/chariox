@@ -849,7 +849,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
 
   onCleanup(recordPaneFirstFrame(renderer, () => primaryTranscriptRuntimeStore.transcriptRenderables.size > 0))
   const {
-    hydrateComposer, mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript, flushDeferredRebuild,
+    hydrateComposer, hydratePromptInputHistory, mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript, flushDeferredRebuild,
     replaceTranscriptEntries, primeAttachedSessionBinding, bumpHistoryLoadGeneration, transcriptHistoryAutoloadController,
   } = createCliPrimaryTranscriptComposition({
     waitingRoomLaunchOwnershipRevision,
@@ -1045,7 +1045,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleKernelApprovalKey: kernelApprovals.handleKey,
     openKernelApprovals: kernelApprovals.openFromCommand,
     kernelApprovalOwnsInput: kernelApprovals.ownsInput,
-    hydrateComposer, dialogOverlayOpen, closeActiveDialogOverlay, activePrompt, handleCommandCenterKey,
+    hydrateComposer, hydratePromptInputHistory, dialogOverlayOpen, closeActiveDialogOverlay, activePrompt, handleCommandCenterKey,
     handleQueuedPromptKey: handleQueuedPromptStripKey,
     commandCenterOpen, promptHistoryIndex, promptHistoryDraft, navigatePromptHistoryInput,
     visibleTranscriptEntries, transcriptScrollboxRefController, commandCenterController, waitingRoomState,

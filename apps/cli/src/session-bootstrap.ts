@@ -1,3 +1,5 @@
+import { createComposerInventoryLoader } from "./composer-inventory-loader.js"
+import { getRelayStatus, getKernelCloudRelayProfile } from "./relay-api.js"
 import { bootstrapWaitingRoom } from "./waiting-room-bootstrap.js"
 import type { CharioxLogger } from "./logging.js"
 import type { CharioxPreferences } from "./preferences.js"
@@ -244,15 +246,20 @@ export async function bootstrapSession(
     ? attachedSession : await deps.getSessionState(client, session.id)
   const visibleAgentId = deps.resolveVisibleAgentId(hydratedSession, preferences)
   // MP-08 / MP-10: composer inventories are user requested, never attach work.
-  let composerFlight: ReturnType<NonNullable<import("./cli-types.js").BootstrapDeferredState["loadComposer"]>> | undefined
-  const loadComposer = () => composerFlight ??= Promise.all([
+  const refreshComposer = () => Promise.all([
     deps.getProviderCatalog(client, deps.logger, { provider: options.provider ?? null, accountProfile: options.accountProfile }),
     deps.getProviderCommandCatalogs(client, deps.logger),
     deps.getTerminalCommandCatalog(client, deps.logger),
-    loadSessionPromptHistory(client, session.id, deps),
-  ]).then(([providerCatalog, providerCommandCatalogs, terminalCommandCatalog, promptHistoryEntries]) => ({
-    sessionId: session.id, providerCatalog, providerCommandCatalogs, terminalCommandCatalog, promptHistoryEntries,
-  })).catch(error => { composerFlight = undefined; throw error })
+  ]).then(([providerCatalog, providerCommandCatalogs, terminalCommandCatalog]) => ({
+    sessionId: session.id, providerCatalog, providerCommandCatalogs, terminalCommandCatalog, promptHistoryEntries: [],
+  }))
+  const cachedComposer = createComposerInventoryLoader(async () => {
+    const profile = options.targetDaemonId ? preferences.relay?.cloud : await getKernelCloudRelayProfile(client)
+    const owner = profile?.userId ?? "local"
+    const kernel = options.targetDaemonId ?? (await getRelayStatus(client)).daemon_id
+    return { owner, key: JSON.stringify([owner, kernel, options.provider, options.accountProfile]) }
+  }, refreshComposer, () => JSON.stringify([options.provider, options.accountProfile]))
+  const loadComposer = () => cachedComposer().then(value => ({ ...value, sessionId: session.id }))
   const attachedHistoryPromise = hydrateAttachedHistory(
     client,
     session.id,
@@ -286,6 +293,8 @@ export async function bootstrapSession(
     preferences,
     deferred: {
       loadComposer,
+      composerScopeKey: () => JSON.stringify([options.provider, options.accountProfile]),
+      loadPromptInputHistory: (sessionId: string) => loadSessionPromptHistory(client, sessionId, deps).then(entries => ({ sessionId, entries })),
       attachedHistory: attachedHistoryPromise,
     },
   }

@@ -300,7 +300,7 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
   assert.deepEqual(deferredHistory?.historyEntries, [{ id: 1, role: "user", text: "hi" }])
   assert.deepEqual(deferredHistory?.agentEntries["agent-a"], [{ id: 1, role: "user", text: "hi" }])
   assert.deepEqual(deferredHistory?.promptHistoryEntries, [])
-  assert.deepEqual((await bootstrap.deferred?.loadComposer?.())?.promptHistoryEntries, ["hi"])
+  assert.deepEqual((await bootstrap.deferred?.loadPromptInputHistory?.(bootstrap.binding!.session.id))?.entries, ["hi"])
   assert.deepEqual(deferredHistory?.nextHistoryCursor, {
     agentId: "agent-a",
     cursor: { before_sequence: 9 },
@@ -503,7 +503,7 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
   assert.deepEqual(bootstrap.binding?.promptHistoryEntries, [])
   const deferredHistory = await bootstrap.deferred?.attachedHistory
   assert.deepEqual(deferredHistory?.promptHistoryEntries, [])
-  assert.deepEqual((await bootstrap.deferred?.loadComposer?.())?.promptHistoryEntries, ["hello"])
+  assert.deepEqual((await bootstrap.deferred?.loadPromptInputHistory?.(bootstrap.binding!.session.id))?.entries, ["hello"])
   const assistantEntry = deferredHistory?.historyEntries.find((entry) => entry.role === "assistant")
   assert.equal(assistantEntry?.text, "while you were away")
 })

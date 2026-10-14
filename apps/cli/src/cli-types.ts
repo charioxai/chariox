@@ -435,14 +435,19 @@ export type SessionBinding = {
   nextHistoryCursor: SessionHistoryCursorState
 }
 
+export type ComposerInventory = {
+  sessionId: string
+  providerCatalog: ProviderCatalog
+  providerCommandCatalogs: ProviderCommandCatalogs
+  terminalCommandCatalog: TerminalCommandCatalog
+  promptHistoryEntries: string[]
+  reconciliation?: Promise<ComposerInventory>
+}
+
 export type BootstrapDeferredState = {
-  loadComposer?: () => Promise<{
-    sessionId: string
-    providerCatalog: ProviderCatalog
-    providerCommandCatalogs: ProviderCommandCatalogs
-    terminalCommandCatalog: TerminalCommandCatalog
-    promptHistoryEntries: string[]
-  }>
+  composerScopeKey?: () => string
+  loadPromptInputHistory?: (sessionId: string) => Promise<{ sessionId: string; entries: string[] }>
+  loadComposer?: () => Promise<ComposerInventory>
 
   promptInputHistory?: Promise<{ sessionId: string; entries: string[] }>
   waitingRoomDefaults?: Promise<{ provider?: string; model?: string; effort?: string }>

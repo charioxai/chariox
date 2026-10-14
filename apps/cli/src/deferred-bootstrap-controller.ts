@@ -1,3 +1,4 @@
+import { clientInventoryEpoch } from "./client-inventory-cache.js"
 import type {
   BootstrapDeferredState,
   SessionHistoryCursorState,
@@ -137,15 +138,34 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
     })
   }
 
+  let promptFlight: Promise<void> | undefined, promptAttachment: string | null | undefined
+  const hydratePromptInputHistory = () => {
+    const attachment = deps.currentAttachmentId(), sessionId = deps.currentAttachmentSessionId()
+    if (promptAttachment !== attachment) { promptFlight = undefined; promptAttachment = attachment }
+    if (!sessionId) return Promise.resolve()
+    return promptFlight ??= (async () => {
+      const history = await deps.getDeferred()?.loadPromptInputHistory?.(sessionId)
+      if (!history || attachment !== deps.currentAttachmentId() || history.sessionId !== deps.currentAttachmentSessionId()) return
+      if (deps.currentPromptHistoryIndex?.() == null) deps.setPromptHistoryEntries(history.entries)
+    })().catch(error => { promptFlight = undefined; warn("failed to load prompt navigation", error) })
+  }
   let composerFlight: Promise<void> | undefined
+  let composerEpoch = clientInventoryEpoch(), composerLoadedAt = 0
+  let composerAttachment: string | null | undefined, composerScope: string | undefined
   const hydrateComposer = () => {
     const load = deps.getDeferred()?.loadComposer
     if (!load) return Promise.resolve()
+    const selectedScope = deps.getDeferred()?.composerScopeKey?.()
+    if (composerAttachment !== deps.currentAttachmentId() || composerScope !== selectedScope
+      || composerEpoch !== clientInventoryEpoch() || Date.now() - composerLoadedAt >= 4 * 60 * 60 * 1000) {
+      composerAttachment = deps.currentAttachmentId(); composerScope = selectedScope
+      composerFlight = undefined; composerEpoch = clientInventoryEpoch(); composerLoadedAt = Date.now()
+    }
     if (composerFlight) return composerFlight
     const attachment = deps.currentAttachmentId()
     const promptHistory = deps.currentPromptHistoryEntries?.()
-    composerFlight = load().then(data => {
-      if (attachment !== deps.currentAttachmentId() || data.sessionId !== deps.currentAttachmentSessionId()) return
+    const applyComposer = (data: import("./cli-types.js").ComposerInventory) => {
+      if (attachment !== deps.currentAttachmentId()) return
       deps.setProviderCatalog(data.providerCatalog)
       deps.setProviderCommandCatalogs(data.providerCommandCatalogs)
       deps.setTerminalCommandCatalog(data.terminalCommandCatalog)
@@ -153,12 +173,17 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
         deps.setPromptHistoryEntries(data.promptHistoryEntries)
       }
       deps.updateSessionChrome()
+    }
+    composerFlight = load().then(data => {
+      applyComposer(data)
+      void data.reconciliation?.then(applyComposer).catch(error => warn("failed to reconcile composer inventory", error))
     }).catch(error => { composerFlight = undefined; warn("failed to load composer inventory", error) })
     return composerFlight
   }
 
   return {
     hydrateComposer,
+    hydratePromptInputHistory,
     apply,
   }
 }

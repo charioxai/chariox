@@ -375,6 +375,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
 
   return {
     hydrateComposer: deferredBootstrapController.hydrateComposer,
+    hydratePromptInputHistory: deferredBootstrapController.hydratePromptInputHistory,
     mountTranscriptEntry,
     reconcileMountedTranscript,
     updateTranscriptEntry,
