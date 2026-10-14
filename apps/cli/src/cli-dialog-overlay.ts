@@ -7,6 +7,7 @@ import {
 
 import type { HotkeySection } from "./hotkey-help.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
+import { projectEnvironmentPanelWidth } from "./project-environment-read-controller.js"
 import {
   formatPairingExpiry,
   formatTerminalTypeLabel,
@@ -67,7 +68,7 @@ export function renderCliDialogOverlay(options: CliDialogOverlayOptions): void {
   scrim.onMouseUp = options.onDismiss
 
   if (options.mode === "environment") {
-    const panel = dialogPanel(renderer, Math.min(110, Math.max(30, dimensions.width - 4)), dimensions.width)
+    const panel = dialogPanel(renderer, projectEnvironmentPanelWidth(dimensions.width), dimensions.width)
     panel.add(dialogHeader(renderer, "Environment", "↑/↓ scroll • Esc close"))
     panel.add(new TextRenderable(renderer, {content:"An Environment lists what this project needs on this machine.",fg:theme.text,wrapMode:"word"}))
     panel.add(new TextRenderable(renderer, { content: (options.environmentLines ?? []).join("\n"), fg: theme.text, wrapMode: "none" }))

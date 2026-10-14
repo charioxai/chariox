@@ -10,12 +10,37 @@ export function projectEnvironmentPageSize(height: number) {
   return Math.max(1, height - Math.max(1, Math.floor(height / 5)) - 4)
 }
 
+// Inner text width of the Environment panel (see cli-dialog-overlay.ts: panel width, 2-column padding each side).
+export function projectEnvironmentPanelWidth(viewportWidth: number) {
+  return Math.min(110, Math.max(30, viewportWidth - 4))
+}
+
+export function projectEnvironmentTextWidth(viewportWidth: number) {
+  return Math.max(1, Math.min(projectEnvironmentPanelWidth(viewportWidth), viewportWidth - 4) - 4)
+}
+
+// Word-wrap keeping the line's indentation; words longer than the row are split.
+function wrapLine(line: string, width: number): string[] {
+  if (line.length <= width) return [line]
+  const indent = " ".repeat(Math.min(line.length - line.trimStart().length, Math.floor(width / 2)))
+  const room = width - indent.length
+  const words = line.trimStart().split(" ").flatMap(word => word.match(new RegExp(`.{1,${room}}`, "gs")) ?? [""])
+  const rows: string[] = []
+  for (const word of words) {
+    const last = rows.at(-1)
+    if (last !== undefined && last.length + 1 + word.length <= room) rows[rows.length - 1] = `${last} ${word}`
+    else rows.push(word)
+  }
+  return rows.map(row => indent + row)
+}
+
 export function createProjectEnvironmentReadController(deps: {
   send: (request: unknown) => Promise<unknown>
   render: () => void
   pageSize: () => number
   copyLink?: (link: string) => void
   kernelKey?: () => unknown
+  textWidth?: () => number
 }) {
   const cache = createEnvironmentViewCache()
   let previousProposalOffsets: number[] = []
@@ -41,9 +66,10 @@ export function createProjectEnvironmentReadController(deps: {
   let checkingGeneration: number | null = null
   let expiryTimer: ReturnType<typeof setTimeout> | undefined
   const apply = createEnvironmentApplyController({ send: deps.send, current: () => current, snapshot: snapshot => { cache.remember(scope,snapshot); current=snapshot; lines=viewLines(snapshot); deps.render() }, render: () => { if(open && current){ lines=viewLines(current); deps.render() } } })
+  const displayLines = () => lines.flatMap(line => wrapLine(line, deps.textWidth?.() ?? Infinity))
   const controller = {
     isOpen: () => open,
-    visibleLines: () => lines.slice(offset, offset + Math.max(1, deps.pageSize())),
+    visibleLines: () => displayLines().slice(offset, offset + Math.max(1, deps.pageSize())),
     close() { apply.reset(); clearTimeout(expiryTimer); open = false; generation++; deps.render() },
     async resolveOpening(projectId: string | null, workspaceId: string | null, create = false): Promise<void> {
       if (!workspaceId) { open = true; current = null; lines = ["Choose a folder on this kernel before opening Environment."]; deps.render(); return }
@@ -244,7 +270,7 @@ export function createProjectEnvironmentReadController(deps: {
       if (event.name === "d") { void controller.detect(); return true }
       if (event.name === "escape") { controller.close(); return true }
       const amount = event.name === "down" ? 1 : event.name === "up" ? -1 : event.name === "pagedown" ? deps.pageSize() : event.name === "pageup" ? -deps.pageSize() : 0
-      offset = Math.max(0, Math.min(Math.max(0, lines.length - deps.pageSize()), offset + amount))
+      offset = Math.max(0, Math.min(Math.max(0, displayLines().length - deps.pageSize()), offset + amount))
       deps.render()
       return true
     },

@@ -451,7 +451,7 @@ function keyEvent(name: string, options: {
 // MP-08/MP-10: exercise the real stdin ordering with the mounted read controller.
 test("Environment panel preserves Ctrl+E and Ctrl+C exit/stop through stdin", async () => {
   for (const name of ["e", "c"]) for (const activeTurnWork of [false, true]) {
-    const panel = createProjectEnvironmentReadController({ send: async () => { throw new Error("read only") }, render() {}, pageSize: () => 10 })
+    const panel = createProjectEnvironmentReadController({ send: async () => { throw new Error("read only") }, render() {}, pageSize: () => 10, textWidth: () => 72 })
     await panel.open("project")
     const harness = createHarness({ parsedEvent: keyEvent(name, { ctrl: true }), activeTurnWork, handleProjectEnvironmentKey: panel.handleKey })
     assert.equal(harness.controller.handleData("x"), true)
