@@ -212,7 +212,9 @@ process.exitCode = result.status ?? 1;
     if not args.local_cli:
         result["requester"] = json.loads((state / "requester.json").read_text())
     # EXT-UX-01: the owner sees one short question, never pid, path or process start.
-    if "Codex (an external agent) wants access to Chariox. Allow?" not in labels:
+    # The supplementary local-CLI requester is the drill process itself: no harness name.
+    question = "An external agent wants access to Chariox. Allow?" if args.local_cli else "Codex (an external agent) wants access to Chariox. Allow?"
+    if question not in labels:
         raise RuntimeError("EXT-UX-01 short grant question absent")
     for hidden in ("Requester:", "Executable:", "Process start", "PID ", "Local kernel", "expires"):
         if hidden in labels:
