@@ -186,7 +186,14 @@ async fn exercise_activation(heartbeat_ms: u64) {
             .read()
             .await
             .managed_slice_relay_activation_confirmed("slice-1", "activation-1");
-        if confirmed {
+        if confirmed
+            && renewed
+            && worker_state
+                .read()
+                .await
+                .pending_managed_slice_activation_confirmation()
+                .is_none()
+        {
             break;
         }
     }
@@ -195,6 +202,10 @@ async fn exercise_activation(heartbeat_ms: u64) {
         .await
         .pending_managed_slice_activation_confirmation()
         .is_some();
+    let reconnects = worker_router
+        .transport_health_store()
+        .snapshot(0, 0, 0)
+        .relay_reconnect_attempts;
     let _ = stop_worker.send(true);
     let _ = stop_owner.send(true);
     worker_task.await.unwrap();
@@ -206,6 +217,7 @@ async fn exercise_activation(heartbeat_ms: u64) {
         "runtime credential must authenticate on the real socket"
     );
     assert!(!disconnected, "activation must not reconnect the worker");
+    assert_eq!(reconnects, 0, "even a reconnect between samples must fail");
     assert!(
         confirmed,
         "same-socket registration must dispatch pending activation confirmation"
