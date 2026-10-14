@@ -371,6 +371,10 @@ pub(crate) fn refresh_provider_account_profile_explicitly(
         (provider_family == Some("opencode")).then(|| inspect_opencode_services(&environment));
     let (status, usage) = match provider_family {
         Some("codex") => {
+            // The official app-server caches its login at startup. An explicit
+            // account refresh must observe a native login imported since the
+            // catalog last started this profile's utility server.
+            crate::provider::invalidate_codex_account_endpoint(owner_user_id, &profile.profile_id);
             let endpoint = crate::provider::ensure_codex_account_endpoint(
                 owner_user_id,
                 &profile.profile_id,
