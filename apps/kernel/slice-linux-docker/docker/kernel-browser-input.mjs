@@ -83,7 +83,10 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       await check();
       if (method === "Input.insertText" || method === "Input.imeSetComposition" || (method === "Input.dispatchKeyEvent" && params.text)) {
         await checkTextTarget();
-        await check();
+        // MP-11: a fenced mirror guard below checks the live document and
+        // focused ancestry after this shared secret preflight. No mutation or
+        // await separates a duplicate document read from that final guard.
+        if (!resolved?.fenced) await check();
       }
       // MP-11: live mirror focus is the final fence, after every text preflight.
       await mirrorGuard?.();
@@ -111,7 +114,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       if (!resolved?.fenced) await check();
       if(resolved) {
         mirrorGuard=resolved.guard;
-        if(resolved.perform) {await check();await resolved.perform(sendInput,onDispatch);await check();return;}
+        if(resolved.perform) {if(!resolved.fenced)await check();await resolved.perform(sendInput,onDispatch);await check();return;}
         input=resolved.input;
       }
       if (input.kind === "text") {
