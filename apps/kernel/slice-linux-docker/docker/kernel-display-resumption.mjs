@@ -54,6 +54,9 @@ export class DisplaySessions {
     return {generation,subscription_id:next,codec:stream.codec,bitrate:stream.bitrate,
       device_scale_factor:stream.device_scale_factor,resumed:true,
       ...(stream.source_kind==='desktop'?{source:{kind:'desktop',surface_id:source.surface_id,
-        generation:source.generation,width:source.width,height:source.height}}:{})};
+        generation:source.generation,width:source.width,height:source.height}}:{}),
+      ...(stream.source_kind==='region'?{source_kind:'region',binding_id:stream.binding_id,
+        document_id:stream.regionLease.document_id,sequence:stream.regionLease.sequence,
+        css_width:stream.css_width,css_height:stream.css_height}:{})};
   }
 }

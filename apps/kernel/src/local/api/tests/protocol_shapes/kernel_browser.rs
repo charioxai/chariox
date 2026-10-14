@@ -164,6 +164,7 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
         Command::DisplaySubscribe {
             tab_id: "t".into(),
             generation: 2,
+            target: None,
             codecs: vec![
                 "avc1.420033".into(),
                 "png".into(),
@@ -187,6 +188,8 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
             tab_id: "t".into(),
             generation: 2,
             document_id: "d".into(),
+            binding_id: None,
+            sequence: None,
             input: Input::Text {
                 text: "fixture".into(),
             },
@@ -264,20 +267,28 @@ fn mp08_agent_tabs_protocol_491_snapshot_and_hash() {
     );
 }
 
-// MP-08/MP-11: protocol498 bounds modifiers at deserialization, shared by
+// MP-08/MP-11: protocol517 bounds modifiers at deserialization, shared by
 // local, remote and provider input. Legacy keys still omit the zero mask.
 #[test]
-fn kernel_browser_protocol_498_bounded_modifiers() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 525);
+fn kernel_browser_protocol_517_bounded_modifiers() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 517);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        133
+        crate::test_support::expected_relay_peer_protocol_version()
     );
     let input = Input::Key {
         key: "a".into(),
         modifiers: 2,
     };
     let wire = serde_json::to_value(&input).unwrap();
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("browser-key-modifiers-517.json")).unwrap();
+    assert_eq!(wire, expected);
+
     assert_eq!(
         wire,
         serde_json::json!({"kind":"key","key":"a","modifiers":2})
@@ -302,5 +313,42 @@ fn kernel_browser_protocol_498_bounded_modifiers() {
             serde_json::json!({"kind":"key","key":"a","modifiers":value})
         )
         .is_err());
+    }
+}
+
+#[test]
+fn mp08_mp10_mp11_browser_display_region_519_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 519);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    let snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("browser-display-region-519.json")).unwrap();
+    for value in snapshot["requests"].as_array().unwrap() {
+        let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), *value);
+    }
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "600c3e22c812a66ee7712a302b5889e83db4ba1f91b4d8affcc77281bb027b32"
+    );
+    for field in ["rect", "xid", "pid", "selector", "policy"] {
+        let mut request = snapshot["requests"][0].clone();
+        request["KernelBrowser"]["command"]["target"][field] = serde_json::json!(1);
+        assert!(serde_json::from_value::<LocalDaemonRequest>(request).is_err());
     }
 }

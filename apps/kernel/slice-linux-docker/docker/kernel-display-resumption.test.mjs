@@ -75,3 +75,16 @@ test('MP-11 browser resume identity fences region revisions and replaced capture
   host.displayTarget=async()=>({document_id:'different'});
   await assert.rejects(host.displayResumeBinding(stream));
 });
+
+for(const kind of ['region','browser_chrome'])test(`MP-08/MP-11 ${kind} resume retains the admitted source and input epoch`,async()=>{
+ const f=fixture('region'),source={closed:false,valid:()=>current,allowed:()=>true};let current=true;
+ const host=Object.create(KernelBrowserHost.prototype);
+ Object.assign(host,{generation:7,protection:f.host.protection,displayTarget:async()=>{throw Error('MP-11: region resume must use its lease')}});
+ Object.assign(f.stream,{regionTarget:{kind},regionLease:{isAlive:()=>current,document_id:'region-doc',sequence:9},regionSource:source,regionWindow:{isCurrent:()=>current},regionCurrent:async()=>current,binding_id:'binding',document_id:'region-doc',css_width:640,css_height:80,device_scale_factor:2});
+ const binding=()=>host.displayResumeBinding(f.stream);
+ assert.equal(await binding(),source);
+ await f.sessions.suspend('old','owner',7,binding);
+ const resumed=await f.sessions.resume('old','owner',7,binding);
+ assert.equal(resumed.source_kind,'region');assert.equal(resumed.binding_id,'binding');assert.equal(resumed.document_id,'region-doc');assert.equal(resumed.sequence,9);assert.equal(resumed.css_width,640);assert.equal(resumed.css_height,80);
+ current=false;await assert.rejects(host.displayResumeBinding(f.stream));
+});

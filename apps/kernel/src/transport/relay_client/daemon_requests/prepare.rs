@@ -44,7 +44,8 @@ impl PreparedDaemonRequest {
                 &target.surface_id,
                 &target.generation,
             ))
-            .ok().map(|key| (key, false));
+            .ok()
+            .map(|key| (key, false));
         }
         // A mirror subscription binds one tab and viewer; its input and reads share it.
         let (tab, generation, read) = match command {
@@ -172,6 +173,8 @@ mod tests {
             tab_id: "tab".into(),
             generation: 1,
             document_id: "doc".into(),
+            binding_id: None,
+            sequence: None,
             input: crate::local::KernelBrowserInput::Text {
                 text: "public".into(),
             },
@@ -290,6 +293,8 @@ mod tests {
             tab_id: "tab".into(),
             generation: 1,
             document_id: "doc".into(),
+            binding_id: None,
+            sequence: None,
             input: crate::local::KernelBrowserInput::Text {
                 text: "public".into(),
             },

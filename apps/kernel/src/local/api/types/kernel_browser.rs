@@ -82,6 +82,8 @@ pub enum KernelBrowserCommand {
     DisplaySubscribe {
         tab_id: String,
         generation: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<KernelBrowserDisplayTarget>,
         codecs: Vec<String>,
         bitrate: u32,
         device_scale_factor: u32,
@@ -114,6 +116,10 @@ pub enum KernelBrowserCommand {
         tab_id: String,
         generation: u64,
         document_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        binding_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sequence: Option<u64>,
         input: KernelBrowserInput,
     },
     Start,
@@ -158,6 +164,21 @@ pub enum KernelBrowserCommand {
     },
 }
 
+/// MP-08/MP-10/MP-11: allocated519; only owner-issued references select regions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum KernelBrowserDisplayTarget {
+    Region {
+        mirror_subscription_id: String,
+        document_id: String,
+        sequence: u64,
+        region_id: String,
+    },
+    BrowserChrome {
+        window_generation: u64,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KernelBrowserInput {
@@ -170,7 +191,7 @@ pub enum KernelBrowserInput {
     },
     Key {
         key: String,
-        /// MP-08/MP-11 protocol498: bounded CDP modifier bitset.
+        /// MP-08/MP-11 protocol517: bounded CDP modifier bitset (carried from 498).
         #[serde(
             default,
             deserialize_with = "deserialize_key_modifiers",
@@ -272,4 +293,17 @@ fn deserialize_key_modifiers<'de, D: serde::Deserializer<'de>>(
         return Err(serde::de::Error::custom("invalid key modifiers"));
     }
     Ok(value)
+}
+
+/// MP-08/MP-10/MP-11: kernel-private §2a target, ready for the 519 adapter.
+/// This type is not yet a command field; adding it to the public request belongs
+/// to the coordinated 519/127 protocol bump. Clients never choose crop geometry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelBrowserMirrorRegionTarget {
+    pub mirror_subscription_id: String,
+    pub generation: u64,
+    pub document_id: String,
+    pub sequence: u64,
+    pub region_id: String,
 }

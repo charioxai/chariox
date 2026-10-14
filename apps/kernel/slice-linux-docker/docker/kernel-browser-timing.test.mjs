@@ -37,5 +37,9 @@ test('MP-08/MP-10/MP-11 scheduler attribution records only input waiting time',(
  assert.deepEqual(adapter.scheduleRequest(input),{kind:'barrier'});adapter.scheduleRequest(read);adapter.scheduleRequest(native);
  assert.equal(adapter.handleRequest(input,{signal:null}),'result');adapter.handleRequest(read,{});adapter.handleRequest(native,{});
  assert.equal(events.length,2);for(const event of events){assert.equal(event.length,2);assert.equal(event[0],'host_input_queue');assert(Number.isFinite(event[1]));}assert.equal(events[0].length,2);assert.equal(events[0][0],'host_input_queue');assert(Number.isFinite(events[0][1]));
+ const read={method:'host.browser',params:{op:'state'}};
+ assert.deepEqual(adapter.scheduleRequest(input),{kind:'barrier'});adapter.scheduleRequest(read);
+ assert.equal(adapter.handleRequest(input,{signal:null}),'result');adapter.handleRequest(read,{});
+ assert.equal(events.length,1);assert.equal(events[0].length,2);assert.equal(events[0][0],'host_input_queue');assert(Number.isFinite(events[0][1]));
  assert.equal(handled[0][0],input);assert.equal(handled[1][0],read);
 });

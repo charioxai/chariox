@@ -24,10 +24,95 @@ struct Config {
     /// browser window; the kernel masks every frame before encode.
     #[serde(default)]
     desktop: bool,
+    /// MP-08/MP-10/MP-11: private kernel-resolved owned-window crop.
+    #[serde(default)]
+    window_region: Option<WindowRegion>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WindowRegion {
+    #[serde(default)]
+    id: Option<u32>,
+    width: i32,
+    height: i32,
+    left: i32,
+    top: i32,
+}
+impl Config {
+    fn valid(&self) -> bool {
+        if self.pid <= 1 || !self.pool.is_absolute() || self.desktop && self.window_region.is_some()
+        {
+            return false;
+        }
+        match &self.window_region {
+            None => [(1280, 800), (2560, 1600), (1920, 1080)].contains(&(self.width, self.height)),
+            Some(window) => {
+                window.id.is_none_or(|id| id > 1)
+                    && (2..=2560).contains(&self.width)
+                    && (2..=1600).contains(&self.height)
+                    && self.width % 2 == 0
+                    && self.height % 2 == 0
+                    && (1..=2560).contains(&window.width)
+                    && (1..=2400).contains(&window.height)
+                    && window.left >= 0
+                    && window.top >= 0
+                    && window.left <= window.width - self.width
+                    && window.top <= window.height - self.height
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod region_tests {
+    use super::*;
+    #[test]
+    fn mp11_region_config_cannot_escape_owned_window_or_widen_legacy_geometry() {
+        let base = json!({"pid":42,"width":1280,"height":174,"pool":"/owned/pool",
+            "window_region":{"width":1280,"height":974,"left":0,"top":0}});
+        assert!(serde_json::from_value::<Config>(base.clone())
+            .unwrap()
+            .valid());
+        for (key, value) in [
+            ("id", 0),
+            ("id", 1),
+            ("left", -1),
+            ("top", 801),
+            ("width", 1279),
+            ("height", 2410),
+        ] {
+            let mut bad = base.clone();
+            bad["window_region"][key] = value.into();
+            assert!(
+                !serde_json::from_value::<Config>(bad).unwrap().valid(),
+                "{key}"
+            );
+        }
+        let mut legacy = base.clone();
+        legacy.as_object_mut().unwrap().remove("window_region");
+        assert!(!serde_json::from_value::<Config>(legacy).unwrap().valid());
+        for (key, value) in [
+            ("pid", json!(1)),
+            ("height", json!(175)),
+            ("pool", json!("relative")),
+        ] {
+            let mut bad = base.clone();
+            bad[key] = value;
+            assert!(
+                !serde_json::from_value::<Config>(bad).unwrap().valid(),
+                "{key}"
+            );
+        }
+    }
 }
 #[derive(Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 enum Command {
+    // MP-08/MP-10/MP-11: upstream fences cannot be inferred from raster
+    // pixels. Count their fixed reasons at the native worker, never content.
+    Reject {
+        reject: Rejection,
+    },
     Encode {
         encode: Encode,
     },
@@ -67,9 +152,35 @@ enum Command {
     Key {
         key: [u32; 2],
     },
+    KeyChord {
+        key_chord: [u32; 2],
+    },
     Plans {
         plans: bool,
     },
+}
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Rejection {
+    StaleDocument,
+    Epoch,
+    RegionRevision,
+    SerialSkipped,
+    ShiftHold,
+}
+impl Rejection {
+    fn index(self) -> usize {
+        self as usize
+    }
+    fn label(self) -> &'static str {
+        [
+            "stale_document",
+            "epoch",
+            "region_revision",
+            "serial_skipped",
+            "shift_hold",
+        ][self.index()]
+    }
 }
 /// MP-08/MP-10/MP-11: pointer input is a request: the reply says whether the
 /// owned window received it, so Node falls back to CDP on a refusal.
@@ -85,6 +196,27 @@ fn admit_default() -> bool {
     true
 }
 const RASTER_SLOTS: usize = super::RASTER_SLOT_NAMES.len();
+// MP-08/MP-10: damage-driven FramePace semantics described in the Selkies
+// audit (pixelflux pace.rs). Independently implemented here; no upstream
+// code copied. Input wakes retain their immediate readback admission.
+const READBACK_MIN: Duration = Duration::from_millis(3);
+pub(super) fn readback_due(dirty: bool, wake: bool, elapsed: Duration) -> bool {
+    dirty && (wake || elapsed >= READBACK_MIN)
+}
+pub(super) fn readback_wait(dirty: bool, free_slot: bool, elapsed: Duration) -> i32 {
+    if dirty && free_slot {
+        READBACK_MIN
+            .saturating_sub(elapsed)
+            .as_micros()
+            .div_ceil(1000) as i32
+    } else if free_slot {
+        // Upper bound only; XDamage/control readiness wakes poll sooner.
+        16
+    } else {
+        // No slot can be overwritten. Release/control/XDamage still wake us.
+        1000
+    }
+}
 pub(super) fn epoch() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -157,10 +289,7 @@ fn read_config() -> Result<Config, String> {
 pub(super) fn run() -> Result<(), String> {
     let config = read_config()?;
     let (w, h) = (config.width, config.height);
-    if config.pid <= 1
-        || ![(1280, 800), (2560, 1600), (1920, 1080)].contains(&(w, h))
-        || !config.pool.is_absolute()
-    {
+    if !config.valid() {
         return Err("MP-11: native admission".into());
     }
     let info =
@@ -188,8 +317,30 @@ pub(super) fn run() -> Result<(), String> {
         if attempt > 0 {
             std::thread::sleep(Duration::from_millis(50));
         }
-        capture =
-            Capture(unsafe { ffi::cx_capture_open_mode(owner as libc::c_ulong, w, h, automatic) });
+        capture = Capture(unsafe {
+            match &config.window_region {
+                Some(window) if window.id.is_some() => ffi::cx_capture_open_selected_region(
+                    config.pid as libc::c_ulong,
+                    window.id.unwrap() as libc::c_ulong,
+                    window.width,
+                    window.height,
+                    window.left,
+                    window.top,
+                    w,
+                    h,
+                ),
+                Some(window) => ffi::cx_capture_open_region(
+                    config.pid as libc::c_ulong,
+                    window.width,
+                    window.height,
+                    window.left,
+                    window.top,
+                    w,
+                    h,
+                ),
+                None => ffi::cx_capture_open_mode(owner as libc::c_ulong, w, h, automatic),
+            }
+        });
         if !capture.0.is_null() {
             break;
         }
@@ -205,6 +356,16 @@ pub(super) fn run() -> Result<(), String> {
         .collect::<Result<Vec<_>, _>>()?;
     let mut control = Vec::new();
     let mut serial = 0u64;
+    let mut rejected = [0u64; 5];
+    for reason in [
+        Rejection::StaleDocument,
+        Rejection::Epoch,
+        Rejection::RegionRevision,
+        Rejection::SerialSkipped,
+        Rejection::ShiftHold,
+    ] {
+        eprintln!("MD-DISPLAY: native rejected {} 0", reason.label());
+    }
     let mut admitted = 0u64;
     let exact = ExactWorker::new();
     let mut dirty = true;
@@ -259,7 +420,7 @@ pub(super) fn run() -> Result<(), String> {
             }
             dirty = true;
         }
-        let due = dirty && (wake.is_some() || last.elapsed() >= Duration::from_millis(16));
+        let due = readback_due(dirty, wake.is_some(), last.elapsed());
         if due {
             if let Some(slot) = slots.iter_mut().find(|s| s.available()) {
                 let at = epoch();
@@ -330,11 +491,7 @@ pub(super) fn run() -> Result<(), String> {
                 wake = None;
             }
         }
-        let timeout = if dirty && slots.iter().any(|s| s.available()) {
-            16u128.saturating_sub(last.elapsed().as_millis()).min(16) as i32
-        } else {
-            1000
-        };
+        let timeout = readback_wait(dirty, slots.iter().any(|s| s.available()), last.elapsed());
         let mut fds = [
             libc::pollfd {
                 fd: 0,
@@ -381,6 +538,11 @@ pub(super) fn run() -> Result<(), String> {
                 Ok(s)
             };
             match command {
+                Command::Reject { reject } => {
+                    let count = &mut rejected[reject.index()];
+                    *count = count.saturating_add(1);
+                    eprintln!("MD-DISPLAY: native rejected {} {}", reject.label(), count);
+                }
                 Command::Wake { wake: true } => wake = Some(epoch()),
                 Command::Refresh { refresh: true } => {
                     dirty = true;
@@ -426,6 +588,23 @@ pub(super) fn run() -> Result<(), String> {
                 } => {
                     if unsafe { ffi::cx_capture_key(capture.0, keysym.into(), shift as i32) } != 0 {
                         return Err("MP-11: native key refused".into());
+                    }
+                    wake = Some(epoch());
+                }
+                Command::KeyChord {
+                    key_chord: [keysym, modifiers],
+                } => {
+                    if modifiers > 15
+                        || !((0x20..=0x7e).contains(&keysym) || (0xff08..=0xffff).contains(&keysym))
+                        || unsafe {
+                            ffi::cx_capture_key_modifiers(
+                                capture.0,
+                                keysym.into(),
+                                modifiers as i32,
+                            )
+                        } != 0
+                    {
+                        return Err("MP-11: native key chord refused".into());
                     }
                     wake = Some(epoch());
                 }
@@ -506,4 +685,34 @@ pub(super) fn run() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+// MP-08/MP-10/MP-11: one-shot numeric inventory, private owned-display ABI.
+pub(super) fn inventory() -> Result<(), String> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Query {
+        pid: u32,
+    }
+    let mut line = String::new();
+    use std::io::Read;
+    std::io::stdin()
+        .take(8193)
+        .read_to_string(&mut line)
+        .map_err(|_| "MP-11: native window query")?;
+    if line.len() > 8192 {
+        return Err("MP-11: native window query bound".into());
+    }
+    let q: Query = serde_json::from_str(&line).map_err(|_| "MP-11: native window query")?;
+    if q.pid <= 1 {
+        return Err("MP-11: native window owner".into());
+    }
+    let mut data = [0i64; 32 * 9];
+    let count = unsafe { ffi::cx_capture_inventory(q.pid as libc::c_ulong, data.as_mut_ptr(), 32) };
+    if count < 0 {
+        return Err("MP-11: native window inventory".into());
+    }
+    let rows:Vec<_>=data.chunks_exact(9).take(count as usize).map(|r|json!({"id":r[0],"width":r[1],"height":r[2],"x":r[3],"y":r[4],"visible":r[5]==1,"override_redirect":r[6]==1,"transient_for":r[7],"focused":r[8]==1})).collect();
+    serde_json::to_writer(std::io::stdout().lock(), &rows)
+        .map_err(|_| "MP-11: native window inventory reply".into())
 }

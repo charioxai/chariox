@@ -3939,7 +3939,7 @@ unused. Supplementary descriptor, command-shape and takeover tests cannot close
 MP-10 Drill D; that requires an official agent, real TUI/web/hostedWSS and public
 native document work at DPR1/2.
 
-### MP-08 / MP-10 / MP-11 bounded host-browser keys (498 / peer107)
+### MP-08 / MP-10 / MP-11 bounded host-browser keys (517 / peer125)
 
 `KernelBrowserInput` keys accept an optional `modifiers` integer in 0..15,
 using Chromium's Alt=1, Control=2, Meta=4 and Shift=8 bits. Omitted/zero
@@ -3948,5 +3948,39 @@ CDP key events under the existing document, cancellation, mirror and live
 sensitive-focus fences. Control/Meta/Alt chords emit no inserted text and
 cannot read or modify protected fields. Native input remains available for
 unmodified and Shift keys on the admitted owned display. Canvas clients send
-modifiers only to protocol498 or newer; trusted local paste retains the
+modifiers only to protocol517 or newer; trusted local paste retains the
 existing text-ingress path. The kernel remains the input authority.
+
+
+## MP-08 / MP-10 / MP-11 display region contract (519 / peer 127)
+
+Allocated local519/peer127 preserves the mirror517 snapshot and its modifier
+contract. `display_subscribe` accepts an optional `target`: `{kind:"region",
+mirror_subscription_id,document_id,sequence,region_id}` or
+`{kind:"browser_chrome",window_generation}`. The enclosing tab/generation and
+caller admission remain mandatory. No client rectangle, selector, PID or XID
+is accepted. The mirror resolver owns canonical live geometry, identity and
+protection; ChromeWindows owns the tabbed window, band and lifetime.
+
+A successful crop negotiation returns `source_kind:"region"`, `binding_id`,
+`document_id`, `sequence`, canonical crop `css_width`/`css_height`, scale and
+the existing subscription/codec/bitrate fields. Fractional page clips round
+inward to even device dimensions; input retains the canonical clip offset.
+Page document epochs and Chrome window epochs are distinct. Native readbacks,
+encoded delivery and input await the mirror's live geometry fence as well as
+checking its cheap synchronous lifetime predicate. Refusal never becomes a
+whole-page crop or PNG-polling source.
+
+Region `display_input` adds paired `binding_id` and `sequence`. The crop is
+caller-bound; agents cannot use this terminal-only path. A read-only private
+preflight resolves Chrome input to the owner arbiter's active page before the
+existing Rust actor ledger admits the action. Page-region input uses the same
+mirror hit/document/Vault fences. Frame credits and `display_ack` use the
+ordinary display sequence, independent of the region's applied mirror/window
+epoch. No second pump, grant, history or resumption mechanism is introduced.
+
+`browser-display-region-519.json` pins both targets, region input, ACK and
+response metadata. The focused drill is
+`docs/drills/MP08_BROWSER_DISPLAY_REGIONS.md`. The region client's floor is519;
+whole-page and mirror clients retain their existing floors. This contract is
+source implementation, not real-path acceptance.

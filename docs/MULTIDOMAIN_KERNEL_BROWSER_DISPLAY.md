@@ -19,8 +19,8 @@ native DPR. Current results remain RED and the flag stays off; source-bound
 measurement receipts stay outside the repository.
 
 The optional Linux `native-display` kernel feature links X11, Xext, Xdamage,
-Xcomposite, Xtst, x264, libavcodec/libavutil, static libyuv and static
-libwebp/libsharpyuv; `CHARIOX_NATIVE_DISPLAY_INCLUDE` and
+Xcomposite and Xtst. x264 and libavcodec/libavutil are loaded at runtime;
+libyuv and libwebp are static (SharpYUV only where WebP ships that archive); `CHARIOX_NATIVE_DISPLAY_INCLUDE` and
 `CHARIOX_NATIVE_DISPLAY_LIB` are build-only search paths. Builds without it keep
 the CDP capture and portable encoder path.
 
@@ -642,3 +642,19 @@ records all four window/density cells, requires an actual socket retirement,
 captures video/screenshots and checks three network changes per cell. It never
 automatically labels the feature accepted: review the recordings, the normal
 public-site/control/protection tasks and the separate 2-hour soak first.
+
+MP-08/MP-10/MP-11 519→525 integration: region and native Chrome streams use
+the same `DisplaySessions` lifetime. Resume rechecks the owner lease, native
+source, current geometry/window epoch and protection, retains the encoder, and
+returns the original region input binding/epoch with a fresh delivery ID.
+The 517 mirror/modifier and 519 region snapshots remain independently pinned.
+
+Headed Docker slices build the native worker against Bookworm's codec ABI.
+At runtime installation, `install-display-codec.py` downloads Cisco OpenH264
+2.6 directly over HTTPS into kernel-owned private state, checks compressed and
+library SHA-256 pins, then reuses only a verified cache. The binary is excluded
+from source kits and images. amd64 and arm64 public downloads are pinned; an
+amd64 ABI probe does not establish arm64 runtime acceptance. No automatic x264
+fallback is introduced. Ordinary/managed host packaging can call this same
+installer; their target-specific library provisioning remains independently
+validated by those installation lanes.

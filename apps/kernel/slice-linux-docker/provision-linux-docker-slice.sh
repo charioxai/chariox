@@ -520,6 +520,8 @@ refresh_slice_support_files() {
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/owned_process_signals.py" "$SLICE_NAME:/opt/chariox-slice/owned_process_signals.py" "shared process ownership guard"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/runtime-process-owner.py" "$SLICE_NAME:/opt/chariox-slice/runtime-process-owner.py" "runtime process ownership guard"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/chariox-slice/start-runtime.sh" "runtime launcher"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/install-display-codec.py" "$SLICE_NAME:/opt/chariox-slice/install-display-codec.py" "pinned display codec installer"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/display-codec-pin.json" "$SLICE_NAME:/opt/chariox-slice/display-codec-pin.json" "public display codec hashes"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-providers.sh" "$SLICE_NAME:/opt/chariox-slice/start-providers.sh" "provider launcher"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/chariox-slice/slice-screen.sh" "screen launcher"
   # MP-08 / MP-10 / MP-11: preserved images need the Python closure too.
