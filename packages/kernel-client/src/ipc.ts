@@ -1,3 +1,4 @@
+import { KernelCatalogReads } from './kernel-catalog-reads.js'
 import { RelayFrameReceiver, relayTransportUrl } from "./relay-frame-transport.js"
 import { RelayAuthRenewal, type RelayGrantProvider } from "./relay-auth-renewal.js"
 import { RelaySubscriptionDiagnostics, type RelaySubscriptionDiagnostic } from "./relay-subscription-diagnostics.js"
@@ -247,6 +248,7 @@ type LocalIpcClientOptions = {
 }
 
 export class LocalIpcClient {
+  private readonly catalogReads = new KernelCatalogReads()
   readonly socketPath: string
   private readonly relayIssuer: LocalIpcClient | null
   private readonly relayIssuerDaemonId: string | null
@@ -393,7 +395,7 @@ export class LocalIpcClient {
       return this.sendWebSocket(query, "control", admittedSocket)
     }, request)
     if (admittedSocket) return this.sendWebSocket<TResponse>(request, "control", admittedSocket)
-    return this.sendUnchecked<TResponse>(request)
+    return this.catalogReads.run(request, this.socketPath, () => this.sendUnchecked<TResponse>(request))
   }
 
   private sendUnchecked<TResponse>(request: unknown): Promise<TResponse> {
@@ -570,6 +572,7 @@ export class LocalIpcClient {
   }
 
   async close(): Promise<void> {
+    this.catalogReads.clear()
     if (this.renewalRetainers) {
       this.renewalCloseRequested = true
       await this.unsubscribeFromKernelEvents()
