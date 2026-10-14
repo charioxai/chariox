@@ -207,8 +207,14 @@ export class KernelBrowserHost {
         await this.open(restorationUrl(tab.url), tab.tab_id, { signal });
       }
       await this.save();
+      await this.rebindWindows();
     } catch (error) { await this.stop(); throw error; }
     finally { this.restoring = false; }
+  }
+  // MP-08/MP-10/MP-11: native binding changes stay on the host mutation lane.
+  async rebindWindows() {
+    if (!this.chromium.display) return;
+    try { await this.chromeWindows.resolve(); } catch { this.chromeWindows.retire('window_changed'); }
   }
   async syncTabGroups(groups) {
     const labels = new Map();
@@ -229,8 +235,6 @@ export class KernelBrowserHost {
     await connection.send("Browser.setDownloadBehavior", { behavior: "deny" });
     this.lockdownOff?.();
     this.lockdownOff = connection.subscribe(message => {
-      // A page target change can move or replace the tabbed window: re-resolve a live binding.
-      if (["Target.targetCreated", "Target.targetDestroyed"].includes(message?.method) && this.chromeWindows.bound) void this.chromeWindows.resolve().catch(() => this.chromeWindows.retire('window_destroyed'));
       const info = message?.params?.targetInfo;
       if (!["Target.targetCreated", "Target.targetInfoChanged"].includes(message?.method) || info?.type !== "page") return;
       // The new tab page is the policy's home page (NewTabPageLocation).
@@ -610,7 +614,7 @@ export class KernelBrowserHost {
       return this.observe(this.tabState(), tab, scope);
     }
     if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
-    if (command.op === "open") return this.observe(await this.open(command.url, undefined, { signal }), null, scope);
+    if (command.op === "open") { const opened = await this.open(command.url, undefined, { signal }); await this.rebindWindows(); return this.observe(opened, null, scope); }
     for (const stream of this.displays.values()) if (Date.now() > stream.expires) await this.removeDisplay(stream);
     if(['display_suspend','display_resume'].includes(command.op)){
       if(command.focused_agent||command._agent_input)throw new UserDomainRefusal('not_granted');
@@ -696,7 +700,9 @@ export class KernelBrowserHost {
       }
       await this.browser.manageTab({ ...binding, action: "close" }, { signal });
       for (const observed of this.observedDocuments.values()) observed.delete(tab.tab_id);
-      return this.reconcile();
+      const state = await this.reconcile();
+      await this.rebindWindows();
+      return state;
     }
     if (command.op === "navigate") {
       // MP-08/MP-11: an agent's navigation is its input to the App Tab too.

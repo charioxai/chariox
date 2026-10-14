@@ -27,8 +27,13 @@ export class ChromeWindows {
     if (!this.bound || !this.bound.tabbed.isCurrent()) throw new UserDomainRefusal('stale_reference');
     return this.bound;
   }
-  /** Resolve (or re-resolve) the tabbed window and its auxiliary windows. */
-  async resolve() {
+  /** Resolve the owned window set serially on the host mutation lane. */
+  resolve() {
+    const run = (this.resolving ?? Promise.resolve()).catch(() => {}).then(() => this.resolveNow());
+    this.resolving = run;
+    return run;
+  }
+  async resolveNow() {
     const host = this.host, chromium = host.chromium, display = chromium.display, pid = chromium.browserPid ?? chromium.child?.pid, scale = chromium.scale;
     const browserGeneration = host.generation;
     const live = () => host.generation === browserGeneration && ownsDisplay(display) && (chromium.browserPid ?? chromium.child?.pid) === pid;

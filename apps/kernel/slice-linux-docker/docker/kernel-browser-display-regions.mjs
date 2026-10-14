@@ -23,7 +23,7 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
  const tab=await host.displayTarget(command),policy=host.protection,generation=host.generation;
  if(tab.tab_id!==command.tab_id)refuse();
  let lease,args,offset={x:0,y:0};
- const windows=await host.chromeWindows?.resolve();
+ const windows=host.chromeWindows?.current();
  const window=windows?.tabbed;
  if(!window||window.role!=='tabbed'||window.browser_generation!==generation||!window.isCurrent())refuse();
  if(target.kind==='region') {
