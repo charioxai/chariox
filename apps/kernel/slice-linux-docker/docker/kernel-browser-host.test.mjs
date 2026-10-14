@@ -1041,3 +1041,18 @@ test("MP-11 an older tab observation never replaces a newer one", () => using(as
   assert.equal(host.tabs.size, 2);
   assert.ok(host.tabs.has(opened.tab_id));
 }));
+
+test('MP-08/MP-10/MP-11 canonical mirror density does not depend on video', async()=>{
+  const {hostViewport,displayGeometry}=await import('./kernel-browser-geometry.mjs');
+  const beforeMirror=process.env.CHARIOX_KERNEL_BROWSER_MIRROR,beforeVideo=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+  try {
+    process.env.CHARIOX_KERNEL_BROWSER_MIRROR='1';process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='0';
+    const mirrored=hostViewport();
+    process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+    assert.deepEqual(mirrored,hostViewport(),'enabling video cannot change the shared browser density');
+    assert.equal(mirrored.device_scale_factor,displayGeometry.dpr);
+  } finally {
+    if(beforeMirror===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR;else process.env.CHARIOX_KERNEL_BROWSER_MIRROR=beforeMirror;
+    if(beforeVideo===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=beforeVideo;
+  }
+});

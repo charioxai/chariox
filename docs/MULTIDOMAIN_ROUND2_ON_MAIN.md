@@ -15,6 +15,8 @@ The host imports native capture, codec and video credit modules only when a
 video operation uses them. Headed mirror Chromium gets its kernel-owned
 private display even with `CHARIOX_KERNEL_BROWSER_DISPLAY=0`; it requires
 native Chromium, Node and Xvfb on Linux, but no video encoder or transport.
+The mirror retains the canonical browser density with video disabled; toggling
+video cannot change the shared page's DPR or capture geometry.
 Mirror v2 uses the existing controller, user profile, actor admission, Vault
 barrier, input/capture protection and relay contract. No parallel authority or
 provider execution path is introduced.
