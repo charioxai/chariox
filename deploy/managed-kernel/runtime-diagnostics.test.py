@@ -153,7 +153,7 @@ esac
     def test_mp07_upgrade_wires_only_real_phase_after_commit(self):
         source=pathlib.Path(__file__).with_name('upgrade-image.sh').read_text()
         self.assertIn('atomic-text "$1" "$transaction_root/phase" || return $?\n  record_diagnostic_phase "$1"',source)
-        self.assertIn('transaction_active=1\nrecord_diagnostic_phase prepared\n\nif ! systemctl stop',source)
+        self.assertIn('transaction_active=1\nrecord_diagnostic_phase prepared\n\nupdate_step=service_stop\nif ! systemctl stop',source)
     def test_mp07_partial_observer_write_can_retry_and_ship_later_records(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
