@@ -105,6 +105,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::AttachToSession(_) => "session.attach",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
+        LocalDaemonRequest::SubmitPrompt(_) => "prompt.submit",
         LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
         LocalDaemonRequest::GetRoomEnvironmentEvents(_) => "environment.events.get",
         LocalDaemonRequest::ListRoomEnvironmentActionHistory(_) => "environment.history.list",
