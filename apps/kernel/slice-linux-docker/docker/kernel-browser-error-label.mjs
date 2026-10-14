@@ -2,6 +2,8 @@
 const names=new Set(['Error','TypeError','RangeError','ReferenceError','SyntaxError']);
 const files=new Set(['kernel-browser-host.mjs','kernel-browser-process.mjs','kernel-browser-owned-display.mjs','kernel-browser-linux.mjs','kernel-browser-display.mjs','kernel-browser-motion.mjs','kernel-browser-native.mjs','kernel-browser-native-worker.mjs','kernel-browser-native-pipe.mjs','kernel-browser-native-credit.mjs','kernel-browser-refiner.mjs','kernel-browser-pixels.mjs','kernel-browser-pixel-worker.mjs','kernel-browser-display-capture.mjs','kernel-browser-display-credit.mjs','browser-controller-cdp.mjs','browser-controller-actions.mjs','browser-controller-compatibility.mjs','kernel-browser-mirror2.mjs']);
 const codes=new Set(['ENOENT','EACCES','EINVAL','EPIPE','ETIMEDOUT','ERR_BUFFER_OUT_OF_BOUNDS','ERR_OUT_OF_RANGE','browser_cdp_timeout','browser_cdp_command_failed','browser_cdp_disconnected','browser_cdp_socket_error','browser_target_not_found','browser_connection_changed','browser_cdp_response_too_large','browser_action_cancelled','browser_namespace_permission_denied','browser_policy_mount_denied','browser_sandbox_unavailable','browser_display_unavailable','browser_executable_missing','browser_executable_permission_denied','browser_launch_failed','browser_navigation_failed','browser_navigation_identity_missing','browser_action_timeout','browser_action_failed','browser_action_invalid','browser_wait_timeout','browser_wait_invalid','stale_element_reference','stale_document_reference','ENOSPC','EMFILE','ENOMEM']);
+// MP-11: closed public codes declared by the shipped controller adapters; no caller-defined code passthrough.
+for(const code of 'browser_action_cancelled browser_action_failed browser_action_invalid browser_action_timeout browser_artifact_invalid browser_artifact_unavailable browser_attach_failed browser_cdp_command_failed browser_cdp_disconnected browser_cdp_socket_error browser_cdp_timeout browser_connection_changed browser_controller_internal browser_cookie_writer_fence_busy browser_cookie_writer_fence_timeout browser_debugger_endpoint_unsafe browser_debugger_invalid browser_debugger_unavailable browser_dialog_invalid browser_document_identity_missing browser_download_invalid browser_download_low_disk browser_download_not_active browser_download_unavailable browser_download_unconfigured browser_event_capacity_invalid browser_event_cursor_invalid browser_event_limit_invalid browser_history_action_invalid browser_history_timeout browser_history_unavailable browser_navigation_failed browser_navigation_identity_missing browser_navigation_invalid browser_observation_redacted browser_permission_invalid browser_permission_origin_denied browser_secret_input_exception browser_secret_target_changed browser_secret_target_not_focusable browser_secret_target_not_masked browser_snapshot_invalid browser_submit_failed browser_tab_action_invalid browser_tab_close_failed browser_target_not_found browser_unavailable browser_upload_denied browser_upload_invalid browser_upload_staging_unavailable browser_viewport_invalid browser_wait_invalid browser_wait_timeout invalid_request navigated resync snapshot_frame_limit stale_browser_generation stale_document_reference stale_element_reference viewport_apply_failed'.split(' '))codes.add(code);
 const methods=new Set(['Page.captureScreenshot','Page.getFrameTree','Page.getLayoutMetrics','Runtime.evaluate','Runtime.callFunctionOn','DOM.resolveNode','CSS.enable','DOMSnapshot.captureSnapshot','Page.navigate','Page.createIsolatedWorld','Target.activateTarget','Target.attachToTarget','Browser.getVersion','Input.dispatchKeyEvent','Input.dispatchMouseEvent','Input.insertText']);
 const navigationReasons=new Set(['ERR_NAME_NOT_RESOLVED','ERR_CONNECTION_REFUSED','ERR_CONNECTION_TIMED_OUT','ERR_TIMED_OUT','ERR_CERT_COMMON_NAME_INVALID','ERR_CERT_DATE_INVALID','ERR_CERT_AUTHORITY_INVALID','ERR_ABORTED','ERR_INTERNET_DISCONNECTED','ERR_NETWORK_CHANGED','ERR_BLOCKED_BY_ADMINISTRATOR','ERR_BLOCKED_BY_CLIENT','ERR_INVALID_URL']);
 const cdpReasons=new Map([['Target closed','target_closed'],['Cannot find context with specified id','execution_context_retired'],['Cannot find execution context with given id','execution_context_retired'],['Could not find node with given id','node_retired'],['No node with given id found','node_retired'],['Session with given id not found','cdp_session_retired']]);
@@ -13,7 +15,19 @@ export function mirrorExceptionReason(description) {
  const reason=/^Error: mirror2 ([a-z ]+)$/.exec(first)?.[1].replaceAll(' ','_');
  return observerReasons.has(reason)?reason:'observer_exception';
 }
-const inputReasons=new Map([
+const fixedReasons=new Map([
+ ['MD-N2: shadow root limit reached','note_shadow_root_limit'],
+ ['MD-N2: page text limit reached','note_text_limit'],
+ ['MD-N2: observed target/document required','note_reference_required'],
+ ['MD-N2: invalid quote','note_quote_invalid'],
+ ['MD-N2: stale document; refresh tab','note_document_stale'],
+ ['MD-N2: isolated world unavailable','note_world_unavailable'],
+ ['MD-N2: isolated observer unavailable','note_observer_unavailable'],
+ ['MD-N2: selection observation failed','note_selection_unavailable'],
+ ['MD-N2: frame changed during capture','note_frame_changed'],
+ ['MD-N2: document changed during capture','note_document_changed'],
+ ['MD-N2: isolated frame geometry unavailable','note_frame_geometry_unavailable'],
+ ['MD-N2: frame geometry unavailable','note_frame_geometry_unavailable'],
  ['MP-11: stale or foreign mirror','mirror_subscription_retired'],
  ['MP-11: stale mirror document','mirror_document_stale'],
  ['MP-11: stale mirror protection policy or subscription','mirror_policy_stale'],
@@ -48,7 +62,7 @@ export function hostErrorLabel(error) {
  const command=error?.code==='browser_cdp_command_failed'?/^([A-Za-z.]+): (.*)$/.exec(description):null;
  const method=error?.code==='browser_cdp_timeout'?/^browser CDP method ([A-Za-z.]+) timed out after [0-9]+ms$/.exec(description)?.[1]:command?.[1];
  const navigation=error?.code==='browser_navigation_failed'?/^browser navigation failed: net::([A-Z_]+)$/.exec(description)?.[1]:null;
- return 'host_error '+name+(codes.has(error?.code)?' '+error.code:'')+(method&&methods.has(method)?' '+method:'')+(command&&cdpReasons.has(command[2])?' '+cdpReasons.get(command[2]):'')+(navigation&&navigationReasons.has(navigation)?' net::'+navigation:'')+(observerReasons.has(error?.mirrorReason)?' '+error.mirrorReason:'')+(inputReasons.has(error?.message)?' '+inputReasons.get(error.message):'')+(frame?' '+frame[1]+':'+frame[2]+':'+frame[3]:'');
+ return 'host_error '+name+(codes.has(error?.code)?' '+error.code:'')+(method&&methods.has(method)?' '+method:'')+(command&&cdpReasons.has(command[2])?' '+cdpReasons.get(command[2]):'')+(navigation&&navigationReasons.has(navigation)?' net::'+navigation:'')+(observerReasons.has(error?.mirrorReason)?' '+error.mirrorReason:'')+(fixedReasons.has(error?.message)?' '+fixedReasons.get(error.message):'')+(frame?' '+frame[1]+':'+frame[2]+':'+frame[3]:'');
 }
 
 // MP-08/MP-10/MP-11: shared public reply and log classifier. Exception messages,

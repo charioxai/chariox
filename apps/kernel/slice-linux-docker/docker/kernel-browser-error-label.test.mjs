@@ -64,3 +64,11 @@ test('MP-08/MP-10/MP-11 navigation and detached CDP failures preserve safe cause
  assert(privateFailure.includes('browser_navigation_failed'));assert(!privateFailure.includes('private-canary'));assert(!privateFailure.includes('private.invalid'));
  assert(!hostFailureMessage({code:'browser_cdp_command_failed',message:'Runtime.callFunctionOn: private-canary'}).includes('private-canary'));
 });
+
+test('MP-08/MP-10/MP-11 normalized controller failures retain declared public codes',()=>{
+ for(const code of ['browser_document_identity_missing','snapshot_frame_limit','browser_history_unavailable','browser_permission_origin_denied']){
+  const reply=hostFailureMessage({code,message:'private-canary',stack:'Error: private-canary\n at normalize (/private/browser-controller-cdp.mjs:72:22)'});
+  assert(reply.includes(code));assert(!reply.includes('private-canary'));assert(!reply.includes('/private/'));
+ }
+ assert.match(hostFailureMessage({message:'MD-N2: frame changed during capture'}),/note_frame_changed/);
+});
