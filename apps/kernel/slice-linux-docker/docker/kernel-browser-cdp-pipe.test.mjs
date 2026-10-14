@@ -64,3 +64,19 @@ test('MP-11 a synchronous batched CDP write failure rejects every fence',async()
  await rejected;assert.equal(connection.isOpen(),false);
  assert.equal(input.destroyed,true);assert.equal(output.destroyed,true);
 });
+
+// MP-08/MP-10 (real site html.spec.whatwg.org): one page's reply above the frame bound failed the whole
+// private pipe, which retired the person's entire browser (every Tab). Only that request fails now;
+// an oversized event or unframed data still fails closed (above).
+test('MP-08/MP-10 an oversized CDP reply fails only its own request', async () => {
+ const {input,output,connection}=pipe();
+ const big=connection.send('Runtime.evaluate',{expression:'huge'},'s');const rejected=assert.rejects(big,/exceeds/);
+ await Promise.resolve();const wire=JSON.parse(input.read().toString().slice(0,-1));
+ const head=Buffer.from(`{"id":${wire.id},"result":{"result":{"type":"string","value":"`);
+ output.write(head);for(let n=0;n<17;n++)output.write(Buffer.alloc(1024*1024,65));output.write(Buffer.from('"}},"sessionId":"s"}\0'));
+ await rejected;assert.equal(connection.isOpen(),true);
+ const next=connection.send('Browser.getVersion');await Promise.resolve();
+ const again=JSON.parse(input.read().toString().slice(0,-1));output.write(JSON.stringify({id:again.id,result:{product:'Chrome'}})+'\0');
+ assert.deepEqual(await next,{product:'Chrome'});
+ await connection.close();
+});
