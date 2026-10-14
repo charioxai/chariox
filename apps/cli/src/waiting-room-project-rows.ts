@@ -63,7 +63,7 @@ export function waitingRoomProjectRows(
       scrollbar: "",
     })
     // MP-08 / MP-10 / MP-11: ownership stays visible beside every Project.
-    rows.push({id:`project-kernel:${project.id}`,title:"Kernel",value:options.kernelLabel ?? "Unnamed kernel",titleWidth:options.titleWidth,indent:2,focused:false,selectable:false,scrollbar:""})
+    rows.push({id:`project-kernel:${project.id}`,title:`Kernel: ${options.kernelLabel ?? "Unnamed kernel"}`,value:"",titleWidth:options.titleWidth,indent:2,focused:false,selectable:false,scrollbar:""})
   }
   return rows
 }
