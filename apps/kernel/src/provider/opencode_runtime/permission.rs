@@ -57,7 +57,12 @@ fn permission_origin(
     let message_id = request.message_id.as_ref()?;
     let parent = state.message_parent_ids.get(message_id)?.as_deref()?;
     match state.active_user_message_id.as_deref() {
-        Some(active) if parent == active => state.native_approval_origin.clone(),
+        Some(_)
+            if state.message_belongs_to_active_prompt(message_id)
+                && state.is_active_prompt_parent(parent) =>
+        {
+            state.native_approval_origin.clone()
+        }
         Some(_) => None,
         None => Some(crate::session::NativeInteractionOrigin::NativeTurn {
             provider_run_id: run.id().into(),
@@ -512,8 +517,32 @@ mod tests {
             .insert("assistant-message".into(), Some("user-B".into()));
         assert_eq!(
             super::permission_origin(&run, &state, &request),
-            Some(origin)
+            Some(origin.clone())
         );
+        // MP-08 / MP-10 / MP-11: a verified compaction continuation retains
+        // this kernel prompt's interaction origin, and expires with the turn.
+        state
+            .active_continuation_user_ids
+            .insert("continue-B".into());
+        state
+            .message_parent_ids
+            .insert("assistant-message".into(), Some("continue-B".into()));
+        assert_eq!(
+            super::permission_origin(&run, &state, &request),
+            Some(origin.clone())
+        );
+        state
+            .compaction_summary_message_ids
+            .insert("assistant-message".into());
+        assert_eq!(super::permission_origin(&run, &state, &request), None);
+        state.compaction_summary_message_ids.clear();
+        state
+            .preexisting_message_ids
+            .insert("assistant-message".into());
+        assert_eq!(super::permission_origin(&run, &state, &request), None);
+        state.preexisting_message_ids.clear();
+        state.note_prompt_submitted("user-C".into());
+        assert_eq!(super::permission_origin(&run, &state, &request), None);
         state.active_user_message_id = None;
         state
             .message_parent_ids

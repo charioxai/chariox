@@ -17,12 +17,12 @@ pub(super) fn opencode_message_completes_active_prompt(
     state: &OpenCodeRuntimeState,
     info: &OpenCodeMessageInfo,
 ) -> bool {
-    let Some(active_user_message_id) = state.active_user_message_id.as_deref() else {
-        return false;
-    };
     info.session_id == state.session_id
         && info.role == "assistant"
-        && info.parent_id.as_deref() == Some(active_user_message_id)
+        && info
+            .parent_id
+            .as_deref()
+            .is_some_and(|parent| state.is_active_prompt_parent(parent))
         && info.is_terminal_assistant_completion()
 }
 
@@ -41,10 +41,17 @@ pub(super) fn opencode_messages_active_prompt_failure(
     active_user_message_id: Option<&str>,
 ) -> Option<String> {
     let active_user_message_id = active_user_message_id?;
+    if state.active_user_message_id.as_deref() != Some(active_user_message_id) {
+        return None;
+    }
     messages.iter().rev().find_map(|message| {
         (message.info.role == "assistant"
             && message.info.session_id == state.session_id
-            && message.info.parent_id.as_deref() == Some(active_user_message_id))
+            && message
+                .info
+                .parent_id
+                .as_deref()
+                .is_some_and(|parent| state.is_active_prompt_parent(parent)))
         .then(|| message.info.terminal_error_message())
         .flatten()
     })
@@ -54,13 +61,14 @@ pub(super) fn opencode_messages_have_empty_active_assistant(
     state: &OpenCodeRuntimeState,
     messages: &[OpenCodeMessage],
 ) -> bool {
-    let Some(active_user_message_id) = state.active_user_message_id.as_deref() else {
-        return false;
-    };
     messages.iter().any(|message| {
         message.info.role == "assistant"
             && message.info.session_id == state.session_id
-            && message.info.parent_id.as_deref() == Some(active_user_message_id)
+            && message
+                .info
+                .parent_id
+                .as_deref()
+                .is_some_and(|parent| state.is_active_prompt_parent(parent))
             && message.info.time.completed.is_none()
             && message.info.error.is_none()
             && message.parts.is_empty()
@@ -100,7 +108,16 @@ pub(super) fn record_snapshot_message_metadata(
     state: &mut OpenCodeRuntimeState,
     messages: &[OpenCodeMessage],
 ) {
+    super::compaction::record_compaction_continuations(state, messages);
     for message in messages {
+        if message.info.session_id != state.session_id {
+            continue;
+        }
+        if message.info.is_compaction_summary() {
+            state
+                .compaction_summary_message_ids
+                .insert(message.info.id.clone());
+        }
         state
             .message_roles
             .insert(message.info.id.clone(), message.info.role.clone());
@@ -164,7 +181,8 @@ pub(super) fn render_snapshot_output_chunks(
     record_snapshot_message_metadata(state, messages);
     let mut chunks = Vec::new();
     for message in messages {
-        if message.info.role != "assistant"
+        if message.info.session_id != state.session_id
+            || message.info.role != "assistant"
             || !state.message_belongs_to_active_prompt(&message.info.id)
         {
             continue;

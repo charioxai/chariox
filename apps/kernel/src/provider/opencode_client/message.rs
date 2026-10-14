@@ -16,6 +16,8 @@ pub struct OpenCodeMessageInfo {
     #[serde(rename = "sessionID")]
     pub session_id: String,
     pub role: String,
+    #[serde(default)]
+    pub summary: Value,
     #[serde(rename = "parentID", default)]
     pub parent_id: Option<String>,
     #[serde(default)]
@@ -37,6 +39,10 @@ pub struct OpenCodeMessageInfo {
 }
 
 impl OpenCodeMessageInfo {
+    pub fn is_compaction_summary(&self) -> bool {
+        self.role == "assistant" && self.summary.as_bool() == Some(true)
+    }
+
     pub fn terminal_error_message(&self) -> Option<String> {
         let error = self.error.as_ref()?;
         error
@@ -50,6 +56,9 @@ impl OpenCodeMessageInfo {
     }
 
     pub fn is_terminal_assistant_completion(&self) -> bool {
+        if self.is_compaction_summary() {
+            return false;
+        }
         if self.error.is_some() {
             return true;
         }
@@ -122,6 +131,8 @@ pub struct OpenCodeSelectedModel {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct OpenCodeMessageTime {
     #[serde(default)]
+    pub created: u64,
+    #[serde(default)]
     pub completed: Option<u64>,
 }
 
@@ -136,6 +147,10 @@ pub struct OpenCodePart {
     pub kind: String,
     #[serde(default)]
     pub text: String,
+    #[serde(default)]
+    pub synthetic: bool,
+    #[serde(default)]
+    pub auto: bool,
     #[serde(default)]
     pub tool: String,
     #[serde(default)]

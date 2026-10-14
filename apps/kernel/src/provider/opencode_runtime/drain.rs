@@ -45,12 +45,19 @@ pub(in crate::provider) fn drain_opencode_events(
     let mut resolved_variant = None;
     let mut resolved_usage_tokens_total = None;
     let drain_active_user_message_id = state.active_user_message_id.clone();
+    let mut drain_active_user_message_ids = state.active_continuation_user_ids.clone();
+    if let Some(active) = &drain_active_user_message_id {
+        drain_active_user_message_ids.insert(active.clone());
+    }
 
     for _ in 0..OPENCODE_EVENT_DRAIN_MAX_EVENTS {
         match state.event_subscription.receiver.try_recv() {
             Ok(OpenCodeEvent::MessageUpdated { info }) => {
                 if info.session_id != state.session_id {
                     continue;
+                }
+                if info.is_compaction_summary() {
+                    state.compaction_summary_message_ids.insert(info.id.clone());
                 }
                 if resolved_model.is_none() {
                     resolved_model = info.resolved_model();
@@ -73,9 +80,14 @@ pub(in crate::provider) fn drain_opencode_events(
                 state
                     .message_parent_ids
                     .insert(info.id.clone(), info.parent_id.clone());
+                drain_active_user_message_ids
+                    .extend(state.active_continuation_user_ids.iter().cloned());
                 if info.session_id == state.session_id
                     && info.role == "assistant"
-                    && info.parent_id.as_deref() == drain_active_user_message_id.as_deref()
+                    && info
+                        .parent_id
+                        .as_deref()
+                        .is_some_and(|parent| drain_active_user_message_ids.contains(parent))
                 {
                     if let Some(message) = info.terminal_error_message() {
                         record_terminal_failure(
@@ -396,6 +408,7 @@ pub(in crate::provider) fn drain_opencode_events(
                 let mut completion_confirmed = state.active_terminal_assistant_message_id.is_some();
                 let mut empty_active_assistant = false;
                 if let Ok(messages) = client.messages(&state.session_id) {
+                    record_snapshot_message_metadata(state, &messages);
                     empty_active_assistant =
                         opencode_messages_have_empty_active_assistant(state, &messages);
                     completion_confirmed |=
