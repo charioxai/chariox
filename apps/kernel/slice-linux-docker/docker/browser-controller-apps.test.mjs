@@ -694,3 +694,33 @@ test("delayed agent work keeps its originating actor across unrelated human inpu
   assert.equal(app.actors.size, 3, "task retention is per actor, not per keystroke");
   assert.equal(typeof await tabs.beginInput("unknown", agent.id), "function");
 });
+
+// MP-08/MP-11: a script navigation runs as the task Chromium retained for it; an unresolved one is
+// refused, never handed to the most recent agent or the owner.
+test("navigation origin is resolved from retained ancestry and never borrowed from the last agent", async () => {
+  const { tabs, connection } = await opened();
+  const app = tabs.apps.get("s1");
+  const taskOf = id => [...app.actors].find(([, actor]) => actor?.id === id)[0];
+  await (await tabs.beginInput("t1", "agent-7"))();
+  await (await tabs.beginInput("t1", "agent-8"))();            // the most recent agent
+  const navigate = async (id, task) => {
+    if (task) await connection.emit({ method: "Runtime.consoleAPICalled", sessionId: "s1", params: { type: "trace", args: [{ value: id }],
+      stackTrace: { callFrames: [], parent: { description: "await", callFrames: [], parent: { description: task, callFrames: [] } } } } });
+    await connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1", params: { name: "__charioxAppNavigation", payload: id } });
+    await connection.emit({ method: "Page.frameNavigated", sessionId: "s1", params: { frame: { loaderId: "doc-" + id } } });
+    await app.initial;
+  };
+  const startup = async id => {
+    await connection.emit({ method: "Runtime.consoleAPICalled", sessionId: "s1", params: { type: "trace", args: [{ value: id }],
+      stackTrace: { callFrames: [], parent: { description: app.initialTask, callFrames: [] } } } });
+    await connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1", params: { name: "__charioxAppCall", payload: JSON.stringify({ id, method: "delete_todo" }) } });
+    return (await tabs.takeCalls()).calls.map(call => call.actor ?? null);
+  };
+  await navigate("nav:1", taskOf("agent-7"));
+  assert.deepEqual(await startup("a"), [{ kind: "agent", id: "agent-7" }], "the traced initiator, not the last agent");
+  await navigate("nav0:3");                                     // no agent input in that document: the document's own work
+  assert.deepEqual(await startup("b"), [{ kind: "agent", id: "agent-7" }], "keeps the document's initial actor");
+  await navigate("nav:2");                                      // no retained ancestry after agent input
+  assert.deepEqual(await startup("c"), [], "unresolved origin is refused");
+  assert.equal(connection.sent.some(message => message.params?.expression?.includes("APP_ACTOR_UNKNOWN")), true);
+});
