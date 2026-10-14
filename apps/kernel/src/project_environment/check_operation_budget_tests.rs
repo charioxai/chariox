@@ -61,9 +61,10 @@ fn review0821_multi_probe_requirement_settles_at_operation_deadline() {
     let mut journal = store.load_checks(project.id()).unwrap();
     journal.operations.push(op.clone());
     store.save_checks(project.id(), &journal).unwrap();
+    let ctx = context(root.path());
     let began = Instant::now();
     let result = store.run_check_until(
-        context(root.path()),
+        ctx,
         env,
         op,
         || Ok(project.clone()),
