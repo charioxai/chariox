@@ -1203,6 +1203,21 @@ test('MP-08 agent Tabs named by the kernel are grouped by target; the rest stay 
   assert.notEqual(host.tabs.get(a.tab_id).target_id, host.tabs.get(b.tab_id).target_id);
 }));
 
+// MP-08/MP-10/MP-11 (BROWSER-UX-14): a viewer learns the band's window epoch and the
+// natively active Tab from state; it never names a window itself.
+test('MP-08 state projects the bound Chrome window epoch and its natively active Tab', () => using(async ({ host }) => {
+  await host.request({ op: 'open', url: 'https://example.com/' });
+  const b = await host.request({ op: 'open', url: 'https://example.org/' });
+  host.chromeWindows.bound = null;
+  assert.equal((await host.request({ op: 'state' })).chrome_window, null, 'no binding, no band');
+  let current = true;
+  host.chromeWindows.bound = { tabbed: { window_generation: 7, isCurrent: () => current }, auxiliary: [] };
+  host.tabGroups = { active: async () => host.tabs.get(b.tab_id).target_id };
+  assert.deepEqual((await host.request({ op: 'state' })).chrome_window, { window_generation: 7, active_tab_id: b.tab_id });
+  current = false;
+  assert.equal((await host.request({ op: 'state' })).chrome_window, null, 'a retired window is not offered');
+}));
+
 // MP-08/MP-10/MP-11: error strings must retain a specific safe cause to the Rust/client boundary.
 test('Browser replies distinguish observation timeout from a retired subscription without exposing page data', () => using(async ({host}) => {
   const failures=[

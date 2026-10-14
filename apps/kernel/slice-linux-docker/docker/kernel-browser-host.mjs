@@ -309,7 +309,15 @@ export class KernelBrowserHost {
     // MP-08: private creation evidence for the kernel, stripped before client projection.
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
     return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
-      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:hostViewport() }, this.protection.values);
+      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:hostViewport(), chrome_window: this.chromeWindow() }, this.protection.values);
+  }
+  // MP-08/MP-10/MP-11 (BROWSER-UX-14): the band's window epoch (for a 519 BrowserChrome
+  // subscription) and the Tab Chrome's own strip shows, as last observed by the kernel.
+  chromeWindow() {
+    const tabbed = this.chromeWindows?.bound?.tabbed;
+    if (!tabbed?.isCurrent()) return null;
+    const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
+    return { window_generation: tabbed.window_generation, active_tab_id: active?.tab_id ?? null };
   }
   async reconcile() {
     const observation = ++this.observations;
@@ -344,6 +352,7 @@ export class KernelBrowserHost {
       this.tabs.set(old?.tab_id ?? `host-tab-${randomUUID()}`, { ...tab, tab_id: old?.tab_id ?? null });
     }
     for (const [id, tab] of this.tabs) tab.tab_id = id;
+    this.activeTarget = await this.tabGroups?.active().catch(() => null) ?? null;
     const result = this.tabState();
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
     if (!this.restoring) await this.save();
