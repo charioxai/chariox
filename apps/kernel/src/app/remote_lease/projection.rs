@@ -20,6 +20,8 @@ mod history_tests;
 mod test_pause;
 
 #[cfg(test)]
+mod failure_tests;
+#[cfg(test)]
 mod test_provider_runs;
 
 const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
@@ -1254,6 +1256,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             });
             let intentionally_cancelled =
                 settlement_status == crate::git_observer::CompletedTurnSettlementStatus::Cancelled;
+            let explicitly_failed =
+                settlement_status == crate::git_observer::CompletedTurnSettlementStatus::Failed;
             if !intentionally_cancelled
                 && active_prompt.workflow_run_id().is_some()
                 && !workflow_output_ready
@@ -1276,9 +1280,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                                 .as_ref()
                                 .and_then(|run| run.terminal_diagnostic().map(str::to_string))
                                 .filter(|message| !message.trim().is_empty())
+                        })
+                        .or_else(|| {
+                            explicitly_failed.then(|| "worker provider turn failed".into())
                         });
-                    let provider_failed =
-                        failed_provider.is_some() && provider_diagnostic.is_some();
+                    let provider_failed = explicitly_failed
+                        || (failed_provider.is_some() && provider_diagnostic.is_some());
                     let (failure_kind, failure_message, notice_message) = if let Some(diagnostic) =
                         provider_diagnostic
                     {
@@ -1335,6 +1342,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         .app
                         .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
                     outcome.provider_failed = provider_failed;
+                    if provider_failed {
+                        let _ = self
+                            .app
+                            .agents()
+                            .mark_unexpected_provider_exit_error(agent_id, true);
+                    }
                     crate::transport::flow_control::clear_prompt_activity(
                         self.app,
                         &projected_provider_run_id,
@@ -1417,10 +1430,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
             let _ =
                 crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);
-            if let Some(termination) = projected_termination
-                .as_ref()
-                .filter(|_| !intentionally_cancelled)
-            {
+            if !intentionally_cancelled && (explicitly_failed || projected_termination.is_some()) {
+                outcome.provider_failed = true;
                 let _ = self
                     .app
                     .agents()
@@ -1433,7 +1444,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         crate::session::WorkflowFailureKind::ProviderFailure,
                         workflow_node_run_id,
                         Vec::new(),
-                        termination.reason.clone(),
+                        projected_termination
+                            .as_ref()
+                            .map(|termination| termination.reason.clone())
+                            .unwrap_or_else(|| "worker provider turn failed".into()),
                     );
                     let _ = self.app.sessions_mut().record_workflow_failure_event(
                         session_id,

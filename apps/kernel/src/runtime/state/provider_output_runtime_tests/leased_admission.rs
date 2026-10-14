@@ -240,7 +240,7 @@ async fn leased_admission_commits_before_async_io_and_dispatch_failure_settles_f
     assert!(failed.is_err());
     drop(lane);
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
+    let worker_settlement = loop {
         let snapshot = runtime
             .owned
             .session_snapshot(&leased.backing_session_id)
@@ -259,12 +259,99 @@ async fn leased_admission_commits_before_async_io_and_dispatch_failure_settles_f
                 settled.settlement_status,
                 crate::git_observer::CompletedTurnSettlementStatus::Failed
             );
-            break;
+            let termination = settled
+                .provider_termination
+                .as_ref()
+                .expect("MP-08 dispatch failure must retain its reason through receipt recovery");
+            assert_eq!(
+                termination.category,
+                crate::provider::ProviderRunTerminationCategory::RuntimeFailure
+            );
+            assert!(termination
+                .reason
+                .contains("supplementary receipt regression"));
+            break settled.settlement_status;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
             "a shared dispatch error must settle the admitted turn"
         );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    };
+
+    // MP-08 / MP-10 / MP-11: optional termination metadata cannot be the
+    // home failure discriminator, including a peer which omits that field.
+    let mut home = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut home)
+        .create_session(crate::session::CreateSessionRequest::new("home", "home"))
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut home)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "home-attachment",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    home.agents
+        .bind_remote_execution(
+            agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel-1".into(),
+                worker_machine_id: "worker-machine".into(),
+                execution_lease_id: lease.id.clone(),
+                leased_agent_id: leased.id.clone(),
+                active_worker_provider_run_id: Some(run_id.clone()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    let home_prompt = crate::session::PromptQueueItem::new(
+        "home-dispatch-failure",
+        attachment.id(),
+        agent.id(),
+        "admitted before failed worker input",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started {
+        prompt: home_prompt,
+    } = home
+        .prompt_owner_submit_prepared_prompt(session.id(), home_prompt, false)
+        .unwrap()
+    else {
+        panic!("MP-08 failed projection needs an admitted home prompt");
+    };
+    home.agents
+        .set_remote_execution_active_worker_provider_run_id(agent.id(), Some(run_id.clone()))
+        .unwrap();
+    let projected = RemoteLeaseRuntime::new(&mut home)
+        .project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session.id().into(),
+                home_agent_id: agent.id().into(),
+                provider_run_id: run_id,
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                    message_id: "worker-dispatch-failure".into(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                    home_prompt_id: Some(home_prompt.id().into()),
+                    settlement_status: Some(worker_settlement),
+                    provider_termination: None,
+                }],
+            },
+        )
+        .unwrap();
+    assert_eq!(projected.completions.len(), 1);
+    assert!(projected.provider_failed);
+    assert_eq!(
+        home.agents.get_agent(agent.id()).unwrap().state(),
+        crate::agent::AgentState::Error
+    );
 }

@@ -180,7 +180,10 @@ impl KernelRuntimeOwnedState {
             agent_id,
             Some(provider_run_id),
             Some(prompt_id),
-            None,
+            Some(crate::provider::ProviderRunTermination::runtime_failure(
+                message,
+                crate::session::unix_epoch_ms(),
+            )),
         )?
         else {
             return Ok(None);
