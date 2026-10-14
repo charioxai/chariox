@@ -2,12 +2,18 @@
 // No provider/page mutation or product observation cap. Keep the Cloud copy identical.
 import assert from 'node:assert/strict'
 export const oracleStyles = ['display','visibility','opacity','color','background-color','border-top-width','border-right-width','border-bottom-width','border-left-width']
-export const captureOracleSnapshot = send => send('DOMSnapshot.captureSnapshot', {computedStyles:oracleStyles,includePaintOrder:true,includeDOMRects:true})
+export async function captureOracleSnapshot(send){
+ const layout=await send('Page.getLayoutMetrics'),scale=layout.layoutViewport.clientWidth/layout.cssLayoutViewport.clientWidth
+ assert(Number.isFinite(scale)&&scale>0,'MP-10: native CDP coordinate scale required')
+ const snapshot=await send('DOMSnapshot.captureSnapshot',{computedStyles:oracleStyles,includePaintOrder:true,includeDOMRects:true})
+ return {...snapshot,coordinateScale:scale}
+}
 const rare = (data, index) => { const at=data?.index?.indexOf(index)??-1; return at<0?null:data.value[at] }
 const clipped = (b,w,h) => [Math.max(0,b[0]),Math.max(0,b[1]),Math.min(w,b[0]+b[2]),Math.min(h,b[1]+b[3])]
 const visible = (b,w,h) => b[2]>0&&b[3]>0&&b[0]<w&&b[1]<h&&b[0]+b[2]>0&&b[1]+b[3]>0
 export function oracleRecords(snapshot,root=0,width=1280,height=800) {
  assert(Array.isArray(snapshot.documents)&&snapshot.documents[root]&&Array.isArray(snapshot.strings),'MP-10: complete CDP DOMSnapshot required')
+ const scale=snapshot.coordinateScale??1;assert(Number.isFinite(scale)&&scale>0,'MP-10: native CDP coordinate scale required')
  const out=[],visited=new Set(),s=i=>snapshot.strings[i]??''
  const visit=(index,offset=[0,0])=>{
   assert(!visited.has(index),'MP-10: cyclic CDP documents');visited.add(index)
@@ -17,19 +23,19 @@ export function oracleRecords(snapshot,root=0,width=1280,height=800) {
    const ni=l.nodeIndex[i],name=s(n.nodeName[ni]).toLowerCase(),type=n.nodeType[ni],text=type===3?s(n.nodeValue[ni]):'',attrs={}
    for(let a=0;a<(n.attributes[ni]?.length??0);a+=2)attrs[s(n.attributes[ni][a])]=s(n.attributes[ni][a+1])
    const styles=Object.fromEntries(oracleStyles.map((k,j)=>[k,s(l.styles[i]?.[j])]))
-   const b=l.bounds[i],box=[b[0]-(d.scrollOffsetX??0)+offset[0],b[1]-(d.scrollOffsetY??0)+offset[1],b[2],b[3]]
+   const b=l.bounds[i],box=[b[0]-(d.scrollOffsetX??0)+offset[0],b[1]-(d.scrollOffsetY??0)+offset[1],b[2],b[3]].map(value=>value/scale)
    const hidden=['hidden','collapse'].includes(styles.visibility)||styles.display==='none'||styles.opacity==='0'
    const painted=type===3?!!text.trim():['img','svg','input','textarea','select','button','canvas','video','iframe','object','embed'].includes(name)||styles['background-color']&&!['rgba(0, 0, 0, 0)','transparent'].includes(styles['background-color'])||['border-top-width','border-right-width','border-bottom-width','border-left-width'].some(k=>parseFloat(styles[k])>0)
    if(!hidden&&painted&&visible(box,width,height)&&!['script','style','noscript','template'].includes(name)){
     const fragments=[]
-    if(type===3)for(let f=0;f<(d.textBoxes?.layoutIndex.length??0);f++)if(d.textBoxes.layoutIndex[f]===i){const q=d.textBoxes.bounds[f];fragments.push([q[0]-(d.scrollOffsetX??0)+offset[0],q[1]-(d.scrollOffsetY??0)+offset[1],q[2],q[3]])}
+    if(type===3)for(let f=0;f<(d.textBoxes?.layoutIndex.length??0);f++)if(d.textBoxes.layoutIndex[f]===i){const q=d.textBoxes.bounds[f];fragments.push([q[0]-(d.scrollOffsetX??0)+offset[0],q[1]-(d.scrollOffsetY??0)+offset[1],q[2],q[3]].map(value=>value/scale))}
     out.push({key:JSON.stringify([type,name,attrs.id??'',text]),type,name,text,box,fragments,color:styles.color})
    }
   }
   for(let ni=0;ni<n.nodeName.length;ni++){
    const child=rare(n.contentDocumentIndex,ni);if(child===null)continue
    const li=layout.get(ni);if(li===undefined)continue
-   const b=l.bounds[li];if(visible([b[0]-(d.scrollOffsetX??0)+offset[0],b[1]-(d.scrollOffsetY??0)+offset[1],b[2],b[3]],width,height))visit(child,[offset[0]+b[0]-(d.scrollOffsetX??0),offset[1]+b[1]-(d.scrollOffsetY??0)])
+   const b=l.bounds[li];if(visible([b[0]-(d.scrollOffsetX??0)+offset[0],b[1]-(d.scrollOffsetY??0)+offset[1],b[2],b[3]].map(value=>value/scale),width,height))visit(child,[offset[0]+b[0]-(d.scrollOffsetX??0),offset[1]+b[1]-(d.scrollOffsetY??0)])
   }
  }
  visit(root)
@@ -70,4 +76,16 @@ export function mirrorMetricFailures(metrics){
  if(metrics.drift.maxCssPx>.5||metrics.drift.colorMismatches||metrics.drift.fragmentMismatches||metrics.drift.missingPaint)out.push('native/mirror geometry, text fragments or colors differ')
  if(!Number.isFinite(metrics.raster?.outside_edge_mismatch_fraction)||metrics.raster.outside_edge_mismatch_fraction>.001)out.push('raster outside-edge mismatch exceeds 0.10%')
  return out
+}
+
+// MP-10: project only protected native pixels into the actual viewer footprint.
+// This never reads client pixels to choose an exclusion or changes the viewer DOM.
+export function expectedPanelRaster(native,clip,box,width,height){
+ const data=new Uint8Array(width*height*4),sx=width/clip.width,sy=height/clip.height
+ for(let y=0;y<height;y++)for(let x=0;x<width;x++){
+  const u=Math.max(0,Math.min(native.width-1,((clip.x+(x+.5)/sx-box.x)/box.width)*native.width-.5)),v=Math.max(0,Math.min(native.height-1,((clip.y+(y+.5)/sy-box.y)/box.height)*native.height-.5))
+  const x0=Math.floor(u),y0=Math.floor(v),x1=Math.min(x0+1,native.width-1),y1=Math.min(y0+1,native.height-1),dx=u-x0,dy=v-y0
+  for(let c=0;c<4;c++){const a=native.pixels[(y0*native.width+x0)*4+c]*(1-dx)+native.pixels[(y0*native.width+x1)*4+c]*dx,b=native.pixels[(y1*native.width+x0)*4+c]*(1-dx)+native.pixels[(y1*native.width+x1)*4+c]*dx;data[(y*width+x)*4+c]=Math.round(a*(1-dy)+b*dy)}
+ }
+ return {width,height,data}
 }
