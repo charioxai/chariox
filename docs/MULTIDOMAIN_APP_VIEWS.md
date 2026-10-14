@@ -115,12 +115,15 @@ carries who drove the Tab. An agent-driven call runs as that agent
 (`Actor::Agent`, `agent_id`, `room_id`, running turn) and only while the agent
 still holds the App view and its own App grant (rechecked at enqueue and
 reply; otherwise `AGENT_APP_NOT_GRANTED`); it never borrows the owner's App
-authority. The page bridge tags each trusted input event with its driver (the
-controller names the agent around its dispatch) and a call keeps the tag of the
-event or answer it continues from; `chariox.capture()` carries it across
-delays. A call with no tag (a timer, page load) is the person's only while no
-agent drove the document, the sole agent's after one did, and refused with
-`APP_ORIGIN_UNRESOLVED` when several did. Owner input in between never changes it. Critical effects still need the owner's validation and passkey.
+authority. Who a call runs as comes only from the input the kernel host
+dispatched into that Tab, recorded by the controller; the page cannot name it.
+Timers, browser-generated events (scroll, focus, load) and the App's own
+navigations can outlive the input that caused them by any delay, so once an
+agent drove the Tab, through any of its documents, every call from it runs as
+that agent (a person's own click there acts with no more than the agent's
+grants), and is refused with `APP_ACTOR_UNKNOWN` when several agents did. A Tab
+no agent drove is the person's; closing the App view and opening it again
+starts a clean Tab. Critical effects still need the owner's validation and passkey.
 Existing Room-hosted instances keep the Room rule below; opening an App from
 a client no longer selects that host merely because a Room is attached.
 

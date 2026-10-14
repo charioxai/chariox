@@ -162,7 +162,7 @@ test("bridge call ids differ between documents, so a late answer cannot match a 
   const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
   const firstIds = () => {
     const sent = [];
-    const context = vm.createContext({ crypto: globalThis.crypto, queueMicrotask, __charioxAppCall: (payload) => sent.push(JSON.parse(payload).id) });
+    const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: (payload) => sent.push(JSON.parse(payload).id) });
     vm.runInContext(bridge, context);
     vm.runInContext("chariox.call('list_todos')", context);
     return sent[0];
@@ -240,7 +240,7 @@ test(`an 80-call backlog (${counts.join("/")}) across four views settles every p
     const { target_id } = await tabs.open({ origin_label: `app-${i}`, installation_id: `inst-${i}`,
       assets: [asset("index.html", "<p>backlog</p>")] });
     const sessionId = await browser.ensureTargetSession(connection, target_id);
-    const context = vm.createContext({ crypto: globalThis.crypto, queueMicrotask, __charioxAppCall: (payload) => {
+    const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: (payload) => {
       bindings.push(tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId,
         params: { name: "__charioxAppCall", payload } }));
     } });
@@ -571,7 +571,7 @@ test("view host helpers only queue the shared copy/link methods, never operate t
   const { connection } = await opened();
   const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
   const sent = [];
-  const context = vm.createContext({ crypto: globalThis.crypto, queueMicrotask, __charioxAppCall: payload => sent.push(JSON.parse(payload)),
+  const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: payload => sent.push(JSON.parse(payload)),
     navigator: { clipboard: { writeText() { assert.fail("App view must not copy directly"); } } },
     open() { assert.fail("App view must not open directly"); } });
   vm.runInContext(bridge, context);
@@ -664,130 +664,51 @@ test("user-domain instances of one App have independent targets and do not adopt
   }
 });
 
-// MP-08/MP-10/MP-11: an App's bridge calls keep the origin of the input that
-// started them. The page is a vm running the real bridge; its events and timers
-// are driven by hand so the order is exact.
-async function pageOf(tabs, connection) {
-  const sessionId = "s1";
-  const listeners = [];
-  const timers = [];
-  const calls = [];
-  const context = vm.createContext({ crypto: globalThis.crypto, queueMicrotask, event: undefined,
-    addEventListener: (type, listener) => listeners.push([type, listener]),
-    setTimeout: (fn) => timers.push(fn),
-    __charioxAppCall: (payload) => calls.push(tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId,
-      params: { name: "__charioxAppCall", payload } })) });
-  const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
-  vm.runInContext(bridge, context);
-  const send = connection.send.bind(connection);
-  connection.send = async (method, params, id) => {
-    if (method === "Runtime.evaluate") vm.runInContext(params.expression, context);
-    return send(method, params, id);
-  };
-  return {
-    context,
-    run: (code) => vm.runInContext(code, context),
-    // A browser event: its handlers (and their microtasks) see it as `event`.
-    async event(type, handler, isTrusted = true) {
-      const event = { type, isTrusted };
-      context.event = event;
-      for (const [kind, listener] of listeners) if (kind === type) listener(event);
-      handler?.(event);
-      await Promise.resolve();
-      context.event = undefined;
-    },
-    fire: () => timers.splice(0).forEach((fn) => fn()),
-    async settle() { await Promise.all(calls.splice(0)); },
-  };
-}
-
+// MP-08/MP-10/MP-11: who an App Tab's calls run as comes from the controller's
+// own record of the input it dispatched there, never from the page.
+const bindingCall = (tabs, connection, call) => tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId: "s1",
+  params: { name: "__charioxAppCall", payload: JSON.stringify({ params: {}, ...call }) } });
 const takeActors = async (tabs) => (await tabs.takeCalls()).calls.map((call) => call.actor ?? null);
 const agentOf = (id) => ({ kind: "agent", id });
 
-test("a delayed call keeps the agent that started it through a person's unrelated input", async () => {
+test("a Tab no agent drove runs its calls as the person; one an agent drove, as that agent", async () => {
   const { tabs, connection } = await opened();
-  const page = await pageOf(tabs, connection);
-  let now = 1_000;
-  tabs.now = () => now;
-  // The agent clicks; the App's handler waits 10 s before it calls.
-  const done = await tabs.beginInput("t1", "agent-7");
-  await page.event("click", () => page.run("setTimeout(() => chariox.call('delete_todo'), 10000)"));
-  await done();
-  // The person scrolls meanwhile; the timer then fires with no event around it.
-  now += 10_000;
-  await page.event("scroll");
-  page.fire();
-  await page.settle();
-  assert.deepEqual(await takeActors(tabs), [agentOf("agent-7")]);
-});
-
-test("a person's own event runs as the person, even after an agent drove the document", async () => {
-  const { tabs, connection } = await opened();
-  const page = await pageOf(tabs, connection);
-  await (await tabs.beginInput("t1", "agent-7"))();
-  await page.event("click", () => page.run("chariox.call('list')"));
-  await page.event("click", () => page.run("chariox.call('person')"), false);
-  await page.settle();
-  // The synthetic click is no person: it falls back to the agent that drove the page.
-  assert.deepEqual(await takeActors(tabs), [null, agentOf("agent-7")]);
-});
-
-test("calls without an origin are the person's only while no agent drove the document", async () => {
-  const { tabs, connection } = await opened();
-  const page = await pageOf(tabs, connection);
-  page.run("setTimeout(() => chariox.call('poll'), 1)");
-  page.fire();
-  await page.settle();
+  await bindingCall(tabs, connection, { id: "c1", method: "poll" });
   assert.deepEqual(await takeActors(tabs), [null]);
-  await (await tabs.beginInput("t1", "agent-7"))();
-  page.run("setTimeout(() => chariox.call('poll'), 1)");
-  page.fire();
-  await page.settle();
+  tabs.noteAgent("t1", "agent-7");
+  // Timers, browser-generated events and the person's own clicks look alike to
+  // the controller: after the agent, none of them is the person's.
+  await bindingCall(tabs, connection, { id: "c2", method: "poll" });
   assert.deepEqual(await takeActors(tabs), [agentOf("agent-7")]);
-  // Two agents make an unclaimed timer ambiguous: refuse, never pick one or the person.
-  await (await tabs.beginInput("t1", "agent-8"))();
-  const refused = page.run("chariox.call('poll').catch(error => error.code)");
-  page.fire();
-  await page.settle();
-  assert.equal(await refused, "APP_ORIGIN_UNRESOLVED");
-  assert.deepEqual(await takeActors(tabs), []);
+  tabs.noteAgent("unknown", "agent-7");
 });
 
-test("an answer and chariox.capture carry the origin into the code that continues", async () => {
+test("the page cannot name who a call runs as", async () => {
   const { tabs, connection } = await opened();
-  const page = await pageOf(tabs, connection);
-  await (await tabs.beginInput("t1", "agent-7"))();
-  const answer = async (method) => {
-    await page.settle();
-    const [call] = (await tabs.takeCalls()).calls;
-    assert.equal(call.method, method);
-    await tabs.respond({ target_id: "t1", call_id: call.call_id, result: {} });
-    await new Promise((resolve) => setImmediate(resolve));
-    return call.actor ?? null;
-  };
-  // A person's click: the call it makes after awaiting an answer is still the person's,
-  // although an agent drove the page earlier.
-  await page.event("click", () => page.run("chariox.call('first').then(() => chariox.call('second'))"));
-  assert.equal(await answer("first"), null);
-  assert.equal(await answer("second"), null);
-  // The agent's handler captures its scope; a later person's scroll does not take it.
-  const done = await tabs.beginInput("t1", "agent-7");
-  let held;
-  await page.event("click", () => { held = page.run("chariox.capture()"); });
-  await done();
-  await page.event("scroll");
-  held(() => page.run("chariox.call('third')"));
-  assert.deepEqual(await answer("third"), agentOf("agent-7"));
+  tabs.noteAgent("t1", "agent-7");
+  for (const origin of ["", null, "agent-8", "*"]) await bindingCall(tabs, connection, { id: `c-${origin}`, method: "poll", origin, actor: null });
+  assert.deepEqual(await takeActors(tabs), Array(4).fill(agentOf("agent-7")));
 });
 
-test("a new document forgets which agents drove the last one", async () => {
+test("a new document of the Tab keeps the agents that drove it", async () => {
   const { tabs, connection } = await opened();
-  const page = await pageOf(tabs, connection);
-  await (await tabs.beginInput("t1", "agent-7"))();
+  tabs.noteAgent("t1", "agent-7");
   await navigated(connection, "doc-2");
-  page.run("setTimeout(() => chariox.call('poll'), 1)");
-  page.fire();
-  await page.settle();
-  assert.deepEqual(await takeActors(tabs), [null]);
-  assert.equal(typeof (await tabs.beginInput("unknown", "agent-7")), "function");
+  await bindingCall(tabs, connection, { id: "c1", method: "startup" });
+  assert.deepEqual(await takeActors(tabs), [agentOf("agent-7")]);
+});
+
+test("a Tab two agents drove refuses every call with APP_ACTOR_UNKNOWN", async () => {
+  const { tabs, connection } = await opened();
+  const answers = [];
+  const send = connection.send.bind(connection);
+  connection.send = async (method, params, id) => {
+    if (method === "Runtime.evaluate") answers.push(params.expression);
+    return send(method, params, id);
+  };
+  tabs.noteAgent("t1", "agent-7");
+  tabs.noteAgent("t1", "agent-8");
+  await bindingCall(tabs, connection, { id: "c1", method: "poll" });
+  assert.deepEqual(await takeActors(tabs), []);
+  assert.match(answers.at(-1), /__charioxAppResolve\("c1", false, .*APP_ACTOR_UNKNOWN/);
 });
