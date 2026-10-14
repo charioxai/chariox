@@ -32,11 +32,27 @@ fn main() {
             build.include(path);
         }
     }
-    if let Some(paths) = std::env::var_os("CHARIOX_NATIVE_DISPLAY_LIB") {
-        for path in std::env::split_paths(&paths) {
-            println!("cargo:rustc-link-search=native={}", path.display());
-        }
+    let library_paths = std::env::var_os("CHARIOX_NATIVE_DISPLAY_LIB")
+        .map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .unwrap_or_default();
+    for path in &library_paths {
+        println!("cargo:rustc-link-search=native={}", path.display());
     }
+    // MP-08/MP-10/MP-11: WebP 1.2 (Bookworm) has no separate SharpYUV
+    // archive. Newer WebP needs it after libwebp; use the selected compiler's
+    // search path as well as explicit native-library paths.
+    let sharpyuv = library_paths
+        .iter()
+        .any(|path| path.join("libsharpyuv.a").is_file())
+        || build
+            .get_compiler()
+            .to_command()
+            .arg("-print-file-name=libsharpyuv.a")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .is_some_and(|path| std::path::Path::new(path.trim()).is_file());
     build.compile("chariox_display_native");
     // OpenH264, x264 and libavcodec are loaded at runtime, never linked.
     for library in ["X11", "Xext", "Xdamage", "Xcomposite", "Xtst", "dl"] {
@@ -44,5 +60,7 @@ fn main() {
     }
     println!("cargo:rustc-link-lib=static=yuv");
     println!("cargo:rustc-link-lib=static=webp");
-    println!("cargo:rustc-link-lib=static=sharpyuv");
+    if sharpyuv {
+        println!("cargo:rustc-link-lib=static=sharpyuv");
+    }
 }

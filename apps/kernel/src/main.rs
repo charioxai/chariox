@@ -17,12 +17,15 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 // process, and signal-handling work all need a shared async execution model.
 fn main() -> Result<(), chariox_kernel::DaemonError> {
     #[cfg(all(feature = "native-display", target_os = "linux"))]
-    if let Some(arg) = std::env::args_os()
-        .nth(1)
-        .filter(|arg| arg == "--display-native-worker" || arg == "--display-native-codec-probe")
-    {
+    if let Some(arg) = std::env::args_os().nth(1).filter(|arg| {
+        arg == "--display-native-worker"
+            || arg == "--display-native-codec-probe"
+            || arg == "--display-native-windows"
+    }) {
         let result = if arg == "--display-native-codec-probe" {
             chariox_kernel::display_native::probe_codec()
+        } else if arg == "--display-native-windows" {
+            chariox_kernel::display_native::inventory()
         } else {
             chariox_kernel::display_native::run()
         };

@@ -26,6 +26,7 @@ import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.
 import { WindowForeground } from './kernel-browser-foreground.mjs';
 import { SampleLane } from './kernel-browser-sample-lane.mjs';
 import { DisplaySessions } from './kernel-display-resumption.mjs';
+import { DisplayDocuments } from './kernel-browser-display-document.mjs';
 
 // Private display operations may overlap input; lifecycle still settles all
 // owned work before closing. Public admission/Vault barriers stay in Rust.
@@ -47,7 +48,7 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport())
 }
 const TAB_LIMIT = 128;
 // Read-only host operations: they never dispatch input into a page.
-const OBSERVATION_OPS = new Set(['state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'note_reanchor', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach']);
+const OBSERVATION_OPS = new Set(['state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'note_reanchor', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_input_target']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
 const TIMED_OPS = new Set(['start', 'state', 'open', 'close', 'navigate', 'mirror_subscribe', 'display_subscribe']);
 const inputKinds = { click: 1, text: 2, key: 3, scroll: 4 };
@@ -86,6 +87,7 @@ export class KernelBrowserHost {
     this.restoring = false;
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
+    this.displayDocuments = new DisplayDocuments();
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
     // MP-08/MP-11: desktop consumers place CDP protection regions on X11 pixels.
@@ -156,6 +158,7 @@ export class KernelBrowserHost {
     this.popupEvidence.clear();
     this.observed = ++this.observations;
     this.observedDocuments.clear();
+    this.displayDocuments.clear();
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     let saved = { generation: 0, tabs: [] };
     try { saved = JSON.parse(await readFile(path.join(this.root, "tabs.json"), "utf8")); }
@@ -230,6 +233,7 @@ export class KernelBrowserHost {
   // MP-08/MP-10: one fixed-label diagnostic per change of native refusal scope.
   nativeScope(reason){if(this.nativeScopeReason!==reason){this.nativeScopeReason=reason;if(reason)this.timing('native_unavailable_scope '+reason,timestamp());}}
   async compositorFor(tab,stream) {
+    if(stream.regionSource)return stream.regionSource;
     // MP-08/MP-10/MP-11: mirror capture/input never loads the video backend.
     const {LinuxCapture,selectNativeCapture} = await import('./kernel-browser-native.mjs');
     const {CompositorSource} = await import('./kernel-browser-compositor.mjs');
@@ -276,6 +280,7 @@ export class KernelBrowserHost {
   }
   async stop() {
     await this.desktopDisplay.close();
+    this.displayDocuments.clear();
     await this.closeCompositors();
     this.sampleLanes.clear();
 
@@ -368,10 +373,11 @@ export class KernelBrowserHost {
     if (!tab) throw new UserDomainRefusal("not_granted");
     return tab;
   }
-  async displayTarget(command) {
+  async displayTarget(command, native = false) {
     if (command.generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
     const stored = this.tabs.get(command.tab_id);
     if (!stored) throw new UserDomainRefusal("not_granted");
+    if(native)return this.displayDocuments.target(this.browser,stored);
     const { connection, sessionId } = await this.browser.resolvePageTarget(stored.target_id);
     const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
     const document_id = frameTree?.frame?.loaderId;
@@ -480,7 +486,10 @@ export class KernelBrowserHost {
     }, Math.max(1, stream.expires - Date.now()));
     stream.timer.unref?.();
   }
-  async removeDisplay(stream) {
+  async removeDisplay(reference) {
+    const stream=typeof reference==='string'?this.displays.get(reference):reference;
+    if(!stream||this.displays.get(stream.subscription_id)!==stream)return;
+    clearTimeout(stream.timer);
     if(stream.source_kind==='desktop')return this.desktopDisplay.remove(stream);
     this.displays.delete(stream.subscription_id);await stream.close();
     if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id)){
@@ -489,6 +498,12 @@ export class KernelBrowserHost {
   }
   async displayResumeBinding(stream,signal) {
     assertNotCancelled(signal);
+    if(stream.source_kind==='region'){
+      const source=stream.regionSource;
+      if(!source||typeof stream.regionCurrent!=='function'||!await stream.regionCurrent()||!stream.regionLease?.isAlive()||!stream.regionWindow?.isCurrent()||!source.valid()||source.closed||source.allowed&&!source.allowed(this.protection))throw new UserDomainRefusal('stale_reference');
+      assertNotCancelled(signal);
+      return source;
+    }
     if(stream.source_kind==='desktop'){
       const binding=this.chromium.desktop?.binding();
       if(!binding||binding.surface_id!==stream.tab_id||binding.generation!==stream.desktop_generation)throw new UserDomainRefusal('stale_reference');
@@ -532,7 +547,7 @@ export class KernelBrowserHost {
     if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
     if (command.op === "stop") return this.stop();
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "note_selection", "note_reanchor", "mirror_subscribe", "mirror_next", "mirror_close"].includes(command.op) });
+    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "note_selection", "note_reanchor", "mirror_subscribe", "mirror_next", "mirror_close"].includes(command.op) });
     assertNotCancelled(signal);
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
@@ -552,6 +567,14 @@ export class KernelBrowserHost {
       return command.op==='display_resume'
         ?this.displaySessions.resume(command.subscription_id,scope,command.generation,binding)
         :this.displaySessions.suspend(command.subscription_id,scope,command.generation,binding);
+    }
+    if(command.op==='display_subscribe'&&command.target) {
+      const {subscribeRegion}=await import('./kernel-browser-display-regions.mjs');
+      return subscribeRegion(this,command,scope,signal);
+    }
+    if(command.op==='display_input_target'||command.op==='input'&&command.binding_id) {
+      const {regionInput,regionInputTarget}=await import('./kernel-browser-display-regions.mjs');
+      return command.op==='display_input_target'?regionInputTarget(this,command,scope,signal):regionInput(this,command,scope,signal);
     }
     if(command.op==='mirror_subscribe') return this.mirror.subscribe(command,scope);
     if(command.op==='mirror_next') return this.mirror.next(command,scope,{signal});
@@ -611,7 +634,7 @@ export class KernelBrowserHost {
     }
     if (command.op === "close") {
       this.mirror.removeTab(tab.tab_id);
-      for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id) { await stream.close(); this.displays.delete(id); }
+      for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id && stream.regionTarget?.kind !== 'browser_chrome') { await stream.close(); this.displays.delete(id); }
       await this.closeCompositors(tab.tab_id);if(this.foreground.tab===tab.tab_id)this.foreground.reset();
       this.sampleLanes.delete(tab.tab_id);
       this.scales.delete(tab.tab_id);
@@ -807,7 +830,7 @@ export class KernelBrowserHost {
         if (TIMED_OPS.has(request.params.op)) this.timing(`host_op ${request.params.op}${typeof request.params.tab_id === 'string' && request.params.op === 'state' ? ' tab' : ''}`, at);
         // Structured controller observations scrub before compaction; metadata
         // and other host replies receive the same protection at this boundary.
-        if (!["screenshot", "poll", "mirror_next"].includes(request.params?.op)) {
+        if (!["screenshot", "poll", "mirror_next", "display_subscribe", "display_input_target"].includes(request.params?.op)) {
           return { id: request.id, ok: true, result: redactObservation(result, this.protection.values) };
         }
         return { id: request.id, ok: true, result };

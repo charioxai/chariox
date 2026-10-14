@@ -3,12 +3,9 @@ import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // Linux XDamage/XShm implementation; macOS unsupported until ScreenCaptureKit.
 import {mkdtemp,rm} from 'node:fs/promises';
 import path from 'node:path';
-import {SharedRasterPool} from './kernel-browser-shared-raster.mjs';
-import {spawn} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
-import {NativePipe,NativeRaster} from './kernel-browser-native-pipe.mjs';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
+import {startNativeReadback} from './kernel-browser-native-readback.mjs';
 import {decodePng,maskNativeRaster} from './kernel-browser-pixels.mjs';
 import {NativeRegionProtection,regionProtectionChanged} from './kernel-browser-region-protection.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
@@ -47,13 +44,15 @@ export function attestationMask(regions,width,height){
 }
 export class LinuxCapture {
  constructor({display,pid,connection,sessionId,tab,scale,hostScale=1,policy,browser,screenshot,allowed,frames,timing=()=>{}}){
-  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
+  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,timing});this.native=true;this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
  async createRasterPool(){return mkdtemp(path.join(nativeWorkerResource()?.root??this.display.root,'raster-'));}
- valid(){return !this.closed&&ownsDisplay(this.display)&&this.allowed(this.policy)}
+ valid(){return !this.closed&&this.connection?.isOpen?.()!==false&&ownsDisplay(this.display)&&this.allowed(this.policy)}
+ rejected(reason){this.nativeWorker?.rejected?.(reason);}
  onCdp(m){
-  if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId)this.fence();
+  if(m.method==='Chariox.browserDisconnected'||m.method==='Target.detachedFromTarget'&&m.params?.sessionId===this.sessionId||m.method==='Target.targetDestroyed'&&m.params?.targetId===this.tab?.target_id||m.sessionId===this.sessionId&&m.method==='Inspector.detached'){this.rejected('stale_document');this.fence();return;}
+  if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId){if(this.latest||this.pending||this.publishingRaw)this.rejected('stale_document');this.fence();}
   if(m.method==='Target.targetCreated'&&m.params?.targetInfo?.type==='page')this.fence();
   // MP-11: attribute-only protection changes produce no XDamage. Retire even
   // before attestation, so an empty snapshot cannot outlive marker insertion.
@@ -62,6 +61,7 @@ export class LinuxCapture {
    // also during attestation (pages that mutate continuously still attest).
    // Retire all pixels and queued consumers by revision, refresh only trusted
    // region metadata, and mask any readback older than that new fence in full.
+   if(this.latest||this.pending||this.publishingRaw)this.rejected('region_revision');
    this.regionRevision++;this.regions.retire();this.latest?.raw.release?.();this.pending?.release?.();
    this.latest=null;this.pending=null;this.changedAt=performance.now();this.wake(true);
   }
@@ -81,42 +81,7 @@ export class LinuxCapture {
    this.regions=new NativeRegionProtection(this.connection,this.sessionId,{policy:this.policy,browser:this.browser,tab:this.tab,scale:this.scale,record:reason=>this.timing('region_frame_masked '+reason,performance.timeOrigin+performance.now())});
    for(let attempt=0;;attempt++){try{await this.regions.refresh();break}catch(error){if(attempt>=4||!/region fence retired/.test(error?.message??''))throw error;}}
    this.poolRoot=await this.createRasterPool();
-   this.phase='readback';const executable=nativeWorkerResource()?.executable;
-   const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...this.display.environment},stdio:['pipe','pipe','pipe']});this.child=child;if(executable)this.nativeWorker=new NativeWorkerControl(child,this.timing);
-   const fail=()=>this.fence();child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
-   // MP-08/MP-10: fixed-label stage and owned-window sizes only.
-   child.stderr.on('data',b=>{for(const line of b.toString().split('\n')){
-    if(/^MD-DISPLAY: native stage [a-z_]+$/.test(line))this.helperStage=line.split(' ').at(-1);
-    else if(/^MD-DISPLAY: native geometry requested \d+x\d+ owned (none|\d+x\d+(,\d+x\d+){0,7})$/.test(line))this.timing(line.replace('MD-DISPLAY: native geometry ','native_geometry '),performance.timeOrigin+performance.now());
-   }});
-   const raster=new NativeRaster();
-   const pool=new SharedRasterPool(this.poolRoot,(slot,serial)=>this.control({release:slot,serial}));
-   const pipe=new NativePipe(header=>{
-    if(header.reply!==undefined){this.nativeWorker?.validate(header);if(!this.nativeWorker)throw Error('MP-11: unexpected native reply');return;}
-    if(header.width!==geometry.width*this.scale||header.height!==geometry.height*this.scale||!Number.isSafeInteger(header.serial)||header.serial<1||!Number.isFinite(header.captured_ms)||!Number.isFinite(header.capture_ms)||!/^[a-f0-9]{16}$/.test(header.signature))throw Error('raw geometry');
-   },(header,pixels)=>{
-    if(header.reply!==undefined){this.nativeWorker.receive(header,pixels);return;}
-    const received=performance.timeOrigin+performance.now();
-    if(Array.isArray(header.native_cpu)&&header.native_cpu.length===3)for(const [index,stage] of ['native_cpu_xshm_fence_read','native_cpu_damage_compare','native_cpu_capture_copy'].entries()){const cpu=header.native_cpu[index];if(Number.isFinite(cpu)&&cpu>=0)this.timing(stage,header.captured_ms,header.captured_ms+cpu);}
-    if(Number.isFinite(header.native_read_ms))this.timing('native_capture_compare_copy',header.captured_ms,header.native_read_ms);
-    // MP-08/MP-10: proved scroll plans offered by this readback (telemetry only).
-    if(header.shift_adjacent)this.timing('native_shift_adjacent',header.captured_ms,header.native_read_ms??header.captured_ms);
-    for(const [name,start,end] of [['input_wake_to_capture',header.input_wake_ms,header.captured_ms],['native_damage_coalesce',header.damage_ready_ms,header.captured_ms],['native_window_fence',header.captured_ms,header.get_image_ms],['native_xshm_get_image',header.get_image_ms,header.image_ready_ms],['native_readback_copy',header.image_ready_ms,header.readback_ms],['native_readback',header.captured_ms,header.readback_ms],['native_fingerprint',header.readback_ms,header.fingerprint_ms],['native_damage_scan',header.fingerprint_ms,header.damage_ms]]){
-     if(Number.isFinite(start)&&Number.isFinite(end)&&end>=start)this.timing(name,start,end);
-    }
-    if(Number.isFinite(header.damage_ms))this.timing('native_pipe',header.damage_ms,received);
-    const at=performance.timeOrigin+performance.now(),raw=header.slot==null?raster.apply(header,pixels):pool.apply(header);this.timing('native_raster_copy',at);
-    if(this.nativeWorker){
-     raw.nativeEncode=values=>this.nativeWorker.request('encode',{...values,serial:raw.serial});
-     raw.nativeExact=values=>this.nativeWorker.request('exact',{...values,serial:raw.serial});
-     raw.nativeRetire=encoder=>this.nativeWorker.retire(encoder);
-     raw.nativeDelivered=(encoder,revision)=>this.nativeWorker.delivered(encoder,revision);
-     raw.nativeCommit=(encoder,admit)=>this.nativeWorker.commit(encoder,raw.serial,admit);
-    }
-    if(this.valid()){raw.format='bgr0';this.pending?.release?.();this.pending=raw;void this.publish()}else raw.release?.()
-   });
-   child.stdout.on('data',b=>{try{pipe.push(b)}catch{this.fence()}});
-   child.stdin.write(JSON.stringify({pid:this.pid,width:geometry.width*this.scale,height:geometry.height*this.scale,pool:this.poolRoot})+'\n');
+   startNativeReadback(this,{width:geometry.width*this.scale,height:geometry.height*this.scale});
    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
    if(!this.latest||!this.valid())throw Error('MD-DISPLAY: native readback unavailable');
    this.phase='attestation';let matched=false;
@@ -153,6 +118,9 @@ export class LinuxCapture {
  async publish(){
   if(this.publishing)return;this.publishing=true;
   try{while(this.pending&&this.valid()){
+   // MP-11: mirror geometry is live authority, not a cached synchronous epoch.
+   // Refuse a readback before any mask, encoder offer or delivery can consume it.
+   if(this.validateCurrent&&!await this.validateCurrent()){this.fence();break;}
    let raw=this.pending;this.pending=null;this.publishingRaw=raw;
    if(this.connection.presentationFence&&!this.connection.presentationFence.stable(raw.captured_ms,raw.captured_ms+(raw.capture_ms??0))){
     this.timing('native_capture_transient_dropped',raw.captured_ms);raw.release?.();this.publishingRaw=null;this.wake(true);continue;
@@ -169,13 +137,13 @@ export class LinuxCapture {
     if(revision===this.regionRevision)throw error;
    }
    this.timing('native_region_fence',at);
-   if(revision!==this.regionRevision){raw.release?.();this.publishingRaw=null;continue;}
+   if(revision!==this.regionRevision){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;continue;}
    // Attribute-only changes need a new readback even if XDamage/pixels did
    // not change. The first readback may precede the refreshed metadata.
    if(raw.captured_ms<this.regions.beforeAt){this.wake(true);raw.release?.();this.publishingRaw=null;continue;}
    at=performance.timeOrigin+performance.now();const masked=maskNativeRaster(raw,regions,this.previousRegions,this.latest?.raw);this.timing('native_mask_copy_hash',at);
    if(masked!==raw){raw.release?.();raw=masked;this.publishingRaw=raw;}
-   if(!this.valid())break;
+   if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())break;
    this.previousRegions=regions;
    this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();
    this.timing('native_xshm_capture',raw.captured_ms); // includes bounded pipe delivery and source fence.
@@ -243,10 +211,12 @@ export class LinuxCapture {
  async close(){this.fence();return this.closing}
  async cleanup(){
   this.off?.();this.nativeWorker?.close();const child=this.child;this.child=null;
-  if(!child||child.pid===undefined)return;safeChildPid(child);child.stdin.end();
-  for(let n=0;n<50&&child.exitCode===null&&child.signalCode===null;n++)await delay(20);
-  if(child.exitCode===null&&child.signalCode===null){child.kill('SIGTERM');for(let n=0;n<50&&child.exitCode===null&&child.signalCode===null;n++)await delay(20)}
-  if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await new Promise(r=>child.once('exit',r))}
+  if(child&&child.pid!==undefined){
+   safeChildPid(child);child.stdin.end();
+   for(let n=0;n<50&&child.exitCode===null&&child.signalCode===null;n++)await delay(20);
+   if(child.exitCode===null&&child.signalCode===null){child.kill('SIGTERM');for(let n=0;n<50&&child.exitCode===null&&child.signalCode===null;n++)await delay(20)}
+   if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await new Promise(r=>child.once('exit',r))}
+  }
   if(this.poolRoot){await rm(this.poolRoot,{recursive:true,force:true});this.poolRoot=null}
  }
 }

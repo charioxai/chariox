@@ -1035,7 +1035,14 @@ async fn owner_types(
     text: &str,
     focus: bool,
 ) {
-    let focus = focus.then(|| KernelBrowserInput::Key { key: "Tab".into(), modifiers: 0 });
+    let focus = focus.then(|| KernelBrowserInput::Key {
+        key: "Tab".into(),
+        modifiers: 0,
+    });
+    let focus = focus.then(|| KernelBrowserInput::Key {
+        key: "Tab".into(),
+        modifiers: 0,
+    });
     for input in focus.into_iter().chain([
         KernelBrowserInput::Text { text: text.into() },
         KernelBrowserInput::Key {

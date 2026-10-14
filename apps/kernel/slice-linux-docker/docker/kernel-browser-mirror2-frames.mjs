@@ -173,6 +173,24 @@ export class MirrorFrames {
     const entry = source && !source.resync && source.focused ? stream.frames.get(source.focused) : null;
     return entry ? { ...source, focused: entry.focus.focused ?? source.focused, selection: entry.focus.selection ?? source.selection } : source;
   }
+  // §2a: child crop bounds are clipped to the current frame content viewport.
+  async regionBoxes(stream, parent, tab, policy) {
+    const out=[];
+    for(const [owner,entry] of stream.frames){
+      if(await this.loaderId(entry.child) !== entry.loaderId) continue;
+      await this.mirror.protectTargets(entry.child,tab,policy,`frame:${entry.child.frame.id}:${entry.loaderId}:`);
+      const geometry=await this.mirror.evaluate(parent,`${parent.ref}.regionShape(${JSON.stringify(owner)})`);
+      const boxes=await this.mirror.evaluate(entry.child,`${entry.child.ref}.regionBoxes()`);
+      if(await this.loaderId(entry.child) !== entry.loaderId) continue;
+      const [ox,oy,w,h]=geometry.contentBox,clip=geometry.clip;
+      for(const b of boxes){
+        const [x,y,bw,bh]=b.clip,left=Math.max(x+ox,ox,clip[0]),top=Math.max(y+oy,oy,clip[1]);
+        const right=Math.min(x+ox+bw,ox+w,clip[0]+clip[2]),bottom=Math.min(y+oy+bh,oy+h,clip[1]+clip[3]);
+        if(right>left&&bottom>top)out.push({id:rebaseId(b.id,entry.slot),box:[b.box[0]+ox,b.box[1]+oy,b.box[2],b.box[3]],clip:[left,top,right-left,bottom-top],distorted:b.distorted||geometry.distorted});
+      }
+    }
+    return out;
+  }
   // Viewport boxes of child opaque regions, in top-level coordinates.
   async opaqueBoxes(stream, parent) {
     const out = [];

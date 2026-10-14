@@ -23,6 +23,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-desktop-protection.py"),
     ),
     (
+        "kernel-browser-display-document.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-display-document.mjs"),
+    ),
+    (
         "kernel-browser-error-label.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-error-label.mjs"),
     ),
@@ -65,6 +69,22 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "kernel-browser-native-viewport.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-viewport.mjs"),
+    ),
+    (
+        "kernel-browser-native-windows.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-windows.mjs"),
+    ),
+    (
+        "kernel-browser-window-region.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-window-region.mjs"),
+    ),
+    (
+        "kernel-browser-display-regions.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-display-regions.mjs"),
+    ),
+    (
+        "kernel-browser-native-readback.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-readback.mjs"),
     ),
     (
         "kernel-browser-native.mjs",
@@ -205,6 +225,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "kernel-browser-mirror2-observer.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2-observer.mjs"),
+    ),
+    (
+        "kernel-browser-mirror2-regions.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2-regions.mjs"),
     ),
     (
         "kernel-browser-mirror2-frames.mjs",

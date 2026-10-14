@@ -10,7 +10,17 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
   && apt-get -o Acquire::Check-Valid-Until=false update \
   && apt-get install -y --no-install-recommends \
     libdbus-1-dev \
+    libavcodec-dev \
+    libavutil-dev \
     libssl-dev \
+    libwebp-dev \
+    libx11-dev \
+    libxcomposite-dev \
+    libxdamage-dev \
+    libxext-dev \
+    libxtst-dev \
+    libx264-dev \
+    libyuv-dev \
     pkg-config \
     protobuf-compiler \
   && rm -rf /var/lib/apt/lists/*
@@ -41,14 +51,14 @@ RUN mkdir -p /opt/chariox-runtime-bin \
     else \
       case "$CHARIOX_RUNTIME_BUILD_PROFILE" in \
         release) \
-          CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
+          CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --features native-display --release --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
           && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-relay --bin chariox-relay \
           && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-app-package --bin chariox-app-package \
           && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-app-runtime --bin chariox-app-storage \
           && profile_dir="release" \
           ;; \
         dev) \
-          CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
+          CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked --features native-display --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
           && CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked --package chariox-relay --bin chariox-relay \
           && profile_dir="debug" \
           ;; \
@@ -104,6 +114,8 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     git \
     jq \
     libdbus-1-dev \
+    libavcodec59 \
+    libavutil57 \
     libdrm2 \
     libegl1 \
     libgbm1 \
@@ -117,6 +129,9 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     libva-x11-2 \
     libwayland-server0 \
     libxkbcommon0 \
+    libxdamage1 \
+    libxcomposite1 \
+    libxtst6 \
     lsof \
     mousepad \
     novnc \
@@ -212,6 +227,7 @@ RUN groupadd --gid 1001 slice \
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-kernel /opt/chariox-slice/bin/chariox-kernel
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-relay /opt/chariox-slice/bin/chariox-relay
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/install-display-codec.py apps/kernel/slice-linux-docker/docker/display-codec-pin.json /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-actions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-input.mjs /opt/chariox-slice/browser-controller-input.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-notes.mjs /opt/chariox-slice/browser-controller-notes.mjs
@@ -316,4 +332,67 @@ WORKDIR /workspace
 CMD ["sleep", "infinity"]
 
 # MP-08/MP-10/MP-11: Room uses the kernel shared producer on its existing display.
-COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cdp-pipe.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-compositor.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-contention.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-display-capture.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-display-credit.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-display.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-error-label.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-foreground.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-frames.browser-test.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-geometry.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-host.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-input.browser-test.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-input.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-linux.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-macos.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-observer.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-resources.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-sanitize.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-styles.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-mirror.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-apps.browser-test.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-css.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-frames.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-observer.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2.browser-test.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-motion.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-native-credit.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-native-pipe.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-native-viewport.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-native-worker.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-native.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-owned-display.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-pixel-worker.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-pixels.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-popup-evidence.browser-test.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-popup-evidence.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-process.browser-test.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-process.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-refiner.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-refusal.browser-test.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-refusal.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-region-protection.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-sample-lane.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-shared-raster.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-terminal-fixture.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-tiles.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-timing.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-webcodecs.mjs apps/kernel/slice-linux-docker/docker/kernel-desktop-display.mjs apps/kernel/slice-linux-docker/docker/kernel-desktop-source.mjs apps/kernel/slice-linux-docker/docker/kernel-display-resumption.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-codec-protection.py apps/kernel/slice-linux-docker/docker/kernel-browser-encoder.py apps/kernel/slice-linux-docker/docker/kernel-browser-openh264.py apps/kernel/slice-linux-docker/docker/kernel-browser-raster-damage.py apps/kernel/slice-linux-docker/docker/kernel-browser-stripes.py apps/kernel/slice-linux-docker/docker/kernel-browser-xshm.py apps/kernel/slice-linux-docker/docker/kernel-desktop-protection.py apps/kernel/slice-linux-docker/docker/room-shared-display.mjs /opt/chariox-slice/
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cdp-pipe.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-compositor.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-contention.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-display-capture.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-display-credit.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-display-document.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-display-regions.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-display.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-error-label.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-foreground.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-geometry.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-host.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-input.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-linux.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-macos.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-observer.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-resources.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-sanitize.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-styles.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-css.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-frames.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-observer.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-regions.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-motion.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-credit.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-pipe.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-readback.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-viewport.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-windows.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-worker.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-owned-display.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-pixel-worker.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-pixels.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-popup-evidence.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-process.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-refiner.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-refusal.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-region-protection.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-sample-lane.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-shared-raster.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-tiles.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-timing.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-webcodecs.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-window-region.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-desktop-display.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-desktop-source.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-display-resumption.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-codec-protection.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-codec-protection.test.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-encoder.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-encoder.test.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-openh264.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-raster-damage.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-raster-damage.test.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-stripes.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-stripes.test.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-xshm.py \
+     apps/kernel/slice-linux-docker/docker/kernel-desktop-protection.py \
+     apps/kernel/slice-linux-docker/docker/kernel-desktop-protection.test.py \
+     apps/kernel/slice-linux-docker/docker/room-shared-display.mjs \
+     /opt/chariox-slice/
