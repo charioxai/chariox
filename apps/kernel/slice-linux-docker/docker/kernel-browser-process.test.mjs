@@ -53,3 +53,14 @@ test('MP-10 host display renders at the geometry density for negotiated DPR1/2 p
  assert.equal(new HostChromium('/private').scale,displayGeometry.dpr);
  assert(launchArguments('/private',false,true,2).includes('--force-device-scale-factor=2'));
 });
+
+// MP-08/MP-10/MP-11 review #1001 P2: an ambient desktop cannot replace a failed private renderer.
+test('MP-11 headed mirror refuses an unavailable private display before spawning Chromium', async()=>{
+ const root=await mkdtemp(tmpdir()+'/chariox-md-display-refusal-');
+ const start=OwnedDisplay.prototype.start,uid=process.getuid;
+ process.getuid=()=>2100; // Supplementary policy seam; no real browser is launched.
+ OwnedDisplay.prototype.start=async()=>{throw Error('MD-DISPLAY: owned X server unavailable')};
+ const host=new HostChromium(root,{environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/bin/true',CHARIOX_KERNEL_BROWSER_MIRROR:'1',CHARIOX_KERNEL_BROWSER_DISPLAY:'0',CHARIOX_KERNEL_BROWSER_HEADLESS:'0',DISPLAY:':77',XAUTHORITY:'/ambient',WAYLAND_DISPLAY:'wayland-0'}});
+ try{await assert.rejects(host.start(),/owned X server unavailable/);assert.equal(host.child,null,'ambient display must not launch a browser');assert.equal(host.display,null);}
+ finally{OwnedDisplay.prototype.start=start;process.getuid=uid;await host.stop();await rm(root,{recursive:true,force:true})}
+});

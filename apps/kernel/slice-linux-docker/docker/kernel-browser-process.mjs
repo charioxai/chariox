@@ -84,7 +84,10 @@ export class HostChromium {
     if(process.platform==='linux'&&headedRenderer&&environment.CHARIOX_KERNEL_BROWSER_HEADLESS!=='1'){
       // MP-11: the kernel reclaims this transient root even after supervisor SIGKILL.
       this.display=new OwnedDisplay(environment.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT || this.root);
-      try{environment={...environment,...await this.display.start()};}catch{this.display=null;}
+      environment={...environment};
+      for(const name of ['DISPLAY','XAUTHORITY','WAYLAND_DISPLAY'])delete environment[name];
+      try{environment={...environment,...await this.display.start()};}
+      catch(error){await this.display.close();this.display=null;throw error;}
     }
     const child = spawn(binary, launchArguments(profile,
       environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", this.scale), {
