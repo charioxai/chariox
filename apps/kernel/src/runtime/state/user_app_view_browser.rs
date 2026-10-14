@@ -28,6 +28,7 @@ impl KernelRuntimeState {
         owner: &str,
         view: &UserAppView,
         frontend: &AppFrontendBundle,
+        restoring: bool,
     ) -> Result<UserAppView, DaemonError> {
         let host = KernelBrowserAppViewHost {
             state: self,
@@ -53,7 +54,13 @@ impl KernelRuntimeState {
             && opened.tab_id.starts_with("host-tab-")
             && opened.generation > 0
         {
-            instances.bind_browser(
+            let bind = if restoring {
+                crate::runtime::user_app_views::UserAppViews::bind_restoring_browser
+            } else {
+                crate::runtime::user_app_views::UserAppViews::bind_browser
+            };
+            bind(
+                instances,
                 owner,
                 &view.view_id,
                 opened.target_id.clone(),
@@ -137,13 +144,21 @@ impl KernelRuntimeState {
     }
 
     pub(super) async fn close_user_app_view(&self, owner: &str, id: &str) {
+        self.retire_user_app_browser(owner, id, false).await;
+    }
+
+    pub(super) async fn retire_user_app_browser(&self, owner: &str, id: &str, restore: bool) {
         let instances = self.app_control().user_views();
         let hosted = instances
             .get(owner, id)
             .and_then(|(_, view)| view.browser)
             .zip(instances.browser_target(owner, id));
         // Revocation wins immediately, even if Chromium is gone or close fails.
-        self.forget_user_app_view(owner, id);
+        if restore {
+            self.suspend_user_app_view(owner, id);
+        } else {
+            self.forget_user_app_view(owner, id);
+        }
         if let Some((browser, target_id)) = hosted {
             let _ = KernelBrowserAppViewHost {
                 state: self,

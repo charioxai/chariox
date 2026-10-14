@@ -38,6 +38,7 @@ pub(crate) mod app_snapshot_restore;
 mod app_state_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_validation_broker;
+pub(crate) mod app_view_authority;
 pub(crate) mod app_views;
 pub(crate) mod app_wake_pump;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]

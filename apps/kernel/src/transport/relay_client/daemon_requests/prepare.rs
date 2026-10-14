@@ -190,7 +190,7 @@ mod tests {
         assert_eq!(read("mirror"), (input.0.clone(), true));
         assert_ne!(read("other").0, input.0);
     }
-    /// #992 review F4 (protocol 511): through the envelope's turn rule, a viewer's
+    /// #992 review F4 (protocol 516): through the envelope's turn rule, a viewer's
     /// read runs after its earlier key and never holds the viewer's next key.
     #[tokio::test]
     async fn mp08_a_mirror_read_enters_after_its_key_and_never_holds_the_next_key() {
@@ -224,12 +224,20 @@ mod tests {
         .unwrap();
         let order = BrowserInputOrder::default();
         let (first, second) = (key(3), key(4));
-        let running = order.reserve(first.0).unwrap().enter(first.1).await.unwrap();
+        let running = order
+            .reserve(first.0)
+            .unwrap()
+            .enter(first.1)
+            .await
+            .unwrap();
         let pending_read = order.reserve(read.0).unwrap();
         let next = order.reserve(second.0).unwrap();
         let reading = tokio::spawn(pending_read.enter(read.1));
         tokio::time::sleep(Duration::from_millis(5)).await;
-        assert!(!reading.is_finished(), "the read waits for the key before it");
+        assert!(
+            !reading.is_finished(),
+            "the read waits for the key before it"
+        );
         drop(running);
         assert!(
             reading.await.unwrap().is_none(),

@@ -118,6 +118,15 @@ fn make_control(
 }
 
 impl AppLifecycleService {
+    /// MP-08/MP-11: hold a real cold start before callable publication.
+    pub(crate) fn fixture_before_publication(&self, observe: Arc<dyn Fn() + Send + Sync>) {
+        *self.0.start_checkpoint.lock().unwrap() = Some(Arc::new(move |at| {
+            if at == StartCheckpoint::BeforePublication {
+                observe();
+            }
+        }));
+    }
+
     /// Reproduce a catalog retained when an idle App's startup fails.
     pub(crate) fn fixture_dormant_catalog(&self) {
         let catalog = self
@@ -146,7 +155,7 @@ impl AppLifecycleService {
         )
     }
 
-    fn fixture_inbox_workers_with_mode(
+    pub(crate) fn fixture_inbox_workers_with_mode(
         &self,
         mode: chariox_app_runtime::worker_process::test_fixture::Mode,
     ) -> Arc<Mutex<Vec<Observation>>> {

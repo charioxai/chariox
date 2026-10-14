@@ -237,7 +237,35 @@ impl KernelRuntimeState {
         installation: &str,
         host: Option<UserAppViewHost>,
     ) -> Result<Result<(UserAppView, AppFrontendBundle), AppRequestErrorCode>, DaemonError> {
+        self.open_user_app_view_selected(owner, installation, host, false)
+            .await
+    }
+
+    pub(super) async fn restore_user_app_view(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<Result<(UserAppView, AppFrontendBundle), AppRequestErrorCode>, DaemonError> {
+        self.open_user_app_view_selected(
+            owner,
+            installation,
+            Some(UserAppViewHost::KernelBrowser),
+            true,
+        )
+        .await
+    }
+
+    async fn open_user_app_view_selected(
+        &self,
+        owner: &str,
+        installation: &str,
+        host: Option<UserAppViewHost>,
+        restoring: bool,
+    ) -> Result<Result<(UserAppView, AppFrontendBundle), AppRequestErrorCode>, DaemonError> {
         let instances = self.app_control().user_views();
+        if host == Some(UserAppViewHost::KernelBrowser) {
+            self.seed_user_app_tabs(owner);
+        }
         let (binding, frontend) = match self.user_app_frontend(owner, installation).await {
             Ok(view) => view,
             Err(code) => return Ok(Err(code)),
@@ -251,7 +279,10 @@ impl KernelRuntimeState {
             .views()
             .register(&view.view_id, &view.view_id, binding.clone());
         if host == Some(UserAppViewHost::KernelBrowser) {
-            match self.open_user_app_browser(owner, &view, &frontend).await {
+            match self
+                .open_user_app_browser(owner, &view, &frontend, restoring)
+                .await
+            {
                 Ok(opened) => view = opened,
                 Err(error) => {
                     self.forget_user_app_view(owner, &view.view_id);
@@ -265,7 +296,8 @@ impl KernelRuntimeState {
             .await
             || instances.get(owner, &view.view_id).is_none()
         {
-            self.close_user_app_view(owner, &view.view_id).await;
+            self.retire_user_app_browser(owner, &view.view_id, restoring)
+                .await;
             return Ok(Err(AppRequestErrorCode::Conflict));
         }
         Ok(Ok((view, frontend)))
@@ -294,6 +326,28 @@ impl KernelRuntimeState {
                 "CANCELLED",
                 "App view closed",
             ));
+        }
+        if let super::app_view_runtime::ViewCaller::Agent(agent) = &caller {
+            let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+            if !self
+                .user_domain_owner_aliases(&user)
+                .iter()
+                .any(|alias| alias == owner)
+            {
+                return Err(super::app_view_runtime::agent_not_granted());
+            }
+            let grant = self
+                .owned
+                .kernel_browser_host
+                .retain_resource_grant(
+                    &user,
+                    agent.id(),
+                    UserDomainResource::AppView {
+                        view_id: view_id.into(),
+                    },
+                )
+                .map_err(|_| super::app_view_runtime::agent_not_granted())?;
+            tracked.retain_browser_grant(grant);
         }
         if method == "chariox.panel" {
             return Ok(serde_json::json!({"placement": "none", "minimized": false}));

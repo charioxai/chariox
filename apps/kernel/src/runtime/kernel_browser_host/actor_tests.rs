@@ -1235,9 +1235,22 @@ done
 "#).unwrap();
     let host = KernelBrowserHost::new(root.clone());
     host.install_fixture_backend("alice", &script, &root);
-    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
     let policy = json!({"values":[],"targets":[],"unknown":false});
-    let state = || host.protected_request("alice", None, "host.browser", json!({"op":"state"}), policy.clone());
+    let state = || {
+        host.protected_request(
+            "alice",
+            None,
+            "host.browser",
+            json!({"op":"state"}),
+            policy.clone(),
+        )
+    };
     state().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let early = std::thread::scope(|scope| {
@@ -1260,16 +1273,22 @@ done
     });
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
-    assert_eq!(early.expect("input waited behind the state read").unwrap()["input_completed"], true);
+    assert_eq!(
+        early.expect("input waited behind the state read").unwrap()["input_completed"],
+        true
+    );
 }
 
 // MP-11: a state read finishing after a newer controller observation (an input's
 // post-dispatch reconcile) cannot roll the ledger back to the older document.
 #[test]
 fn mp11_older_controller_observation_does_not_replace_a_newer_one() {
-    let state = |observation: u64, document: &str| json!({"generation":1,"_observation":observation,
-        "tabs":[{"tab_id":"host-tab-a","document_id":document}]});
-    let current = |document: &str| json!({"tab_id":"host-tab-a","generation":1,"document_id":document});
+    let state = |observation: u64, document: &str| {
+        json!({"generation":1,"_observation":observation,
+        "tabs":[{"tab_id":"host-tab-a","document_id":document}]})
+    };
+    let current =
+        |document: &str| json!({"tab_id":"host-tab-a","generation":1,"document_id":document});
     let mut model = crate::runtime::kernel_browser_actors::KernelBrowserActors::default();
     model.reconcile(&state(2, "after-click")).unwrap();
     model.reconcile(&state(1, "before-click")).unwrap();
@@ -1282,8 +1301,10 @@ fn mp11_older_controller_observation_does_not_replace_a_newer_one() {
 // selection result, whose payload is named `observation`.
 #[test]
 fn mp08_note_selection_keeps_its_observation_through_the_host() {
-    let root =
-        std::env::temp_dir().join(format!("chariox-note-observation-{:032x}", rand::random::<u128>()));
+    let root = std::env::temp_dir().join(format!(
+        "chariox-note-observation-{:032x}",
+        rand::random::<u128>()
+    ));
     std::fs::create_dir(&root).unwrap();
     let script = root.join("controller.sh");
     std::fs::write(&script, r#"set -eu
@@ -1300,17 +1321,36 @@ done
 "#).unwrap();
     let host = KernelBrowserHost::new(root.clone());
     host.install_fixture_backend("alice", &script, &root);
-    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
     let policy = json!({"values":[],"targets":[],"unknown":false});
     let state = host
-        .protected_request("alice", None, "host.browser", json!({"op":"state"}), policy.clone())
+        .protected_request(
+            "alice",
+            None,
+            "host.browser",
+            json!({"op":"state"}),
+            policy.clone(),
+        )
         .unwrap();
     let note = host
-        .protected_request("alice", None, "host.browser",
-            json!({"op":"note_selection","tab_id":"host-tab-a","generation":1}), policy)
+        .protected_request(
+            "alice",
+            None,
+            "host.browser",
+            json!({"op":"note_selection","tab_id":"host-tab-a","generation":1}),
+            policy,
+        )
         .unwrap();
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
-    assert!(state.get("_observation").is_none(), "the order stays controller-internal");
+    assert!(
+        state.get("_observation").is_none(),
+        "the order stays controller-internal"
+    );
     assert_eq!(note["observation"], json!({"text":"quote"}));
 }

@@ -42,9 +42,9 @@ test("waiting-room App opens without session and shares the kernel browser seam"
   } finally { await h.controller.dispose() }
   assert.deepEqual(h.requests.at(-1),{CloseUserAppView:{view_id:"v"}})
 })
-test("attached-session App open uses the kernel browser, flag-off verbs send nothing",async()=>{
+test("App open uses the kernel browser, flag-off verbs send nothing",async()=>{
   const h=harness()
-  try { assert.equal(await h.controller.handle(["open","fixture"],"session"),true)
+  try { assert.equal(await h.controller.handle(["open","fixture"]),true)
     assert.deepEqual(h.requests[0],{OpenUserAppView:{installation_id:"fixture",host:"kernel_browser"}})
     const count=h.requests.length
     assert.equal(await h.controller.handle(["open","fixture","--session","room"]),false)
