@@ -217,7 +217,7 @@ test("MP-08 MP-10 main491 exact cancellation crosses the actual CLI transport", 
       local_daemon_protocol_version: version }))
     assert.deepEqual(await client.send(request), { PromptCancelled: {} })
     capabilities = []
-    const before = requests.length
+    const before: number = requests.length
     await assert.rejects(client.send(request), /does not support exact_prompt_cancellation_v499/)
     assert.deepEqual(requests.slice(before), [{ RelayStatus: null }])
     capabilities = ["exact_prompt_cancellation_v499"]

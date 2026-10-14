@@ -70,7 +70,7 @@ test("MP-07/MP-10/MP-11 protocol 520 retains admitted predecessor contracts and 
       assert.equal(transition(newRoot, runtimeProtocol, oldRoot, version), "")
     }
     // Released G2 and Apps predecessors are reciprocal; other branch numbers stay refused.
-    for (const version of [488, 489, 492, 495, 496, 499, 312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index), 412, 413, 414, ...Array.from({ length: 9 }, (_, index) => 417 + index)]) {
+    for (const version of [473, 488, 489, 492, 495, 496, 499, 502, 509, 312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index), 412, 413, 414, ...Array.from({ length: 9 }, (_, index) => 417 + index)]) {
       const oldRoot = join(scratch, `protocol-${version}`)
       const refusal = version > policy.protocol ? /policy is missing or invalid/ : /not reciprocally authorized/
       assert.throws(() => transition(oldRoot, version, newRoot, runtimeProtocol), refusal)
