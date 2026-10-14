@@ -191,6 +191,18 @@ async fn native_hook_context_case(steering: bool) {
     outcome
         .as_ref()
         .expect("native pump must reach its hook processing seam");
+    // MP-08 / MP-10 / MP-11: the native identity must also survive a profile change.
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .unwrap()
+            .provider_resume_state()
+            .claude_session_id(),
+        Some("new-claude-session"),
+        "native hook metadata did not persist the agent's resumable session"
+    );
     if steering {
         let response = root.path().join("hook-context-responses/native-first.txt");
         assert!(
@@ -243,6 +255,7 @@ async fn native_hook_context_case(steering: bool) {
                 "retry-before-receipt",
                 false,
             )
+            .unwrap()
             .is_some(),
         "creating the response file prematurely consumed native context before delivery"
     );
@@ -273,6 +286,7 @@ async fn native_hook_context_case(steering: bool) {
                     "retry-before-receipt",
                     false,
                 )
+                .unwrap()
                 .is_some(),
             "a stale delivery receipt consumed the current native context"
         );

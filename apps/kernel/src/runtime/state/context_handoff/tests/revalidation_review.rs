@@ -181,6 +181,7 @@ async fn restored_room_final_packet_preserves_the_freshly_prepared_brief() {
             "next",
             false,
         )
+        .unwrap()
         .unwrap();
     handoff.conversation.brief = Some(FRESH.into());
     fixture
@@ -230,6 +231,7 @@ async fn fitting_structured_packet_never_acquires_a_stale_stored_brief_on_revali
             "next",
             false,
         )
+        .unwrap()
         .unwrap();
     assert!(handoff.conversation.brief.is_none());
     let handoff = fixture
@@ -258,6 +260,7 @@ async fn substitute_policy_rebuild_excludes_the_dispatched_request() {
             .runtime
             .owned
             .context_handoff_for_dispatch(&fixture.session_id, &agent, &target, "prompt-3", false)
+            .unwrap()
             .unwrap();
         assert!(!snapshot
             .render(MAX_HANDOFF_BYTES)

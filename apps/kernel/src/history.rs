@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::DaemonError;
 
 pub(crate) use handoff_brief::AgentHandoffBrief;
+mod compaction_boundary;
 mod handoff_brief;
 pub(crate) mod leased_projection;
 mod operational_archive;
@@ -1242,6 +1243,19 @@ CREATE TABLE IF NOT EXISTS history_agent_handoff_briefs (
     covered_through_sequence INTEGER NOT NULL,
     brief TEXT NOT NULL,
     updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (session_id, agent_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS history_agent_compaction_boundaries (
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    delivered_revision INTEGER NOT NULL,
+    provider_family TEXT NOT NULL,
+    source_provider TEXT NOT NULL,
+    source_model TEXT NOT NULL,
+    account_profile TEXT NOT NULL,
+    provider_session_id TEXT,
     PRIMARY KEY (session_id, agent_id)
 ) WITHOUT ROWID;
 "#;

@@ -7,6 +7,9 @@ use tokio::sync::Mutex;
 #[path = "tests/profile_selection.rs"]
 mod profile_selection;
 
+#[path = "tests/profile_native_identity.rs"]
+mod profile_native_identity;
+
 #[path = "tests/remote_profile_active_run.rs"]
 mod remote_profile_active_run;
 
@@ -1256,3 +1259,6 @@ fn same_execution_profile(
         && a.model() == b.model()
         && a.effort() == b.effort()
 }
+
+#[path = "tests/profile_compaction.rs"]
+mod profile_compaction;

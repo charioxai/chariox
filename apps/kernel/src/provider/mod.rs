@@ -189,17 +189,73 @@ pub(crate) fn canonical_provider_family(provider: &str) -> Option<&'static str> 
     }
 }
 
-/// The model's context window in tokens. Neither the Claude nor the Codex
-/// catalog reports one, so this is each harness's documented window: Codex's
-/// effective window (it reports 258,400 at turn start) and Claude's 200k, or
-/// 1M for a `[1m]` model.
+/// First-party harness windows: Codex's effective 258,400-token window and
+/// current Claude Code defaults. Claude `/context` and the official model
+/// configuration docs verify the alias and explicit-ID table below.
 pub(crate) fn model_context_window_tokens(provider: &str, model: &str) -> u64 {
     match canonical_provider_family(provider) {
         Some("codex") => 258_400,
-        Some("claude") if model.to_ascii_lowercase().ends_with("[1m]") => 1_000_000,
-        Some("claude") => 200_000,
+        Some("claude") => {
+            let normalized = model.trim().to_ascii_lowercase();
+            let model = match normalized.split_once('/') {
+                Some((namespace, model))
+                    if canonical_provider_family(namespace) == Some("claude") =>
+                {
+                    model
+                }
+                _ => normalized.as_str(),
+            };
+            // Current first-party Claude Code defaults, verified with `/context`.
+            // Older explicit IDs stay 200k unless extended context is selected.
+            if model.ends_with("[1m]")
+                || matches!(model, "default" | "sonnet" | "opus" | "opusplan" | "fable")
+                || [
+                    "claude-sonnet-5",
+                    "claude-opus-4-7",
+                    "claude-opus-4-8",
+                    "claude-opus-5",
+                    "claude-fable-5",
+                ]
+                .iter()
+                .any(|prefix| model == *prefix || model.starts_with(&format!("{prefix}-")))
+            {
+                1_000_000
+            } else {
+                200_000
+            }
+        }
         _ => 128_000,
     }
+}
+
+/// Apply the account's native CLI cap to both the switch guard and its packet.
+pub(crate) fn effective_model_context_window_tokens(
+    provider: &str,
+    model: &str,
+    disable_1m: bool,
+) -> u64 {
+    let window = model_context_window_tokens(provider, model);
+    if disable_1m && canonical_provider_family(provider) == Some("claude") {
+        window.min(200_000)
+    } else {
+        window
+    }
+}
+
+pub(crate) fn claude_1m_context_disabled(run: &RuntimeProviderRun) -> bool {
+    run.pty_env()
+        .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
+        .cloned()
+        .or_else(|| {
+            (!run
+                .pty_env_remove()
+                .iter()
+                .any(|key| key == "CLAUDE_CODE_DISABLE_1M_CONTEXT"))
+            .then(|| std::env::var("CLAUDE_CODE_DISABLE_1M_CONTEXT").ok())
+            .flatten()
+        })
+        .as_deref()
+        == Some("1")
 }
 
 pub(crate) fn provider_run_is_claude_headless(run: &RuntimeProviderRun) -> bool {
@@ -329,6 +385,9 @@ pub(crate) enum ProviderUtilityExecutionPolicy {
     ReadOnlyDiscovery,
     /// MP-08: No source reads, commands, MCPs, host instructions or prior thread.
     MetadataOnlyDiscovery,
+    /// A provider command on the run's own session, such as Claude's
+    /// `/compact`: sent bare, and it answers with no assistant text.
+    SessionCommand,
 }
 
 impl ProviderUtilityExecutionPolicy {
@@ -338,6 +397,11 @@ impl ProviderUtilityExecutionPolicy {
 
     pub(crate) fn is_read_only_discovery(self) -> bool {
         matches!(self, Self::ReadOnlyDiscovery | Self::MetadataOnlyDiscovery)
+    }
+
+    /// The prompt goes out as given, without the kernel's turn context.
+    pub(crate) fn sends_bare_prompt(self) -> bool {
+        matches!(self, Self::MetadataOnlyDiscovery | Self::SessionCommand)
     }
 }
 
@@ -427,6 +491,54 @@ mod tests {
         ProviderClientInterface, ProviderLaunchResult, ProviderUtilityExecutionPolicy,
         RuntimeProviderRun,
     };
+
+    #[test]
+    fn claude_provider_mode_namespaces_keep_the_same_context_window() {
+        for provider in ["claude", "claude-p", "claude-headless"] {
+            for model in ["sonnet", "claude-sonnet-5-5", "haiku"] {
+                let qualified = format!("{provider}/{model}");
+                assert_eq!(
+                    super::model_context_window_tokens(provider, &qualified),
+                    super::model_context_window_tokens(provider, model),
+                    "MP-08 MP-10 MP-11 {qualified} must retain its native window"
+                );
+            }
+        }
+        assert_eq!(
+            super::model_context_window_tokens("claude", "codex/sonnet"),
+            200_000
+        );
+    }
+
+    #[test]
+    fn claude_context_windows_match_official_cli_context_probes() {
+        for model in [
+            "sonnet",
+            "opus",
+            "claude-sonnet-5-5",
+            "claude-opus-5-5",
+            "claude-opus-4-7",
+            "claude/sonnet[1m]",
+        ] {
+            assert_eq!(
+                super::model_context_window_tokens("claude", model),
+                1_000_000,
+                "{model}"
+            );
+        }
+        for model in [
+            "haiku",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-6",
+            "claude-opus-4-6",
+        ] {
+            assert_eq!(
+                super::model_context_window_tokens("claude", model),
+                200_000,
+                "{model}"
+            );
+        }
+    }
 
     #[test]
     fn claude_headless_provider_mode_is_provider_policy() {

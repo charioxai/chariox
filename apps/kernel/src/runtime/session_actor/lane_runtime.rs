@@ -198,8 +198,8 @@ impl SessionRuntime {
 
     async fn remove_session_lanes(&self, session_id: &str) {
         let mut lanes = self.lanes.lock().await;
-        lanes.remove(session_id);
-        lanes.remove(&format!("{session_id}{ROOM_INTERRUPT_LANE_SUFFIX}"));
+        let prefix = format!("{session_id}::");
+        lanes.retain(|id, _| id != session_id && !id.starts_with(&prefix));
     }
 
     #[allow(dead_code)]
@@ -239,7 +239,8 @@ impl SessionRuntime {
         command_type: impl Into<String>,
         request: LocalDaemonRequest,
     ) -> Result<oneshot::Receiver<Result<LocalDaemonResponse, DaemonError>>, DaemonError> {
-        let lane = self.session_lane(session_id, session_id).await;
+        let lane_id = session_command_lane_id(&request, session_id);
+        let lane = self.session_lane(&lane_id, session_id).await;
         let (result_tx, result_rx) = oneshot::channel();
         let command_id = command_id.into();
         let command_type = command_type.into();
@@ -364,6 +365,16 @@ async fn run_session_command_lane(
 }
 
 fn session_command_lane_id(request: &LocalDaemonRequest, session_id: &str) -> String {
+    let agent_id = match request {
+        LocalDaemonRequest::UpdateAgentProfile(request) => Some(&request.agent_id),
+        LocalDaemonRequest::UpdateAgentConfig(request) => Some(&request.agent_id),
+        _ => None,
+    };
+    if let Some(agent_id) = agent_id {
+        // Preserve mutation ordering for this agent while its native command
+        // waits, without blocking notices, input or interaction responses.
+        return format!("{session_id}::agent-config:{agent_id}");
+    }
     if matches!(
         request,
         LocalDaemonRequest::CancelRoomEnvironmentAction(_)

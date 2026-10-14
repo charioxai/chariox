@@ -23,7 +23,7 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
         }
         let base = self.room_secret_observations.scrub(session_id, base)?;
         let handoff =
-            self.context_handoff_for_dispatch(session_id, agent_id, &run, prompt_id, steering);
+            self.context_handoff_for_dispatch(session_id, agent_id, &run, prompt_id, steering)?;
         let hidden = match handoff {
             Some(handoff) => {
                 let handoff =

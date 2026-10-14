@@ -427,3 +427,24 @@ fn native_claude_auto_compaction_requires_the_generated_envelope() {
         "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation. Please audit the queue."
     ));
 }
+
+#[test]
+fn claude_compact_control_requires_complete_provider_envelopes() {
+    let policy = ExternalProviderObservationPolicy::for_provider("claude");
+    for prompt in [
+        "<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>",
+        "<local-command-stdout>Compacted </local-command-stdout>",
+    ] {
+        assert!(policy.user_prompt_is_internal_control(prompt));
+        assert!(!ExternalProviderObservationPolicy::for_provider("codex").user_prompt_is_internal_control(prompt));
+    }
+    for prompt in [
+        "/compact", "Explain <local-command-stdout>Compacted </local-command-stdout>",
+        "<local-command-stdout>Compacted </local-command-stdout> then audit the queue",
+        "<command-name>/compact</command-name> please explain this command",
+        "<command-name>/compact</command-name><command-message>compact</command-message><command-args>unfinished",
+        "<command-name>/model</command-name><command-message>model</command-message><command-args>haiku</command-args>",
+    ] {
+        assert!(!policy.user_prompt_is_internal_control(prompt), "genuine user prompt filtered: {prompt}");
+    }
+}

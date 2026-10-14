@@ -168,6 +168,7 @@ pub(super) fn execute_utility_command(
                 &mut utility,
                 &envelope,
                 timeout,
+                true,
                 cancellation.as_ref(),
                 admission.as_ref(),
             );
@@ -177,11 +178,13 @@ pub(super) fn execute_utility_command(
         runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
         return result;
     }
+    let expects_text = policy != ProviderUtilityExecutionPolicy::SessionCommand;
     let result = run_claude_utility_prompt_on_runtime(
         &run,
         &mut state,
         &envelope,
         timeout,
+        expects_text,
         None,
         admission.as_ref(),
     );
@@ -194,6 +197,7 @@ fn run_claude_utility_prompt_on_runtime(
     state: &mut super::super::ClaudeRuntimeState,
     envelope: &PromptEnvelope,
     timeout: Duration,
+    expects_text: bool,
     cancellation: Option<&super::utility_cancellation::MetadataUtilityCancellation>,
     admission: Option<&crate::provider::ProviderUtilityAdmission>,
 ) -> Result<String, DaemonError> {
@@ -225,7 +229,7 @@ fn run_claude_utility_prompt_on_runtime(
         }
         if batch.prompt_completed {
             let output = output.trim().to_string();
-            if output.is_empty() {
+            if output.is_empty() && expects_text {
                 return Err(DaemonError::ProviderProtocol {
                     provider_run_id: run.id().to_string(),
                     operation: "claude_utility_empty_output",

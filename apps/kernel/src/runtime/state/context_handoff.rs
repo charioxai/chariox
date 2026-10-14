@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 
+use crate::error::DaemonError;
 use crate::provider::RuntimeProviderRun;
 
 mod brief;
@@ -26,10 +27,14 @@ pub(super) struct PendingAgentContextHandoff {
     pub(super) target_provider: String,
     pub(super) target_account_profile: String,
     pub(super) target_model: Option<String>,
+    /// Captured from the target launch environment; internal, not serialized.
+    target_1m_context_disabled: bool,
     conversation: AgentConversation,
     /// Derived from history for a provider switch, so it carries the agent's
     /// handoff brief.
     pub(super) derived: bool,
+    /// Durable epoch captured for this prepared compaction packet.
+    compaction_revision: Option<u64>,
     /// Explicit snapshots cannot outlive the Room policy that protected them.
     pub(super) room_revision: Option<u64>,
 }
@@ -38,7 +43,7 @@ pub(super) struct PendingAgentContextHandoff {
 /// a fork target and a turn substitute. Profile switches need no entry; the
 /// kernel derives them from history at dispatch.
 #[derive(Debug, Clone, Default)]
-pub(super) struct PendingAgentContextHandoffStore {
+pub(crate) struct PendingAgentContextHandoffStore {
     inner: Arc<StdMutex<BTreeMap<String, PendingAgentContextHandoff>>>,
     /// Each agent's run known to hold its conversation, so later prompts to it
     /// skip the history checks and the derived handoff is delivered once.
@@ -192,9 +197,10 @@ impl PendingAgentContextHandoff {
     /// The packet size the target allows: 15% of its model's window, within
     /// the prompt transport's cap.
     fn budget(&self) -> usize {
-        let window = crate::provider::model_context_window_tokens(
+        let window = crate::provider::effective_model_context_window_tokens(
             &self.target_provider,
             self.target_model.as_deref().unwrap_or_default(),
+            self.target_1m_context_disabled,
         );
         (window * HANDOFF_WINDOW_PERCENT / 100 * HANDOFF_BYTES_PER_TOKEN)
             .min(MAX_PROMPT_HANDOFF_BYTES) as usize
@@ -267,8 +273,43 @@ impl super::KernelRuntimeOwnedState {
             agent_id,
             agent_id,
             target_provider_run_id,
-            (target_provider, target_account_profile, target_model),
+            (target_provider, target_account_profile, target_model, false),
         );
+    }
+
+    /// Native compaction can drop early records without changing the session
+    /// identity. Recover those records through the normal protected handoff
+    /// and brief path on the next turn, just as at a provider session boundary.
+    pub(super) fn prepare_compacted_session_context_handoff(
+        &self,
+        source_run: &RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        let Some(agent_id) = source_run.agent_instance_id() else {
+            return Ok(());
+        };
+        self.operational_history_store
+            .record_agent_compaction_boundary(
+                source_run.session_id(),
+                agent_id,
+                source_run.provider(),
+                source_run.model(),
+                source_run.account_profile(),
+                native_session_id(source_run),
+            )?;
+        self.prepare_context_handoff_for_target(
+            source_run,
+            source_run.session_id(),
+            agent_id,
+            agent_id,
+            None,
+            (
+                source_run.provider(),
+                source_run.account_profile(),
+                None,
+                true,
+            ),
+        );
+        Ok(())
     }
 
     pub(super) fn prepare_agent_fork_context_handoff(
@@ -291,6 +332,7 @@ impl super::KernelRuntimeOwnedState {
                 target_run.provider(),
                 target_run.account_profile(),
                 Some(target_run.model()),
+                false,
             ),
         );
     }
@@ -302,9 +344,9 @@ impl super::KernelRuntimeOwnedState {
         source_history_agent_id: &str,
         agent_id: &str,
         target_provider_run_id: Option<&str>,
-        target_profile: (&str, &str, Option<&str>),
+        target_context: (&str, &str, Option<&str>, bool),
     ) {
-        let (target_provider, target_account_profile, target_model) = target_profile;
+        let (target_provider, target_account_profile, target_model, derived) = target_context;
         self.pending_agent_context_handoffs
             .clear(session_id, agent_id);
         let room_revision = self.room_secret_observations.revision(session_id).ok();
@@ -321,8 +363,10 @@ impl super::KernelRuntimeOwnedState {
                     target_provider: target_provider.to_string(),
                     target_account_profile: target_account_profile.to_string(),
                     target_model: target_model.map(str::to_string),
+                    target_1m_context_disabled: false,
                     conversation,
-                    derived: false,
+                    derived,
+                    compaction_revision: None,
                     room_revision,
                 },
             );
@@ -371,19 +415,70 @@ impl super::KernelRuntimeOwnedState {
         target_run: &RuntimeProviderRun,
         prompt_id: &str,
         steering: bool,
-    ) -> Option<PendingAgentContextHandoff> {
+    ) -> Result<Option<PendingAgentContextHandoff>, DaemonError> {
         if steering {
-            return None;
+            return Ok(None);
         }
         let started = std::time::Instant::now();
+        // A compacted session retains its native ID while losing records.
+        // Resolve its durable boundary before consulting answered-session IDs.
+        if target_run.workflow_fresh_context_node_run_id().is_none()
+            && target_run.turn_substitute().is_none()
+        {
+            if let Some(boundary) = self
+                .operational_history_store
+                .load_agent_compaction_boundary(
+                    session_id,
+                    agent_id,
+                    target_run.provider(),
+                    target_run.account_profile(),
+                    native_session_id(target_run),
+                )?
+            {
+                let mut conversation = self.agent_conversation(session_id, agent_id, Some(prompt_id))
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "restore compacted session context",
+                        message: "Retained conversation is unavailable at the pending compaction boundary".into(),
+                    })?;
+                self.add_session_facts(session_id, agent_id, prompt_id, &mut conversation);
+                if !brief_refresh::writes_handoff_briefs(target_run) {
+                    conversation.brief = self.stored_handoff_brief(session_id, agent_id);
+                }
+                let handoff = PendingAgentContextHandoff {
+                    source_provider: boundary.source_provider,
+                    source_model: boundary.source_model,
+                    target_provider_run_id: Some(target_run.id().to_string()),
+                    target_provider: target_run.provider().to_string(),
+                    target_account_profile: target_run.account_profile().to_string(),
+                    target_model: Some(target_run.model().to_string()),
+                    target_1m_context_disabled: crate::provider::claude_1m_context_disabled(
+                        target_run,
+                    ),
+                    conversation,
+                    derived: true,
+                    compaction_revision: Some(boundary.revision),
+                    room_revision: self.room_secret_observations.revision(session_id).ok(),
+                };
+                self.pending_agent_context_handoffs
+                    .set(session_id, agent_id, handoff.clone());
+                return Ok(Some(handoff));
+            }
+        }
         if let Some(mut handoff) = self
             .pending_agent_context_handoffs
             .peek_matching(session_id, agent_id, target_run)
         {
+            // A compacted session still needs its records if another model
+            // was selected before this turn. Budget the packet for this run.
+            if handoff.target_model.is_none() {
+                handoff.target_model = Some(target_run.model().to_string());
+            }
             // A substitute is prepared after the failed turn was recorded and
             // receives that turn's prompt as its request.
+            handoff.target_1m_context_disabled =
+                crate::provider::claude_1m_context_disabled(target_run);
             handoff.conversation = handoff.conversation.before_prompt(prompt_id);
-            return Some(handoff);
+            return Ok(Some(handoff));
         }
         if target_run.workflow_fresh_context_node_run_id().is_some()
             || target_run.turn_substitute().is_some()
@@ -391,7 +486,7 @@ impl super::KernelRuntimeOwnedState {
                 .pending_agent_context_handoffs
                 .run_holds_conversation(session_id, agent_id, target_run)
         {
-            return None;
+            return Ok(None);
         }
         let latest = self
             .operational_history_store
@@ -406,8 +501,7 @@ impl super::KernelRuntimeOwnedState {
                         "error": error.to_string(),
                     }),
                 );
-            })
-            .ok()?;
+            })?;
         let run_session = native_session_id(target_run);
         // Output recorded without a provider session id is the target
         // session's own only when the same provider family answered it.
@@ -462,7 +556,7 @@ impl super::KernelRuntimeOwnedState {
         let Some(mut conversation) = conversation else {
             self.pending_agent_context_handoffs
                 .note_run_holds_conversation(session_id, agent_id, target_run);
-            return None;
+            return Ok(None);
         };
         self.add_session_facts(session_id, agent_id, prompt_id, &mut conversation);
         // Structured harnesses load the brief once during refresh. Other harnesses
@@ -483,7 +577,7 @@ impl super::KernelRuntimeOwnedState {
                 "derive_ms": started.elapsed().as_millis() as u64,
             }),
         );
-        Some(PendingAgentContextHandoff {
+        Ok(Some(PendingAgentContextHandoff {
             source_provider: latest
                 .and_then(|latest| latest.provider.clone())
                 .unwrap_or_default(),
@@ -494,10 +588,12 @@ impl super::KernelRuntimeOwnedState {
             target_provider: target_run.provider().to_string(),
             target_account_profile: target_run.account_profile().to_string(),
             target_model: Some(target_run.model().to_string()),
+            target_1m_context_disabled: crate::provider::claude_1m_context_disabled(target_run),
             conversation,
             derived: true,
+            compaction_revision: None,
             room_revision: self.room_secret_observations.revision(session_id).ok(),
-        })
+        }))
     }
 
     pub(super) fn stored_handoff_brief(&self, session_id: &str, agent_id: &str) -> Option<String> {
@@ -593,10 +689,11 @@ impl super::KernelRuntimeOwnedState {
         prompt_id: &str,
         prompt: &str,
         steering: bool,
-    ) -> String {
-        self.context_handoff_for_dispatch(session_id, agent_id, target_run, prompt_id, steering)
+    ) -> Result<String, DaemonError> {
+        Ok(self
+            .context_handoff_for_dispatch(session_id, agent_id, target_run, prompt_id, steering)?
             .map(|handoff| inject_context_handoff(prompt, &handoff))
-            .unwrap_or_else(|| prompt.to_string())
+            .unwrap_or_else(|| prompt.to_string()))
     }
 
     /// The run received the prompt, and with it any handoff it carried.
@@ -606,9 +703,23 @@ impl super::KernelRuntimeOwnedState {
         agent_id: &str,
         target_run: &RuntimeProviderRun,
     ) {
-        let _ = self
+        if let Some(revision) = self
             .pending_agent_context_handoffs
-            .consume_matching(session_id, agent_id, target_run);
+            .consume_matching(session_id, agent_id, target_run)
+            .and_then(|handoff| handoff.compaction_revision)
+        {
+            if let Err(error) = self
+                .operational_history_store
+                .deliver_agent_compaction_boundary(session_id, agent_id, revision)
+            {
+                // A failed acknowledgement retains the durable boundary for retry.
+                crate::logging::warn_with_fields(
+                    "daemon.provider_context_handoff",
+                    "failed to acknowledge compaction recovery",
+                    serde_json::json!({ "session_id": session_id, "agent_id": agent_id, "error": error.to_string() }),
+                );
+            }
+        }
         if target_run.turn_substitute().is_none() {
             self.pending_agent_context_handoffs
                 .note_run_holds_conversation(session_id, agent_id, target_run);
@@ -634,6 +745,7 @@ fn model_label(model: Option<&str>) -> &str {
 #[cfg(test)]
 mod tests {
     mod brief_protection;
+    mod compaction_recovery_review;
     mod revalidation_review;
     use super::builder::MAX_HANDOFF_BYTES;
     use super::*;
@@ -713,6 +825,119 @@ mod tests {
         )
     }
 
+    // MP-08 / MP-10 / MP-11: hosted profile changes and local queue promotion
+    // can use different routers over the same kernel-owned stores.
+    #[tokio::test]
+    async fn post_compaction_handoff_is_shared_with_another_kernel_router() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(
+            1,
+            "Keep the named assistant proposal separate from decisions.",
+        );
+        fixture.output(
+            2,
+            "source",
+            "claude",
+            Some("native"),
+            "Assistant proposal: Continuity Ledger.",
+        );
+        let mut source = fixture
+            .run("source", "claude", Some("native"))
+            .projected_for_home_agent_with_id(
+                "source".to_string(),
+                fixture.session_id.clone(),
+                fixture.agent_id.clone(),
+            );
+        source.set_model("sonnet");
+        fixture
+            .runtime
+            .owned
+            .prepare_compacted_session_context_handoff(&source)
+            .unwrap();
+        let mut target = fixture
+            .run("target", "claude", Some("native"))
+            .projected_for_home_agent_with_id(
+                "target".to_string(),
+                fixture.session_id.clone(),
+                fixture.agent_id.clone(),
+            );
+        target.set_model("haiku");
+        assert!(
+            fixture
+                .runtime
+                .owned
+                .pending_agent_context_handoffs
+                .peek_matching(&fixture.session_id, &fixture.agent_id, &target)
+                .is_some(),
+            "source compaction must first prepare this session's handoff"
+        );
+        let another_router = owned_runtime_state(&fixture.runtime.app).await;
+        let handoff = another_router
+            .owned
+            .context_handoff_for_dispatch(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &target,
+                "next-turn",
+                false,
+            )
+            .unwrap()
+            .expect("the next router lost the compacted session's kernel history");
+        assert!(handoff.render_hidden(24_000).contains("Continuity Ledger"));
+        another_router.owned.consume_pending_context_handoff(
+            &fixture.session_id,
+            &fixture.agent_id,
+            &target,
+        );
+        assert!(
+            fixture
+                .runtime
+                .owned
+                .pending_agent_context_handoffs
+                .peek_matching(&fixture.session_id, &fixture.agent_id, &target)
+                .is_none(),
+            "delivery through another router must consume the same handoff"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_compaction_handoff_stays_with_its_kernel() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "Keep this kernel's conversation private.");
+        fixture.output(
+            2,
+            "source",
+            "claude",
+            Some("native"),
+            "Assistant proposal: Continuity Ledger.",
+        );
+        let source = fixture
+            .run("source", "claude", Some("native"))
+            .projected_for_home_agent_with_id(
+                "source".to_string(),
+                fixture.session_id.clone(),
+                fixture.agent_id.clone(),
+            );
+        fixture
+            .runtime
+            .owned
+            .prepare_compacted_session_context_handoff(&source)
+            .unwrap();
+        let another_kernel = DerivedHandoffFixture::new().await;
+        assert!(another_kernel
+            .runtime
+            .owned
+            .pending_agent_context_handoffs
+            .peek_matching(&fixture.session_id, &fixture.agent_id, &source)
+            .is_none());
+        assert!(fixture
+            .runtime
+            .owned
+            .pending_agent_context_handoffs
+            .peek_matching(&fixture.session_id, &fixture.agent_id, &source)
+            .is_some());
+    }
+
     #[test]
     fn pending_handoff_is_consumed_once() {
         let store = PendingAgentContextHandoffStore::default();
@@ -726,8 +951,10 @@ mod tests {
                 target_provider: "codex".to_string(),
                 target_account_profile: "default".to_string(),
                 target_model: Some("model-new".to_string()),
+                target_1m_context_disabled: false,
                 conversation: conversation("prior context"),
                 derived: false,
+                compaction_revision: None,
                 room_revision: Some(0),
             },
         );
@@ -941,6 +1168,7 @@ mod tests {
                     &format!("prompt-{sequence}"),
                     false,
                 )
+                .unwrap()
                 .and_then(|handoff| handoff.render(MAX_HANDOFF_BYTES))
         }
 
@@ -1008,14 +1236,17 @@ mod tests {
         }
 
         fn prompt(&self, run: &RuntimeProviderRun) -> String {
-            self.runtime.owned.prompt_with_pending_context_handoff(
-                &self.session_id,
-                &self.agent_id,
-                run,
-                "prompt-next",
-                "next",
-                false,
-            )
+            self.runtime
+                .owned
+                .prompt_with_pending_context_handoff(
+                    &self.session_id,
+                    &self.agent_id,
+                    run,
+                    "prompt-next",
+                    "next",
+                    false,
+                )
+                .unwrap()
         }
 
         fn run(
@@ -1267,13 +1498,17 @@ mod tests {
         fixture.output(2, "run-old", "codex", Some("thread-old"), "OK");
         let fresh = fixture.run("run-new", "claude", None);
         let steer = |steering| {
-            fixture.runtime.owned.context_handoff_for_dispatch(
-                &fixture.session_id,
-                &fixture.agent_id,
-                &fresh,
-                "prompt-next",
-                steering,
-            )
+            fixture
+                .runtime
+                .owned
+                .context_handoff_for_dispatch(
+                    &fixture.session_id,
+                    &fixture.agent_id,
+                    &fresh,
+                    "prompt-next",
+                    steering,
+                )
+                .unwrap()
         };
 
         assert!(steer(true).is_none());
@@ -1308,6 +1543,7 @@ mod tests {
                 "prompt-next",
                 false,
             )
+            .unwrap()
             .expect("the new session receives the conversation");
 
         for room in [0, 100, 1_000, 9_000, 18_000, 48_000] {
@@ -1402,6 +1638,7 @@ mod tests {
                 "prompt-next",
                 false,
             )
+            .unwrap()
             .expect("the new session receives the conversation");
 
         let handoff = fixture
@@ -1417,7 +1654,7 @@ mod tests {
             )
             .await;
         assert!(handoff.derived);
-        assert_eq!(handoff.budget(), 90_000);
+        assert_eq!(handoff.budget(), MAX_PROMPT_HANDOFF_BYTES as usize);
         assert!(handoff
             .render(handoff.budget())
             .unwrap()
@@ -1427,6 +1664,57 @@ mod tests {
             ..handoff
         };
         assert_eq!(codex.budget(), 116_280);
+    }
+
+    #[tokio::test]
+    async fn claude_handoff_budget_uses_the_target_accounts_effective_context_cap() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "remember amber-kestrel");
+        let request = crate::provider::LaunchProviderRequest::new(
+            &fixture.session_id,
+            "claude",
+            "claude",
+            "default",
+            "sonnet",
+        )
+        .with_agent_id(&fixture.agent_id);
+        let mut target = RuntimeProviderRun::new(
+            "capped-target",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: [("CLAUDE_CODE_DISABLE_1M_CONTEXT".into(), "1".into())].into(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        target.mark_running();
+        let capped = fixture
+            .runtime
+            .owned
+            .context_handoff_for_dispatch(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &target,
+                "next",
+                false,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            capped.budget(),
+            90_000,
+            "the account's 200k cap must constrain the handoff"
+        );
+        assert!(capped
+            .render(capped.budget())
+            .unwrap()
+            .contains("amber-kestrel"));
     }
 
     fn test_run_in_session(
@@ -1459,8 +1747,10 @@ mod tests {
             target_provider: String::new(),
             target_account_profile: "default".to_string(),
             target_model: None,
+            target_1m_context_disabled: false,
             conversation: AgentConversation::default(),
             derived: true,
+            compaction_revision: None,
             room_revision: Some(0),
         };
         let codex = test_run_in_session("run", "agent", "codex", "gpt-5.5", None);
@@ -1580,6 +1870,7 @@ mod tests {
                 "prompt-next",
                 false,
             )
+            .unwrap()
             .unwrap();
         // A successful fold is durable even when the next utility call fails.
         let brief = "## Goal\nShip amber-kestrel.\n## Next Steps\nTest.";
@@ -1623,8 +1914,10 @@ mod tests {
                 target_provider: "codex".to_string(),
                 target_account_profile: "default".to_string(),
                 target_model: None,
+                target_1m_context_disabled: false,
                 conversation: conversation("workflow context"),
                 derived: false,
+                compaction_revision: None,
                 room_revision: Some(0),
             },
         );
@@ -1649,8 +1942,10 @@ mod tests {
             target_provider: "claude-headless".to_string(),
             target_account_profile: "default".to_string(),
             target_model: Some("claude-opus-4-7".to_string()),
+            target_1m_context_disabled: false,
             conversation: conversation("prior context"),
             derived: false,
+            compaction_revision: None,
             room_revision: Some(0),
         };
         let hidden = handoff.render_hidden(MAX_HANDOFF_BYTES);
@@ -1677,8 +1972,10 @@ mod tests {
                 target_provider: "codex".to_string(),
                 target_account_profile: "default".to_string(),
                 target_model: Some("gpt-5".to_string()),
+                target_1m_context_disabled: false,
                 conversation: conversation("prior context"),
                 derived: false,
+                compaction_revision: None,
                 room_revision: Some(0),
             },
         );

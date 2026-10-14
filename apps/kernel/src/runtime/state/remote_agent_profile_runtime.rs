@@ -8,6 +8,19 @@ impl KernelRuntimeState {
         agent_id: &str,
         update: &owned::OwnedRemoteAgentProfileUpdate,
     ) -> Result<(), DaemonError> {
+        // The home reserves admission while the worker prepares its profile.
+        // Show that wait on every home attachment without running or predicting
+        // the worker's provider session command here.
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        self.owned.record_notice_for_agent(
+            agent.session_id(),
+            None,
+            Some(agent_id),
+            self.owned
+                .attachment_store
+                .list_session_attachment_ids(agent.session_id()),
+            "Preparing the worker's profile change…",
+        );
         let mut config = self.config_snapshot().await;
         if let (Some(url), Some(token)) = (update.relay_url.clone(), update.relay_token.clone()) {
             config.apply_remote_relay_override(url, token);
@@ -41,13 +54,12 @@ impl KernelRuntimeState {
         worker_kernel_id: &str,
         request: RelayPeerRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        let response_timeout =
+            request.off_lock_response_timeout(remote_profile_response_timeout(config, &request));
         let target = ClientTarget {
             daemon_id: Some(worker_kernel_id.to_string()),
             daemon_alias: None,
         };
-        let timeout = request.off_lock_response_timeout(std::time::Duration::from_millis(
-            config.relay_request_timeout_ms,
-        ));
         match self.connected_relay_state_for_config(config).await {
             Some(relay_state) => {
                 crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
@@ -55,13 +67,13 @@ impl KernelRuntimeState {
                     &relay_state,
                     target,
                     request,
-                    timeout,
+                    response_timeout,
                 )
                 .await
             }
             None => {
                 crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                    config, target, request, timeout,
+                    config, target, request, response_timeout,
                 )
                 .await
             }
@@ -78,13 +90,65 @@ impl KernelRuntimeState {
             .owned
             .finish_remote_profile_transition(session_id, agent_id, claim)?
         {
-            self.finish_owned_prompt_submission_workflow_start(&mut submission)
-                .await?;
+            self.finish_owned_prompt_submission(&mut submission).await?;
             self.spawn_remote_prompt_projection_drain_if_needed(&submission);
             if let Some(dispatch) = submission.remote_dispatch.take() {
                 self.spawn_remote_prompt_dispatch(dispatch);
             }
         }
         Ok(())
+    }
+}
+
+// A worker may spend the full native session-command deadline preparing a
+// Claude profile. Account sync and other profile requests keep their normal
+// response deadline. This changes no relay or client request shape.
+fn remote_profile_response_timeout(
+    config: &crate::config::DaemonConfig,
+    request: &RelayPeerRequest,
+) -> std::time::Duration {
+    let normal = std::time::Duration::from_millis(config.relay_request_timeout_ms);
+    match request {
+        RelayPeerRequest::UpdateLeasedAgentProfile { provider, .. } => {
+            super::leased_profile_transition_runtime::worker_profile_response_timeout(
+                normal, provider,
+            )
+        }
+        _ => normal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn remote_claude_profile_deadline_includes_the_worker_compaction_budget() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_request_timeout_ms = 60_000;
+        let mut request = RelayPeerRequest::UpdateLeasedAgentProfile {
+            leased_agent_id: "worker".into(),
+            provider: "claude".into(),
+            account_profile: "work".into(),
+            model: Some("haiku".into()),
+            effort: None,
+        };
+        assert_eq!(
+            remote_profile_response_timeout(&config, &request),
+            std::time::Duration::from_secs(360)
+        );
+        assert_eq!(
+            super::super::leased_profile_transition_runtime::worker_profile_response_timeout(
+                crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
+                "claude"
+            ),
+            std::time::Duration::from_secs(540)
+        );
+        if let RelayPeerRequest::UpdateLeasedAgentProfile { provider, .. } = &mut request {
+            *provider = "codex".into();
+        }
+        assert_eq!(
+            remote_profile_response_timeout(&config, &request),
+            std::time::Duration::from_secs(60)
+        );
     }
 }

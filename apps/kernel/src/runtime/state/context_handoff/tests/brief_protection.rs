@@ -87,6 +87,7 @@ async fn assert_direct_and_no_new_history(recovered: bool) {
             "prompt-next",
             false,
         )
+        .unwrap()
         .unwrap();
     let refreshed = fixture
         .runtime
@@ -200,6 +201,7 @@ async fn assert_utility_input(recovered: bool) {
             "prompt-next",
             false,
         )
+        .unwrap()
         .unwrap();
     let handoff = fixture
         .runtime
@@ -281,6 +283,7 @@ async fn persisted_brief_refresh_error_fallback_is_currently_protected() {
                 "prompt-next",
                 false,
             )
+            .unwrap()
             .unwrap();
         // Missing target actor makes the actual utility refresh fail.
         let handoff = fixture

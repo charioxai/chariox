@@ -460,6 +460,7 @@ async fn explicit_handoff_rebuilds_after_room_policy_changed_after_capture() {
             &fixture.prompt_id,
             false,
         )
+        .unwrap()
         .unwrap();
     handoff.derived = false;
     fixture
@@ -532,6 +533,7 @@ async fn native_policy_rebuilds_explicit_snapshot_after_room_change() {
             &fixture.prompt_id,
             false,
         )
+        .unwrap()
         .unwrap();
     handoff.derived = false;
     fixture.runtime.owned.pending_agent_context_handoffs.set(

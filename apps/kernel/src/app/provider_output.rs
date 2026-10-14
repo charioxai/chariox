@@ -776,7 +776,11 @@ impl<'a> ProviderOutputPumpContext<'a> {
         let projected_provider_run = self
             .provider_store
             .preview_structured_output_metadata(provider_run_id, &poll_result)?;
-        self.persist_resolved_resume_state(&projected_provider_run, &poll_result)?;
+        super::provider_output_resume::persist_resolved_resume_state(
+            self.app,
+            &projected_provider_run,
+            &poll_result,
+        )?;
         Ok(poll_result)
     }
 
@@ -937,38 +941,6 @@ impl<'a> ProviderOutputPumpContext<'a> {
         }
         settlement?;
         Ok(records)
-    }
-
-    fn persist_resolved_resume_state(
-        &mut self,
-        provider_run: &RuntimeProviderRun,
-        poll_result: &ProviderPromptSignalBatch,
-    ) -> Result<(), DaemonError> {
-        let Some(resume_state) = poll_result.resolved_resume_state.as_ref() else {
-            return Ok(());
-        };
-        // A substitute run reruns one turn; it never becomes the agent's profile.
-        let Some(agent_id) = provider_run
-            .agent_instance_id()
-            .filter(|_| provider_run.turn_substitute().is_none())
-        else {
-            return Ok(());
-        };
-        let durable_state_store = self.app.durable_state_store();
-        self.app.agents.set_agent_runtime_profile_durably(
-            &durable_state_store,
-            agent_id,
-            provider_run.provider(),
-            Some(provider_run.model().to_string()),
-            provider_run.variant().map(str::to_string),
-            None,
-            resume_state.clone(),
-            Some(provider_run.id()),
-            None,
-        )?;
-        let _ = crate::app::KernelSessionReadService::new(self.app)
-            .session_snapshot(provider_run.session_id())?;
-        Ok(())
     }
 
     fn mark_resolved_external_provider_session_attached(&self, provider_run: &RuntimeProviderRun) {
