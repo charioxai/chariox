@@ -12,6 +12,7 @@ import {assertCurrentDocument} from './browser-controller-actions.mjs';
 
 export function windowRegionGeometry(surface,window,rect,contentHeight,scale){
  const {width,height}=rect,top=rect.top,left=rect.left;
+ if(window.id!==undefined&&(!Number.isSafeInteger(window.id)||window.id<=1||window.id>0xffffffff))throw Error('MP-11: invalid owned X window');
  if(!['page','browser_chrome'].includes(surface)||![1,2].includes(scale)||
    ![window.width,window.height,contentHeight,left,top,width,height].every(Number.isSafeInteger)||
    window.width<2||window.width>2560||window.height<2||window.height>2400||
@@ -23,7 +24,7 @@ export function windowRegionGeometry(surface,window,rect,contentHeight,scale){
   throw Error('MP-11: native region crosses surface boundary');
  return Object.freeze({width,height,contentHeight,css_width:width/scale,css_height:height/scale,
   pageLeft:left,pageTop:top-contentTop,contentTop,
-  window_region:Object.freeze({width:window.width,height:window.height,left,top})});
+  window_region:Object.freeze({width:window.width,height:window.height,left,top,...(window.id===undefined?{}:{id:window.id})})});
 }
 export function projectRegionMasks(regions,left,top){
  return regions.map(({x,y,width,height})=>({x:x-left,y:y-top,width,height}));

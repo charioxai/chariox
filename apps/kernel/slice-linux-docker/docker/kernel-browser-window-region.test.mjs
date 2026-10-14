@@ -31,3 +31,9 @@ test('MP-11 region coordinates and Chrome chords require a current kernel lease'
  assert.equal(source.point(NaN,0),false);assert.equal(source.click(0,88),false);
  assert.equal(source.chord(0x6c,2),false);
 });
+
+test('MP-11 only a kernel-resolved exact X window may disambiguate owned equal-size windows',()=>{
+ const w={id:42,width:1280,height:888},rect={left:0,top:0,width:1280,height:88};
+ assert.equal(windowRegionGeometry('browser_chrome',w,rect,800,1).window_region.id,42);
+ for(const id of [0,1,-1,NaN,2**32])assert.throws(()=>windowRegionGeometry('browser_chrome',{...w,id},rect,800,1),/window/);
+});

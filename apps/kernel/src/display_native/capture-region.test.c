@@ -46,6 +46,15 @@ int main(void) {
     char keys[32];XQueryKeymap(d,keys);KeyCode control=XKeysymToKeycode(d,XK_Control_L);
     assert(!(keys[control/8]&(1<<(control%8))));
     assert(cx_capture_key_modifiers(chrome,XK_l,16)==-1);
+    Window other=XCreateSimpleWindow(d,DefaultRootWindow(d),256,0,128,160,0,0,0x00ff00);
+    XChangeProperty(d,other,XInternAtom(d,"_NET_WM_PID",False),XA_CARDINAL,32,PropModeReplace,(unsigned char*)&pid,1);XMapWindow(d,other);XSync(d,False);
+    assert(!cx_capture_open_region(pid,128,160,0,0,128,32));
+    struct Capture *selected=cx_capture_open_selected_region(pid,w,128,160,0,0,128,32);assert(selected);
+    assert(cx_capture_read(selected,pixels,bounds)==1);for(int i=0;i<128*32;i++)assert(pixels[i*4+2]==255);cx_capture_close(selected);
+    assert(!cx_capture_open_selected_region(pid,DefaultRootWindow(d),128,160,0,0,128,32));
+    assert(!cx_capture_open_selected_region(pid,w,127,160,0,0,128,32));
+    int64_t inventory[32*9];assert(cx_capture_inventory(pid,inventory,32)==2);assert(cx_capture_inventory(pid,inventory,1)==-1);assert(cx_capture_inventory(1,inventory,32)==-1);
+    XDestroyWindow(d,other);XSync(d,False);
     XResizeWindow(d,w,128,161);XSync(d,False);
     assert(cx_capture_read(chrome,pixels,bounds)==-1);
     assert(cx_capture_read(page,pixels,bounds)==-1);

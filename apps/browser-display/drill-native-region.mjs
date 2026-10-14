@@ -11,6 +11,7 @@ const kernelHash=workerHash.digest('hex');
 const {KernelBrowserHost}=await import('../kernel/slice-linux-docker/docker/kernel-browser-host.mjs');
 const {NativeWindowRegionCapture}=await import('../kernel/slice-linux-docker/docker/kernel-browser-window-region.mjs');
 const {PortableEncoder}=await import('../kernel/slice-linux-docker/docker/kernel-browser-display.mjs');
+const {nativeWindowInventory}=await import('../kernel/slice-linux-docker/docker/kernel-browser-native-windows.mjs');
 process.env.CHARIOX_HOME=root+'/home';process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT=root;
 await mkdir(root,{mode:0o700});await mkdir(E,{recursive:true});
 const report={items:['MP-08','MP-10','MP-11'],source:process.env.OSS_SOURCE,native_worker_source:process.env.NATIVE_WORKER_SOURCE,kernel_sha256:kernelHash,qualification:'Real sandboxed Chromium launched by KernelBrowserHost, compiled private native worker, crop source/codec/exact/retirement only. Public client/relay and provider/Vault flows NOT exercised.',cells:[]};let host,source,encoder,held;
@@ -19,7 +20,9 @@ try{
  const tab=await host.displayTarget({tab_id:opened.tab_id,generation:host.generation});
  const {connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);const {windowId}=await connection.send('Browser.getWindowForTarget',{targetId:tab.target_id});
  await connection.send('Browser.setWindowBounds',{windowId,bounds:{windowState:'normal'}});await connection.send('Browser.setWindowBounds',{windowId,bounds:{width:1280,height:887}});await connection.send('Page.bringToFront',{},sessionId);await delay(1000);
- host.scales.set(tab.tab_id,2);let current=true;const common={display:host.chromium.display,pid:host.chromium.child.pid,connection,sessionId,tab,scale:2,hostScale:2,window:{width:2560,height:1774},contentHeight:1600,isCurrent:()=>current,policy:host.protection,browser:host.browser,frames:id=>host.browser.frameSession(id,connection),screenshot:()=>host.displayScreenshot(tab,null,false),allowed:p=>p===host.protection&&!p.unknown};
+ host.scales.set(tab.tab_id,2);let current=true;const windows=await nativeWindowInventory({display:host.chromium.display,pid:host.chromium.child.pid,isCurrent:()=>current});
+ const owned=windows.filter(w=>w.visible&&w.width===2560&&w.height===1774);assert.equal(owned.length,1);report.window_inventory=windows;
+ const common={display:host.chromium.display,pid:host.chromium.child.pid,connection,sessionId,tab,scale:2,hostScale:2,window:{id:owned[0].id,width:2560,height:1774},contentHeight:1600,isCurrent:()=>current,policy:host.protection,browser:host.browser,frames:id=>host.browser.frameSession(id,connection),screenshot:()=>host.displayScreenshot(tab,null,false),allowed:p=>p===host.protection&&!p.unknown};
  for(const [surface,rect]of [['browser_chrome',{left:0,top:0,width:2560,height:174}],['page',{left:40,top:214,width:640,height:400}]]){
   const row={surface,rect,status:'RUNNING'};report.cells.push(row);
   try{source=new NativeWindowRegionCapture({surface,rect,...common});await source.start();const sample=source.sample();assert(sample?.raw?.nativeEncode);held=sample.raw;held.retain();assert.equal(sample.width,rect.width);assert.equal(sample.height,rect.height);row.attested=true;
