@@ -2,12 +2,13 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
+import { tmpdir } from "node:os"
 import type { CliRenderer } from "@opentui/core"
 import type { TranscriptEntry } from "./cli-types.js"
 import { recordPaneFirstFrame } from "./pane-first-frame-timing.js"
 
 test("MP-08 / MP-10 assistant timing follows the accepted prompt, not a provider echo", () => {
-  const root = mkdtempSync(join(process.env.TMPDIR!, "pane-receipt-"))
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pane-receipt-"))
   const path = join(root, "receipt.jsonl")
   const oldPath = process.env.CHARIOX_PANE_TIMING_FILE
   const oldPrefix = process.env.CHARIOX_PANE_TIMING_PREFIX
