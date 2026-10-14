@@ -45,3 +45,18 @@ strict paired latency/FPS/CPU measurements. Physical source fixtures and a
 real-Chromium source drill qualify this producer only; neither closes P3 or
 native Chrome UI acceptance. In particular, owned auxiliary windows used by
 omnibox suggestions and menus need their explicit consumer binding and proof.
+
+Run the producer qualification with `node apps/browser-display/drill-native-region.mjs
+STATE_ROOT EVIDENCE_ROOT` as an ordinary user (the documented root builder may
+use its user namespace wrapper). Roots must be new
+`/root/.chariox/dev/vidlat/r<N>/region-live-<name>` and evidence under the
+corresponding evidence lane. Set `OSS_SOURCE`, `NATIVE_WORKER_SOURCE`,
+`CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER` to the exact built executable,
+`CHARIOX_BROWSER_DISPLAY_OPENH264` to the installed public codec and the normal
+headed browser/display/software flags. The drill hashes the worker itself,
+uses `KernelBrowserHost` to launch sandboxed Chromium, and qualifies Wikipedia
+page/Chrome crops, native codec, exact output, an omnibox chord and lease
+retirement. It exits nonzero for a failed case and closes its owned source
+processes before deleting its state. An older worker which refuses private
+window-region configuration is the red-capable comparison; record its distinct
+worker source. This is producer qualification, not public-client acceptance.
