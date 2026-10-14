@@ -917,6 +917,8 @@ function createHarness(router: TestRouter, options: {
     setRemoteKernelsState: (update: unknown) => { remoteKernels = setValue(remoteKernels, update as never) },
     providerAccountsState: () => providerAccounts,
     setProviderAccountsState: (update: unknown) => { providerAccounts = setValue(providerAccounts, update as never) },
+    installedProvidersState: () => undefined,
+    setInstalledProvidersState: () => undefined,
     terminalsState: () => terminals,
     setTerminalsState: (update: unknown) => { terminals = setValue(terminals, update as never) },
     slicesState: () => slices,

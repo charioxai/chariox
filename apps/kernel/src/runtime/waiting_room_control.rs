@@ -119,6 +119,9 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
     let account_owner_user_id =
         runtime_state.provider_account_authority_owner_user_id(caller_user_id);
+    super::native_provider_account_discovery::schedule_native_provider_account_discovery(
+        runtime_state,
+    );
     let config = config_projection.snapshot();
     let relay_status = projected_relay_status_view(relay_state, config_projection).await;
     let (remote_machines, remote_kernels) = remote_relay_inventory_projection.snapshot();
@@ -197,6 +200,10 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
                 .map(|profile| profile.label.clone());
         }
     }
+    let installed_providers =
+        tokio::task::spawn_blocking(crate::provider::cached_installed_provider_harnesses)
+            .await
+            .unwrap_or_default();
     let account_fingerprint =
         serde_json::to_vec(&accounts).map_err(|error| DaemonError::LocalTransport {
             operation: "project waiting room provider accounts",
@@ -206,6 +213,7 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
     let mut hasher = Sha256::new();
     hasher.update(snapshot.structural_version.as_bytes());
     hasher.update(account_fingerprint);
+    hasher.update(installed_providers.join(",").as_bytes());
     hasher.update(serde_json::to_vec(&git_credentials).map_err(|error| {
         DaemonError::LocalTransport {
             operation: "project waiting room Git credentials",
@@ -215,6 +223,7 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
     snapshot.structural_version = format!("{:x}", hasher.finalize());
     snapshot.inventory_version = snapshot.structural_version.clone();
     snapshot.provider_accounts = accounts;
+    snapshot.installed_providers = installed_providers;
     snapshot.git_credentials = git_credentials;
     Ok(snapshot)
 }

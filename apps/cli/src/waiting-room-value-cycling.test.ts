@@ -4,12 +4,12 @@ import test from "node:test"
 import type { SliceRecord } from "./cli-types.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
-import { cycleWaitingRoomFocusedValue } from "./waiting-room-value-cycling.js"
+import { cycleWaitingRoomFocusedValue, cycleWaitingRoomValue } from "./waiting-room-value-cycling.js"
 import {
   createWaitingRoomState,
   normalizeWaitingRoomState,
 } from "./waiting-room-state.js"
-import type { WaitingRoomState } from "./waiting-room-types.js"
+import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 
 test("waiting room focused value cycling normalizes provider and model changes", () => {
   const catalog = fallbackProviderCatalog()
@@ -118,3 +118,124 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
     ...overrides,
   }
 }
+
+test("MP-08 waiting room provider cycling offers only kernel-installed harnesses", () => {
+  const catalog = fallbackProviderCatalog()
+  const remote = { installedProviders: ["claude", "codex"] }
+  const normalizeState = (state: WaitingRoomState) => normalizeWaitingRoomState(
+    state,
+    [],
+    catalog,
+    DEFAULT_THEME_REGISTRY,
+    remote,
+  )
+  const initial = normalizeState({
+    ...createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high"),
+    focus: "provider" as const,
+  })
+  assert.equal(initial.providerId, "codex", "an uninstalled selected provider falls back to an installed one")
+
+  const seen = new Set<string>()
+  let state = initial
+  for (let step = 0; step < 6; step += 1) {
+    state = cycleWaitingRoomFocusedValue(state, 1, {
+      catalog,
+      themeRegistry: DEFAULT_THEME_REGISTRY,
+      remote,
+      normalizeState,
+    })
+    seen.add(state.providerId)
+  }
+  assert.deepEqual([...seen].sort(), ["claude-headless", "claude-p", "codex"])
+
+  const olderKernel = cycleWaitingRoomFocusedValue({ ...initial, providerId: "claude-p" }, 1, {
+    catalog,
+    themeRegistry: DEFAULT_THEME_REGISTRY,
+    remote: {},
+    normalizeState: (next) => next,
+  })
+  assert.equal(olderKernel.providerId, "opencode", "a kernel that reports nothing keeps every provider")
+})
+
+test("MP-08/MP-10/MP-11 Account cycling starts at the resolved default and makes an explicit choice", () => {
+  const catalog = fallbackProviderCatalog()
+  const account = (profileId: string, isDefault: boolean) => ({
+    owner_user_id: "local", provider: "codex", profile_id: profileId, label: profileId, origin: "default" as const,
+    is_default: isDefault, auth_state: "authenticated" as const,
+    usage: { profile_id: profileId, provider: "codex", availability: "unavailable" as const, source: "test" },
+  })
+  const remote = { providerAccounts: [account("first", false), account("second", true)], installedProviders: ["codex"] }
+  const initial = normalizeWaitingRoomState({
+    ...createWaitingRoomState([], catalog, "codex", "default", ""), focus: "account",
+  }, [], catalog, undefined, remote)
+  assert.equal(initial.accountProfileId, "default")
+  const next = cycleWaitingRoomValue(initial, [], catalog, 1, undefined, remote)
+  assert.equal(next.accountAddSelected, true, "the add value follows the displayed second account")
+  const explicit = cycleWaitingRoomValue(next, [], catalog, -1, undefined, remote)
+  assert.equal(explicit.accountProfileId, "second", "returning to the default is an explicit choice")
+  const promoted = { ...remote, providerAccounts: remote.providerAccounts.map(profile => ({ ...profile, is_default: profile.profile_id === "first" })) }
+  assert.equal(normalizeWaitingRoomState(explicit, [], catalog, undefined, promoted).accountProfileId, "second")
+})
+
+test("MP-08 Account row cycling ends with an add-new-account value that never becomes the launch account", () => {
+  const catalog = fallbackProviderCatalog()
+  const account = (profileId: string) => ({
+    owner_user_id: "local", provider: "codex", profile_id: profileId, label: profileId, origin: "default" as const,
+    is_default: profileId === "codex-1", auth_state: "authenticated" as const,
+    usage: { profile_id: profileId, provider: "codex", availability: "unavailable" as const, source: "test" },
+  })
+  const remote = { providerAccounts: [account("codex-1"), account("codex-2")], installedProviders: ["codex"] }
+  const normalizeState = (state: WaitingRoomState) => normalizeWaitingRoomState(state, [], catalog, DEFAULT_THEME_REGISTRY, remote)
+  let state = normalizeState({ ...createWaitingRoomState([], catalog, "codex", "codex/gpt-5.4", "high"), focus: "account" as const, accountProfileId: "codex-2" })
+  const cycle = (delta: number) => { state = cycleWaitingRoomFocusedValue(state, delta, { catalog, themeRegistry: DEFAULT_THEME_REGISTRY, remote, normalizeState }) }
+  cycle(1)
+  assert.equal(state.accountAddSelected, true)
+  assert.equal(state.accountProfileId, "codex-2")
+  cycle(1)
+  assert.equal(state.accountAddSelected, false)
+  assert.equal(state.accountProfileId, "codex-1")
+  cycle(-1)
+  assert.equal(state.accountAddSelected, true)
+  state = normalizeState({ ...state, focus: "model" })
+  assert.equal(state.accountAddSelected, undefined, "leaving the row drops the add value")
+})
+
+for (const machine of ["remote-machine", "managed:new", "managed:environment:pending"]) {
+  test(`MP-08/MP-11 provider choices do not use the home inventory for ${machine}`, () => {
+    const catalog = fallbackProviderCatalog()
+    const remote: WaitingRoomRemoteState = {
+      installedProviders: ["codex"],
+      machines: [{ machine_id: "remote-machine", kernel_count: 1 }],
+      kernels: [{ kernel_id: "remote-kernel", machine_id: "remote-machine" }],
+      managedEnvironments: [],
+    }
+    const normalizeState = (state: WaitingRoomState) => normalizeWaitingRoomState(state, [], catalog, DEFAULT_THEME_REGISTRY, remote)
+    let state = normalizeState({
+      ...createWaitingRoomState([], catalog, "claude-p", "default", ""),
+      focus: "provider",
+      selectedMachineRef: machine,
+      selectedKernelRef: "remote-kernel",
+    })
+    assert.equal(state.providerId, "claude-p", "home-only Codex must not replace the destination provider")
+    const seen = new Set<string>()
+    for (let step = 0; step < 4; step++) {
+      state = cycleWaitingRoomFocusedValue(state, 1, { catalog, themeRegistry: DEFAULT_THEME_REGISTRY, remote, normalizeState })
+      seen.add(state.providerId)
+    }
+    assert.deepEqual([...seen].sort(), ["claude-headless", "claude-p", "codex", "opencode"])
+  })
+}
+
+test("MP-08/MP-11 remote kernels filter by their own advertised providers", () => {
+  const catalog = fallbackProviderCatalog()
+  const remote: WaitingRoomRemoteState = {
+    installedProviders: ["codex"],
+    machines: [{ machine_id: "remote-machine", kernel_count: 1 }],
+    kernels: [{ kernel_id: "remote-kernel", machine_id: "remote-machine", available_providers: ["claude"] }],
+  }
+  const normalizeState = (state: WaitingRoomState) => normalizeWaitingRoomState(state, [], catalog, DEFAULT_THEME_REGISTRY, remote)
+  const initial = normalizeState({ ...createWaitingRoomState([], catalog, "claude-p", "default", ""),
+    focus: "provider", selectedMachineRef: "remote-machine", selectedKernelRef: "remote-kernel" })
+  assert.equal(initial.providerId, "claude-p")
+  assert.equal(cycleWaitingRoomFocusedValue(initial, 1, { catalog, themeRegistry: DEFAULT_THEME_REGISTRY, remote, normalizeState }).providerId, "claude-headless")
+})

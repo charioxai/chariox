@@ -515,6 +515,7 @@ fn build_waiting_room_public_snapshot_from_summaries(
         terminals,
         launch_target,
         provider_accounts: Vec::new(),
+        installed_providers: Vec::new(),
         git_credentials: Vec::new(),
     })
 }

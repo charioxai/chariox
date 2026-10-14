@@ -17,6 +17,11 @@ pub(crate) use credential_environment::{
     ProviderLifecycleFailureStage,
 };
 mod executable_resolution;
+mod harness_inventory;
+pub(crate) use harness_inventory::{
+    cached_installed_provider_harnesses, installed_provider_harnesses,
+    retain_installed_harness_providers,
+};
 mod external_observation;
 pub(crate) use account_handoff::encode_account_handoff;
 mod launch_contract;

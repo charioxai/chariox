@@ -110,6 +110,8 @@ type AnyFn = (...args: any[]) => any
 export type CliWaitingRoomCompositionDeps = {
   cloudClient?: CloudClient
   onLaunchRefused?: (message: string, retry: () => void) => void
+  openProviderAccounts?: () => void
+  runCommand?: (command: string) => Promise<void>
   client: any
   options: any
   appLogger: any
@@ -144,6 +146,8 @@ export type CliWaitingRoomCompositionDeps = {
   setRemoteKernelsState: AnyFn
   providerAccountsState: AnyFn
   setProviderAccountsState: AnyFn
+  installedProvidersState: AnyFn
+  setInstalledProvidersState: AnyFn
   terminalsState: AnyFn
   setTerminalsState: AnyFn
   slicesState: AnyFn
@@ -219,6 +223,8 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   const kernelConnectionController = createWaitingRoomKernelConnectionController({
     cloudClient: deps.cloudClient, kernelConnected: deps.kernelConnected,
     getInventory: client => getInventoryForClient(client),
+    getProviderCatalog: client => getProviderCatalog(client, deps.appLogger),
+    setProviderCatalog: deps.setProviderCatalogState,
     client: deps.client,
     clientId: deps.options.clientId,
     initialTargetKernelId: deps.options.targetDaemonId,
@@ -260,10 +266,12 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
       inventoryStatus: deps.waitingRoomInventoryStatus(),
       loadingFrame: deps.waitingRoomState().introStep,
+      homeKernelId,
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
       providerAccounts: deps.providerAccountsState(),
+      installedProviders: deps.installedProvidersState(),
       terminals: deps.terminalsState(),
       slices: deps.slicesState(),
       externalProviderSessions: deps.externalProviderSessionsState(),
@@ -376,6 +384,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setRemoteMachines: deps.setRemoteMachinesState,
     setRemoteKernels: deps.setRemoteKernelsState,
     setProviderAccounts: deps.setProviderAccountsState,
+    setInstalledProviders: deps.setInstalledProvidersState,
     setManagedEnvironmentCatalog: (catalog) => {
       managedEnvironmentCatalog = catalog
     },
@@ -683,16 +692,20 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
 
   const waitingRoomActivationController = createWaitingRoomActivationController({
     onLaunchRefused: (message, retry) => deps.onLaunchRefused?.(message, () => { if (!deps.isAttached()) retry() }),
+    ...(deps.openProviderAccounts ? { openProviderAccounts: deps.openProviderAccounts } : {}),
+    ...(deps.runCommand ? { runCommand: deps.runCommand } : {}),
     isKernelConnected: deps.kernelConnected,
     connectKernel: () => connectDetachedKernelFromWaitingRoom(),
     getWaitingRoomState: deps.waitingRoomState,
     getRemoteState: () => ({
       ...managedWaitingRoomRemote(),
       inventoryStatus: deps.waitingRoomInventoryStatus(),
+      homeKernelId,
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
       providerAccounts: deps.providerAccountsState(),
+      installedProviders: deps.installedProvidersState(),
       terminals: deps.terminalsState(),
       slices: deps.slicesState(),
       externalProviderSessions: deps.externalProviderSessionsState(),
@@ -767,6 +780,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       // MP-08/MP-11: workspace previews retain home account state. Admission
       // after the owner pivot must use the destination's fresh inventory.
       deps.setProviderAccountsState(inventory.providerAccounts ?? [])
+      deps.setInstalledProvidersState(inventory.installedProviders)
       // Profile IDs are kernel-scoped. Preserve a matching destination choice;
       // otherwise use its normal Waiting Room default before admission.
       launch.accountProfile = normalizeProviderAccountProfileId(
@@ -941,6 +955,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
       inventoryStatus: deps.waitingRoomInventoryStatus(),
       loadingFrame: deps.waitingRoomState().introStep,
+      homeKernelId,
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
@@ -1053,6 +1068,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   })
 
   const waitingRoomTargets = () => ({
+    homeKernelId,
     workspacePath: deps.pendingWorkspaceTarget(),
     worktreePath: deps.pendingWorktreeTarget(),
     workspaceId: sourceLaunchTarget?.workspaceId,

@@ -8,6 +8,9 @@ const quotaRefusal = /has exhausted its allowance|cannot start new work because 
 
 type RecoveryAction = { label: string; run(): void }
 
+/** MP-08: a Provider Accounts popup row; ←/→ cycles its choices, Enter runs one. */
+export type ProviderAccountsPopupRow = { label: string; choices: RecoveryAction[] }
+
 export function createProviderAccountRecoveryController(options: {
   renderer: ConstructorParameters<typeof BoxRenderable>[0]
   dimensions(): { width: number; height: number }
@@ -18,7 +21,11 @@ export function createProviderAccountRecoveryController(options: {
   let target: ProviderAccountRecoveryTarget | undefined
   let customActions: RecoveryAction[] | null = null
   let customTitle: string | null = null
-  const actions = () => customActions ?? options.actions(target)
+  let rows: ProviderAccountsPopupRow[] | null = null
+  let rowChoices: number[] = []
+  const actions = () => rows
+    ? rows.map((row, index) => row.choices[rowChoices[index] ?? 0]!)
+    : customActions ?? options.actions(target)
   let selected = 0
   let closing = false
   const clear = () => {
@@ -32,6 +39,7 @@ export function createProviderAccountRecoveryController(options: {
     message = null
     customActions = null
     customTitle = null
+    rows = null
     // The same key also reaches the raw stdin listener during this event turn.
     closing = true
     setTimeout(() => { closing = false }, 0)
@@ -55,6 +63,12 @@ export function createProviderAccountRecoveryController(options: {
     })
     panel.add(new TextRenderable(options.renderer, { content: customTitle ?? (message.includes("sign-in not checked") ? "Check provider account sign-in" : quotaRefusal.test(message) ? "Choose provider account with quota" : "Provider account needs sign-in"), fg: theme.text }))
     panel.add(new TextRenderable(options.renderer, { content: message, fg: theme.text, wrapMode: "word" }))
+    if (rows) {
+      renderRows(panel, width, size.height)
+      box.add(panel)
+      box.requestRender()
+      return
+    }
     actions().forEach((action, index) => {
       const button = new TextRenderable(options.renderer, {
         content: `${selected === index ? ">" : " "} [${action.label}]`, fg: selected === index ? theme.primary : theme.text,
@@ -66,13 +80,48 @@ export function createProviderAccountRecoveryController(options: {
     box.add(panel)
     box.requestRender()
   }
+  const renderRows = (panel: BoxRenderable, width: number, height: number) => {
+    const visible = Math.max(3, Math.min(rows!.length, height - Math.floor(height / 5) - 8))
+    const start = Math.min(Math.max(0, selected - visible + 1), Math.max(0, rows!.length - visible))
+    rows!.slice(start, start + visible).forEach((row, offset) => {
+      const index = start + offset
+      const choice = row.choices[rowChoices[index] ?? 0]!
+      const cycle = row.choices.length > 1 ? `‹ ${choice.label} ›` : `[${choice.label}]`
+      const label = row.label.length + cycle.length + 6 > width ? `${row.label.slice(0, Math.max(8, width - cycle.length - 9))}…` : row.label
+      const line = new TextRenderable(options.renderer, {
+        content: `${selected === index ? ">" : " "} ${label}  ${cycle}`,
+        fg: selected === index ? theme.primary : theme.text,
+        wrapMode: "none",
+      })
+      line.onMouseUp = event => { event.stopPropagation(); invoke(index) }
+      panel.add(line)
+    })
+    if (rows!.length > visible) {
+      panel.add(new TextRenderable(options.renderer, { content: `${start + 1}-${start + visible} of ${rows!.length}`, fg: theme.textMuted }))
+    }
+    panel.add(new TextRenderable(options.renderer, { content: "↑/↓ choose · ←/→ action · Enter run · Esc close", fg: theme.textMuted }))
+  }
   return {
     assignBox(value: BoxRenderable | undefined) { box = value; render() },
+    /** MP-08: Provider Accounts opened from the waiting-room Account row. */
+    showProviderAccounts(title: string, messageText: string, popupRows: ProviderAccountsPopupRow[]) {
+      const usable = popupRows.filter(row => row.choices.length > 0)
+      if (!usable.length) return
+      message = messageText
+      target = undefined
+      customTitle = title
+      customActions = null
+      rows = usable
+      rowChoices = usable.map(() => 0)
+      selected = 0
+      render()
+    },
     ownsInput: () => message !== null || closing,
     showLaunchRefusal(messageText: string, retry: () => void) {
       message = messageText
       target = undefined
       customTitle = "Session launch refused"
+      rows = null
       customActions = [{label: "Retry", run: retry}]
       selected = 0
       render()
@@ -82,6 +131,7 @@ export function createProviderAccountRecoveryController(options: {
       message = messageText
       target = undefined
       customTitle = "Choose provider account"
+      rows = null
       customActions = choices
       selected = 0
       render()
@@ -89,7 +139,8 @@ export function createProviderAccountRecoveryController(options: {
     show(messageText: string, rejectedTarget?: ProviderAccountRecoveryTarget) {
       if (!/selected \S+ account .*not authenticated|needs sign-in\.|sign-in not checked\./i.test(messageText) && !quotaRefusal.test(messageText)) return
       customActions = null
-    customTitle = null
+      customTitle = null
+      rows = null
       target = rejectedTarget
       message = messageText
       selected = 0
@@ -101,6 +152,11 @@ export function createProviderAccountRecoveryController(options: {
       if (event.eventType === "release") return true
       if (event.name === "escape") close()
       else if (event.name === "return" || event.name === "enter") invoke(selected)
+      else if (rows && (event.name === "left" || event.name === "right")) {
+        const count = rows[selected]?.choices.length ?? 1
+        rowChoices[selected] = ((rowChoices[selected] ?? 0) + (event.name === "left" ? count - 1 : 1)) % count
+        render()
+      }
       else if (event.name === "down" || event.name === "tab") {
         selected = (selected + 1) % actions().length; render()
       } else if (event.name === "up") {

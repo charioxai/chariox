@@ -37,50 +37,63 @@ pub(crate) fn load_provider_catalog(
         thread::sleep(Duration::from_millis(config.provider_catalog_read_delay_ms));
     }
 
-    let mut catalogs = vec![claude_provider_catalog()];
+    // MP-08/MP-11: every local catalog source requires its own installed harness.
+    let installed = crate::provider::installed_provider_harnesses();
+    let mut catalogs = Vec::new();
+    if installed.iter().any(|family| family == "claude") {
+        catalogs.push(claude_provider_catalog());
+    }
     if crate::provider::dev_stub_public_inventory_enabled() {
         catalogs.push(dev_stub_provider_catalog());
     }
     let mut source_errors = Vec::new();
 
     let selected_profiles = resolve_catalog_profiles(&registry, &owner_user_id, &request)?;
-    let opencode_profile = selected_profiles
-        .get("opencode")
-        .expect("OpenCode default profile is migrated");
-    let opencode_environment =
-        registry.resolve_environment(&owner_user_id, "opencode", &opencode_profile.profile_id)?;
-    match crate::provider::ensure_opencode_account_endpoint(
-        &owner_user_id,
-        &opencode_profile.profile_id,
-        opencode_environment,
-    ) {
-        Ok(endpoint) => match OpenCodeClient::new("catalog", endpoint.as_str()) {
-            Ok(client) => match client.provider_catalog() {
-                Ok(catalog) => catalogs.push(opencode_backend_catalog(catalog)),
-                Err(error) => source_errors.push(format!("opencode catalog request: {error}")),
+    // MP-08: an uninstalled harness is not a catalog source, not a failure.
+    if installed.iter().any(|family| family == "opencode") {
+        let opencode_profile = selected_profiles
+            .get("opencode")
+            .expect("OpenCode default profile is migrated");
+        let opencode_environment = registry.resolve_environment(
+            &owner_user_id,
+            "opencode",
+            &opencode_profile.profile_id,
+        )?;
+        match crate::provider::ensure_opencode_account_endpoint(
+            &owner_user_id,
+            &opencode_profile.profile_id,
+            opencode_environment,
+        ) {
+            Ok(endpoint) => match OpenCodeClient::new("catalog", endpoint.as_str()) {
+                Ok(client) => match client.provider_catalog() {
+                    Ok(catalog) => catalogs.push(opencode_backend_catalog(catalog)),
+                    Err(error) => source_errors.push(format!("opencode catalog request: {error}")),
+                },
+                Err(error) => source_errors.push(format!("opencode client: {error}")),
             },
-            Err(error) => source_errors.push(format!("opencode client: {error}")),
-        },
-        Err(error) => source_errors.push(format!("opencode endpoint: {error}")),
+            Err(error) => source_errors.push(format!("opencode endpoint: {error}")),
+        }
     }
-    let codex_profile = selected_profiles
-        .get("codex")
-        .expect("Codex default profile is migrated");
-    let codex_environment =
-        registry.resolve_environment(&owner_user_id, "codex", &codex_profile.profile_id)?;
-    match crate::provider::ensure_codex_account_endpoint(
-        &owner_user_id,
-        &codex_profile.profile_id,
-        codex_environment,
-    ) {
-        Ok(endpoint) => match CodexClient::new("catalog", endpoint.as_str()) {
-            Ok(client) => match client.provider_catalog() {
-                Ok(catalog) => catalogs.push(catalog),
-                Err(error) => source_errors.push(format!("codex catalog request: {error}")),
+    if installed.iter().any(|family| family == "codex") {
+        let codex_profile = selected_profiles
+            .get("codex")
+            .expect("Codex default profile is migrated");
+        let codex_environment =
+            registry.resolve_environment(&owner_user_id, "codex", &codex_profile.profile_id)?;
+        match crate::provider::ensure_codex_account_endpoint(
+            &owner_user_id,
+            &codex_profile.profile_id,
+            codex_environment,
+        ) {
+            Ok(endpoint) => match CodexClient::new("catalog", endpoint.as_str()) {
+                Ok(client) => match client.provider_catalog() {
+                    Ok(catalog) => catalogs.push(catalog),
+                    Err(error) => source_errors.push(format!("codex catalog request: {error}")),
+                },
+                Err(error) => source_errors.push(format!("codex client: {error}")),
             },
-            Err(error) => source_errors.push(format!("codex client: {error}")),
-        },
-        Err(error) => source_errors.push(format!("codex endpoint: {error}")),
+            Err(error) => source_errors.push(format!("codex endpoint: {error}")),
+        }
     }
 
     let remote_machines = if config.relay_url.is_some() && config.relay_token.is_some() {
@@ -1320,6 +1333,46 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn mp08_mp11_catalog_has_no_claude_source_without_its_harness() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-catalog-missing-cli-{}",
+            rand::random::<u64>()
+        ));
+        fs::create_dir_all(&root).expect("fixture root");
+        for name in [
+            "CHARIOX_CLAUDE_BIN",
+            "CHARIOX_CODEX_BIN",
+            "CHARIOX_OPENCODE_BIN",
+        ] {
+            std::env::set_var(name, root.join("missing-harness"));
+        }
+        std::env::remove_var("CHARIOX_PROVIDER_DEV_STUB");
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .expect("registry");
+        registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .expect("defaults");
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = None;
+        config.relay_token = None;
+        let result = load_provider_catalog(
+            config,
+            registry,
+            "owner-a".to_string(),
+            GetProviderCatalogRequest::default(),
+        );
+        fs::remove_dir_all(&root).expect("cleanup");
+        assert!(
+            result.is_err(),
+            "missing official harnesses must not provide a Claude catalog: {result:?}"
+        );
+    }
 
     #[test]
     fn drill_provider_catalog_exposes_dev_stub_without_restricting_fixture_models() {

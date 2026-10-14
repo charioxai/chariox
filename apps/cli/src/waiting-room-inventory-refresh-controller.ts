@@ -49,6 +49,7 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   setTerminals: (terminals: TerminalView[]) => void
   setSlices: (slices: SliceRecord[]) => void
   setProviderAccounts?: (profiles: ProviderAccountProfile[]) => void
+  setInstalledProviders?: (providers: readonly string[] | undefined) => void
   setManagedEnvironmentCatalog?: (catalog: ManagedEnvironmentCatalog | undefined) => void
   getManagedEnvironmentCatalogScope?: (inventory: WaitingRoomInventory) => string
   shouldApplyWorkspaceInventory?: (inventory: WaitingRoomInventory) => boolean
@@ -100,13 +101,15 @@ export function createWaitingRoomInventoryRefreshController(
 
   const retainedMachines = createWaitingRoomRetainedRows<RemoteMachineView>(row => row.machine_id, options.nowMs ?? Date.now)
   const retainedKernels = createWaitingRoomRetainedRows<RemoteKernelView>(row => row.kernel_id, options.nowMs ?? Date.now)
-  const restoreCachedInventory = () => {
+  const restoreCachedInventory = (preserveRemoteRows = false) => {
     options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
     const snapshots = [...inventoriesByKernel.values()].filter(snapshot => !directTargetKernelId || snapshot.kernelId === directTargetKernelId)
     const machines = [...new Map(snapshots.flatMap(snapshot => snapshot.remoteMachines).map(row => [row.machine_id, row])).values()]
     const kernels = [...new Map(snapshots.flatMap(snapshot => snapshot.remoteKernels).map(row => [row.kernel_id, row])).values()]
-    options.setRemoteMachines(retainedMachines.restore(machines).map(row => ({ ...row, online: false })))
-    options.setRemoteKernels(retainedKernels.restore(kernels).map(row => ({ ...row, accepting_remote_leases: false })))
+    if (!preserveRemoteRows) {
+      options.setRemoteMachines(retainedMachines.restore(machines).map(row => ({ ...row, online: false })))
+      options.setRemoteKernels(retainedKernels.restore(kernels).map(row => ({ ...row, accepting_remote_leases: false })))
+    }
     const workspaceSnapshots = snapshots.filter(snapshot => options.shouldApplyWorkspaceInventory?.(snapshot) !== false)
     if (workspaceSnapshots.length || !snapshots.length) {
       options.setProjects?.([...new Map(workspaceSnapshots.flatMap(snapshot => snapshot.projects ?? []).map(row => [row.id, row])).values()])
@@ -237,6 +240,7 @@ export function createWaitingRoomInventoryRefreshController(
     options.setTerminals(snapshot.terminals)
     options.setSlices(snapshot.slices)
     options.setProviderAccounts?.(snapshot.providerAccounts ?? [])
+    options.setInstalledProviders?.(snapshot.installedProviders)
     const nextManagedEnvironmentCatalogScope = options.getManagedEnvironmentCatalogScope?.(snapshot)
       ?? snapshot.kernelId
     if (snapshot.managedEnvironmentCatalog !== undefined) {
@@ -285,7 +289,10 @@ export function createWaitingRoomInventoryRefreshController(
     activeKernelId = null
     inventoryVersion = null
     inventoryInvalidated = true
-    restoreCachedInventory()
+    // MP-08/MP-10: a pivot can precede the destination's first baseline. Keep
+    // its selected directory row until live inventory replaces it; session and
+    // workspace caches still follow the target, and Cloud scope changes clear all.
+    restoreCachedInventory(!cacheScopeChanged)
   }
 
   return {

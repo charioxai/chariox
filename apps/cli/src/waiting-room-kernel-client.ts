@@ -1,3 +1,4 @@
+import type { ProviderCatalog } from "./provider-catalog.js"
 import type { CloudClient } from "./cloud-client.js"
 import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { LocalIpcClient } from "./ipc.js"
@@ -88,6 +89,8 @@ export function createWaitingRoomKernelConnectionController(deps: {
   cloudClient?: CloudClient | undefined
   kernelConnected?: () => boolean
   getInventory?: (client: LocalIpcClient) => Promise<WaitingRoomInventory>
+  getProviderCatalog?: (client: LocalIpcClient) => Promise<ProviderCatalog>
+  setProviderCatalog?: (catalog: ProviderCatalog) => void
   clientId: string
   initialTargetKernelId?: string | null
   homeKernelId(): string | null
@@ -186,6 +189,11 @@ export function createWaitingRoomKernelConnectionController(deps: {
       connectedMachineId = targetInventory.machineId
       directTargetKernelId = targetInventory.kernelId === deps.homeKernelId() ? homeDirectTargetKernelId : targetInventory.kernelId
       connected?.(targetInventory)
+    }
+    // MP-08/MP-11: models belong to the destination, just like account and harness inventory.
+    if (deps.getProviderCatalog && deps.setProviderCatalog) {
+      const catalog = await deps.getProviderCatalog(nextClient)
+      if (isActive() && deps.client.currentClient() === nextClient) deps.setProviderCatalog(catalog)
     }
     deps.invalidateInventory()
     deps.connected(connection.label)

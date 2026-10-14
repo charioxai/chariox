@@ -6,7 +6,11 @@ use crate::error::DaemonError;
 
 impl DaemonApp {
     pub fn relay_registration(&mut self) -> DaemonRegistration {
-        let available_providers = self.providers.registry().advertised_provider_ids();
+        let mut available_providers = self.providers.registry().advertised_provider_ids();
+        crate::provider::retain_installed_harness_providers(
+            &mut available_providers,
+            &crate::provider::cached_installed_provider_harnesses(),
+        );
         let provider_accounts = self
             .provider_account_profiles
             .list(crate::session::DEFAULT_LOCAL_USER_ID, None)

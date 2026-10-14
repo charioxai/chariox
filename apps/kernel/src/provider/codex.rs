@@ -44,6 +44,17 @@ pub fn resolve_codex_executable() -> Result<PathBuf, DaemonError> {
     resolve_codex_executable_unlocked()
 }
 
+/// MP-08: whether the official Codex CLI resolves on this host now, without
+/// the transient-replacement retry used by launches.
+pub(crate) fn codex_harness_installed() -> bool {
+    let _guard = crate::env_lock::lock();
+    match env::var_os(CODEX_ENV_OVERRIDE) {
+        Some(path) => resolve_candidate(PathBuf::from(path), true),
+        None => resolve_candidate(PathBuf::from("codex"), false),
+    }
+    .is_some()
+}
+
 fn resolve_codex_executable_unlocked() -> Result<PathBuf, DaemonError> {
     if let Some(path) = env::var_os(CODEX_ENV_OVERRIDE).map(PathBuf::from) {
         return CODEX_EXECUTABLE_RESOLUTION

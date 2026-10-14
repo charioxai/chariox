@@ -26,6 +26,22 @@ include the appropriate openssh-client/ssh and tmux system-tool steps and bounde
 not assume the managed image already provides them. Prefer the project's existing setup recipe and
 return it with bounded validation for the kernel to apply and verify later on the selected worker.
 
+Include installer prerequisites explicitly, such as unzip for the Linux Bun installer.
+Stop on installer failure and verify the installed executable before a later step uses it.
+Install the toolchains and components named by the validation checks; minimal Rust toolchains
+may need rustfmt and clippy. Use valid native command syntax and project-relative paths.
+
+After the kernel reports a failed recipe, preserve every explicitly requested validation command
+and every check from a user-authored definition. Correct invalid checks in an automatically
+generated definition using project evidence, preserving their intended tool and build coverage.
+Never replace checks with success placeholders; the kernel reruns the corrected commands.
+
+Honor the caller's total setup and validation stage budgets. Longer shell timeouts cannot extend
+them. Put dependency installation in setup steps, then choose ordinary tool checks and a real
+bounded project build that fit together in the validation budget on this worker. A CI-only cold
+full-workspace or release build is not automatically an ordinary readiness requirement. Preserve
+explicitly requested and user-authored checks.
+
 Project evidence discovery is read-only and the provider capability is enforced as read-only.
 For recipe discovery, use provider-native read-only file inspection, including shell reads only
 where the provider's enforced read-only sandbox permits them. Do not execute setup scripts,

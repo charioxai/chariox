@@ -27,6 +27,31 @@ impl OwnedProcessSignals {
         Self::capture(child, true)
     }
 
+    /// MP-08/MP-11: recover an exclusive Linux session from its durable birth witness.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn for_linux_session_identity(pid: u32, start_ticks: u64) -> io::Result<Self> {
+        if pid <= 1 || pid > i32::MAX as u32 || start_ticks == 0 {
+            return Err(io::Error::other("invalid session birth witness"));
+        }
+        let rows = snapshot()?;
+        let identity = rows
+            .iter()
+            .find(|row| {
+                row.pid == pid
+                    && row.group == pid
+                    && row.session == pid
+                    && row.start == start_ticks.to_string()
+            })
+            .ok_or_else(|| io::Error::other("session leader birth witness changed"))?;
+        let mut guard = Self {
+            root: pid,
+            exclusive_session: Some(pid),
+            owned: BTreeMap::from([(pid, identity.start.clone())]),
+        };
+        guard.refresh_from(&rows);
+        Ok(guard)
+    }
+
     fn capture(child: &Child, launched_exclusive_session: bool) -> io::Result<Self> {
         let rows = snapshot()?;
         let pid = child.id();
@@ -117,6 +142,17 @@ impl OwnedProcessSignals {
 
     pub(crate) fn kill_owned_processes(&mut self) -> io::Result<()> {
         self.kill_owned_with(snapshot, send_signal)
+    }
+
+    pub(crate) fn kill_owned_descendants(&mut self) -> io::Result<()> {
+        let root = self.root;
+        self.kill_owned_with(snapshot, |pid| {
+            if pid == root as i32 {
+                Ok(())
+            } else {
+                send_signal(pid)
+            }
+        })
     }
 
     fn kill_owned_with(
@@ -319,6 +355,15 @@ mod tests {
             start: start.into(),
         }
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mp11_durable_session_guard_rejects_system_ids_and_missing_birth() {
+        for pid in [0, 1, i32::MAX as u32 + 1] {
+            assert!(OwnedProcessSignals::for_linux_session_identity(pid, 1).is_err());
+        }
+        assert!(OwnedProcessSignals::for_linux_session_identity(std::process::id(), 0).is_err());
+    }
+
     #[test]
     fn mp11_review_macos_session_witness_admits_fast_reparented_child() {
         assert_eq!(

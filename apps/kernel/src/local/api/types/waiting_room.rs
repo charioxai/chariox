@@ -50,6 +50,10 @@ pub struct WaitingRoomInventorySnapshot {
     pub launch_target: Option<WaitingRoomLaunchTarget>,
     #[serde(default)]
     pub provider_accounts: Vec<crate::account_profile::ProviderAccountProfile>,
+    /// MP-08: provider families whose official harness CLI is installed on
+    /// this kernel host. Clients offer only these providers and accounts.
+    #[serde(default)]
+    pub installed_providers: Vec<String>,
     #[serde(default)]
     pub git_credentials: Vec<WaitingRoomGitCredentialSummary>,
 }
@@ -80,6 +84,10 @@ pub struct WaitingRoomPublicSnapshot {
     pub launch_target: Option<WaitingRoomLaunchTarget>,
     #[serde(default)]
     pub provider_accounts: Vec<crate::account_profile::ProviderAccountProfile>,
+    /// MP-08: provider families whose official harness CLI is installed on
+    /// this kernel host. Clients offer only these providers and accounts.
+    #[serde(default)]
+    pub installed_providers: Vec<String>,
     #[serde(default)]
     pub git_credentials: Vec<WaitingRoomGitCredentialSummary>,
 }
@@ -286,6 +294,7 @@ impl From<WaitingRoomPublicSnapshot> for WaitingRoomInventorySnapshot {
             terminals: snapshot.terminals,
             launch_target: snapshot.launch_target,
             provider_accounts: snapshot.provider_accounts,
+            installed_providers: snapshot.installed_providers,
             git_credentials: snapshot.git_credentials,
         }
     }

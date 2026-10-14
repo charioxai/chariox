@@ -1481,16 +1481,8 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
     assert_eq!(
         persisted.origin,
         match scenario {
-            DefinitionScenario::Supplied | DefinitionScenario::SuppliedInputReuse => {
-                ProjectEnvironmentDefinitionOrigin::UserAuthored
-            }
-            DefinitionScenario::Generated
-            | DefinitionScenario::SuppliedSetupFailure
-            | DefinitionScenario::SuppliedStaleInputs
-            | DefinitionScenario::SuppliedMissingInputs
-            | DefinitionScenario::SuppliedLegacyUnattested => {
-                ProjectEnvironmentDefinitionOrigin::UtilityGenerated
-            }
+            DefinitionScenario::Generated => ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
+            _ => ProjectEnvironmentDefinitionOrigin::UserAuthored,
         }
     );
     drop(provider_fixture);
@@ -2165,7 +2157,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
          command -v sh; test -f {repair_recipe_path}; test -f {repair_lockfile_path}"
     )];
     let mut repaired_definition = repairable_definition.clone();
-    repaired_definition.origin = ProjectEnvironmentDefinitionOrigin::UtilityGenerated;
+    repaired_definition.origin = ProjectEnvironmentDefinitionOrigin::UserAuthored;
     repaired_definition.inputs = vec![
         ProjectEnvironmentInput {
             kind: ProjectEnvironmentInputKind::Recipe,

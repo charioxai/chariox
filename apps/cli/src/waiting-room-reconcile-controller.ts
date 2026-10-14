@@ -1,6 +1,7 @@
 import type { BackendProviderId, ProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import type { ThemeRegistry } from "./theme-registry.js"
+import { selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 import {
   deriveWaitingRoomStateUpdate,
   type WaitingRoomStateUpdate,
@@ -51,18 +52,25 @@ export function createWaitingRoomReconcileController(
   deps: WaitingRoomReconcileControllerDeps,
 ) {
   const deriveStateUpdate = deps.deriveStateUpdate ?? deriveWaitingRoomStateUpdate
+  const initialState = deps.getCurrentState()
+  let catalogAccountProfileId = selectedProviderAccount(
+    deps.getRemoteState().providerAccounts,
+    initialState.providerId,
+    initialState.accountProfileId,
+  )?.profile_id ?? "default"
 
   const reconcileWith = (
     next: WaitingRoomState,
     setState: (state: WaitingRoomState) => void,
   ) => {
     const currentState = deps.getCurrentState()
+    const remote = deps.getRemoteState()
     const update: WaitingRoomStateUpdate = deriveStateUpdate({
       currentState,
       nextState: next,
       sessions: deps.getSessions(),
       catalog: deps.getProviderCatalog(),
-      remote: deps.getRemoteState(),
+      remote,
       themeRegistry: deps.getThemeRegistry(),
       currentProvider: deps.getCurrentProvider(),
       currentModel: deps.getCurrentModel(),
@@ -74,9 +82,18 @@ export function createWaitingRoomReconcileController(
       || currentState.selectedKernelRef !== update.normalizedState.selectedKernelRef)) {
       deps.placementChanged?.(update.normalizedState)
     }
+    // MP-08/MP-11: "default" keeps its intent while discovery changes its catalog account.
+    const nextCatalogAccountProfileId = selectedProviderAccount(
+      remote.providerAccounts,
+      update.normalizedState.providerId,
+      update.normalizedState.accountProfileId,
+    )?.profile_id ?? "default"
+    const catalogAccountChanged = catalogAccountProfileId !== nextCatalogAccountProfileId
+    catalogAccountProfileId = nextCatalogAccountProfileId
     if (
       currentState.providerId !== update.normalizedState.providerId
       || currentState.accountProfileId !== update.normalizedState.accountProfileId
+      || catalogAccountChanged
       || currentState.selectedKernelRef !== update.normalizedState.selectedKernelRef
       || currentState.sliceSelectionId !== update.normalizedState.sliceSelectionId
     ) {

@@ -24,6 +24,8 @@ import {
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
 
+import { normalizeWaitingRoomLaunchPlacement } from "@chariox/kernel-client/waiting-room-runtime-placement"
+
 test("waiting room inventory refresh is idle while kernel is disconnected", async () => {
   const harness = createHarness({ connected: false })
 
@@ -914,4 +916,32 @@ test("MP-08/MP-11 grace expiry reprojects sessions with an unchanged live versio
   assert.deepEqual(harness.availableSessions().map(s => s.id), ["session-a"])
   await harness.controller.refreshNow()
   assert.deepEqual(harness.availableSessions().map(s => s.id), ["session-a"])
+})
+
+
+test("MP-08/MP-10 pivot preserves the selected worker until its baseline arrives", async () => {
+  let target: string | null = null
+  const home = inventory("home", {
+    kernelId: "home", machineId: "home-machine",
+    relayStatus: { connected: true, daemon_id: "home", machine_id: "home-machine" } as RelayStatusView,
+    remoteMachines: [{ machine_id: "worker-machine", kernel_count: 1, online: true } as RemoteMachineView],
+    remoteKernels: [kernel("worker", { machine_id: "worker-machine", available_providers: ["opencode"] })],
+  })
+  const harness = createHarness({ snapshots: [home], getDirectTargetKernelId: () => target })
+  await harness.controller.refreshNow()
+  const selected = { selectedMachineRef: "worker-machine", selectedKernelRef: "worker" }
+  const placement = () => normalizeWaitingRoomLaunchPlacement(selected, {
+    homeKernelId: "home", relay: harness.relayStatus(),
+    machines: harness.remoteMachines(), kernels: harness.remoteKernels(),
+  })
+  assert.equal(placement().selectedMachineRef, "worker-machine")
+  target = "worker"
+  harness.controller.invalidate()
+  assert.equal(placement().selectedMachineRef, "worker-machine")
+  assert.equal(placement().selectedKernelRef, "worker")
+  // Directory deltas from the connected worker omit itself. Retain the fresh
+  // source directory until its relay identity and full inventory are applied.
+  harness.controller.applyRemoteMachinesChanged([])
+  assert.equal(placement().selectedMachineRef, "worker-machine")
+  assert.equal(placement().selectedKernelRef, "worker")
 })

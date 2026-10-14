@@ -103,6 +103,8 @@ export type WaitingRoomState = {
   sliceDisplayMode?: "headless" | "headed"
   providerId: BackendProviderId
   accountProfileId?: string
+  /** MP-08: the Account row shows its trailing "Add new <provider> account" value. */
+  accountAddSelected?: boolean | undefined
   modelId: string
   effort: string
   executionMode?: "build" | "plan"
@@ -141,6 +143,8 @@ export type WaitingRoomRemoteKernel = {
 }
 
 export type WaitingRoomRemoteState = {
+  /** MP-08/MP-11: local placement denotes the original home, even while a worker is connected. */
+  homeKernelId?: string | null
   workspaceId?: string
   worktreeId?: string
   inventoryStatus?: "loading" | "ready" | "error"
@@ -163,6 +167,8 @@ export type WaitingRoomRemoteState = {
   externalProviderSessionsNextCursor?: string | null
   projects?: WaitingRoomProjectSummary[]
   providerAccounts?: ProviderAccountProfile[]
+  /** Protocol 512: provider families installed on the kernel host; absent from older kernels. */
+  installedProviders?: readonly string[]
   gitCredentials?: import("@chariox/kernel-client").WaitingRoomGitCredentialSummary[]
   managedComputeClasses?: readonly ManagedEnvironmentComputeClassOption[]
   managedContextSources?: readonly ManagedEnvironmentContextSourceOption[]
@@ -180,11 +186,12 @@ export type WaitingRoomTerminal = {
 }
 
 export type WaitingRoomTargetState = {
+  homeKernelId?: string | null
   workspacePath: string
   worktreePath: string
-  workspaceId?: string
-  worktreeId?: string
-  managedEnvironmentCatalog?: import("@chariox/kernel-client/ipc-managed-environment-requests").ManagedEnvironmentCatalog
+  workspaceId?: string | undefined
+  worktreeId?: string | undefined
+  managedEnvironmentCatalog?: import("@chariox/kernel-client/ipc-managed-environment-requests").ManagedEnvironmentCatalog | undefined
 }
 
 export type WaitingRoomRow = {

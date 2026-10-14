@@ -1,11 +1,37 @@
+import { waitingRoomLaunchPlacement } from "@chariox/kernel-client/waiting-room-runtime-placement"
+import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 import {
   providerAccountCapacity,
   providerAccountCapacityLabel,
   providerAccountCapacityResetLabel,
   type ProviderAccountProfile,
 } from "@chariox/kernel-client"
+import { BACKEND_PROVIDER_IDS, type BackendProviderId } from "./provider-catalog.js"
 
 export { providerAccountCapacity }
+
+/** MP-08/MP-11: the execution kernel's known harness families narrow the list. */
+function offeredBackendProviderIds(
+  installedProviders: readonly string[] | undefined,
+): readonly BackendProviderId[] {
+  if (!installedProviders) return BACKEND_PROVIDER_IDS
+  return BACKEND_PROVIDER_IDS.filter((id) => installedProviders.includes(providerAccountFamily(id)))
+}
+
+/** MP-08/MP-11: only the execution kernel may narrow provider choices. */
+export function waitingRoomOfferedBackendProviderIds(
+  state: WaitingRoomState,
+  remote: WaitingRoomRemoteState,
+): readonly BackendProviderId[] {
+  const placement = waitingRoomLaunchPlacement(state, remote)
+  const local = placement.kernelRef === "local"
+    && !placement.managedEnvironmentId && !placement.newManagedEnvironment
+    && (!remote.homeKernelId || !remote.relay?.daemon_id || remote.homeKernelId === remote.relay.daemon_id)
+  const connected = placement.kernelRef === remote.relay?.daemon_id
+  const installed = local || connected ? remote.installedProviders
+    : remote.kernels?.find((kernel) => kernel.kernel_id === (placement.kernelRef === "local" ? remote.homeKernelId : placement.kernelRef))?.available_providers
+  return offeredBackendProviderIds(installed)
+}
 
 export function providerAccountFamily(provider: string): string {
   return provider === "claude-headless" || provider === "claude-p" ? "claude" : provider
@@ -24,6 +50,9 @@ export function normalizeProviderAccountProfileId(
   provider: string,
   profileId: string | null | undefined,
 ): string {
+  // MP-08/MP-11: preserve follow-default intent across background discovery.
+  // Concrete IDs belong to explicit choices; resolve the default at use time.
+  if (!profileId || profileId === "default") return "default"
   const accounts = providerAccountsForProvider(profiles, provider)
   return accounts.some((profile) => profile.profile_id === profileId)
     ? profileId!

@@ -47,6 +47,17 @@ pub fn resolve_claude_executable() -> Result<PathBuf, DaemonError> {
     resolve_claude_executable_unlocked()
 }
 
+/// MP-08: whether the official Claude Code CLI resolves on this host now,
+/// without the transient-replacement retry used by launches.
+pub(crate) fn claude_harness_installed() -> bool {
+    let _guard = crate::env_lock::lock();
+    match env::var_os(CLAUDE_ENV_OVERRIDE) {
+        Some(path) => resolve_candidate(PathBuf::from(path), true),
+        None => resolve_candidate(PathBuf::from("claude"), false),
+    }
+    .is_some()
+}
+
 fn resolve_claude_executable_unlocked() -> Result<PathBuf, DaemonError> {
     if let Some(path) = env::var_os(CLAUDE_ENV_OVERRIDE).map(PathBuf::from) {
         return CLAUDE_EXECUTABLE_RESOLUTION

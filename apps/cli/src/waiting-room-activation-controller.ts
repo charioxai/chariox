@@ -45,6 +45,9 @@ export type WaitingRoomPreparedManagedLaunch = {
 
 export type WaitingRoomActivationControllerDeps = {
   onLaunchRefused?: (message: string, retry: () => void) => void
+  /** MP-08: the waiting-room Provider Accounts popup. */
+  openProviderAccounts?: () => void
+  runCommand?: (command: string) => Promise<void>
   isKernelConnected: () => boolean
   connectKernel: () => Promise<void>
   getWaitingRoomState: () => WaitingRoomState
@@ -135,6 +138,7 @@ export function createWaitingRoomActivationController(
       }
 
       const decision = deriveActivationDecision({
+        worktreePath: deps.getWorktreeTarget(),
         state: deps.getWaitingRoomState(),
         sessions: deps.getAvailableSessions(),
         catalog: deps.getProviderCatalog(),
@@ -160,6 +164,7 @@ export function createWaitingRoomActivationController(
       }
 
       const decision = deriveCreateSessionDecision({
+        worktreePath: deps.getWorktreeTarget(),
         state: deps.getWaitingRoomState(),
         catalog: deps.getProviderCatalog(),
         currentProvider: deps.getCurrentProvider(),
@@ -213,6 +218,25 @@ export function createWaitingRoomActivationController(
     }
     if (decision.action === "open-session-browser") {
       deps.openSessionBrowserDialog()
+      return true
+    }
+    if (decision.action === "run-command") {
+      deps.flashFooter(decision.message, "info")
+      if (deps.runCommand) await deps.runCommand(decision.command)
+      else {
+        deps.setPromptText(decision.command)
+        deps.focusPrompt()
+        deps.syncCommandCenter(decision.command)
+      }
+      return true
+    }
+    if (decision.action === "open-provider-accounts") {
+      if (deps.openProviderAccounts) deps.openProviderAccounts()
+      else {
+        deps.setPromptText("/provider accounts")
+        deps.focusPrompt()
+        deps.syncCommandCenter("/provider accounts")
+      }
       return true
     }
     if (decision.action === "load-older-external-sessions") {

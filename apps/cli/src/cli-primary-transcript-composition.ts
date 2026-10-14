@@ -1,3 +1,4 @@
+import { waitingRoomRemoteTargets } from "./waiting-room-remote-state.js"
 import { createWaitingRoomBootstrapDefaultsController } from "./waiting-room-bootstrap-defaults.js"
 import { onMount } from "solid-js"
 
@@ -71,6 +72,7 @@ export type CliPrimaryTranscriptCompositionDeps = {
   remoteMachinesState: AnyFn
   remoteKernelsState: AnyFn
   providerAccountsState: AnyFn
+  installedProvidersState: AnyFn
   terminalsState: AnyFn
   externalProviderSessionsState: AnyFn
   externalProviderSessionsPageState: AnyFn
@@ -121,21 +123,6 @@ export type CliPrimaryTranscriptCompositionDeps = {
 }
 
 export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscriptCompositionDeps) {
-  const waitingRoomRemoteTargets = () => {
-    const targets = deps.waitingRoomTargets()
-    const managedEnvironmentCatalog = targets.managedEnvironmentCatalog
-    return {
-      ...(targets.workspaceId ? { workspaceId: targets.workspaceId } : {}),
-      ...(targets.worktreeId ? { worktreeId: targets.worktreeId } : {}),
-      ...(managedEnvironmentCatalog
-        ? {
-            managedComputeClasses: managedEnvironmentCatalog.computeClasses,
-            managedContextSources: managedEnvironmentCatalog.contextSources,
-            managedEnvironments: managedEnvironmentCatalog.environments,
-          }
-        : {}),
-    }
-  }
   const primaryTranscriptRenderController = createPrimaryTranscriptRenderController({
     // A zero-length click selection holds nothing worth preserving.
     preserveTextSelection: () => {
@@ -183,7 +170,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
           ? buildLoadingTranscriptRenderable(deps.renderer)
           : buildEmptyTranscriptRenderable(deps.renderer))
       : buildNoSessionRenderable(deps.renderer, deps.waitingRoomState(), deps.availableSessions(), deps.providerCatalogState(), {
-        ...waitingRoomRemoteTargets(),
+        ...waitingRoomRemoteTargets(deps.waitingRoomTargets()),
         cloudNotice: deps.waitingRoomCloudNotice(),
         inventoryStatus: deps.waitingRoomInventoryStatus(),
         loadingFrame: deps.waitingRoomState().introStep,
@@ -191,6 +178,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
         machines: deps.remoteMachinesState(),
         kernels: deps.remoteKernelsState(),
         providerAccounts: deps.providerAccountsState(),
+        installedProviders: deps.installedProvidersState(),
         terminals: deps.terminalsState(),
         externalProviderSessions: deps.externalProviderSessionsState(),
         externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,

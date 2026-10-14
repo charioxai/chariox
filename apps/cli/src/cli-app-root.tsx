@@ -49,7 +49,7 @@ import { createCliRuntimeProjectionComposition } from "./cli-runtime-projection-
 import { createCliSessionLifecycleComposition } from "./cli-session-lifecycle-composition.js"
 import { createCliTranscriptRuntimeComposition } from "./cli-transcript-runtime-composition.js"
 import { createCliWaitingRoomComposition } from "./cli-waiting-room-composition.js"
-import { waitingRoomManagedCatalogRemoteState } from "./waiting-room-managed-environments.js"
+import { waitingRoomRemoteTargets } from "./waiting-room-remote-state.js"
 import { createCliClosingStateController } from "./cli-closing-state-controller.js"
 import {
   COMMAND_CENTER_OVERLAY_FOOTPRINT,
@@ -70,7 +70,8 @@ import { createAgentPaneRuntimeResetController } from "./agent-pane-runtime-rese
 import { createAgentPaneRuntimeStoreController } from "./agent-pane-runtime-store-controller.js"
 import { createFooterFlashController } from "./footer-flash-controller.js"
 import { createProviderAccountRecoveryController } from "./provider-account-recovery-controller.js"
-import { providerAccountCapacity, providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
+import { providerAccountCapacity, providerAccountFamily, providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
+import { providerAccountsPopupItems, providerFamilyLabel, type ProviderAccountsPopupCommand } from "./provider-accounts-popup.js"
 import { createHistoryLoadingRenderController } from "./history-loading-render-controller.js"
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
@@ -193,7 +194,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     providerCatalogState, setProviderCatalogState, providerCommandCatalogState, setProviderCommandCatalogState,
     terminalCommandCatalogState, setTerminalCommandCatalogState, themeRegistryState, relayStatusState,
     setRelayStatusState, remoteMachinesState, setRemoteMachinesState, remoteKernelsState,
-    setRemoteKernelsState, providerAccountsState, setProviderAccountsState, slicesState, setSlicesState, terminalsState,
+    setRemoteKernelsState, providerAccountsState, setProviderAccountsState, installedProvidersState, setInstalledProvidersState, slicesState, setSlicesState, terminalsState,
     setTerminalsState, externalProviderSessionsState, setExternalProviderSessionsState, externalProviderSessionsPageState,
     setExternalProviderSessionsPageState, waitingRoomInventoryStatus, setWaitingRoomInventoryStatus, waitingRoomHiddenKernelController,
     waitingRoomCloudNotice, setWaitingRoomCloudNotice, terminalPairingOpen, setTerminalPairingOpen,
@@ -441,6 +442,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     waitingRoomTargets, editWaitingRoomWorkspace,
   } = createCliWaitingRoomComposition({
     onLaunchRefused: (message, retry) => providerAccountRecovery.showLaunchRefusal(message, retry),
+    openProviderAccounts: () => openProviderAccountsPopup(),
+    runCommand: async (command) => runProviderAccountsPopupCommand({ kind: "run", command }),
     client, cloudClient, options, appLogger, formatError,
     isAttached, kernelConnected, waitingRoomState, setWaitingRoomState, setWaitingRoomStateProjection,
     waitingRoomLaunchOwnershipRevision,
@@ -449,7 +452,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     providerCommandCatalogState, setProviderCommandCatalogState, themeRegistryState, waitingRoomCloudNotice,
     waitingRoomInventoryStatus, setWaitingRoomInventoryStatus, waitingRoomHiddenKernelController, relayStatusState,
     setRelayStatusState, remoteMachinesState, setRemoteMachinesState, remoteKernelsState,
-    setRemoteKernelsState, providerAccountsState, setProviderAccountsState, terminalsState, setTerminalsState, externalProviderSessionsState,
+    setRemoteKernelsState, providerAccountsState, setProviderAccountsState, installedProvidersState, setInstalledProvidersState, terminalsState, setTerminalsState, externalProviderSessionsState,
     setExternalProviderSessionsState, externalProviderSessionsPageState, setExternalProviderSessionsPageState, slicesState,
     setSlicesState, pendingWorkspaceTarget, setPendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorktreeTarget, preferencesState,
     setPreferencesState, setThemeRevision,
@@ -589,12 +592,12 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     waitingRoomRemoteState: () => {
       const targets = waitingRoomTargets()
       return {
-        ...targets,
-        ...waitingRoomManagedCatalogRemoteState(targets.managedEnvironmentCatalog),
+        ...waitingRoomRemoteTargets(targets),
         relay: relayStatusState(),
         machines: remoteMachinesState(),
         kernels: remoteKernelsState(),
         providerAccounts: providerAccountsState(),
+        installedProviders: installedProvidersState(),
         terminals: terminalsState(),
         slices: slicesState(),
         projects: waitingRoomProjects(),
@@ -713,6 +716,58 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     blockedAccountTarget = undefined
   }
   onCleanup(providerAccountRecovery.close)
+  // MP-08: Provider Accounts as a popup over the waiting room. Actions reuse
+  // the `/provider` commands; those needing input or confirmation are staged.
+  const openProviderAccountsPopup = () => {
+    const providerId = waitingRoomState().providerId
+    const installedProviders = installedProvidersState()
+    const signedIn = providerAccountsForProvider(providerAccountsState(), providerId).some(profile => profile.auth_state === "authenticated")
+    const rows = providerAccountsPopupItems({ profiles: providerAccountsState(), installedProviders, providerId }).map(item => ({
+      label: item.label,
+      choices: item.choices.map(choice => ({ label: choice.label, run: () => runProviderAccountsPopupCommand(choice.command) })),
+    }))
+    providerAccountRecovery.showProviderAccounts(
+      "Provider accounts",
+      rows.length
+        ? signedIn
+          ? "Accounts on this machine."
+          : `No ${providerFamilyLabel(providerId)} account is signed in on this machine. Sign in, add a new account, or use another account.`
+        : "No Codex, Claude Code or OpenCode CLI is installed on this machine.",
+      rows,
+    )
+  }
+  const runProviderAccountsPopupCommand = (command: ProviderAccountsPopupCommand) => {
+    if (command.kind === "run") {
+      if (isAttached()) {
+        void executeCommandCenterCommand(command.command)
+        return
+      }
+      // In the waiting room a command's notices would replace the waiting-room
+      // view; show them (sign-in link and code) in the popup instead.
+      const before = entries.length
+      void executeCommandCenterCommand(command.command).then(() => {
+        const notices = entries.slice(before).filter(entry => entry.role === "notice").map(entry => entry.text)
+        if (!notices.length || isAttached()) return
+        replaceTranscriptEntries(entries.slice(0, before))
+        providerAccountRecovery.showProviderAccounts("Provider accounts", notices.join("\n"), [
+          { label: "Back to the waiting room", choices: [{ label: "Close", run: () => {} }] },
+          { label: "Provider accounts", choices: [{ label: "Open", run: () => openProviderAccountsPopup() }] },
+        ])
+      })
+      return
+    }
+    if (command.kind === "stage") {
+      setPromptText(command.command)
+      promptInputRefController.focus()
+      commandCenterController.sync(command.command)
+      return
+    }
+    const current = waitingRoomState()
+    const providerId = providerAccountFamily(current.providerId) === command.provider
+      ? current.providerId
+      : normalizeBackendProviderId(command.provider)
+    reconcileWaitingRoom({ ...current, providerId, accountProfileId: command.profileId, focus: "account" })
+  }
   void cloudClient.resume(() => {
     setPreferencesState(current => mergeRelayCloudProfile(current, null))
     void saveRelayCloudProfile(null).catch(() => {})
@@ -865,7 +920,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     workflowScreenActive: () => workflowActions.workflowScreenActive(),
     workflowInspector, workspaceShellEntries, workspaceShellContext, waitingRoomState,
     availableSessions, waitingRoomProjects, providerCatalogState, waitingRoomCloudNotice, waitingRoomInventoryStatus,
-    relayStatusState, remoteMachinesState, remoteKernelsState, providerAccountsState, terminalsState,
+    relayStatusState, remoteMachinesState, remoteKernelsState, providerAccountsState, installedProvidersState, terminalsState,
     externalProviderSessionsState, externalProviderSessionsPageState, slicesState, waitingRoomTargets,
     themeRegistryState, transcriptScrollboxRefController, primaryTranscriptRuntimeStore, transcriptEntryProjectionController,
     visibleTranscriptAgentId, transcriptSyntaxStyleController, historyScrollRestoreController, transcriptTurnStateController,
@@ -1042,7 +1097,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     commandCenterOpen, promptHistoryIndex, promptHistoryDraft, navigatePromptHistoryInput,
     visibleTranscriptEntries, transcriptScrollboxRefController, commandCenterController, waitingRoomState,
     availableSessions, waitingRoomProjects, waitingRoomTargets, providerCatalogState, relayStatusState, remoteMachinesState,
-    setRemoteMachinesState, remoteKernelsState, providerAccountsState, terminalsState, slicesState,
+    setRemoteMachinesState, remoteKernelsState, providerAccountsState, installedProvidersState, terminalsState, slicesState,
     themeRegistryState, reconcileWaitingRoom, setWaitingRoomState, applyWaitingRoomSessionLifecycleAction,
     restoreWaitingRoomProject, renameWaitingRoomProject,
     activateWaitingRoom, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults, handleSessionBrowserKey,

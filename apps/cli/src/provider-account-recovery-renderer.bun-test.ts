@@ -103,3 +103,41 @@ test("MP-08/MP-10/MP-11 attached recovery opens visible choices and retains the 
     assert.deepEqual(invoked, [{profile:"b",target}])
   } finally {controller.close();h.renderer.destroy()}
 })
+
+test("MP-08 waiting-room Provider Accounts popup cycles row actions and runs the chosen one", async () => {
+  const h = await createTestRenderer({ width: 100, height: 40, useThread: false })
+  const box = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+  h.renderer.root.add(box)
+  const ran: string[] = []
+  const controller = createProviderAccountRecoveryController({ renderer: h.renderer, dimensions: () => ({ width: 100, height: 40 }), actions: () => [] })
+  try {
+    controller.assignBox(box)
+    controller.showProviderAccounts("Provider accounts", "No Codex account is signed in on this machine.", [
+      { label: "Codex · codex-1 · needs sign-in", choices: [
+        { label: "Sign in", run: () => ran.push("sign-in") },
+        { label: "Refresh", run: () => ran.push("refresh") },
+      ] },
+      { label: "Add new Codex account", choices: [{ label: "Device code link", run: () => ran.push("add") }] },
+    ])
+    await h.renderOnce()
+    let frame = h.captureCharFrame()
+    assert.match(frame, /Provider accounts/)
+    assert.match(frame, /No Codex account is signed in/)
+    assert.match(frame, /> Codex · codex-1 · needs sign-in  ‹ Sign in ›/)
+    assert.match(frame, /Add new Codex account  \[Device code link\]/)
+    controller.handleKey({ name: "right" })
+    await h.renderOnce()
+    frame = h.captureCharFrame()
+    assert.match(frame, /‹ Refresh ›/)
+    controller.handleKey({ name: "return" })
+    assert.deepEqual(ran, ["refresh"])
+    assert.equal(controller.ownsInput(), true)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(controller.ownsInput(), false)
+    controller.showProviderAccounts("Provider accounts", "msg", [
+      { label: "Add new Codex account", choices: [{ label: "Device code link", run: () => ran.push("add") }] },
+    ])
+    controller.handleKey({ name: "return" })
+    assert.deepEqual(ran, ["refresh", "add"])
+  } finally { controller.close(); h.renderer.destroy() }
+})

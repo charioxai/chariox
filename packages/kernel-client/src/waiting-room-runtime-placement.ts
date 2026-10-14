@@ -12,7 +12,18 @@ export type WaitingRoomLaunchKernelInput = {
   relay_alias?: string | null
 }
 
+/** MP-08/MP-11: the connected kernel is absent from its own remote directory. */
+export type WaitingRoomLaunchRelayInput = {
+  connected: boolean
+  machine_id?: string | null
+  daemon_id?: string | null
+  machine_alias?: string | null
+  daemon_alias?: string | null
+}
+
 export type WaitingRoomLaunchRemoteState = {
+  homeKernelId?: string | null
+  relay?: WaitingRoomLaunchRelayInput | null
   machines?: readonly WaitingRoomLaunchMachineInput[]
   kernels?: readonly WaitingRoomLaunchKernelInput[]
   managedEnvironments?: readonly WaitingRoomLaunchManagedEnvironmentInput[]
@@ -55,6 +66,8 @@ export type WaitingRoomLaunchKernelOption<TKernel extends WaitingRoomLaunchKerne
 export function waitingRoomLaunchMachineOptions<TMachine extends WaitingRoomLaunchMachineInput>(
   remote: {
     machines?: readonly TMachine[]
+    relay?: WaitingRoomLaunchRelayInput | null
+    homeKernelId?: string | null
     managedEnvironments?: readonly WaitingRoomLaunchManagedEnvironmentInput[]
   } = {},
 ): WaitingRoomLaunchMachineOption<TMachine>[] {
@@ -66,6 +79,10 @@ export function waitingRoomLaunchMachineOptions<TMachine extends WaitingRoomLaun
       machine,
       managedEnvironment: null,
     })),
+    ...(remote.homeKernelId && remote.relay?.connected && remote.relay.machine_id && remote.relay.daemon_id !== remote.homeKernelId && remote.relay.daemon_id
+      && !remote.machines?.some((machine) => machine.machine_id === remote.relay!.machine_id)
+      ? [{ id: remote.relay.machine_id, label: remote.relay.machine_alias ?? remote.relay.machine_id, machine: null, managedEnvironment: null }]
+      : []),
     ...(remote.managedEnvironments ?? [])
       .filter((environment) => environment.desiredState !== "deleted")
       .map((environment) => ({
@@ -100,6 +117,8 @@ export function waitingRoomSelectedLaunchMachineRef(
 export function waitingRoomLaunchKernelOptions<TKernel extends WaitingRoomLaunchKernelInput>(
   remote: {
     kernels?: readonly TKernel[]
+    relay?: WaitingRoomLaunchRelayInput | null
+    homeKernelId?: string | null
     managedEnvironments?: readonly WaitingRoomLaunchManagedEnvironmentInput[]
   } = {},
   machineRef = "local",
@@ -115,7 +134,7 @@ export function waitingRoomLaunchKernelOptions<TKernel extends WaitingRoomLaunch
     machineRef = environment.runtimeMachineId!
   }
   if (machineRef === NEW_MANAGED_MACHINE_REF) return []
-  return (remote.kernels ?? [])
+  const options: WaitingRoomLaunchKernelOption<TKernel>[] = (remote.kernels ?? [])
     .filter((kernel) => kernel.machine_id === machineRef)
     .map((kernel) => ({
       id: kernel.kernel_id,
@@ -123,6 +142,11 @@ export function waitingRoomLaunchKernelOptions<TKernel extends WaitingRoomLaunch
       machineId: kernel.machine_id,
       kernel,
     }))
+  if (remote.homeKernelId && remote.relay?.connected && remote.relay.machine_id === machineRef && remote.relay.daemon_id !== remote.homeKernelId && remote.relay.daemon_id
+    && !options.some((option) => option.id === remote.relay!.daemon_id)) {
+    options.push({ id: remote.relay.daemon_id, label: remote.relay.daemon_alias ?? remote.relay.daemon_id, machineId: machineRef, kernel: null })
+  }
+  return options
 }
 
 export function waitingRoomSelectedLaunchKernelRef(
