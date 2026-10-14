@@ -40,16 +40,14 @@ test("MP-08 / MP-10: initial-view bootstrap uses bundled history and preserves b
   assert.equal(history?.agentEntries.a?.length, 2)
 })
 
-test("MP-08 / MP-10: explicit attach resolves its target while unrelated startup reads are pending", async () => {
+test("MP-08 / MP-10 / MP-11: explicit attach mounts without startup inventory or launch defaults", async () => {
   const session = { id: "s", active_provider_run_id: "run", agents: [{ id: "a" }], focused_agent_id: "a" }
   const calls: string[] = []
-  let finishDefaults!: (value: {}) => void, finishInventory!: (value: unknown[]) => void
-  const defaults = new Promise<{}>(resolve => { finishDefaults = resolve })
-  const inventory = new Promise<unknown[]>(resolve => { finishInventory = resolve })
+  const pending = new Promise<never>(() => {})
   const unexpected = async () => { throw new Error("unexpected fallback") }
   const boot = bootstrapSession({} as never, { clientId: "cli", sessionId: "alias", model: "default", effort: "", accountProfile: "default" }, "/workspace", "/workspace", {}, {
-    getConfiguredProviderLaunchDefaults: () => { calls.push("defaults"); return defaults },
-    listSessions: () => { calls.push("inventory"); return inventory },
+    getConfiguredProviderLaunchDefaults: () => { calls.push("defaults"); return pending },
+    listSessions: () => { calls.push("inventory"); return pending },
     resolveSession: async () => { calls.push("resolve"); return session },
     attachSessionView: async () => { calls.push("view"); return { attachment: { id: "binding", session_id: "s" }, session, history: { agents: [outlineAgent("a", "prompt", "answer")] } } },
     attachToSession: unexpected, getSessionState: unexpected, catchUpAttachedSession: unexpected,
@@ -59,12 +57,13 @@ test("MP-08 / MP-10: explicit attach resolves its target while unrelated startup
     getTerminalCommandCatalog: async () => terminalCatalog(),
     resolveVisibleAgentId: () => "a", prepareHistoryOutlineAgent: hydrateSessionHistoryOutlineAgentEntries,
   } as never)
-  await new Promise(resolve => setImmediate(resolve))
-  const before = [...calls]
-  finishDefaults({}); finishInventory([session])
-  const result = await boot
-  assert.deepEqual(before, ["defaults", "inventory", "resolve"])
-  assert.equal((await result.deferred?.attachedHistory)?.historyEntries.length, 2)
+  const result = await Promise.race([boot, new Promise<"blocked">(resolve => setTimeout(() => resolve("blocked"), 30))])
+  assert.notEqual(result, "blocked", "explicit attach waited for unrelated startup reads")
+  assert.deepEqual(calls, ["resolve", "view"])
+  if (result !== "blocked") {
+    assert.equal((await result.deferred?.attachedHistory)?.historyEntries.length, 2)
+    assert.deepEqual(result.sessions.map(session => session.id), ["s"])
+  }
 })
 
 test("MP-08 / MP-10: the bundled later desk hydrates before any off-desk outline request", async () => {

@@ -99,19 +99,21 @@ export async function bootstrapSession(
   let createdSession = false
   let session: RuntimeSession | null = null
 
-  // These are independent reads. In particular, an explicit session reference
-  // does not depend on the waiting-room inventory or launch defaults. Keep
-  // attachment/launch mutations after all reads succeed.
-  const configuredPromise: Promise<{ provider?: string; model?: string; effort?: string }> = !options.provider || options.model === "default" || !options.effort.trim()
+  // MP-08 / MP-10 / MP-11: an explicit attach observes its existing
+  // agent selection. Waiting-room inventory and new-session launch defaults
+  // cannot affect its target and must not hold its first screen hostage.
+  const explicitAttach = Boolean(options.sessionId && !options.createSession)
+  const configuredPromise: Promise<{ provider?: string; model?: string; effort?: string }> = !explicitAttach && (!options.provider || options.model === "default" || !options.effort.trim())
     ? deps.getConfiguredProviderLaunchDefaults?.(client) ?? Promise.resolve({})
     : Promise.resolve({})
-  const sessionsPromise = deps.listSessions(client)
-  const resolvedSessionPromise = options.sessionId && !options.createSession
-    ? deps.resolveSession(client, options.sessionId, workspace)
+  const sessionsPromise = explicitAttach ? Promise.resolve([]) : deps.listSessions(client)
+  const resolvedSessionPromise = explicitAttach
+    ? deps.resolveSession(client, options.sessionId!, workspace)
     : Promise.resolve(null)
-  const [configured, sessions, resolvedSession] = await Promise.all([
+  const [configured, discoveredSessions, resolvedSession] = await Promise.all([
     configuredPromise, sessionsPromise, resolvedSessionPromise,
   ])
+  const sessions = resolvedSession ? [resolvedSession] : discoveredSessions
   if (!options.provider && configured.provider) options.provider = configured.provider
   if (options.model === "default" && configured.model) options.model = configured.model
   if (!options.effort.trim() && configured.effort) options.effort = configured.effort
