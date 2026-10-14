@@ -539,9 +539,10 @@ export class KernelBrowserHost {
       // into attached views and later state reads reconcile its title.
       const stored = this.tabs.get(tab.tab_id);
       if (!stored || typeof navigated?.document_id !== 'string' || !navigated.document_id) return this.observe(await this.reconcile(), null, scope);
-      Object.assign(stored, { document_id: navigated.document_id, url: navigated.url ?? stored.url, title: '' });
+      // A redirect commits another address: read the committed target, fenced to this document.
+      const committed = await this.displayTarget({ generation: this.generation, tab_id: tab.tab_id });
+      if (committed.document_id !== navigated.document_id) return this.observe(await this.reconcile(), null, scope);
       this.observed = ++this.observations; // an older in-flight reconcile cannot restore the previous document
-      await this.save();
       return this.observe(this.tabState(), null, scope);
     }
     if (command.op === "note_selection" || command.op === "note_reanchor") return this.observe({ generation:this.generation, observation:await this.browser.observeNote({ ...binding, ...(command.quote ? {quote:command.quote} : {}) }) },tab,scope);

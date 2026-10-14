@@ -1071,16 +1071,29 @@ test('MP-08/MP-10/MP-11: protected still captures keep the hidden render widget 
 
 // MP-08/MP-10 (owner A/B 2026-10-14, findings 6/8): a typed URL waited for full all-tab reconciles before
 // and after the navigation (up to 25 s on a loading page), holding the mutation lane for the next one.
-test('MP-08/MP-10 navigate answers at commit without all-tab reconciles', () => using(async ({ host, connection }) => {
+test('MP-08/MP-10 navigate answers at commit without all-tab reconciles', () => using(async ({ host, pages }) => {
   const opened = await host.request({ op: 'open', url: 'about:blank' });
   const browser = host.browser, reconcile = browser.reconcile;
   let reconciles = 0;
   browser.reconcile = async (...args) => { reconciles++; return reconcile(...args); };
-  browser.navigate = async ({ target_id, url }) => ({ target_id, document_id: 'doc-next', url });
+  browser.navigate = async ({ target_id, url }) => { pages.set(target_id, { url, document_id: 'doc-next' }); return { target_id, document_id: 'doc-next', url }; };
   const result = await host.request({ op: 'navigate', tab_id: opened.tab_id, generation: opened.generation, url: 'https://example.com/next' });
   assert.equal(reconciles, 0, 'no all-tab reconcile on the navigation path');
   const tab = result.tabs.find(entry => entry.tab_id === opened.tab_id);
   assert.equal(tab.document_id, 'doc-next'); assert.equal(tab.url, 'https://example.com/next');
+}));
+
+// MP-08/MP-10 (review #1009 @ec754ee48 P2): a redirect commits another address; the navigation reply,
+// the saved Tab and later tab-scoped reads report the committed URL, not the requested one.
+test('MP-08/MP-10 navigate reports the committed URL after a redirect', () => using(async ({ host, pages }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const target = host.tabs.get(opened.tab_id).target_id;
+  host.browser.navigate = async ({ target_id, url }) => { pages.set(target_id, { url: 'https://example.com/landed', document_id: 'doc-next' }); return { target_id, document_id: 'doc-next', url }; };
+  const result = await host.request({ op: 'navigate', tab_id: opened.tab_id, generation: opened.generation, url: 'https://example.com/next' });
+  assert.equal(result.tabs.find(entry => entry.tab_id === opened.tab_id).url, 'https://example.com/landed');
+  assert.equal(host.tabs.get(opened.tab_id).url, 'https://example.com/landed');
+  assert.equal((await host.displayTarget({ generation: opened.generation, tab_id: opened.tab_id })).url, 'https://example.com/landed');
+  assert.equal(pages.get(target).document_id, 'doc-next');
 }));
 
 // MP-08/MP-10 (review #1009 P2): the kernel's navigate/subscribe preflight names its Tab and reads only that
