@@ -215,3 +215,31 @@ test("recover skips local launch for remote-backed focused agents", async () => 
   assert.equal(skipped, "remote_backed_agent")
   assert.equal(controller.isInFlight(), false)
 })
+
+test("MP-08 recovery relaunches the target agent with its own account", async () => {
+  const launched: string[] = []
+  const controller = createProviderRecoveryController<TestSession, TestProviderRun>({
+    isAttached: () => true,
+    getSessionId: () => "session-1",
+    getSessionStateSnapshot: () => makeSession({
+      agents: [makeAgent({ id: "agent-1", provider: "codex", account_profile: "codex-work" })],
+    }),
+    getFallbackLaunch: () => ({ provider: "codex", model: "gpt-5.2", effort: "medium" }),
+    getAccountProfile: () => "default",
+    getTargetAgentId: () => "agent-1",
+    launchProviderRun: async (input) => {
+      launched.push(input.accountProfile)
+      return { id: "run-1" }
+    },
+    getSessionState: async (sessionId) => ({ id: sessionId }),
+    projectSession: (session) => session,
+    applyProviderRun: () => {},
+    applySession: () => {},
+    resizeSession: async () => {},
+    onRecovered: () => {},
+    onRecoverySkipped: () => assert.fail("recovery skipped"),
+    onRecoveryFailed: (_reason, error) => assert.fail(String(error)),
+  })
+  assert.equal(await controller.recover("silent_poll"), true)
+  assert.deepEqual(launched, ["codex-work"])
+})

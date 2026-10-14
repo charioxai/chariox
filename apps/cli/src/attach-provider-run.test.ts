@@ -116,3 +116,23 @@ test("settleAttachProviderRun still surfaces unrelated provider launch failures"
     (error) => error === launchError,
   )
 })
+
+test("MP-08 reattach relaunches an idle agent with its own account, not the CLI default", async () => {
+  const launched: string[] = []
+  const result = await settleAttachProviderRun(
+    session,
+    { provider: "codex", model: "gpt-5.6-luna", effort: "low" },
+    "default",
+    false,
+    {
+      launchProviderRun: async (_sessionId, _provider, accountProfile) => {
+        launched.push(accountProfile)
+        return { id: "provider-run-reattach" } as never
+      },
+      getSessionState: async () => session,
+      tryGetProviderRun: async () => null,
+    },
+  )
+  assert.equal(result.action, "launched")
+  assert.deepEqual(launched, ["codex-secondary"])
+})

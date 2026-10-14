@@ -3649,3 +3649,51 @@ Web Copy and TUI `/kernel copy-status <context-id>` project the same authoritati
 outcome. Refusals occur before packaging or publication; no bytes are copied.
 The existing C5 allocation remains local 520 / peer 128: this correction changes
 error strings and client rendering, with no new serialized fields or variants.
+### MP-08 / MP-11: managed-context package compatibility (round L)
+
+Coordinator-assigned local protocol 504 and relay peer 112 gate package schema 5.
+Vault-backed provider-account components use the schema-5 object form; schemas
+2/3/4 retain their previous contracts, including Git credentials from schema 4.
+A schema-4 package containing a Vault object is rejected. Arm admission rejects
+older peer generations before Begin or any credential-bearing package upload.
+Web/TUI feature minima remain unchanged because they use existing control RPCs.
+
+### MP-07: managed release update failure reason (round Q)
+
+Coordinator-assigned local protocol 515. Relay peer protocol stays 112: no peer
+message changed, and peer admission refuses peers older than its own version.
+A failed Cloud-authorized update now carries the machine's own reason. The root
+updater writes `/usr/lib/chariox/.managed-kernel-upgrade-failure` (root-owned,
+0644): `1`, the update id and the first failed step (`release_staging`,
+`release_extraction`, `release_verification`, `prior_update_recovery`,
+`protocol_transition`, `release_install`, `docker_admission`,
+`transaction_prepare`, `service_stop`, `activation_*`, `target_start`,
+`target_health_check`, `final_validation` or `interrupted`). A later failure of
+the same update keeps the first step. The kernel adds `failureReason` to its
+signed `release_update_poll` beside `failedUpdateId`: the recorded step, else
+its own `artifact_download_failed` or `update_unit_start_failed`, else
+`updater_reported_no_reason`. It sends the field only when the poll response
+that handed out the update carried `acceptsFailureReason: true`, because older
+Cloud rejects unknown poll fields. Cloud stores it as the update's
+`failureReason` next to `failureCode: machine_upgrade_failed`. The reporting
+kernel and updater are the source release, so updates from releases before
+round Q still report no reason.
+
+MP-01 / MP-08 / MP-11: provider replicas imported for an execution lease stay
+in that lease owner's registry namespace, including when the worker's configured
+Cloud owner has the same user id. Host-user aliases apply to ordinary host
+accounts. Lease launch authority is kernel-local (`serde(skip)`), assigned only
+after lease admission, and preserved for launch, prompt, usage and recovery,
+including app prompt dispatch, Claude Vault unlock guards and credential lookup.
+App dispatch derives lease authority from the authenticated backing-agent binding
+even when a fresh internal launch request does not carry the private launch bit.
+Prompt admission, queued advance and native run reuse apply the same account
+owner policy before authentication; host-only checks must not precede lease lookup.
+No serialized client or relay shape changes in this namespace correction.
+
+MP-08 / MP-11: an admitted Claude lease may reuse its source-authorized launch
+credential even though the receiver has no local Vault login for that replica.
+Kernel-private provenance survives consumption of the launch secret and is
+bound to the live run's exact session, agent, owner and account. Both launch and
+run provenance are serde-skipped: restoration or client JSON cannot claim it.
+Other accounts use normal registry authentication. This adds no serialized shape.
