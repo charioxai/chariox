@@ -362,3 +362,26 @@ test('MP-08/MP-10: a new document is held until its first contentful paint befor
   assert.ok(hold >= 0 && snapshot > hold, 'the hold precedes the new document snapshot');
   assert.equal((await run('D1')).some(call => call.includes('first-contentful-paint')), false, 'same document: no hold');
 });
+
+// MP-08/MP-10: a long poll on a document the Tab has navigated away from ends at once (no 2 s wait on the old page).
+test('MP-08/MP-10: a navigation ends a waiting long poll before its deadline', async () => {
+  const policy = { targets: [] }, tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+  const documents = new Map([['T', 'D1']]);
+  const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: documents.get('T') } } }) };
+  const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+  const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, header: { scroll: '[0,0]', focused: 'null', selection: 'null', fragment: 'null' } };
+  const host = { protection: policy, generation: 1, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+    browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
+  const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
+  mirror.world = async () => world;
+  let waits = 0;
+  mirror.evaluate = async (_world, expression) => {
+    if (expression.includes('waitDrain')) { waits++; await new Promise(resolve => setTimeout(resolve, 20)); if (waits === 2) documents.set('T', 'D2'); }
+    return { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0 };
+  };
+  mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
+  mirror.materialize = async () => [];
+  const started = Date.now();
+  await mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 1 }, 'scope', undefined, Date.now() + 2000).catch(() => {}); // the moved document then refuses this credit (existing fence); the next one resets
+  assert.ok(Date.now() - started < 1000, `the wait ended after the navigation (${Date.now() - started} ms)`);
+});

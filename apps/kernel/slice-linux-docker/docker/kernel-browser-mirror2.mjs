@@ -347,7 +347,9 @@ export class Mirror2 {
       // slices), so an echo never queues behind image bytes on the socket.
       resources = reset ? await this.materialize(world, stream, 'font') : this.empty(stream, source) ? await this.materialize(world, stream, null, source.loaded) : [];
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
-      while (!reset && !resources.length && this.empty(stream, source) && Date.now() < deadline && stream.hurry === hurry) {
+      // A navigation ends the wait at once (MP-08/MP-10): the next credit resets to the new document.
+      const moved = () => { const live = this.host.browser.documentIdsByTarget?.get(tab.target_id); return !!live && live !== tab.document_id; };
+      while (!reset && !resources.length && this.empty(stream, source) && Date.now() < deadline && stream.hurry === hurry && !moved()) {
         const settle = stream.movedAt + SETTLE_MS - Date.now(), refine = settle > 0 && this.refinePending(stream) ? settle + 1 : 500;
         const more = await processDelta(await this.evaluate(world, `${world.ref}.waitDrain(${Math.max(1, Math.min(500, refine, deadline - Date.now()))})`, true));
         assertNotCancelled(signal);
