@@ -174,21 +174,9 @@ impl KernelRuntimeOwnedState {
                     prompt.source_attachment_id(),
                     prompt,
                 )?;
-                let provider_run_id =
-                    provider_run_id
-                        .as_deref()
-                        .ok_or_else(|| DaemonError::NoActiveProviderRun {
-                            session_id: session_id.clone(),
-                        })?;
-                if let Ok(provider_run) = self.provider_store.get_run(provider_run_id) {
-                    self.capture_git_turn_snapshot_for_started_prompt(
-                        &session,
-                        &target_agent_id,
-                        &provider_run,
-                        prompt,
-                        Some(prompt_sent_at_ms),
-                    );
-                }
+                // MP-08 / MP-10: admission persists and echoes the prompt;
+                // the dispatch owner captures Git on its blocking lane before
+                // provider input. Repository I/O must not delay other clients.
                 self.persist_prompt_session_state(
                     &self.session_store.get_session(&session_id)?,
                     &outcome_agent_id,
