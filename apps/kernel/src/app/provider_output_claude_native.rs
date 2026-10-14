@@ -1018,6 +1018,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let interaction = interaction.with_native_origin(origin);
         let session_id = session_id.to_string();
         let context_file = context_file.to_string();
+        let output_ready = self.app.providers.output_ready_signal();
+        let provider_run_id = provider_run_id.to_string();
         std::thread::spawn(move || {
             let input = match bridge.request_blocking(&session_id, interaction) {
                 Ok(resolution)
@@ -1041,6 +1043,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 }
             };
             write_claude_permission_input(&context_file, &interaction_id, &input);
+            // MP-08 / MP-10 / MP-11: a reply can arrive after PTY output stops.
+            // Publish readiness only after the existing mailbox write.
+            output_ready.record(&provider_run_id);
         });
         Ok(())
     }
@@ -1730,6 +1735,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             // Like prompt submission, let the provider register the selection
             // before Enter, between short app-lock holds.
             write_claude_workspace_trust_selection_marker(context_file);
+            self.app.providers.output_ready_signal().record_after(
+                provider_run_id,
+                CLAUDE_SUBMIT_DELAY_MS,
+            );
             clear_claude_permission_recent(context_file);
             Ok(None)
         } else if input == b"\r" {
@@ -1798,6 +1807,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         ));
         let session_id = session_id.to_string();
         let context_file = context_file.to_string();
+        let output_ready = self.app.providers.output_ready_signal();
+        let provider_run_id = provider_run_id.to_string();
         std::thread::spawn(move || {
             let input = match bridge.request_blocking(&session_id, interaction) {
                 Ok(resolution)
@@ -1821,6 +1832,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 }
             };
             write_claude_permission_input(&context_file, &interaction_id, &input);
+            // MP-08 / MP-10 / MP-11: a reply can arrive after PTY output stops.
+            // Publish readiness only after the existing mailbox write.
+            output_ready.record(&provider_run_id);
         });
         Ok(())
     }

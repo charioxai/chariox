@@ -101,6 +101,10 @@ impl KernelRuntimeState {
                 [
                     self.owned.structured_output_records.next_poll_due_at_ms(),
                     self.owned.provider_output_deadlines.next_due_at_ms(),
+                    self.owned
+                        .provider_store
+                        .output_ready_signal()
+                        .next_due_at_ms(),
                 ]
                 .into_iter()
                 .flatten()

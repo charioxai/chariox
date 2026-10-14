@@ -1706,7 +1706,18 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
         "no PTY bytes may be sent before trust approval"
     );
 
+    // MP-08 / MP-10: a human can answer after the provider has gone quiet.
+    // The mailbox write must wake the shared owner without another PTY byte.
+    let output_ready = app.providers.output_ready_signal();
+    output_ready.take_ready_provider_run_ids();
+    let before_reply = output_ready.sequence();
     bridge.resolve("allow_once", "allow");
+    let wake_deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    while output_ready.sequence() == before_reply && std::time::Instant::now() < wake_deadline {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(output_ready.take_ready_provider_run_ids().contains(run.id()),
+        "MP-08 / MP-10: a resolved workspace trust mailbox must wake this run's shared pump");
     let mut approved = false;
     for _ in 0..500 {
         let _ = ProviderOutputClaudeNativeBridge::new(&mut app)
