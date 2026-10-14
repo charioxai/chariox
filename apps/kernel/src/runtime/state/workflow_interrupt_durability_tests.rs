@@ -2036,3 +2036,118 @@ async fn a01_failed_workflow_settles_unstarted_delegate_on_blocked_parent() {
         "failure settlement needs a reason and recovery receipt"
     );
 }
+
+// MP-08 / MP-10 / MP-11 A12-S06: terminal legacy runs leave the hot cache;
+// the adoption wrapper must receive completion, not a fabricated source loss.
+#[tokio::test]
+async fn amfix_r11_adopted_goal_observes_archived_workflow_completion() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("amfix-adopted-archive"),
+        config,
+        false,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let run = session
+        .workflow_runs()
+        .iter()
+        .find(|r| r.id() == fixture.workflow_run_id)
+        .unwrap();
+    let Outcome::Task(goal) = owned
+        .durable_state_store
+        .agent_lifecycle(Operation::AdoptGoal {
+            owner: session.owner_user_id().into(),
+            room: session.id().into(),
+            agent: fixture.target_agent_id.clone(),
+            run: run.id().into(),
+            nodes: run.node_runs().iter().map(|n| n.node_id().into()).collect(),
+            objective: "Verify the retained predecessor audit result without relaunching nodes"
+                .into(),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("adopted goal")
+    };
+    // Its original provider prompts have already drained; retain unrelated
+    // queue items, then archive the completed predecessor normally.
+    owned
+        .prompt_state_owner
+        .remove_queued_prompts_by_workflow_run(&session, &fixture.workflow_run_id);
+    owned
+        .reserve_local_workflow_prompt_completion_if_matches(
+            session.id(),
+            &fixture.target_agent_id,
+            "interrupt-active",
+        )
+        .unwrap();
+    for agent in owned.agent_store.get_session_agents(session.id()) {
+        let (active, queued) = owned.prompt_state_owner.state_parts(&session, agent.id());
+        owned
+            .session_store
+            .mirror_agent_prompt_state(session.id(), agent.id(), active, queued)
+            .unwrap();
+    }
+    let session = owned.session_store.get_session(session.id()).unwrap();
+    // Restore a completed predecessor snapshot exactly as migration does,
+    // then pass through the normal durable terminal archive transition.
+    let mut value = serde_json::to_value(run).unwrap();
+    value["status"] = serde_json::json!("Completed");
+    for node in value["node_runs"].as_array_mut().unwrap() {
+        node["status"] = serde_json::json!("Completed");
+    }
+    value["completed_at_ms"] = serde_json::json!(crate::session::unix_epoch_ms());
+    let completed: crate::session::WorkflowRun = serde_json::from_value(value).unwrap();
+    let mut restored = serde_json::to_value(&session).unwrap();
+    assert!(restored.get("workflow_runs").is_some());
+    restored["workflow_runs"] = serde_json::json!([completed]);
+    let restored: crate::session::RuntimeSession = serde_json::from_value(restored).unwrap();
+    owned.session_store.write().restore_session(restored);
+    owned
+        .persist_workflow_runtime_session(session.id(), "completed_legacy_fixture")
+        .unwrap();
+    assert!(owned
+        .session_store
+        .get_session(session.id())
+        .unwrap()
+        .workflow_runs()
+        .is_empty());
+    assert_eq!(
+        owned
+            .agent_workflow_source(&session, &fixture.workflow_run_id)
+            .unwrap()
+            .map(|r| r.status()),
+        Some(crate::session::WorkflowRunStatus::Completed),
+        "archive lookup"
+    );
+    assert!(
+        !owned
+            .workflow_agent_tasks_unsettled(session.id(), &fixture.workflow_run_id)
+            .unwrap(),
+        "legacy tasks drained"
+    );
+    fixture.runtime.sweep_agent_lifecycle().await.unwrap();
+    let events = owned
+        .durable_state_store
+        .agent_inbox(session.id(), &fixture.target_agent_id, 0)
+        .unwrap();
+    assert!(events.iter().any(|e| e.source_id == fixture.workflow_run_id && e.kind == "source_completed"),
+        "MP-08 / MP-10 / MP-11: durable Completed must wake the adopted goal as success, not source_lost: {events:?}");
+    assert!(!events
+        .iter()
+        .any(|e| e.source_id == fixture.workflow_run_id && e.kind == "source_lost"));
+    let current = owned
+        .durable_state_store
+        .agent_tasks(Some(session.id()), None)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.task_id == goal.task_id)
+        .unwrap();
+    assert!(current.obligations.iter().all(|o| o.status == "settling"));
+}
