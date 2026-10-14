@@ -1,4 +1,4 @@
-// MP-08/MP-10 (plan 1.1): protocol 475 ACK gate under a stalled client.
+// MP-08/MP-10 (plan 1.1): protocol 491 ACK gate under a stalled client.
 // The viewer keeps receiving and presenting but stops acknowledging while
 // the canvas fixture animates (its click toggles motion, as in the workload); the kernel pump must stop sending
 // (Selkies backpressure, reprobe keys only), then resume on the first

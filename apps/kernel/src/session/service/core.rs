@@ -955,6 +955,10 @@ impl SessionService {
         resolve_workspace_link_ref_in_session(&session, link_ref).cloned()
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing attach_workspace_link operation signature and explicit context arguments"
+    )]
     pub fn attach_workspace_link(
         &mut self,
         session_id: &str,

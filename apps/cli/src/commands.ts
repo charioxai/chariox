@@ -201,6 +201,9 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       args: trimmed.replace(/^\/agent\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
+  // MP-08/MP-10/MP-11 A04: window controls; any other `/sudo …` is a prompt.
+  const sudo = /^\/sudo\s+(extend|revoke|status)(?:\s+(sudo:[0-9a-f]+))?\s*$/u.exec(trimmed)
+  if (sudo) return { kind: "kernel", raw: trimmed, args: ["sudo", sudo[1]!, ...(sudo[2] ? [sudo[2]] : [])] }
   if (trimmed.startsWith("/kernel")) {
     return {
       kind: "kernel",
@@ -393,6 +396,8 @@ export function sharedShellCommandForSlashCommand(input: string): string | null 
     || command.startsWith("/workflow code ")
     || command === "/workflow trigger"
     || command.startsWith("/workflow trigger ")
+    || command === "/workflow notifications"
+    || command.startsWith("/workflow notifications ")
     || command === "/workflow registry"
     || command.startsWith("/workflow registry ")
     || command === "/workflow load"

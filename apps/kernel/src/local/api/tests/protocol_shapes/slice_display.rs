@@ -2,7 +2,10 @@ use super::*;
 
 #[test]
 fn slice_creation_uses_selkies_as_the_omitted_wire_default() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 503);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
         "CreateSlice": {
             "name": "headed", "display_mode": "headed", "display_backend": "selkies"
@@ -44,7 +47,10 @@ fn omitted_slice_backend_defaults_to_selkies_and_explicit_novnc_is_preserved() {
 
 #[test]
 fn local_daemon_protocol_selkies_endpoint_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 503);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let response = LocalDaemonResponse::SliceDisplayEndpoint {
         endpoint: crate::slice::SliceDisplayEndpoint {
             slice_id: "slice-1".to_string(),
@@ -81,7 +87,10 @@ fn encrypted_display_fragment_contract_is_versioned() {
     use crate::transport::relay_crypto;
     use crate::transport::secure_display::{DisplayMessageKind, DisplayPeer, SecureDisplayChannel};
 
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 503);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let kernel_key = relay_crypto::generate_private_key_base64();
     let viewer_key = relay_crypto::generate_private_key_base64();
     let viewer_public = relay_crypto::public_key_from_private_key_base64(&viewer_key).unwrap();
@@ -110,7 +119,10 @@ fn encrypted_display_fragment_contract_is_versioned() {
 
 #[test]
 fn room_selkies_viewer_admission_contract_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 503);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
         "GetSliceDisplayEndpoint": {
             "slice_ref": "slice-1",
@@ -173,7 +185,10 @@ fn room_selkies_worker_admission_contract_is_versioned() {
         RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
     };
 
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 111);
+    assert_eq!(
+        RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
     let endpoint = crate::slice::SliceDisplayEndpoint {
         slice_id: "slice-1".to_string(),
         kind: crate::slice::SliceDisplayEndpointKind::Selkies,

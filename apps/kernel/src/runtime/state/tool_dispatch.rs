@@ -5,7 +5,10 @@
 
 use super::*;
 
+mod agent_events;
 mod agent_messaging;
+mod agent_process_permission;
+mod agent_wakes;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app;
 mod capability_registry;
@@ -170,13 +173,23 @@ impl KernelRuntimeState {
             if run.state() != crate::provider::ProviderRunState::Ended)
         {
             specs.push(crate::transport::runtime_tools::RuntimeToolSpec {
-                name: "chariox_kernel_request".into(),
-                description: "Requires a live human-authorized sudo turn; ordinary turns are denied. Act as the host on this kernel during that turn. Submit a LocalDaemonRequest in request. Can answer critical approvals across sessions. Cannot grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at yield or revocation.".into(),
+                name: sudo::SUDO_TOOL.into(),
+                description: "Act as the host on this kernel during your sudo window, for the owner-authorized task only. Submit a LocalDaemonRequest in request. Cannot answer approvals, grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at expiry, task end or revocation; regular work continues.".into(),
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });
+            specs.push(super::sudo::vault_generate_spec());
         }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
-            specs.extend(crate::transport::runtime_tools::meta_runtime_tool_specs());
+            let room_tools = self.room_agent_tools_enabled();
+            specs.extend(
+                crate::transport::runtime_tools::meta_runtime_tool_specs()
+                    .into_iter()
+                    .filter(|spec| {
+                        room_tools
+                            || spec.name
+                                != crate::transport::runtime_tools::META_HISTORY_SEARCH_TOOL
+                    }),
+            );
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
             specs.extend(
                 crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs()
@@ -185,7 +198,9 @@ impl KernelRuntimeState {
                         spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL
                     }),
             );
-            specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
+            if !room_tools {
+                specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
+            }
             specs.extend(
                 provider_runs
                     .iter()
@@ -210,10 +225,16 @@ impl KernelRuntimeState {
             return specs;
         }
         if matches!(provider_runs.as_slice(), [_]) {
+            if self.room_agent_tools_enabled() {
+                specs.extend(crate::transport::runtime_tools::room_runtime_tool_specs());
+                specs.extend(crate::transport::runtime_tools::agent_event_tool_specs());
+            }
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::extension_runtime_tool_specs());
-            specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
+            if !self.room_agent_tools_enabled() {
+                specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
+            }
             specs.extend(provider_runs.iter().flat_map(|run| {
                 run.remote_extension_manifest()
                     .home_proxy_runtime_tool_specs()
@@ -284,10 +305,49 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        for run in self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token)
+        {
+            if let Some(agent) = run.agent_instance_id() {
+                let session = self.owned.session_store.get_session(run.session_id())?;
+                if self
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent)
+                    .is_some_and(|p| {
+                        p.prompt_origin() == crate::session::PromptOrigin::CompletionCheck
+                    })
+                {
+                    return Err(crate::durable_state::agent_lifecycle::error(
+                        "completion_check cannot run tools",
+                    ));
+                }
+                if self
+                    .owned
+                    .durable_state_store
+                    .agent_tasks(Some(run.session_id()), Some(agent))?
+                    .iter()
+                    .any(|t| {
+                        t.state == crate::durable_state::agent_lifecycle::ExecutionState::Working
+                            && crate::durable_state::agent_lifecycle::goals::is_check(
+                                t,
+                                &t.prompt_id,
+                            )
+                    })
+                {
+                    return Err(crate::durable_state::agent_lifecycle::error("completion_check is assessment only; tools cannot run work or mint authority"));
+                }
+            }
+        }
         if let Some(result) =
             Box::pin(self.try_kernel_browser_tool(auth_token, tool_name, arguments.clone())).await
         {
             return result;
+        }
+        if tool_name == super::sudo::VAULT_GENERATE {
+            return Box::pin(self.vault_generate(auth_token, arguments)).await;
         }
         {
             let owned = &self.owned;
@@ -335,6 +395,19 @@ impl KernelRuntimeState {
                     unambiguous_runtime_tool_provider_run(&provider_runs, canonical_tool_name)?;
                 return Box::pin(self.dispatch_permission_prompt_runtime_tool_call(run, arguments))
                     .await;
+            }
+            if let Some(name) =
+                crate::transport::runtime_tools::canonical_agent_event_tool_name(tool_name)
+            {
+                let run = unambiguous_runtime_tool_provider_run(&provider_runs, name)?;
+                // A10: a leased run's events belong to the home ledger.
+                if let Some(result) = self
+                    .try_dispatch_remote_meta_runtime_tool_call(run, name, arguments.clone())
+                    .await?
+                {
+                    return Ok(result);
+                }
+                return self.dispatch_agent_event_tool(run, name, arguments).await;
             }
             let is_metaagent_auth_token =
                 self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token);
@@ -394,6 +467,16 @@ impl KernelRuntimeState {
             }
             if is_meta_tool {
                 let (provider_run, _, _) = self.metaagent_context_for_auth_token(auth_token)?;
+                if let Some(result) = self
+                    .try_dispatch_remote_meta_runtime_tool_call(
+                        &provider_run,
+                        canonical_tool_name,
+                        arguments.clone(),
+                    )
+                    .await?
+                {
+                    return Ok(result);
+                }
                 return Box::pin(self.dispatch_meta_runtime_tool_call(
                     &provider_run,
                     canonical_tool_name,
@@ -554,7 +637,6 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL
-                    | crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL
             ) {
                 if let Some(result) = Box::pin(self
                     .try_dispatch_remote_meta_runtime_tool_call(
@@ -703,7 +785,6 @@ fn is_home_credential_runtime_tool(tool_name: &str) -> bool {
     matches!(
         tool_name,
         crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL
-            | crate::transport::runtime_tools::CREATE_GENERATED_CREDENTIAL_TOOL
             | crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL
             | crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL
             | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
@@ -882,7 +963,6 @@ mod tests {
             );
         }
         for name in [
-            CREATE_GENERATED_CREDENTIAL_TOOL,
             REQUEST_CREDENTIAL_SECRET_TOOL,
             MANAGE_CREDENTIAL_VAULT_TOOL,
             PASTE_SECRET_TO_COMPUTER_TOOL,
@@ -921,3 +1001,11 @@ mod tests {
 #[cfg(test)]
 #[path = "tool_dispatch/hosted_worker_tests.rs"]
 mod hosted_worker_tests;
+
+#[cfg(test)]
+#[path = "tool_dispatch/history_search_tests.rs"]
+mod history_search_tests;
+
+#[cfg(test)]
+#[path = "tool_dispatch/recall_scope_tests.rs"]
+mod recall_scope_tests;

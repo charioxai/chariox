@@ -278,7 +278,8 @@ pub(super) async fn handle_daemon_peer_request(
                 )),
             };
         };
-        if identity.subject.trim().is_empty()
+        if sender.starts_with("slice:")
+            || identity.subject.trim().is_empty()
             || (identity.subject_kind == chariox_relay::auth::RelaySubjectKind::Kernel
                 && identity.subject != sender)
         {
@@ -1031,6 +1032,22 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::LeasedWatchedProcess {
+            leased_agent_id,
+            action,
+        } => match router
+            .relay_leased_watched_process(&leased_agent_id, action)
+            .await
+        {
+            Ok(receipt) => RelayPeerResponse::LeasedWatchedProcess { receipt },
+            Err(error) => {
+                return RelayRequestOutcome {
+                    display_event: None,
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                }
+            }
+        },
         RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id,
             home_prompt_id,
@@ -1066,6 +1083,24 @@ pub(super) async fn handle_daemon_peer_request(
             Ok(receipt) => RelayPeerResponse::LeasedPromptReceiptQueried {
                 receipt: Some(receipt),
             },
+            Err(error) => {
+                return RelayRequestOutcome {
+                    display_event: None,
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                };
+            }
+        },
+        RelayPeerRequest::UpdateLeasedSudo {
+            leased_agent_id,
+            home_prompt_id,
+            grant,
+        } => match router
+            .runtime_state()
+            .update_relay_leased_sudo(&leased_agent_id, &home_prompt_id, grant)
+            .await
+        {
+            Ok(()) => RelayPeerResponse::LeasedSudoUpdated,
             Err(error) => {
                 return RelayRequestOutcome {
                     display_event: None,
@@ -2167,6 +2202,10 @@ pub(super) async fn handle_daemon_peer_request(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing send_authenticated_peer_request_for_test operation signature and explicit context arguments"
+)]
 pub(crate) async fn send_authenticated_peer_request_for_test(
     router: &Arc<CommandRouter>,
     state: &Arc<RwLock<RelayClientState>>,
@@ -2482,7 +2521,13 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id, ..
         }
+        | RelayPeerRequest::LeasedWatchedProcess {
+            leased_agent_id, ..
+        }
         | RelayPeerRequest::GetLeasedPromptReceipt {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::UpdateLeasedSudo {
             leased_agent_id, ..
         }
         | RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
@@ -2832,6 +2877,10 @@ mod tests {
         config
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing send_lease_worker_request operation signature and explicit context arguments"
+    )]
     async fn send_lease_worker_request(
         router: &Arc<CommandRouter>,
         state: &Arc<RwLock<RelayClientState>>,

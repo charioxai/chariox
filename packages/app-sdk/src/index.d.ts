@@ -11,6 +11,12 @@ export interface InvocationContext {
   readonly task_id?: string;
   /** The agent turn an agent's call was made in: its Chariox prompt id, as in session history. */
   readonly turn_id?: string;
+  /**
+   * Who made the call. A call from the App's own page (`window.chariox.call`)
+   * is `human` (the owner's id) when a person drives the App Tab, and `agent`
+   * (the agent's id, with `agent_id` and `room_id`) when an agent's input in
+   * the Tab caused it, so an App can apply different rules to each.
+   */
   readonly actor?: Readonly<{ kind: 'human' | 'agent' | 'background'; id: string }>;
 }
 /**

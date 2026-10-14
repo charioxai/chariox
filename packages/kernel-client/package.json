@@ -21,6 +21,7 @@
     "./external-provider-observation": "./dist/external-provider-observation.js",
     "./project-environment-review": "./dist/project-environment-review.js",
     "./interaction-choice": "./dist/interaction-choice.js",
+    "./owner-handoff": "./dist/owner-handoff.js",
     "./kernel-events": "./dist/kernel-events.js",
     "./kernel-transport-frames": "./dist/kernel-transport-frames.js",
     "./browser-relay-crypto": "./dist/browser-relay-crypto.js",
@@ -69,6 +70,7 @@
     "./session-runtime-lookup": "./dist/session-runtime-lookup.js",
     "./session-runtime-transition": "./dist/session-runtime-transition.js",
     "./session-runtime-status": "./dist/session-runtime-status.js",
+    "./agent-wake-status": "./dist/agent-wake-status.js",
     "./session-runtime-labels": "./dist/session-runtime-labels.js",
     "./runtime-session-normalization": "./dist/runtime-session-normalization.js",
     "./transcript-display-state": "./dist/transcript-display-state.js",
@@ -92,16 +94,17 @@
     "./project-environment-panel": "./dist/project-environment-panel.js",
     "./kernel-unix-socket-path": "./dist/kernel-unix-socket-path.js",
     "./hidden-input": "./dist/hidden-input.js",
+    "./room-workflows": "./dist/room-workflows.js",
+    "./room-workflows-controller": "./dist/room-workflows-controller.js",
+    "./project-environment-aggregate": "./dist/project-environment-aggregate.js",
     "./user-domain-access": "./dist/user-domain-access.js",
     "./browser-mirror": "./dist/browser-mirror.js",
     "./browser-mirror2": "./dist/browser-mirror2.js",
-    "./room-workflows": "./dist/room-workflows.js",
-    "./room-workflows-controller": "./dist/room-workflows-controller.js",
-    "./project-environment-aggregate": "./dist/project-environment-aggregate.js"
+    "./agent-task-state": "./dist/agent-task-state.js"
   },
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "build": "node ../../scripts/generate-protocol-versions.mjs --check && node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm run build && node --test dist/*.test.js",
     "test:relay-renewal-kernel": "pnpm run build && node --test scripts/relay-renewal-kernel.integration.test.mjs"

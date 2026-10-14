@@ -583,7 +583,7 @@ impl KernelRuntimeState {
             Some((binding, false)) if binding.installation == call.installation_id => {
                 match self
                     .invoke_app_view_tool(
-                        Some(&session_id),
+                        ViewCaller::Owner(Some(&session_id)),
                         &binding,
                         &call.method,
                         call.params,
@@ -760,15 +760,34 @@ impl KernelRuntimeState {
 
     pub(super) async fn invoke_app_view_tool(
         &self,
-        session_id: Option<&str>,
+        caller: ViewCaller<'_>,
         binding: &AppViewBinding,
         tool: &str,
         input: Value,
         tracked: &mut ViewCall,
     ) -> Result<Value, BrowserAppViewError> {
         let unavailable = || view_error("APP_UNAVAILABLE", "The App is not running");
+        // MP-08/MP-11: an agent's call needs its own App grant before any lease,
+        // tool or host action (clipboard, links) runs.
+        let authority = crate::runtime::app_view_authority::AppViewAuthority::new(
+            self.owned.agent_store.clone(),
+            match &caller {
+                ViewCaller::Agent(agent) => Some(*agent),
+                ViewCaller::Owner(_) => None,
+            },
+            &binding.installation,
+            tracked.browser_grant(),
+            match &caller {
+                ViewCaller::Agent(agent) => {
+                    Some(self.app_binding_epoch(agent.id(), &binding.installation))
+                }
+                ViewCaller::Owner(_) => None,
+            },
+        );
+        authority.check()?;
         let leased = tokio::select! {
             result = self.app_lease_on_demand(&binding.owner, &binding.installation) => result,
+            () = authority.cancelled() => return Err(agent_not_granted()),
             () = tracked.cancelled() => return Err(view_error("CANCELLED", "The calling view went away")),
         };
         let lease = match leased {
@@ -785,6 +804,7 @@ impl KernelRuntimeState {
         if tracked.is_cancelled() {
             return Err(view_error("CANCELLED", "The calling view went away"));
         }
+        authority.check()?;
         if lease.catalog().generation() != binding.generation {
             return Err(view_error(
                 "APP_VIEW_STALE",
@@ -792,15 +812,24 @@ impl KernelRuntimeState {
             ));
         }
         if matches!(tool, "host.clipboard_write" | "host.open_link") {
-            return crate::runtime::app_host_broker::AppHostBroker::new(
+            let result = crate::runtime::app_host_broker::AppHostBroker::new(
                 self.owned.durable_state_store.clone(),
                 binding.owner.clone(),
                 lease.catalog().clone(),
                 self.app_control().admission(),
             )
-            .request(tool, input)
+            .request_view(
+                tool,
+                input,
+                authority.clone(),
+                tracked
+                    .operation_budget()
+                    .with_installation(authority.clone()),
+            )
             .await
             .map_err(|error| view_error(&error.code, &error.message));
+            authority.check()?;
+            return result;
         }
         let tool = view_call_tool(lease.catalog(), binding.generation, tool)?;
         let slot = lease
@@ -813,18 +842,28 @@ impl KernelRuntimeState {
             .try_admit()
             .map_err(|_| coded(app_call_errors::admission_busy()))?;
         let store = self.owned.durable_state_store.clone();
-        let caller = view_caller(binding, session_id);
+        let turn = match &caller {
+            ViewCaller::Agent(agent) => self.view_agent_turn(agent),
+            ViewCaller::Owner(_) => None,
+        };
+        let caller = view_caller(binding, caller, turn);
         let tool_name = tool;
-        let operation_budget = tracked.operation_budget();
+        let operation_budget = tracked
+            .operation_budget()
+            .with_installation(authority.clone());
+        let still_granted = authority.clone();
         let response = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            store.enqueue_app_tool(slot, &tool_name, input, caller, operation_budget)
+            still_granted.check()?;
+            store
+                .enqueue_app_tool(slot, &tool_name, input, caller, operation_budget)
+                .map_err(|error| coded(app_call_errors::enqueue_error(&error)))
         })
         .await
-        .map_err(|_| unavailable())?
-        .map_err(|error| coded(app_call_errors::enqueue_error(&error)))?;
+        .map_err(|_| unavailable())??;
         // Dropping the pending reply makes the worker peer send `cancel`.
         let reply = tokio::select! {
+            () = authority.cancelled() => return Err(agent_not_granted()),
             reply = response.receive() => reply
                 .map_err(|error| coded(app_call_errors::worker_call_error(&error)))?,
             () = tracked.cancelled() => {
@@ -839,12 +878,65 @@ impl KernelRuntimeState {
         let store = self.owned.durable_state_store.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            store.accept_app_tool_reply(reply)
+            authority.commit(|| store.accept_app_tool_reply(reply).map_err(app_error))
         })
         .await
         .map_err(|_| unavailable())?
-        .map_err(app_error)
     }
+
+    /// The agent's running turn, when it has one the App context can carry.
+    fn view_agent_turn(&self, agent: &crate::agent::AgentInstance) -> Option<String> {
+        let session = self
+            .owned
+            .session_store
+            .get_session(agent.session_id())
+            .ok()?;
+        self.owned
+            .prompt_state_owner
+            .active_prompt_for_agent_snapshot(&session, agent.id())
+            .filter(|prompt| prompt.status() == crate::session::PromptStatus::Running)
+            .map(|prompt| prompt.id().to_owned())
+            .filter(|id| CallerContext::valid_id(id))
+    }
+}
+
+/// Who a view call runs as. MP-08/MP-10/MP-11: the owner's view, unless an
+/// agent's input drove the user-domain App Tab; that call runs as the agent,
+/// with the agent's own App grant and attribution, never the owner's authority.
+pub(super) enum ViewCaller<'a> {
+    Owner(Option<&'a str>),
+    Agent(&'a crate::agent::AgentInstance),
+}
+
+/// A Room view, or a user view its owner drives, runs as the owner (V-SDK-04:
+/// no separate view privilege); an agent-driven user view runs as the agent.
+/// Critical effects still need the kernel's human validation either way.
+fn view_caller(
+    binding: &AppViewBinding,
+    caller: ViewCaller<'_>,
+    turn_id: Option<String>,
+) -> CallerContext {
+    let operation_id = format!("app-operation-{:016x}", rand::random::<u64>());
+    match caller {
+        ViewCaller::Owner(room) => CallerContext {
+            actor: Actor::Human(binding.owner.clone()),
+            room_id: room.map(str::to_owned),
+            operation_id,
+            task_id: None,
+            turn_id: None,
+        },
+        ViewCaller::Agent(agent) => CallerContext {
+            actor: Actor::Agent(agent.id().into()),
+            room_id: Some(agent.session_id().into()),
+            operation_id,
+            task_id: None,
+            turn_id,
+        },
+    }
+}
+
+pub(super) fn agent_not_granted() -> BrowserAppViewError {
+    crate::runtime::app_view_authority::not_granted()
 }
 
 /// The App's own error (e.g. CONFLICT from a stale edit) reaches its view;
@@ -852,21 +944,6 @@ impl KernelRuntimeState {
 fn app_error(error: crate::durable_state::app_tools::AppToolsError) -> BrowserAppViewError {
     let (code, message) = crate::runtime::app_call_errors::tool_call_error(&error);
     view_error(&code, &message)
-}
-
-/// A view call runs as the view's owner, whoever drives the Tab: the view is
-/// the owner's human surface, and a person or an agent operating the shared
-/// Room browser acts through it with the owner's App authority (V-SDK-04: no
-/// separate view privilege). Critical effects still need the kernel's human
-/// validation, which a view click cannot provide.
-fn view_caller(binding: &AppViewBinding, session_id: Option<&str>) -> CallerContext {
-    CallerContext {
-        actor: Actor::Human(binding.owner.clone()),
-        room_id: session_id.map(str::to_owned),
-        operation_id: format!("app-operation-{:016x}", rand::random::<u64>()),
-        task_id: None,
-        turn_id: None,
-    }
 }
 
 /// One origin per owner and installation keeps each App's web storage apart.
@@ -996,7 +1073,7 @@ mod tests {
             generation: 1,
             panel: Default::default(),
         };
-        let caller = view_caller(&binding, Some("session-1"));
+        let caller = view_caller(&binding, ViewCaller::Owner(Some("session-1")), None);
         assert!(matches!(&caller.actor, Actor::Human(owner) if owner == "alice"));
         assert_eq!(caller.room_id.as_deref(), Some("session-1"));
         assert!(caller.task_id.is_none() && caller.turn_id.is_none());
@@ -1153,3 +1230,7 @@ pub(super) fn browser_recovery_downtime(message: &str) -> bool {
 #[cfg(test)]
 #[path = "app_view_cold_start_tests.rs"]
 mod cold_start_tests;
+
+#[cfg(test)]
+#[path = "app_view_grant_epoch_tests.rs"]
+mod grant_epoch_tests;

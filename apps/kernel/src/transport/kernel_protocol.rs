@@ -30,6 +30,10 @@ pub(crate) struct BrowserImportRelayResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing KernelIncomingFrame typed actor payload layout"
+)]
 pub(crate) enum KernelIncomingFrame {
     Request {
         request_id: String,
@@ -104,12 +108,24 @@ pub(crate) enum KernelEvent {
         room_workflows: crate::runtime::projection::RoomWorkflowInventory,
         session: Box<RuntimeSession>,
         provider_run: Box<Option<PublicProviderRun>>,
+        #[allow(
+            clippy::box_collection,
+            reason = "Keeps the protocol enum payload bounded independently of map header size"
+        )]
         agent_activity: Box<BTreeMap<String, AgentRuntimeActivity>>,
         #[serde(default)]
         agent_activity_revision: u64,
     },
+    AgentTaskUpdated {
+        session_id: String,
+        task: Box<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
+    },
     AgentActivityChanged {
         session_id: String,
+        #[allow(
+            clippy::box_collection,
+            reason = "Keeps the protocol enum payload bounded independently of map header size"
+        )]
         agent_activity: Box<BTreeMap<String, AgentRuntimeActivity>>,
         #[serde(default)]
         agent_activity_revision: u64,
@@ -267,6 +283,10 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
             "provider_run_id": provider_run.as_ref().as_ref().map(|run| run.id()),
             "agent_activity": agent_activity,
             "agent_activity_revision": agent_activity_revision,
+        }),
+        KernelEvent::AgentTaskUpdated { session_id, task } => serde_json::json!({
+            "event_id": event_id, "event": "agent_task_updated", "session_id": session_id,
+            "task_id": task.task_id, "revision": task.revision, "state": task.state,
         }),
         KernelEvent::AgentActivityChanged {
             session_id,
@@ -572,6 +592,88 @@ pub(crate) fn session_metadata_changed_event(
     })
 }
 
+/// MP-08/MP-10/MP-11: local and relay subscribers share the decision about
+/// replacing a full session snapshot with smaller projection events.
+// MP-08 / MP-09 / MP-10 / MP-11 A12: one delta selection for every terminal transport.
+pub(crate) fn session_projection_changed_events(
+    snapshot: &SessionSnapshotProjection,
+    previous: Option<&SessionSnapshotProjection>,
+) -> Vec<KernelEvent> {
+    [
+        agent_activity_changed_event(snapshot, previous),
+        provider_run_changed_event(snapshot, previous),
+        session_metadata_changed_event(snapshot, previous),
+        runtime_interactions_changed_event(snapshot, previous),
+    ]
+    .into_iter()
+    .flatten()
+    .chain(agent_task_updated_events(snapshot, previous))
+    .collect()
+}
+
+fn agent_task_updated_events(
+    snapshot: &SessionSnapshotProjection,
+    previous: Option<&SessionSnapshotProjection>,
+) -> Vec<KernelEvent> {
+    let Some(previous) = previous else {
+        return vec![];
+    };
+    snapshot
+        .session
+        .agent_tasks()
+        .iter()
+        .filter(|task| !previous.session.agent_tasks().contains(task))
+        .cloned()
+        .map(|task| KernelEvent::AgentTaskUpdated {
+            session_id: snapshot.session.id().to_owned(),
+            task: Box::new(task),
+        })
+        .collect()
+}
+
+pub(crate) fn can_skip_session_snapshot(
+    snapshot: &SessionSnapshotProjection,
+    previous_snapshot: Option<&SessionSnapshotProjection>,
+    emitted_projection_delta: bool,
+) -> bool {
+    // Smaller events do not carry window status. Keep the full snapshot when
+    // a window opens, warns, extends or ends alongside another projection delta.
+    emitted_projection_delta
+        && previous_snapshot.is_some_and(|previous| {
+            if previous.session.sudo_windows() != snapshot.session.sudo_windows() {
+                return false;
+            }
+            if previous.session.agent_tasks() == snapshot.session.agent_tasks() {
+                return true;
+            }
+            // MP-08/MP-10: task events carry no prompt, agent, activity or
+            // provider state. Preserve a snapshot for accompanying changes.
+            if previous.provider_run != snapshot.provider_run
+                || previous.agent_activity != snapshot.agent_activity
+            {
+                return false;
+            }
+            // Task updates have no removal event.
+            let task_ids = snapshot
+                .session
+                .agent_tasks()
+                .iter()
+                .map(|task| task.task_id.as_str())
+                .collect::<BTreeSet<_>>();
+            if previous
+                .session
+                .agent_tasks()
+                .iter()
+                .any(|task| !task_ids.contains(task.task_id.as_str()))
+            {
+                return false;
+            }
+            let mut previous_session = previous.session.clone();
+            previous_session.set_agent_tasks(snapshot.session.agent_tasks().to_vec());
+            previous_session == snapshot.session
+        })
+}
+
 pub(crate) fn runtime_interactions_changed_event(
     snapshot: &SessionSnapshotProjection,
     previous_snapshot: Option<&SessionSnapshotProjection>,
@@ -643,6 +745,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::AssistantMessageCompleted { .. } => "assistant_message_completed",
         KernelEvent::RoomWorkflowsChanged { .. } => "room_workflows_changed",
         KernelEvent::SessionSnapshot { .. } => "session_snapshot",
+        KernelEvent::AgentTaskUpdated { .. } => "agent_task_updated",
         KernelEvent::AgentActivityChanged { .. } => "agent_activity_changed",
         KernelEvent::ProviderRunChanged { .. } => "provider_run_changed",
         KernelEvent::SessionMetadataChanged { .. } => "session_metadata_changed",
@@ -675,6 +778,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::AssistantMessageCompleted { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::RoomWorkflowsChanged { inventory } => Some(&inventory.session_id),
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
+        KernelEvent::AgentTaskUpdated { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::AgentActivityChanged { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::ProviderRunChanged { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::SessionMetadataChanged { session_id, .. } => Some(session_id.as_str()),
@@ -737,6 +841,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
             .any(|id| id == attachment_id),
         KernelEvent::RoomWorkflowsChanged { .. }
         | KernelEvent::SessionSnapshot { .. }
+        | KernelEvent::AgentTaskUpdated { .. }
         | KernelEvent::AgentActivityChanged { .. }
         | KernelEvent::ProviderRunChanged { .. }
         | KernelEvent::SessionMetadataChanged { .. }
@@ -818,10 +923,10 @@ fn terminal_output_event_json_bytes_for_records(record_bytes: usize, record_coun
 
 pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
     match error {
-        DaemonError::UserDomainRefused { reason } => kernel_error(reason.code(), error, false),
         DaemonError::ExternalRequestFailed { code, retryable } => {
             kernel_error(code, error, *retryable)
         }
+        DaemonError::UserDomainRefused { reason } => kernel_error(reason.code(), error, false),
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_kernel_error(source);
             mapped.message = error.to_string();

@@ -3,6 +3,7 @@ use super::*;
 use crate::local::{KernelBrowserCommand, KernelBrowserInput, KernelBrowserRequest};
 use serde_json::{json, Value};
 mod access;
+mod capability_grants;
 mod focus_authority;
 
 fn run_test(test: fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {

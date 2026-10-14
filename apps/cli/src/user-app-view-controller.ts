@@ -85,11 +85,12 @@ export function createUserAppViewController(deps: {
     if (active?.view.view_id === bound.view.view_id && active.client === bound.client) { active = undefined; hide() }
     deps.notify("App view closed")
   }
-  async function handle(args: string[], sessionId?: string): Promise<boolean> {
-    const waitingOpen = !sessionId && args[0] === "open" && args.length === 2
-    if (!waitingOpen && args[0] !== "view" && args[0] !== "views") return false
+  async function handle(args: string[]): Promise<boolean> {
+    // MP-08/MP-11: an attached Room does not change the App's browser host.
+    const appOpen = args[0] === "open" && args.length === 2
+    if (!appOpen && args[0] !== "view" && args[0] !== "views") return false
     const client = deps.client()
-    const [action, ...rest] = waitingOpen ? ["open", args[1]!] : args[0] === "views" ? ["list", ...args.slice(1)] : args.slice(1)
+    const [action, ...rest] = appOpen ? ["open", args[1]!] : args[0] === "views" ? ["list", ...args.slice(1)] : args.slice(1)
     if (action === "list" && !rest.length) {
       const views = await list(client); active = undefined
       show(["User-domain App views", ...views.map(v => `${appViewText(v.view_id)}  ${appViewText(v.installation_id)}  ${v.browser ? "text projection" : "client native"}`),

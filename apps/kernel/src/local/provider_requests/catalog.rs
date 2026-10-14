@@ -44,43 +44,44 @@ pub(crate) fn load_provider_catalog(
     let mut source_errors = Vec::new();
 
     let selected_profiles = resolve_catalog_profiles(&registry, &owner_user_id, &request)?;
-    let opencode_profile = selected_profiles
-        .get("opencode")
-        .expect("OpenCode default profile is migrated");
-    let opencode_environment =
-        registry.resolve_environment(&owner_user_id, "opencode", &opencode_profile.profile_id)?;
-    match crate::provider::ensure_opencode_account_endpoint(
-        &owner_user_id,
-        &opencode_profile.profile_id,
-        opencode_environment,
-    ) {
-        Ok(endpoint) => match OpenCodeClient::new("catalog", endpoint.as_str()) {
-            Ok(client) => match client.provider_catalog() {
-                Ok(catalog) => catalogs.push(opencode_backend_catalog(catalog)),
-                Err(error) => source_errors.push(format!("opencode catalog request: {error}")),
+    if let Some(opencode_profile) = selected_profiles.get("opencode") {
+        let opencode_environment = registry.resolve_environment(
+            &owner_user_id,
+            "opencode",
+            &opencode_profile.profile_id,
+        )?;
+        match crate::provider::ensure_opencode_account_endpoint(
+            &owner_user_id,
+            &opencode_profile.profile_id,
+            opencode_environment,
+        ) {
+            Ok(endpoint) => match OpenCodeClient::new("catalog", endpoint.as_str()) {
+                Ok(client) => match client.provider_catalog() {
+                    Ok(catalog) => catalogs.push(opencode_backend_catalog(catalog)),
+                    Err(error) => source_errors.push(format!("opencode catalog request: {error}")),
+                },
+                Err(error) => source_errors.push(format!("opencode client: {error}")),
             },
-            Err(error) => source_errors.push(format!("opencode client: {error}")),
-        },
-        Err(error) => source_errors.push(format!("opencode endpoint: {error}")),
+            Err(error) => source_errors.push(format!("opencode endpoint: {error}")),
+        }
     }
-    let codex_profile = selected_profiles
-        .get("codex")
-        .expect("Codex default profile is migrated");
-    let codex_environment =
-        registry.resolve_environment(&owner_user_id, "codex", &codex_profile.profile_id)?;
-    match crate::provider::ensure_codex_account_endpoint(
-        &owner_user_id,
-        &codex_profile.profile_id,
-        codex_environment,
-    ) {
-        Ok(endpoint) => match CodexClient::new("catalog", endpoint.as_str()) {
-            Ok(client) => match client.provider_catalog() {
-                Ok(catalog) => catalogs.push(catalog),
-                Err(error) => source_errors.push(format!("codex catalog request: {error}")),
+    if let Some(codex_profile) = selected_profiles.get("codex") {
+        let codex_environment =
+            registry.resolve_environment(&owner_user_id, "codex", &codex_profile.profile_id)?;
+        match crate::provider::ensure_codex_account_endpoint(
+            &owner_user_id,
+            &codex_profile.profile_id,
+            codex_environment,
+        ) {
+            Ok(endpoint) => match CodexClient::new("catalog", endpoint.as_str()) {
+                Ok(client) => match client.provider_catalog() {
+                    Ok(catalog) => catalogs.push(catalog),
+                    Err(error) => source_errors.push(format!("codex catalog request: {error}")),
+                },
+                Err(error) => source_errors.push(format!("codex client: {error}")),
             },
-            Err(error) => source_errors.push(format!("codex client: {error}")),
-        },
-        Err(error) => source_errors.push(format!("codex endpoint: {error}")),
+            Err(error) => source_errors.push(format!("codex endpoint: {error}")),
+        }
     }
 
     let remote_machines = if config.relay_url.is_some() && config.relay_token.is_some() {
@@ -181,18 +182,25 @@ fn resolve_catalog_profiles(
     let mut selected = BTreeMap::new();
     for provider in ["codex", "claude", "opencode"] {
         let profile = if let Some(profile_id) = overrides.get(provider) {
-            registry.get(owner_user_id, provider, profile_id)?
+            Some(registry.get(owner_user_id, provider, profile_id)?)
         } else {
             registry
                 .list(owner_user_id, Some(provider))?
                 .into_iter()
                 .find(|profile| profile.is_default)
-                .ok_or_else(|| DaemonError::LocalTransport {
+        };
+        let Some(profile) = profile else {
+            if focus_provider == Some(provider) {
+                return Err(DaemonError::LocalTransport {
                     operation: "get_provider_catalog",
                     message: format!(
                         "provider `{provider}` does not have a registered default account profile"
                     ),
-                })?
+                });
+            }
+            // MP-08 / MP-10 / MP-11: a new collaborator has only their own linked profiles.
+            // Unconfigured providers cannot hide the configured providers or borrow owner accounts.
+            continue;
         };
         if focus_provider == Some(provider) {
             validate_catalog_materialization(&profile, &request.execution_location)?;
@@ -1331,6 +1339,51 @@ mod tests {
         assert!(catalog.all[0].models.is_empty());
     }
 
+    // MP-08 / MP-10 / MP-11: fresh caller isolation without unrelated-provider prerequisites.
+    #[test]
+    fn catalog_profile_resolution_allows_an_independent_single_provider_owner() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-catalog-independent-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .unwrap();
+        let primary = registry
+            .create_managed("primary", "codex", "Primary")
+            .unwrap();
+        registry
+            .set_default("primary", "codex", &primary.profile_id)
+            .unwrap();
+        let second = registry
+            .create_managed("second", "codex", "Second")
+            .unwrap();
+        registry
+            .set_default("second", "codex", &second.profile_id)
+            .unwrap();
+        let request = GetProviderCatalogRequest::default();
+        let selected = resolve_catalog_profiles(&registry, "second", &request).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected["codex"].profile_id, second.profile_id);
+        assert!(resolve_catalog_profiles(&registry, "empty", &request)
+            .unwrap()
+            .is_empty());
+        let foreign = GetProviderCatalogRequest {
+            provider: Some("codex".into()),
+            account_profiles: BTreeMap::from([("codex".into(), primary.profile_id)]),
+            ..Default::default()
+        };
+        assert!(resolve_catalog_profiles(&registry, "second", &foreign).is_err());
+        let missing = GetProviderCatalogRequest {
+            provider: Some("opencode".into()),
+            ..Default::default()
+        };
+        assert!(resolve_catalog_profiles(&registry, "second", &missing).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn catalog_profile_resolution_uses_override_and_requires_target_materialization() {
         let root = std::env::temp_dir().join(format!(
@@ -1499,6 +1552,141 @@ mod tests {
         };
         assert_eq!(status.auth_state, "not_logged_in");
         assert!(status.login_hint.is_some());
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11: a valid file-only logout observation
+    // must not erase a previously verified, account-bound Vault login.
+    #[test]
+    fn claude_file_status_preserves_verified_vault_account_without_reviving_logout() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-verified-vault-status-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir(&root).unwrap();
+        struct Cleanup(
+            std::path::PathBuf,
+            Option<std::ffi::OsString>,
+            Option<std::ffi::OsString>,
+        );
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                for (name, value) in [
+                    ("CHARIOX_HOME", self.1.take()),
+                    ("CHARIOX_CLAUDE_BIN", self.2.take()),
+                ] {
+                    match value {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(
+            root.clone(),
+            std::env::var_os("CHARIOX_HOME"),
+            std::env::var_os("CHARIOX_CLAUDE_BIN"),
+        );
+        std::env::set_var("CHARIOX_HOME", root.join("state"));
+        let executable = root.join("claude");
+        fs::write(&executable, "#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'Claude test version\n'; else printf '%s\n' '{\"loggedIn\":false}'; fi\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("CHARIOX_CLAUDE_BIN", executable);
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .unwrap();
+        registry
+            .migrate_effective_defaults("local", &root.join("home"))
+            .unwrap();
+        let profile_id = registry
+            .get("local", "claude", "default")
+            .unwrap()
+            .profile_id;
+        let credential_id =
+            crate::provider::provider_account_credential_id("local", "claude", &profile_id);
+        crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .upsert(crate::config::UserCredentialConfig {
+                id: credential_id.clone(),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Vault { key: credential_id },
+                allowed_hosts: vec![],
+                allowed_uses: vec![crate::config::UserCredentialUse::Provider],
+                injection: crate::config::UserCredentialInjectionConfig::Provider,
+                metadata: None,
+            })
+            .unwrap();
+        registry
+            .update_observation(
+                "local",
+                "claude",
+                "default",
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(crate::provider::provider_account_credential_registered(
+            "local",
+            "claude-p",
+            &profile_id
+        )
+        .unwrap());
+        let status =
+            observe_provider_auth_status(&registry, "local", "claude-p", "default").unwrap();
+        assert_eq!(status.auth_state, "authenticated");
+        registry
+            .require_authenticated(
+                "local",
+                "claude",
+                "default",
+                None,
+                "test verified token admission",
+            )
+            .unwrap();
+        registry
+            .mark_logged_out("local", "claude", "default")
+            .unwrap();
+        assert_ne!(
+            observe_provider_auth_status(&registry, "local", "claude-p", "default")
+                .unwrap()
+                .auth_state,
+            "authenticated"
+        );
+        registry
+            .require_authenticated("local", "claude", "default", None, "MP-11 logout fence")
+            .expect_err("explicit logout must fence the retained Vault token");
+        for state in [
+            crate::account_profile::ProviderAccountAuthState::Unknown,
+            crate::account_profile::ProviderAccountAuthState::Expired,
+        ] {
+            registry
+                .update_observation("local", "claude", "default", state, None, None, None, None)
+                .unwrap();
+            registry
+                .require_authenticated("local", "claude", "default", None, "MP-11 first-use check")
+                .expect("unknown/expired token still reaches the first-use verifier");
+        }
+        for state in [
+            crate::account_profile::ProviderAccountAuthState::Expired,
+            crate::account_profile::ProviderAccountAuthState::Error,
+        ] {
+            registry
+                .update_observation("local", "claude", "default", state, None, None, None, None)
+                .unwrap();
+            assert_ne!(
+                observe_provider_auth_status(&registry, "local", "claude-p", "default")
+                    .unwrap()
+                    .auth_state,
+                "authenticated"
+            );
+        }
     }
 
     #[test]

@@ -195,6 +195,11 @@ fn run_claude_print(
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_CUSTOM_HEADERS",
+        // These select a different authentication source before OAuth. A
+        // successful cloud-provider turn would not verify this setup token.
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
     ] {
         command.env_remove(name);
     }
@@ -443,7 +448,11 @@ writeFileSync(process.env.CHARIOX_PROBE_TEST_ENV_FILE, JSON.stringify({
   anthropicApiKey: process.env.ANTHROPIC_API_KEY,
   anthropicAuthToken: process.env.ANTHROPIC_AUTH_TOKEN,
   anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL,
-  anthropicCustomHeaders: process.env.ANTHROPIC_CUSTOM_HEADERS
+  anthropicCustomHeaders: process.env.ANTHROPIC_CUSTOM_HEADERS,
+  bedrock: process.env.CLAUDE_CODE_USE_BEDROCK,
+  vertex: process.env.CLAUDE_CODE_USE_VERTEX,
+  foundry: process.env.CLAUDE_CODE_USE_FOUNDRY,
+  oauthPresent: process.env.CLAUDE_CODE_OAUTH_TOKEN === "fixture-oauth"
 }))
 process.stdout.write(JSON.stringify({
   type: "result",
@@ -470,6 +479,10 @@ process.stdout.write(JSON.stringify({
         assert!(installed.success(), "install fake Claude: {installed}");
         let inherited_home = std::env::var("HOME").expect("test HOME");
         let environment = BTreeMap::from([
+            ("CLAUDE_CODE_USE_BEDROCK".into(), "1".into()),
+            ("CLAUDE_CODE_USE_VERTEX".into(), "1".into()),
+            ("CLAUDE_CODE_USE_FOUNDRY".into(), "1".into()),
+            ("CLAUDE_CODE_OAUTH_TOKEN".into(), "fixture-oauth".into()),
             (
                 "CLAUDE_CONFIG_DIR".to_string(),
                 claude_config_dir.display().to_string(),
@@ -519,9 +532,13 @@ process.stdout.write(JSON.stringify({
             "anthropicAuthToken",
             "anthropicBaseUrl",
             "anthropicCustomHeaders",
+            "bedrock",
+            "vertex",
+            "foundry",
         ] {
             assert!(observed.get(key).is_none(), "{key} must be removed");
         }
+        assert_eq!(observed["oauthPresent"], true);
         assert!(
             !claude_config_dir.exists(),
             "the non-interactive probe must not mutate Claude profile state"

@@ -4,7 +4,7 @@ import {WorkerVideoDecoder} from './decoder-worker.mjs';
 // MD-DISPLAY-04: protocol 419 presentation only. Cloud supplies its existing
 // admitted/encrypted kernel request and event adapter; never a Cloud media proxy.
 export const minimumProtocolVersion = 466;
-export const pushProtocolVersion = 475;
+export const pushProtocolVersion = 491;
 const VP9='vp09.00.10.08';
 const videoCodecs=['vp8','avc1.420033','vp09.00.50.08','vp09.00.40.08',VP9];
 // Empty credits must not saturate a narrow link with control traffic. Admitted
@@ -169,10 +169,10 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     if (codecs.length === 8) codecs.splice(codecs.indexOf('png') - 1, 1);
     codecs.push('chariox-relay-binary-v96');
   }
-  // MP-08/MP-10: protocol 475 kernels push frames on a relay display
+  // MP-08/MP-10: protocol 491 kernels push frames on a relay display
   // subscription; older kernels and other transports keep credits.
   const pushMode = options.push !== false && transport.kernelProtocolVersion >= pushProtocolVersion && typeof transport.subscribeDisplay === 'function';
-  // The reply's generation wins (protocol 475 replies carry it).
+  // The reply's generation wins (protocol 491 replies carry it).
   const binding = { ...tab, ...await request({ op: 'display_subscribe', ...tab, codecs: options.stripes===false?codecs.filter(c=>c!=='chariox-stripes-v1'):codecs, bitrate: options.bitrate ?? 2_000_000, device_scale_factor: options.deviceScaleFactor ?? 1 }) };
   const onTiming = options.onTiming ?? (() => {});
   const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming);
@@ -302,7 +302,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   };
 }
 
-// MP-08/MP-10: protocol 475 pushed display. The kernel pump sends frames as
+// MP-08/MP-10: protocol 491 pushed display. The kernel pump sends frames as
 // they are produced; the viewer acknowledges each presented sequence (plus a
 // heartbeat), which drives the kernel's ACK gate (after Selkies' frame ACK).
 function pushDisplay(presenter, transport, request, binding, tab, options) {

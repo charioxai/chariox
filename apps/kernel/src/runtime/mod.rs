@@ -38,6 +38,7 @@ pub(crate) mod app_snapshot_restore;
 mod app_state_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_validation_broker;
+pub(crate) mod app_view_authority;
 pub(crate) mod app_views;
 pub(crate) mod app_wake_pump;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -146,7 +147,7 @@ pub mod terminal_output_executor;
 pub(crate) mod terminal_pairings;
 pub(crate) mod user_config_executor;
 pub(crate) mod user_config_policy;
-mod user_domain_access;
+pub(crate) mod user_domain_access;
 pub(crate) mod waiting_room_activity;
 pub(crate) mod waiting_room_control;
 pub(crate) mod waiting_room_public_projection;
@@ -167,5 +168,9 @@ pub(crate) mod workspace_worktrees;
 pub(crate) mod kernel_access;
 
 pub(crate) mod relay_peer_authority;
-mod user_app_views;
 pub(crate) mod self_host_terminal_grants;
+
+pub(crate) mod room_tool_admission;
+
+pub(crate) mod room_dispatch_registration;
+mod user_app_views;

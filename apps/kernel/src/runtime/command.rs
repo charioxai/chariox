@@ -56,6 +56,12 @@ impl KernelCommand {
         .then(|| self.caller.caller_id.clone())
     }
 
+    /// A command an elevated provider turn submitted through its sudo grant.
+    pub(crate) fn is_sudo_command(&self) -> bool {
+        self.external_grant_id()
+            .is_some_and(|id| id.starts_with("sudo:") && self.causation_id.as_deref() == Some(&id))
+    }
+
     pub(crate) fn durable_operation_id(&self, suffix: Option<&str>) -> String {
         match suffix {
             Some(suffix) => format!("{}:{suffix}", self.command_id),
@@ -185,6 +191,13 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
                 "custom_reply": request.custom_reply.as_ref().map(|_| "[redacted]"),
                 "passkey": request.passkey.as_ref().map(|_| "[redacted]"),
                 "passkey_remember_minutes": request.passkey_remember_minutes
+            }
+        }),
+        LocalDaemonRequest::RespondToHandoff(request) => serde_json::json!({
+            "RespondToHandoff": {
+                "session_id": request.session_id,
+                "interaction_id": request.interaction_id,
+                "action": request.action.kind(),
             }
         }),
         LocalDaemonRequest::RequestCredentialEnrollmentInteraction(request) => {

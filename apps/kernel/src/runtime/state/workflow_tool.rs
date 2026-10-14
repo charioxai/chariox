@@ -674,7 +674,7 @@ fn call_agent_app_http_action(
     let content_type = response.content_type().to_string();
     let text = read_limited_response_body(response, options.max_response_bytes)?;
     let body = if content_type.contains("application/json") {
-        serde_json::from_str(&text).unwrap_or_else(|_| serde_json::Value::String(text))
+        serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text))
     } else {
         serde_json::Value::String(text)
     };

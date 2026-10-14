@@ -179,13 +179,14 @@ async fn revoked_native_recovery(discovery: bool) {
         let request = request.clone();
         let grant = grant.clone();
         async move {
-            state
-                .launch_remote_native_provider_run_with_grant(
-                    &request,
-                    crate::session::DEFAULT_LOCAL_USER_ID,
-                    Some(&grant),
-                )
-                .await
+            let launch = state.launch_remote_native_provider_run_with_grant(
+                &request,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                Some(&grant),
+            );
+            // MP-08 / MP-10 / MP-11: the stale-binding callbacks must fit the default task stack.
+            assert!(std::mem::size_of_val(&launch) <= 64 * 1024);
+            launch.await
         }
     });
     timeout(

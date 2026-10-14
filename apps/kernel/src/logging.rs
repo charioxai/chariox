@@ -717,12 +717,9 @@ mod tests {
             parsed.get("chariox_log_record_truncated"),
             Some(&Value::Bool(true))
         );
-        assert_eq!(
-            parsed
-                .get("chariox_original_record_bytes")
-                .and_then(Value::as_u64)
-                .is_some(),
-            true
-        );
+        assert!(parsed
+            .get("chariox_original_record_bytes")
+            .and_then(Value::as_u64)
+            .is_some());
     }
 }

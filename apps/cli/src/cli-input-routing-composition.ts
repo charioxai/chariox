@@ -311,6 +311,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     ...(deps.openRoomViewer ? { openRoomViewer: deps.openRoomViewer } : {}),
     ...(deps.readSecret ? { readSecret: deps.readSecret } : {}),
     workspaceShellContext: deps.workspaceShellContext,
+    attachmentId: () => deps.attachmentState()?.id ?? null,
     setWorkspaceShellContext: (context) => {
       deps.setWorkspaceShellContext(context)
     },

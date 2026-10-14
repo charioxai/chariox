@@ -343,6 +343,10 @@ impl KernelRuntimeState {
         })
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing execute_bound_room_screenshot_chunk operation signature and explicit context arguments"
+    )]
     pub(crate) fn execute_bound_room_screenshot_chunk(
         &self,
         authenticated_kernel_id: &str,

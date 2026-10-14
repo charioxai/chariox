@@ -124,6 +124,10 @@ pub(crate) fn render_workflow_turn_prompt_from_messages(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing render_workflow_turn_prompt operation signature and explicit context arguments"
+)]
 pub(crate) fn render_workflow_turn_prompt(
     app: &DaemonApp,
     session_id: &str,

@@ -158,11 +158,37 @@ impl KernelRuntimeState {
                 }
             }
         }
+        // MP-08 / MP-10 / MP-11: runtime creation stamps its authoritative
+        // Room into metadata. A value becomes private (scrub-only) when stored,
+        // before any later browser insertion; prior public echoes are retired now.
+        let room = credential
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.session_id.clone());
+        let key = match &credential.source {
+            crate::config::UserCredentialSourceConfig::Vault { key } => Some(key.clone()),
+            _ => None,
+        };
         self.with_authorized_app_side_effect(|_| {
             self.with_forwarded_binding_operation(|| {
-                service.upsert_vault_backed_credential_with_secret(
+                let _history = self.owned.operational_history_store.lock_public_history()?;
+                let result = service.upsert_vault_backed_credential_with_secret(
                     registry, credential, secret, overwrite,
-                )
+                )?;
+                if let Some(room) = room {
+                    let source = self
+                        .owned
+                        .room_secret_observations
+                        .register_credential_source(&room, key.as_deref());
+                    // Protect the value even if persisting its provenance fails.
+                    let protection = self
+                        .owned
+                        .room_secret_observations
+                        .register_stored_with_locked_public_history(&room, secret);
+                    source?;
+                    protection?;
+                }
+                Ok(result)
             })
         })
         .await

@@ -1,4 +1,4 @@
-// MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 503). The page's own
+// MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 517). The page's own
 // sanitized stylesheets and attributes are rebuilt in a script-free sandbox;
 // deltas apply in place. No origin I/O: resources arrive as kernel bytes.
 import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp, validMirror2Sprite } from './browser-mirror2-security.js'
@@ -6,7 +6,7 @@ import { Mirror2Wheel } from './browser-mirror2-wheel.js'
 import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2State, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
-export const browserMirror2MinimumProtocolVersion = 503
+export const browserMirror2MinimumProtocolVersion = 517
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 const CREDIT_WINDOW = 4 // credits in flight at most (attachBrowserMirror2)
@@ -40,6 +40,7 @@ export class BrowserMirror2Renderer {
   private slices = new Map<string, Mirror2Resource>() // resources still arriving in slices
   private styled = new Map<string, Styled>()
   private tileUrls = new Map<string, string>()
+  private tileBoxes = new Map<string, Pick<Mirror2Tile, "x" | "y" | "width" | "height">>()
   private selects: Array<[Element, Mirror2Form]> = []
   private states: Element[] = [] // UA state to apply once this packet's DOM is attached
   private targeted = new WeakMap<Document, Element>() // per document, the element its fragment names (`:target`)
@@ -286,7 +287,7 @@ export class BrowserMirror2Renderer {
   }
   private restyle(entry: Styled): void {
     if (entry.kind === 'css') entry.node.textContent = this.substitute(entry.raw)
-    else if (entry.kind === 'attr') entry.node.setAttribute('style', this.substitute(entry.raw))
+    else if (entry.kind === 'attr') { entry.node.setAttribute('style', this.substitute(entry.raw)); const record = this.records.get(this.ids.get(entry.node) ?? ''); if (record) this.opaqueLayout(record, entry.node) }
     else {
       const { node: root, raw } = entry as Extract<Styled, { kind: 'adopted' }>
       const view = (root.nodeType === 9 ? root as Document : (root as ShadowRoot).ownerDocument).defaultView as (Window & typeof globalThis) | null
@@ -319,6 +320,13 @@ export class BrowserMirror2Renderer {
     if (record.state) this.states.push(element)
     if (record.kind === 'element' && record.tag === 'style') this.setStyled(record.id, { kind: 'css', raw: record.css ?? '', node: element, keys: [] })
     if (record.res !== undefined) this.image(record.id, element, record.res)
+    this.opaqueLayout(record, element)
+    if (record.kind === 'frame') { element.setAttribute('sandbox', 'allow-same-origin'); element.setAttribute('referrerpolicy', 'no-referrer') }
+    // A select's state waits for its options (the build appends children after their parent).
+    if (record.form) { if (element.localName === 'select') this.selects.push([element, record.form]); else this.form(element, record.form) }
+  }
+  // Author layout remains ordinary CSS; capture paint overrides are restored separately.
+  private opaqueLayout(record: Mirror2Record, element: Element): void {
     if (record.kind === 'mask' || record.kind === 'tile') {
       const style = (element as HTMLElement).style
       const [width, height] = record.size ?? [0, 0]
@@ -326,11 +334,8 @@ export class BrowserMirror2Renderer {
       style.setProperty('overflow', 'hidden', 'important'); style.setProperty('background-color', 'black', 'important'); style.setProperty('color', 'transparent', 'important')
       // A mask keeps the protected box: inline/contents boxes become inline blocks of the source size.
       if (record.kind === 'mask') { style.setProperty('display', record.display === 'none' ? 'none' : !record.display || ['inline', 'contents'].includes(record.display) ? 'inline-block' : record.display, 'important'); style.setProperty('background-image', 'none', 'important'); element.setAttribute('aria-label', 'Protected content') }
-      if (record.kind === 'tile') { style.setProperty('display', record.display === 'none' ? 'none' : 'inline-block'); if (element.localName === 'iframe') element.setAttribute('sandbox', '') }
+      if (record.kind === 'tile') { if (element.localName === 'iframe') element.setAttribute('sandbox', ''); this.paintTile(record.id, element as HTMLElement) }
     }
-    if (record.kind === 'frame') { element.setAttribute('sandbox', 'allow-same-origin'); element.setAttribute('referrerpolicy', 'no-referrer') }
-    // A select's state waits for its options (the build appends children after their parent).
-    if (record.form) { if (element.localName === 'select') this.selects.push([element, record.form]); else this.form(element, record.form) }
   }
   private uaState(element: Element): void {
     const record = this.records.get(this.ids.get(element) ?? ''), state: Mirror2State = record?.state ?? {}
@@ -443,7 +448,7 @@ export class BrowserMirror2Renderer {
     const node = this.dom.get(id), kind = this.records.get(id)?.kind
     if (kind === 'tile' || kind === 'mask') this.counts[kind]--
     this.dom.delete(id); this.records.delete(id); this.styled.delete(id); this.styled.delete(`${id}#style`); this.styled.delete(`${id}#adopted`)
-    const tile = this.tileUrls.get(id); if (tile) { URL.revokeObjectURL(tile); this.tileUrls.delete(id) }
+    const tile = this.tileUrls.get(id); if (tile) { URL.revokeObjectURL(tile); this.tileUrls.delete(id) }; this.tileBoxes.delete(id)
     if (node) this.ids.delete(node)
   }
   private forgetTree(node: Node): void {
@@ -539,7 +544,7 @@ export class BrowserMirror2Renderer {
   private reset(packet: Mirror2Packet, scrolls: Array<[Element, number, number]>): void {
     const doc = this.doc!
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frameDocuments.clear(); this.ids = new WeakMap(); this.counts = { tile: 0, mask: 0 }
+    this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frameDocuments.clear(); this.ids = new WeakMap(); this.counts = { tile: 0, mask: 0 }
     const records = packet.nodes ?? [], frames: Array<{ frame: HTMLIFrameElement; id: string }> = []
     const root = records[0]!
     const main = this.subtree(records, root.id)
@@ -591,6 +596,7 @@ export class BrowserMirror2Renderer {
         record.attrs ??= {}
         if (op.value === null) { delete record.attrs[op.name]; if (op.name === 'style') this.styled.delete(`${op.id}#style`); element.removeAttribute(op.name) }
         else { record.attrs[op.name] = op.value; if (op.name === 'style') this.setStyled(op.id, { kind: 'attr', raw: op.value, node: element, keys: [] }); else element.setAttribute(op.name, op.name === 'popover' ? 'manual' : op.value) }
+        if (op.name === 'style' && op.value === null) this.opaqueLayout(record, element)
         if (op.name === 'href' && record.res !== undefined && element.localName === 'use') this.image(op.id, element, record.res) // its sprite file + the new fragment
         break
       }
@@ -611,6 +617,11 @@ export class BrowserMirror2Renderer {
     const element = this.dom.get(tile.node_id) as HTMLElement | undefined; if (!element) return
     const old = this.tileUrls.get(tile.node_id); if (old) URL.revokeObjectURL(old)
     const url = URL.createObjectURL(new Blob([bytesOf(tile.data_base64) as Uint8Array<ArrayBuffer>], { type: 'image/png' })); this.tileUrls.set(tile.node_id, url)
+    this.tileBoxes.set(tile.node_id, { x: tile.x, y: tile.y, width: tile.width, height: tile.height })
+    this.paintTile(tile.node_id, element)
+  }
+  private paintTile(id: string, element: HTMLElement): void {
+    const tile = this.tileBoxes.get(id), url = this.tileUrls.get(id); if (!tile || !url) return
     const style = element.style
     style.setProperty('background-image', `url("${url}")`, 'important'); style.setProperty('background-repeat', 'no-repeat', 'important')
     style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
@@ -619,7 +630,7 @@ export class BrowserMirror2Renderer {
     this.disposed = true; this.doc = null
     for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    URL.revokeObjectURL(this.empty); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frame.remove()
+    URL.revokeObjectURL(this.empty); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frame.remove()
   }
 }
 
@@ -651,7 +662,7 @@ type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'fram
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
 export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; packet?(packet: Mirror2Packet): void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
-  if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 503')
+  if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 517')
   const request = async (command: unknown): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } }) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).

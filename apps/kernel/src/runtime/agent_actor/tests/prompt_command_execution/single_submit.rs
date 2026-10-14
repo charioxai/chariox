@@ -568,12 +568,13 @@ async fn prompt_submit_routes_leading_agent_alias_and_focuses_target() {
         attachments: Vec::new(),
     };
     let local_request = LocalDaemonRequest::SubmitPrompt(request.clone());
-    let command = crate::runtime::command::KernelCommand::from_local_request(
+    let mut command = crate::runtime::command::KernelCommand::from_local_request(
         "alias-routed-prompt-submit",
         None,
         None,
         &local_request,
     );
+    command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
 
     let response = runtime
         .dispatch_prompt_submit(&command, request)

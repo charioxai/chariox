@@ -2,6 +2,13 @@ use serde::{Deserialize, Serialize};
 
 use super::types::unix_epoch_ms;
 
+mod handoff;
+pub(crate) use handoff::bounded_display_text;
+pub use handoff::{
+    HandoffChangeLine, HandoffChangeOp, HandoffKind, HandoffReason, HandoffTarget, RuntimeHandoff,
+    HANDOFF_CHANGE_LINE_MAX_CHARS, HANDOFF_CHANGE_MAX_LINES, HANDOFF_EXPLANATION_MAX_CHARS,
+    HANDOFF_LABEL_MAX_CHARS, HANDOFF_MAX_TIMEOUT_SEC, HANDOFF_MIN_TIMEOUT_SEC,
+};
 mod subject;
 pub use subject::RuntimeInteractionSubject;
 
@@ -242,6 +249,9 @@ pub struct RuntimeInteraction {
     /// Ephemeral provider-native login UI, never model context or history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_login: Option<RuntimeProviderLogin>,
+    /// Protocol 477: a protected owner hand-off (safe target metadata only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    handoff: Option<RuntimeHandoff>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,6 +302,7 @@ impl RuntimeInteraction {
             requested_at_ms: unix_epoch_ms(),
             project_environment_review: None,
             provider_login: None,
+            handoff: None,
             requester: None,
         }
     }
@@ -340,6 +351,13 @@ impl RuntimeInteraction {
 
     pub(crate) fn valid_subject(&self) -> bool {
         self.subject.valid()
+            && self.handoff.as_ref().is_none_or(|h| {
+                h.valid()
+                    && self.id == RuntimeHandoff::interaction_id(&h.obligation_id)
+                    && self.kernel_operation_id() == Some(self.id.as_str())
+                    && self.custom_choice.is_none()
+                    && self.default_on_timeout.is_none()
+            })
     }
 
     /// A kernel-owned decision, projected without creating an agent or prompt.
@@ -368,6 +386,7 @@ impl RuntimeInteraction {
             requested_at_ms: unix_epoch_ms(),
             project_environment_review: None,
             provider_login: None,
+            handoff: None,
             requester: None,
         }
     }
@@ -391,6 +410,16 @@ impl RuntimeInteraction {
         self.provider_login.as_ref()
     }
 
+    /// A kernel-operation decision carrying a protected owner hand-off.
+    pub(crate) fn with_handoff(mut self, handoff: RuntimeHandoff) -> Self {
+        self.handoff = Some(handoff);
+        self
+    }
+
+    pub fn handoff(&self) -> Option<&RuntimeHandoff> {
+        self.handoff.as_ref()
+    }
+
     pub fn kind(&self) -> RuntimeInteractionKind {
         self.kind
     }
@@ -401,6 +430,11 @@ impl RuntimeInteraction {
 
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+
+    pub(crate) fn with_message(mut self, message: String) -> Self {
+        self.message = message;
+        self
     }
 
     pub fn message(&self) -> &str {

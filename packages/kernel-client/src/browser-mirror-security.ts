@@ -23,7 +23,7 @@ export function validateMirrorNode(node: MirrorNode): void {
   if(node.kind==='mask' && (node.text || node.resource || node.form || node.children.length || node.pseudo)) throw Error('MP-11: protected mirror payload')
 }
 export function validateMirrorPacket(packet: MirrorPacket, previous: ReadonlyMap<string,MirrorNode>): Map<string,MirrorNode> {
-  if(JSON.stringify(packet).length>4194304 || !Number.isSafeInteger(packet.sequence) || packet.sequence<=0 || !/^[a-f0-9]{64}$/.test(packet.hash) || packet.css_width!==1280 || packet.css_height!==800 || ![1,2].includes(packet.device_scale_factor) || packet.nodes.length>12000 || packet.resources.length>128 || packet.tiles.length>64) throw Error('MP-11: mirror packet bounds')
+  if(JSON.stringify(packet).length>4194304 || !Number.isSafeInteger(packet.sequence) || packet.sequence<=0 || !/^[a-f0-9]{64}$/.test(packet.hash) || !(packet.css_width===1280 && packet.css_height===800 && [1,2].includes(packet.device_scale_factor) || packet.css_width===1920 && packet.css_height===1080 && packet.device_scale_factor===1) || packet.nodes.length>12000 || packet.resources.length>128 || packet.tiles.length>64) throw Error('MP-11: mirror packet bounds')
   const next = packet.reset ? new Map<string,MirrorNode>() : new Map(previous)
   for(const id of packet.removed) next.delete(id)
   const changed = new Set<string>(),styles=new Map<string,Record<string,string>>()

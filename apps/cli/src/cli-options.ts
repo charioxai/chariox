@@ -242,6 +242,8 @@ function printUsage() {
     "",
     "commands:",
     "  /stop                 request cancellation of the active provider turn",
+    "  /goal [--interval N] <objective>  run a durable goal (1–60 minutes; default 10)",
+    "  /goal pause|resume|cancel|interval <N>|edit <objective>  control the focused goal",
     "  /exit                 exit the CLI",
     "  /waiting              go to the waiting room",
     "  /provider <name>      select the provider backend",

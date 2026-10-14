@@ -125,6 +125,7 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     protobuf-compiler \
     pulseaudio \
     python3 \
+    python3-cairo \
     python3-gi \
     python3-pyatspi \
     python3-venv \
@@ -215,6 +216,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cookie-fence.mjs /opt/chariox-slice/browser-controller-cookie-fence.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-dialogs.mjs /opt/chariox-slice/browser-controller-dialogs.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-compatibility.mjs /opt/chariox-slice/browser-controller-compatibility.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-actor.mjs /opt/chariox-slice/browser-app-actor.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-apps.mjs /opt/chariox-slice/browser-controller-apps.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-bar.mjs /opt/chariox-slice/browser-controller-bar.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-restore.mjs /opt/chariox-slice/browser-app-restore.mjs
@@ -265,6 +267,7 @@ RUN chmod +x /opt/chariox-slice/browser-cdp.mjs \
     /opt/chariox-slice/browser-controller-cookie-fence.mjs \
     /opt/chariox-slice/browser-controller-dialogs.mjs \
     /opt/chariox-slice/browser-controller-compatibility.mjs \
+    /opt/chariox-slice/browser-app-actor.mjs \
     /opt/chariox-slice/browser-controller-apps.mjs \
     /opt/chariox-slice/browser-controller-bar.mjs \
     /opt/chariox-slice/browser-controller-events.mjs \

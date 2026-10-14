@@ -712,8 +712,11 @@ export class Mirror2 {
     if (action.kind === 'selection') { const entry = frameOf(action.anchor_id); return { perform: async () => { if (entry) await inFrame(entry, `${m}.select(${JSON.stringify({ ...action, anchor_id: localId(action.anchor_id), focus_id: localId(action.focus_id) })})`); else await call(`${m}.select(${JSON.stringify(action)})`); } }; }
     // Live focus inside a mirrored cross-origin frame is validated in that frame.
     const activeTarget = async editable => {
-      const owner = await call(`${m}.activeForeign()`); const entry = owner && stream.frames.get(owner); if (owner && !entry) throw new Error('MP-11: unavailable native text focus');
-      if (!entry) return seen(await call(`${m}.activeTarget(${editable})`));
+      // MP-08/MP-10/MP-11: read the leaf and its foreign-frame binding in one
+      // task. Keep the same live ancestry/epoch proof before physical dispatch.
+      const [owner, ids] = await call(`(()=>{const owner=${m}.activeForeign();return [owner,owner?null:${m}.activeTarget(${editable})]})()`);
+      const entry = owner && stream.frames.get(owner); if (owner && !entry) throw new Error('MP-11: unavailable native text focus');
+      if (!entry) return seen(ids);
       seen((await inFrame(entry, `${m}.activeTarget(${editable})`)).map(id => rebaseId(id, entry.slot))); seen(await call(`${m}.ancestry(${JSON.stringify(owner)})`));
     };
     // The shared text preflight's verdict for focus inside a mirrored cross-origin frame.

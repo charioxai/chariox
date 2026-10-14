@@ -15,7 +15,7 @@ async function mirrored(html, run, routes = {}) {
   const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-"));
   const server = createServer((request, response) => {
     const port = String(server.address().port), route = routes[request.url];
-    if (route) { response.setHeader("Content-Type", route.type); for (const [name, value] of Object.entries(route.headers ?? {})) response.setHeader(name, value); response.end(route.body.replaceAll("PORT", port)); return; }
+    if (route) { response.setHeader("Content-Type", route.type); for (const [name, value] of Object.entries(route.headers ?? {})) response.setHeader(name, value); const send = () => response.end(route.body.replaceAll("PORT", port)); if (route.delay_ms) setTimeout(send, route.delay_ms); else send(); return; }
     response.setHeader("Content-Type", "text/html"); response.end(`<!doctype html>${html.replaceAll("PORT", port)}`);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -1143,3 +1143,14 @@ for(const placement of ['parent','open-root','same-origin-frame','attached-child
   assert(found,'MP-10: delayed closed root becomes an opaque region through ordinary credits');
  },{'/late':{type:'text/html',body:'<!doctype html><x-late id="late" style="display:block;width:80px;height:40px"></x-late><script>customElements.define("x-late",class extends HTMLElement{})</script>'}}
 ));
+
+// MP-08/MP-10/MP-11: review a44f1afce F2, waiting child resources need their own load receipt.
+test("MP-10: delayed same-origin child image becomes deliverable without a parent load or reset",()=>mirrored(
+ '<iframe src="/idle-child" style="width:320px;height:140px"></iframe>',async({next,evaluate,host,subscription_id})=>{
+  await next();await next(0);
+  assert([...host.mirror.streams.get(subscription_id).resources.values()].some(r=>r.state==='waiting'),'MP-10: unused child author CSS first leaves the resource waiting');
+  await evaluate("(()=>{const d=document.querySelector('iframe').contentDocument;const i=d.createElement('img');i.id='slow';i.width=100;i.height=60;i.src='/slow-child.svg';d.body.append(i);return true})()");
+  for(let i=0;i<100&&!await evaluate("document.querySelector('iframe').contentDocument.getElementById('slow').complete");i++)await new Promise(r=>setTimeout(r,30));
+  let delivered=false;for(let i=0;i<5;i++){const p=await next(800);assert(!p.reset);if(p.resources.some(r=>Buffer.from(r.data_base64,'base64').toString().includes('#6543ab'))){delivered=true;break;}}
+  assert(delivered,'MP-10: the idle parent observer admits the completed child image');
+ },{'/idle-child':{type:'text/html',body:'<!doctype html><style>.lazy{background-image:url(/slow-child.svg)}</style><p>idle</p>'},'/slow-child.svg':{type:'image/svg+xml',body:svg('#6543ab'),delay_ms:1200}}));

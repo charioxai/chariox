@@ -90,6 +90,7 @@ fn history_page_entry(
     }
 }
 
-mod screenshot;
-
+mod agent_lifecycle;
+mod owner_handoff;
 mod room_workflows;
+mod screenshot;

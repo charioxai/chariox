@@ -49,6 +49,12 @@ impl BrowserInputOrder {
     }
 }
 impl Turn {
+    /// Wait for earlier input on this key. A mirror read then gives its turn back
+    /// before it runs, so later input never waits for it (protocol 516).
+    pub(super) async fn enter(mut self, read: bool) -> Option<Self> {
+        self.ready().await;
+        (!read).then_some(self)
+    }
     pub(super) async fn ready(&mut self) {
         if let Some(previous) = self.previous.as_mut() {
             let _ = previous.await;
@@ -126,6 +132,25 @@ mod tests {
         drop(first);
         third.ready().await;
         drop(third);
+        assert_eq!(order.0.lock().unwrap().pending, 0);
+    }
+    #[tokio::test]
+    async fn mp08_a_released_read_turn_never_holds_later_input() {
+        let order = BrowserInputOrder::default();
+        let mut key = order.reserve("mirror".into()).unwrap();
+        key.ready().await;
+        let mut read = order.reserve("mirror".into()).unwrap();
+        let mut next = order.reserve("mirror".into()).unwrap();
+        assert!(timeout(Duration::from_millis(5), read.ready())
+            .await
+            .is_err());
+        drop(key);
+        read.ready().await;
+        drop(read);
+        timeout(Duration::from_millis(5), next.ready())
+            .await
+            .unwrap();
+        drop(next);
         assert_eq!(order.0.lock().unwrap().pending, 0);
     }
     #[tokio::test]

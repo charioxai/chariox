@@ -9,7 +9,9 @@ export async function executeWorkflowNotificationSettings(args: string[], contex
   const [state, ...rest] = args
   if (state !== "on" && state !== "off") return { ok: false, message: "usage: workflow notifications on|off [workflow-ref] [--fields verdict,review_url]" }
   const fieldIndex = rest.indexOf("--fields")
-  const fields = fieldIndex < 0 ? null : (rest[fieldIndex + 1] ?? "").split(",").filter(Boolean)
+  const fieldList = fieldIndex < 0 ? undefined : rest[fieldIndex + 1]
+  if (fieldIndex >= 0 && (!fieldList || fieldList.startsWith("--"))) return { ok: false, message: "usage: --fields needs a comma-separated list, e.g. --fields verdict,review_url" }
+  const fields = fieldList === undefined ? null : fieldList.split(",").filter(Boolean)
   const workflow = rest[0]?.startsWith("--") ? context.workflowId : rest[0] ?? context.workflowId
   if (!workflow || !context.sessionId) return { ok: false, message: "select a workflow first" }
   const response = await deps.client.send(registerWorkflowNotificationSourceRequest(context.sessionId, workflow, state === "on", fields))
@@ -54,7 +56,13 @@ export async function executeWorkflowNotificationTrigger(args: string[], context
   const response = await deps.client.send(listWorkflowNotificationsRequest(context.sessionId)) as WorkflowNotificationsResponse
   const inventory = response.WorkflowNotifications
   if (!inventory) throw new Error("unexpected notification inventory response")
-  if (action === "list") return { ok: true, message: ["My workflows:", ...inventory.sources.map(s => `${s.source_id} ${s.name} (${s.kernel_id})${s.available ? "" : " — kernel offline/source not available"}; fields: ${s.fields.join(", ")}`), ...inventory.subscriptions.filter(s => !s.source_available).map(s => `${s.subscription_id}: source not available`)].join("\n"), data: inventory }
+  if (action === "list") return { ok: true, message: [
+    "My workflows:",
+    ...inventory.sources.map(s => `${s.source_id} ${s.name} (${s.kernel_id})${s.available ? "" : " — kernel offline/source not available"}; fields: ${s.fields.join(", ")}`),
+    "Subscriptions (detach <subscription-id>):",
+    ...inventory.subscriptions.map(s => `${s.subscription_id}: ${s.source_id} → ${s.publication_id} (${s.events}, ${s.delivery_mode}, ${s.ttl_days}d)${s.source_available ? "" : " — source not available"}`),
+    ...inventory.diagnostics.map(d => `diagnostic ${d.source_id} ${d.occurrence_id}: ${d.code}`),
+  ].join("\n"), data: inventory }
   const sources = inventory.sources.filter(s => s.source_id === sourceRef || s.name === sourceRef || `${s.kernel_id}/${s.name}` === sourceRef)
   if (sources.length !== 1) return { ok: false, message: "source missing or ambiguous; use an id from notification list" }
   const source = sources[0]!
@@ -67,5 +75,5 @@ export async function executeWorkflowNotificationTrigger(args: string[], context
   }
   const attached = await deps.client.send(attachWorkflowNotificationRequest(context.sessionId, source.source_id, publication, null, ttl, events, filters, deliveryMode)) as WorkflowNotificationAttachedResponse
   if (!attached.WorkflowNotificationAttached) throw new Error("unexpected notification attach response")
-  return { ok: true, message: `attached ${source.name} (${events}, ${deliveryMode})`, data: attached.WorkflowNotificationAttached }
+  return { ok: true, message: `attached ${source.name} (${events}, ${deliveryMode}) as ${attached.WorkflowNotificationAttached.subscription.subscription_id}`, data: attached.WorkflowNotificationAttached }
 }

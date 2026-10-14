@@ -121,8 +121,8 @@ credential handle plus observed tab/generation/document/node reference, never
 secret text. Only the host owner (local or configured Cloud identity) can use
 the host Vault. Collaborators keep separate browser profiles. The existing Room
 Vault service, unlock RuntimeInteraction and lifecycle read lock authorize the
-observed frame URL; focus, metadata and the editable password target are checked
-again after waits. The existing controller Fill enforces document/URL/masking
+observed frame URL; focus (or an A06 sudo window), metadata and the editable
+password target are checked again after waits. The existing controller Fill enforces document/URL/masking
 and native-form submission. `submit=false` is the default. Browser profiles remain private kernel
 state. Arbitrary JavaScript and CDP are internal implementation seams only.
 
@@ -309,3 +309,46 @@ created. App trust, tool queue and detached approvals remain in the App runtime.
 MD-stack integration: the unreleased feature allocation is folded into local
 protocol 427 (relay peer 74). This union and its shape/hash guards supersede the
 per-feature versions described during development above.
+
+## MP-08 / MP-10 / MP-11: agent tabs visible (protocol 486)
+
+Published PR 937 uses protocol 481 (OSS main 472). The coordinator allocated
+protocol 486 to the added tab projection. Shared version, JSON snapshot/hash
+and dependent Web/TUI minima pin that allocation.
+Kernel browser state carries every admitted viewer's tab inventory, including
+agent-created tabs. Each tab has `opened_by` (actor ID, human/agent kind, display
+label; null for previously discovered tabs whose opener is unknown). Names come
+from the authenticated agent record. `agent_activity` identifies the latest
+admitted agent mutation with a generation-local monotonic sequence and tab ID.
+The same retained-grant scope bounds both inventory and activity metadata.
+Closing a tab retires its metadata; a browser generation change resets activity.
+
+The web tab strip projects this inventory and defaults to following agent
+activity. Follow-off retains the selected view and shows a notice. Selecting or
+following a tab attaches protected observation only: it never activates the
+native tab, takes over input, or changes grants. Watched surfaces reject input
+across mirror, video and image adapters, including queued gestures from retired
+control bindings. Vault capture protection remains on the shared kernel path.
+`/access tabs` lists the same inventory with opener, title and URL in the TUI.
+
+The owner decision of 2026-10-09 15:20 UTC adds acceptance scenario
+`apps-agent-model/TABS-VISIBLE`: official Codex opens and fills a real public
+form while hosted web viewers watch at DPR 1 and 2; screenshots show discovery
+and follow, follow-off shows notice, and watching preserves input ownership.
+Source checks are supplementary; hosted real-site, shaped-network and stability
+evidence is required before this row can pass. Protocol 481 clients do not advertise follow or opener provenance.
+
+## MP-08 / MP-10 / MP-11: native display and agent tabs integration (491/101)
+
+The coordinator allocated local protocol 491 and peer protocol 101 to the
+combined native display and agent-model union. Agent following requires 491.
+Tab provenance and activity remain kernel-owned, and watched display ACKs
+return observation credit without granting input authority. Popup evidence
+wraps the same admitted CDP dispatch window as native display input; native
+viewer fast paths preserve their document and ownership fences.
+
+Peer101 combines opaque display transport with workflow notifications. The
+existing peer90 runtime admission floor remains for compatible legacy worker
+operations; binary display negotiation retains its independent peer96 floor.
+Real hosted DPR1/2 popup/tab painting, follow behavior, key budget and reconnect
+drills are required for acceptance; source checks alone do not close MP-10.

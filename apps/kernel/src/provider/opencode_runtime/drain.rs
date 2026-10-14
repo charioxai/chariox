@@ -358,13 +358,8 @@ pub(in crate::provider) fn drain_opencode_events(
                             completions.extend(snapshot_completions);
                         }
                         if snapshot.status.kind == "idle"
-                            && opencode_messages_complete_active_prompt(state, &snapshot.messages)
-                        {
-                            prompt_completed = true;
-                            state.active_terminal_assistant_message_id = None;
-                            state.active_user_message_id = None;
-                        } else if snapshot.status.kind == "idle"
-                            && state.active_terminal_assistant_message_id.is_some()
+                            && (opencode_messages_complete_active_prompt(state, &snapshot.messages)
+                                || state.active_terminal_assistant_message_id.is_some())
                         {
                             prompt_completed = true;
                             state.active_terminal_assistant_message_id = None;

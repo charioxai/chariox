@@ -43,7 +43,7 @@ private resume payloads, launch manifests and free-form diagnostics. Native TUI
 structured endpoints are projected only when the URL has no userinfo, query or
 fragment. Internal persistence and authenticated worker launch/projection
 contracts retain `RuntimeProviderRun`; no relay-peer shape changes in this
-revision (peer protocol remains 70 on this branch).
+revision (peer protocol remains 73 on this branch).
 
 The focused synthetic protocol drill is
 `apps/cli/scripts/public-provider-run-protocol-drill.mjs`. It runs the Rust DTO,
@@ -74,7 +74,8 @@ holders and non-focused-use notice. Revocation cancels grant epochs and idle
 subscriptions. MP-11: retained holders have the same input and mutations as
 focused agents on granted resources, including typing, keys, Tab and clicks.
 Explicit start/open is allowed; open grants its newly created tab. Claiming an
-unrelated existing resource or loading a capability requires focus. Vault,
+unrelated existing resource requires focus. Loading a capability requires focus
+or the A05 owner approval described below. Vault,
 protected regions, sensitive approvals and App/passkey validation keep their
 shared protections. Ordinary input has no retained/focused classification;
 revoke and idle lapse still cancel authority immediately. Observation reads,
@@ -93,6 +94,60 @@ Successful browser results are bound to the exact admission epoch under the
 grant lock before resource/subscription registration or inventory projection;
 revocation followed by refocus cannot adopt an old call's result into a fresh
 grant. A final live cancellation/provider-run check fences returned results.
+
+### MP-08 / MP-10 / MP-11: A06 Vault generation and login (local 469)
+
+Local 469 combines A04 (460) and A05 (462); relay peer 87 combines peer 82 and
+86. A06 adds no serialized request or event shape: the sudo-only MCP tool
+`chariox.vault.generate` replaces `chariox.create_generated_credential`, and
+`chariox.kernel_browser_paste_secret` accepts a live sudo window in place of
+focus for a retained grant. See [Sudo windows](KERNEL_SUDO.md).
+
+### MP-08 / MP-10 / MP-11: A05 capability acquisition (local 462)
+
+With `CHARIOX_ROOM_AGENT_TOOLS=1`, a running prompt submitted by the owner
+through a human attachment supplies acquisition causation. Agent messages,
+workflows, schedules and continuations do not. A new App binding or kernel
+browser grant also requires the owner's resource-specific `RuntimeInteraction`
+reply; a human prompt alone cannot authorize unrelated resources. Owner Deny
+and a missing owner request return the typed `user_domain_not_requested`
+refusal; a revoke reaching that agent while its decision is pending returns
+`user_domain_not_granted`. Other holders' grant changes do not affect a pending
+decision. Provider MCP errors carry the same code. Existing focus grants remain
+available through the shared browser authority path; focus is the owner's live
+act, so focus grants have no absolute lifetime (no `expires_at_ms`) and retire
+through idle, revocation or session/agent end.
+Explicit owner focus promotes an existing requested or delegated browser grant
+to that focus lifecycle without retiring its resources, subscriptions or epoch.
+
+Browser loader arguments may request `lifetime_hours` from 1 through 24; the
+default is 8 hours. A prompt grant covers newly opened tabs, while claiming an
+existing resource and Vault-sensitive actions retain the focus checks.
+`chariox.kernel_browser_share` transfers an explicit nonempty resource subset
+to a direct local child. A delegated grant cannot open additional tabs, outlive
+its source or survive source revocation. Grant projections include absolute
+`expires_at_ms` and optional prompt/delegation attribution. Absolute and idle
+expiry have live kernel wakes that cancel in-flight work and subscription scopes.
+
+App bindings use the existing trusted installation, admitted publisher key and
+capability checks. Issued bindings carry an optional `app_grant` generation,
+absolute expiry and prompt/delegation attribution; agents cannot submit this
+issued authority as grant input. App grants default to 8 hours and child
+bindings inherit the parent's deadline. Revocation removes only bindings
+actually delegated from that generation, wakes retained calls and prevents an
+old call or expiry wake from adopting a replacement binding. Recovery rearms
+absolute expiry; an untimed legacy binding needs fresh owner approval in room
+mode, and recovery without a live expiry executor fails closed. Recovery
+removals record the normal `agent.extension_revoked` event and
+`home_extension.grant.revoked` audit. Leased, remote and slice agents cannot acquire these user-domain
+resources; they use their Room Browser/Computer route.
+
+Clients consuming this metadata require local 462; relay peer shapes are
+unchanged. The focused A05 drill exercises the built TUI, kernel and official
+Codex resource-approval path: owner Deny with the typed refusal code, owner
+Allow with the 462 grant projection over the real client transport, and the
+live absolute-expiry wake. Source refusal and protocol snapshot tests are
+supplementary and do not establish hosted, public-site or managed acceptance.
 
 ## 1. Scope
 
@@ -484,6 +539,228 @@ ordering per metaagent. Optional workflow subscriptions may share the same
 visible prompt mechanism, but filtering and durable inbox state remain
 kernel-owned. A missing provider run or delivery failure must be surfaced in
 the event status and retry path rather than being silently dropped.
+
+## 3.3.4 Regular Agent Room Tools (MP-08 / MP-10 / MP-11, A01)
+
+PR1 is enabled with `CHARIOX_ROOM_AGENT_TOOLS=1`. Ordinary provider runs receive
+`chariox.room.*`, command/guide discovery, public room history/trace, and the
+existing workflow-code/registry tools. Legacy `/meta` remains available during
+migration. Aliases share the kernel admission path; they do not create another
+prompt or authority path.
+
+Local daemon protocol 450 adds immutable `spawned_by_agent_id` to agent
+projections and `created_by_agent_id` to workflows, runs and queued workflow
+prompts. Missing legacy creators decode as unknown; controller identity never
+backfills creator authority. Spawn creator is derived from the authenticated
+provider actor, not accepted from a client command. Relay peer shapes are
+unchanged in this PR.
+
+Agents may spawn without room agent-count limits, message any current room
+agent, create workflows, and observe/run peers' workflows. Agent rename/delete
+requires the caller's direct spawned child in the same room; self, peers,
+parents and grandchildren are denied. Workflow mutations require the caller
+or its direct child as immutable object creator. A peer workflow invocation
+creates a separately caller-owned run, without changing definition ownership.
+Running a peer's saved source may create a caller-owned definition/run; it
+does not rewrite the peer artifact's provenance or application history.
+PR1 agent-authored workflow declarations cannot provision extension grants;
+owner-admitted capability paths remain separate until the capability-grants PR.
+Current room, run/lease and creator fences apply after waits before effects;
+a replaced provider run cannot receive an asynchronous room-tool result.
+
+Before delegation, message submission or workflow invocation, the kernel
+persists `room.obligation.registered` with actor/room/run/prompt, kind and
+resource reference. A dispatch receipt records accepted resource identity or
+a proven pre-admission rejection. Receipt-write failure after admission must
+preserve dispatch and return the obligation/resource IDs so callers inspect
+existing work before retrying. The receipt transaction finishes before newly
+admitted provider dispatches are spawned, including when the receipt fails,
+so a failing receipt cannot batch-roll back those startup writes.
+Ambiguous post-commit failures retain intent;
+PR1 does not add automatic replay, settlement, yield or recovery scheduling.
+Those lifecycle semantics belong to PR2.
+
+## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
+
+MP-08 / MP-09 / MP-10 / MP-11: the integrated acceptance contract uses local
+protocol **513** and relay peer protocol **121**. It combines the agent-model
+493/102 task, wake, Goal and leased-watcher contracts; main's local 490 bounded
+relay response framing and socket-local receipts; and the native display,
+App-view, Notes, grant, capture, DOM-mirror and agent-tab contracts integrated
+at local 491. The display history includes bounded stripes (447), binary frames
+with WebP tiles and scroll rectangles (466), and relay display push/ACKs (475).
+Binary transport downgrade does not admit an obsolete worker runtime: remote
+lease creation, restored bindings, Room browser forwarding, context transfer and
+hosted slice receipts require peer 121 or newer. 513/121 also includes main's
+local 491 / relay peer 101 (#974) kernel ownership, waiting-room and Room
+workflow contracts. Client feature floors depend on
+the contracts they use; this entry allocates no new protocol version.
+
+MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
+actor normalization for display metadata/credits and the historical workflow
+read policy. A run with neither immutable agent creator nor invoking-user proof
+is visible only to the authenticated kernel owner, even when another member
+has Full collaboration. List, Get, snapshots and updates mark it with
+`created_before_ownership_tracking=true`; current endpoint/Room ownership never
+reassigns it. Web/TUI label it **Created before ownership tracking · read-only**.
+All individual and captured Room pause/resume/stop requests reject it below
+clients, including already-terminal/idempotent requests. New admissions retain
+the transactional immutable proof. Managed upgrade policy retains 506 as an
+explicit predecessor; the consuming web floor is 513.
+
+MP-08 / MP-10 / MP-11: local protocol **516** orders a DOM mirror read
+(`mirror_next`) behind every earlier `mirror_input` of the same mirror
+subscription and generation that reached the kernel first; the read never holds
+later input. A 516 client writes the read right behind a key, so the key's echo
+shares one relay round trip with input; kernels through 515 retain the
+input-reply-then-read path. The target's 513/121 lacked this ordering, so the
+coordinator allocated 516/124 above it; 511 is no longer an ordering floor.
+
+MP-08 / MP-10 / MP-11 G08: legacy recall tools (`chariox.search_recall`,
+`chariox.query_recall`, used while room agent tools are off) keep the
+`scope` values `current_session` and `all`; the argument shape is unchanged.
+Both values resolve to the caller's own session, including under `/sudo`; any
+other `session_id` is denied before lookup. The room history tools
+(`chariox.history.search`, `chariox.history.read`) follow the same rule. An agent
+in a live `/sudo` window reads another session through `chariox_kernel_request`
+with the typed recall request, which needs the owner's per-operation scope
+approval and is audited.
+
+MP-08 / MP-09 / MP-10 / MP-11 A10: leased watched processes use the existing
+signed, lease-scoped peer connection. Home owns the task, registration and inbox;
+worker owns a durable launch receipt and the common watched-process supervisor.
+Start is pinned to the current home prompt, worker run, placement and lease.
+Queries and cancellation retain that exact launch identity across turns. A lost
+Start response is reconciled by query, never by another execution. Worker restart
+or lost supervision produces source loss; a persisted PID is not a live handle.
+Older workers fail admission before creating a launch. Kernel-managed cwd,
+permission approval, output protection and pinned process signals apply on worker.
+
+
+With `CHARIOX_ROOM_AGENT_TOOLS=1`, local protocol 452 projects independent
+`agent_tasks` in the shared session snapshot. The kernel owns their SQLite
+ledger, attributed inbox, obligations and exact provider acceptance receipts.
+Task prompt IDs stay stable through admission, queueing, promotion and replay;
+provider-native settlement must reconcile the same task. New user work cannot
+hide an older incomplete task. The shared TUI status prioritizes blocked tasks
+and shows wait reason/deadline and aggregate unresolved obligations. Web and
+native clients must consume the same projection; client integration is required
+before claiming visibility on those clients.
+
+Ordinary provider runs receive `chariox.events.subscribe`, `subscriptions`,
+`unsubscribe`, `inbox`, `ack`, `yield` and `blocked`. Each requires current
+`task_id` and `origin_prompt_id`; room/run/turn fences precede resource lookup
+or mutation. A valid yield names admitted completion registrations, covers all
+unresolved obligations and has a finite future deadline. Waiting commits only
+when the official provider turn settles. Source completion/loss and overdue
+waits wake the retained task; ACK and provider acceptance remain distinct.
+
+MP-08 / MP-09 / MP-10 / MP-11: `chariox.events.cancel_wake` also accepts an
+earlier task's retained source from the same agent, room and owner. The caller
+still supplies the running turn's task and prompt IDs. Source ownership stays
+with the original task; its cancellation outcome invalidates the original
+wait, and a watched process settles only after physical exit. An owner Resume
+or corrective continuation takes precedence over that task's pending inbox
+delivery, so the event cannot create a replacement task during admission.
+
+A workflow node that yields remains supervised by its durable task after the
+native provider turn ends. The returned workflow run ID stays live and
+addressable for cancellation. Wake and owner continuations retain the same
+workflow/node context; cancelling the run cancels its bound tasks and resources.
+Orphan reconciliation and workflow completion must respect those retained
+tasks, including physical resource settlement after cancellation. The canonical
+`workflow_run` obligation and legacy `workflow` spelling share completion-source
+admission and settlement, so cancellation also releases the parent's wait.
+This lineage is private kernel storage and adds no serialized client fields.
+
+A final answer with unresolved obligations gets one persisted corrective turn,
+then blocks if still invalid. Unfinished work without a live wake source is
+corrected or shown as blocked, never silently left idle. The kernel sweeps every
+30 seconds. Three consecutive settled wake turns without real progress block
+further automatic wakes; the third turn may still handle progress. A handled
+result or verified public artifact resets the counter; repeated status, ACK,
+cursor or deadline changes do not. Fifteen minutes waiting without progress
+produces a notice. Unconfirmed provider delivery blocks within two minutes and
+requires reconciliation of the original receipt; uncertainty never permits
+blind replay. Damaged ledger/source rows are retained and quarantined.
+MP-08/MP-10/MP-11: each admitted delivery gets a full two-minute receipt
+window. Repeated refusals while idle have a separate bounded escalation clock;
+an active recipient turn clears that clock. Unsupported or refused steering
+stays queued through long turns and retries when the recipient becomes idle.
+Steer rejections do not start the idle-refusal clock; idle refusals start it at
+receipt time. A damaged refusal clock is retained and quarantines only its
+own delivery through the owner-action path; supervision of other Rooms continues.
+
+`chariox.send_agent_message` defaults to nonurgent and no reply. Nonurgent
+messages wait behind active work; idle/yielded receivers wake. Urgent messages
+use the existing exact-turn steer path, with rejected/unsupported steering
+retained for a later wake and uncertainty pinned. Explicitly stopped receivers
+keep pending items. `reply_requested=true` creates one correlated reply
+obligation; ordinary messages must not produce courtesy feedback loops.
+
+Blocked tasks create one kernel-owned **Agent needs your action** interaction,
+projected to every session client. In the TUI, open it with F8, Ctrl+G or
+`/approvals`, explicitly select Resume or Cancel, then confirm. Resume
+revalidates the blocked revision and retained receipts; progress or reconnect
+alone cannot resume. Cancellation retains obligations until actual owned
+resource settlement. MP-08/MP-10/MP-11: cancellation applies to the addressed
+task; an older independent wait still receives its source completion or deadline
+wake. Historical task ordering is not an agent stop disposition.
+Legacy `/agent task` commands still address Meta tasks;
+they are not selectors for regular `agent_tasks`. Process/timer watcher sources
+belong to PR3 and leased delivery reconciliation to PR10; unsupported leased
+paths fail visibly instead of fabricating acceptance.
+
+## 3.3.6 Hybrid Goals (MP-08 / MP-09 / MP-10 / MP-11, A12)
+
+With room agent tools enabled, owner terminal prompts `/goal [--interval N]
+<objective>` enter ordinary prompt admission on the focused ordinary agent.
+The interval defaults to 10 minutes and accepts 1–60. `/sudo /goal` uses the
+existing fresh elevation interaction; goal and elevation duration remain
+independent. Delegates inherit neither goal mode nor elevation.
+
+`agent_tasks[].goal` has schema version 1 and binds its immutable goal/task ID
+to owner, room, agent and original prompt. It persists the protected objective,
+objective revision, elapsed active/wait time, interval/next due, continuation
+sequence, evaluation intent/result, check count and verified final answer/evidence.
+Obligations, progress, blocked interactions and delivery receipts stay in the
+shared task ledger. No separate goal scheduler or relay/Cloud authority exists.
+
+Each work-turn end admits one same-provider `completion_check` turn, bounded
+by 60 seconds and an 8 KiB public assessment. Its bounded public context carries
+obligation and registration coverage. It runs through the same provider actor
+using a fresh tool-free official-provider conversation in a neutral directory;
+ordinary conversation/resume state and permissions remain available for later
+work. Native shell, file, network, configured MCP and runtime tools are disabled
+before dispatch. Unsupported unstructured assessment paths block explicitly.
+It cannot use sudo, recursively evaluate or count its assessment as progress. The home kernel
+validates achieved/continue/waiting/blocked against current objective and ledger
+bindings. Achieved requires no open, settling or failed obligations. Valid
+continue retains sources and admits one durable continuation; valid waiting
+requires coverage and a deadline no later than the goal interval. Both immediate
+continuations and periodic wakes share the no-progress guard. Malformed/timeout
+checks block once with explicit owner recovery. Plain tasks gain no goal loop.
+
+Owner controls use the existing `SubmitPrompt` frame:
+`/goal pause|resume|cancel|interval|edit <goal-id> <task-revision> [value]`.
+The TUI binds short commands to its displayed goal revision; web buttons send
+the same command. Stale/foreign controls fail. Pause/edit suspend looping while
+retaining obligations; edit fences prior evaluations. Resume revalidates retained
+resources and admits one continuation without renewing sudo. Source events and
+reconnect cannot resume a blocked goal. All clients read the same home goal row.
+
+New `/goal` no longer invokes `planner-worker-reviewer`. Existing templates,
+`/loop` and workflow history remain available. Legacy records without trustworthy
+command provenance continue draining and require explicit owner adoption:
+`/goal adopt <run-id> <owner-confirmed objective>` on the authoritative ordinary
+entry agent. Adoption atomically fences the run ID, records its original
+invocation reference, and tracks the existing run/nodes as covered obligations.
+It never replays a template launch. Completed/cancelled runs stay terminal;
+restart retains the migration receipt, source cursors and finite check-in.
+
+The goal shape, compact task acknowledgements and `completion_check` origin were
+introduced at local protocol 493 and are retained in the integrated 513/121
+contract above, with matching snapshots and dependent Goal client gates.
 
 ## 3.4 Workflow Coordination Semantics
 
@@ -2323,7 +2600,7 @@ Workflow trigger and deployment direction:
   persisted bindings and publication `event-bindings` documents that still
   carry the removed fields are read with them ignored.
 - protocol 365: direct workflow event bindings are retired. Initially events reached
-  workflows only through Apps (protocol 491 adds private workflow sources): an App inbox route (protocol 358) receives the
+  workflows only through Apps (protocol 452 adds private workflow sources): an App inbox route (protocol 358) receives the
   generator's events, and an App automation sends the App's outgoing event to
   an `event_based` publication. `CreateWorkflowEventBinding`,
   `ListWorkflowEventBindings`, `SetWorkflowEventBindingStatus`,
@@ -2892,7 +3169,9 @@ Workflow trigger and deployment direction:
 
   Kernel user config settings are live runtime policy. Set/unset is supported;
   unset restores the default. An extension popup is raised at the notice
-  time and a verified answer starts a new term.
+  time and a verified answer starts a new term. These terms apply to
+  external-agent grants only (default 8 h, at most 24 h); an older config
+  outside that range is clamped at load with a warning, never refused.
 
   ```toml
   [kernel_access]
@@ -2922,7 +3201,7 @@ Workflow trigger and deployment direction:
   than the command transport source. Only that class may submit a passkey or
   receive owner passkey popups. Unauthenticated Unix peers can only request
   access; approved external peers keep the process-bound, whole-local-kernel grant
-  path from protocol 404 and cannot answer critical approvals. Relay identities,
+  path from protocol 404 and cannot answer approvals. Relay identities,
   per-run runtime MCP admission and the publication gateway keep their existing
   credential paths. No first-party minimum version rises: token-aware clients
   also work with older log-mode kernels, and this change adds no request or event
@@ -2959,6 +3238,25 @@ Workflow trigger and deployment direction:
   Rotation, revoke all and session end revoke these entries as well. `/meta`
   retains delegation-only behavior for one release and emits a notice pointing
   to `/sudo`. See `KERNEL_SUDO.md` and `scripts/kernel-access-sudo-drill.sh`.
+- protocol 484 (MP-08/MP-10/MP-11 A04) replaces the one-turn authorization with
+  a finite window. The `sudo` popup carries `lifetime_minutes = 60` and
+  `max_lifetime_minutes = 480`; the approve answer's `custom_reply` selects 60,
+  120, 240 or 480 minutes (absent means 60), anything else is refused. The
+  window starts at the fresh verification and is bound to one owner-authorized
+  task: with room agent tools it covers that task's kernel-correlated
+  continuations across waits and wakes; without them, its first turn only.
+  `KernelSudoTurn` gains `task_id`, `duration_minutes`, `expires_at_ms`
+  (display only; authority uses the kernel's monotonic deadline, never
+  serialized), `revision` and `warning_sent`. `RuntimeSession.sudo_windows`
+  projects live windows only to each window's owner; other members see none. `ExtendKernelSudo { session_id,
+  attachment_id, entry_id, revision }` (host terminal only) raises one
+  fresh-passkey popup (`kernel_operation_id` `<entry>:extend:<revision>`); on
+  approval the expiry becomes now plus the chosen duration and `revision`
+  increments; the response is `KernelSudoExtended { turn }`. Stale revisions,
+  expired, revoked or restarted windows are refused. Agents can no longer answer
+  any interaction: `chariox_kernel_request` and every `KernelAgent` caller are
+  refused `RespondToInteraction`, `chariox.meta.resolve_runtime_interaction`
+  and its aliases are removed, and `kernel_access.sudo_approval` is retired.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
@@ -3284,6 +3582,90 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
 
+MP-08 / MP-10 / MP-11: a human's direct endpoint invocation records the authenticated
+invoking user atomically with queued admission in kernel-private durable metadata.
+Private run reads, snapshots and updates recognize that immutable creator proof;
+room ownership alone does not expose another user's or agent's private runs.
+The proof survives kernel restart and endpoint edits without adding a client or
+relay field. Legacy runs without creator proof remain fail-closed.
+
+### Workflow completion notifications (MP-08 / MP-10 / MP-11)
+
+Private same-user workflows are a second notification source kind beside Apps.
+The kernel emits successful final output or failure bare status once per run, with
+recorded subject/trigger provenance and optional declared output fields. Subscription
+filters use the shared AEGS equality/any-of semantics at source and target. Bindings
+and receipts generalize `app_automations` / `app_outbox` with source kinds `app_event`
+and `workflow_completion`; both use the existing App pump and ordinary durable queue
+handoff. App-specific signature/capability admission remains in the App adapter.
+
+These owner-bound messages use the shared current relay peer protocol version:
+`ListWorkflowNotificationSources`,
+`SubscribeWorkflowNotifications`, `UnsubscribeWorkflowNotifications` and
+`DeliverWorkflowNotification` over the existing E2EE channel. The original
+452/82 contract is included in the integrated 513/121 union; those introduction
+versions are not the current admission floor. Picker discovery reuses
+waiting-room kernel inventory; Cloud stores no workflow directory or event data.
+ACK means durable target acceptance, not run completion. Seven-day default / 1–30-day
+TTL and kernel-derived ancestry apply. Repeated target workflow identities drop
+with a diagnostic. Deletion/transfer leaves pending records to expire. See
+`EVENT_TRIGGER_PROTOCOL.md` for shared commands, bounded payloads, migration,
+source availability and the deferred workflow-owned run-scoped subscription design.
+
+MP-08 / MP-10: triggering metadata and optional subject pass through as opaque
+generator values; the kernel does not construct domain-specific subjects. Every
+App automation and workflow binding has `delivery_mode:queue|inject` (default queue).
+Injection retains the original durable admission until steering acceptance, joins
+ancestry to the selected run, and falls back to ordinary queue on idle/ended turns
+or multiple active workflow runs. Subscribers always belong to workflows.
+
+### MP-08 / MP-09 / MP-10 / MP-11 — transitional durable agent lifecycle (A02)
+
+Local daemon protocol **452** adds `RuntimeSession.agent_tasks`; relay82 is inherited
+from #885. The transitional `CHARIOX_ROOM_AGENT_TOOLS=1` surface publishes
+`chariox.events.subscribe/subscriptions/inbox/ack/yield/blocked`. Tools require the
+current task and prompt IDs; hidden turn context supplies both. Independent
+user prompts retain separate task records. Work can be working, waiting on
+admitted named sources with a future deadline, blocked on an explicit owner
+action, done, or owner-cancelled. Cancellation is never successful completion.
+
+Obligation/registration, wait intent, event admission and delivery intent commit
+through the shared SQLite writer. Native provider settlement commits the wait;
+a result racing it remains in the inbox. Done requires public output and no
+unresolved obligation. One persisted correction is permitted; another invalid
+end blocks on one kernel-owned interaction. Provider failures also block.
+The kernel sweeps every30 seconds; three consecutive wakes without handling a
+real result block;15 minutes without progress notifies attached/reconnecting
+clients; uncertain submission escalates after2 minutes without replay.
+
+`send_agent_message` adds `urgent=false` and `reply_requested=false`. Default
+messages wait behind busy turns in the event inbox. Urgent delivery targets the
+exact running turn and rechecks after acquiring its provider lane. Rejected or
+unsupported steering defers to a later wake; uncertain attempts remain pinned
+and preserve recipient FIFO. Explicitly stopped receivers retain pending items.
+Structured delivery is accepted only by the existing exact finished-submit
+receipt; enqueue and inbox ACK never substitute for provider acceptance.
+Reply opt-in registers one correlated result obligation; ordinary messages
+request no courtesy response. Legacy PR1 dispatch intents migrate idempotently
+as blocked obligations requiring exact reconciliation, without guessing success.
+
+Leased recipients (MP-08 / MP-09 / MP-10 / MP-11 A10, local protocol
+485, relay peer 83): the home kernel orders and delivers their events through the existing leased prompt
+dispatch. The worker's exact acceptance is the delivery receipt; a lost reply
+is reconciled from `GetLeasedPromptReceipt`, never a second turn; only a proven
+worker rejection returns the event to pending, and the retry uses a new home
+prompt id because the worker fences a rejected one. A leased turn's completion
+settles the home task as a local turn does, so delegators wake, and a leased
+run's `chariox.events.*` calls are forwarded home over `ForwardMetaRuntimeTool`
+with its current lease, worker run and running home prompt. Watched processes
+remain local-only. `UpdateLeasedSudo {leased_agent_id, home_prompt_id, grant:
+{entry_id, revision, remaining_ms, initial}}` installs, renews or ends
+(`remaining_ms` 0) the worker fence of a home sudo window for one exact leased
+home prompt; the worker lists and forwards `chariox_kernel_request` only under
+it and the home rechecks its own window on every call. A worker that lost the
+window refuses a non-initial renewal and the home ends the window. PR3
+supplies process/timer watcher sources. The real-provider/hosted validation
+matrix remains the acceptance gate.
 ### Protocol 418: user-domain App views
 
 `OpenUserAppView`, `ListUserAppViews`, `CloseUserAppView`,
@@ -3360,33 +3742,6 @@ replacement ACK and races two resume callers. Real acceptance additionally
 requires hosted WSS drop/blip/reconnect at DPR 1/2 and the built TUI, retained
 lists, cache reconciliation, unique bindings and zero decrypt failures.
 
-### Workflow completion notifications — local 491 / relay peer 101 (developed as 437 / 82; MP-08 / MP-10 / MP-11)
-
-Private same-user workflows are a second notification source kind beside Apps.
-The kernel emits successful final output or failure bare status once per run, with
-recorded subject/trigger provenance and optional declared output fields. Subscription
-filters use the shared AEGS equality/any-of semantics at source and target. Bindings
-and receipts generalize `app_automations` / `app_outbox` with source kinds `app_event`
-and `workflow_completion`; both use the existing App pump and ordinary durable queue
-handoff. App-specific signature/capability admission remains in the App adapter.
-
-Peer 101 adds owner-bound `ListWorkflowNotificationSources`,
-`SubscribeWorkflowNotifications`, `UnsubscribeWorkflowNotifications` and
-`DeliverWorkflowNotification` over the existing E2EE channel. Picker discovery reuses
-waiting-room kernel inventory; Cloud stores no workflow directory or event data.
-ACK means durable target acceptance, not run completion. Seven-day default / 1–30-day
-TTL and kernel-derived ancestry apply. Repeated target workflow identities drop
-with a diagnostic. Deletion/transfer leaves pending records to expire. See
-`EVENT_TRIGGER_PROTOCOL.md` for shared commands, bounded payloads, migration,
-source availability and the deferred workflow-owned run-scoped subscription design.
-
-MP-08 / MP-10: triggering metadata and optional subject pass through as opaque
-generator values; the kernel does not construct domain-specific subjects. Every
-App automation and workflow binding has `delivery_mode:queue|inject` (default queue).
-Injection retains the original durable admission until steering acceptance, joins
-ancestry to the selected run, and falls back to ordinary queue on idle/ended turns
-or multiple active workflow runs. Subscribers always belong to workflows.
-
 ### Retired kernel human Cloud controls, protocol 491 (MP-08 / MP-11)
 
 Kernel enrollment stores a kernel credential and cannot authorize human account
@@ -3406,3 +3761,19 @@ that login is required before creating any local invite. `/relay cloud pair` and
 `pair-machine` are retired; use `/client invite` for a terminal and independent
 `/cloud link` enrollment on the receiving kernel. Neither caller credentials nor
 human session tokens are sent to or persisted by the kernel.
+
+## MP-08 / MP-10 / MP-11 combined App Tab DOM mirror contract (517 / peer 125)
+
+Coordinator-allocated local protocol 517 combines the App Tab call, grant and
+input-attribution contract with DOM mirror v2 author CSS, text, live controls,
+compact deltas, per-document protection, native density, long-poll credits and
+resend. Mirror reads retain the shared per-viewer input ordering. Clients enable
+App echo pipelining only at the allocated ordering floor 516 or later; the
+v2 renderer requires 517 to admit inert layout-attribute deltas on opaque tiles. Old clients keep their existing
+minimum-version checks. App authority remains in the kernel App host; Cloud
+projects the kernel's Tab and surface geometry.
+
+The combined request snapshot is browser-mirror-517.json with a canonical SHA-256
+shape guard. Run the installed signed Todo App through the real /app open client
+flow, Notes and presented-glyph DPR1/2 drills from MULTIDOMAIN_DOM_MIRRORING.md.
+These tests supplement exact-head review and real hosted acceptance.

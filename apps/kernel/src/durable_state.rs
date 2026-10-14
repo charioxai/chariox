@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+mod agent_deletion_provenance;
+pub(crate) mod agent_lifecycle;
 pub(crate) mod app_activation;
 pub(crate) mod app_active_release;
 pub(crate) mod app_automations;
@@ -55,6 +57,7 @@ pub(crate) mod room_environment;
 pub(crate) mod storage_full;
 pub(crate) mod worker_prompt_receipts;
 pub(crate) mod worker_steer_receipts;
+pub(crate) mod workflow_invocation_provenance;
 mod writer_fence;
 use writer_fence::fenced_writer_error;
 pub(crate) mod notification_target;
@@ -74,6 +77,7 @@ pub struct DurableKernelStateStore {
     workflow_runtime_transition_lock: Arc<Mutex<()>>,
     app_wake_changed: Arc<tokio::sync::Notify>,
     _owner: Option<Arc<owner::OwnerLease>>,
+    workflow_history_authority: workflow_invocation_provenance::WorkflowHistoryAuthority,
 }
 
 const DURABLE_WRITE_QUEUE_CAPACITY: usize = 4_096;
@@ -173,11 +177,23 @@ struct DurableWriteRequest {
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing DurableWriterRequest typed actor payload layout"
+)]
 enum DurableWriterRequest {
     Ordinary(DurableWriteRequest),
     App(Box<apps::AppRegistryRequest>),
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     AppPublisher(Box<app_publishers::AppPublisherRequest>),
     AppPublisherOperation(Box<app_publisher_operations::PublisherOperationRequest>),
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     VerifiedApp(Box<app_installation_staging::AppVerifiedInstallationRequest>),
     AppState(Box<app_state::AppStateRequest>),
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -192,6 +208,7 @@ enum DurableWriterRequest {
     AppConnectionGrant(Box<app_connections::ConnectionGrantRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
+    AgentLifecycle(Box<agent_lifecycle::Request>),
     WorkflowNotification(Box<workflow_notifications::NotificationRequest>),
     AppActivation(Box<app_activation::AppActivationRequest>),
     AppWorkerLifecycle(Box<app_worker_lifecycle::AppWorkerLifecycleRequest>),
@@ -248,6 +265,7 @@ enum DurableWriteOperation {
         workflow_runs: Vec<DurableWorkflowRunWrite>,
         delivery_receipts: Vec<DurableDeliveryReceiptWrite>,
         prompt_state_jsons: Vec<String>,
+        invocation_creator: Option<workflow_invocation_provenance::WorkflowUserInvocation>,
     },
     WorkflowRuntimeMigration {
         owner_id: String,
@@ -386,6 +404,7 @@ impl DurableKernelStateStore {
         app_state::initialize(&mut connection)?;
         app_automations::initialize(&mut connection)?;
         workflow_notifications::initialize(&mut connection)?;
+        agent_lifecycle::initialize(&mut connection)?;
         app_inbox::initialize(&connection)?;
         app_worker_lifecycle::initialize(&connection)?;
         app_validations::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
@@ -426,6 +445,7 @@ impl DurableKernelStateStore {
             workflow_runtime_transition_lock: Arc::new(Mutex::new(())),
             app_wake_changed: Arc::new(tokio::sync::Notify::new()),
             _owner: None,
+            workflow_history_authority: Default::default(),
         })
     }
 
@@ -1562,6 +1582,14 @@ fn run_durable_writer(
                 app_bindings::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AgentLifecycle(request) => {
+                if agent_lifecycle::execute(&mut connection, *request) {
+                    health.fatal.store(true, Ordering::Release);
+                    health.stopped_uncertain.store(true, Ordering::Release);
+                    break;
+                }
+                continue;
+            }
             DurableWriterRequest::WorkflowNotification(request) => {
                 if workflow_notifications::execute(&mut connection, *request) {
                     health.fatal.store(true, Ordering::Release);
@@ -1674,6 +1702,7 @@ fn run_durable_writer(
                     | DurableWriterRequest::AppConnectionGrant(_)
                     | DurableWriterRequest::AppBinding(_)
                     | DurableWriterRequest::AppAutomation(_)
+                    | DurableWriterRequest::AgentLifecycle(_)
                     | DurableWriterRequest::WorkflowNotification(_)
                     | DurableWriterRequest::AppActivation(_)
                     | DurableWriterRequest::AppWorkerLifecycle(_)
@@ -1811,6 +1840,7 @@ fn commit_durable_write_batch(
                 workflow_runs,
                 delivery_receipts,
                 prompt_state_jsons,
+                invocation_creator,
             } => workflow_runtime::write_workflow_runtime_transition(
                 &transaction,
                 workflow_runtime::WorkflowRuntimeTransitionWrite {
@@ -1825,6 +1855,7 @@ fn commit_durable_write_batch(
                     workflow_runs,
                     delivery_receipts,
                     prompt_state_jsons,
+                    invocation_creator: invocation_creator.as_ref(),
                 },
             ),
             DurableWriteOperation::WorkflowRuntimeMigration {

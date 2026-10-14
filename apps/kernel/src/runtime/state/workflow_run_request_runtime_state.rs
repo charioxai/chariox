@@ -12,6 +12,7 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::InvokeWorkflowEndpointRequest,
         caller_user_id: &str,
+        caller_agent_id: Option<&str>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
@@ -28,14 +29,32 @@ impl KernelRuntimeState {
             "invoke workflow endpoint",
         ) {
             Ok(()) => {
-                let (outcome, dispatches) = match owned.workflow_enqueue_prompt_and_maybe_start(
-                    &request.session_id,
-                    &request.workflow_ref,
-                    &request.endpoint_ref,
-                    request.prompt.clone(),
-                    request.queue_ref.as_deref(),
-                    request.publication_invocation.clone(),
-                ) {
+                let obligation = match caller_agent_id
+                    .map(|id| {
+                        let actor = self.owned.agent_store.get_agent(id)?;
+                        self.register_room_dispatch_obligation(
+                            &actor,
+                            "workflow_run",
+                            Some(&request.workflow_ref),
+                        )
+                    })
+                    .transpose()
+                {
+                    Ok(id) => id.flatten(),
+                    Err(error) => return (Err(error), None),
+                };
+                let (outcome, dispatches) = match owned
+                    .workflow_enqueue_prompt_by_agent_and_maybe_start(
+                        &request.session_id,
+                        &request.workflow_ref,
+                        &request.endpoint_ref,
+                        request.prompt.clone(),
+                        request.queue_ref.as_deref(),
+                        request.publication_invocation.clone(),
+                        caller_agent_id,
+                        caller_agent_id.is_none().then_some(caller_user_id),
+                        obligation.as_deref(),
+                    ) {
                     Ok(outcome) => outcome,
                     Err(error) => return (Err(error), None),
                 };
@@ -48,7 +67,24 @@ impl KernelRuntimeState {
                     }
                     _ => None,
                 };
-                self.spawn_workflow_prompt_dispatches(dispatches);
+                let resource_id = match &outcome {
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                        workflow_run,
+                        ..
+                    } => workflow_run.id(),
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
+                        queued_prompt,
+                        ..
+                    } => queued_prompt.id(),
+                };
+                // Admission already committed: receipt failure must not discard dispatches.
+                if let Err(error) =
+                    self.finish_room_dispatch(obligation.as_deref(), Some(resource_id), || {
+                        self.spawn_workflow_prompt_dispatches(dispatches)
+                    })
+                {
+                    return (Err(error), None);
+                }
                 let refreshed_workflow_run = match dev_stub_workflow_run_id.as_deref() {
                     Some(workflow_run_id) => {
                         self.wait_for_dev_stub_workflow_run_start(
@@ -198,6 +234,7 @@ impl KernelRuntimeState {
                 session_id: session_id.to_string(),
                 workflow_run_id: workflow_run_ref.to_string(),
             })?;
+        owned.ensure_workflow_run_has_control_provenance(&session, &resolved_workflow_run)?;
         let workflow_run_id = resolved_workflow_run.id().to_string();
         let expected_status = if pause {
             crate::session::WorkflowRunStatus::Paused
@@ -205,6 +242,10 @@ impl KernelRuntimeState {
             crate::session::WorkflowRunStatus::Stopped
         };
         if resolved_workflow_run.status() == expected_status {
+            if !pause {
+                self.cancel_workflow_agent_tasks(session_id, &workflow_run_id)
+                    .await?;
+            }
             return Ok((resolved_workflow_run, owned.session_snapshot(session_id)?));
         }
         let mut provider_run_ids = owned
@@ -343,6 +384,10 @@ impl KernelRuntimeState {
                 self.spawn_prompt_abort(dispatch, self.provider_runtime_lanes.clone());
             }
         }
+        if !pause {
+            self.cancel_workflow_agent_tasks(session_id, &workflow_run_id)
+                .await?;
+        }
         Ok((workflow_run, owned.session_snapshot(session_id)?))
     }
 
@@ -355,6 +400,29 @@ impl KernelRuntimeState {
     ) {
         let owned = &self.owned;
         let session_id = request.session_id.clone();
+        let admitted = (|| {
+            let session = owned.session_store.get_session(&request.session_id)?;
+            // MP-08/MP-10/MP-11: history may already be pruned from hot state.
+            // Resolve the same durable archive used by reads before classifying control.
+            let run = owned
+                .session_store
+                .read()
+                .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)
+                .ok()
+                .or(owned.durable_state_store.resolve_workflow_run(
+                    session.host_daemon_id(),
+                    session.id(),
+                    &request.workflow_run_ref,
+                )?)
+                .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                    session_id: request.session_id.clone(),
+                    workflow_run_id: request.workflow_run_ref.clone(),
+                })?;
+            owned.ensure_workflow_run_has_control_provenance(&session, &run)
+        })();
+        if let Err(error) = admitted {
+            return (Err(error), None);
+        }
         if let Err(error) = owned.require_publication_activation() {
             return (Err(error), owned.session_snapshot(&session_id).ok());
         }

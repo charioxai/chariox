@@ -181,6 +181,9 @@ pub(crate) fn provider_auth_env_vars(provider: &str) -> &'static [&'static str] 
             "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_CUSTOM_HEADERS",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY",
             "CLAUDE_CODE_OAUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
             "CLAUDE_CODE_OAUTH_SCOPES",
@@ -1172,9 +1175,7 @@ impl ProviderAccountProfileRegistry {
             .iter()
             .filter(|profile| {
                 profile.public.owner_user_id == owner_user_id
-                    && provider
-                        .as_deref()
-                        .is_none_or(|provider| profile.public.provider == provider)
+                    && provider.is_none_or(|provider| profile.public.provider == provider)
             })
             .map(|profile| project_usage_freshness(profile.public.clone()))
             .collect())
@@ -1234,8 +1235,10 @@ impl ProviderAccountProfileRegistry {
         // MP-08/MP-10/MP-11: a registered Claude token is admitted to the
         // kernel's first-use check. Unknown/expired observations must not ask
         // the user to replace a potentially valid token before that check.
-        let deferred_claude_check = profile.auth_state != ProviderAccountAuthState::Authenticated
-            && profile.provider == "claude"
+        let deferred_claude_check = matches!(
+            profile.auth_state,
+            ProviderAccountAuthState::Unknown | ProviderAccountAuthState::Expired
+        ) && profile.provider == "claude"
             && crate::provider::provider_account_credential_registered(
                 owner_user_id,
                 "claude",
@@ -1284,22 +1287,15 @@ impl ProviderAccountProfileRegistry {
 
     pub(crate) fn require_agent_authenticated(
         &self,
-        config: &crate::config::DaemonConfig,
+        owner_user_id: &str,
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(());
         };
-        let owner_user_id = provider_account_authority_owner_for_profile(
-            config,
-            self,
-            agent.owner_user_id(),
-            provider,
-            agent.provider_account_profile(),
-        )?;
         self.require_authenticated(
-            &owner_user_id,
+            owner_user_id,
             provider,
             agent.provider_account_profile(),
             agent.model(),
@@ -1322,6 +1318,10 @@ impl ProviderAccountProfileRegistry {
             .map(|profile| profile.public.clone())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing update_observation operation signature and explicit context arguments"
+    )]
     pub fn update_observation(
         &self,
         owner_user_id: &str,
@@ -2253,7 +2253,7 @@ impl ProviderAccountProfileRegistry {
                 require_replica_root_identity(managed_parent, profile_id, expected_root_identity)?;
                 managed_parent.rename(profile_id, rollback_name)?;
                 require_replica_root_identity(
-                    &managed_parent,
+                    managed_parent,
                     rollback_name,
                     expected_root_identity,
                 )?;
@@ -2809,7 +2809,7 @@ impl ProviderAccountProfileRegistry {
             let registry_restore_error = self.persist_locked(&document).err();
             let root_restore_error = retained.as_ref().and_then(|(root, identity, parent)| {
                 let name = root.file_name()?.to_str()?;
-                require_replica_root_identity(&parent, name, *identity)
+                require_replica_root_identity(parent, name, *identity)
                     .and_then(|_| {
                         if parent.exists(profile_id)? {
                             return Err(registry_error(
@@ -4796,7 +4796,7 @@ fn remove_managed_root(root: &Path, registry_path: &Path) -> Result<(), DaemonEr
             ));
         };
         let parent = managed_fs::ManagedProviderParent::open(registry_path, owner, provider)?;
-        return parent.remove(name);
+        parent.remove(name)
     }
     #[cfg(not(unix))]
     {

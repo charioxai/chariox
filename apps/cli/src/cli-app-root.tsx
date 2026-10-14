@@ -1,4 +1,5 @@
 import { createCliUserAppViewsComposition } from "./cli-user-app-views-composition.js"
+import { sessionActivePromptForAgent } from "@chariox/kernel-client/session-prompt-identity"
 import type { MutableLocalIpcClient } from "./mutable-local-ipc-client.js"
 import { createProviderLoginLinkOpener, localDesktopAvailable } from "./provider-login-link.js"
 import { createProviderLoginInteractionController } from "./provider-login-interaction-controller.js"
@@ -378,8 +379,10 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     const session = sessionState()
+    // MP-08 / MP-09 / MP-10 / MP-11 G03: read outside the untracked signal updater.
+    const attachmentId = attachmentState()?.id
     setWorkspaceShellContext((previous) =>
-      deriveWorkspaceShellContextForSession(previous, session, attachmentState()?.id))
+      deriveWorkspaceShellContextForSession(previous, session, attachmentId))
   })
   const historyLoadingRenderController = createHistoryLoadingRenderController({
     renderer,
@@ -404,10 +407,10 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
   const promptStopController = createPromptStopController({
     getAttachment: attachmentState,
-    getActivePrompt: activePrompt,
+    getActivePrompt: () => sessionActivePromptForAgent(sessionState(), focusedAgentId() ?? sessionState().focused_agent_id ?? ""),
     getSessionId: () => sessionState().id,
-    getFallbackStreamingAgentId: streamingAgentId,
-    cancelActivePrompt: (sessionId, attachmentId) => cancelActivePrompt(client, sessionId, attachmentId),
+    getFallbackStreamingAgentId: () => focusedAgentId() ?? streamingAgentId(),
+    cancelActivePrompt: (sessionId, attachmentId, targetAgentId) => cancelActivePrompt(client, sessionId, attachmentId, targetAgentId),
     onCancellationRequested: (targetAgentId) => {
       appLogger?.info("requested active prompt cancellation")
       setStatusLine("Cancellation requested.")
@@ -776,6 +779,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     closeOtherDialog: () => { userAppViews?.hide(); closeActiveDialogOverlay() },
     applySession: applySessionState,
     notify: (message) => flashFooter(message, "info"),
+    attachmentId: () => attachmentState()?.id ?? null,
   })
 
   userAppViews = createCliUserAppViewsComposition({
@@ -1172,6 +1176,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       assignDialogOverlayBox={assignDialogOverlayBox}
       assignKernelApprovalBox={kernelApprovals.assignBox}
       assignKernelApprovalBanner={kernelApprovals.assignBanner}
+      assignSudoBand={kernelApprovals.assignSudoBand}
       assignPasskeyPopupBox={kernelApprovals.assignPopupBox}
       assignProviderAccountRecoveryBox={providerAccountRecovery.assignBox}
       kernelApprovalOwnsInput={() => kernelApprovals.ownsInput() || Boolean(userAppViews?.ownsInput())}

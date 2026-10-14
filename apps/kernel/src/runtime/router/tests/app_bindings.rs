@@ -116,9 +116,8 @@ async fn app_discovery_consumes_its_cursor_without_exposing_another_owners_insta
         serde_json::json!({"kind":"app","apps_cursor":"bad\nvalue"}),
         serde_json::json!({"kind":"app","apps_cursor":cursor,"owner":"bob"}),
     ] {
-        match call(arguments).await {
-            Ok(result) => assert!(!result.ok),
-            Err(_) => {}
+        if let Ok(result) = call(arguments).await {
+            assert!(!result.ok)
         }
     }
 }

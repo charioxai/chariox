@@ -17,7 +17,7 @@ export type KernelBrowserCommand =
   | { op: "display_actors" }
   | { op: "display_subscribe"; tab_id: string; generation: number; codecs: string[]; bitrate: number; device_scale_factor: 1 | 2 }
   | { op: "display_next"; subscription_id: string; generation: number; after_sequence: number }
-  // MP-08/MP-10: protocol 475 push acknowledgement on a relay display subscription.
+  // MP-08/MP-10: protocol 491 push acknowledgement on a relay display subscription.
   | { op: "display_ack"; subscription_id: string; generation: number; sequence: number; lost: boolean }
   | { op: "display_input"; tab_id: string; generation: number; document_id: string; input: KernelBrowserInput }
   | { op: "start" | "state" | "stop" }
@@ -44,6 +44,7 @@ export type UserDomainGrant = {
   agent_id: string; session_id: string; kernel_id: string; resources: UserDomainResource[];
   since_ms: number; focused: boolean; idle_since_ms: number | null;
   idle_timeout_seconds: number; expiry_rule: string
+  prompt_id?: string | null; delegated_by_agent_id?: string | null; expires_at_ms?: number | null
 }
 export type UserDomainGrantEvent = {
   event: "user_domain_grants_changed"; cursor: number; grants: UserDomainGrant[];
@@ -52,9 +53,11 @@ export type UserDomainGrantEvent = {
 export function userDomainWindowBadge(access: UserDomainWindowAccess): string | null {
   return access.reachable_by_focused_agent ? null : `Your focused agent can't control this window — focus an agent on kernel ${access.kernel_name}`
 }
-export type KernelBrowserTab = { tab_id: string; document_id: string; url: string; title: string }
+export type KernelBrowserTabActor = { actor_id: string; kind: "agent" | "human"; display_label: string }
+export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; actor: KernelBrowserTabActor }
+export type KernelBrowserTab = { tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null }
 export type KernelBrowserResult = {
-  generation?: number; state?: "ready" | "stopped"; tabs?: KernelBrowserTab[];
+  generation?: number; state?: "ready" | "stopped"; tabs?: KernelBrowserTab[]; agent_activity?: KernelBrowserAgentActivity | null;
   tab_id?: string; subscription_id?: string; frame?: KernelBrowserFrame | null;
   snapshot?: unknown; unsubscribed?: boolean;
   kernel_id?: string; kernel_name?: string; focused_agent_kernel_id?: string | null;

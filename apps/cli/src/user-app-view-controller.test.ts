@@ -42,11 +42,13 @@ test("waiting-room App opens without session and shares the kernel browser seam"
   } finally { await h.controller.dispose() }
   assert.deepEqual(h.requests.at(-1),{CloseUserAppView:{view_id:"v"}})
 })
-test("Room App open stays on the existing path, flag-off verbs send nothing",async()=>{
+test("App open uses the kernel browser, flag-off verbs send nothing",async()=>{
   const h=harness()
-  try { assert.equal(await h.controller.handle(["open","fixture"],"session"),false)
+  try { assert.equal(await h.controller.handle(["open","fixture"]),true)
+    assert.deepEqual(h.requests[0],{OpenUserAppView:{installation_id:"fixture",host:"kernel_browser"}})
+    const count=h.requests.length
     assert.equal(await h.controller.handle(["open","fixture","--session","room"]),false)
-    assert.equal(h.requests.length,0)
+    assert.equal(h.requests.length,count)
     await assert.rejects(handleAppSlashCommand({sendAppRequest:async()=>{throw Error("must not send")},appendNotice(){},flashFooter(){}},parseSlashCommand("/app views") as any),/CHARIOX_USER_APP_VIEWS_PROTOTYPE/)
     assert.equal(tuiAppHelp(true).length,tuiAppHelp(false).length+2)
   } finally {await h.controller.dispose()}
@@ -136,7 +138,7 @@ test("session-less critical popup is flag gated; proof reply requires matching k
 })
 
 
-test("actual TUI slash handler selects waiting-room user view and preserves explicit Room open", async () => {
+test("actual TUI slash handler opens kernel-browser App tabs with and without a Room", async () => {
   const h = harness()
   const room: any[] = []
   const deps = {userAppViews:h.controller,sendAppRequest:async(request:any)=>{room.push(request);return {AppViewOpened:{installation_id:"fixture",tab_id:"room-tab",session_id:"room"}}},appendNotice(){},flashFooter(){}}
@@ -144,7 +146,8 @@ test("actual TUI slash handler selects waiting-room user view and preserves expl
     await handleAppSlashCommand(deps,parseSlashCommand("/app open fixture") as any)
     assert.deepEqual(h.requests[0],{OpenUserAppView:{installation_id:"fixture",host:"kernel_browser"}})
     await handleAppSlashCommand({...deps,currentAppSessionId:()=>"room"},parseSlashCommand("/app open fixture") as any)
-    assert.deepEqual(room[0],{OpenAppView:{installation_id:"fixture",session_id:"room"}})
+    assert.deepEqual(room,[])
+    assert.equal(h.requests.filter(r=>r.OpenUserAppView?.host==="kernel_browser").length,2)
   } finally {await h.controller.dispose()}
 })
 test("queued keys after Escape are discarded before kernel mutation",async()=>{

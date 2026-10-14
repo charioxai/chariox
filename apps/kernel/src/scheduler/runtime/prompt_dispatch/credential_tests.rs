@@ -44,7 +44,7 @@ impl Fixture {
         config.user_config.credential_vault.path =
             root.join("credentials.vault").display().to_string();
         crate::secret::unlock_chariox_encrypted_vault(
-            &root.join("credentials.vault"),
+            root.join("credentials.vault"),
             "fixture passphrase",
             crate::secret::VaultUnlockLease::KernelShutdown,
         )
@@ -112,7 +112,7 @@ impl Fixture {
 
     fn store_token(&mut self) {
         crate::secret::unlock_chariox_encrypted_vault(
-            &self.root.join("credentials.vault"),
+            self.root.join("credentials.vault"),
             "fixture passphrase",
             crate::secret::VaultUnlockLease::KernelShutdown,
         )
@@ -275,7 +275,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = crate::secret::lock_chariox_encrypted_vault(&self.root.join("credentials.vault"));
+        let _ = crate::secret::lock_chariox_encrypted_vault(self.root.join("credentials.vault"));
         let _ = crate::secret::clear_vault_secret_process_cache();
         match self.previous_home.take() {
             Some(value) => std::env::set_var("CHARIOX_HOME", value),

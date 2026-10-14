@@ -1,6 +1,7 @@
 //! MD-5: user-domain scope over the Room Vault/observation implementation.
 use super::kernel_browser_runtime::{host_error, PASTE};
 use super::*;
+use crate::local::KernelSudoTurn;
 use crate::runtime::browser_controller_action::BrowserLocatorAction;
 use crate::runtime::kernel_browser_host::{KernelBrowserAdmission, KernelBrowserHost};
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
@@ -76,7 +77,7 @@ impl KernelRuntimeState {
     }
 
     // Caller holds the scope's capture/input barrier for every protected operation.
-    async fn kernel_browser_bound_operation(
+    pub(super) async fn kernel_browser_bound_operation(
         &self,
         user: &str,
         admission: Option<&KernelBrowserAdmission>,
@@ -84,6 +85,24 @@ impl KernelRuntimeState {
         params: Value,
         protect: bool,
     ) -> Result<Value, DaemonError> {
+        let model_mutation = admission.is_some_and(KernelBrowserAdmission::is_agent)
+            && (method == "host.secret"
+                || (method == "host.browser"
+                    && matches!(
+                        params["op"].as_str(),
+                        Some(
+                            "stop"
+                                | "close"
+                                | "navigate"
+                                | "input"
+                                | "mirror_input"
+                                | "display_input"
+                        )
+                    )));
+        let tab = params["tab_id"].as_str().map(str::to_owned);
+        if model_mutation && self.handoff_model_write_blocked(user, tab.as_deref()) {
+            return Err(host_error("owner_step_pending: wait for the owner's hand-off completion before changing this tab".into()));
+        }
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
         let policy = if protect {
@@ -94,7 +113,17 @@ impl KernelRuntimeState {
             Value::Null
         };
         let host = self.owned.kernel_browser_host.clone();
-        let admission = admission.cloned();
+        let admission = admission.cloned().map(|admission| {
+            if model_mutation {
+                let state = self.clone();
+                let owner = user.to_owned();
+                admission.with_authority(move || {
+                    !state.handoff_model_write_blocked(&owner, tab.as_deref())
+                })
+            } else {
+                admission
+            }
+        });
         let (user, method) = (user.to_string(), method.to_string());
         let pixels =
             method == "host.browser" && (params["op"] == "screenshot" || params["op"] == "poll");
@@ -143,47 +172,76 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         arguments: Value,
         admission: KernelBrowserAdmission,
+        sudo_turn: Option<&KernelSudoTurn>,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let args: PasteArgs = serde_json::from_value(arguments)
             .map_err(|_| host_error("MD-5: invalid Vault input arguments".into()))?;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         let user = user.as_str();
         require_vault_owner(user)?;
-        self.owned
-            .kernel_browser_host
-            .check_admission(Some(&admission))
-            .map_err(host_error)?;
+        let check_authority = || {
+            self.owned
+                .kernel_browser_host
+                .check_admission(Some(&admission))
+                .map_err(host_error)
+        };
+        check_authority()?;
         // Validate the observed document before prompting for unlock. Recheck
         // metadata, focus and target afterward, under the actual input barrier.
         let url = self
             .kernel_browser_secret_target_url(user, &admission, &args)
             .await?;
-        self.home_runtime_secret_service()?
-            .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?;
+        check_authority()?;
+        crate::runtime::state::sudo::require_login_handle_scope(
+            self.home_runtime_secret_service()?
+                .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
+            session,
+            sudo_turn.is_some(),
+        )?;
+        let protection = &self.owned.kernel_browser_secret_observations;
+        let scope = KernelBrowserHost::profile_key(user);
+        // MP-11 A06: discovery fixes the protection epoch the fill relies on.
+        let epoch = protection.revision(&scope)?;
         let _unlock = self
             .ensure_vault_unlocked_for_agent(session, agent.id(), "kernel_browser_paste_secret")
             .await?;
-        let protection = &self.owned.kernel_browser_secret_observations;
-        let scope = KernelBrowserHost::profile_key(user);
+        check_authority()?;
         let (service, _vault_guard) = self
             .scoped_secret_input_service(protection, &scope, &args.credential_id)
             .await?;
+        check_authority()?;
         let _barrier = protection.barrier(&scope)?.write_owned().await;
+        check_authority()?;
         let current = self.owned.agent_store.get_agent(agent.id())?;
+        let authorized = match sudo_turn {
+            Some(turn) => self.sudo_turn_live(turn),
+            None => self.owned.session_snapshot(session)?.focused_agent_id() == Some(agent.id()),
+        };
         if current.session_id() != session
             || current.owner_user_id() != agent.owner_user_id()
-            || self.owned.session_snapshot(session)?.focused_agent_id() != Some(agent.id())
+            || !authorized
         {
             return Err(host_error(
-                "MD-3: current local focus required after Vault wait".into(),
+                "MD-3: current local focus or sudo window required after Vault wait".into(),
             ));
         }
         require_vault_owner(
             &self.provider_account_authority_owner_user_id(current.owner_user_id()),
         )?;
+        if protection.revision(&scope)? != epoch {
+            return Err(host_error(
+                "MP-11: observation protection changed during the Vault wait; observe the page again".into(),
+            ));
+        }
         let url = self
             .kernel_browser_secret_target_url_bound(user, &admission, &args)
             .await?;
+        check_authority()?;
+        crate::runtime::state::sudo::require_login_handle_scope(
+            service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
+            session,
+            sudo_turn.is_some(),
+        )?;
         let secret = zeroize::Zeroizing::new(
             service.browser_secret_input_for_target_url(&args.credential_id, &url)?,
         );
@@ -197,6 +255,7 @@ impl KernelRuntimeState {
                 true,
             )
             .await?;
+        check_authority()?;
         let target = snapshot["snapshot"]["target_id"]
             .as_str()
             .ok_or_else(|| host_error("MD-5: missing target identity".into()))?;
@@ -216,6 +275,7 @@ impl KernelRuntimeState {
                 timeout_ms: 10_000,
             };
         protection.register_command(&scope, &command)?;
+        check_authority()?;
         self.kernel_browser_bound_operation(user, Some(&admission), "host.secret", json!({"tab_id":args.tab_id,"generation":args.generation,"document_id":args.document_id,"node_ref":args.node_ref,"action":action}), true).await?;
         Ok(RuntimeToolResult {
             ok: true,
@@ -303,11 +363,28 @@ fn scrub_browser_result(
         protection.require(scope, false)?;
         return Ok(result);
     }
+    if pixels && display && result.is_object() {
+        // MP-08/MP-10/MP-11: this is a host-owned transport schema. Neither
+        // fixed keys nor enum/binding strings are document observations.
+        protection.require(scope, false)?;
+        if let Some(frame) = result.get_mut("display_frame") {
+            if !frame.is_null() && !frame.is_object() {
+                return Err(host_error("MD-DISPLAY: invalid protected frame".into()));
+            }
+            *frame = scrub_display_metadata(protection, scope, frame.take(), true)?;
+        }
+        if let Some(object) = result.as_object_mut() {
+            for (key, value) in object {
+                if key != "display_frame" {
+                    *value = scrub_display_metadata(protection, scope, value.take(), false)?;
+                }
+            }
+        }
+        return Ok(result);
+    }
     // Trusted masked pixel bytes are opaque; scrubbing base64 as text would
     // corrupt images for short Vault values. All metadata still gets scrubbed.
-    let pixel_path = if display {
-        "/display_frame"
-    } else if result.get("frame").is_some() {
+    let pixel_path = if result.get("frame").is_some() {
         "/frame/data_base64"
     } else {
         "/data_base64"
@@ -318,27 +395,61 @@ fn scrub_browser_result(
         None
     };
     let mut result = protection.scrub(scope, result)?;
-    if let Some(mut data) = data {
-        if display && !data.is_null() {
-            // Opaque bytes are protected by the host; textual document/tab metadata is scrubbed.
-            let frame = data
-                .as_object_mut()
-                .ok_or_else(|| host_error("MD-DISPLAY: invalid protected frame".into()))?;
-            let payload = frame.remove("data_base64");
-            let tiles = frame.remove("tiles");
-            data = protection.scrub(scope, data)?;
-            if let Some(payload) = payload {
-                data["data_base64"] = payload;
-            }
-            if let Some(tiles) = tiles {
-                data["tiles"] = tiles;
-            }
-        }
+    if let Some(data) = data {
         if let Some(slot) = result.pointer_mut(pixel_path) {
             *slot = data;
         }
     }
     Ok(result)
+}
+
+// Display keys come from the fixed host contract. Scrub document-derived
+// values while preserving opaque protected payloads and trusted frame fields.
+fn scrub_display_metadata(
+    protection: &super::room_secret_observation::RoomSecretObservations,
+    scope: &str,
+    mut value: Value,
+    schema: bool,
+) -> Result<Value, DaemonError> {
+    // Admission was checked once above; primitives cannot carry text. Avoid
+    // serialization/value-lock work for every tile coordinate and key flag.
+    if matches!(&value, Value::Null | Value::Bool(_) | Value::Number(_)) {
+        return Ok(value);
+    }
+    if !schema {
+        return protection.scrub(scope, value);
+    }
+    match &mut value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                if schema
+                    && matches!(
+                        key.as_str(),
+                        "kind"
+                            | "codec"
+                            | "format"
+                            | "colour"
+                            | "subscription_id"
+                            | "tab_id"
+                            | "document_id"
+                            | "data_base64"
+                    )
+                {
+                    continue;
+                }
+                let segment = schema && matches!(key.as_str(), "tiles" | "stripes");
+                *child = scrub_display_metadata(protection, scope, child.take(), segment)?;
+            }
+        }
+        Value::Array(array) => {
+            for child in array {
+                *child = scrub_display_metadata(protection, scope, child.take(), schema)?;
+            }
+        }
+        Value::String(_) => return protection.scrub(scope, value),
+        _ => {}
+    }
+    Ok(value)
 }
 
 fn require_vault_owner(user: &str) -> Result<(), DaemonError> {
@@ -403,6 +514,90 @@ mod tests {
             .unwrap();
         }
     }
+    #[test]
+    fn mp08_mp11_hydrated_stripes_survive_short_secret_scrubbing() {
+        use super::super::room_secret_observation::RoomSecretObservations;
+        use crate::transport::kernel_browser_display::encode_display_event;
+        let root = crate::test_support::TestWorktree::new("stripe-scrub-boundary");
+        let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+        for secret in ["AAAA", "stripes", "frame", "avc1", "srgb"] {
+            store.register("stripe", secret).unwrap();
+        }
+        // MP-08/MP-10/MP-11: schema and binding collisions must survive the
+        // production scrub -> event extraction -> CXD1 transport boundary.
+        let packet = "AAAAAWU=";
+        let frame = json!({"kind":"stripes","subscription_id":"frame-stripes",
+            "tab_id":"frame-tab", "document_id":"stripes-document", "generation":1,
+            "sequence":2, "width":1280, "height":800, "colour":"srgb",
+            "stripes":[{"codec":"avc1.420033","key":true,"data_base64":packet}]});
+        let result = json!({"display_frame":frame,"frame_sent":true,"generation":1,
+            "title":"AAAA stripes frame","url":"https://example.org/stripes/frame",
+            "text":"AAAA stripes frame"});
+        let wire = scrub_browser_result(&store, "stripe", result, true, true, false).unwrap();
+        assert_eq!(wire["display_frame"], frame);
+        assert_eq!(wire["frame_sent"], true);
+        assert_eq!(wire["generation"], 1);
+        for key in ["title", "url", "text"] {
+            let text = wire[key].as_str().unwrap();
+            for secret in ["AAAA", "stripes", "frame"] {
+                assert!(!text.contains(secret));
+            }
+        }
+        let mut reply = json!({"KernelBrowser":{"result":wire}});
+        let (id, sequence, event) =
+            crate::transport::kernel_browser_display::take_display_event(&mut reply).unwrap();
+        assert_eq!(id, "frame-stripes");
+        assert_eq!(sequence, 2);
+        let encoded = encode_display_event(event).unwrap();
+        assert!(encoded.ends_with(&[0, 0, 0, 1, 0x65]));
+        let length = u32::from_be_bytes(encoded[4..8].try_into().unwrap()) as usize;
+        let header: Value = serde_json::from_slice(&encoded[8..8 + length]).unwrap();
+        assert_eq!(header["frame"]["kind"], "stripes");
+        assert_eq!(header["frame"]["tab_id"], "frame-tab");
+        assert_eq!(header["frame"]["document_id"], "stripes-document");
+        let mut observed = frame.clone();
+        observed["title"] = json!("AAAA stripes frame");
+        observed["url"] = json!("https://example.org/stripes/frame");
+        let metadata = scrub_browser_result(
+            &store,
+            "stripe",
+            json!({"display_frame":observed,"observation":{"frame":"stripes"}}),
+            true,
+            true,
+            false,
+        )
+        .unwrap();
+        for key in ["title", "url"] {
+            for secret in ["AAAA", "stripes", "frame"] {
+                assert!(!metadata["display_frame"][key]
+                    .as_str()
+                    .unwrap()
+                    .contains(secret));
+            }
+        }
+        assert!(metadata["observation"].get("frame").is_none());
+        let scalar = scrub_browser_result(
+            &store,
+            "stripe",
+            json!("AAAA stripes frame"),
+            true,
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(!scalar.as_str().unwrap().contains("AAAA"));
+
+        assert!(scrub_browser_result(
+            &store,
+            "stripe",
+            json!({"display_frame":"invalid"}),
+            true,
+            true,
+            false
+        )
+        .is_err());
+    }
+
     #[test]
     fn host_vault_is_owner_only_and_tool_never_accepts_secret_bytes() {
         assert!(require_vault_owner(crate::session::DEFAULT_LOCAL_USER_ID).is_ok());

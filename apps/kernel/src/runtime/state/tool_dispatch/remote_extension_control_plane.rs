@@ -126,6 +126,20 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
+        let Some(remote_context) = self.leased_forward_context(provider_run).await? else {
+            return Ok(None);
+        };
+        self.forward_meta_runtime_tool(remote_context, tool_name, arguments, Default::default())
+            .await
+            .map(Some)
+    }
+
+    /// The home-bound context of a leased worker run, or `None` when local.
+    pub(crate) async fn leased_forward_context(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<Option<crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext>, DaemonError>
+    {
         let workspace_context = self
             .workspace_live_sync_workspace_for_provider_run(provider_run)
             .await?;
@@ -138,9 +152,16 @@ impl KernelRuntimeState {
                     )
             })
             .await;
-        let Some(remote_context) = remote_context else {
-            return Ok(None);
-        };
+        Ok(remote_context)
+    }
+
+    pub(crate) async fn forward_meta_runtime_tool(
+        &self,
+        remote_context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        tool_name: &str,
+        arguments: serde_json::Value,
+        min_response_timeout: std::time::Duration,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         // Home may call back into this worker while handling the forwarded
         // tool. Snapshot configuration under the app lock, then release it
         // before waiting for the relay round trip.
@@ -155,11 +176,12 @@ impl KernelRuntimeState {
                     tool_name: tool_name.to_string(),
                     arguments,
                 },
-                std::time::Duration::from_millis(config.relay_request_timeout_ms),
+                std::time::Duration::from_millis(config.relay_request_timeout_ms)
+                    .max(min_response_timeout),
             )
             .await?;
         match response {
-            RelayPeerResponse::MetaRuntimeToolHandled { result } => Ok(Some(result)),
+            RelayPeerResponse::MetaRuntimeToolHandled { result } => Ok(result),
             other => Err(DaemonError::LocalTransport {
                 operation: "forward leased metaagent runtime tool",
                 message: format!("unexpected forwarded metaagent response: {other:?}"),
@@ -179,13 +201,26 @@ impl KernelRuntimeState {
         self.pause_forwarded_meta_request_before_dispatch_for_test();
         self.with_app_side_effect(|_| self.authorize_forwarded_workspace_context(&context))
             .await?;
-        self.dispatch_meta_runtime_tool_call_for_agent(
-            &context.home_session_id,
-            &context.home_agent_id,
-            &tool_name,
-            arguments,
-        )
-        .await
+        if let Some(name) =
+            crate::transport::runtime_tools::canonical_agent_event_tool_name(&tool_name)
+        {
+            return self
+                .dispatch_leased_agent_event_tool(&context, name, arguments)
+                .await;
+        }
+        // A10: room tools of a leased agent act with its lease-verified origin.
+        let run = crate::provider::projected_leased_provider_run_id(
+            &context.leased_agent_id,
+            &context.worker_provider_run_id,
+        );
+        self.with_room_provider_origin(Some(&context.home_agent_id), Some(&run))
+            .dispatch_meta_runtime_tool_call_for_agent(
+                &context.home_session_id,
+                &context.home_agent_id,
+                &tool_name,
+                arguments,
+            )
+            .await
     }
 
     pub(super) async fn try_dispatch_remote_capability_runtime_tool_call(
@@ -360,7 +395,14 @@ impl KernelRuntimeState {
             Ok(())
         })
         .await?;
+        // A10: a leased sender acts with its lease-verified origin, as a local
+        // provider turn does.
+        let run = crate::provider::projected_leased_provider_run_id(
+            &context.leased_agent_id,
+            &context.worker_provider_run_id,
+        );
         let (result, package) = self
+            .with_room_provider_origin(Some(&context.home_agent_id), Some(&run))
             .dispatch_capability_runtime_tool_call_for_agent(
                 &context.home_session_id,
                 &context.home_agent_id,
@@ -389,7 +431,11 @@ impl KernelRuntimeState {
             });
         };
         let session_id = provider_run.session_id().to_string();
-        let (result, _) = self
+        // MP-11 SB-03: retain the authenticated run across capability waits.
+        let state = self
+            .with_room_provider_origin(provider_run.agent_instance_id(), Some(provider_run.id()));
+        state.authorize_current_external_command()?;
+        let (result, _) = state
             .dispatch_capability_runtime_tool_call_for_agent(
                 &session_id,
                 &agent_id,

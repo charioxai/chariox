@@ -26,7 +26,7 @@ const MANAGED_SLICE_ACTIVATION_CONFIRMATION_TTL: Duration = Duration::from_secs(
 const MANAGED_SLICE_ACTIVATION_CONFIRMATION_MAX_ATTEMPTS: u8 = 3;
 
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct RelayClientState {
     pub(super) connected: bool,
     pub(super) connected_relay_url: Option<String>,
@@ -455,6 +455,7 @@ impl RelayClientState {
         self.display_streams.remove(stream_id);
     }
 
+    #[cfg(test)]
     pub(crate) fn display_stream_sender(
         &self,
         stream_id: &str,
@@ -541,9 +542,7 @@ impl RelayClientState {
         &self,
         request: &RelayPeerRequest,
     ) -> Option<oneshot::Receiver<()>> {
-        let Some(observer) = self.test_authenticated_peer_request_observer.as_ref() else {
-            return None;
-        };
+        let observer = self.test_authenticated_peer_request_observer.as_ref()?;
         let (observation, release) = match request {
             RelayPeerRequest::StartLeasedProjectEnvironmentSetup { operation_id, .. } => (
                 TestPeerRequestObservation::StartProjectEnvironmentSetup {
@@ -670,29 +669,6 @@ impl RelayDisplayTunnelTarget {
 pub(crate) enum RelayDisplayTunnelClientEvent {
     Chunk(RelayDisplayTunnelStreamChunk),
     Close,
-}
-
-impl Default for RelayClientState {
-    fn default() -> Self {
-        Self {
-            connected: false,
-            connected_relay_url: None,
-            outgoing_tx: None,
-            pending_peer_requests: BTreeMap::new(),
-            next_peer_request_id: 0,
-            pinned_peer_public_keys: BTreeMap::new(),
-            peer_public_keys: BTreeMap::new(),
-            display_tunnels: BTreeMap::new(),
-            pending_display_tunnel_registrations: BTreeMap::new(),
-            display_streams: BTreeMap::new(),
-            #[cfg(test)]
-            lose_next_peer_response_payload: None,
-            #[cfg(test)]
-            test_authenticated_peer_request_observer: None,
-            managed_slice_activation_expectations: BTreeMap::new(),
-            pending_managed_slice_activation_confirmation: None,
-        }
-    }
 }
 
 pub(super) async fn set_connected(

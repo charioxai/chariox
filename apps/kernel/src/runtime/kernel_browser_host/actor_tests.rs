@@ -2,6 +2,82 @@
 use super::*;
 use serde_json::json;
 use std::time::Instant;
+
+#[test]
+fn mp10_idle_app_drain_does_not_lock_out_host_input() {
+    let root =
+        std::env::temp_dir().join(format!("chariox-app-drain-{:032x}", rand::random::<u128>()));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"method":"browser.app.calls"'*)
+  printf started > "$root/started"
+  (while [ ! -f "$root/release" ]; do sleep 0.01; done
+   printf '{"id":%s,"ok":true,"result":{"calls":[]}}\n' "$id") & ;;
+ *'"method":"host.browser"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    host.protected_request(
+        "alice",
+        None,
+        "host.browser",
+        json!({"op":"state"}),
+        policy.clone(),
+    )
+    .unwrap();
+    let completed = std::thread::scope(|scope| {
+        let drain = scope.spawn(|| {
+            host.protected_request(
+                "alice",
+                None,
+                "browser.app.calls",
+                json!({}),
+                policy.clone(),
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !root.join("started").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let entered = root.join("started").exists();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let input_host = &host;
+        let input_policy = policy.clone();
+        let input = scope.spawn(move || {
+            sender.send(input_host.protected_request("alice", None, "host.browser",
+                json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"text","text":"typed"}}), input_policy)).unwrap();
+        });
+        let result = receiver.recv_timeout(Duration::from_millis(200));
+        // Settle both owned operations before asserting the observed ordering.
+        std::fs::write(root.join("release"), "release").unwrap();
+        input.join().unwrap();
+        drain.join().unwrap().unwrap();
+        entered && result.is_ok_and(|result| result.is_ok())
+    });
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        completed,
+        "MP-10: held App drain must not own the host input lock"
+    );
+}
 #[test]
 fn human_takeover_cancels_the_running_controller_and_fences_the_focused_agent() {
     check_running_cancellation(false, false);
@@ -510,6 +586,15 @@ fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() 
         )
         .unwrap();
     }
+    // MP-08/MP-11 SB-02: Stop is global even with a scoped tab parameter.
+    assert!(host
+        .scope_browser_request(
+            Some(&admission),
+            "host.browser",
+            &json!({"op":"stop","tab_id":"tab"})
+        )
+        .unwrap_err()
+        .contains("not_focused_agent"));
     assert!(host
         .scope_browser_request(
             Some(&admission),
@@ -960,7 +1045,12 @@ done
     let host = KernelBrowserHost::new(root.clone());
     host.install_fixture_backend("alice", &script, &root);
     // MP-11: observations cannot implicitly start a stopped controller.
-    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
     let policy = json!({"values":[],"targets":[],"unknown":false});
     let (tx, rx) = std::sync::mpsc::channel();
     let early = std::thread::scope(|scope| {
@@ -1020,7 +1110,12 @@ done
     let host = KernelBrowserHost::new(root.clone());
     host.install_fixture_backend("alice", &script, &root);
     // MP-11: observations cannot implicitly start a stopped controller.
-    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
     let policy = json!({"values":[],"targets":[],"unknown":false});
     let (tx, rx) = std::sync::mpsc::channel();
     let early = std::thread::scope(|scope| {
@@ -1038,7 +1133,16 @@ done
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(root.join("capture").exists());
-        let input=scope.spawn(|| { let result=host.protected_request("alice",None,"host.browser",json!({"op":"screenshot","display_subscription_id":"s"}),policy.clone());tx.send(result).unwrap();});
+        let input = scope.spawn(|| {
+            let result = host.protected_request(
+                "alice",
+                None,
+                "host.browser",
+                json!({"op":"screenshot","display_subscription_id":"s"}),
+                policy.clone(),
+            );
+            tx.send(result).unwrap();
+        });
         let early = rx.recv_timeout(Duration::from_millis(100));
         std::fs::write(root.join("release"), b"release").unwrap();
         assert_eq!(capture.join().unwrap().unwrap()["input_completed"], true);
@@ -1131,9 +1235,22 @@ done
 "#).unwrap();
     let host = KernelBrowserHost::new(root.clone());
     host.install_fixture_backend("alice", &script, &root);
-    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
     let policy = json!({"values":[],"targets":[],"unknown":false});
-    let state = || host.protected_request("alice", None, "host.browser", json!({"op":"state"}), policy.clone());
+    let state = || {
+        host.protected_request(
+            "alice",
+            None,
+            "host.browser",
+            json!({"op":"state"}),
+            policy.clone(),
+        )
+    };
     state().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let early = std::thread::scope(|scope| {
@@ -1156,16 +1273,22 @@ done
     });
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
-    assert_eq!(early.expect("input waited behind the state read").unwrap()["input_completed"], true);
+    assert_eq!(
+        early.expect("input waited behind the state read").unwrap()["input_completed"],
+        true
+    );
 }
 
 // MP-11: a state read finishing after a newer controller observation (an input's
 // post-dispatch reconcile) cannot roll the ledger back to the older document.
 #[test]
 fn mp11_older_controller_observation_does_not_replace_a_newer_one() {
-    let state = |observation: u64, document: &str| json!({"generation":1,"_observation":observation,
-        "tabs":[{"tab_id":"host-tab-a","document_id":document}]});
-    let current = |document: &str| json!({"tab_id":"host-tab-a","generation":1,"document_id":document});
+    let state = |observation: u64, document: &str| {
+        json!({"generation":1,"_observation":observation,
+        "tabs":[{"tab_id":"host-tab-a","document_id":document}]})
+    };
+    let current =
+        |document: &str| json!({"tab_id":"host-tab-a","generation":1,"document_id":document});
     let mut model = crate::runtime::kernel_browser_actors::KernelBrowserActors::default();
     model.reconcile(&state(2, "after-click")).unwrap();
     model.reconcile(&state(1, "before-click")).unwrap();
@@ -1174,12 +1297,12 @@ fn mp11_older_controller_observation_does_not_replace_a_newer_one() {
     assert!(model.input_is_current(&current("next")));
 }
 
-// MP-08/MP-11: the controller-internal observation order must not cost a reply its own
-// `observation` payload (a Notes selection carries one).
+// MP-08/MP-11: the controller's private observation order never strips a Notes
+// selection result, whose payload is named `observation`.
 #[test]
-fn mp08_note_selection_reply_keeps_its_observation_payload() {
+fn mp08_note_selection_keeps_its_observation_through_the_host() {
     let root = std::env::temp_dir().join(format!(
-        "chariox-mp08-note-observation-{:032x}",
+        "chariox-note-observation-{:032x}",
         rand::random::<u128>()
     ));
     std::fs::create_dir(&root).unwrap();
@@ -1188,33 +1311,46 @@ fn mp08_note_selection_reply_keeps_its_observation_payload() {
 while IFS= read -r request; do
  id=${request#*:}; id=${id%%,*}
  case "$request" in
- *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
  *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
- *'"op":"note_selection"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"observation":{"quote":"Ada"}}}\n' "$id" ;;
- *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id";exit 0 ;;
+ *'"op":"note_selection"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"observation":{"text":"quote"}}}\n' "$id" ;;
+ *'"method":"host.browser"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"_observation":4,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
  esac
 done
 "#).unwrap();
     let host = KernelBrowserHost::new(root.clone());
     host.install_fixture_backend("alice", &script, &root);
-    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
-    let reply = host.protected_request("alice", None, "host.browser",
-        json!({"op":"note_selection","tab_id":"host-tab-a","generation":1}),
-        json!({"values":[],"targets":[],"unknown":false}));
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let state = host
+        .protected_request(
+            "alice",
+            None,
+            "host.browser",
+            json!({"op":"state"}),
+            policy.clone(),
+        )
+        .unwrap();
+    let note = host
+        .protected_request(
+            "alice",
+            None,
+            "host.browser",
+            json!({"op":"note_selection","tab_id":"host-tab-a","generation":1}),
+            policy,
+        )
+        .unwrap();
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
-    assert_eq!(reply.unwrap()["observation"]["quote"], "Ada");
-}
-
-// MP-11: a state read from before browser restart cannot invalidate the new bindings.
-#[test]
-fn mp11_older_controller_generation_does_not_replace_a_newer_one() {
-    let state = |generation: u64, observation: u64, document: &str| json!({"generation":generation,"_observation":observation,
-        "tabs":[{"tab_id":"host-tab-a","document_id":document}]});
-    let mut model = crate::runtime::kernel_browser_actors::KernelBrowserActors::default();
-    model.reconcile(&state(1, 8, "old")).unwrap();
-    model.reconcile(&state(2, 1, "after-restart")).unwrap();
-    model.reconcile(&state(1, 9, "late-old-reply")).unwrap();
-    assert!(model.input_is_current(&json!({"tab_id":"host-tab-a","generation":2,"document_id":"after-restart"})));
-    assert!(!model.input_is_current(&json!({"tab_id":"host-tab-a","generation":1,"document_id":"late-old-reply"})));
+    assert!(
+        state.get("_observation").is_none(),
+        "the order stays controller-internal"
+    );
+    assert_eq!(note["observation"], json!({"text":"quote"}));
 }

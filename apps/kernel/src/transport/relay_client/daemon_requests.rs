@@ -125,18 +125,12 @@ pub(super) async fn handle_prepared_daemon_request(
                             }
                         }
                     };
-                    let mut caller = KernelCaller::for_relay_request(None);
-                    caller.caller_id = grant.client_id.clone();
-                    caller.client_id = Some(grant.client_id);
-                    caller.user_id = Some(crate::session::DEFAULT_LOCAL_USER_ID.into());
-                    caller.public_key_thumbprint = Some(grant.public_key_thumbprint);
-                    caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
-                    caller
+                    KernelCaller::from_paired_terminal(grant)
                 }
             } else {
                 KernelCaller::for_relay_request(caller_identity)
             };
-            // MP-08/MP-10: protocol 475 acknowledgements stay in the relay
+            // MP-08/MP-10: protocol 491 acknowledgements stay in the relay
             // layer: they only gate this sender's own push pump and renew
             // its delivery lease; the pump's frames take the admitted path.
             if let LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
@@ -541,6 +535,10 @@ mod cli_relay_sender_tests {
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing ParsedRelayClientMessage typed actor payload layout"
+)]
 enum ParsedRelayClientMessage {
     Request(ParsedRelayClientRequest),
     BrowserImportDelivery(crate::runtime::browser_import_payload::BrowserImportDeliveryRequest),
@@ -622,7 +620,9 @@ async fn dispatch_relay_client_request(
     // comes from relay authentication, never the request or command ID.
     if matches!(
         &request,
-        LocalDaemonRequest::KernelBrowser(_) | LocalDaemonRequest::Notes(_)
+        LocalDaemonRequest::KernelBrowser(_)
+            | LocalDaemonRequest::Notes(_)
+            | LocalDaemonRequest::RespondToHandoff(_)
     ) && !command.is_terminal_caller()
     {
         return RelayDispatchOutcome::RelayError(relay_error(
@@ -719,6 +719,10 @@ async fn dispatch_relay_client_request(
     cached_relay_dispatch_outcome(response, error)
 }
 
+#[allow(
+    clippy::boxed_local,
+    reason = "Consumes the already boxed response frame without moving a large payload through the caller stack"
+)]
 fn cached_relay_dispatch_outcome(
     response: Box<Option<Value>>,
     error: Option<KernelTransportError>,

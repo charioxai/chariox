@@ -265,42 +265,45 @@ pub use workspace::*;
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
 /// Version 435 combines Apps, Browser artifacts, bounded Computer holds, and
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
+/// MP-08/MP-10/MP-11: version 443 combines main 435 with the multidomain
+/// host browser, App views, Notes, grants, captures and DOM mirror contract.
+/// Version 450 adds immutable room spawn/object creators and regular room tools
+/// behind the transitional room-agent-tools flag (MP-08/MP-10/MP-11 A01).
+/// Version 462 adds user-requested capability grant causes, absolute grant
+/// expiry and the `not_requested` refusal (MP-08/MP-10/MP-11 A05).
+/// Version 452 adds durable agent events, enforced turn dispositions and
+/// kernel-emitted workflow notifications (MP-08/09/10/11 A02).
+/// Version 459 adds kernel-owned timer/process wakes with proof-of-life and
+/// delivery receipts on `RuntimeSession.agent_wakes` (MP-08/09/10/11 A03).
 /// Version 451 grants the whole local kernel and routes access popups without sessions.
 /// Version 470 adds structured OS requester identity to access decisions.
 /// Version 472 advertises identity-preserving terminal relay renewal with
 /// explicit capability negotiation and recoverable target-offline handshakes.
+/// Version 484 replaces one-turn sudo with hour-scale windows bound to owner
+/// work, fresh-passkey extension, session status and no agent approvals
+/// (MP-08/MP-10/MP-11 A04).
 /// Version 487 adds value-free Project Environment aggregates and reserves the
 /// complete Environment operation contract on top of 472 (developed as 471;
 /// MP-02/MP-03/MP-08/MP-10/MP-11).
-/// Version 490 requires bounded relay response framing and socket-local receipts.
-/// Version 491 adds credential-free Cloud kernel ownership projections, receiving
-/// CLIENT key-bound pivots, Cloud-free terminal pairing and provider account
-/// portability preflight, and requires a distinct relay subscription identity for
-/// every fresh encrypted binding while retaining the logical session replay
-/// cursor. It also restores workflow notifications, Room workflow inventory and
-/// controls, opt-in Cloud device denial and exact home-prompt cancellation
-/// admission (MP-08/MP-10/MP-11).
-/// MP-08/MP-10/MP-11: version 447 adds bounded stripe display to the multidomain
-/// host browser, App views, Notes, grants, captures and DOM mirror contract.
-/// MP-08/MP-10: version 466 makes display frame events binary (raw payload
-/// segments) and adds lossless WebP tiles and scroll move rectangles.
-/// MP-08/MP-10: version 475 adds pushed display (`display_ack` drives the
-/// kernel push pump of a relay display subscription; `display_next` remains).
-/// MP-08/MP-10/MP-11: version 482 adds DOM mirror v2 (`wire: 2`): author
-/// stylesheets and attributes, snapshot plus deltas, long-poll credits
-/// (`wait_ms`), viewer-offset clicks and viewer-owned `scroll_to`.
-/// MP-08/MP-10: version 489 makes mirror v2 compact: deltas omit the binding
-/// and unchanged header fields, bodies deflate in the subscription's context,
-/// form ops carry changed properties, resources travel in ordered slices and
-/// `mirror_input` answers `{"accepted": true}`.
-/// MP-08/MP-10: version 492 bridges committed control state and focus from the
-/// mirror viewer (`set`, `blur`; the unused `composition` action is retired) and
-/// adds sampled UA state (`state` op), the document `fragment` header and
-/// custom-element definitions to mirror v2 packets.
-/// MP-08/MP-10/MP-11: version 501 adds `mirror_next.resend` (the viewer asks for the
-/// packet after its base at once: a lost reply or a failed credit), custom validity
-/// (`state.custom_invalid`) and external SVG `<use>` sprites (sanitized resources).
-/// MP-08/MP-10/MP-11: version 503 gives each mirrored frame document its own
-/// fragment (`fragment` on frame document records and a `fragment` op), so its
-/// `:target` no longer follows the top document's header.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 503;
+/// Version 493 reconciles the agent-model union, task/wake projections and leased watchers (MP-08/MP-09/MP-10/MP-11).
+/// MP-08/MP-10/MP-11: version 447 added bounded stripe display, App views,
+/// Notes, grants, captures and DOM mirrors; 466 added binary display frames,
+/// WebP tiles and scroll rectangles; 475 added relay display push/ACKs.
+/// Version 490 added bounded relay response framing and socket-local receipts.
+/// Version 491 combined native display and agent-tab provenance/activity.
+/// Main's version 491 (#974) adds credential-free Cloud kernel ownership
+/// projections, receiving CLIENT key-bound pivots, Cloud-free terminal pairing
+/// and provider account portability preflight, and requires a distinct relay
+/// subscription identity for every fresh encrypted binding while retaining the
+/// logical session replay cursor. It also restores workflow notifications, Room
+/// workflow inventory and controls, opt-in Cloud device denial and exact
+/// home-prompt cancellation admission (MP-08/MP-10/MP-11).
+/// Version 506 integrates those contracts, including main's 491, with the 493
+/// agent-model union; generated consumers follow this coordinator-allocated
+/// acceptance version.
+/// Version 511 orders a DOM mirror read behind its viewer's earlier mirror input,
+/// so a client sends the read with the key and gets its echo in one round trip
+/// (MP-08/MP-10/MP-11).
+/// Version 517 combines App Tab calls/grants and ordered reads with DOM mirror v2
+/// author CSS, live controls, compact deltas, native density and long-poll credits.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 517;

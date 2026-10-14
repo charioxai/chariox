@@ -63,7 +63,27 @@
               }
             ],
             "session_id": "s",
-            "since_ms": 1
+            "since_ms": 1,
+            "prompt_id": "p",
+            "expires_at_ms": 28800001
+          },
+          {
+            "agent_id": "child",
+            "expiry_rule": "active turn or pending wake; then idle window",
+            "focused": false,
+            "idle_since_ms": 2,
+            "idle_timeout_seconds": 1800,
+            "kernel_id": "home",
+            "resources": [
+              {
+                "kind": "browser_tab",
+                "tab_id": "t"
+              }
+            ],
+            "session_id": "s",
+            "since_ms": 1,
+            "expires_at_ms": 28800001,
+            "delegated_by_agent_id": "a"
           }
         ],
         "notice": {

@@ -153,7 +153,7 @@ function validateOp(op: Mirror2Op, known: (id: string) => Mirror2Record | undefi
   if (!op || typeof op !== 'object' || !id.test(op.id)) fail('op')
   switch (op.op) {
     case 'children': if (!Array.isArray(op.children) || op.children.length > 200000 || op.children.some(c => !id.test(c)) || !Array.isArray(op.nodes)) fail('op'); validateTree(op.nodes, known, op.id); break
-    case 'attr': { const record = known(op.id); if (!record) break; validateAttrs({ ...record, attrs: op.value === null ? {} : { [op.name]: op.value } }); if (typeof op.name !== 'string' || op.value !== null && typeof op.value !== 'string' || record.kind === 'mask' || record.kind === 'tile') fail('op'); break }
+    case 'attr': { const record = known(op.id); if (!record) break; validateAttrs({ ...record, attrs: op.value === null ? {} : { [op.name]: op.value } }); if (typeof op.name !== 'string' || op.value !== null && typeof op.value !== 'string' || record.kind === 'mask') fail('op'); break }
     case 'text': if (typeof op.text !== 'string' || op.text.length > 16 * 1024 * 1024 || known(op.id) && known(op.id)!.kind !== 'text') fail('op'); break
     case 'css': validateMirror2Css(op.css); if (known(op.id) && known(op.id)!.tag !== 'style') fail('op'); break
     case 'adopted': if (!Array.isArray(op.sheets) || op.sheets.length > 256) fail('op'); op.sheets.forEach(validateMirror2Css); break

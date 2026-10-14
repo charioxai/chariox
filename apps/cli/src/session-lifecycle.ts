@@ -206,8 +206,16 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     if (!attachment) {
       return
     }
-    await deps.detachAttachment(attachment.id)
+    // MP-08 / MP-10 / MP-11 G03: stop old-room recovery before awaiting detach.
     deps.setAttachmentState(null)
+    try {
+      await deps.detachAttachment(attachment.id)
+    } catch (error) {
+      if (!deps.attachmentState() && deps.sessionState().id === attachment.session_id) {
+        deps.setAttachmentState(attachment)
+      }
+      throw error
+    }
   }
 
   const rollbackAttachedSession = async (

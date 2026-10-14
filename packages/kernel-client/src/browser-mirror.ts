@@ -76,6 +76,7 @@ export class BrowserMirrorRenderer {
     const removers:Array<()=>void>=[]
     this.documentBindings.set(doc,removers)
     let lastComposition:string|null=null
+    let wheelX=0,wheelY=0,wheelDocument=this.documentId
     const target=(event:Event):Node=>event.composedPath()[0] as Node
     const point=(event:MouseEvent):{x:number;y:number}=>{let x=event.clientX,y=event.clientY;for(let view:Window|null=doc.defaultView;view&&view!==this.frame.contentWindow;view=view.parent){const frame=view.frameElement as HTMLElement|null;if(!frame)throw Error('MP-11: detached mirror frame');const box=frame.getBoundingClientRect();const style=view.parent.getComputedStyle(frame);x+=box.x+frame.clientLeft+(parseFloat(style.paddingLeft)||0);y+=box.y+frame.clientTop+(parseFloat(style.paddingTop)||0)}return {x:Math.floor(x),y:Math.floor(y)}}
     const id=(node:Node|null):string|undefined=>node ? this.ids.get(node) : undefined
@@ -86,12 +87,14 @@ export class BrowserMirrorRenderer {
     const on=(kind:string,fn:EventListener):void=>{doc.addEventListener(kind,fn,true);removers.push(()=>doc.removeEventListener(kind,fn,true))}
     on('focusin',event=>{if(!this.applying&&!this.disposed&&!this.nativeFocus)this.rememberFocus(target(event))})
     on('click',event=>{event.preventDefault();const element=target(event) as HTMLElement,node=id(element);if(node){const record=this.records.get(node);if(record?.kind==='mask')return;this.nativeFocus=null;if(record?.kind==='tile'||record?.form||element.isContentEditable){const mouse=event as MouseEvent;this.enqueue({kind:'coordinate',input:{kind:'click',...point(mouse)}})}else this.enqueue({kind:'click',node_id:node})}})
-    on('wheel',event=>{event.preventDefault();const wheel=event as WheelEvent,node=id(target(event));if(!node)return;const record=this.records.get(node);if(record?.kind==='mask')return;const delta_x=Math.trunc(wheel.deltaX),delta_y=Math.trunc(wheel.deltaY);if(record?.kind==='tile')this.enqueue({kind:'coordinate',input:{kind:'scroll',...point(wheel),delta_x,delta_y}});else this.enqueue({kind:'scroll',node_id:node,delta_x,delta_y})})
+    on('wheel',event=>{event.preventDefault();const wheel=event as WheelEvent,node=id(target(event));if(!node)return;const record=this.records.get(node);if(record?.kind==='mask')return;if(wheelDocument!==this.documentId){wheelX=wheelY=0;wheelDocument=this.documentId;}const unit=wheel.deltaMode===1?(parseFloat(doc.defaultView?.getComputedStyle(target(event) as Element).lineHeight??'')||16):wheel.deltaMode===2?(doc.defaultView?.innerHeight||800):1;wheelX+=wheel.deltaX*unit;wheelY+=wheel.deltaY*unit;const integer=(value:number)=>Math.trunc(value+Math.sign(value)*1e-9);const delta_x=integer(wheelX),delta_y=integer(wheelY);wheelX-=delta_x;wheelY-=delta_y;if(!delta_x&&!delta_y)return;if(record?.kind==='tile')this.enqueue({kind:'coordinate',input:{kind:'scroll',...point(wheel),delta_x,delta_y}});else this.enqueue({kind:'scroll',node_id:node,delta_x,delta_y})})
     // MP-08/MP-11: after native focus progress, keys follow the same live-focus
     // bridge as text. A newer credit in flight cannot bind them to painted focus.
     // Shift+Tab is the one modified key: backward focus must stay backward.
     on('keydown',event=>{const {key,shiftKey}=event as KeyboardEvent;if(['Tab','Enter','Escape','Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(key)){event.preventDefault();const native=Boolean(this.nativeFocus),sent=key==='Tab'&&shiftKey?'Shift+Tab':key;if(['Tab','Enter','Escape'].includes(key))this.localFocus=null;this.nativeFocus={document_id:this.documentId,through_sequence:this.sequence+1};this.enqueue(native?{kind:'coordinate',input:{kind:'key',key:sent}}:{kind:'key',key:sent})}})
-    on('beforeinput',event=>{const input=event as InputEvent;event.preventDefault();if(input.isComposing||input.inputType.includes('Composition')||input.data===lastComposition)return;const node=id(target(event));if(node&&input.data)text(node,input.data)})
+    // Rich-editor paste carries plaintext in dataTransfer, with null data.
+    // One beforeinput event uses the same text route; no second paste listener.
+    on('beforeinput',event=>{const input=event as InputEvent;event.preventDefault();const paste=input.inputType==='insertFromPaste';const value=input.data??(paste?input.dataTransfer?.getData('text/plain'):null);if(input.isComposing||input.inputType.includes('Composition')||!paste&&value===lastComposition)return;const node=id(target(event));if(node&&value)text(node,value)})
     on('compositionupdate',event=>{event.preventDefault();const e=event as CompositionEvent,node=id(target(event));if(node&&!fullTile(node)&&!this.nativeFocus)this.enqueue({kind:'composition',node_id:node,text:e.data,selection_start:e.data.length,selection_end:e.data.length})})
     on('compositionend',event=>{event.preventDefault();const e=event as CompositionEvent,node=id(target(event));if(node){lastComposition=e.data;setTimeout(()=>{lastComposition=null},0);text(node,e.data)}})
     on('selectionchange',()=>{if(this.applying)return;const selection=doc.getSelection();if(!selection||selection.isCollapsed)return;const a=id(selection.anchorNode),b=id(selection.focusNode);if(a&&b)this.enqueue({kind:'selection',anchor_id:a,anchor_offset:selection.anchorOffset,focus_id:b,focus_offset:selection.focusOffset})})
@@ -163,6 +166,8 @@ export class BrowserMirrorRenderer {
     if(this.disposed||!this.doc)throw Error('MP-08: mirror closed during validation')
     const newTiles=packet.tiles.map<TileRaster>(tile=>{const cached=packet.reset?undefined:this.tileCache.get(tile.node_id);return cached&&JSON.stringify(cached.tile)===JSON.stringify(tile)?cached:{tile,url:blobUrl(tile.data_base64,'image/png')}})
     this.timed('resource_decode',at);at=performance.now()
+    // MP-08/MP-10/MP-11: validated canonical host bounds, independent of viewer DPR.
+    this.frame.style.width=`${packet.css_width}px`;this.frame.style.height=`${packet.css_height}px`
     this.dpr=packet.device_scale_factor
     if(this.nativeFocus&&(packet.reset||this.nativeFocus.document_id!==packet.document_id||!this.pendingInputs&&packet.sequence>this.nativeFocus.through_sequence))this.nativeFocus=null
     // MP-11: local progress never crosses reset/protection or document fences,

@@ -301,7 +301,10 @@ impl Sessions {
         }
         // MP-08/MP-10: a rate change retunes the live x264 rows (no IDR);
         // hardware rows cannot and reopen.
-        if let Some(s) = sessions.get_mut(&q.encoder).filter(|s| s.bitrate != q.bitrate) {
+        if let Some(s) = sessions
+            .get_mut(&q.encoder)
+            .filter(|s| s.bitrate != q.bitrate)
+        {
             let retuned = s
                 .codec
                 .as_ref()

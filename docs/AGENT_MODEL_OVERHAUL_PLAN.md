@@ -614,6 +614,14 @@ with proposed 60-second service bound and 8 KiB public result limit. Its context
 is the original request plus a bounded safe delta/obligation list, with paged
 public references when needed; include coverage so truncation cannot mean done.
 No additional evaluator agent or provider; no secret/private reasoning input.
+MP-08 / MP-10 / MP-11: private runtime/MCP tool records are intentionally
+excluded from the public assessment projection. Their absence is not truncated
+evidence coverage or an owner input requirement. Assess the returned public
+outcome and tracked obligations; do not demand that the owner export a private
+tool trace solely to confirm the preceding turn. Missing public results,
+contradictions, unresolved failures and truncated public coverage still prevent
+completion. Provider confirmation does not independently prove tool-call
+counts or arbitrary semantic correctness.
 Persist intent and result against the objective/ledger/work-turn revision;
 lost ACK reconciles exactly, never spends a second evaluation blindly. A stale
 result re-enters the revision check before accepting completion. Mark this
@@ -942,7 +950,7 @@ exact fault point before/after commit and first failing seam on base.
 | Provider | CX = Codex, OC = OpenCode, CL = Claude. 1. Select a product-linked account and pin official harness version. 2. Launch the selected real provider through the built kernel; no SDK, stub or alternate runtime. |
 | Client | W = web, T = local TUI, R = remote TUI, B = combined web + local + remote TUI. 1. Attach built real client(s), web with real entry/flags in a real desktop browser via Playwright at DPR 1 and 2, TUI binary via PTY on a real machine. 2. Drive prompts and owner interactions through that UI over the hosted relay. 3. Reconnect and inspect the same task. B rotates prompt/answering clients in both directions and asserts every projection; other cells drive only their selected client, plus the existing real browser attachment at both densities when pixels are needed. |
 | Placement | L = provider on home kernel; R = leased provider on a distinct real worker kernel through the hosted relay; S = provider in a product-provisioned Docker slice selected by `slice_ref`, attached through home admission. 1. Provision lane-owned topology through product commands on real machines. 2. Verify execution and home/worker/run/lease bindings; L still uses the hosted client relay path. 3. Keep the user-domain Chromium outside the slice. All 12 PRs affect provider/task paths, so S is relevant to each; include worker-loss subcases on S. |
-| Environment | O = ordinary kernel; M = same reviewed runtime on a fresh/fresh-equivalent managed Path-1 host. 1. Pin OSS/Cloud/binary/image identities. 2. Run with normal product launch, compare O/M outcomes after excluding only signed deployment and mandatory shutdown. M requires coordinator-provided authorized infrastructure; this study authorizes no provisioning/deployment. |
+| Machine | O = ordinary machine (the user's own kernel); M = managed machine running the same reviewed runtime on a fresh/fresh-equivalent Path-1 host. 1. Pin OSS/Cloud/binary/image identities. 2. Run with normal product launch, compare O/M outcomes after excluding only signed deployment and mandatory shutdown. M requires coordinator-provided authorized infrastructure; this study authorizes no provisioning/deployment. |
 
 **P0 — owner prerequisites shared by every A/I/FB matrix:** product-linked
 real accounts and available quota for all three official providers; paired
@@ -1175,6 +1183,28 @@ restart and managed STOP/start windows. Simulated workers are regression-only.
 | S04 | 1. Repeat on O/M and slice, lose worker process/App source. 2. Allow deadline/sweep. 3. Normally stop/start managed host and resume overdue work. Parity excluding shutdown/deployment only; no hidden dormant task. | Paired normalized results, source-loss/deadline wake and MP-09 timings. | BLOCKED(B0) |
 | S05 | 1. Repeat A04 S06 through a real lease: unrelated urgent/non-urgent peer requests and queued prompts cannot acquire the worker's live sudo binding. 2. Replay forged/stale causal ID, run/lease or goal revision; both ends deny before effect. 3. Correlated authorized result wakes the same owner task and approved privileged operation succeeds under valid scope/window. | Home/worker context/causal fences, deferred regular-origin UI, negative effect counts and positive same-task continuation receipts. | BLOCKED(B0) |
 
+### MP-08 / MP-10 / MP-11 — historical workflow admission (2026-10-13)
+
+Coordinator decision: a run without an immutable agent creator or invoking-user
+proof is historical. Do not reconstruct an invoker from the current endpoint,
+node or Room owner. Only the authenticated kernel owner may read it, even when
+another Room member has Full collaboration. Project
+`created_before_ownership_tracking=true` and label it **Created before ownership
+tracking · read-only**. New admissions keep their atomic immutable proof.
+
+Required focused live cells (in addition to source regressions):
+
+| Cell | Real user flow and required outcome |
+| --- | --- |
+| HW-01 | On the pre-proof source, use the real TUI and official provider to schedule a real repository review. Reproduce hidden owner List/Get/history. Upgrade the same product state; the same run ID, content and status become visible to its kernel owner with the historical label in real TUI and Web DPR 1/2 over hosted WSS. Repeat the read after restart. |
+| HW-02 | Join the same Room as a distinct authenticated collaborator, including Full collaboration. Historical List/Get, snapshots, updates and history remain denied; current proven invocations retain their normal visibility. A fixture caller test is supplementary, never live acceptance. |
+| HW-03 | For the real historical run, attempt individual pause, resume and stop plus captured Room controls through real clients. All are rejected before mutation, including terminal/idempotent controls. New proven runs retain ordinary controls. |
+
+These cells close only the historical admission correction. They do not close
+A11's legacy task/index migration, the provider/platform matrix, signing review
+or unrelated Browser/Computer acceptance. A missing second authenticated hosted
+identity is a coordinator bootstrap prerequisite, not provider-login work.
+
 ### MP-08 / MP-09 / MP-10 / MP-11 — A11 migration and retirement
 
 **Owner prerequisites:** P0; owner-authorized real legacy tasks/subscriptions/
@@ -1268,7 +1298,7 @@ close FB, I or any MP gate; every missing live resource/action remains explicit.
 
 Run I01–I03 on the exact final paired OSS/Cloud build, after PRs 1–10 + 12, then
 again after retirement. IDs are `I{01..03}-{provider}-{client}-{placement}-
-{environment}-{before-retirement|after-retirement}` over every axis above
+{machine}-{before-retirement|after-retirement}` over every axis above
 (72 cells per scenario per integration phase). Steps/evidence/results expand
 exactly like A cells. Mix all three
 providers in delegation chains, rotating the selected provider as root;

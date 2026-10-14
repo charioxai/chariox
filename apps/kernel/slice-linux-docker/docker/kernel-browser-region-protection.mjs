@@ -1,5 +1,5 @@
 // MP-08/MP-10/MP-11: only the shared collector's recorded Vault fill fields.
-import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry,hostViewport} from './kernel-browser-geometry.mjs';
 import {cropProtectedPng,displayMaskRegions,displayFullMaskRegions} from './kernel-browser-pixels.mjs';
 import {measurePageProtection,protectionDigest} from './browser-protection-regions.mjs';
 import {locateBrowserRegions} from './browser-observation-regions.mjs';
@@ -50,7 +50,7 @@ export class NativeRegionProtection {
 }
 
 export async function captureProtectedDisplay(host,tab,clip=null,optimizeForSpeed=true){
-  const scale=host.scales.get(tab.tab_id)??1;let frame;
+  const scale=host.scales.get(tab.tab_id)??hostViewport().device_scale_factor;let frame;
   const {protected_regions,...captured}=await host.screenshot(tab,null,true,'png',optimizeForSpeed);
   frame={...captured,[displayMaskRegions]:protected_regions};
   const cropped=cropProtectedPng(frame.data_base64,clip,scale);

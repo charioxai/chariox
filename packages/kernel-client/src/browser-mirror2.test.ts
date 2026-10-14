@@ -27,7 +27,7 @@ test('MP-11: v2 refuses active elements, handlers, navigable URLs and fetching C
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'use', ns: 'svg', attrs: { href: 'https://x/#icon' } })), new Map()), /unsafe mirror/)
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'foreignObject', ns: 'svg' })), new Map()), /unsafe mirror/)
   assert.match(mirror2SandboxCsp, /script-src 'none'/); assert.match(mirror2SandboxCsp, /connect-src 'none'/); assert.match(mirror2SandboxCsp, /img-src blob: data:;/)
-  assert.equal(browserMirror2MinimumProtocolVersion, 503)
+  assert.equal(browserMirror2MinimumProtocolVersion, 517)
 })
 
 test('MP-11: masks carry no content and leaves never parent nodes', () => {
@@ -132,7 +132,7 @@ const flow = (script: (command: Record<string, unknown>) => Promise<unknown>) =>
   const packets: Mirror2Packet[] = []
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (packet: Mirror2Packet) => { if (failNext) { failNext = always; throw Error('MP-11: nested mirror unavailable') } applied.push(packet.sequence); packets.push(packet) } })
   const requests: Array<Record<string, unknown>> = []
-  const transport = { protocolVersion: 503, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
+  const transport = { protocolVersion: 517, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
   return { applied, packets, failures, requests, failOnce: () => { failNext = true }, failAlways: () => { failNext = true; always = true }, start: (failingMs?: number) => attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: error => failures.push(error) }, { credits: 1, waitMs: 0, renderer, ...(failingMs ? { failingMs } : {}) }) }
 }
 // Protocol 489: a reset carries the binding and header; a delta only what changed.
@@ -377,7 +377,7 @@ test('MP-10: credits that fail together (a dropped socket) count as one failure:
   let sequence = 0, dropped = false, released: Array<() => void> = []
   const applied: number[] = [], requests: Array<Record<string, unknown>> = []
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
-  const transport = { protocolVersion: 503, request: async (request: unknown) => {
+  const transport = { protocolVersion: 517, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
@@ -403,7 +403,7 @@ test('MP-10: protocol 501 a gap (a reply lost with its socket) asks for the miss
   let sequence = 0, gapAt = 0
   const applied: number[] = [], requests: Array<Record<string, unknown>> = []
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
-  const transport = { protocolVersion: 503, request: async (request: unknown) => {
+  const transport = { protocolVersion: 517, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
@@ -431,7 +431,7 @@ test('MP-08: a queued credit answered within the kernel bound is not lost: no re
   let sequence = 0, chain: Promise<unknown> = Promise.resolve()
   const requests: Array<Record<string, unknown>> = [], started = Date.now(), wait = 2000
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async () => {} })
-  const transport = { protocolVersion: 503, request: async (request: unknown) => {
+  const transport = { protocolVersion: 517, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() - started })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
@@ -456,7 +456,7 @@ test('MP-10: protocol 501 an overdue oldest credit (orphaned by the transport) a
   let sequence = 0
   const applied: Array<[number, number]> = [], requests: Array<Record<string, unknown>> = [], started = Date.now()
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push([p.sequence, Date.now() - started]) } })
-  const transport = { protocolVersion: 503, request: async (request: unknown) => {
+  const transport = { protocolVersion: 517, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() - started })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
@@ -474,3 +474,13 @@ test('MP-10: protocol 501 an overdue oldest credit (orphaned by the transport) a
   const at = applied.find(([s]) => s === 2)?.[1]
   assert.ok(at !== undefined && at < 2500, `MP-10: the orphan's packet applied at ${at} ms (wait 500 ms)`)
 })
+
+// MP-11: protocol517 admits tile layout deltas through the same inert attribute/CSS guard.
+test('MP-11: tile layout updates admit inert style/class and reject fetching CSS or handlers',()=>{
+ const record: Mirror2Record={id:'n3',parent:'n2',kind:'tile',tag:'canvas',size:[80,40],attrs:{}};
+ const known=new Map(tree(record).map(r=>[r.id,r]));
+ const packet=(name:string,value:string)=>base(tree(record), {reset:false,base_sequence:1,sequence:2,ops:[{op:'attr',id:'n3',name,value}]});
+ validateMirror2Packet(packet('class','moved'),known);validateMirror2Packet(packet('style','position:absolute;left:200px;display:block'),known);
+ for(const [name,value]of [['onclick','alert(1)'],['src','https://example.com/x'],['style','background-image:url(https://example.com/x)']])assert.throws(()=>validateMirror2Packet(packet(name!,value!),known),/unsafe mirror/);
+ const protectedKnown=new Map(known);protectedKnown.set('n3',{...record,kind:'mask'});assert.throws(()=>validateMirror2Packet(packet('class','moved'),protectedKnown),/unsafe mirror/);
+});

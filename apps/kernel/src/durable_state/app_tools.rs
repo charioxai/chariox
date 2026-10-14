@@ -126,7 +126,7 @@ pub(super) fn execute(connection: &mut Connection, request: AppToolsRequest) {
             crate::session::unix_epoch_ms(),
         )?;
         request.budget.check()?;
-        Ok(call.enqueue()?)
+        request.budget.commit(|| Ok(call.enqueue()?))
     })();
     let _ = request.response.send(result);
 }

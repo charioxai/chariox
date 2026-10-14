@@ -128,6 +128,13 @@ response_policies! {
         EventGeneratorAuthorizationStarted,
         EventConnectionAuthorizationStarted,
         EventConnectionAuthorizationObserved,
+        // Environment authorization URLs and reserved export/import/apply
+        // payloads stay with the host terminal; P01 delivers none of them.
+        EnvironmentProviderAuthorizationLink,
+        ProjectEnvironmentExport,
+        EnvironmentImportPreview,
+        EnvironmentImportCommitted,
+        ProjectEnvironmentPlan,
         // MP-08/MP-11: user-domain browser, Notes and App replies show page,
         // window and App content; external grant holders use the host terminal.
         KernelBrowser,
@@ -140,23 +147,18 @@ response_policies! {
         UserAppViewsChanged,
         UserAppViewsListed,
         UserDomainInteractionAnswered,
-        // Environment authorization URLs and reserved export/import/apply
-        // payloads stay with the host terminal; P01 delivers none of them.
-        EnvironmentProviderAuthorizationLink,
-        ProjectEnvironmentExport,
-        EnvironmentImportPreview,
-        EnvironmentImportCommitted,
-        ProjectEnvironmentPlan,
     ],
     Public => [
         WorkflowNotificationSourceRegistered,
         WorkflowNotificationAttached,
         WorkflowNotificationDetached,
         WorkflowNotifications,
+        HandoffResolved,
         RoomWorkflowRunsControlled,
         ActivePromptSteered,
         CloudRelayLoggedOut,
         KernelSudoRequested,
+        KernelSudoExtended,
         KernelAccessGranted,
         KernelAccessGrantsListed,
         KernelAccessRevoked,
@@ -223,6 +225,7 @@ response_policies! {
         SessionsListed,
         SessionResolved,
         SessionState,
+        AgentTaskUpdated,
         RoomEnvironmentState,
         BrowserImportConsent,
         RoomEnvironmentSlice,

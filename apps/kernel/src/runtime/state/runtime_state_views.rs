@@ -5,6 +5,10 @@ use crate::app::ActiveTurnState;
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) fn durable_state_store(&self) -> &DurableKernelStateStore {
+        &self.owned.durable_state_store
+    }
+
     pub(crate) fn start_active_turn_with_trace_id(
         &self,
         session_id: &str,

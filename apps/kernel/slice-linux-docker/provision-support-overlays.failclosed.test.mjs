@@ -24,6 +24,7 @@ const requiredOverlayDestinations = [
   ["Selkies viewer module", "/opt/chariox-slice/selkies_viewers.py"],
   ...[
     "browser-controller-actions.mjs",
+    "browser-app-actor.mjs",
     "browser-app-restore.mjs",
     "browser-controller-cdp.mjs",
     "browser-controller-resources.mjs",

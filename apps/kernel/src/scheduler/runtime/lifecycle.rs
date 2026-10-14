@@ -144,10 +144,7 @@ pub fn on_workflow_prompt_completed(
         handoff_validation_failure,
         missing_output_failure,
         run_output_validation_failure,
-    } = match completion_result {
-        Ok(update) => update,
-        Err(error) => return Err(error),
-    };
+    } = completion_result?;
     if !validation_warnings.is_empty() {
         for warning in &validation_warnings {
             let failure = WorkflowFailureEvent::new(

@@ -226,7 +226,8 @@ export function installMirror2(sanitizeMirrorCss) {
       record.kind = 'tile'; record.reason = reason; record.size = [width, height];
       record.tag = node.namespaceURI === HTML && !['object', 'embed', 'applet', 'frame', 'frameset', 'portal', 'fencedframe'].includes(node.localName) ? node.localName : 'div';
       shapes.set(record.id, { size: record.size, display: null });
-      const attrs = {}; for (const name of ['class', 'id', 'width', 'height']) { const value = node.getAttribute(name); if (value !== null && value.length <= 4096) attrs[name] = value; } record.attrs = attrs;
+      // MP-08/MP-11: opaque pixels still occupy the author's admitted DOM layout.
+      record.attrs = attributes(node, node.baseURI);
     };
     const maskRecord = (node, record) => {
       const element = node.nodeType === 1;
@@ -521,7 +522,7 @@ export function installMirror2(sanitizeMirrorCss) {
         const kind = kindOf.get(id);
         if (node.nodeType !== 1) continue;
         if ((kind === 'mask') !== secretElement(node)) { dirty.replace.add(node); continue; }
-        if (kind === 'mask' || kind === 'tile') continue; // reconciled every drain (size, mask display)
+        if (kind === 'mask') continue; // protected boxes retain only their admitted mask geometry
         if (styleNodes.has(id)) { dirty.sheets.add(node); continue; }
         if (node.localName === 'img' && (names.has('src') || names.has('srcset'))) imageOp(node, id, ops);
         if (names.has('popover') || names.has('open')) { if (stateful(node)) dirty.state.add(node); else { stateNodes.delete(id); sentStates.delete(id); } }
@@ -834,9 +835,12 @@ export function installMirror2(sanitizeMirrorCss) {
     const sanitize = (text, base) => sanitizeMirrorCss(String(text), String(base), resource);
     // URLs this document actually fetched (Resource Timing): the kernel reads
     // only those bytes, never a URL that a stylesheet merely mentions.
-    const loaded = () => { const names = new Set([...timed, ...performance.getEntriesByType('resource').map(entry => entry.name)]); for (const img of document.images) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].flatMap(url => [urlKeys.get(url), urlKeys.get(`sprite:${url}`)]).filter(Boolean).map(entry => entry.key); };
+    const resourceDocuments = () => new Set([document, ...[...roots.values()].filter(root => root.nodeType === 9)]);
+    const resourceEntries = () => [...resourceDocuments()].flatMap(doc => { try { return doc.defaultView?.performance.getEntriesByType('resource') ?? []; } catch { return []; } });
+    const resourceImages = () => [...nodes.values()].filter(node => node.localName === 'img');
+    const loaded = () => { const names = new Set([...timed, ...resourceEntries().map(entry => entry.name)]); for (const img of resourceImages()) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].flatMap(url => [urlKeys.get(url), urlKeys.get(`sprite:${url}`)]).filter(Boolean).map(entry => entry.key); };
     // Changes when the page loads something (an image may complete without a new entry).
-    const loadedCount = () => { let complete = 0; for (const img of document.images) if (img.complete) complete++; return timed.size + performance.getEntriesByType('resource').length + complete; };
+    const loadedCount = () => { let complete = 0; for (const img of resourceImages()) if (img.complete) complete++; return timed.size + resourceEntries().length + complete; };
     // MP-10 wheel bytes: images (by element) near the viewport, with their CSS
     // size; element images elsewhere wait until the view comes near them.
     const nearImages = margin => {

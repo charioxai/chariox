@@ -1,4 +1,4 @@
-import {displayGeometry as geometry,displayDeviceMetrics} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry,displayDeviceMetrics,hostViewport} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
 import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -13,6 +13,7 @@ import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
+import { BrowserPopupEvidence } from "./kernel-browser-popup-evidence.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
 import { captureProtectionFence, captureProtectedDisplay, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage } from "./kernel-browser-pixels.mjs";
@@ -34,12 +35,14 @@ import { displayCredit, displayPushCredit } from './kernel-browser-display-credi
 export const nativeRetryDelayMs = attempts => Math.min(60_000, 1_000 * 2 ** (attempts - 1));
 
 export function scheduleHostRequest(request, browser) {
-  // MP-08/MP-10: mirror v2 credits long-poll; they never hold the barrier. A state
-  // poll waits for every page's reconcile: once the viewport is applied it only
-  // observes, so input does not queue behind it.
-  return request.method === 'host.browser' && (request.params?.op === 'screenshot' &&
-    typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && Number.isInteger(request.params.wait_ms)
-    || request.params?.op === 'state' && browser?.canReconcileConcurrently?.(viewport, { browserBarVisible: false }) === true)
+  // MP-08/MP-10: App drains wait for enqueue, so the shared bridge lane must
+  // stay independent of input and lifecycle barriers on the host as in Rooms.
+  // A state poll waits for every page's reconcile: once the viewport is applied
+  // it only observes, so input does not queue behind it.
+  return ['browser.app.calls','browser.app.respond'].includes(request.method) ||
+    request.method === 'host.browser' && (request.params?.op === 'screenshot' &&
+    typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && Number.isInteger(request.params.wait_ms) ||
+    request.params?.op === 'state' && browser?.canReconcileConcurrently?.(hostViewport(), { browserBarVisible: false }) === true)
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
@@ -48,8 +51,6 @@ function restorationUrl(url) {
   try { return navigationUrl(url); } catch { return "about:blank"; }
 }
 
-const viewport = { css_width: geometry.width, css_height: geometry.height, device_scale_factor: 1,
-  desktop_pixel_width: geometry.width, desktop_pixel_height: geometry.height };
 export function navigationUrl(raw) {
   if (typeof raw !== "string" || raw.length > 8192) throw new Error("invalid browser URL");
   const url = new URL(raw);
@@ -68,6 +69,7 @@ export class KernelBrowserHost {
     this.generation = 0;
     this.observations = 0; this.observed = 0;
     this.tabs = new Map();
+    this.popupEvidence = new BrowserPopupEvidence(TAB_LIMIT);
     this.streams = new Map();
     this.displays = new Map();
     this.scales = new Map();
@@ -127,6 +129,7 @@ export class KernelBrowserHost {
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
     this.streams.clear();
     this.tabs.clear();
+    this.popupEvidence.clear();
     this.observed = ++this.observations;
     this.observedDocuments.clear();
     await mkdir(this.root, { recursive: true, mode: 0o700 });
@@ -213,6 +216,7 @@ export class KernelBrowserHost {
   async stop() {
     await this.closeCompositors();
     this.sampleLanes.clear();
+    this.popupEvidence.clear();
     await this.chromium.stop(this.browser?.connection);
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
@@ -227,8 +231,10 @@ export class KernelBrowserHost {
   // MP-08/MP-10/MP-11: reconciles can overlap (a state poll beside input). They
   // apply in start order: an older observation reports the newer current tabs.
   tabState() {
-    return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed,
-      tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport }, this.protection.values);
+    // MP-08: private creation evidence for the kernel, stripped before client projection.
+    const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
+    return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
+      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:hostViewport() }, this.protection.values);
   }
   async reconcile() {
     const observation = ++this.observations;
@@ -236,7 +242,7 @@ export class KernelBrowserHost {
     // Restored pages can finish navigation between CDP document reads. Retry
     // only this observation, never the mutation that led to reconciliation.
     for (let attempt = 0; attempt < 3; attempt++) {
-      try { state = await this.browser.reconcile(viewport, { browserBarVisible: false }); break; }
+      try { state = await this.browser.reconcile(hostViewport(), { browserBarVisible: false }); break; }
       catch (error) {
         if (error.code !== "stale_document_reference" || attempt === 2) throw error;
         await delay(25);
@@ -312,7 +318,7 @@ export class KernelBrowserHost {
   }
   async screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true) {
     const started = timestamp();
-    const scale = this.scales.get(tab.tab_id) ?? 1;
+    const scale = this.scales.get(tab.tab_id) ?? hostViewport().device_scale_factor;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
     const regionMasks = protectedCapture ? this.protection.targets.length || this.browser.fillTargets?.size
@@ -459,8 +465,13 @@ export class KernelBrowserHost {
     let tab = command.op === 'input' && typeof command.document_id === 'string'
       ? await this.displayTarget(command) : await this.target(command);
     assertNotCancelled(signal);
-    if (["input", "navigate", "close"].includes(command.op) && (command.focused_agent || command._agent_input)
-      && [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.targetId === tab.target_id)) {
+    // MP-08/MP-11: an agent drives an App Tab as itself, only after the kernel
+    // claimed that App view in the agent's own grant. The page stays on its origin.
+    const app = [...(this.browser.appTabs?.apps?.values() ?? [])].find(open => open.targetId === tab.target_id);
+    const agent = command.focused_agent || command._agent_input
+      ? /^agent:(.+)$/.exec(String(command.observed_by ?? ""))?.[1] ?? "unattributed-agent" : null;
+    if (app && (["input", "navigate", "close"].includes(command.op) && agent && command._app_view_tab !== tab.tab_id
+      || command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin)) {
       throw new UserDomainRefusal("not_granted");
     }
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
@@ -468,18 +479,16 @@ export class KernelBrowserHost {
       if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
       if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
-        ![1, 2].includes(command.device_scale_factor) || (geometry.width===1920&&command.device_scale_factor!==1) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
-      const scale = this.scales.get(tab.tab_id);
-      if (scale && scale !== command.device_scale_factor) throw new Error("MD-DISPLAY: canonical tab geometry is already selected");
-      const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-      await connection.send("Emulation.setDeviceMetricsOverride", displayDeviceMetrics(geometry.width,geometry.height,command.device_scale_factor,this.chromium.scale??1), sessionId);
-      this.scales.set(tab.tab_id, command.device_scale_factor);
+        ![1, 2].includes(command.device_scale_factor) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
+      // MP-08/MP-10/MP-11: observation never changes the native page density.
+      const scale = hostViewport().device_scale_factor;
+      this.scales.set(tab.tab_id, scale);
       const id = `host-display-${randomUUID()}`;
       const codec=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER&&command.codecs.includes('avc1.420033')?'avc1.420033':command.codecs.find(c=>['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(c))??'png';
-      const stream = new DisplayStream({ relay_binary:command.codecs.includes('chariox-relay-binary-v96'), subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor, codec, css_width:geometry.width, css_height:geometry.height, dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec) }, { timing:this.timing,encoder:new BrowserEncoder(this.browser,tab.target_id) });
+      const stream = new DisplayStream({ relay_binary:command.codecs.includes('chariox-relay-binary-v96'), subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: scale, codec, css_width:geometry.width, css_height:geometry.height, dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec) }, { timing:this.timing,encoder:new BrowserEncoder(this.browser,tab.target_id) });
       this.displays.set(id, stream);
       this.armDisplayExpiry(stream);
-      return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor };
+      return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: scale };
     }
     if (command.op === "close") {
       this.mirror.removeTab(tab.tab_id);
@@ -497,7 +506,10 @@ export class KernelBrowserHost {
       return this.reconcile();
     }
     if (command.op === "navigate") {
-      await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal });
+      // MP-08/MP-11: the reloaded App page's calls run as whoever navigated it.
+      const appInput = app ? await this.browser.appTabs.beginInput?.(tab.target_id, agent, { navigation: true }) : null;
+      try { await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal }); }
+      finally { await appInput?.(); }
       return this.observe(await this.reconcile(), null, scope);
     }
     if (command.op === "note_selection" || command.op === "note_reanchor") return this.observe({ generation:this.generation, observation:await this.browser.observeNote({ ...binding, ...(command.quote ? {quote:command.quote} : {}) }) },tab,scope);
@@ -520,6 +532,7 @@ export class KernelBrowserHost {
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
         this.compositors.get(tab.tab_id)?.source?.wake?.();
       };
+      const appInput = app ? await this.browser.appTabs.beginInput?.(tab.target_id, agent) : null;
       try {
         // MP-08/MP-10/MP-11: agent and ordinary input must await CDP's ack,
         // including the lifetime of hidden-target focus emulation. Only an
@@ -530,7 +543,7 @@ export class KernelBrowserHost {
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
         const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>viewerActive()&&owned.click(x,y):null;
         const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;
-        const deferred=await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, viewScale: this.scales.has(tab.tab_id) ? this.scales.get(tab.tab_id) / (this.chromium?.scale ?? 1) : 1, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+        const deferred=await this.sampleLane(tab).run("input", () => this.popupEvidence.capture(this.browser, tab, command._action_id, beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) })));
         // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
         // fenced, ledgered dispatch is ordered by CDP; the renderer's
         // frame-aligned ack would otherwise serialize kernel input admission.
@@ -546,6 +559,7 @@ export class KernelBrowserHost {
         }
         throw error;
       }
+      finally { await appInput?.(); }
       const post = timestamp();
       if(command.input.kind === 'scroll')this.scrolling.set(tab.tab_id,{document_id:tab.document_id,until:performance.now()+400});
       const result = this.observe(await this.reconcile(), null, scope);
@@ -575,12 +589,20 @@ export class KernelBrowserHost {
         return { id: request.id, ok: true, result: { revoked: true } };
       }
       if (request.method === "host.secret") {
+        // MP-08 / MP-10 / MP-11: this internal owner-only flag does not
+        // loosen ordinary Vault secret insertion into password fields.
+        const codeInput = request.params.mask_code_input === true;
+        if (codeInput && (!String(request.params.observed_by ?? "").startsWith("terminal:") ||
+            request.params.action?.kind !== "fill" || typeof request.params.action?.expected_document_url !== "string")) {
+          throw new UserDomainRefusal("not_granted");
+        }
         await this.start({ signal });
         if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
         const tab = await this.target(request.params);
         if (tab.document_id !== request.params.document_id) throw new UserDomainRefusal("stale_reference");
+        const action = codeInput ? { ...request.params.action, mask_code_input: true } : request.params.action;
         await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
-          node_ref: request.params.node_ref, action: request.params.action, timeout_ms: 10_000 }, { signal }));
+          node_ref: request.params.node_ref, action, timeout_ms: 10_000 }, { signal }));
         await this.save();
         return { id: request.id, ok: true, result: { inserted: true } };
       }

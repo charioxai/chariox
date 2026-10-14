@@ -19,7 +19,9 @@ DelegateSubgroup=supervisor
 # Prepares the `apps` subtree from the supervisor subgroup, then execs the
 # kernel. No ExecStartPre/Post: see start-kernel.sh.
 ExecStart=%h/.local/lib/chariox/start-kernel.sh %h/.local/bin/chariox-kernel
-KillMode=control-group
+# Stop signals the kernel only: its shutdown stops Apps as stopped, so they come
+# back after a restart. systemd then kills whatever the kernel left behind.
+KillMode=mixed
 TimeoutStopSec=60s
 # Restart after a crash (owner decision, 2026-09-30); a clean stop stays stopped.
 # Apps and pending work recover through the kernel's own startup recovery.

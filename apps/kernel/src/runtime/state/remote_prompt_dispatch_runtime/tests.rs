@@ -4831,3 +4831,67 @@ mod dispatch_settlement {
         .await;
     }
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 A10/G03: real partition/stop left the durable task Working.
+#[tokio::test]
+async fn a10_settled_remote_cancellation_cancels_only_its_durable_task() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    let fixture = make_receipt_reconciliation_fixture("ws://127.0.0.1:9", "task-cancel").await;
+    let mut config = fixture.runtime.owned.config_projection.snapshot();
+    config.room_agent_tools = true;
+    fixture.runtime.owned.config_projection.update(config);
+    let owner = fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap()
+        .owner_user_id()
+        .to_string();
+    for prompt in [&fixture.dispatch.prompt_id, &fixture.successor_prompt_id] {
+        fixture
+            .runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Begin {
+                owner: owner.clone(),
+                room: fixture.session_id.clone(),
+                agent: fixture.agent_id.clone(),
+                prompt: prompt.clone(),
+                run: None,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+    }
+    fixture
+        .runtime
+        .owned
+        .finalize_remote_prompt_cancellation_after_worker_settled(
+            &fixture.session_id,
+            &fixture.agent_id,
+            &fixture.dispatch.source_attachment_id,
+        )
+        .unwrap();
+    let tasks = fixture
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(&fixture.session_id), Some(&fixture.agent_id))
+        .unwrap();
+    assert_eq!(
+        tasks
+            .iter()
+            .find(|t| t.task_id == fixture.dispatch.prompt_id)
+            .unwrap()
+            .state,
+        ExecutionState::Cancelled
+    );
+    assert_eq!(
+        tasks
+            .iter()
+            .find(|t| t.task_id == fixture.successor_prompt_id)
+            .unwrap()
+            .state,
+        ExecutionState::Working
+    );
+}

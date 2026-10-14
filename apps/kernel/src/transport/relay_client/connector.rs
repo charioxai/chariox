@@ -795,17 +795,10 @@ async fn run_daemon_relay_connector_inner(
             }),
         );
         let connect_started = Instant::now();
-        match timeout(RELAY_CONNECT_TIMEOUT, async {
-            let request = chariox_relay::binary_event::connection_request(
-                &chariox_relay::frame_transport::transport_url(&relay_url),
-            )?;
-            tokio_tungstenite::connect_async_with_config(
-                request,
-                None,
-                std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() == Ok("1"),
-            )
-            .await
-        })
+        match timeout(
+            RELAY_CONNECT_TIMEOUT,
+            crate::transport::relay_socket_connect::connect_binary_events(&relay_url),
+        )
         .await
         {
             Err(_) => {
@@ -1070,11 +1063,11 @@ async fn run_daemon_relay_connector_inner(
                         changed = shutdown.changed() => {
                             if changed.is_ok() && *shutdown.borrow() {
                                 if static_relay.is_none() {
-                                    let _ = spawn_cloud_presence_publish(
+                                    drop(spawn_cloud_presence_publish(
                                         Arc::clone(&router),
                                         false,
                                         "daemon shutting down",
-                                    );
+                                    ));
                                 }
                                 let _ = send_outgoing_envelope(&outgoing_tx, RelayEnvelope::Close {
                                     reason: "daemon shutting down".to_string(),

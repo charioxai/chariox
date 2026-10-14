@@ -3,10 +3,6 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
-    WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
-    WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
-    WorkflowNotificationDetached { subscription_id: String },
-    WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     EnvironmentUnsupportedFeature { feature: crate::project_environment::EnvironmentCapability, supported_schema: u32 },
     ProjectEnvironmentDiff { diff: crate::project_environment::EnvironmentRevisionDiff },
     ProjectEnvironmentSaved { environment: crate::project_environment::ProjectEnvironment, diff: crate::project_environment::EnvironmentRevisionDiff },
@@ -17,11 +13,18 @@ pub enum LocalDaemonResponse {
     EnvironmentImportCommitted { project: RuntimeProject, environment: crate::project_environment::ProjectEnvironment, operation: crate::project_environment::EnvironmentOperation },
     EnvironmentProviderAuthorizationLink { link: crate::project_environment::EnvironmentProviderAuthorizationLink },
     ProjectEnvironment { environment: crate::project_environment::ProjectEnvironment },
+    WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
+    WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
+    WorkflowNotificationDetached { subscription_id: String },
+    WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     KernelSudoRequested { agent_id: String },
+    KernelSudoExtended { turn: KernelSudoTurn },
     KernelAccessGranted { grant: KernelAccessGrant, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
     KernelAccessRevoked { revoked: usize, },
     RoomBrowserArtifact { result: crate::transport::runtime_tools::RuntimeToolResult },
+    /// Protocol 477: the safe outcome of the owner's hand-off action.
+    HandoffResolved { outcome: HandoffOutcome },
     /// MD-2: operation result; no CDP endpoints or profile paths.
     KernelBrowser { result: serde_json::Value, },
     Notes { result: NoteResult, },
@@ -101,6 +104,8 @@ pub enum LocalDaemonResponse {
     ProjectEnvironmentSetupRetried { status: ProjectEnvironmentSetupStatus, },
     SessionsListed { sessions: Vec<RuntimeSession>, },
     SessionResolved { session: RuntimeSession, },
+    /// MP-08 / MP-09 / MP-10 / MP-11 A12: compact, home-owned control confirmation.
+    AgentTaskUpdated { session_id: String, task: Box<crate::durable_state::agent_lifecycle::AgentTaskExecution> },
     RoomWorkflowRunsControlled {
         results: Vec<RoomWorkflowRunControlResult>,
         inventory: crate::runtime::projection::RoomWorkflowInventory,

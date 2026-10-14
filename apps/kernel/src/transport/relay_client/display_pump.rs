@@ -1,4 +1,4 @@
-//! MP-08/MP-10: protocol 475 pushed display. One kernel-resident pump per
+//! MP-08/MP-10: protocol 491 pushed display. One kernel-resident pump per
 //! relay display subscription takes frames through the ordinary admitted
 //! display path (terminal admission, Vault barrier, host policy, scrub) and
 //! pushes them as relay events. The relay RTT leaves the frame loop; the
@@ -45,7 +45,11 @@ enum Gate {
 
 impl PumpState {
     fn rtt_floor(&self) -> Duration {
-        self.rtt.iter().map(|(_, rtt)| *rtt).min().unwrap_or_default()
+        self.rtt
+            .iter()
+            .map(|(_, rtt)| *rtt)
+            .min()
+            .unwrap_or_default()
     }
     fn admit(&mut self, now: Instant) -> Gate {
         if let Some(&(_, oldest)) = self.sent.front() {
@@ -263,12 +267,17 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
         };
         idle = Duration::ZERO;
         let at = std::time::Instant::now();
-        let Some(encrypted_event) = crate::transport::kernel_browser_display::encode_display_event(event)
-            .ok()
-            .and_then(|bytes| {
-                relay_crypto::encrypt_payload_for_peer(&daemon_private_key, &route.public_key, &bytes)
+        let Some(encrypted_event) =
+            crate::transport::kernel_browser_display::encode_display_event(event)
+                .ok()
+                .and_then(|bytes| {
+                    relay_crypto::encrypt_payload_for_peer(
+                        &daemon_private_key,
+                        &route.public_key,
+                        &bytes,
+                    )
                     .ok()
-            })
+                })
         else {
             pump.with(|state| state.failed = true);
             return;
@@ -306,9 +315,15 @@ mod tests {
             state.sent.push_back((sequence, start));
         }
         // Outstanding frames within the allowance keep streaming.
-        assert!(matches!(state.admit(start + Duration::from_millis(50)), Gate::Open(_)));
+        assert!(matches!(
+            state.admit(start + Duration::from_millis(50)),
+            Gate::Open(_)
+        ));
         // A client lagging past RTT floor + allowance stops new frames.
-        assert_eq!(state.admit(start + Duration::from_millis(150)), Gate::Closed);
+        assert_eq!(
+            state.admit(start + Duration::from_millis(150)),
+            Gate::Closed
+        );
         state.acknowledge(3, false, start + Duration::from_millis(160));
         assert_eq!(state.rtt_floor(), Duration::from_millis(160));
         let Gate::Open(credit) = state.admit(start + Duration::from_millis(161)) else {
@@ -334,7 +349,10 @@ mod tests {
         let Gate::Open(credit) = state.admit(start + Duration::from_millis(500)) else {
             panic!()
         };
-        assert!(!credit.reset && state.reset, "a second loss waits for the sync floor");
+        assert!(
+            !credit.reset && state.reset,
+            "a second loss waits for the sync floor"
+        );
         let Gate::Open(credit) = state.admit(start + SYNC_FLOOR) else {
             panic!()
         };
@@ -363,7 +381,10 @@ mod tests {
             assert_eq!(state.admit(at + Duration::from_millis(150)), Gate::Closed);
             state.acknowledge(round + 1, false, at + Duration::from_millis(160));
             // The pump re-admits after every ack; that ends the closure.
-            assert!(matches!(state.admit(at + Duration::from_millis(161)), Gate::Open(_)));
+            assert!(matches!(
+                state.admit(at + Duration::from_millis(161)),
+                Gate::Open(_)
+            ));
         }
         let Gate::Open(credit) = state.admit(start + Duration::from_millis(600)) else {
             panic!()

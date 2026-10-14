@@ -258,6 +258,7 @@ impl KernelRuntimeState {
         Ok(true)
     }
 
+    #[cfg(test)]
     pub(super) async fn settle_unexpected_provider_run_exit(
         &self,
         session_id: &str,

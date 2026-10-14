@@ -173,11 +173,11 @@ pub use api::{
     RequestManagedEnvironmentReleaseUpdateRequest, RequestNativeProviderTurnInteractionRequest,
     RequestRoomEnvironmentInputTakeoverRequest, ResetAllPromptSettingsRequest,
     ResetPromptSettingRequest, ResizeTerminalRequest, ResolveKernelClientConnectionRequest,
-    ResolveSessionRequest, ResolveWorkflowRequest, RespondToInteractionRequest,
-    RestoreProjectRequest, RestoreSliceBackupRequest, ResumeMetaagentTaskRequest,
-    ResumeWorkflowRunRequest, RetryProjectEnvironmentSetupRequest, RetryRoomEnvironmentRequest,
-    RevokeAgentExtensionRequest, RevokeCloudSessionInviteRequest, RevokePairedClientRequest,
-    RevokeSessionInviteRequest, RoomEnvironmentAccessibilityNode,
+    ResolveSessionRequest, ResolveWorkflowRequest, RespondToHandoffRequest,
+    RespondToInteractionRequest, RestoreProjectRequest, RestoreSliceBackupRequest,
+    ResumeMetaagentTaskRequest, ResumeWorkflowRunRequest, RetryProjectEnvironmentSetupRequest,
+    RetryRoomEnvironmentRequest, RevokeAgentExtensionRequest, RevokeCloudSessionInviteRequest,
+    RevokePairedClientRequest, RevokeSessionInviteRequest, RoomEnvironmentAccessibilityNode,
     RoomEnvironmentBrowserHistoryAction, RoomEnvironmentBrowserTabAction,
     RoomEnvironmentClipboardText, RoomEnvironmentHumanAction, RoomEnvironmentHumanBrowserAction,
     RoomEnvironmentKeyboardInput, RoomEnvironmentPointerButton,
@@ -277,21 +277,22 @@ pub use api::{
     RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
 };
 pub use api::{
+    ExtendKernelSudoRequest, KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest,
+    RequestKernelAccessRequest, RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
+};
+pub use api::{
     GetKernelResourceTelemetryRequest, KernelResourceTelemetryDisk, KernelResourceTelemetryLogs,
     KernelResourceTelemetryMemory, KernelResourceTelemetryMetadata, KernelResourceTelemetryProcess,
     KernelResourceTelemetryRelease, KernelResourceTelemetrySnapshot,
     KERNEL_RESOURCE_TELEMETRY_SCHEMA,
 };
 pub use api::{
-    KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
-    RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
+    HandoffOutcome, HandoffResponseAction, HandoffStatus, HandoffValue,
+    KernelAccessProviderHarness, KernelAccessRequester, KernelConnectionClass, PasskeyPrompt,
+    PasskeyPromptKind,
 };
 pub use api::{
     KernelBrowserCommand, KernelBrowserInput, KernelBrowserMirrorAction, KernelBrowserRequest,
-};
-pub use api::{
-    KernelAccessProviderHarness, KernelAccessRequester, KernelConnectionClass, PasskeyPrompt,
-    PasskeyPromptKind,
 };
 pub use api::{
     NoteAnchor, NoteBox, NoteCommand, NoteRecord, NoteReply, NoteResult, NoteSelection,

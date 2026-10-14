@@ -332,7 +332,10 @@ async fn mdnotes_two_local_connections_child() {
         match future {
             KernelOutgoingFrame::Response {
                 error: Some(error), ..
-            } => assert!(error.message.contains("MP-11: stale mirror input epoch")),
+            } => assert!(
+                error.message.contains("MP-11: stale mirror input epoch"),
+                "MP-11: mirror refusal: {error:?}"
+            ),
             other => panic!("MP-11: future mirror epoch unexpectedly admitted: {other:?}"),
         }
         let b_subscribed = success(

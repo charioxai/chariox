@@ -102,6 +102,10 @@ impl std::fmt::Debug for AppStateOperation {
 }
 
 #[derive(Debug, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing AppStateOutcome typed actor payload layout"
+)]
 pub(crate) enum AppStateOutcome {
     Value(Option<StateRecord>),
     Transaction {

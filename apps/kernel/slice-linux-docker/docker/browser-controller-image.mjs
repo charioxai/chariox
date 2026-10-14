@@ -3,6 +3,7 @@ import { withBrowserFrames, assertBrowserFramesUnchanged } from './browser-contr
 // Re-encode pixels without PNG metadata; no raw protected frame leaves CDP.
 import { deflateSync, crc32 } from "node:zlib";
 import { BrowserSnapshotError } from "./browser-controller-snapshot.mjs";
+import { MAX_BROWSER_ARTIFACT_BYTES } from "./browser-controller-artifacts.mjs";
 
 // MP-08/MP-11: screenshot artifacts use the same exact fill targets as video.
 export async function captureProtectedBrowserImage({connection,sessionId,targetId,documentId,viewport,protectedValues,fillTargets=[]}) {
@@ -14,7 +15,7 @@ export async function captureProtectedBrowserImage({connection,sessionId,targetI
     const captured=await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false,fromSurface:true},sessionId);
     return captured.data;
   },viewport.device_scale_factor,null,regions=>{redaction=regions.length?'fill_targets':'none';},
-  {width:viewport.css_width*viewport.device_scale_factor,height:viewport.css_height*viewport.device_scale_factor});
+  {width:viewport.css_width*viewport.device_scale_factor,height:viewport.css_height*viewport.device_scale_factor,maxBytes:MAX_BROWSER_ARTIFACT_BYTES});
   const bytes=Buffer.from(data,'base64');
   if(bytes.length<24||bytes.readUInt32BE(16)!==viewport.css_width*viewport.device_scale_factor||bytes.readUInt32BE(20)!==viewport.css_height*viewport.device_scale_factor)throw new BrowserSnapshotError('browser_artifact_invalid','Browser capture dimensions differ from the canonical viewport');
   await assertBrowserFramesUnchanged(connection,frames);

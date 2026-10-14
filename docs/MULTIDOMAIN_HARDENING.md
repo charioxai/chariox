@@ -46,20 +46,9 @@ Native selection/layout are test CDP stimuli; observation and reanchoring remain
 kernel isolated-world operations. Fixture frontend assets prove the host seam;
 the separate Cloud live drill exercises signed App package admission and channel.
 
-Cloud's `apps/web/scripts/multidomain-hardening-live-drill.mjs` drives the real
-browser → local relay → kernel topology, two owner browser contexts, a separately
-authenticated collaborator, local CLI transport under the disposable Unix owner,
-remote CLI transport, and both full local and remote TUIs. The parent live harness
-owns provisioning, process pinning, teardown and release acceptance limitations.
-No hosted Cloud, real accounts, provider model prompts or runtime proxy is used.
-
-For the initial base, set `MD_HARDENING_EXPECT_DPR2_RED=1`: the DPR2 pixel assertion
-is an expected regression receipt. On the rebased/fixed stack, set it to `0` so
-that the same failure is fatal. The probe asserts decoded PNG dimensions and
-samples native pixels at the protected field's scaled coordinates. A failed
-transport or invalid geometry is always fatal, never an expected pixel failure.
-The published-stack rerun requires DPR2 green and preserves strict, structured
-per-case authorization/stale-reference rejection checks.
+Cloud's former `multidomain-hardening-live-drill.mjs` drove the removed web
+native App host and is retired. Apps now open as kernel-browser Tabs; Cloud's
+`user-app-tab-live-drill.mjs` covers that path on a hosted origin.
 
 ## Published-stack result
 

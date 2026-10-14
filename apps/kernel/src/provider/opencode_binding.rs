@@ -473,6 +473,227 @@ pub(super) fn abort_opencode_session(
 #[path = "opencode_binding_permission_tests.rs"]
 mod permission_tests;
 
+pub(super) fn submit_opencode_prompt(
+    run: &RuntimeProviderRun,
+    state: &mut OpenCodeRuntimeState,
+    envelope: &crate::prompt_assembly::PromptEnvelope,
+) -> Result<(), DaemonError> {
+    // A resumed native session can still carry an earlier permission policy.
+    // Sync it before execution while preserving the session and transcript.
+    let permission = if run.read_only_discovery() {
+        opencode_read_only_permission_rules()
+    } else if run.requires_workspace_live_sync() {
+        opencode_workspace_live_sync_permission_rules(
+            opencode_workspace_live_sync_native_writes_allowed(run),
+            run.permission_level(),
+        )
+    } else {
+        opencode_permission_rules(run.permission_level())
+    };
+    OpenCodeClient::new(run.id(), state.base_url())?
+        .update_session_permissions(state.session_id(), permission)?;
+    submit_opencode_prompt_with_policy(
+        run,
+        state,
+        envelope,
+        ProviderUtilityExecutionPolicy::ExistingRun,
+    )
+}
+
+fn submit_opencode_prompt_with_policy(
+    run: &RuntimeProviderRun,
+    state: &mut OpenCodeRuntimeState,
+    envelope: &crate::prompt_assembly::PromptEnvelope,
+    policy: ProviderUtilityExecutionPolicy,
+) -> Result<(), DaemonError> {
+    let client = OpenCodeClient::new(run.id(), state.base_url())?;
+    if let Ok(messages) = client.messages(state.session_id()) {
+        state.baseline_existing_messages(&messages);
+    }
+    let message_id = next_opencode_message_id();
+    client.submit_prompt(
+        state.session_id(),
+        &message_id,
+        &envelope.visible_user_prompt,
+        &envelope.attachments,
+        Some(&envelope.hidden_system_context),
+        Some(run.model()),
+        run.variant(),
+        run.execution_mode(),
+        policy.is_read_only_discovery() || opencode_prompt_should_disable_native_writes(run),
+        !policy.is_read_only_discovery() && opencode_prompt_should_allow_native_bash(run),
+    )?;
+    state.note_prompt_submitted(message_id);
+    Ok(())
+}
+
+pub(crate) fn run_opencode_utility_prompt(
+    run: &RuntimeProviderRun,
+    prompt: &str,
+    hidden_system_context: &str,
+    timeout: Duration,
+    policy: ProviderUtilityExecutionPolicy,
+) -> Result<String, DaemonError> {
+    let base_url = run
+        .structured_endpoint()
+        .ok_or_else(|| DaemonError::ProviderProtocol {
+            provider_run_id: run.id().to_string(),
+            operation: "opencode_utility_endpoint_missing",
+            message: "opencode utility requires a structured provider endpoint".to_string(),
+        })?
+        .to_string();
+    let client = OpenCodeClient::new(run.id(), &base_url)?;
+    client.wait_until_healthy(Duration::from_secs(30))?;
+    let allow_native_writes = opencode_workspace_live_sync_native_writes_allowed(run);
+    let session_permission = if policy.is_metadata_only() {
+        Some(serde_json::json!([{ "permission": "*", "pattern": "*", "action": "deny" }]))
+    } else if policy.is_read_only_discovery() {
+        Some(opencode_read_only_permission_rules())
+    } else if run.requires_workspace_live_sync() {
+        Some(opencode_workspace_live_sync_permission_rules(
+            allow_native_writes,
+            run.permission_level(),
+        ))
+    } else {
+        Some(opencode_permission_rules(run.permission_level()))
+    };
+    let session_id = client.create_session_with_retry(
+        session_permission,
+        OPENCODE_SESSION_CREATE_TIMEOUT,
+        OPENCODE_SESSION_CREATE_RETRY_INTERVAL,
+    )?;
+    let event_subscription = client.subscribe_events_with_retry(
+        OPENCODE_EVENT_SUBSCRIBE_TIMEOUT,
+        OPENCODE_EVENT_SUBSCRIBE_RETRY_INTERVAL,
+    )?;
+    let mut state = OpenCodeRuntimeState::new(base_url, session_id, event_subscription);
+    let envelope = crate::prompt_assembly::PromptEnvelope::new(
+        prompt,
+        hidden_system_context,
+        Vec::new(),
+        crate::prompt_assembly::PromptManifest::default(),
+    );
+    if let Err(error) = submit_opencode_prompt_with_policy(run, &mut state, &envelope, policy) {
+        state.stop();
+        return Err(error);
+    }
+
+    let deadline = Instant::now() + timeout;
+    let mut output = String::new();
+    let mut completed = false;
+    while Instant::now() < deadline {
+        let drain = match drain_opencode_events(run, &mut state, None) {
+            Ok(drain) => drain,
+            Err(error) => {
+                state.stop();
+                return Err(error);
+            }
+        };
+        for chunk in drain.chunks {
+            if chunk.kind == TerminalOutputKind::ProviderOutput {
+                output.push_str(&String::from_utf8_lossy(&chunk.bytes));
+            }
+        }
+        if let Some(failure) = drain.terminal_failure {
+            state.stop();
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "opencode_utility_failed",
+                message: failure,
+            });
+        }
+        if drain.prompt_completed {
+            completed = true;
+            break;
+        }
+        std::thread::sleep(OPENCODE_UTILITY_POLL_INTERVAL);
+    }
+    if !completed {
+        let _ = OpenCodeClient::new(run.id(), state.base_url())
+            .and_then(|client| client.abort_session(state.session_id()));
+        state.stop();
+        return Err(DaemonError::ProviderProtocol {
+            provider_run_id: run.id().to_string(),
+            operation: "opencode_utility_timeout",
+            message: format!(
+                "opencode utility did not complete within {} ms",
+                timeout.as_millis()
+            ),
+        });
+    }
+    state.stop();
+    let output = clean_opencode_utility_output(&output);
+    if output.is_empty() {
+        return Err(DaemonError::ProviderProtocol {
+            provider_run_id: run.id().to_string(),
+            operation: "opencode_utility_empty_output",
+            message: "opencode utility returned no assistant text".to_string(),
+        });
+    }
+    Ok(output)
+}
+
+fn clean_opencode_utility_output(output: &str) -> String {
+    let trimmed = output.trim();
+    if let Some(stripped) = trimmed
+        .strip_prefix("```json")
+        .and_then(|value| value.strip_suffix("```"))
+    {
+        return stripped.trim().to_string();
+    }
+    if let Some(stripped) = trimmed
+        .strip_prefix("```")
+        .and_then(|value| value.strip_suffix("```"))
+    {
+        return stripped.trim().to_string();
+    }
+    trimmed.to_string()
+}
+
+fn next_opencode_message_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let timestamp_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed) & 0x0fff;
+    let encoded_time =
+        timestamp_ms.saturating_mul(0x1000).saturating_add(sequence) & 0xffff_ffff_ffff;
+    let random = Alphanumeric.sample_string(&mut rand::thread_rng(), 14);
+    format!("msg_{encoded_time:012x}{random}")
+}
+
+fn resolve_initial_selection(
+    run: &RuntimeProviderRun,
+    client: &OpenCodeClient,
+) -> Result<OpenCodeRunSelection, DaemonError> {
+    let resolved = if run.model() != "default" && run.variant().is_some() {
+        OpenCodeConfiguredDefaults::default()
+    } else {
+        client.configured_defaults()?
+    };
+    let requested_model = if run.model() == "default" {
+        resolved.model.as_deref()
+    } else {
+        Some(run.model())
+    };
+    let model = client.validated_model(requested_model)?;
+    // A configured variant belongs to its configured model, not any explicit selection.
+    let variant = run
+        .variant()
+        .is_none()
+        .then(|| {
+            if run.model() == "default" || resolved.model.as_deref() == model.as_deref() {
+                resolved.variant
+            } else {
+                None
+            }
+        })
+        .flatten();
+    Ok(OpenCodeRunSelection { model, variant })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1116,225 +1337,4 @@ mod tests {
             },
         )
     }
-}
-
-pub(super) fn submit_opencode_prompt(
-    run: &RuntimeProviderRun,
-    state: &mut OpenCodeRuntimeState,
-    envelope: &crate::prompt_assembly::PromptEnvelope,
-) -> Result<(), DaemonError> {
-    // A resumed native session can still carry an earlier permission policy.
-    // Sync it before execution while preserving the session and transcript.
-    let permission = if run.read_only_discovery() {
-        opencode_read_only_permission_rules()
-    } else if run.requires_workspace_live_sync() {
-        opencode_workspace_live_sync_permission_rules(
-            opencode_workspace_live_sync_native_writes_allowed(run),
-            run.permission_level(),
-        )
-    } else {
-        opencode_permission_rules(run.permission_level())
-    };
-    OpenCodeClient::new(run.id(), state.base_url())?
-        .update_session_permissions(state.session_id(), permission)?;
-    submit_opencode_prompt_with_policy(
-        run,
-        state,
-        envelope,
-        ProviderUtilityExecutionPolicy::ExistingRun,
-    )
-}
-
-fn submit_opencode_prompt_with_policy(
-    run: &RuntimeProviderRun,
-    state: &mut OpenCodeRuntimeState,
-    envelope: &crate::prompt_assembly::PromptEnvelope,
-    policy: ProviderUtilityExecutionPolicy,
-) -> Result<(), DaemonError> {
-    let client = OpenCodeClient::new(run.id(), state.base_url())?;
-    if let Ok(messages) = client.messages(state.session_id()) {
-        state.baseline_existing_messages(&messages);
-    }
-    let message_id = next_opencode_message_id();
-    client.submit_prompt(
-        state.session_id(),
-        &message_id,
-        &envelope.visible_user_prompt,
-        &envelope.attachments,
-        Some(&envelope.hidden_system_context),
-        Some(run.model()),
-        run.variant(),
-        run.execution_mode(),
-        policy.is_read_only_discovery() || opencode_prompt_should_disable_native_writes(run),
-        !policy.is_read_only_discovery() && opencode_prompt_should_allow_native_bash(run),
-    )?;
-    state.note_prompt_submitted(message_id);
-    Ok(())
-}
-
-pub(crate) fn run_opencode_utility_prompt(
-    run: &RuntimeProviderRun,
-    prompt: &str,
-    hidden_system_context: &str,
-    timeout: Duration,
-    policy: ProviderUtilityExecutionPolicy,
-) -> Result<String, DaemonError> {
-    let base_url = run
-        .structured_endpoint()
-        .ok_or_else(|| DaemonError::ProviderProtocol {
-            provider_run_id: run.id().to_string(),
-            operation: "opencode_utility_endpoint_missing",
-            message: "opencode utility requires a structured provider endpoint".to_string(),
-        })?
-        .to_string();
-    let client = OpenCodeClient::new(run.id(), &base_url)?;
-    client.wait_until_healthy(Duration::from_secs(30))?;
-    let allow_native_writes = opencode_workspace_live_sync_native_writes_allowed(run);
-    let session_permission = if policy.is_metadata_only() {
-        Some(serde_json::json!([{ "permission": "*", "pattern": "*", "action": "deny" }]))
-    } else if policy.is_read_only_discovery() {
-        Some(opencode_read_only_permission_rules())
-    } else if run.requires_workspace_live_sync() {
-        Some(opencode_workspace_live_sync_permission_rules(
-            allow_native_writes,
-            run.permission_level(),
-        ))
-    } else {
-        Some(opencode_permission_rules(run.permission_level()))
-    };
-    let session_id = client.create_session_with_retry(
-        session_permission,
-        OPENCODE_SESSION_CREATE_TIMEOUT,
-        OPENCODE_SESSION_CREATE_RETRY_INTERVAL,
-    )?;
-    let event_subscription = client.subscribe_events_with_retry(
-        OPENCODE_EVENT_SUBSCRIBE_TIMEOUT,
-        OPENCODE_EVENT_SUBSCRIBE_RETRY_INTERVAL,
-    )?;
-    let mut state = OpenCodeRuntimeState::new(base_url, session_id, event_subscription);
-    let envelope = crate::prompt_assembly::PromptEnvelope::new(
-        prompt,
-        hidden_system_context,
-        Vec::new(),
-        crate::prompt_assembly::PromptManifest::default(),
-    );
-    if let Err(error) = submit_opencode_prompt_with_policy(run, &mut state, &envelope, policy) {
-        state.stop();
-        return Err(error);
-    }
-
-    let deadline = Instant::now() + timeout;
-    let mut output = String::new();
-    let mut completed = false;
-    while Instant::now() < deadline {
-        let drain = match drain_opencode_events(run, &mut state, None) {
-            Ok(drain) => drain,
-            Err(error) => {
-                state.stop();
-                return Err(error);
-            }
-        };
-        for chunk in drain.chunks {
-            if chunk.kind == TerminalOutputKind::ProviderOutput {
-                output.push_str(&String::from_utf8_lossy(&chunk.bytes));
-            }
-        }
-        if let Some(failure) = drain.terminal_failure {
-            state.stop();
-            return Err(DaemonError::ProviderProtocol {
-                provider_run_id: run.id().to_string(),
-                operation: "opencode_utility_failed",
-                message: failure,
-            });
-        }
-        if drain.prompt_completed {
-            completed = true;
-            break;
-        }
-        std::thread::sleep(OPENCODE_UTILITY_POLL_INTERVAL);
-    }
-    if !completed {
-        let _ = OpenCodeClient::new(run.id(), state.base_url())
-            .and_then(|client| client.abort_session(state.session_id()));
-        state.stop();
-        return Err(DaemonError::ProviderProtocol {
-            provider_run_id: run.id().to_string(),
-            operation: "opencode_utility_timeout",
-            message: format!(
-                "opencode utility did not complete within {} ms",
-                timeout.as_millis()
-            ),
-        });
-    }
-    state.stop();
-    let output = clean_opencode_utility_output(&output);
-    if output.is_empty() {
-        return Err(DaemonError::ProviderProtocol {
-            provider_run_id: run.id().to_string(),
-            operation: "opencode_utility_empty_output",
-            message: "opencode utility returned no assistant text".to_string(),
-        });
-    }
-    Ok(output)
-}
-
-fn clean_opencode_utility_output(output: &str) -> String {
-    let trimmed = output.trim();
-    if let Some(stripped) = trimmed
-        .strip_prefix("```json")
-        .and_then(|value| value.strip_suffix("```"))
-    {
-        return stripped.trim().to_string();
-    }
-    if let Some(stripped) = trimmed
-        .strip_prefix("```")
-        .and_then(|value| value.strip_suffix("```"))
-    {
-        return stripped.trim().to_string();
-    }
-    trimmed.to_string()
-}
-
-fn next_opencode_message_id() -> String {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    let timestamp_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default();
-    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed) & 0x0fff;
-    let encoded_time =
-        timestamp_ms.saturating_mul(0x1000).saturating_add(sequence) & 0xffff_ffff_ffff;
-    let random = Alphanumeric.sample_string(&mut rand::thread_rng(), 14);
-    format!("msg_{encoded_time:012x}{random}")
-}
-
-fn resolve_initial_selection(
-    run: &RuntimeProviderRun,
-    client: &OpenCodeClient,
-) -> Result<OpenCodeRunSelection, DaemonError> {
-    let resolved = if run.model() != "default" && run.variant().is_some() {
-        OpenCodeConfiguredDefaults::default()
-    } else {
-        client.configured_defaults()?
-    };
-    let requested_model = if run.model() == "default" {
-        resolved.model.as_deref()
-    } else {
-        Some(run.model())
-    };
-    let model = client.validated_model(requested_model)?;
-    // A configured variant belongs to its configured model, not any explicit selection.
-    let variant = run
-        .variant()
-        .is_none()
-        .then(|| {
-            if run.model() == "default" || resolved.model.as_deref() == model.as_deref() {
-                resolved.variant
-            } else {
-                None
-            }
-        })
-        .flatten();
-    Ok(OpenCodeRunSelection { model, variant })
 }

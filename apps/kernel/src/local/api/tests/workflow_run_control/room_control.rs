@@ -1,4 +1,5 @@
 use super::*;
+use crate::durable_state::workflow_invocation_provenance::WorkflowUserInvocation;
 
 #[test]
 fn room_workflow_controls_capture_ids_report_each_outcome_and_preserve_other_runs() {
@@ -50,8 +51,21 @@ fn room_workflow_controls_capture_ids_report_each_outcome_and_preserve_other_run
                 vec![],
                 vec![],
             );
+            // These synthetic runs represent this user's own invocations. Private
+            // callers cannot see legacy runs without immutable creator proof.
+            run.set_invocation_context(1, None, Some(id.into()), 0, None);
             run.set_status(status);
             room.create_workflow_run(run);
+            app.durable_state_store()
+                .persist_workflow_runtime_transition_with_invocation(
+                    &room,
+                    "workflow_prompt_enqueued",
+                    Some(WorkflowUserInvocation {
+                        queue_item_id: id.into(),
+                        user_id: room.owner_user_id().into(),
+                    }),
+                )
+                .unwrap();
         }
         app.sessions_mut().restore_session(room);
     });

@@ -727,6 +727,8 @@ impl KernelRuntimeState {
             Some(slice_id) => self.resolve_slice_worker_kernel_ref(slice_id).await?,
             None => machine_ref.to_string(),
         };
+        // MP-08/MP-10/MP-11 D1: Apps remain home-owned across placement
+        // changes; their existing grant generation and expiry still apply.
         self.owned
             .kernel_browser_host
             .revoke_agent(local_agent.id());
@@ -859,6 +861,8 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         self.owned
             .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
+        self.revoke_agent_app_capability_grants(&agent).await?;
+        self.authorize_current_external_command()?;
         // Relay projection ingestion also owns the app lock. Keep the worker
         // acknowledgement and home deletion in one critical section so an
         // already-admitted snapshot cannot revive the run after it is ended.
@@ -897,6 +901,10 @@ impl KernelRuntimeState {
         self.remove_destroyed_agent_provider_processes(local_provider_run_ids);
         self.append_agent_durable_event("agent.deleted", &destroyed, None)
             .await?;
+        // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: a removed delegate is a
+        // terminal source now; wake its waiting parent through the shared
+        // reconciliation path rather than the next 30-second periodic sweep.
+        self.schedule_agent_lifecycle_sweep();
         Ok(destroyed)
     }
 
@@ -972,6 +980,9 @@ impl KernelRuntimeState {
             .await?;
         self.stop_managed_environment_for_session_lifecycle(session_id)
             .await;
+        for agent in owned.agent_store.get_session_agents(session_id) {
+            self.revoke_agent_app_capability_grants(&agent).await?;
+        }
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
         self.sweep_kernel_access();
         owned.clear_session_prompt_runtime_state(session_id);

@@ -24,6 +24,7 @@ export * from "./agent-pane-state.js"
 export * from "./external-provider-sessions.js"
 export * from "./external-provider-observation.js"
 export * from "./interaction-choice.js"
+export * from "./owner-handoff.js"
 export * from "./prompt-origin.js"
 export * from "./prompt-history.js"
 export * from "./prompt-meta.js"
@@ -86,10 +87,10 @@ export { LOCAL_DAEMON_PROTOCOL_VERSION, userDomainWindowBadge } from "./kernel-t
 export type * from "./kernel-types.js"
 
 export { roomBrowserArtifactRequest, roomBrowserArtifactMinimumProtocolVersion, type RoomBrowserArtifactOperation } from "./ipc-room-environment-requests.js"
-export * from "./notes.js"
-
-export * from "./user-domain-refusal.js"
 
 export * from "./project-environment-aggregate.js"
 
 export * from "./project-environment-aggregate-requests.js"
+export * from "./notes.js"
+
+export * from "./user-domain-refusal.js"

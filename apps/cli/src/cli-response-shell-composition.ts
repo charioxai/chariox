@@ -355,6 +355,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     scheduleTimer: deps.scheduleTimer,
     clearTimer: deps.clearTimer,
     isBatched: deps.uiBatchController.isBatched,
+    isDisposed: () => deps.renderer.isDestroyed,
     applyUpdate: sessionChromeRenderController.apply,
   })
   const updateSessionChrome = () => {

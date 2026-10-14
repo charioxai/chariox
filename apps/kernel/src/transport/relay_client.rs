@@ -7,7 +7,9 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, MissedTickBehavior};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+#[cfg(test)]
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 
 use chariox_relay::protocol::{
     ClientTarget, EncryptedRelayPayload, RelayDisplayTunnelHeader, RelayDisplayTunnelOpenRequest,
@@ -24,11 +26,9 @@ use crate::runtime_transport::{
     WAITING_ROOM_ROW_COALESCE_MS, WATCH_INTERVAL_MS,
 };
 use crate::transport::kernel_protocol::{
-    agent_activity_changed_event, event_is_relevant_to_attachment, provider_run_changed_event,
-    runtime_interactions_changed_event, session_metadata_changed_event,
-    subscription_event_stream_id, terminal_output_event_batches, workflow_run_only_changed,
-    workflow_run_updated_events, KernelEvent, WAITING_ROOM_INVENTORY_SENTINEL_ID,
-    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+    can_skip_session_snapshot, event_is_relevant_to_attachment, subscription_event_stream_id,
+    terminal_output_event_batches, workflow_run_only_changed, workflow_run_updated_events,
+    KernelEvent, WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 use crate::transport::relay_crypto;
 use crate::transport::relay_discovery;
@@ -204,6 +204,10 @@ impl RelayOutgoingSender {
         (Self::new(priority_tx, event_tx), priority_rx, event_rx)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing try_send typed error contract"
+    )]
     pub(crate) fn try_send(
         &self,
         envelope: RelayEnvelope,

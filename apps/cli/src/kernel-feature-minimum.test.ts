@@ -51,15 +51,6 @@ test("unknown versions and unrelated requests retain existing transport behavior
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ ListSessions: null }, 388))
 })
 
-
-test("MD-stack user App and browser surfaces require union protocol 443", () => {
-  for (const name of ["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"]) {
-    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 417), /443/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 443))
-  }
-  assert.throws(() => requireKernelFeatureProtocol({KernelBrowser: {command:{op:"input"}}},416), /443/)
-})
-
 test("Cloud owner control and terminal pivots require allocated protocol 491", () => {
   for (const name of ["CloudRelayStatus", "StartCloudRelayLogin", "PollCloudRelayLogin", "LogoutCloudRelay", "ConnectCloudRelay", "IssueCloudRelayClientToken", "ResolveKernelClientConnection", "PreflightProviderAccountPortability"]) {
     assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 472), /491/)
@@ -85,6 +76,15 @@ test("standalone and reserved Project Environment operations require protocol 48
     assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 472), /Project Environment needs protocol ≥487/)
     assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 487))
   }
+})
+
+
+test("MD-stack user App and browser surfaces require union protocol 443", () => {
+  for (const name of ["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"]) {
+    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 417), /443/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 443))
+  }
+  assert.throws(() => requireKernelFeatureProtocol({KernelBrowser: {command:{op:"input"}}},416), /443/)
 })
 
 // MP-08 / MP-10 / MP-11: old decoders may ignore an optional cancellation fence.
