@@ -1314,7 +1314,9 @@ done
         .start()
         .unwrap();
     let policy = json!({"values":[],"targets":[],"unknown":false});
-    let request = |params: Value| host.protected_request("alice", None, "host.browser", params, policy.clone());
+    let request = |params: Value| {
+        host.protected_request("alice", None, "host.browser", params, policy.clone())
+    };
     request(json!({"op":"state"})).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let early = std::thread::scope(|scope| {
@@ -1324,7 +1326,9 @@ done
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(root.join("navigating").exists());
-        let read = scope.spawn(|| { tx.send(request(json!({"op":"state"}))).unwrap(); });
+        let read = scope.spawn(|| {
+            tx.send(request(json!({"op":"state"}))).unwrap();
+        });
         let early = rx.recv_timeout(Duration::from_millis(500));
         std::fs::write(root.join("release"), b"release").unwrap();
         assert!(navigation.join().unwrap().is_ok());
@@ -1333,7 +1337,77 @@ done
     });
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
-    assert!(early.expect("the state read waited behind the navigation").is_ok());
+    assert!(early
+        .expect("the state read waited behind the navigation")
+        .is_ok());
+}
+
+// MP-08/MP-10 (review #1009 P2): a navigation or v2 subscribe admits against its
+// own Tab; an all-tab state read slowed by a busy unrelated page must not delay it.
+#[test]
+fn mp08_navigate_and_subscribe_preflight_only_their_own_tab() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-mp08-target-preflight-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+state='{"generation":1,"_observation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"},{"tab_id":"host-tab-b","document_id":"busy"}]}'
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"op":"state"'*'"tab_id":"host-tab-a"'*) printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$state" ;;
+ *'"op":"state"'*)
+   if test -f "$root/busy"; then (while ! test -f "$root/release"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$state") &
+   else printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$state"; fi ;;
+ *'"op":"navigate"'*) printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$state" ;;
+ *'"op":"mirror_subscribe"'*) printf '{"id":%s,"ok":true,"result":{"subscription_id":"mirror-a","generation":1}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id";exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let request = |params: Value| {
+        host.protected_request("alice", None, "host.browser", params, policy.clone())
+    };
+    request(json!({"op":"state"})).unwrap();
+    std::fs::write(root.join("busy"), b"busy").unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let early = std::thread::scope(|scope| {
+        let tx = tx.clone();
+        let run = scope.spawn(move || {
+            tx.send(request(json!({"op":"navigate","tab_id":"host-tab-a","generation":1,"url":"https://example.com/"}))).unwrap();
+            tx.send(request(json!({"op":"mirror_subscribe","tab_id":"host-tab-a","generation":1,"device_scale_factor":1,"wire":2}))).unwrap();
+        });
+        let early = [
+            rx.recv_timeout(Duration::from_millis(1000)),
+            rx.recv_timeout(Duration::from_millis(1000)),
+        ];
+        std::fs::write(root.join("release"), b"release").unwrap();
+        run.join().unwrap();
+        early
+    });
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    let [navigate, subscribe] = early;
+    assert!(navigate
+        .expect("the navigation waited for an all-tab state read")
+        .is_ok());
+    assert!(subscribe
+        .expect("the subscribe waited for an all-tab state read")
+        .is_ok());
 }
 
 // MP-11: a state read finishing after a newer controller observation (an input's
