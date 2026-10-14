@@ -3,7 +3,7 @@ use super::detect_index::{credential_configuration_name, safe_metadata, skip, Ev
 use super::*;
 use serde_json::Value;
 
-const MAX_ORIGINS: usize = 128;
+pub(super) const MAX_ORIGINS: usize = 128;
 pub(super) const MAX_PROPOSAL_BYTES: usize = 2 * 1024 * 1024;
 pub(super) fn encoded_size(value: &impl serde::Serialize) -> usize {
     serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len())

@@ -135,7 +135,7 @@ fn validate_draft(
                 || !ids.insert(&r.requirement_id)
                 || r.depends_on.len() > 128
                 || r.platform_variants.len() > 32
-                || r.origins.len() > 128
+                || r.origins.len() > super::detect_importers::MAX_ORIGINS
             {
                 return Err(environment_error(
                     "invalid requirement identity, scope or bounds",
