@@ -7,9 +7,9 @@ use crate::provider::RuntimeProviderRun;
 mod brief;
 pub(super) mod brief_refresh;
 mod builder;
-mod remote;
 mod facts;
 mod protection;
+mod remote;
 use builder::{load_agent_conversation, AgentConversation};
 
 const HIDDEN_HANDOFF_SUFFIX: &str = "The active user request is supplied separately.";

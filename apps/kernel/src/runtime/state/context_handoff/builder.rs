@@ -327,7 +327,6 @@ fn format_recreated_latest_turn(turn: &HandoffTurn, max_bytes: usize) -> String 
     truncate_bytes(&lines.join("\n"), max_bytes)
 }
 
-
 #[derive(Debug, Clone, Default)]
 struct HandoffTurn {
     prompt_id: Option<String>,

@@ -28,8 +28,9 @@ use launch_args::claude_launch_args;
 pub(crate) use mcp_config::CLAUDE_MCP_CONFIG_PLACEHOLDER;
 pub(crate) use mcp_config::{materialize_runtime_claude_mcp_config, ClaudeMcpConfigFile};
 pub(crate) use native_tui::{
-    claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits, fit_claude_native_hidden_context,
-    CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS, CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+    claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits,
+    fit_claude_native_hidden_context, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
+    CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
 };
 use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
 pub(crate) use usage_probe::{

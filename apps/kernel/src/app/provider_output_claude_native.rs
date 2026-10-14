@@ -702,7 +702,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         )?,
                         None => base,
                     };
-                    let context = crate::provider::fit_claude_native_hidden_context(provider_run_id, context)?;
+                    let context = crate::provider::fit_claude_native_hidden_context(
+                        provider_run_id,
+                        context,
+                    )?;
                     fs::write(context_file, &context).map_err(|error| {
                         DaemonError::ProviderProtocol {
                             provider_run_id: provider_run_id.to_string(),
@@ -1972,7 +1975,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let handoff_room = crate::provider::claude_native_hidden_context_room(&hidden_context);
         let hidden_context =
             join_claude_context([hidden_context, (prompt.context_handoff)(handoff_room)]);
-        let hidden_context = crate::provider::fit_claude_native_hidden_context(provider_run_id, hidden_context)?;
+        let hidden_context =
+            crate::provider::fit_claude_native_hidden_context(provider_run_id, hidden_context)?;
         if provider_run
             .pty_env()
             .get("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS")
