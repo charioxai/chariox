@@ -7,7 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { displayTiming, timestamp } from './kernel-browser-timing.mjs';
-import { hostErrorLabel } from './kernel-browser-error-label.mjs';
+import { hostErrorLabel, hostFailureMessage } from './kernel-browser-error-label.mjs';
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
 import { HostChromium } from "./kernel-browser-process.mjs";
@@ -745,7 +745,7 @@ export class KernelBrowserHost {
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }
-      return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
+      return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : hostFailureMessage(error) } }; }
   }
 }
 

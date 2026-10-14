@@ -784,7 +784,9 @@ test('MP-11: only pre-dispatch mirror epoch refusal survives host error sanitiza
   for(const error of [new Error('MP-11: stale mirror input epoch'),Object.assign(new Error('page secret'),{code:'mirror_input_epoch_stale'})]) {
     host.request=async()=>{throw error};
     const rejected=await host.handle({id:'other',method:'host.browser',params:{op:'input'}});
-    assert.equal(rejected.error.message,'MD-2: host browser operation failed; refresh state or check host browser readiness');
+    assert.match(rejected.error.message,/^MD-2: browser operation failed:/);
+    assert.notEqual(rejected.error.message,'MP-11: stale mirror input epoch');
+    assert(!rejected.error.message.includes('page secret'));
   }
 }));
 
@@ -1199,4 +1201,19 @@ test('MP-08 agent Tabs named by the kernel are grouped by target; the rest stay 
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.deepEqual(synced, [[{ label: 'Mara', target_ids: [host.tabs.get(b.tab_id).target_id] }]]);
   assert.notEqual(host.tabs.get(a.tab_id).target_id, host.tabs.get(b.tab_id).target_id);
+}));
+
+// MP-08/MP-10/MP-11: error strings must retain a specific safe cause to the Rust/client boundary.
+test('Browser replies distinguish observation timeout from a retired subscription without exposing page data', () => using(async ({host}) => {
+  const failures=[
+    [Object.assign(new Error('browser CDP method Page.captureScreenshot timed out after 5000ms'),{code:'browser_cdp_timeout'}), /browser_cdp_timeout Page.captureScreenshot/],
+    [new Error('MP-11: stale or foreign mirror'), /mirror_subscription_retired/],
+    [Object.assign(new Error('private-page-canary'),{mirrorReason:'occluded_node'}), /occluded_node/],
+  ];
+  for(const [error,reason] of failures){
+    host.request=async()=>{throw error};
+    const reply=await host.handle({id:'cause',method:'host.browser',params:{op:'mirror_next'}});
+    assert.equal(reply.error.code,'kernel_browser_failed');assert.match(reply.error.message,reason);
+    assert(!reply.error.message.includes('private-page-canary'));
+  }
 }));

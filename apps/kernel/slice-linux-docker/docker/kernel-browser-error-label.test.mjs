@@ -1,6 +1,6 @@
 // MP-11: supplementary diagnostics privacy regression.
 import test from 'node:test';import assert from 'node:assert/strict';
-import {hostErrorLabel,mirrorExceptionReason} from './kernel-browser-error-label.mjs';
+import {hostErrorLabel,mirrorExceptionReason,hostFailureMessage} from './kernel-browser-error-label.mjs';
 test('MP-11 ordinary unprefixed failures retain public source location without private data',()=>{
  const error={name:'TypeError',code:'ENOENT',message:'private page value',stack:'TypeError: private page value\n at f (/private/credential-profile/kernel-browser-native-worker.mjs:17:20)'};
  assert.equal(hostErrorLabel(error),'host_error TypeError ENOENT kernel-browser-native-worker.mjs:17:20');
@@ -26,4 +26,16 @@ test('MP-08/MP-10/MP-11: observer diagnostics admit fixed input refusal classes 
 test('MP-08/MP-10/MP-11: kernel-owned mirror fences have fixed diagnostic names',()=>{
  assert.equal(hostErrorLabel({message:'MP-11: changed mirror input target'}),'host_error Error input_target_changed');
  assert.equal(hostErrorLabel({message:'MP-11: changed mirror input target private-canary'}),'host_error Error');
+});
+
+// MP-08/MP-10/MP-11: the public error uses the same safe classifier as diagnostics.
+test('public Browser failures distinguish timeout, stale target, observer refusal and unexpected source',()=>{
+ const timeout={code:'browser_cdp_timeout',message:'browser CDP method Page.captureScreenshot timed out after 5000ms'};
+ assert.match(hostFailureMessage(timeout),/browser_cdp_timeout Page.captureScreenshot/);
+ assert.match(hostFailureMessage({message:'MP-11: stale or foreign mirror'}),/mirror_subscription_retired/);
+ assert.match(hostFailureMessage({mirrorReason:'occluded_node'}),/occluded_node/);
+ const unexpected={name:'TypeError',message:'private-canary',stack:'TypeError: private-canary\n at apply (/private-canary/kernel-browser-host.mjs:17:20)'};
+ assert.match(hostFailureMessage(unexpected),/TypeError kernel-browser-host.mjs:17:20/);
+ assert(!hostFailureMessage(unexpected).includes('private-canary'));
+ assert(!hostFailureMessage({code:'private-canary',mirrorReason:'private-canary',message:'private-canary'}).includes('private-canary'));
 });
