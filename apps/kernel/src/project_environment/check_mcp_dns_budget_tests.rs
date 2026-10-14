@@ -2,7 +2,7 @@
 use super::*;
 #[cfg(target_os = "linux")]
 #[test]
-fn review1118_mcp_check_owns_stalled_resolver() {
+fn review1118_mcp_check_rejects_ambient_stalled_resolver() {
     use std::{
         os::unix::fs::PermissionsExt,
         time::{Duration, Instant},
@@ -42,8 +42,8 @@ echo '127.0.0.1 STREAM'
     std::env::set_var("PATH", old);
     std::thread::sleep(Duration::from_millis(700));
     assert!(
-        root.path().join("getent.started").exists(),
-        "MCP must use owned bounded OS resolution"
+        !root.path().join("getent.started").exists(),
+        "MCP must not execute an ambient PATH resolver"
     );
     assert!(!root.path().join("getent.survived").exists());
     assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
