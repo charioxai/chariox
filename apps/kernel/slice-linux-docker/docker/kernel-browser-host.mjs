@@ -461,7 +461,9 @@ export class KernelBrowserHost {
     // Explicit physical input already names an observed tab/document. Read
     // that live target directly; whole-tab discovery still runs afterward.
     // Per-dispatch document/cancellation and secret-focus checks remain below.
-    let tab = command.op === 'input' && typeof command.document_id === 'string'
+    // MP-08/MP-10: a navigation reads only its own Tab's live document: a full
+    // all-tab reconcile waits for busy (loading) pages and held the mutation lane.
+    let tab = command.op === 'input' && typeof command.document_id === 'string' || command.op === 'navigate'
       ? await this.displayTarget(command) : await this.target(command);
     assertNotCancelled(signal);
     // MP-08/MP-11: an agent drives an App Tab as itself, only after the kernel
@@ -509,9 +511,17 @@ export class KernelBrowserHost {
     if (command.op === "navigate") {
       // MP-08/MP-11: the reloaded App page's calls run as whoever navigated it.
       const appInput = app ? this.browser.appTabs.beginInput?.(tab.target_id, agent) : null;
-      try { await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal }); }
+      let navigated;
+      try { navigated = await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal }); }
       finally { appInput?.(); }
-      return this.observe(await this.reconcile(), null, scope);
+      // MP-08/MP-10: answer at commit, like a browser's address bar; the page loads
+      // into attached views and later state reads reconcile its title.
+      const stored = this.tabs.get(tab.tab_id);
+      if (!stored || typeof navigated?.document_id !== 'string' || !navigated.document_id) return this.observe(await this.reconcile(), null, scope);
+      Object.assign(stored, { document_id: navigated.document_id, url: navigated.url ?? stored.url, title: '' });
+      this.observed = ++this.observations; // an older in-flight reconcile cannot restore the previous document
+      await this.save();
+      return this.observe(this.tabState(), null, scope);
     }
     if (command.op === "note_selection" || command.op === "note_reanchor") return this.observe({ generation:this.generation, observation:await this.browser.observeNote({ ...binding, ...(command.quote ? {quote:command.quote} : {}) }) },tab,scope);
     if (command.op === "snapshot") return this.observe({ generation: this.generation, snapshot: await this.browser.snapshot(binding) }, tab, scope);
