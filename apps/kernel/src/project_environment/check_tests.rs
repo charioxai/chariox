@@ -342,3 +342,6 @@ fn named_host_probe_keeps_its_symlink_invocation_name() {
         alias.to_string_lossy()
     );
 }
+
+#[path = "review0634_dependency_tests.rs"]
+mod review0634_dependencies;
