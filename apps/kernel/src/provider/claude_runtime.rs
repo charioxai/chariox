@@ -117,7 +117,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             active_execution_mode: run.execution_mode(),
             active_permission_level: run.permission_level(),
             session_id: run.resume_state().claude_session_id().map(str::to_string),
-            session_started: run.resume_state().claude_session_id().is_some(),
+            requested_session_id: session_id,
             active_stream_message_id: None,
             active_turn_id: None,
             active_prompt_message: None,
@@ -193,7 +193,6 @@ pub(crate) fn submit_claude_prompt(
         }
     });
     write_json_line(&mut state.stdin, &message)?;
-    state.session_started = true;
     state.active_turn_id = Some(turn_id);
     state.active_prompt_message = Some(message);
     state.turn_watchdog.begin(Instant::now());
@@ -481,16 +480,13 @@ fn restart_claude_runtime(
         state.mcp_config_file.is_some() && run.runtime_mcp_auth_token().is_some(),
     );
     let mut args = base_args.clone();
-    if let Some(session_id) = resume_session_id {
-        // MP-05/MP-08: an unstarted session has no transcript, and Claude
-        // rejects `--resume` for it ("No conversation found"). Start it again.
-        let flag = if state.session_started {
-            "--resume"
-        } else {
-            "--session-id"
-        };
-        args.extend([flag.to_string(), session_id.to_string()]);
-    }
+    // MP-05/MP-08: only native init or restored history makes an ID resumable.
+    // A first utility turn still restarts with the same private requested ID.
+    let (flag, session_id) = match resume_session_id {
+        Some(session_id) => ("--resume", session_id),
+        None => ("--session-id", state.requested_session_id.as_str()),
+    };
+    args.extend([flag.to_string(), session_id.to_string()]);
     let env = run.pty_env().clone();
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
@@ -659,7 +655,7 @@ mod tests {
                 active_execution_mode: AgentExecutionMode::Build,
                 active_permission_level: AgentPermissionLevel::Yolo,
                 session_id: None,
-                session_started: false,
+                requested_session_id: new_claude_session_id(),
                 active_stream_message_id: None,
                 active_turn_id: Some("turn-1".to_string()),
                 active_prompt_message: None,
@@ -967,7 +963,11 @@ done
         );
         let mut binding =
             initialize_claude_runtime(&run).expect("fixture Claude child should start");
-        let session_id = binding.state.session_id().unwrap().to_string();
+        assert!(
+            binding.state.session_id().is_none(),
+            "requested ID is not confirmed history"
+        );
+        let session_id = binding.state.requested_session_id.clone();
         let _ = wait_for_trace_lines(&trace, 1);
         let envelope = crate::prompt_assembly::PromptEnvelope::new(
             "read-only discovery",

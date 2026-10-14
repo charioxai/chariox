@@ -43,8 +43,8 @@ pub struct ClaudeRuntimeState {
     pub(super) active_execution_mode: AgentExecutionMode,
     pub(super) active_permission_level: AgentPermissionLevel,
     pub(super) session_id: Option<String>,
-    /// Claude persists a session only once it has received a user message.
-    pub(super) session_started: bool,
+    /// MP-05/MP-08: keep a requested ID private until native init confirms it.
+    pub(super) requested_session_id: String,
     pub(super) active_stream_message_id: Option<String>,
     pub(super) active_turn_id: Option<String>,
     pub(super) active_prompt_message: Option<Value>,
@@ -76,7 +76,7 @@ impl std::fmt::Debug for ClaudeRuntimeState {
             .field("active_execution_mode", &self.active_execution_mode)
             .field("active_permission_level", &self.active_permission_level)
             .field("session_id", &self.session_id)
-            .field("session_started", &self.session_started)
+            .field("requested_session_id", &self.requested_session_id)
             .field("active_stream_message_id", &self.active_stream_message_id)
             .field("active_turn_id", &self.active_turn_id)
             .field("turn_watchdog", &self.turn_watchdog)
