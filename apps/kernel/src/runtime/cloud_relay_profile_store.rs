@@ -74,12 +74,10 @@ pub(crate) async fn migrate_legacy_kernel_profile(
     if profile.kernel_credential.is_some() {
         return Ok(());
     }
-    // MP-08/MP-09/MP-11: bootstrap enrolls a new kernel before confirmation.
-    // Legacy migration would retire the credential needed by its lifecycle
-    // reporter when the supervisor restarts the confirmed child.
-    if crate::managed_bootstrap::uses_bootstrap_cloud_enrollment(&config)? {
-        return Ok(());
-    }
+    // MP-08/MP-09/MP-11: managed lifecycle reports retain their separately
+    // bound capability while the kernel completes normal key-pinned enrollment.
+    let retain_managed_credential =
+        crate::managed_bootstrap::managed_lifecycle_credential_is_bound(&config)?;
     let credential = profile.machine_credential.as_deref().ok_or_else(|| DaemonError::LocalTransport {
         operation: "migrate kernel Cloud enrollment", message: "legacy human session cannot enroll a kernel; run /cloud link to enroll this kernel independently".into(),
     })?;
@@ -103,7 +101,9 @@ pub(crate) async fn migrate_legacy_kernel_profile(
     profile.kernel_id = Some(config.daemon_id);
     profile.kernel_credential = Some(grant.to_string());
     profile.machine_id = Some(config.host_machine_id);
-    profile.machine_credential = None;
+    if !retain_managed_credential {
+        profile.machine_credential = None;
+    }
     profile.cloud_session_token = None;
     profile.cloud_session_expires_at_ms = None;
     profile.client_id = None;

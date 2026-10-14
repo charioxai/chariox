@@ -3105,7 +3105,7 @@ mod tests {
         let profile = persisted_profile(response().cloud_relay);
         runtime.cloud_relay = Some(profile.clone());
         env::set_var(ACTIVITY_RECEIPT_ENV, &path);
-        assert!(super::super::uses_bootstrap_cloud_enrollment(&runtime).unwrap());
+        assert!(super::super::managed_lifecycle_credential_is_bound(&runtime).unwrap());
         assert_eq!(
             activity_allocation(&path, &runtime, &profile).unwrap(),
             "worker-1"
@@ -3115,7 +3115,7 @@ mod tests {
         confirmed.status = WorkerReceiptStatus::Confirmed;
         confirmed.confirmed_at = Some("2026-09-13T11:00:00Z".to_string());
         confirmed.persist(&path).unwrap();
-        assert!(super::super::uses_bootstrap_cloud_enrollment(&runtime).unwrap());
+        assert!(super::super::managed_lifecycle_credential_is_bound(&runtime).unwrap());
         assert_eq!(
             confirmed_activity_allocation(&path, &runtime, &profile).unwrap(),
             "worker-1"
@@ -3147,15 +3147,15 @@ mod tests {
         );
         runtime.remote_lease_capacity = None;
         assert!(activity_allocation(&path, &runtime, &profile).is_err());
-        assert!(super::super::uses_bootstrap_cloud_enrollment(&runtime).is_err());
+        assert!(super::super::managed_lifecycle_credential_is_bound(&runtime).is_err());
         runtime.remote_lease_capacity = Some(1);
         runtime.lease_worker_home_caller = None;
         assert!(activity_allocation(&path, &runtime, &profile).is_err());
-        assert!(super::super::uses_bootstrap_cloud_enrollment(&runtime).is_err());
+        assert!(super::super::managed_lifecycle_credential_is_bound(&runtime).is_err());
         runtime.lease_worker_home_caller = Some(receipt.home_caller.lease_binding());
         runtime.daemon_id = "other-kernel".to_string();
         assert!(activity_allocation(&path, &runtime, &profile).is_err());
-        assert!(super::super::uses_bootstrap_cloud_enrollment(&runtime).is_err());
+        assert!(super::super::managed_lifecycle_credential_is_bound(&runtime).is_err());
         let mut changed = identity();
         changed.kernel_id = "other-kernel".to_string();
         assert!(restored.validate_identity(&changed).is_err());

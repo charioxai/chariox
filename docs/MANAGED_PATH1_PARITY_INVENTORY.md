@@ -2,20 +2,20 @@
 
 ## MP-08 / MP-09 / MP-10 / MP-11 bootstrap enrollment and relay renewal
 
-An exchanged managed bootstrap receipt already binds the kernel, Machine and
-relay key. It is not a predecessor enrollment requiring legacy migration.
-Migrating that first child to a kernel grant retires the Machine credential;
-the supervisor's confirmation restart then fails while constructing the
+An exchanged managed bootstrap receipt binds the kernel, Machine and relay
+key. Normal kernel ownership migration used to retire its Machine credential;
+the supervisor's confirmation restart then failed while constructing the
 mandatory managed activity reporter, before starting the relay connector.
 
-Relay renewal retains the existing dedicated bootstrap capability for both
-exchanged and confirmed managed children. The shared admission helper checks the
-receipt against the running kernel, Machine, relay key and Cloud profile.
-Disposable workers use their existing receipt, home-caller, role and capacity
-checks. Cloud still authenticates the capability and binds account/realm/target
-ownership through the ordinary token and presence paths. Context execution still
-requires confirmation. Ordinary predecessor kernels retain their key-pinned
-migration path; co-resident receipts confer no authority.
+Managed kernels complete the same key-pinned Cloud ownership migration as
+ordinary kernels. They retain only the receipt-bound capability required for
+managed lifecycle reports. The shared admission helper checks the receipt
+against the running kernel, Machine, relay key and Cloud profile. Disposable
+workers use their existing receipt, home-caller, role and capacity checks.
+Cloud's account membership, existing target/key checks, kernel grant issuance
+and terminal delegation remain authoritative. Context execution still requires
+confirmation. Ordinary predecessor credentials are retired as before;
+co-resident receipts confer no retention authority.
 
 This correction changes no serialized contract or protocol version. Router and
 binding regressions are supplementary. Signed-successor, real managed-machine,

@@ -1,6 +1,6 @@
 mod cloud;
-mod cloud_enrollment;
-pub(crate) use cloud_enrollment::uses_bootstrap_cloud_enrollment;
+mod lifecycle_credential;
+pub(crate) use lifecycle_credential::managed_lifecycle_credential_is_bound;
 mod context_plan;
 mod control_ownership;
 pub mod control_state;

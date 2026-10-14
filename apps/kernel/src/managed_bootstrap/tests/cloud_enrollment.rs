@@ -53,98 +53,124 @@ fn managed_bootstrap_exchange_keeps_its_activity_credential_through_relay_connec
         let key =
             crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key);
         let server = thread::spawn(move || {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(
-                            std::time::Instant::now() < deadline,
-                            "Cloud fixture deadline"
-                        );
-                        thread::sleep(Duration::from_millis(5));
+            let mut requests = Vec::new();
+            for expected in ["/auth/kernel/migrate", "/relay/token"] {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "Cloud fixture deadline"
+                            );
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("Cloud fixture: {error}"),
                     }
-                    Err(error) => panic!("Cloud fixture: {error}"),
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let (start, length, path) = loop {
+                    let mut chunk = [0; 4096];
+                    let count = stream.read(&mut chunk).unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if let Some(end) = bytes.windows(4).position(|value| value == b"\r\n\r\n") {
+                        let headers = std::str::from_utf8(&bytes[..end]).unwrap();
+                        let path = headers
+                            .lines()
+                            .next()
+                            .unwrap()
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap()
+                            .to_string();
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap();
+                        break (end + 4, length, path);
+                    }
+                };
+                while bytes.len() < start + length {
+                    let mut chunk = [0; 4096];
+                    let count = stream.read(&mut chunk).unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&chunk[..count]);
                 }
-            };
-            stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
-                .unwrap();
-            let mut bytes = Vec::new();
-            let (start, length, path) = loop {
-                let mut chunk = [0; 4096];
-                let count = stream.read(&mut chunk).unwrap();
-                assert!(count > 0);
-                bytes.extend_from_slice(&chunk[..count]);
-                if let Some(end) = bytes.windows(4).position(|value| value == b"\r\n\r\n") {
-                    let headers = std::str::from_utf8(&bytes[..end]).unwrap();
-                    let path = headers
-                        .lines()
-                        .next()
-                        .unwrap()
-                        .split_whitespace()
-                        .nth(1)
-                        .unwrap()
-                        .to_string();
-                    let length = headers
-                        .lines()
-                        .find_map(|line| {
-                            let (name, value) = line.split_once(':')?;
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().unwrap())
-                        })
-                        .unwrap();
-                    break (end + 4, length, path);
-                }
-            };
-            while bytes.len() < start + length {
-                let mut chunk = [0; 4096];
-                let count = stream.read(&mut chunk).unwrap();
-                assert!(count > 0);
-                bytes.extend_from_slice(&chunk[..count]);
+                let body: serde_json::Value =
+                    serde_json::from_slice(&bytes[start..start + length]).unwrap();
+                assert_eq!(path, expected);
+                let (status, response) = if path == "/relay/token" {
+                    let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+                        serde_json::json!({"public_key_thumbprint":key,"exp":4102444800_u64})
+                            .to_string(),
+                    );
+                    (
+                        "201 Created",
+                        serde_json::json!({"token":format!("header.{claims}.signature"),"expiresAt":"2099-01-01T00:00:00Z"}),
+                    )
+                } else {
+                    (
+                        "201 Created",
+                        serde_json::json!({"kernelCredential":"synthetic-kernel-grant"}),
+                    )
+                };
+                let response = response.to_string();
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+                requests.push((path, body));
             }
-            let body: serde_json::Value =
-                serde_json::from_slice(&bytes[start..start + length]).unwrap();
-            let (status, response) = if path == "/relay/token" {
-                let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-                    serde_json::json!({"public_key_thumbprint":key,"exp":4102444800_u64})
-                        .to_string(),
-                );
-                (
-                    "201 Created",
-                    serde_json::json!({"token":format!("header.{claims}.signature"),"expiresAt":"2099-01-01T00:00:00Z"}),
-                )
-            } else {
-                (
-                    "403 Forbidden",
-                    serde_json::json!({"error":{"code":"authorization_denied"}}),
-                )
-            };
-            let response = response.to_string();
-            write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
-            (path, body)
+            requests
         });
         let connected = harness.dispatch(LocalDaemonRequest::ConnectCloudRelay(
             ConnectCloudRelayRequest,
         ));
-        let (path, body) = server.join().unwrap();
+        let requests = server.join().unwrap();
         let retained = harness
             .with_app(|app| app.config().cloud_relay.clone())
             .unwrap();
         drop(harness);
         fixture.cleanup();
-        assert_eq!(
-            path, "/relay/token",
-            "{status:?} bootstrap must use its dedicated enrollment, never legacy migration"
-        );
         assert!(connected.is_ok());
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].0, "/auth/kernel/migrate");
         assert_eq!(
-            body["machineCredential"].as_str(),
+            requests[0].1["machineCredential"].as_str(),
             profile.machine_credential.as_deref()
         );
-        assert!(body.get("kernelCredential").is_none());
-        assert_eq!(retained.machine_credential, profile.machine_credential);
-        assert!(retained.kernel_credential.is_none());
+        assert_eq!(requests[1].0, "/relay/token");
+        assert_eq!(requests[1].1["kernelCredential"], "synthetic-kernel-grant");
+        assert!(requests[1].1.get("machineCredential").is_none());
+        assert_eq!(
+            retained.machine_credential, profile.machine_credential,
+            "{status:?} lifecycle capability must survive normal kernel-grant enrollment"
+        );
+        assert_eq!(
+            retained.kernel_credential.as_deref(),
+            Some("synthetic-kernel-grant")
+        );
+        config.cloud_relay = Some(retained);
+        let registration = ConfirmedManagedKernelRegistration {
+            environment_id: receipt.environment_id,
+            machine_id: receipt.machine_id,
+            kernel_id: receipt.kernel_id,
+            context_plan: None,
+        };
+        assert!(
+            crate::runtime::managed_kernel_activity::ManagedKernelActivityReporter::from_runtime(
+                &config,
+                Some(&registration)
+            )
+            .is_ok(),
+            "confirmed restart must retain mandatory activity reporting"
+        );
     }
 }
 
@@ -180,7 +206,7 @@ fn managed_bootstrap_relay_enrollment_requires_its_exact_identity_and_profile() 
         receipt.schema_version = 2;
         receipt.relay_public_key = config.relay_public_key.clone();
         receipt.persist(&fixture.config.receipt_path).unwrap();
-        assert!(super::super::uses_bootstrap_cloud_enrollment(&config).unwrap());
+        assert!(super::super::managed_lifecycle_credential_is_bound(&config).unwrap());
         for field in ["kernel", "machine", "key", "profile-machine", "credential"] {
             let mut foreign = config.clone();
             match field {
@@ -194,7 +220,7 @@ fn managed_bootstrap_relay_enrollment_requires_its_exact_identity_and_profile() 
                 _ => foreign.cloud_relay.as_mut().unwrap().machine_credential = None,
             }
             assert!(
-                super::super::uses_bootstrap_cloud_enrollment(&foreign).is_err(),
+                super::super::managed_lifecycle_credential_is_bound(&foreign).is_err(),
                 "{status:?}/{field}"
             );
         }
@@ -202,7 +228,7 @@ fn managed_bootstrap_relay_enrollment_requires_its_exact_identity_and_profile() 
     std::env::remove_var("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT");
     std::env::remove_var(MANAGED_PROVIDER_TOPOLOGY_ENV);
     assert!(
-        !super::super::uses_bootstrap_cloud_enrollment(&config).unwrap(),
+        !super::super::managed_lifecycle_credential_is_bound(&config).unwrap(),
         "co-resident receipt cannot select an ordinary kernel"
     );
     fixture.cleanup();

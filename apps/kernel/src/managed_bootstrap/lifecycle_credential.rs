@@ -2,10 +2,12 @@
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 
-/// Exchanged and confirmed children use the same Cloud bootstrap authority.
-/// They are new enrollments, never predecessor kernels needing legacy migration.
-/// Cloud still authenticates the credential and binds relay ownership on issuance.
-pub(crate) fn uses_bootstrap_cloud_enrollment(config: &DaemonConfig) -> Result<bool, DaemonError> {
+/// Only receipt-bound managed lifecycle capabilities survive kernel enrollment.
+/// Cloud independently authenticates and enrolls the kernel through its normal
+/// key-pinned ownership flow; this credential signs managed lifecycle reports.
+pub(crate) fn managed_lifecycle_credential_is_bound(
+    config: &DaemonConfig,
+) -> Result<bool, DaemonError> {
     let Some(profile) = config.cloud_relay.as_ref() else {
         return Ok(false);
     };
