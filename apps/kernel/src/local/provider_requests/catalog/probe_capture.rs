@@ -38,16 +38,8 @@ pub(crate) fn capture(mut command: Command, timeout: Duration) -> Result<Output,
     loop {
         #[cfg(unix)]
         process.observe_descendants()?;
-        drain(
-            process.child.stdout.as_mut().expect("captured stdout"),
-            &mut stdout,
-            stderr.len(),
-        )?;
-        drain(
-            process.child.stderr.as_mut().expect("captured stderr"),
-            &mut stderr,
-            stdout.len(),
-        )?;
+        drain(stdout_pipe(&mut process), &mut stdout, stderr.len())?;
+        drain(stderr_pipe(&mut process), &mut stderr, stdout.len())?;
         #[cfg(unix)]
         let status = process.try_wait()?;
         #[cfg(windows)]
@@ -56,16 +48,8 @@ pub(crate) fn capture(mut command: Command, timeout: Duration) -> Result<Output,
             // A successful launcher can leave pipe writers behind. End them
             // before collecting the bytes already buffered in our pipes.
             process.stop()?;
-            while drain(
-                process.child.stdout.as_mut().expect("captured stdout"),
-                &mut stdout,
-                stderr.len(),
-            )? {}
-            while drain(
-                process.child.stderr.as_mut().expect("captured stderr"),
-                &mut stderr,
-                stdout.len(),
-            )? {}
+            while drain(stdout_pipe(&mut process), &mut stdout, stderr.len())? {}
+            while drain(stderr_pipe(&mut process), &mut stderr, stdout.len())? {}
             return Ok(Output {
                 status,
                 stdout,
@@ -80,6 +64,27 @@ pub(crate) fn capture(mut command: Command, timeout: Duration) -> Result<Output,
                 .saturating_duration_since(Instant::now())
                 .min(Duration::from_millis(5)),
         );
+    }
+}
+
+fn stdout_pipe(process: &mut platform::Process) -> &mut std::process::ChildStdout {
+    #[cfg(unix)]
+    {
+        process.stdout_mut()
+    }
+    #[cfg(windows)]
+    {
+        process.child.stdout.as_mut().expect("captured stdout")
+    }
+}
+fn stderr_pipe(process: &mut platform::Process) -> &mut std::process::ChildStderr {
+    #[cfg(unix)]
+    {
+        process.stderr_mut()
+    }
+    #[cfg(windows)]
+    {
+        process.child.stderr.as_mut().expect("captured stderr")
     }
 }
 
