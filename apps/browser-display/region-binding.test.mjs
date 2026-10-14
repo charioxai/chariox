@@ -44,3 +44,8 @@ test('MP-08/MP-11 a two-device-pixel crop is valid at native DPR2',()=>{
  const presenter=new BrowserDisplayPresenter(canvas(),binding);
  try{assert.equal(presenter.validate({...binding,sequence:1,width:2,height:2},0),true)}finally{presenter.close()}
 });
+test('MP-08/MP-11 negotiated wide Chrome crops use the native physical-pixel bounds',()=>{
+ const binding={...lease,css_width:1920,css_height:86,device_scale_factor:1};
+ const presenter=new BrowserDisplayPresenter(canvas(),binding);
+ try{assert.equal(presenter.validate({...binding,sequence:1,width:1920,height:86},0),true)}finally{presenter.close()}
+});
