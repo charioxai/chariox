@@ -76,6 +76,24 @@ pub fn drain_codex_events(
             &mut resolved_usage,
             run.remote_extension_manifest(),
         );
+        // MP-08/MP-10/MP-11: a fresh utility owns one turn, with no successor.
+        // Its exact terminal packet settles it before any later socket close
+        // can discard the accepted result. Ordinary conversation drains still
+        // observe all queued starts and keep their existing quiet boundary.
+        if state.notification_only && state.turn_tracker.has_pending_terminal() {
+            maybe_finalize_terminal_signal(
+                &mut state.active_turn_id,
+                &mut state.turn_tracker,
+                &mut completions,
+                &mut notices,
+                &mut prompt_completed,
+                &mut terminal_failure,
+            );
+            if prompt_completed {
+                drained_to_quiet = true;
+                break;
+            }
+        }
     }
     state.buffered_notifications.extend(buffered);
     if !drained_to_quiet
