@@ -88,7 +88,9 @@ retry may manufacture PASS.
    precheck must cause zero native warps. Returned focus cannot revive cleanup.
    Require all runner-owned windows closed within their bounded deadlines.
 2. M1, paired identity, lease, Stop/revoke, stale epochs and strict in-flight
-   cancellation. Only `browser_action_cancelled` proves cancellation. Timeout,
+   cancellation. Only the agent's own Action, running at revoke and ending
+   `cancelled`/`controller_cancellation` in the owner's ledger while the agent is
+   refused `user_domain_not_granted`, proves cancellation. Timeout,
    transport loss or `owner_reset_required` fails. Oversized/unsupported/no-effect
    input must leave subsequent admitted input usable. Lost release confirmation
    must remain latched across Stop/Start.
