@@ -5,6 +5,8 @@
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
+import {keysyms, notches} from './kernel-browser-input.mjs';
+import {assertCurrentDocument} from './browser-controller-actions.mjs';
 
 // The owned display's numeric window inventory comes from the native producer
 // (vidlat nativeWindowInventory, wired with the 519 region step); without it no binding.
@@ -112,16 +114,54 @@ export class InputArbiter {
     if (!tab || !binding.isCurrent()) throw new UserDomainRefusal('stale_reference');
     return {tab_id: tab.tab_id, document_id: tab.document_id, generation: this.host.generation};
   }
-  /** After ledger admission: band input reaches Chrome's own UI through the band source. */
-  async input({stream, command}) {
+  /** After ledger admission: band input reaches Chrome's own UI through the band
+   * source, for the Tab the ledger admitted (rechecked right before dispatch). Keys
+   * and text without a Ctrl/Alt/Meta chord type only while Chrome's own UI holds the
+   * focus: with page focus they would reach the page past its text fences. */
+  async input({stream, command, signal}) {
     if (InputArbiter.agent(command)) throw new UserDomainRefusal('not_granted');
     const source = stream?.regionSource, input = command.input ?? {};
-    if (source?.surface !== 'browser_chrome' || !source.isCurrent?.()) throw new UserDomainRefusal('stale_reference');
-    if (input.kind === 'click') return {dispatched: !!await source.click(input.x, input.y)};
-    if (input.kind === 'wheel') return {dispatched: !!await source.wheel(input.x, input.y, input.delta_x, input.delta_y)};
-    if (input.kind === 'chord') {
-      if (refusedChord(input.keysym, input.modifiers)) throw new UserDomainRefusal('not_granted');
-      return {dispatched: !!await source.chord(input.keysym, input.modifiers)};
+    const current = async () => {
+      if (signal?.aborted || source?.surface !== 'browser_chrome' || !source.isCurrent?.()) throw new UserDomainRefusal('stale_reference');
+      const tab = await this.activeTab();
+      if (!tab || tab.tab_id !== command.tab_id || tab.document_id !== command.document_id || command.generation !== this.host.generation) throw new UserDomainRefusal('stale_reference');
+      const {connection, sessionId} = await this.host.browser.resolvePageTarget(tab.target_id);
+      await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+      return {connection, sessionId};
+    };
+    const uiFocus = async () => {
+      const {connection, sessionId} = await current();
+      const {result} = await connection.send('Runtime.evaluate', {expression: 'document.hasFocus()', returnByValue: true}, sessionId);
+      if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');
+    };
+    // At most once: a native action without a reply may have run; never replayed.
+    const dispatched = async action => {
+      let done;
+      try { done = await action(); } catch (error) { if (error?.code === 'native_input_uncertain') return {dispatched: true}; throw error; }
+      if (!done) throw new UserDomainRefusal('stale_reference');
+      return {dispatched: true};
+    };
+    const chord = async (keysym, modifiers) => {
+      if (!Number.isSafeInteger(keysym) || !Number.isSafeInteger(modifiers) || refusedChord(keysym, modifiers)) throw new UserDomainRefusal('not_granted');
+      if (modifiers & 7) await current(); else await uiFocus();
+      return dispatched(() => source.chord(keysym, modifiers));
+    };
+    if (input.kind === 'click') { await current(); return dispatched(() => source.click(input.x, input.y)); }
+    if (input.kind === 'scroll') {
+      const nx = notches(input.delta_x), ny = notches(input.delta_y);
+      if (nx === null || ny === null || Math.abs(nx) > 10 || Math.abs(ny) > 10) throw new Error('MD-2: unsupported input');
+      await current(); return dispatched(() => source.wheel(input.x, input.y, nx, ny));
+    }
+    if (input.kind === 'key') {
+      const key = typeof input.key === 'string' ? input.key : '';
+      const keysym = /^[\x20-\x7e]$/.test(key) ? key.charCodeAt(0) : keysyms[key];
+      if (keysym === undefined) throw new Error('MD-2: unsupported key');
+      return chord(keysym, input.modifiers ?? 0);
+    }
+    if (input.kind === 'text') {
+      if (typeof input.text !== 'string' || input.text.length > 2048 || !/^[\x20-\x7e]*$/.test(input.text)) throw new Error('MD-2: unsupported text');
+      for (const c of input.text) await chord(c.charCodeAt(0), 0);
+      return {dispatched: true};
     }
     throw new Error('MD-2: unsupported input');
   }

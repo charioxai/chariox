@@ -74,13 +74,38 @@ test("MP-11 band input acts on the kernel-observed active Tab; agents and stale 
   assert.equal(await arbiter.isActiveTab({ target_id: "ta" }, binding), false);
   host.tabGroups = null;
   assert.equal(await arbiter.isActiveTab({ target_id: "tb" }, binding), false, "no extension: fail closed");
+});
+
+test("MP-11 band input: active Tab rechecked before dispatch, page focus fences keys/text, refused or retired input settles", async () => {
+  let focus = false, document = "db";
+  const connection = { send: async (method) => method === "Page.getFrameTree" ? { frameTree: { frame: { loaderId: document } } } : method === "Runtime.evaluate" ? { result: { value: focus } } : {} };
+  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
+    browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }) } };
+  const arbiter = new InputArbiter(host, {});
   const calls = [];
-  const source = { surface: "browser_chrome", isCurrent: () => true, click: async (x, y) => calls.push(["click", x, y]), wheel: async () => true, chord: async (k, m) => calls.push(["chord", k, m]) };
-  assert.deepEqual(await arbiter.input({ stream: { regionSource: source }, command: { input: { kind: "chord", keysym: 0x6c, modifiers: 2 } } }), { dispatched: true });
-  await assert.rejects(arbiter.input({ stream: { regionSource: source }, command: { input: { kind: "chord", keysym: 0x49, modifiers: 10 } } }), { code: "user_domain_not_granted" }, "Ctrl+Shift+I");
-  await assert.rejects(arbiter.input({ stream: { regionSource: { ...source, isCurrent: () => false } }, command: { input: { kind: "click", x: 1, y: 1 } } }), { code: "user_domain_stale_reference" });
-  await assert.rejects(arbiter.input({ stream: { regionSource: source }, command: { _agent_input: true, input: { kind: "click", x: 1, y: 1 } } }), { code: "user_domain_not_granted" });
-  assert.deepEqual(calls, [["chord", 0x6c, 2]]);
+  const source = { surface: "browser_chrome", isCurrent: () => true, click: async (x, y) => (calls.push(["click", x, y]), true), wheel: async (...a) => (calls.push(["wheel", ...a]), true), chord: async (k, m) => (calls.push(["chord", k, m]), true) };
+  const send = (input, extra = {}) => arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input, ...extra } });
+  assert.deepEqual(await send({ kind: "click", x: 300, y: 40 }), { dispatched: true });
+  assert.deepEqual(await send({ kind: "key", key: "l", modifiers: 2 }), { dispatched: true }, "Ctrl+L whatever the focus");
+  await assert.rejects(send({ kind: "key", key: "I", modifiers: 10 }), { code: "user_domain_not_granted" }, "Ctrl+Shift+I");
+  focus = true;
+  await assert.rejects(send({ kind: "text", text: "secret" }), { code: "user_domain_sensitive_requires_focus" }, "page focus: no band text");
+  await assert.rejects(send({ kind: "key", key: "Enter" }), { code: "user_domain_sensitive_requires_focus" });
+  focus = false;
+  assert.deepEqual(await send({ kind: "text", text: "wiki" }), { dispatched: true });
+  assert.deepEqual(await send({ kind: "key", key: "Enter" }), { dispatched: true });
+  assert.deepEqual(await send({ kind: "scroll", x: 10, y: 10, delta_x: 0, delta_y: 120 }), { dispatched: true });
+  await assert.rejects(send({ kind: "click", x: 1, y: 1 }, { tab_id: "host-tab-a" }), { code: "user_domain_stale_reference" }, "another Tab became active after admission");
+  document = "dc";
+  await assert.rejects(send({ kind: "click", x: 1, y: 1 }), { code: "stale_document_reference" }, "the active Tab navigated after admission");
+  document = "db";
+  await assert.rejects(send({ kind: "click", x: 1, y: 1 }, { _agent_input: true }), { code: "user_domain_not_granted" });
+  const retired = { ...source, click: async () => false };
+  await assert.rejects(arbiter.input({ stream: { regionSource: retired }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input: { kind: "click", x: 1, y: 1 } } }), { code: "user_domain_stale_reference" }, "a retired source settles as refused");
+  const uncertain = { ...source, click: async () => { throw Object.assign(Error("x"), { code: "native_input_uncertain" }); } };
+  assert.deepEqual(await arbiter.input({ stream: { regionSource: uncertain }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input: { kind: "click", x: 1, y: 1 } } }), { dispatched: true }, "uncertain native input counts as dispatched, never replayed");
+  await assert.rejects(send({ kind: "text", text: "é" }), /unsupported text/);
+  assert.deepEqual(calls.map(c => c[0] === "chord" ? c[1] : c[0]), ["click", 0x6c, 0x77, 0x69, 0x6b, 0x69, 0xff0d, "wheel"]);
 });
 
 test("MP-08 browser chords and refused chords", () => {
