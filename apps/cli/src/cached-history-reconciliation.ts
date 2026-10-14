@@ -13,6 +13,8 @@ export function reconcileCachedHistory(cached: CliCachedView | null, session: Ru
   if (!current) return { history, discard: false }
   const sequence = Math.max(0, ...current.flatMap(historyEntrySequence))
   if (cached.sequence > sequence) return { history, discard: true }
+  // A null server cursor confirms there is no earlier visible history to restore.
+  if (history.visibleAgentId !== cached.agentId || !history.nextHistoryCursor) return { history, discard: false }
   const first = Math.min(...current.flatMap(historyEntrySequence))
   if (!Number.isFinite(first)) return { history, discard: false }
   const older = cached.entries.filter(entry => {
@@ -27,5 +29,6 @@ export function reconcileCachedHistory(cached: CliCachedView | null, session: Ru
     .map(entry => { const copy = { ...entry, historyBlobLoading: false }; delete copy.queuedPrompt; return copy })
   const entries = reindexTranscriptEntries([...prefix, ...current], 0)
   return { history: { ...history, agentEntries: { ...history.agentEntries, [cached.agentId]: entries },
-    historyEntries: history.visibleAgentId === cached.agentId ? entries : history.historyEntries }, discard: false }
+    historyEntries: entries,
+    nextHistoryCursor: { agentId: cached.agentId, cursor: { before_sequence: Math.min(...prefix.flatMap(historyEntrySequence)) } } }, discard: false }
 }
