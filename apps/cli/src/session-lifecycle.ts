@@ -206,8 +206,18 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     if (!attachment) {
       return
     }
-    await deps.detachAttachment(attachment.id)
-    deps.setAttachmentState(null)
+    try {
+      await deps.detachAttachment(attachment.id)
+    } catch (error) {
+      // A removed attachment is already detached. Keep real transport and
+      // admission failures visible instead of preventing the next selection.
+      if (!formatError(error).includes(`attachment \`${attachment.id}\` was not found`)) {
+        throw error
+      }
+    }
+    if (deps.attachmentState()?.id === attachment.id) {
+      deps.setAttachmentState(null)
+    }
   }
 
   const rollbackAttachedSession = async (
