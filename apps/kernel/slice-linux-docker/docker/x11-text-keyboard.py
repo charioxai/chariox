@@ -4,6 +4,10 @@ Host desktop keymap is US. Overlay only inert physical codes 8/92; never reuse
 media/accelerator codes or a modifier. Slice retains its pinned layout backend.
 """
 import time
+import importlib.util
+from pathlib import Path
+_spec=importlib.util.spec_from_file_location("keymap_fence",Path(__file__).with_name("x11-keymap-fence.py"))
+_fence=importlib.util.module_from_spec(_spec);_spec.loader.exec_module(_fence)
 from Xlib import X, XK
 from Xlib.ext import xtest
 
@@ -27,6 +31,7 @@ class _XTestKeyboard:
         self.modifiers = []
         self._spare_set = frozenset()
         self.saved = {}
+        self.fence = None
         self._find_spare_keycodes()
 
     def _find_spare_keycodes(self):
@@ -49,10 +54,10 @@ class _XTestKeyboard:
     def prebind(self, keysyms): return False  # Bounded recycling at each stroke.
     def _settle(self):
         self.connection.sync()
-        # MP-08/MP-10/MP-11: sync settles the server mapping, while Chrome
-        # refreshes its client keymap asynchronously. Allow that reply to land
-        # before pressing the recycled code under an active native display.
-        time.sleep(0.08)
+        self.fence.wait()
+        # The response is on the client's connection; retain one delivery tick
+        # for its event loop to install that row before the physical press.
+        time.sleep(0.04)
 
     def _overlay_keycode(self, keysym):
         if keysym in self.overlay: return self.overlay[keysym]
@@ -62,6 +67,8 @@ class _XTestKeyboard:
         if code not in self.saved:
             self.saved[code] = list(self.connection.get_keyboard_mapping(code, 1)[0])
         self.overlay = {symbol: old for symbol, old in self.overlay.items() if old != code}
+        if self.fence is None: self.fence = _fence.KeymapFence(self.connection)
+        self.fence.arm(code, keysym)
         self.connection.change_keyboard_mapping(code, [[keysym] * len(self.saved[code])])
         self.overlay[keysym] = code
         self._settle()
@@ -88,5 +95,7 @@ class _XTestKeyboard:
         self.modifiers = []
 
     def release_group_lock(self):
+        if self.fence is not None:
+            self.fence.close(); self.fence = None
         for code, row in self.saved.items(): self.connection.change_keyboard_mapping(code, [row])
         self.connection.sync()

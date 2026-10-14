@@ -139,6 +139,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/native-computer.py"),
     ),
     (
+        "x11-keymap-fence.py",
+        include_bytes!("../../slice-linux-docker/docker/x11-keymap-fence.py"),
+    ),
+    (
         "x11-text-keyboard.py",
         include_bytes!("../../slice-linux-docker/docker/x11-text-keyboard.py"),
     ),
@@ -446,6 +450,14 @@ mod tests {
                 for part in text.split(&format!("{quote}./")).skip(1) {
                     let import = part.split(quote).next().unwrap_or_default();
                     if import.ends_with(".mjs") {
+                        assert!(names.contains(&import), "{name} imports missing {import}");
+                    }
+                }
+            }
+            for quote in ['"', '\''] {
+                for part in text.split(&format!("with_name({quote}")).skip(1) {
+                    let import = part.split(quote).next().unwrap_or_default();
+                    if import.ends_with(".py") {
                         assert!(names.contains(&import), "{name} imports missing {import}");
                     }
                 }

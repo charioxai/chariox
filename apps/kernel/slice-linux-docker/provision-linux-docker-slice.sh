@@ -522,7 +522,7 @@ refresh_slice_support_files() {
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/chariox-slice/slice-screen.sh" "screen launcher"
   # MP-08 / MP-10 / MP-11: preserved images need the Python closure too.
   local native_python
-  for native_python in native-x11.py native-computer.py native-accessibility.py native-fill-targets.py native-clipboard.py room-native-protection.py browser-desktop-protection.py x11-text-keyboard.py slice-observation-mask.py linux-desktop-session.py; do
+  for native_python in native-x11.py native-computer.py native-accessibility.py native-fill-targets.py native-clipboard.py room-native-protection.py browser-desktop-protection.py x11-text-keyboard.py x11-keymap-fence.py slice-observation-mask.py linux-desktop-session.py; do
     copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/$native_python" "$SLICE_NAME:/opt/chariox-slice/$native_python" "native Python dependency $native_python"
   done
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-keyboard.py" "$SLICE_NAME:/opt/chariox-slice/slice-keyboard.py" "physical keyboard and secret target guard"

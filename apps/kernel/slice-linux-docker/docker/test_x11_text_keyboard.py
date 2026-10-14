@@ -14,6 +14,9 @@ class TextTests(unittest.TestCase):
         self.connection.get_modifier_mapping.return_value=[[50]]
         self.connection.get_keyboard_mapping.side_effect=lambda lo,n:[self.mapping[c] for c in range(lo,lo+n)]
         self.connection.change_keyboard_mapping.side_effect=lambda code,rows:self.mapping.update({code:rows[0]})
+        self.fence=Mock()
+        self.factory=patch.object(module._fence, 'KeymapFence', return_value=self.fence)
+        self.factory.start(); self.addCleanup(self.factory.stop)
         self.keyboard=module._XTestKeyboard(self.connection)
     def test_inherited_hardware_overlay_is_not_text(self):
         self.assertIsNone(self.keyboard._placement(0x01004e16))
@@ -48,12 +51,14 @@ class TextTests(unittest.TestCase):
                 delivered.append(client_mapping.get(code, 0))
         symbols = [module.universal_text_keysym(c) for c in '漢字🧪' * 4]
         self.connection.change_keyboard_mapping.side_effect = mapping
-        with patch.object(module.time, 'sleep', side_effect=sleep), patch.object(module.xtest, 'fake_input', side_effect=event):
+        self.fence.wait.side_effect = lambda: sleep(max(0, updates[-1][0] - now))
+        with patch.object(module.xtest, 'fake_input', side_effect=event):
             for symbol in symbols:
                 self.keyboard.press(symbol)
                 self.keyboard.release(symbol)
                 sleep(0.04)
         self.assertEqual(delivered, symbols)
+        self.assertEqual(self.fence.wait.call_count, len(symbols))
 
     def test_occupied_or_modifier_slots_fail_before_injection(self):
         self.mapping[8]=self.mapping[92]=[ord('b')]*2

@@ -204,6 +204,9 @@ def type_text(text, expected_target=None, before_press=None, *, pace_seconds=0.0
             # MP-11: inspect native leaf protection outside the server grab;
             # fence its X focus inside the grab before each physical batch.
             if before_press is not None:before_press()
+            # MP-08/MP-10/MP-11: prepare the mapping while the focused client
+            # can still read it. A server grab would block its keymap reply.
+            if expected_target is not None: keyboard._resolve(keysym)
             # MP-08 / MP-11: one keystroke batch under the X server grab.
             # Other display clients cannot change native focus between the
             # target check and physical input delivery. Never refocus a target.

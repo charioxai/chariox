@@ -106,6 +106,21 @@ class KeyboardTextTests(unittest.TestCase):
         close.assert_called_once()
         self.assertEqual(connection.text,'ab')
 
+    def test_keymap_client_can_reply_before_the_protected_server_grab(self):
+        connection=Display();connection.grabbed=False
+        connection.grab_server=lambda:setattr(connection,'grabbed',True)
+        connection.ungrab_server=lambda:setattr(connection,'grabbed',False)
+        module=helper(connection)
+        original=UpstreamKeyboard._overlay_keycode
+        def bind(keyboard, keysym):
+            if keysym not in keyboard.overlay:
+                self.assertFalse(connection.grabbed, 'client keymap request blocked by the X server grab')
+            return original(keyboard, keysym)
+        with patch.object(UpstreamKeyboard,'_overlay_keycode',bind),patch.object(module,'focused_target',return_value={'focus_window':10}),patch.object(module,'assert_secret_target'),patch.object(module.time,'sleep'),patch.object(module.signal,'signal'):
+            module.type_text('漢字🧪',before_press=lambda:None)
+        self.assertEqual(connection.text,'漢字🧪')
+        self.assertFalse(connection.grabbed)
+
     def test_mp11_finding1_focus_change_stops_a_multi_character_native_event(self):
         connection=Display()
         connection.grab_server=lambda:None
