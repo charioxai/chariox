@@ -537,6 +537,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const drain = () => {
       if (!snapshotted) return { resync: 'evicted' }; // a new instance for a running subscription
       if (overflow) return { resync: 'overflow' };
+      if (!progressive && document.getElementsByTagName('*').length > 10000) return { resync: 'growing' };
       // A snapshot spanning tasks must not publish a subtree captured before a
       // structural mutation under another parent/protection kind. Restart its bounded
       // prefix; the viewer retains its last good paint until the reset arrives.

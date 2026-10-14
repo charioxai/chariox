@@ -1272,3 +1272,11 @@ test('MP-10/MP-11 M2: a closed host discovered in a partial subtree discards all
     for(let n=0;n<10&&!after;n++){const packet=await next();assert(!packet.fallback);assert(!packet.reset);assert(!JSON.stringify(packet.ops).includes('Unpublished light content'));after=packet.ops.some(op=>op.op==='children'&&op.nodes.some(row=>row[2]===0&&row[3]==='After closed host'));}
     assert(after,'continuation skips the now-opaque subtree and reaches its next sibling');
   }));
+
+test('MP-10 M2: a document that grows after an early small snapshot switches to a bounded prefix', () => mirrored(
+  '<h1>Early paint</h1><main></main>', async ({next,evaluate}) => {
+    assert(!(await next()).fallback);
+    await evaluate(`document.querySelector('main').innerHTML='<p>Growing document</p>'.repeat(10001);true`);
+    const grown=await next();assert(grown.reset);assert(!grown.fallback);assert(grown.nodes.length<4096);
+    assert(texts(grown).has('Early paint'));assert((await next()).ops.some(op=>op.op==='children'));
+  }));

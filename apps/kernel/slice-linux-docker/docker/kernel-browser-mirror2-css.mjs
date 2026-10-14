@@ -9,6 +9,7 @@ const MARK = 'function(){return globalThis.__charioxMirror2?.sheetChanged(this) 
 
 export class MirrorCssEvents {
   constructor() { this.sessions = new Map(); }
+  pending(sessionId) { const entry = this.sessions.get(sessionId); return !!entry && !entry.enabled; }
   // A world (page or frame session) whose frame's sheets this subscription mirrors.
   async watch(world, frameId, streamId) {
     let entry = this.sessions.get(world.sessionId);
@@ -16,11 +17,25 @@ export class MirrorCssEvents {
       entry?.stop();
       entry = { connection: world.connection, sessionId: world.sessionId, worlds: new Map(), headers: new Map(), changed: new Set(), streams: new Set(), timer: null };
       const off = world.connection.subscribe(message => this.event(entry, message));
-      entry.stop = () => { off(); clearTimeout(entry.timer); if (this.sessions.get(entry.sessionId) === entry) this.sessions.delete(entry.sessionId); };
+      entry.stop = () => { entry.stopped = true; off(); clearTimeout(entry.timer); if (this.sessions.get(entry.sessionId) === entry) this.sessions.delete(entry.sessionId); };
       this.sessions.set(world.sessionId, entry);
-      try { await world.connection.send('DOM.enable', {}, world.sessionId); await world.connection.send('CSS.enable', {}, world.sessionId); } catch (error) { entry.stop(); throw error; }
     }
     entry.worlds.set(frameId, world.contextId); entry.streams.add(streamId);
+    entry.ready ??= (async () => {
+      try {
+        await world.connection.send('DOM.enable', {}, world.sessionId);
+        // CSS.enable waits for resource bodies, independently of DOM readiness.
+        // Large pages start this bounded watcher without delaying first paint.
+        await world.connection.send('CSS.enable', {}, world.sessionId, { timeoutMs: 30000 });
+        if (entry.stopped) return;
+        entry.enabled = true;
+        // Re-read initial owners: a CSSOM edit between snapshot and activation
+        // must not be lost merely because it preceded styleSheetChanged events.
+        for (const id of entry.headers.keys()) entry.changed.add(id);
+        await this.flush(entry);
+      } catch (error) { entry.stop(); throw error; }
+    })();
+    await entry.ready;
   }
   // The last subscription of a session stops its CSS agent (best effort: a gone session has none).
   release(streamId) {

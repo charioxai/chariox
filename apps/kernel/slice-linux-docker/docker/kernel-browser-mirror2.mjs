@@ -164,8 +164,16 @@ export class Mirror2 {
       world.mirror2Installed = true;
     }
     const out = { connection, sessionId, contextId: world.contextId, frame: frameTree.frame, ref: observerRef(stream) };
-    await this.css.watch(out, frameTree.frame.id, stream.id);
+    await this.watchCss(out, frameTree.frame.id, stream.id);
     return out;
+  }
+  async watchCss(world, frameId, streamId) {
+    const large = await this.evaluate(world, "document.readyState !== 'complete' || document.getElementsByTagName('*').length > 10000");
+    world.holdInitialPaint = large;
+    const pending = this.css.pending(world.sessionId);
+    const ready = this.css.watch(world, frameId, streamId);
+    if (large || pending) ready.catch(() => { world.cssFailed = true; });
+    else await ready;
   }
   async evaluate(world, expression, awaitPromise = false) {
     const reply = await world.connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId);
@@ -260,6 +268,7 @@ export class Mirror2 {
     assertNotCancelled(signal);
     const world = kept?.world ?? await this.world(tab, stream), policy = this.host.protection;
     stream.world = world;
+    if (world.cssFailed) throw new Error('MP-11: mirror CSS observation unavailable');
     mark('world');
     const after = command.after_sequence;
     // The viewer's credits name what it applied: resource completion counts only once acknowledged.
@@ -271,7 +280,7 @@ export class Mirror2 {
     if (reset) this.host.timing?.(`mirror2_reset ${resetReason}`, started);
     // The hold follows the document transition itself: a credit that also resets (a resynchronizing viewer)
     // still keeps the previous page. A new subscription has no previous page to keep.
-    if (stream.document_id && stream.document_id !== tab.document_id) { await this.evaluate(world, paintHoldExpression(PAINT_HOLD_MS), true).catch(() => {}); mark('paint_hold'); assertNotCancelled(signal); }
+    if (stream.document_id && stream.document_id !== tab.document_id || !stream.document_id && world.holdInitialPaint) { await this.evaluate(world, paintHoldExpression(PAINT_HOLD_MS), true).catch(() => {}); mark('paint_hold'); assertNotCancelled(signal); }
     if (stream.document_id !== tab.document_id) { stream.acked = 0; stream.prunedAt = 0; stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
     // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
     if (stream.frameSlot >= 900) reset = true;

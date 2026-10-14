@@ -1308,7 +1308,7 @@ export class CdpConnection {
     return !this.closed && this.socket.readyState === 1;
   }
 
-  send(method, params = {}, sessionId) {
+  send(method, params = {}, sessionId, { timeoutMs = this.requestTimeoutMs } = {}) {
     if (!this.isOpen()) {
       return Promise.reject(
         new BrowserControllerError("browser_cdp_disconnected", "browser CDP connection is closed"),
@@ -1325,10 +1325,10 @@ export class CdpConnection {
         reject(
           new BrowserControllerError(
             "browser_cdp_timeout",
-            `browser CDP method ${method} timed out after ${this.requestTimeoutMs}ms`,
+            `browser CDP method ${method} timed out after ${timeoutMs}ms`,
           ),
         );
-      }, this.requestTimeoutMs);
+      }, timeoutMs);
       this.pending.set(id, { method, sessionId, resolve, reject, timeout });
       try {
         this.socket.send(JSON.stringify(payload));

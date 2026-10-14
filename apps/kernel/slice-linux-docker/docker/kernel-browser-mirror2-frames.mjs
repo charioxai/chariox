@@ -79,7 +79,7 @@ export class MirrorFrames {
     const child = { connection: world.connection, sessionId, contextId: executionContextId, frame, ref: world.ref };
     const installed = await world.connection.send('Runtime.evaluate', { expression: mirror2ObserverExpression(), contextId: executionContextId, returnByValue: true }, sessionId);
     if (installed.exceptionDetails || installed.result?.value !== true) throw new Error('MP-11: frame observer unavailable');
-    await this.mirror.css.watch(child, frame.id, streamId);
+    await this.mirror.watchCss(child, frame.id, streamId);
     return child;
   }
   async loaderId(child) {

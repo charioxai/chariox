@@ -41,6 +41,13 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   hosts become opaque before their packet leaves, with their light descendants
   removed. Published hosts retain ordinary replacement/identity fences.
   These are kernel implementation bounds; mirror v2's wire is unchanged.
+  A loading document waits for its first contentful paint before its initial
+  prefix. A document that grows past the small-document limit restarts with
+  bounded hydration. CSS event initialization runs asynchronously for loading
+  or large documents: Chromium's `CSS.enable` waits for resource bodies. Its
+  own 30 s bound leaves ordinary CDP request deadlines unchanged. Stylesheet
+  owners are reconciled when activation completes so edits during startup are
+  retained; attached frames share the same watcher and discovery rules.
   Deltas carry only changes: a child list that ends as it was sends nothing, a
   form op travels only when the field's state changed, and a subtree the page
   rebuilds with the same shape (a typeahead list replaced by innerHTML) keeps
