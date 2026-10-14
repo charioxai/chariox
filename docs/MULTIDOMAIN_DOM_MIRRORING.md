@@ -25,6 +25,22 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   `form`, `scroll`, `size`, `res`, `state` (492). Records travel as compact rows
   `[idDelta, parentBack, tag | kindCode, attrs | 0, extra]`; a stylesheet text
   of 2 KB or more travels once per snapshot epoch (`sheets` + `css_ref`).
+  MP-08/MP-10/MP-11 M2 keeps ordinary small documents atomic. Large documents
+  start with a pre-order prefix; later credits extend it with these same
+  `children` operations. Each continuation visits at most 4096 nodes, targets
+  an 8 ms task after a minimum 256 visits, and stops near 128 KiB of record
+  work. The initial prefix visits at most 1024 nodes. Document limits remain
+  finite (900,000 records, 64 MiB of record work, local ids below 1,000,000);
+  one record is bounded at 1 MiB. A small document has a 20,000-record/4 MiB
+  atomic backstop, including large open shadow trees. Input echoes precede
+  continuation records. A structural mutation or changed protection kind
+  restarts a bounded current prefix instead of resuming a stale traversal.
+  Closed roots are discovered with bounded `DOM.describeNode` batches on
+  serialized host identities, including open roots and same-origin frames;
+  no whole-document `DOMSnapshot` reply precedes first paint. Unpublished
+  hosts become opaque before their packet leaves, with their light descendants
+  removed. Published hosts retain ordinary replacement/identity fences.
+  These are kernel implementation bounds; mirror v2's wire is unchanged.
   Deltas carry only changes: a child list that ends as it was sends nothing, a
   form op travels only when the field's state changed, and a subtree the page
   rebuilds with the same shape (a typeahead list replaced by innerHTML) keeps

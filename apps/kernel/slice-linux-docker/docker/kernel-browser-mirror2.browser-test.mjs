@@ -1208,3 +1208,67 @@ test('MP-11: a child opaque lease clips to the actual cross-origin frame viewpor
     assert.deepEqual(lease.rect,{x:0,y:40,width:100,height:40});
   },{'/child':{type:'text/html',body:'<style>body{margin:0}canvas{display:block;margin-top:40px;width:200px;height:100px}</style><canvas></canvas>'}}
 ));
+
+// MP-08/MP-10/MP-11 M2: a real public spec has >337k elements. This regression
+// is supplementary; the hosted WHATWG drill is the user-facing acceptance.
+test("MP-10 M2: large documents paint a bounded prefix then continue on existing children ops", () => mirrored(
+  '<h1>Viewport first</h1><main>' + '<p>later text</p>'.repeat(210000) + '</main>', async ({ next, host, evaluate }) => {
+    const first = await next();
+    assert.equal(first.fallback, undefined, 'MP-10 M2: large DOM must remain a DOM mirror');
+    assert(first.nodes.length < 4096, 'MP-10 M2: first packet cannot serialize the entire document');
+    assert([...texts(first).keys()].includes('Viewport first'), 'MP-10 M2: viewport content in the first packet');
+    const stream = [...host.mirror.streams.values()][0];
+    assert(stream, 'MP-10 M2: ordinary mirror subscription');
+    const second = await next();
+    assert.equal(second.reset, undefined);
+    assert(second.ops.some(op => op.op === 'children'), 'MP-10 M2: ordinary children continuation');
+    assert(second.ops.reduce((n, op) => n + (op.nodes?.length ?? 0), 0) < 8192, 'MP-10 M2: bounded continuation');
+    // A different real tab still takes the ordinary path while hydration is pending.
+    const other = await host.request({ op: 'open', url: 'about:blank' });
+    assert(other.tab_id);
+    const otherMirror = await host.request({op:'mirror_subscribe',tab_id:other.tab_id,generation:other.generation,device_scale_factor:1,wire:2});
+    await host.request({op:'mirror_next',subscription_id:otherMirror.subscription_id,generation:other.generation,after_sequence:0,drift_nodes:[],wait_ms:0});
+    const resumed = await next();assert(resumed.ops.reduce((n,op)=>n+(op.nodes?.length??0),0)<8192,'another small document cannot change this viewer continuation budget');
+    assert.equal(await evaluate('document.querySelector("h1").textContent'), 'Viewport first');
+  }));
+
+test('MP-10 M2: continuations finish the full DOM with bounded ordinary children packets', () => mirrored(
+  '<h1>Viewport first</h1><main>' + '<p>middle</p>'.repeat(10001) + '<p>Last paragraph</p></main>', async ({next,host,subscription_id}) => {
+    const first=await next();assert(!first.fallback);assert(first.nodes.length<4096);
+    const seen=new Set(),add=(rows,parent)=>{let id=0;for(let i=0;i<rows.length;i++){const row=rows[i];id+=row[0];const at=`n${id}`,p=row[1]?rows[i-row[1]]._id:parent;assert(p===null||seen.has(p),'parent precedes the continuation record');assert(!seen.has(at),'a node is introduced once');seen.add(at);row._id=at;}};
+    add(first.nodes,null);let tail=false;
+    for(let n=0;n<200&&!tail;n++){const packet=await next();assert(!packet.reset);assert(!packet.fallback);let count=0;for(const op of packet.ops){if(op.op!=='children')continue;add(op.nodes,op.id);count+=op.nodes.length;tail||=op.nodes.some(row=>row[2]===0&&row[3]==='Last paragraph');}assert(count<8192);}
+    assert(tail,'the last paragraph eventually arrives');assert(seen.size>20000,'full document, not just the viewport prefix');
+    const world=host.mirror.streams.get(subscription_id).world;
+    assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'the continuation settles');
+  }));
+
+test('MP-10/MP-11 M2: mutation during a continuation restarts a bounded current snapshot', () => mirrored(
+  '<h1>Viewport first</h1><main>' + '<p>middle</p>'.repeat(10001) + '</main>', async ({next,evaluate}) => {
+    const first=await next();assert(!first.fallback);
+    await evaluate(`document.querySelector('h1').replaceChildren('Changed viewport');true`);
+    const reset=await next();assert.equal(reset.reset,true);assert(!reset.fallback);assert(reset.nodes.length<4096);
+    assert(texts(reset).has('Changed viewport'),'no stale saved subtree crosses the reset');
+  }));
+
+
+test('MP-08/MP-10 M2: native form and text echoes take priority over continuing the document', () => mirrored(
+  '<input id="q"><h1>Viewport first</h1><main>' + '<p>middle</p>'.repeat(10001) + '</main>', async ({next,evaluate}) => {
+    assert(!(await next()).fallback);
+    await evaluate(`const q=document.querySelector('#q');q.value='typed';q.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('h1').firstChild.data='Changed text';true`);
+    const echo=await next();assert(!echo.reset);assert(!echo.fallback);
+    assert(echo.ops.some(op=>op.op==='form'&&op.form.value==='typed'));
+    assert(echo.ops.some(op=>op.op==='text'&&op.text==='Changed text'));
+    assert(!echo.ops.some(op=>op.op==='children'),'an echo never waits behind continuation records');
+    assert((await next()).ops.some(op=>op.op==='children'),'hydration resumes on the next credit');
+  }));
+
+
+test('MP-10/MP-11 M2: a closed host discovered in a partial subtree discards all unpublished light descendants', () => mirrored(
+  '<x-closed>' + '<p>Unpublished light content</p>'.repeat(10001) + '</x-closed><h1>After closed host</h1><script>customElements.define("x-closed",class extends HTMLElement{connectedCallback(){this.attachShadow({mode:"closed"}).innerHTML="<p>Closed pixels</p>"}})</script>', async ({next}) => {
+    const first=await next();assert(!first.fallback);assert(first.nodes.some(row=>row[2]===5));
+    assert(!JSON.stringify(first.nodes).includes('Unpublished light content'));
+    let after=texts(first).has('After closed host');
+    for(let n=0;n<10&&!after;n++){const packet=await next();assert(!packet.fallback);assert(!packet.reset);assert(!JSON.stringify(packet.ops).includes('Unpublished light content'));after=packet.ops.some(op=>op.op==='children'&&op.nodes.some(row=>row[2]===0&&row[3]==='After closed host'));}
+    assert(after,'continuation skips the now-opaque subtree and reaches its next sibling');
+  }));

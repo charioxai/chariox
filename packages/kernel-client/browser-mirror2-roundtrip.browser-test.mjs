@@ -147,3 +147,16 @@ test('MP-08/MP-10: ordinary typing invokes the native page keyboard contract',()
     assert.deepEqual(await evaluate('window.keys'),[...'Chariox'],'ordinary keys must reach native keydown listeners');
     assert.equal(await evaluate('document.querySelector("#field").value'),'Chariox');
   }));
+
+// MP-08/MP-10/MP-11 M2: real source + unmodified product renderer consume
+// the ordinary wire incrementally. Anonymous fixture; not live acceptance.
+test('MP-10 M2: the renderer paints the prefix and retains it while ordinary children packets finish the document',()=>roundtrip(
+  '<!doctype html><h1 id="first">Viewport first</h1><main>'+'<p>Middle</p>'.repeat(10001)+'<p id="last">Last paragraph</p></main>','',async({page,next,apply})=>{
+    const first=await next();assert(!first.fallback);assert(first.nodes.length<4096);await apply(first);
+    assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('first')?.textContent),'Viewport first');
+    assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('last')),null);
+    let complete=false;
+    for(let n=0;n<200&&!complete;n++){const packet=await next();assert(!packet.reset);assert(!packet.fallback);await apply(packet);complete=await page.evaluate(()=>window.r.frame.contentDocument.getElementById('last')?.textContent==='Last paragraph');}
+    assert(complete);assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.querySelectorAll('p').length),10002);
+    assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('first')?.textContent),'Viewport first');
+  }));

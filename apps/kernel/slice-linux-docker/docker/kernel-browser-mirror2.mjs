@@ -13,6 +13,7 @@ import { decodePng, maskPixels } from './kernel-browser-pixels.mjs';
 import { losslessRegion } from './kernel-browser-pixels.mjs';
 import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror2-frames.mjs';
 import { MirrorCssEvents } from './kernel-browser-mirror2-css.mjs';
+import { discoverClosedHosts } from './kernel-browser-mirror2-closed.mjs';
 import { Mirror2Regions } from './kernel-browser-mirror2-regions.mjs';
 
 const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
@@ -187,32 +188,9 @@ export class Mirror2 {
     Object.assign(stream, { wire: 2, issued: 0, resetAt: 0, chain: Promise.resolve(), resources: new Map(), attrSequence: new Map(), tilesAt: 0, tileKeys: '', fallback: null, frames: new Map(), frameSlots: new Map(), frameSlot: 0, movedAt: 0, ownScrolls: new Map() });
     return stream;
   }
-  // Closed shadow roots (owner decision: opaque regions): a trusted DOMSnapshot
-  // pass finds their hosts before the snapshot, only when custom elements exist.
-  async markClosedHosts(world) {
-    if (!await this.evaluate(world, `${world.ref}.customHosts()`)) return 0;
-    const snapshot = await world.connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [] }, world.sessionId);
-    const strings = snapshot.strings ?? [];
-    const documents = snapshot.documents; // Includes same-origin documents serialized by this world.
-    if (!documents?.length) throw new Error('MP-11: closed-root frame snapshot unavailable');
-    let marked = 0;
-    for (const document of documents) {
-      const nodes = document.nodes, types = nodes?.shadowRootType;
-      for (let i = 0; i < (types?.index?.length ?? 0) && marked < 256; i++) {
-        if (strings[types.value[i]] !== 'closed') continue;
-        const host = nodes.parentIndex?.[types.index[i]], backendNodeId = nodes.backendNodeId?.[host];
-        if (!Number.isSafeInteger(backendNodeId)) continue;
-        try {
-          const { object } = await world.connection.send('DOM.resolveNode', { backendNodeId, executionContextId: world.contextId }, world.sessionId);
-          const result = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.markClosedHost.call(this)}`, returnByValue: true }, world.sessionId);
-          await world.connection.send('Runtime.releaseObject', { objectId: object.objectId }, world.sessionId).catch(() => {});
-          if (result.result?.value === true) marked++;
-        } catch {}
-      }
-    }
-    await this.evaluate(world, `${world.ref}.closedChecked()`);
-    return marked;
-  }
+  // Closed shadow roots (owner decision: opaque regions): inspect only hosts
+  // in this chunk before it can be published.
+  async markClosedHosts(world, source) { return discoverClosedHosts(this, world, source); }
   // Registered Vault targets are marked by node identity in the observer's world.
   // Fields the kernel filled from the Vault, by node identity: top-level refs
   // are `backend:N`, child-frame refs `frame:<id>:<loader>:backend:N` (prefix).
@@ -304,9 +282,9 @@ export class Mirror2 {
     const read = async () => {
       if (reset) {
         await this.protectTargets(world, tab, policy);
-        await this.markClosedHosts(world);
         const snap = await this.evaluate(world, `${world.ref}.snapshot()`);
         if (snap.resync) return snap;
+        await this.markClosedHosts(world, snap);
         // Sheets this CSSOM cannot read come through CDP.
         const sheetOps = await this.sheetOps(world, snap.sheets);
         // Cross-origin frames: child DOM under the owner, or an opaque region.
@@ -318,8 +296,7 @@ export class Mirror2 {
     };
     const processDelta = async delta => {
       // New/upgraded custom hosts trigger trusted discovery before their final projection. Steady-state credits add no round trip.
-      if (delta.closed_candidates) {
-        await this.markClosedHosts(world);
+      if (delta.closed_candidates && await this.markClosedHosts(world, delta)) {
         delta = this.merge(delta, await this.evaluate(world, `${world.ref}.drain()`));
       }
       if (delta.resync) return delta;
