@@ -27,6 +27,9 @@ const connection = {
       return { targetId };
     }
     if (method === 'Target.closeTarget') { pages.delete(params.targetId); return {}; }
+    if (method === 'Target.getTargetInfo') return { targetInfo: { targetId: params.targetId, type: 'page', ...pages.get(params.targetId) } };
+    // MP-08/MP-10: the host's keepalive is a popup window opened from a blank page.
+    if (method === 'Target.attachToTarget') return { sessionId: params.targetId };
     if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'frame', loaderId: pages.get(session)?.document_id } } };
     // MP-08/MP-11: production popup attribution observes native input before
     // mirror admission. The fixture must expose its ordinary CDP setup seam.
@@ -35,6 +38,7 @@ const connection = {
     if (method === 'Emulation.setDeviceMetricsOverride') return {};
     if (method === 'Page.getResourceTree') return {frameTree:{frame:{id:'frame'},resources:[]}};
     if (method === 'Runtime.evaluate') {
+      if(params.expression.includes("'chariox-keepalive'")){pages.set(`target-${++next}`,{url:'about:blank',document_id:`doc-${++revision}`});return {result:{value:true}};}
       if(params.expression.includes('Object.fromEntries([...style]'))return {result:{value:{}}};
       if(params.expression.includes('__charioxMirror.read('))return {result:{value:{root:'n1',nodes:[{id:'n1',parent:null,children:[],kind:'element',tag:'button',style:{width:'80px',height:'40px'},box:{x:0,y:0,width:80,height:40}}],fonts:[],resources:[],scroll:{x:0,y:0},focused:'n1'}}};
       // MP-08/MP-11: successful plain keys need painted and live focus.
@@ -55,7 +59,7 @@ const host = new KernelBrowserHost(process.argv[3], {
     navigate: async ({ target_id, url }) => pages.set(target_id, { url, document_id: `doc-${++revision}` }),
     resolvePageTarget: async target => ({ connection, sessionId: target }),
     ensureFocusWorld: async () => ({contextId:42}),
-    inputCapture: { run: async (_, __, operation) => operation() },
+    inputCapture: { hold: async () => async () => {}, run: async (_, __, operation) => operation() },
   }),
 });
 await new BrowserControllerStdioServer({ handleRequest: (request, options) => host.handle(request, options) }).run().finally(() => host.stop());
