@@ -246,3 +246,16 @@ fn deserialize_key_modifiers<'de, D: serde::Deserializer<'de>>(
     }
     Ok(value)
 }
+
+/// MP-08/MP-10/MP-11: kernel-private §2a target, ready for the 519 adapter.
+/// This type is not yet a command field; adding it to the public request belongs
+/// to the coordinated 519/127 protocol bump. Clients never choose crop geometry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelBrowserMirrorRegionTarget {
+    pub mirror_subscription_id: String,
+    pub generation: u64,
+    pub document_id: String,
+    pub sequence: u64,
+    pub region_id: String,
+}

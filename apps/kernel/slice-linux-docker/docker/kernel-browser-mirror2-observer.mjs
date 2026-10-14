@@ -620,6 +620,35 @@ export function installMirror2(sanitizeMirrorCss) {
       }
       return out;
     };
+    // §2a lease geometry: live protection/identity and every owning viewport.
+    // Private values only; no new packet fields or client-selected rectangles.
+    const regionShape = id => {
+      const node = live(id), kind = kindOf.get(id);
+      if (kind !== 'tile' && !(kind === 'frame' && foreign.has(id))) throw new Error('mirror2 region required');
+      const intersect = (a,b) => { const x=Math.max(a[0],b[0]),y=Math.max(a[1],b[1]);return [x,y,Math.max(0,Math.min(a[0]+a[2],b[0]+b[2])-x),Math.max(0,Math.min(a[1]+a[3],b[1]+b[3])-y)]; };
+      let bounds=box(node),clip=intersect(bounds,[0,0,node.ownerDocument.defaultView.innerWidth,node.ownerDocument.defaultView.innerHeight]);
+      for(let view=node.ownerDocument.defaultView;view !== window;view=view.parent){
+        const owner=view.frameElement;if(!owner)throw new Error('mirror2 frame unavailable');
+        const r=owner.getBoundingClientRect(),style=getComputedStyle(owner),x=r.x+owner.clientLeft+(parseFloat(style.paddingLeft)||0),y=r.y+owner.clientTop+(parseFloat(style.paddingTop)||0);
+        bounds=[bounds[0]+x,bounds[1]+y,bounds[2],bounds[3]];clip=[clip[0]+x,clip[1]+y,clip[2],clip[3]];
+        clip=intersect(clip,[0,0,view.parent.innerWidth,view.parent.innerHeight]);
+      }
+      if(!(clip[2]>0&&clip[3]>0))throw new Error('mirror2 region offscreen');
+      const out={id,box:bounds,clip,distorted:distorted(node)};
+      if(foreign.has(id)){
+        const style=getComputedStyle(node),left=node.clientLeft+(parseFloat(style.paddingLeft)||0),top=node.clientTop+(parseFloat(style.paddingTop)||0);
+        const width=node.clientWidth-(parseFloat(style.paddingLeft)||0)-(parseFloat(style.paddingRight)||0),height=node.clientHeight-(parseFloat(style.paddingTop)||0)-(parseFloat(style.paddingBottom)||0);
+        out.contentBox=[bounds[0]+left,bounds[1]+top,width,height];
+      }
+      return out;
+    };
+    const regionBoxes = () => {
+      const out=[];
+      for(const [id] of nodes) if(kindOf.get(id)==='tile'||foreign.has(id)) {
+        try{out.push(regionShape(id));}catch{} // disconnected/protected/fully clipped => no capability
+      }
+      return out;
+    };
     // A viewport screenshot of a region already holds its compositing (any transform beyond a translation,
     // also size-preserving ones like rotate(180deg) or scaleX(-1); a filter; opacity or blending on it, an
     // ancestor or a same-origin frame owner), which the mirrored DOM applies again: such regions are flagged (the service then needs the
@@ -897,6 +926,6 @@ export function installMirror2(sanitizeMirrorCss) {
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
   }
 }

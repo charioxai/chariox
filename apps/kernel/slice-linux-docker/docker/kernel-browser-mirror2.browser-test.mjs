@@ -1181,3 +1181,30 @@ test('MP-11: full snapshots retire the old control-shape cache',()=>mirrored('<i
  const result=await connection.send('Runtime.evaluate',{contextId:world.contextId,expression:"__shapeMaps.filter(m=>[...m.values()].every(v=>v==='text'||v===false)).map(m=>m.size)",returnByValue:true},sessionId);
  assert(!result.exceptionDetails);assert.deepEqual(result.result.value,[2],'only the current input and select ids remain');
 }));
+
+test('MP-08/MP-10/MP-11: opaque leases remeasure actual canvas bounds, protection and navigation', () => mirrored(
+  '<style>body{margin:0}canvas{width:200px;height:100px}</style><canvas id="c"></canvas>',
+  async ({host,next,evaluate,subscription_id,generation}) => {
+    const packet=await next(),stream=host.mirror.streams.get(subscription_id);
+    const region_id=[...stream.regionRecords].find(([,r])=>r.kind==='tile')[0];
+    const target={mirror_subscription_id:subscription_id,generation,document_id:stream.document_id,sequence:packet.sequence,region_id};
+    const lease=await host.mirror.v2.regions.resolve(target,stream.scope);
+    assert.deepEqual(lease.rect,{x:0,y:0,width:200,height:100}); assert.equal(await lease.isCurrent(),true);
+    await evaluate('document.querySelector("canvas").style.marginLeft="10px"');
+    assert.equal(await lease.isCurrent(),false,'live layout changes retire before a new mirror packet');
+    const replacement=await host.mirror.v2.regions.resolve(target,stream.scope);
+    assert.equal(replacement.rect.x,10);
+    await evaluate('document.querySelector("canvas").style.transform="rotate(180deg)"');
+    assert.equal(await replacement.isCurrent(),false);
+    await assert.rejects(host.mirror.v2.regions.resolve(target,stream.scope),/region_transform/);
+  }
+));
+test('MP-11: a child opaque lease clips to the actual cross-origin frame viewport', () => mirrored(
+  '<style>body{margin:0}iframe{width:100px;height:80px;border:0}</style><iframe src="http://localhost:PORT/child"></iframe>',
+  async({host,next,subscription_id,generation})=>{
+    const packet=await next(),stream=host.mirror.streams.get(subscription_id);
+    const region_id=[...stream.regionRecords].find(([,r])=>r.kind==='tile')[0];
+    const lease=await host.mirror.v2.regions.resolve({mirror_subscription_id:subscription_id,generation,document_id:stream.document_id,sequence:packet.sequence,region_id},stream.scope);
+    assert.deepEqual(lease.rect,{x:0,y:40,width:100,height:40});
+  },{'/child':{type:'text/html',body:'<style>body{margin:0}canvas{display:block;margin-top:40px;width:200px;height:100px}</style><canvas></canvas>'}}
+));

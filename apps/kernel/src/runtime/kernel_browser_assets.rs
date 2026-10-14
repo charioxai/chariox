@@ -135,6 +135,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2-observer.mjs"),
     ),
     (
+        "kernel-browser-mirror2-regions.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2-regions.mjs"),
+    ),
+    (
         "kernel-browser-mirror2-frames.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2-frames.mjs"),
     ),
