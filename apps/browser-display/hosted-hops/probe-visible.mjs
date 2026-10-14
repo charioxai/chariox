@@ -1,6 +1,7 @@
 // MP-08/MP-10/MP-11: real hosted web, public controls, numeric per-hop diagnostics.
 const {chromium}=await import(process.env.VIDHOPS_PLAYWRIGHT??'/w/valenv/tools/node_modules/playwright-core/index.mjs');
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import {sampleVisibleFrame} from './probe-surface.mjs';
 import {PhysicalPixels} from './native-observer.mjs';
 import {OwnedDisplay} from './viewer-display.mjs';
 const {LocalIpcClient}=await import(process.env.VIDHOPS_IPC);
@@ -10,7 +11,7 @@ if(root.includes('..')||E.includes('..')||!root.startsWith('/root/.chariox/dev/v
 await mkdir(E,{recursive:true});await mkdir(root+'/viewer',{recursive:true});
 process.env.CHARIOX_HOME=root+'/runtime';
 const ipc=new LocalIpcClient(`ws://127.0.0.1:${state.ports[0]}/kernel`,{controlResponseStallMs:60000});
-const display=new OwnedDisplay(root+'/viewer'),report={items:['MP-08','MP-10','MP-11'],oss:process.env.OSS_SOURCE??null,cloud:process.env.CLOUD_SOURCE??null,status:'RUNNING',cells:[],viewer_gpu_mode:process.env.VIDLAT_VIEWER_DEFAULT_GPU==='1'?'chromium_default':'forced_software',qualification:'Engineering diagnostics; host recorded in command receipt; source canvas pixel echo plus next RAF, not campaign X11 endpoint acceptance. Input driven only through real hosted web.'};
+const display=new OwnedDisplay(root+'/viewer'),report={items:['MP-08','MP-10','MP-11'],oss:process.env.OSS_SOURCE??null,cloud:process.env.CLOUD_SOURCE??null,status:'RUNNING',cells:[],viewer_gpu_mode:process.env.VIDLAT_VIEWER_DEFAULT_GPU==='1'?'chromium_default':'forced_software',qualification:'Engineering diagnostics; host recorded in command receipt; composed video/repair surface echo plus next RAF, not campaign X11 endpoint acceptance. Input driven only through real hosted web.'};
 let browser,network,pixels;process.once('SIGTERM',async()=>{report.status='INTERRUPTED_SIGTERM';await save();await browser?.close();await network?.close();await pixels?.close();await display.close();await ipc.close();process.exit(143)});
 const save=()=>writeFile(E+'/results.json',JSON.stringify(report,null,2));
 const request=async command=>(await ipc.send({KernelBrowser:{command}})).KernelBrowser.result;
@@ -40,7 +41,7 @@ try{
  const denv=await display.start();pixels=await new PhysicalPixels(denv).start();network=await startViewerNetwork(state.relayUrl,{httpsOrigins:[state.webOrigin],uplinkMbps:8,oneWayDelayMs:30});
  browser=await chromium.launch({headless:false,executablePath:'/opt/google/chrome/chrome',args:['--no-sandbox',...(process.env.VIDLAT_VIEWER_DEFAULT_GPU==='1'?[]:['--disable-gpu']),'--disable-dev-shm-usage','--js-flags=--max-old-space-size=1024','--window-size=1920,1080',`--force-device-scale-factor=${Number((process.env.DPRS??'1').split(',')[0])}`,`--proxy-server=${network.proxyUrl}`],env:{...process.env,...denv,TMPDIR:'/root/.chariox/dev/vidlat/r6/tmp'}});
  for(const dpr of (process.env.DPRS??'1,2').split(',').map(Number)){
-  const ctx=await browser.newContext({viewport:{width:1912,height:995},deviceScaleFactor:dpr});await ctx.addInitScript(observe);
+  const ctx=await browser.newContext({viewport:{width:1912,height:995},deviceScaleFactor:dpr});await ctx.addInitScript(observe);await ctx.addInitScript(`globalThis.__vidlatSampleVisibleFrame=${sampleVisibleFrame.toString()}`);
   // MP-08/MP-10 diagnostics: wrap existing exported attach callback only; the real built
   // app, presenter and transport execute unchanged. This instrumentation is not acceptance.
   if(process.env.VIDLAT_NO_TIMING_OVERRIDE!=='1')await ctx.route('**/vendor/browser-display-*/presenter.mjs',async route=>{const response=await route.fetch();const source=await response.text();const suffix=`
@@ -63,7 +64,7 @@ const originalAttach=attachBrowserDisplay; attachBrowserDisplay=function(canvas,
     const q=await point(day.bounds);await p.mouse.click(q.x,q.y);await p.waitForTimeout(2000);
     for(let n=0;n<Number(process.env.TRIALS??20);n++){
      const dark=n%2===0,q=await point((dark?night:day).bounds),b=await surface().boundingBox();const nativeGeometry=await pixels.arm(p,{x:b.x+2*b.width/1280,y:b.y+100*b.height/800,width:30,height:30},'latency',{luminance:dark?[0,100]:[180,255]});if(nativeGeometry.target_already_visible)throw Error('MP-10 target theme already visible before input');await p.mouse.click(q.x,q.y);
-     const sample=await p.evaluate(async dark=>{const c=document.querySelector('canvas[aria-label="Kernel browser video"]'),input=probe.inputs.findLast(x=>x.kind==='pointerdown'),deadline=performance.now()+5000;while(performance.now()<deadline){const data=c.getContext('2d').getImageData(2*c.width/1280,100*c.height/800,10,10).data;let sum=0;for(let i=0;i<data.length;i+=4)sum+=(data[i]+data[i+1]+data[i+2])/3;const mean=sum/(data.length/4);const newest=probe.frames.at(-1);if(newest?.drawn>input.at&&(dark?mean<100:mean>180)){const match=newest;await new Promise(requestAnimationFrame);return {input:input.at,visible:performance.timeOrigin+performance.now(),latency:performance.timeOrigin+performance.now()-input.at,frame:match,mean};}await new Promise(requestAnimationFrame);}return {input:input.at,latency:null};},dark);
+     const sample=await p.evaluate(async dark=>{const c=document.querySelector('canvas[aria-label="Kernel browser video"]'),input=probe.inputs.findLast(x=>x.kind==='pointerdown'),deadline=performance.now()+5000;while(performance.now()<deadline){const observed=globalThis.__vidlatSampleVisibleFrame(c,probe.frames,input.at,dark);if(observed){const {frame:match,mean}=observed;await new Promise(requestAnimationFrame);return {input:input.at,visible:performance.timeOrigin+performance.now(),latency:performance.timeOrigin+performance.now()-input.at,frame:match,mean};}await new Promise(requestAnimationFrame);}return {input:input.at,latency:null};},dark);
      const physical=await pixels.result();sample.canvas_raf_latency=sample.latency;sample.physical=physical;sample.native_geometry=nativeGeometry;sample.latency=physical.latency_ms;sample.visible=physical.presented_at;cell.clicks.push(sample);await save();await p.waitForTimeout(500);
     }
    }else cell.click_blocker='public theme controls absent/outside source viewport';
