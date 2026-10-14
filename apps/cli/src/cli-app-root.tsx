@@ -923,12 +923,19 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentSession: () => isAttached() ? sessionState().id : undefined,
   })
   let recordDaemonActivity: (activityType: string) => void = () => {}
+  let settleKernelConnectionDisplay: () => void = () => {}
+  let markKernelConnectionClosed: (message: string) => void = () => {}
   const {
-    hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart,
+    hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart, sessionBindingRepairInFlight, currentSessionEventBindingReady, syncValidatedKernelEventSubscription,
     transitionToNoSession, detachCurrentAttachment, rollbackAttachedSession, attachBinding, recoverProviderRun,
     requestExit, requestWaitingRoom,
   } = createCliSessionLifecycleComposition({
     client, options, appLogger, renderer,
+    onKernelTransportRecovered: () => settleKernelConnectionDisplay(),
+    onKernelTransportClosed: (message) => {
+      markKernelConnectionClosed(message)
+      void recoverAttachedSessionAfterKernelRestart()
+    },
     drainAppInstall: async () => { await Promise.all([appDevLoop.dispose(), appFileInstaller.dispose(), appPublisherEnrollment.dispose()]) },
     sleep, formatError, supportsKernelEventStream, kernelConnected, closingStateController,
     isAttached, daemonDisconnected, attachmentState, sessionState,
@@ -1055,6 +1062,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
 
   const {
     recordDaemonActivity: runtimeRecordDaemonActivity,
+    applyKernelTransportClosed: runtimeApplyKernelTransportClosed,
+    applyKernelTransportResumed: runtimeApplyKernelTransportResumed,
     ensureBackgroundPollersStarted,
     processKernelTerminalOutputRecord: runtimeProcessKernelTerminalOutputRecord,
   } = createCliAppProcessRuntimeComposition({
@@ -1116,7 +1125,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     queueTerminalOutputRecords, drainTerminalOutputRecords, scheduleSharedPromptInputHistoryRefresh,
     handleWaitingRoomRefresh: refreshWaitingRoomData,
     applyWaitingRoomTransportClosed, applyWaitingRoomRowsChanged, applyRelayStatusChanged, applyRemoteMachinesChanged, applyProviderCatalogChanged,
-    applySlicesChanged, recoverAttachedSessionAfterKernelRestart, setFatalError,
+    applySlicesChanged, recoverAttachedSessionAfterKernelRestart, sessionBindingRepairInFlight, currentSessionEventBindingReady, syncValidatedKernelEventSubscription, setFatalError,
     pumpTerminalOutput: (sessionId: string, attachmentId: string) => pumpTerminalOutput(client, sessionId, attachmentId),
     pollRuntimeNotices: (sessionId: string, attachmentId: string) => pollRuntimeNotices(client, sessionId, attachmentId),
     promptInputRefController, transcriptScrollboxRefController, primaryTranscriptRuntimeStore, syncPromptPlaceholder,
@@ -1124,6 +1133,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     sessionChromeUpdateController, promptInputHistoryRefreshController, transcriptHistoryAutoloadController, setWorkingAnimationFrame,
     sessionStatusMode, workspaceLiveSyncStatus, renderSplitPaneFooters, hydrateCurrentAttachedSession,
   })
+  settleKernelConnectionDisplay = () => runtimeApplyKernelTransportResumed(true)
+  markKernelConnectionClosed = runtimeApplyKernelTransportClosed
   recordDaemonActivity = runtimeRecordDaemonActivity
   setKernelTerminalOutputRecordProcessor(runtimeProcessKernelTerminalOutputRecord)
 

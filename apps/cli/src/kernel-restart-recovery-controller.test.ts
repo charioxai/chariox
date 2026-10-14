@@ -20,6 +20,28 @@ function createDeferred<T>() {
   return { promise, resolve }
 }
 
+// MP-08/MP-10: control traffic can resume before the session event binding.
+test("admitted session repair finishes when a control read clears disconnected health", async () => {
+  let disconnected = true
+  let attached = 0
+  let subscribed = 0
+  let recovered = 0
+  const controller = createKernelRestartRecoveryController<TestSession, TestAttachment>({
+    isClosing: () => false, isAttached: () => true,
+    isDisconnected: () => disconnected, getSessionId: () => "session-1",
+    getSessionState: async () => { disconnected = false; return { id: "session-1" } },
+    attachToSession: async () => { attached++; return { id: "new-attachment" } },
+    projectSession: session => session, applyAttachment: () => {}, applySession: () => {},
+    resetKernelEventSubscription: () => {},
+    syncKernelEventSubscription: async () => { subscribed++ },
+    refreshAgentPanes: async () => {}, clearLocalBusyStateForAuthoritativeIdle: () => {},
+    onRecovered: () => { recovered++ }, onAttemptFailed: () => {},
+    sleep: async () => { throw Error("unexpected retry") },
+  })
+  await controller.recover()
+  assert.deepEqual({ attached, subscribed, recovered }, { attached: 1, subscribed: 1, recovered: 1 })
+})
+
 test("recover reattaches the current disconnected session", async () => {
   const events: string[] = []
   const controller = createKernelRestartRecoveryController<TestSession, TestAttachment>({
