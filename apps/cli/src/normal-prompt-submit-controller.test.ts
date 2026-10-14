@@ -11,6 +11,7 @@ import {
 import type { PendingPromptAttachment } from "./prompt-attachment-state.js"
 import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
+import { createPromptSubmissionUiController } from "./prompt-submission-ui-controller.js"
 
 test("normal prompt submit requires an attachment", async () => {
   const harness = createHarness({ attachment: null })
@@ -403,6 +404,7 @@ function createHarness(options: {
   waitForPendingAgentFocusTransition?: NormalPromptSubmitControllerDeps["waitForPendingAgentFocusTransition"]
   preparePromptAttachmentsForSubmit?: NormalPromptSubmitControllerDeps["preparePromptAttachmentsForSubmit"]
   beginSubmittedPromptUi?: NormalPromptSubmitControllerDeps["beginSubmittedPromptUi"]
+  restoreFailedPromptUi?: NormalPromptSubmitControllerDeps["restoreFailedPromptUi"]
   promptBlockReason?: NormalPromptSubmitControllerDeps["promptBlockReason"]
   onPromptRejected?: NormalPromptSubmitControllerDeps["onPromptRejected"]
   attachment?: RuntimeAttachment | null
@@ -501,7 +503,7 @@ function createHarness(options: {
       if (snapshot) {
         restoredSnapshots.push(snapshot)
       }
-      return Boolean(snapshot)
+      return options.restoreFailedPromptUi?.(snapshot) ?? Boolean(snapshot)
     },
     getSubmittingAgentId: () => "agent-busy",
     clearAgentBusy: (agentId) => {
@@ -648,6 +650,43 @@ function runtimeSession(
   assert.deepEqual(harness.submissions(), [])
   assert.deepEqual(harness.appendedPrompts(), [])
   assert.match(harness.footerMessages().at(-1)?.message ?? "", /needs sign-in.*chariox/)
+})
+
+test("MP-08 / MP-10 / MP-11 account rejection restores the real cleared editor and attachments", async () => {
+  let draft = "Review this attached note"
+  let attachments = [pendingAttachment("file-1")]
+  const original = attachments.map(file => ({ ...file }))
+  const persisted: string[] = []
+  const ui = createPromptSubmissionUiController({
+    getPromptText: () => draft,
+    getSessionId: () => "session-1",
+    getPendingAttachments: () => attachments,
+    resetPromptHistoryNavigation: () => {},
+    clearDraftPersistQueue: () => {},
+    clearPromptText: () => { draft = "" },
+    setPromptText: text => { draft = text },
+    syncPromptTextSnapshot: () => {},
+    clearPendingAttachments: () => { attachments = [] },
+    setPendingAttachments: files => { attachments = files },
+    refreshAttachmentHighlights: () => {},
+    syncCommandCenter: () => {},
+    retainPromptFocus: () => {},
+    clearCommandCenter: () => {},
+    schedulePromptDraftPersist: (_session, text) => { persisted.push(text) },
+    updateSessionChrome: () => {},
+  })
+  const harness = createHarness({
+    getPendingAttachments: () => attachments,
+    beginSubmittedPromptUi: prompt => ui.begin(prompt),
+    restoreFailedPromptUi: snapshot => ui.restore(snapshot),
+    promptBlockReason: () => "Selected account needs sign-in",
+  })
+  await harness.controller.submit(draft)
+  assert.equal(draft, "Review this attached note")
+  assert.deepEqual(attachments, original)
+  assert.deepEqual(persisted, ["", "Review this attached note"])
+  assert.deepEqual(harness.submissions(), [])
+  assert.deepEqual(harness.recordedHistory(), [])
 })
 
 test("MP-08/MP-10/MP-11 kernel auth rejection retains the addressed alias instead of focus", async () => {

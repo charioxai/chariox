@@ -125,6 +125,7 @@ export function createNormalPromptSubmitController(
         const accountBlock = deps.promptBlockReason?.(targetAgentId, aliasRoute?.alias ?? null)
         if (accountBlock) {
           deps.flashFooter(accountBlock, "error")
+          deps.restoreFailedPromptUi(submissionUi)
           return
         }
         const attachments = await deps.preparePromptAttachmentsForSubmit(rawAttachments, {
