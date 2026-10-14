@@ -28,3 +28,16 @@ test('MP-10: native projection uses source pixels and the fractional panel origi
  const r=expectedPanelRaster(native,{x:.25,y:.25,width:2,height:2},{x:.25,y:.25,width:2,height:2},2,2);assert.deepEqual(r.data,pixels)
  const shifted=expectedPanelRaster(native,{x:.5,y:.25,width:2,height:2},{x:.25,y:.25,width:2,height:2},2,2);assert.equal(shifted.data[0],25)
 })
+
+const frameSnapshot=(external=false)=>{
+ const strings=['#document','IFRAME','#text','outside','block','visible','1','rgb(0, 0, 0)','transparent','0px','main','child','url(icon.png)','linear-gradient(red,blue)','DIV'];
+ const style=[4,5,6,7,8,9,9,9,9,-1],nodes={nodeName:[0,1],nodeType:[9,1],nodeValue:[0,0],attributes:[[],[]],backendNodeId:[1,2],contentDocumentIndex:{index:external?[]:[1],value:external?[]:[1]}};
+ return {strings,documents:[{frameId:10,nodes,layout:{nodeIndex:[1],bounds:[[10,10,100,100]],styles:[style]},textBoxes:{layoutIndex:[],bounds:[]}},{frameId:11,nodes:{nodeName:[0,2],nodeType:[9,3],nodeValue:[0,3],attributes:[[],[]]},layout:{nodeIndex:[1],bounds:[[0,200,20,20]],styles:[style]},textBoxes:{layoutIndex:[0],bounds:[[0,200,20,20]]}}]};
+}
+test('MP-10: child text outside its frame viewport is not visible native paint',()=>{assert.equal(oracleRecords(frameSnapshot()).records.some(r=>r.text==='outside'),false)})
+test('MP-10: a visible out-of-process frame without evidence cannot be uncapped',()=>{const s=frameSnapshot(true);s.documents.pop();assert.throws(()=>oracleRecords(s),/frame evidence/)})
+test('MP-10: transparent URL and gradient backgrounds contribute paint',()=>{for(const background of [12,13]){const s=frameSnapshot(true);s.documents.pop();s.documents[0].nodes.nodeName[1]=14;s.documents[0].layout.styles[0][9]=background;assert.equal(oracleRecords(s).records.length,1)}})
+test('MP-10: remote child evidence is stitched and clipped in the owner content viewport',()=>{
+ const s=frameSnapshot(true);const child={strings:s.strings,documents:[s.documents.pop()],coordinateScale:1};child.documents[0].layout.bounds[0]=[0,20,20,20];child.documents[0].textBoxes.bounds[0]=[0,20,20,20];s.externalFrames={'main:1':child};const r=oracleRecords(s);assert.equal(r.documents,2);assert.equal(r.totalNodes,4);assert.deepEqual(r.records.find(r=>r.text==='outside').box,[10,30,20,20]);
+ child.documents[0].scrollOffsetY=100;assert.equal(oracleRecords(s).records.some(r=>r.text==='outside'),false)
+})
