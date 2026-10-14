@@ -10,7 +10,7 @@ test("ENV P01 standalone TUI request and protocol gate", async () => {
   await controller.open("project")
   assert.deepEqual(requests, [{ GetProjectEnvironment: { projectId: "project" } }])
   assert.equal(controller.isOpen(), true)
-  assert.deepEqual(controller.visibleLines(), ["not available"])
+  assert(controller.visibleLines().includes("Environment unavailable. Check the kernel connection and reopen this panel."))
   assert.throws(() => requireKernelFeatureProtocol(requests[0], 472), /487/)
   assert.doesNotThrow(() => requireKernelFeatureProtocol(requests[0], 487))
   controller.handleKey({ name: "escape" })
@@ -27,4 +27,13 @@ test("ENV P01 closed TUI panel ignores a late kernel response", async () => {
   await opening
   assert.equal(controller.isOpen(), false)
   assert.equal(renders, 2)
+})
+
+// MP-08 / MP-10 / MP-11: main explains its read-only boundary without diagnostics.
+test("ENV-UX-01 TUI missing Project is an empty state", async () => {
+  const controller = createProjectEnvironmentReadController({send: async () => { throw new Error("local transport `project.get` failed: project `missing` was not found (code=local_transport_error retryable=true)") }, render() {}, pageSize: () => 100})
+  await controller.open("missing")
+  assert(controller.visibleLines().includes("No Environment for this project yet."))
+  assert(!controller.visibleLines().some(line => line.includes("local transport")))
+  assert(controller.visibleLines().some(line => line.startsWith("After the next release")))
 })

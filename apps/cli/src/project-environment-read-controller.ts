@@ -1,5 +1,14 @@
 // MP-08 / MP-10: Project read-only navigation, independent of session selection.
+import { environmentReadFailureMessage } from "./project-environment-read-errors.js"
 import { getProjectEnvironmentRequest, projectEnvironmentLines, type ProjectEnvironment } from "@chariox/kernel-client"
+
+// MP-08 / MP-10 / MP-11: show only actions this release really supports.
+const environmentReadIntroduction = [
+  "An Environment lists what this project needs on this machine.",
+  "Read only: this release can show requirements, but cannot check or change them here.",
+  "After the next release, you can add requirements and check this machine here.",
+  "",
+]
 
 export function projectEnvironmentPageSize(height: number) {
   return Math.max(1, height - Math.max(1, Math.floor(height / 5)) - 4)
@@ -26,10 +35,10 @@ export function createProjectEnvironmentReadController(deps: {
         const environment = response.ProjectEnvironment?.environment
         if (!environment || environment.local_project_id !== projectId || environment.schema_version !== 1) throw new Error("Environment unavailable for this Project")
         if (requestGeneration !== generation) return
-        lines = projectEnvironmentLines(environment)
+        lines = [...environmentReadIntroduction, ...projectEnvironmentLines(environment)]
       } catch (error) {
         if (requestGeneration !== generation) return
-        lines = [error instanceof Error ? error.message : "Environment unavailable"]
+        lines = [...environmentReadIntroduction, environmentReadFailureMessage(error)]
       }
       deps.render()
     },
