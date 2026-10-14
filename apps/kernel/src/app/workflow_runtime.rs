@@ -435,7 +435,36 @@ pub(crate) fn complete_workflow_prompt_from_runtime(
     prompt: &PromptQueueItem,
     provider_run_id: Option<&str>,
 ) -> Result<(), DaemonError> {
+    if workflow_prompt_run_is_archived_terminal(app, session_id, prompt)? {
+        return Ok(());
+    }
     WorkflowProgression::on_prompt_completed(app, session_id, prompt, provider_run_id)
+}
+
+fn workflow_prompt_run_is_archived_terminal(
+    app: &DaemonApp,
+    session_id: &str,
+    prompt: &PromptQueueItem,
+) -> Result<bool, DaemonError> {
+    let (Some(run_id), Some(node_run_id)) =
+        (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+    else {
+        return Ok(false);
+    };
+    let session = app.sessions().get_session(session_id)?;
+    if session.workflow_run(run_id).is_some() {
+        return Ok(false);
+    }
+    // A runtime tool can finish and archive the run before the provider emits
+    // its final completion. That late signal only settles the provider prompt.
+    Ok(app
+        .durable_state_store()
+        .resolve_workflow_run(session.host_daemon_id(), session_id, run_id)?
+        .is_some_and(|run| {
+            run.id() == run_id
+                && run.status().is_terminal()
+                && run.node_runs().iter().any(|node| node.id() == node_run_id)
+        }))
 }
 
 pub(crate) fn workflow_prompt_has_completion_output_from_runtime(
@@ -444,6 +473,9 @@ pub(crate) fn workflow_prompt_has_completion_output_from_runtime(
     prompt: &PromptQueueItem,
     provider_run_id: Option<&str>,
 ) -> bool {
+    if workflow_prompt_run_is_archived_terminal(app, session_id, prompt).unwrap_or(false) {
+        return true;
+    }
     let (Some(workflow_run_id), Some(workflow_node_run_id)) =
         (prompt.workflow_run_id(), prompt.workflow_node_run_id())
     else {
@@ -1556,5 +1588,34 @@ mod tests {
             crate::session::WorkflowNodeRunStatus::Completed
         );
         assert!(durable_run.active_node_run_id().is_none());
+        assert!(app
+            .sessions()
+            .get_session(session.id())
+            .unwrap()
+            .workflow_run(workflow_run.id())
+            .is_none());
+        let unknown_node_prompt = crate::session::PromptQueueItem::new(
+            "prompt-unknown-workflow-node",
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+            agent.id(),
+            "complete the workflow",
+            crate::session::PromptStatus::Completed,
+        )
+        .with_workflow_context(workflow_run.id(), "unknown-node");
+        assert!(complete_workflow_prompt_from_runtime(
+            &mut app,
+            session.id(),
+            &unknown_node_prompt,
+            None,
+        )
+        .is_err());
+        assert!(workflow_prompt_has_completion_output_from_runtime(
+            &app,
+            session.id(),
+            &prompt,
+            None,
+        ));
+        complete_workflow_prompt_from_runtime(&mut app, session.id(), &prompt, None)
+            .expect("late provider completion must accept an already archived terminal run");
     }
 }
