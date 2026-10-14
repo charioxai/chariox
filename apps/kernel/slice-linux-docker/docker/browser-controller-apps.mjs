@@ -22,9 +22,6 @@ const MAX_CALL_BYTES = 512 * 1024;
 const MAX_ANSWERABLE_CALLS = 1024;
 const FULLSCREEN_CHECK_INTERVAL_MS = 250;
 const CALL_WAIT_MS = 250;
-// MP-08/MP-11: calls a page makes this soon after an agent's input stay the
-// agent's even if a person touches the Tab meanwhile.
-const AGENT_CALL_WINDOW_MS = 5_000;
 const BINDING = "__charioxAppCall";
 export const APP_CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
@@ -51,6 +48,9 @@ export const APP_PERMISSIONS_POLICY = [
 
 // Installed before any App script runs. The binding carries only JSON strings;
 // the kernel binds every call to this tab's installation, never to page data.
+const INPUT_EVENTS = ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick", "auxclick",
+  "contextmenu", "keydown", "keyup", "keypress", "beforeinput", "input", "change", "submit", "wheel", "scroll",
+  "touchstart", "touchend", "paste", "cut", "drop", "dragstart"];
 const BRIDGE_SOURCE = `(() => {
   // WebRTC is outside CSP and request interception; remove it before App code.
   for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel",
@@ -61,23 +61,50 @@ const BRIDGE_SOURCE = `(() => {
   if (typeof call !== "function") return;
   delete globalThis.${BINDING};
   const pending = new Map();
+  // MP-08/MP-11: who started the running task. The controller names the agent
+  // while it dispatches input; a trusted event keeps that origin ("" is a
+  // person) for its handlers, and an answer keeps its call's origin for the
+  // code that continues. Other work (timers, load) has no origin; the
+  // controller never treats that as the person once an agent drove the page.
+  let driver = null;
+  let scope = null;
+  const origins = new WeakMap();
+  const originOf = () => scope ? scope.origin : origins.get(globalThis.event);
+  for (const type of ${JSON.stringify(INPUT_EVENTS)}) {
+    globalThis.addEventListener?.(type, (event) => { if (event.isTrusted) origins.set(event, driver ?? ""); }, true);
+  }
+  Object.defineProperty(globalThis, "__charioxAppDriver", { value(agent) { driver = agent; } });
   // Ids are unique per document: a reopened Tab loads a new one, and an
   // answer still in flight for the old document must not match a new call.
   const documentNonce = crypto.randomUUID();
   let next = 0;
   const request = (method, params) => new Promise((resolve, reject) => {
     const id = documentNonce + ":" + ++next;
-    pending.set(id, { resolve, reject });
-    call(JSON.stringify({ id, method, params }));
+    const origin = originOf();
+    pending.set(id, { resolve, reject, origin });
+    call(JSON.stringify({ id, method, params, origin }));
   });
   Object.defineProperty(globalThis, "__charioxAppResolve", { value(id, ok, value) {
     const entry = pending.get(id);
     if (!entry) return;
     pending.delete(id);
+    scope = { origin: entry.origin };
     ok ? entry.resolve(value) : entry.reject(Object.assign(new Error(value?.message ?? "App call failed"), { code: value?.code }));
+    // After the continuation the answer queued, so it runs with this origin.
+    queueMicrotask(() => { scope = null; });
   } });
   Object.defineProperty(globalThis, "chariox", { value: Object.freeze({
     call(method, params = {}) { return request(method, params); },
+    // Keeps the running task's origin for work that outlives it:
+    // e.g. run = chariox.capture(); await delay(); run(() => chariox.call(...)).
+    capture() {
+      const origin = originOf();
+      return (fn) => {
+        const previous = scope;
+        scope = { origin };
+        try { return fn(); } finally { scope = previous; }
+      };
+    },
     host: Object.freeze({
       openLink(url) { return request("host.open_link", { url }); },
       writeClipboard(text) { return request("host.clipboard_write", { text }); },
@@ -136,33 +163,42 @@ export class AppTabs {
     this.nextFullscreenCheck = 0;
     this.restoreGraceMs = restoreGraceMs;
     this.orphanRestores = new Map();
-    this.now = () => performance.now();
   }
 
-  // MP-08/MP-10/MP-11: the kernel host reports who drives an App Tab (an
-  // agent id, or null for a person). A call runs as the agent while its input
-  // is in flight, within a short window after it, and until a person's input
-  // follows; the kernel then authorizes it as that agent, never as the owner.
-  beginInput(targetId, agent) {
-    const app = [...this.apps.values()].find(open => open.targetId === targetId);
-    if (!app) return () => {};
-    const mark = () => {
-      if (agent) Object.assign(app, { agent, agentAt: this.now() });
-      else app.humanAt = this.now();
-    };
-    mark();
-    if (agent) app.agentInputs = (app.agentInputs ?? 0) + 1;
-    return () => {
-      if (agent) app.agentInputs--;
-      mark();
+  // MP-08/MP-10/MP-11: the kernel host reports an agent's input to an App Tab.
+  // The page tags the events it dispatches with that agent (see the bridge), so
+  // a call keeps its origin however long the App waits. Person input needs no
+  // mark: it is the page's default.
+  async beginInput(targetId, agent) {
+    const entry = [...this.apps.entries()].find(([, open]) => open.targetId === targetId);
+    if (!entry || !agent) return async () => {};
+    const [sessionId, app] = entry;
+    app.agents.add(agent);
+    app.driving.set(agent, (app.driving.get(agent) ?? 0) + 1);
+    // Fail closed: input the page cannot attribute to the agent is not sent.
+    await this.drive(sessionId, app, true);
+    return async () => {
+      const left = app.driving.get(agent) - 1;
+      if (left > 0) app.driving.set(agent, left); else app.driving.delete(agent);
+      await this.drive(sessionId, app, false);
     };
   }
 
-  callActor(app) {
-    if (!app.agent) return undefined;
-    const driving = app.agentInputs > 0 || this.now() - app.agentAt < AGENT_CALL_WINDOW_MS
-      || !(app.humanAt > app.agentAt);
-    return driving ? { kind: "agent", id: app.agent } : undefined;
+  async drive(sessionId, app, strict) {
+    const agents = [...app.driving.keys()];
+    const driver = agents.length > 1 ? "*" : agents[0] ?? null;
+    const sent = this.connection.send("Runtime.evaluate", {
+      expression: `globalThis.__charioxAppDriver?.(${JSON.stringify(driver)})` }, sessionId);
+    await (strict ? sent : sent.catch(() => {}));
+  }
+
+  // undefined: the person. An agent actor, or null when the origin cannot be
+  // told (another agent may have started it): the call is refused.
+  callActor(app, origin) {
+    if (origin === "") return undefined;
+    const agent = origin ?? (app.agents.size === 1 ? [...app.agents][0] : app.agents.size ? "*" : null);
+    if (agent === null) return undefined;
+    return app.agents.has(agent) ? { kind: "agent", id: agent } : null;
   }
 
   async open(params) {
@@ -204,7 +240,7 @@ export class AppTabs {
     clearTimeout(this.orphanRestores.get(targetId)?.timer);
     this.orphanRestores.delete(targetId);
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
-    this.apps.set(sessionId, { ...app, targetId, document: null, pending: new Set() });
+    this.apps.set(sessionId, { ...app, targetId, document: null, pending: new Set(), agents: new Set(), driving: new Map() });
     try {
       if (restored) await connection.send("Target.activateTarget", { targetId });
       await this.fullscreen(connection, targetId);
@@ -304,6 +340,8 @@ export class AppTabs {
     if (message.method === "Page.frameNavigated" && !message.params?.frame?.parentId) {
       app.document = message.params?.frame?.loaderId ?? null;
       app.pending.clear();
+      // Only agents driving right now (a navigation they asked for) carry over.
+      app.agents = new Set(app.driving.keys());
     } else if (message.method === "Fetch.requestPaused") {
       await this.fulfill(connection, message.sessionId, app, message.params);
     } else if (message.method === "Runtime.bindingCalled" && message.params?.name === BINDING) {
@@ -343,12 +381,17 @@ export class AppTabs {
     try { call = JSON.parse(payload); } catch { return; }
     if (typeof call?.id !== "string" || typeof call.method !== "string" || call.method.length > 128) return;
     // Attribute at binding time, before any await can admit other input.
-    const actor = this.callActor(app);
+    const actor = this.callActor(app, call.origin);
     // Resolve the document before admission; the bounded queue check and push
     // then run without an await, even when a page sends one concurrent burst.
     const documentId = app.document ?? await this.document(sessionId, app);
     // Refusing admission must settle the page's promise. Silently dropping
     // overflow leaves Promise.all backlogs waiting forever, even after drain.
+    if (actor === null) {
+      await this.resolve(sessionId, call.id, false, { code: "APP_ORIGIN_UNRESOLVED",
+        message: "App call origin is unknown: more than one agent drove this page" });
+      return;
+    }
     if (this.calls.length >= MAX_PENDING_CALLS) {
       await this.resolve(sessionId, call.id, false, { code: "APP_BUSY",
         message: `App view call queue is full (${MAX_PENDING_CALLS} pending calls); retry after 500 ms` });

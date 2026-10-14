@@ -508,9 +508,9 @@ export class KernelBrowserHost {
     }
     if (command.op === "navigate") {
       // MP-08/MP-11: the reloaded App page's calls run as whoever navigated it.
-      const appInput = app ? this.browser.appTabs.beginInput?.(tab.target_id, agent) : null;
+      const appInput = app && agent ? await this.browser.appTabs.beginInput?.(tab.target_id, agent) : null;
       try { await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal }); }
-      finally { appInput?.(); }
+      finally { await appInput?.(); }
       return this.observe(await this.reconcile(), null, scope);
     }
     if (command.op === "note_selection" || command.op === "note_reanchor") return this.observe({ generation:this.generation, observation:await this.browser.observeNote({ ...binding, ...(command.quote ? {quote:command.quote} : {}) }) },tab,scope);
@@ -533,7 +533,7 @@ export class KernelBrowserHost {
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
         this.compositors.get(tab.tab_id)?.source?.wake?.();
       };
-      const appInput = app ? this.browser.appTabs.beginInput?.(tab.target_id, agent) : null;
+      const appInput = app && agent ? await this.browser.appTabs.beginInput?.(tab.target_id, agent) : null;
       try {
         // MP-08/MP-10/MP-11: agent and ordinary input must await CDP's ack,
         // including the lifetime of hidden-target focus emulation. Only an
@@ -560,7 +560,7 @@ export class KernelBrowserHost {
         }
         throw error;
       }
-      finally { appInput?.(); }
+      finally { await appInput?.(); }
       const post = timestamp();
       if(command.input.kind === 'scroll')this.scrolling.set(tab.tab_id,{document_id:tab.document_id,until:performance.now()+400});
       const result = this.observe(await this.reconcile(), null, scope);

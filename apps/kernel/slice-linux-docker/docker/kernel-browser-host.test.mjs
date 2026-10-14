@@ -578,15 +578,16 @@ test("MP-08/MP-11: agents drive App tabs only with the kernel's App view claim; 
   assert(sent.some(call=>call.method==="Input.dispatchMouseEvent"));
   assert.deepEqual(inputs, [[target, "agent-7"], ["done", target]]);
   await host.request({...command});
-  assert.deepEqual(inputs.slice(2), [[target, null], ["done", target]]);
+  // A person's input needs no mark: the page's default is the person.
+  assert.deepEqual(inputs.slice(2), []);
   // The App page stays on its own origin, whoever navigates it.
   await assert.rejects(host.request({...claimed,op:"navigate",url:"https://example.com/"}), error => error.code === "user_domain_not_granted");
   await assert.rejects(host.request({...command,op:"navigate",url:"https://example.com/"}), error => error.code === "user_domain_not_granted");
-  // A navigation is input too: the reloaded page's calls run as whoever navigated it.
+  // An agent's navigation is input too: the reloaded page's calls run as that agent.
   inputs.length = 0;
   await host.request({...claimed,op:"navigate",url:"https://app.a.invalid/list"});
   await host.request({...command,op:"navigate",url:"https://app.a.invalid/"});
-  assert.deepEqual(inputs, [[target, "agent-7"], ["done", target], [target, null], ["done", target]]);
+  assert.deepEqual(inputs, [[target, "agent-7"], ["done", target]]);
   const {readFile} = await import("node:fs/promises");
   assert.deepEqual(JSON.parse(await readFile(path.join(root,"tabs.json"),"utf8")).tabs, []);
   await host.request({...claimed,op:"close"});
