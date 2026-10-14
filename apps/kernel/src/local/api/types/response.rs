@@ -56,6 +56,11 @@ pub enum LocalDaemonResponse {
     AppInboxOccurrenceAccepted { installation_id: String, route_id: String, occurrence_id: String, duplicate: bool, },
     SessionCreated { session: RuntimeSession, agent: AgentInstance, },
     SessionAttached { attachment: RuntimeAttachment, },
+    SessionViewAttached {
+        attachment: RuntimeAttachment,
+        state: Box<LocalDaemonResponse>,
+        history: Box<LocalDaemonResponse>,
+    },
     SessionDetached { attachment: RuntimeAttachment, },
     SessionMembersListed { members: Vec<SessionMember>, invites: Vec<SessionInvite>, },
     SessionInviteCreated { invite: SessionInviteRecord, session: RuntimeSession, },

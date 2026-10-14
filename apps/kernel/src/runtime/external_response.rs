@@ -87,6 +87,7 @@ response_policies! {
         CredentialsListed,
     ],
     Withhold => [
+        SessionViewAttached,
         SessionInviteCreated,
         DebugBundleExported,
         McpServerInstalled,

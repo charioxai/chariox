@@ -139,6 +139,25 @@ requests. The outline's `steering` flag identifies budgeted steering prompts;
 observed and recovery prompt envelopes retain their collapsed, on-demand role.
 Clients that omit the request flag retain the earlier outline and blob paths.
 
+MP-08 / MP-10 / MP-11, the same allocated 508/116 bump: `AttachSessionView`
+accepts the ordinary session/client/capability binding plus an optional
+`preferred_agent_id`. `SessionViewAttached` returns an attachment, the normal
+`SessionState` response under `state`, and the normal `SessionHistoryOutline`
+response under `history`. The kernel uses the existing authorized and redacted
+read commands, selects at most six visible agents in the preferred agent's pane
+group and four recent turns, and uses the existing bounded content prefetch.
+It binds through `AttachToSession` before reading history, so later output
+already includes the new recipient; a history failure retires that exact new
+attachment through normal detach. This removes client round trips without
+adding session or history authority.
+The event subscription remains the existing attachment-scoped path. Its first
+pump replays output for the new attachment, including output produced between
+the initial read and subscription. Clients render the initial view while event
+admission is pending, deduplicate replay by persisted sequence, and enable
+prompt controls only after subscription and hydration settle. Clients below
+508 retain their existing attach, subscribe, state and history requests.
+External-agent grants cannot request this full-terminal response bundle.
+
 MP-08 / MP-10: complete owned output/thought groups in initial history pages
 also compact repeated delta metadata. `sequence_end`, `sequence_byte_lengths`
 and `sequence_indices` retain each original row identity, including gaps left

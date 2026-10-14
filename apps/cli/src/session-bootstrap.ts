@@ -45,6 +45,9 @@ export type BootstrapDeps = {
   ) => Promise<RuntimeSession>
   resolveSession: (client: LocalIpcClient, sessionRef: string, workspace: string) => Promise<RuntimeSession>
   attachToSession: (client: LocalIpcClient, sessionId: string, clientId: string) => Promise<RuntimeAttachment>
+  attachSessionView?: (client: LocalIpcClient, sessionId: string, clientId: string, preferredAgentId: string | null) => Promise<{
+    attachment: RuntimeAttachment; session: RuntimeSession; history: SessionHistoryOutline
+  }>
   getSessionState: (client: LocalIpcClient, sessionId: string) => Promise<RuntimeSession>
   launchProviderRun: (
     client: LocalIpcClient,
@@ -180,8 +183,9 @@ export async function bootstrapSession(
     }
   }
 
-  const attachment = await deps.attachToSession(client, session.id, options.clientId)
-  let attachedSession = await deps.getSessionState(client, session.id)
+  const initialView = await deps.attachSessionView?.(client, session.id, options.clientId, deps.resolveVisibleAgentId(session, preferences))
+  const attachment = initialView?.attachment ?? await deps.attachToSession(client, session.id, options.clientId)
+  let attachedSession = initialView?.session ?? await deps.getSessionState(client, session.id)
   const providerSettlement = await settleAttachProviderRun(
     attachedSession,
     {
@@ -230,8 +234,11 @@ export async function bootstrapSession(
       })
     }
   }
-  await deps.catchUpAttachedSession(client, session.id, attachment.id, attachedSession, deps.logger)
-  const hydratedSession = await deps.getSessionState(client, session.id)
+  // The new attachment already buffers output after its history read. Let the
+  // live runtime drain it; catch-up would discard rows absent from this view.
+  if (!initialView) await deps.catchUpAttachedSession(client, session.id, attachment.id, attachedSession, deps.logger)
+  const hydratedSession = initialView && providerSettlement.action !== "launched"
+    ? attachedSession : await deps.getSessionState(client, session.id)
   const visibleAgentId = deps.resolveVisibleAgentId(hydratedSession, preferences)
   const providerCatalogPromise = deps.getProviderCatalog(client, deps.logger)
   const providerCommandCatalogsPromise = deps.getProviderCommandCatalogs(client, deps.logger)
@@ -242,6 +249,7 @@ export async function bootstrapSession(
     visibleAgentId,
     hydratedSession,
     deps,
+    initialView?.history,
   )
 
   return {
@@ -280,9 +288,12 @@ async function hydrateAttachedHistory(
   visibleAgentId: string | null,
   session: RuntimeSession,
   deps: Pick<BootstrapDeps, "getSessionHistoryOutline" | "getPromptInputHistory" | "prepareHistoryOutlineAgent">,
+  initialOutline?: SessionHistoryOutline,
 ) {
   const agentIds = session.agents.map((agent) => agent.id)
-  const outlinePromise = agentIds.length > 0
+  const outlinePromise = initialOutline && agentIds.every(id => initialOutline.agents.some(agent => agent.agent_id === id))
+    ? Promise.resolve(initialOutline)
+    : agentIds.length > 0
     ? deps.getSessionHistoryOutline(client, sessionId, agentIds)
     : Promise.resolve({ agents: [] })
   const [outline, promptHistoryEntries] = await Promise.all([

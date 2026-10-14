@@ -33,7 +33,7 @@ pub use api::{
     AppendNativeProviderOutputBatchRequest, AppendNativeProviderOutputRequest,
     ApplyWorkflowCodeArtifactRequest, ApplyWorkflowCodeRequest, ApplyWorkflowDesignOpRequest,
     ApprovalPasskey, ApproveRemoteMachineRequest, ArchiveProjectRequest,
-    ArmDeploymentCredentialEnrollmentRequest, AttachToSessionRequest, AttachWorkspaceLinkRequest,
+    ArmDeploymentCredentialEnrollmentRequest, AttachSessionViewRequest, AttachToSessionRequest, AttachWorkspaceLinkRequest,
     BatchOperationFailure, BindWorkflowCodeSourceRequest, BindWorkflowEndpointRequest,
     BindWorkflowPublicationDeploymentRequest, BrowseEventGeneratorCategoryRequest,
     BrowseEventGeneratorEventsRequest, CancelActivePromptRequest, CancelAgentPromptScheduleRequest,

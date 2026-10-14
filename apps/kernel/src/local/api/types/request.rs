@@ -50,6 +50,7 @@ pub enum LocalDaemonRequest {
     AcceptAppHostAction(AcceptAppHostActionRequest),
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
+    AttachSessionView(AttachSessionViewRequest),
     DetachFromSession(DetachFromSessionRequest),
     ListSessionMembers(ListSessionMembersRequest),
     CreateSessionInvite(CreateSessionInviteRequest),

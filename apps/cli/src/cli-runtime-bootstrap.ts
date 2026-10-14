@@ -18,6 +18,7 @@ import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { joinKernelTerminalPairingLink } from "./relay-api.js"
 import {
   attachToSession,
+  attachSessionView,
   createSession,
   deleteSessionByRef,
   getSessionState,
@@ -380,6 +381,7 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
     createSession,
     resolveSession,
     attachToSession,
+    attachSessionView,
     getSessionState,
     launchProviderRun,
     tryGetProviderRun,

@@ -39,6 +39,7 @@ mod publication;
 mod recall_terminal_metaagent;
 mod released_provider_run;
 mod resource_telemetry;
+mod session_view;
 mod room_controller;
 mod room_environment;
 mod room_environment_placement;

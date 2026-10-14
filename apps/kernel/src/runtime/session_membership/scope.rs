@@ -67,6 +67,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::AttachToSession(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::AttachSessionView(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::LaunchProviderRun(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
