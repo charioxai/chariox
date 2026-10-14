@@ -545,10 +545,15 @@ impl KernelBrowserHost {
             let mut query = params.clone();
             query["op"] = "display_input_target".into();
             let target = backend.host_request_cancellable(
-                "host.browser", query, admission.map(|a| a.cancellation.clone()),
+                "host.browser",
+                query,
+                admission.map(|a| a.cancellation.clone()),
             )?;
             for key in ["tab_id", "document_id"] {
-                if target[key].as_str().is_none_or(|s| s.is_empty() || s.len() > 256) {
+                if target[key]
+                    .as_str()
+                    .is_none_or(|s| s.is_empty() || s.len() > 256)
+                {
                     return Err("MP-11: invalid region input target".into());
                 }
                 params[key] = target[key].clone();

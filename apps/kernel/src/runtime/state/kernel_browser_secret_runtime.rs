@@ -486,10 +486,26 @@ mod tests {
         use super::super::room_secret_observation::RoomSecretObservations;
         let root = crate::test_support::TestWorktree::new("region-lease-boundary");
         let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
-        for secret in ["r", "d", "a"] { store.register("region", secret).unwrap(); }
+        for secret in ["r", "d", "a"] {
+            store.register("region", secret).unwrap();
+        }
         let lease = serde_json::json!({"source_kind":"region","binding_id":"r","document_id":"d","subscription_id":"s","codec":"avc1.420033","css_width":100,"css_height":50,"sequence":3,"device_scale_factor":2});
-        assert_eq!(scrub_browser_result(&store, "region", lease.clone(), false, true, false).unwrap(), lease);
-        assert_ne!(scrub_browser_result(&store, "region", serde_json::json!({"text":"r"}), false, false, false).unwrap(), serde_json::json!({"text":"r"}));
+        assert_eq!(
+            scrub_browser_result(&store, "region", lease.clone(), false, true, false).unwrap(),
+            lease
+        );
+        assert_ne!(
+            scrub_browser_result(
+                &store,
+                "region",
+                serde_json::json!({"text":"r"}),
+                false,
+                false,
+                false
+            )
+            .unwrap(),
+            serde_json::json!({"text":"r"})
+        );
     }
     #[test]
     fn mp08_mp11_mirror_wire_tree_survives_kernel_scrub_boundary() {
