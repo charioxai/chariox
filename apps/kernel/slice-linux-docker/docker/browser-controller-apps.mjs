@@ -7,6 +7,8 @@
 // reloads, navigates or closes, the kernel cancels that document's calls and
 // an answer for it is never delivered to the next one.
 import { BrowserControllerError } from "./browser-controller-cdp.mjs";
+import { randomUUID } from "node:crypto";
+import { APP_BRIDGE_URL, installAppActorTasks, appCallActor } from "./browser-app-actor.mjs";
 import { placeholderOrigin } from "./browser-app-restore.mjs";
 
 // Each installation is a separate registrable domain. A shared parent such as
@@ -22,9 +24,6 @@ const MAX_CALL_BYTES = 512 * 1024;
 const MAX_ANSWERABLE_CALLS = 1024;
 const FULLSCREEN_CHECK_INTERVAL_MS = 250;
 const CALL_WAIT_MS = 250;
-// MP-08/MP-11: calls a page makes this soon after an agent's input stay the
-// agent's even if a person touches the Tab meanwhile.
-const AGENT_CALL_WINDOW_MS = 5_000;
 const BINDING = "__charioxAppCall";
 export const APP_CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
@@ -51,7 +50,8 @@ export const APP_PERMISSIONS_POLICY = [
 
 // Installed before any App script runs. The binding carries only JSON strings;
 // the kernel binds every call to this tab's installation, never to page data.
-const BRIDGE_SOURCE = `(() => {
+const bridgeSource = (controlKey, initialTask) => `(() => {
+  "use strict";
   // WebRTC is outside CSP and request interception; remove it before App code.
   for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel",
     "RTCSessionDescription", "RTCIceCandidate"]) {
@@ -60,20 +60,25 @@ const BRIDGE_SOURCE = `(() => {
   const call = globalThis.${BINDING};
   if (typeof call !== "function") return;
   delete globalThis.${BINDING};
-  const pending = new Map();
+  const tasks = (${installAppActorTasks.toString()})(${JSON.stringify(controlKey)}, ${JSON.stringify(initialTask)});
+  const resolveKey = ${JSON.stringify(controlKey)};
+  const pending = new Map(), NativePromise = Promise;
+  const setPending = Map.prototype.set.bind(pending), getPending = Map.prototype.get.bind(pending), deletePending = Map.prototype.delete.bind(pending);
   // Ids are unique per document: a reopened Tab loads a new one, and an
   // answer still in flight for the old document must not match a new call.
   const documentNonce = crypto.randomUUID();
   let next = 0;
-  const request = (method, params) => new Promise((resolve, reject) => {
+  const request = (method, params) => tasks.run(() => new NativePromise((resolve, reject) => {
     const id = documentNonce + ":" + ++next;
-    pending.set(id, { resolve, reject });
+    setPending(id, { resolve: tasks.bind(resolve), reject: tasks.bind(reject) });
+    tasks.trace(id);
     call(JSON.stringify({ id, method, params }));
-  });
-  Object.defineProperty(globalThis, "__charioxAppResolve", { value(id, ok, value) {
-    const entry = pending.get(id);
+  }));
+  Object.defineProperty(globalThis, "__charioxAppResolve", { value(key, id, ok, value) {
+    if (key !== resolveKey) return;
+    const entry = getPending(id);
     if (!entry) return;
-    pending.delete(id);
+    deletePending(id);
     ok ? entry.resolve(value) : entry.reject(Object.assign(new Error(value?.message ?? "App call failed"), { code: value?.code }));
   } });
   Object.defineProperty(globalThis, "chariox", { value: Object.freeze({
@@ -90,7 +95,8 @@ const BRIDGE_SOURCE = `(() => {
       get() { return request("chariox.panel", {}); },
     }),
   }) });
-})();`;
+})();
+//# sourceURL=${APP_BRIDGE_URL}`;
 
 function invalid(message) {
   return new BrowserControllerError("invalid_request", message);
@@ -139,30 +145,22 @@ export class AppTabs {
     this.now = () => performance.now();
   }
 
-  // MP-08/MP-10/MP-11: the kernel host reports who drives an App Tab (an
-  // agent id, or null for a person). A call runs as the agent while its input
-  // is in flight, within a short window after it, and until a person's input
-  // follows; the kernel then authorizes it as that agent, never as the owner.
-  beginInput(targetId, agent) {
-    const app = [...this.apps.values()].find(open => open.targetId === targetId);
-    if (!app) return () => {};
-    const mark = () => {
-      if (agent) Object.assign(app, { agent, agentAt: this.now() });
-      else app.humanAt = this.now();
-    };
-    mark();
-    if (agent) app.agentInputs = (app.agentInputs ?? 0) + 1;
-    return () => {
-      if (agent) app.agentInputs--;
-      mark();
-    };
-  }
-
-  callActor(app) {
-    if (!app.agent) return undefined;
-    const driving = app.agentInputs > 0 || this.now() - app.agentAt < AGENT_CALL_WINDOW_MS
-      || !(app.humanAt > app.agentAt);
-    return driving ? { kind: "agent", id: app.agent } : undefined;
+  // A private task tag is installed before dispatch. Chromium, rather than a
+  // clock or last-input heuristic, carries it into delayed App work.
+  async beginInput(targetId, agent, { navigation = false } = {}) {
+    const entry = [...this.apps.entries()].find(([, app]) => app.targetId === targetId);
+    if (!entry) return () => {};
+    const [sessionId, app] = entry;
+    const actor = agent ? { kind: "agent", id: agent } : undefined;
+    const task = [...app.actors].find(([name, retained]) => name !== app.initialTask && retained?.id === actor?.id)?.[0] ?? randomUUID();
+    app.actors.set(task, actor);
+    if (agent) app.agentObserved = true;
+    if (navigation) app.initialActor = actor;
+    const set = (name, active) => this.connection.send("Runtime.evaluate", {
+      expression: `globalThis.__charioxAppInput?.(${JSON.stringify(app.controlKey)}, ${JSON.stringify(name)}, ${active}, ${Boolean(agent)})`,
+    }, sessionId);
+    await set(task, true);
+    return () => set(task, false);
   }
 
   async open(params) {
@@ -204,15 +202,19 @@ export class AppTabs {
     clearTimeout(this.orphanRestores.get(targetId)?.timer);
     this.orphanRestores.delete(targetId);
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
-    this.apps.set(sessionId, { ...app, targetId, document: null, pending: new Set() });
+    this.apps.set(sessionId, { ...app, targetId, document: null, pending: new Set(), controlKey: randomUUID(), initialTask: randomUUID(), actors: new Map(), traces: new Map() });
     try {
       if (restored) await connection.send("Target.activateTarget", { targetId });
       await this.fullscreen(connection, targetId);
       const metrics = this.browser.appMetrics?.(app.page);
       if (metrics) await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
       await connection.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] }, sessionId);
+      const opened = this.apps.get(sessionId);
+      opened.actors.set(opened.initialTask, undefined);
+      await connection.send("Debugger.enable", {}, sessionId);
+      await connection.send("Debugger.setAsyncCallStackDepth", { maxDepth: 64 }, sessionId);
       await connection.send("Runtime.addBinding", { name: BINDING }, sessionId);
-      await connection.send("Page.addScriptToEvaluateOnNewDocument", { source: BRIDGE_SOURCE }, sessionId);
+      await connection.send("Page.addScriptToEvaluateOnNewDocument", { source: bridgeSource(opened.controlKey, opened.initialTask) }, sessionId);
       await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
     } catch (error) {
       this.apps.delete(sessionId);
@@ -301,11 +303,22 @@ export class AppTabs {
     }
     const app = this.apps.get(message?.sessionId);
     if (!app) return;
-    if (message.method === "Page.frameNavigated" && !message.params?.frame?.parentId) {
+    if (message.method === "Debugger.scriptParsed" && message.params?.url === APP_BRIDGE_URL && !app.bridgeScript) {
+      app.bridgeScript = message.params.scriptId;
+    } else if (message.method === "Page.frameNavigated" && !message.params?.frame?.parentId) {
       app.document = message.params?.frame?.loaderId ?? null;
+      app.bridgeScript = null;
       app.pending.clear();
+      app.traces.clear();
+      app.actors.set(app.initialTask, app.initialActor);
     } else if (message.method === "Fetch.requestPaused") {
       await this.fulfill(connection, message.sessionId, app, message.params);
+    } else if (message.method === "Runtime.consoleAPICalled" && message.params?.type === "trace") {
+      const id = message.params.args?.[0]?.value;
+      if (typeof id === "string" && id.length <= 128) {
+        app.traces.set(id, appCallActor(connection, message.sessionId, app, message.params.stackTrace));
+        if (app.traces.size > MAX_ANSWERABLE_CALLS) app.traces.delete(app.traces.keys().next().value);
+      }
     } else if (message.method === "Runtime.bindingCalled" && message.params?.name === BINDING) {
       await this.enqueueCall(app, message.params.payload, message.sessionId);
     }
@@ -342,8 +355,18 @@ export class AppTabs {
     let call;
     try { call = JSON.parse(payload); } catch { return; }
     if (typeof call?.id !== "string" || typeof call.method !== "string" || call.method.length > 128) return;
-    // Attribute at binding time, before any await can admit other input.
-    const actor = this.callActor(app);
+    const admittedDocument = app.document;
+    const trace = app.traces.get(call.id);
+    app.traces.delete(call.id);
+    const origin = trace ? await trace.catch(() => ({ found: false })) : { found: false };
+    // Once an agent has driven this document, lost/truncated ancestry cannot
+    // upgrade unclassified work to owner authority.
+    if (!origin.found && app.agentObserved && !app.initialActor) {
+      await this.resolve(sessionId, call.id, false, { code: "APP_ACTOR_UNKNOWN", message: "App call input ancestry is unavailable" });
+      return;
+    }
+    if (app.document !== admittedDocument) return;
+    const actor = origin.found ? origin.actor : app.initialActor;
     // Resolve the document before admission; the bounded queue check and push
     // then run without an await, even when a page sends one concurrent burst.
     const documentId = app.document ?? await this.document(sessionId, app);
@@ -373,7 +396,7 @@ export class AppTabs {
 
   async resolve(sessionId, callId, ok, value) {
     await this.connection.send("Runtime.evaluate", {
-      expression: `globalThis.__charioxAppResolve(${JSON.stringify(callId)}, ${ok}, ${JSON.stringify(value)})`,
+      expression: `globalThis.__charioxAppResolve(${JSON.stringify(this.apps.get(sessionId)?.controlKey)}, ${JSON.stringify(callId)}, ${ok}, ${JSON.stringify(value)})`,
     }, sessionId);
   }
 

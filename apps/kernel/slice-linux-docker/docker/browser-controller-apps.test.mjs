@@ -8,6 +8,8 @@ import { APP_CSP, APP_PERMISSIONS_POLICY, AppTabs, appOrigin } from "./browser-c
 import { BrowserControllerStdioServer } from "./browser-controller.mjs";
 import { appPlaceholder } from "./browser-app-restore.mjs";
 
+const bridgeGlobals = { EventTarget: class { addEventListener() {} removeEventListener() {} }, Window: class {}, Document: class {}, HTMLElement: class {}, SVGElement: class {},
+  console: { trace() {}, createTask() { return { run(callback) { return callback(); } }; } } };
 function fakeConnection(targets = []) {
   const sent = [];
   let listener;
@@ -122,7 +124,7 @@ test("open intercepts every request, installs the bridge, and navigates to the A
   assert.deepEqual(result, { target_id: "t1", origin: "https://app.todo-1.invalid" });
   assert.deepEqual(connection.sent.map((m) => m.method), ["Target.getTargets", "Target.createTarget", "Browser.getWindowForTarget",
     "Browser.getWindowBounds", "Browser.setWindowBounds", "Fetch.enable",
-    "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Page.navigate"]);
+    "Debugger.enable", "Debugger.setAsyncCallStackDepth", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Page.navigate"]);
   // Its own fullscreen window: page coordinates are desktop coordinates.
   assert.equal(connection.sent.find(m => m.method === "Target.createTarget").params.newWindow, true);
   assert.equal(connection.windowState, "fullscreen");
@@ -162,7 +164,7 @@ test("bridge call ids differ between documents, so a late answer cannot match a 
   const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
   const firstIds = () => {
     const sent = [];
-    const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: (payload) => sent.push(JSON.parse(payload).id) });
+    const context = vm.createContext({ ...bridgeGlobals, setTimeout, setInterval, clearTimeout, clearInterval, queueMicrotask, crypto: globalThis.crypto, __charioxAppCall: (payload) => sent.push(JSON.parse(payload).id) });
     vm.runInContext(bridge, context);
     vm.runInContext("chariox.call('list_todos')", context);
     return sent[0];
@@ -221,7 +223,7 @@ test("queues bridge calls bound to the installation and resolves responses", asy
   connection.sent.length = 0;
   await tabs.respond({ target_id: "t1", call_id: "1", result: { todos: [] } });
   assert.equal(connection.sent[0].method, "Runtime.evaluate");
-  assert.equal(connection.sent[0].params.expression, 'globalThis.__charioxAppResolve("1", true, {"todos":[]})');
+  assert.equal(connection.sent[0].params.expression.endsWith(', "1", true, {"todos":[]})'), true);
   await assert.rejects(tabs.respond({ target_id: "nope", call_id: "1" }));
 });
 
@@ -240,7 +242,7 @@ test(`an 80-call backlog (${counts.join("/")}) across four views settles every p
     const { target_id } = await tabs.open({ origin_label: `app-${i}`, installation_id: `inst-${i}`,
       assets: [asset("index.html", "<p>backlog</p>")] });
     const sessionId = await browser.ensureTargetSession(connection, target_id);
-    const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: (payload) => {
+    const context = vm.createContext({ ...bridgeGlobals, setTimeout, setInterval, clearTimeout, clearInterval, queueMicrotask, crypto: globalThis.crypto, __charioxAppCall: (payload) => {
       bindings.push(tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId,
         params: { name: "__charioxAppCall", payload } }));
     } });
@@ -289,7 +291,7 @@ test("a saturated App call queue refuses kernel-owned panel requests with retrya
   const app = tabs.apps.get("s1");
   for (let i = 0; i < 64; i++) await tabs.enqueueCall(app, JSON.stringify({ id: String(i), method: "usage" }), "s1");
   await tabs.enqueueCall(app, JSON.stringify({ id: "panel", method: "chariox.panel", params: { rect: null } }), "s1");
-  assert.match(connection.sent.at(-1).params.expression, /__charioxAppResolve\("panel", false, .*APP_BUSY/);
+  assert.equal(connection.sent.at(-1).params.expression.includes(', "panel", false, ' ) && connection.sent.at(-1).params.expression.includes("APP_BUSY"), true);
   assert.equal((await tabs.takeCalls()).calls.length, 64);
 });
 
@@ -571,7 +573,7 @@ test("view host helpers only queue the shared copy/link methods, never operate t
   const { connection } = await opened();
   const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
   const sent = [];
-  const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: payload => sent.push(JSON.parse(payload)),
+  const context = vm.createContext({ ...bridgeGlobals, setTimeout, setInterval, clearTimeout, clearInterval, queueMicrotask, crypto: globalThis.crypto, __charioxAppCall: payload => sent.push(JSON.parse(payload)),
     navigator: { clipboard: { writeText() { assert.fail("App view must not copy directly"); } } },
     open() { assert.fail("App view must not open directly"); } });
   vm.runInContext(bridge, context);
@@ -664,35 +666,31 @@ test("user-domain instances of one App have independent targets and do not adopt
   }
 });
 
-// MP-08/MP-10/MP-11: an App receives who drove each bridge call.
-test("bridge calls an agent's input drives run as that agent until a person drives the Tab", async () => {
+// MP-08/MP-10/MP-11: delayed calls use retained native task ancestry.
+test("delayed agent work keeps its originating actor across unrelated human input", async () => {
   const { tabs, connection } = await opened();
-  let now = 1_000;
-  tabs.now = () => now;
-  const bind = id => connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1",
-    params: { name: "__charioxAppCall", payload: JSON.stringify({ id, method: "delete_todo" }) } });
-  const actors = async () => (await tabs.takeCalls()).calls.map(call => call.actor ?? null);
+  const app = tabs.apps.get("s1");
   const agent = { kind: "agent", id: "agent-7" };
-  await bind("load");
-  assert.deepEqual(await actors(), [null]);
-  const done = tabs.beginInput("t1", "agent-7");
-  await bind("during");
-  done();
-  now += 60_000;
-  // A timer the agent's click armed still runs as the agent.
-  await bind("later");
-  assert.deepEqual(await actors(), [agent, agent]);
-  const human = tabs.beginInput("t1", null);
-  human();
-  await bind("person");
-  assert.deepEqual(await actors(), [null]);
-  // A person's input right after the agent's does not take its calls over.
-  tabs.beginInput("t1", "agent-7")();
-  now += 1_000;
-  tabs.beginInput("t1", null)();
-  await bind("too-soon");
-  now += 5_000;
-  await bind("person-again");
-  assert.deepEqual(await actors(), [agent, null]);
-  assert.equal(typeof tabs.beginInput("unknown", "agent-7"), "function");
+  const finishAgent = await tabs.beginInput("t1", agent.id);
+  const agentTask = [...app.actors].find(([, actor]) => actor?.id === agent.id)[0];
+  await finishAgent();
+  const finishHuman = await tabs.beginInput("t1", null);
+  const humanTask = [...app.actors].find(([name, actor]) => name !== app.initialTask && !actor)[0];
+  await finishHuman();
+  const bind = async (id, task) => {
+    if (task) await connection.emit({ method: "Runtime.consoleAPICalled", sessionId: "s1", params: {
+      type: "trace", args: [{ value: id }], stackTrace: { callFrames: [], parent: { description: "await", callFrames: [], parent: { description: task, callFrames: [] } } },
+    } });
+    await connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1", params: {
+      name: "__charioxAppCall", payload: JSON.stringify({ id, method: "delete_todo", actor: { kind: "human" } }),
+    } });
+  };
+  await bind("late-agent", agentTask); await bind("person", humanTask);
+  assert.deepEqual((await tabs.takeCalls()).calls.map(call => call.actor ?? null), [agent, null]);
+  await bind("unclassified", "page-forged-task");
+  assert.equal(tabs.calls.length, 0, "missing or forged ancestry never upgrades an agent call to owner");
+  assert.equal(connection.sent.at(-1).params.expression.includes("APP_ACTOR_UNKNOWN"), true);
+  for (let i = 0; i < 100; i++) await (await tabs.beginInput("t1", agent.id))();
+  assert.equal(app.actors.size, 3, "task retention is per actor, not per keystroke");
+  assert.equal(typeof await tabs.beginInput("unknown", agent.id), "function");
 });
