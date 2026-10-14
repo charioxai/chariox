@@ -328,3 +328,182 @@ async fn mp11_app_view_budget_keeps_document_and_grant_cancellation() {
         );
     }
 }
+
+// MP-08/MP-10/MP-11 review #1001 P1: installation revocation is independent of the retained browser grant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp11_app_installation_revoke_regrant_during_cold_lease_never_enqueues() {
+    let ViewFixture {
+        state,
+        agent,
+        binding,
+        view,
+        observations,
+        _cleanup,
+    } = prepare(Mode::ToolEcho);
+    let (entered, received) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let released = Mutex::new(released);
+    state
+        .app_control()
+        .lifecycle()
+        .fixture_before_publication(Arc::new(move || {
+            entered.send(()).unwrap();
+            released
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap();
+        }));
+    state
+        .app_control()
+        .lifecycle()
+        .start_active_blocking("alice", "installed", tokio::runtime::Handle::current())
+        .unwrap();
+    tokio::task::spawn_blocking(move || received.recv_timeout(Duration::from_secs(10)))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut tracked = state.app_control().views().track_call(&view, &view, None);
+    let method = tool_method(&state);
+    let call = state.invoke_user_app_view_call(
+        "alice",
+        &view,
+        &binding,
+        &method,
+        serde_json::json!({"text":"cold"}),
+        &mut tracked,
+        ViewCaller::Agent(&agent),
+    );
+    tokio::pin!(call);
+    tokio::select! { biased;
+        result = &mut call => panic!("call must await cold lease: {result:?}"),
+        _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+    }
+    state
+        .revoke_agent_extension(
+            agent.id(),
+            crate::extension::ExtensionKind::App,
+            "installed",
+            "alice",
+        )
+        .await
+        .unwrap();
+    state
+        .grant_agent_extension(
+            agent.id(),
+            crate::extension::ExtensionGrant::app("installed"),
+            "alice",
+        )
+        .await
+        .unwrap();
+    release.send(()).unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(3), &mut call).await;
+    cleanup_worker(&state).await;
+    assert!(observations.lock().unwrap().iter().all(|o| o.was_reaped()));
+    assert!(
+        matches!(result, Ok(Err(ref error)) if error.code == "AGENT_APP_NOT_GRANTED"),
+        "old admitted call must remain revoked: {result:?}"
+    );
+    assert_eq!(
+        observations
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|o| o.tool_invocations())
+            .sum::<u64>(),
+        0
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp11_app_installation_revoke_regrant_cancels_a_pending_worker_reply() {
+    let ViewFixture {
+        state,
+        agent,
+        binding,
+        view,
+        observations,
+        _cleanup,
+    } = prepare(Mode::ToolStall);
+    state
+        .app_control()
+        .lifecycle()
+        .start_active_blocking("alice", "installed", tokio::runtime::Handle::current())
+        .unwrap();
+    wait_worker(&state).await;
+    let dispatch = state.clone();
+    let caller = agent.clone();
+    let id = view.clone();
+    let mut call = tokio::spawn(async move {
+        let mut tracked = dispatch.app_control().views().track_call(&id, &id, None);
+        let method = tool_method(&dispatch);
+        dispatch
+            .invoke_user_app_view_call(
+                "alice",
+                &id,
+                &binding,
+                &method,
+                serde_json::json!({"text":"pending"}),
+                &mut tracked,
+                ViewCaller::Agent(&caller),
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while observations
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|o| o.tool_invocations())
+            .sum::<u64>()
+            == 0
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    state
+        .revoke_agent_extension(
+            agent.id(),
+            crate::extension::ExtensionKind::App,
+            "installed",
+            "alice",
+        )
+        .await
+        .unwrap();
+    state
+        .grant_agent_extension(
+            agent.id(),
+            crate::extension::ExtensionGrant::app("installed"),
+            "alice",
+        )
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(2), &mut call).await;
+    if result.is_err() {
+        call.abort();
+        let _ = call.await;
+    }
+    let cancelled = tokio::time::timeout(Duration::from_secs(2), async {
+        while observations
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|o| o.tool_cancellations())
+            .sum::<u64>()
+            == 0
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok();
+    cleanup_worker(&state).await;
+    assert!(observations.lock().unwrap().iter().all(|o| o.was_reaped()));
+    assert!(
+        matches!(result, Ok(Ok(Err(ref error))) if error.code == "AGENT_APP_NOT_GRANTED"),
+        "pending reply must wake on grant revocation: {result:?}"
+    );
+    assert!(cancelled, "the worker receives Cancel");
+}

@@ -16,7 +16,8 @@ pub(super) fn refused(reason: UserDomainRefusalReason) -> DaemonError {
 /// Revisions are process-local; persisted grants carry their own generation.
 #[derive(Default)]
 pub(super) struct AppGrantEpochs {
-    pub(super) revisions: std::sync::Mutex<BTreeMap<(String, String), u64>>,
+    pub(super) revisions:
+        std::sync::Mutex<BTreeMap<(String, String), Arc<std::sync::atomic::AtomicU64>>>,
     stopped: std::sync::atomic::AtomicBool,
     changed: Notify,
 }
@@ -392,15 +393,24 @@ impl KernelRuntimeState {
         Ok(prompt)
     }
 
-    pub(super) fn app_binding_revision(&self, agent: &str, installation: &str) -> u64 {
-        *self
-            .owned
+    pub(super) fn app_binding_epoch(
+        &self,
+        agent: &str,
+        installation: &str,
+    ) -> Arc<std::sync::atomic::AtomicU64> {
+        self.owned
             .app_grant_epochs
             .revisions
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&(agent.into(), installation.into()))
-            .unwrap_or(&0)
+            .entry((agent.into(), installation.into()))
+            .or_default()
+            .clone()
+    }
+
+    pub(super) fn app_binding_revision(&self, agent: &str, installation: &str) -> u64 {
+        self.app_binding_epoch(agent, installation)
+            .load(Ordering::Acquire)
     }
 
     pub(super) async fn revoke_agent_app_capability_grants(

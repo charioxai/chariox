@@ -777,8 +777,18 @@ impl KernelRuntimeState {
             },
             &binding.installation,
             tracked.browser_grant(),
+            match &caller {
+                ViewCaller::Agent(agent) => {
+                    Some(self.app_binding_epoch(agent.id(), &binding.installation))
+                }
+                ViewCaller::Owner(_) => None,
+            },
         );
         authority.check()?;
+        let cancelled = authority.clone();
+        let operation_budget = tracked
+            .operation_budget()
+            .fork(move || cancelled.is_cancelled());
         let leased = tokio::select! {
             result = self.app_lease_on_demand(&binding.owner, &binding.installation) => result,
             () = authority.cancelled() => return Err(agent_not_granted()),
@@ -812,7 +822,7 @@ impl KernelRuntimeState {
                 lease.catalog().clone(),
                 self.app_control().admission(),
             )
-            .request_view(tool, input, authority.clone(), tracked.operation_budget())
+            .request_view(tool, input, authority.clone(), operation_budget)
             .await
             .map_err(|error| view_error(&error.code, &error.message));
             authority.check()?;
@@ -835,7 +845,6 @@ impl KernelRuntimeState {
         };
         let caller = view_caller(binding, caller, turn);
         let tool_name = tool;
-        let operation_budget = tracked.operation_budget();
         let still_granted = authority.clone();
         let response = tokio::task::spawn_blocking(move || {
             let _permit = permit;
