@@ -22,7 +22,9 @@ precedes the state read. Owner A/B kernels use `V/runtime`; CPU accounting
 separates V and S sources and tracks their actual kernel/Selkies PID. The
 owner kit state supplies `sessionId`, `kernelPid`, `selkiesPid`,
 `selkiesOrigin` and source CDP port. Source CDP is read-only; Selkies
-navigation uses its native omnibox through real keys. Supply `VIDHOPS_IPC`
+navigation uses its native omnibox through real keys. The read-only source
+oracle selects the unique visible page; CDP list order can name a background
+tab after normal new-tab actions and must never determine input coordinates. Supply `VIDHOPS_IPC`
 (the exact SDK dist/ipc.js), `VIDHOPS_WS` (ws/index.js), `VIDHOPS_PLAYWRIGHT`
 (default /w/valenv/tools/node_modules/playwright-core/index.mjs), `OSS_SOURCE`,
 `CLOUD_SOURCE`, `DPRS=1` or `2`, `TRIALS=20`, `TYPING_TRIALS=20`,
