@@ -366,7 +366,7 @@ test('MP-08/MP-10/MP-11: a v2 view retains the existing render lease until close
 
 // MP-08/MP-10 (owner A/B 2026-10-14, finding 8): a new Tab's v2 view subscribes without an all-tab reconcile.
 test('MP-08/MP-10 a v2 subscription reads its own Tab without an all-tab reconcile', async () => {
- const {service,host}=fixture();let reconciles=0;const target=host.target;host.target=async(...args)=>{reconciles++;return target(...args)};
+ const {service,host}=fixture();host.browser.inputCapture={async hold(){return async()=>{}}};let reconciles=0;const target=host.target;host.target=async(...args)=>{reconciles++;return target(...args)};
  const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1,wire:2},'a');
  assert.ok(sub.subscription_id);assert.equal(reconciles,0);
  await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');assert.equal(reconciles,1,'wire 1 keeps its reconcile');
