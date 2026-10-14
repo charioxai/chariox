@@ -2,6 +2,27 @@
 import { appendFileSync } from "node:fs"
 import type { CliRenderer } from "@opentui/core"
 import type { TranscriptEntry } from "./cli-types.js"
+
+// Private drill receipt: allowlisted metadata only, before client projection.
+export function recordPaneKernelEvent(event: { event?: string; session?: Record<string, unknown> }): void {
+  const destination = process.env.CHARIOX_PANE_TIMING_FILE
+  const prefix = process.env.CHARIOX_PANE_TIMING_PREFIX
+  if (!destination || !prefix || event.event !== "session_snapshot" || !event.session) return
+  const states = event.session.prompt_states as Record<string, { active_prompt?: unknown }> | undefined
+  const prompts = [event.session.active_prompt, ...Object.values(states ?? {}).map(state => state.active_prompt)]
+  const seen = new Set<string>()
+  for (const value of prompts) {
+    if (!value || typeof value !== "object") continue
+    const prompt = value as { id?: unknown; prompt?: unknown; created_at_ms?: unknown }
+    if (typeof prompt.id !== "string" || typeof prompt.prompt !== "string" || seen.has(prompt.id)) continue
+    const tag = prompt.prompt.match(new RegExp(prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[0-9]{2}(?![A-Za-z0-9-])"))?.[0]
+    if (!tag) continue
+    seen.add(prompt.id)
+    appendFileSync(destination, JSON.stringify({ event: "pane_kernel_prompt_received", tag,
+      promptId: prompt.id, kernelCreatedAtMs: typeof prompt.created_at_ms === "number" ? prompt.created_at_ms : null,
+      epochMs: Date.now(), pid: process.pid }) + "\n", { mode: 0o600 })
+  }
+}
 export function recordPaneFirstFrame(
   renderer: CliRenderer,
   hasMountedTranscript: () => boolean,

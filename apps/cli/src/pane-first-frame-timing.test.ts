@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import type { CliRenderer } from "@opentui/core"
 import type { TranscriptEntry } from "./cli-types.js"
-import { recordPaneFirstFrame } from "./pane-first-frame-timing.js"
+import { recordPaneFirstFrame, recordPaneKernelEvent } from "./pane-first-frame-timing.js"
 
 test("MP-08 / MP-10 assistant timing follows the accepted prompt, not a provider echo", () => {
   const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pane-receipt-"))
@@ -57,6 +57,25 @@ test("MP-08 / MP-10 user frame timing does not wait for provider output", () => 
     assert.equal(rows.length, 1)
     assert.equal(rows[0].event, "pane_user_frame")
     assert.equal(rows[0].promptId, "prompt-1")
+  } finally {
+    if (oldPath === undefined) delete process.env.CHARIOX_PANE_TIMING_FILE; else process.env.CHARIOX_PANE_TIMING_FILE = oldPath
+    if (oldPrefix === undefined) delete process.env.CHARIOX_PANE_TIMING_PREFIX; else process.env.CHARIOX_PANE_TIMING_PREFIX = oldPrefix
+    rmSync(root, { recursive: true })
+  }
+})
+
+test("MP-08 / MP-10 kernel prompt receipt records metadata without prompt or private context", () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pane-receive-")), path = join(root, "receipt.jsonl")
+  const oldPath = process.env.CHARIOX_PANE_TIMING_FILE, oldPrefix = process.env.CHARIOX_PANE_TIMING_PREFIX
+  process.env.CHARIOX_PANE_TIMING_FILE = path; process.env.CHARIOX_PANE_TIMING_PREFIX = "MP1-test-"
+  try {
+    const prompt = {id: "accepted-1", prompt: "MP1-test-01 public work", created_at_ms: 123, private_metadata: "must not be recorded"}
+    recordPaneKernelEvent({event: "session_snapshot", session: {active_prompt: prompt, prompt_states: {"agent-1": {active_prompt: prompt}}}})
+    const row = JSON.parse(readFileSync(path, "utf8").trim())
+    assert.deepEqual(Object.keys(row).sort(), ["epochMs", "event", "kernelCreatedAtMs", "pid", "promptId", "tag"])
+    assert.equal(row.kernelCreatedAtMs, 123)
+    assert.equal(row.promptId, "accepted-1")
+    assert.equal(row.tag, "MP1-test-01")
   } finally {
     if (oldPath === undefined) delete process.env.CHARIOX_PANE_TIMING_FILE; else process.env.CHARIOX_PANE_TIMING_FILE = oldPath
     if (oldPrefix === undefined) delete process.env.CHARIOX_PANE_TIMING_PREFIX; else process.env.CHARIOX_PANE_TIMING_PREFIX = oldPrefix
