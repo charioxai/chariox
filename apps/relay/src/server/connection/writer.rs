@@ -58,7 +58,7 @@ impl Transfer {
 // already being streamed. Every existing receiver admits ordinary JSON while
 // assembling a transfer; no transfer IDs interleave and no payload is inspected.
 // The next ordered chunk receipt accounts for these bytes too.
-const INLINE_RESPONSE_BYTES: usize = 1024 * 1024;
+const INLINE_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 fn independent_small(message: &Message) -> bool {
     if message.len() > INLINE_RESPONSE_BYTES {
         return false;
@@ -330,7 +330,7 @@ mod tests {
         let _ = client.close(None).await;
     }
 
-    // MP-08/MP-10/MP-11: a real socket can deliver a mirror-sized opaque
+    // MP-08/MP-10/MP-11: a real socket can deliver a real capture-sized opaque
     // reply while catalog transport credit is deliberately held.
     #[tokio::test]
     async fn medium_reply_bypasses_a_bulk_catalog_without_its_receipts() {
@@ -353,7 +353,7 @@ mod tests {
         let writer = tokio::spawn(run_writer(socket, rx, true, false, ack_rx, control_rx));
         let first = client.next().await.unwrap().unwrap();
         assert!(matches!(first, Message::Text(ref text) if text.contains("transport_chunk")));
-        let reply = serde_json::json!({"kind":"client_response","request_id":"mirror","payload":"y".repeat(256 * 1024)}).to_string();
+        let reply = serde_json::json!({"kind":"client_response","request_id":"mirror","payload":"y".repeat(1_195_568)}).to_string();
         tx.send(Message::Text(reply.clone().into())).await.unwrap();
         let delivered = tokio::time::timeout(std::time::Duration::from_millis(500), async {
             while let Some(Ok(message)) = client.next().await {
