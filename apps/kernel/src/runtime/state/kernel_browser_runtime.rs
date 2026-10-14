@@ -600,13 +600,33 @@ impl KernelRuntimeState {
                         .scrub_error(&scope, error)
                 });
         }
-        #[allow(unused_mut)]
         let mut params = browser_tool_params(arguments)?;
+        self.claim_app_view_tab(&user, &admission, &mut params)?;
+        let payload = self
+            .kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
+            .await?;
+        Ok(RuntimeToolResult { ok: true, payload })
+    }
+}
+impl KernelRuntimeState {
+    /// MP-08/MP-11: an agent drives an owner's App Tab (input or Vault fill)
+    /// only after claiming that App view in its own grant; the host then runs
+    /// the Tab's bridge calls as the agent.
+    #[cfg_attr(
+        not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))),
+        allow(unused_variables)
+    )]
+    pub(super) fn claim_app_view_tab(
+        &self,
+        user: &str,
+        admission: &crate::runtime::kernel_browser_host::KernelBrowserAdmission,
+        params: &mut serde_json::Value,
+    ) -> Result<(), DaemonError> {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         if let Some(tab) = params["tab_id"].as_str().map(str::to_owned) {
             let views = self.app_control().user_views();
             for view in self
-                .user_domain_owner_aliases(&user)
+                .user_domain_owner_aliases(user)
                 .iter()
                 .flat_map(|owner| views.browser_views(owner))
             {
@@ -615,27 +635,22 @@ impl KernelRuntimeState {
                     .as_ref()
                     .is_some_and(|browser| browser.tab_id == tab)
                 {
-                    host.claim_resource(
-                        Some(&admission),
-                        crate::local::UserDomainResource::AppView {
-                            view_id: view.view_id,
-                        },
-                        false,
-                    )
-                    .map_err(host_error)?;
-                    // MP-08/MP-11: the host lets an agent drive an App Tab
-                    // only with this claim; its bridge calls run as the agent.
+                    self.owned
+                        .kernel_browser_host
+                        .claim_resource(
+                            Some(admission),
+                            crate::local::UserDomainResource::AppView {
+                                view_id: view.view_id,
+                            },
+                            false,
+                        )
+                        .map_err(host_error)?;
                     params["_app_view_tab"] = tab.clone().into();
                 }
             }
         }
-        let payload = self
-            .kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
-            .await?;
-        Ok(RuntimeToolResult { ok: true, payload })
+        Ok(())
     }
-}
-impl KernelRuntimeState {
     /// MP-08/MP-11: focus or the owner's running request loads browser tools;
     /// otherwise only an already-loaded grant is retained. Agents cannot self-grant.
     async fn kernel_browser_loader(

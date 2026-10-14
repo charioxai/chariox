@@ -49,7 +49,16 @@ async function openApp(label, assets) {
     await host.request({ op: 'input', tab_id: tabId, generation: host.generation, document_id: frameTree.frame.loaderId,
       input: { kind: 'click', x, y }, focused_agent: true, _agent_input: true, observed_by: 'agent:agent-7', _app_view_tab: tabId });
   };
-  return { until, agentClick, evaluate };
+  // The agent fills `pin` from the Vault as the kernel dispatches it: no input before.
+  const agentFill = async (claimed = true) => {
+    const { snapshot } = await host.request({ op: 'snapshot', tab_id: tabId, generation: host.generation });
+    const node = snapshot.dom_nodes.find(n => n.attributes?.id === 'pin');
+    return host.handle({ id: ++requests, method: 'host.secret', params: { tab_id: tabId, generation: host.generation,
+      document_id: snapshot.document_id, node_ref: node.node_ref, _agent_input: true, observed_by: 'agent:agent-7',
+      ...(claimed ? { _app_view_tab: tabId } : {}),
+      action: { kind: 'fill', text: 'app-vault-fixture', append: false, submit: false, expected_document_url: await evaluate('location.href') } } });
+  };
+  return { until, agentClick, agentFill, evaluate };
 }
 
 test('MP-08/MP-11 #1001 P1: an App that rewrites its bridge serializer cannot make an agent call the person\'s', async () => {
@@ -76,6 +85,25 @@ test('MP-08/MP-11 #1001 P1: a delayed same-origin navigation keeps the agent tha
     asset('next.js', 'text/javascript', `chariox.call('startup');`)]);
   await app.agentClick();
   assert.deepEqual(await app.until('startup', 160), [agent]);
+});
+
+const vaultPage = page('', '<input id="pin" type="password" aria-label="PIN">');
+const vaultApp = `pin.addEventListener('change', () => chariox.call('filled'));`;
+
+test('MP-08/MP-11 #1001 P1: an agent\'s Vault fill is its input to the App Tab before any field handler runs', async () => {
+  const app = await openApp('vault-fill', [vaultPage, asset('app.js', 'text/javascript', vaultApp)]);
+  const reply = await app.agentFill();
+  assert.equal(reply.ok, true, JSON.stringify(reply));
+  assert.deepEqual(await app.until('filled'), [agent]);
+});
+
+test('MP-08/MP-11 #1001 P1: a Vault fill into an App Tab the kernel did not claim for the agent is refused', async () => {
+  const app = await openApp('vault-unclaimed', [vaultPage, asset('app.js', 'text/javascript', vaultApp)]);
+  const reply = await app.agentFill(false);
+  assert.equal(reply.ok, false);
+  assert.equal(reply.error.code, 'user_domain_not_granted');
+  assert.deepEqual(await app.until('filled', 20), []);
+  assert.equal(await app.evaluate('pin.value'), '');
 });
 
 test('MP-08/MP-11: a Tab no agent drove runs every call as the person', async () => {

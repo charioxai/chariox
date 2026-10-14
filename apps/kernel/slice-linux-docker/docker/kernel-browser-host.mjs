@@ -464,13 +464,9 @@ export class KernelBrowserHost {
     let tab = command.op === 'input' && typeof command.document_id === 'string'
       ? await this.displayTarget(command) : await this.target(command);
     assertNotCancelled(signal);
-    // MP-08/MP-11: an agent drives an App Tab as itself, only after the kernel
-    // claimed that App view in the agent's own grant. The page stays on its origin.
-    const app = [...(this.browser.appTabs?.apps?.values() ?? [])].find(open => open.targetId === tab.target_id);
-    const agent = command.focused_agent || command._agent_input
-      ? /^agent:(.+)$/.exec(String(command.observed_by ?? ""))?.[1] ?? "unattributed-agent" : null;
-    if (app && (["input", "navigate", "close"].includes(command.op) && agent && command._app_view_tab !== tab.tab_id
-      || command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin)) {
+    const { app, agent } = this.appAgent(tab, command, ["input", "navigate", "close"].includes(command.op));
+    // The page stays on its origin.
+    if (app && command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin) {
       throw new UserDomainRefusal("not_granted");
     }
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
@@ -576,6 +572,15 @@ export class KernelBrowserHost {
     if (command.op === "subscribe") return this.subscribe(tab, command.bound_frames === true, command._subscription_owner ?? null);
     throw new Error("MD-2: unsupported browser operation");
   }
+  // MP-08/MP-11: an agent drives an App Tab as itself, only after the kernel
+  // claimed that App view in the agent's own grant.
+  appAgent(tab, command, drives) {
+    const app = [...(this.browser.appTabs?.apps?.values() ?? [])].find(open => open.targetId === tab.target_id);
+    const agent = command.focused_agent || command._agent_input
+      ? /^agent:(.+)$/.exec(String(command.observed_by ?? ""))?.[1] ?? "unattributed-agent" : null;
+    if (app && drives && agent && command._app_view_tab !== tab.tab_id) throw new UserDomainRefusal("not_granted");
+    return { app, agent };
+  }
   async handle(request, { signal } = {}) {
     try { assertNotCancelled(signal); } catch { return { id: request.id, ok: false, error: { code: "browser_action_cancelled", message: "MD-3: browser action cancelled" } }; }
     try {
@@ -600,6 +605,10 @@ export class KernelBrowserHost {
         if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
         const tab = await this.target(request.params);
         if (tab.document_id !== request.params.document_id) throw new UserDomainRefusal("stale_reference");
+        // MP-08/MP-11: a Vault fill is the agent's input to an App Tab too,
+        // recorded before the field's input/change handlers can run.
+        const { app, agent } = this.appAgent(tab, request.params, true);
+        if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
         const action = codeInput ? { ...request.params.action, mask_code_input: true } : request.params.action;
         await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
           node_ref: request.params.node_ref, action, timeout_ms: 10_000 }, { signal }));

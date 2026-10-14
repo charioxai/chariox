@@ -275,8 +275,12 @@ impl KernelRuntimeState {
                 timeout_ms: 10_000,
             };
         protection.register_command(&scope, &command)?;
+        let mut params = json!({"tab_id":args.tab_id,"generation":args.generation,"document_id":args.document_id,"node_ref":args.node_ref,"action":action});
+        // MP-08/MP-11: the fill is the agent's input to an App Tab too.
+        self.claim_app_view_tab(user, &admission, &mut params)?;
         check_authority()?;
-        self.kernel_browser_bound_operation(user, Some(&admission), "host.secret", json!({"tab_id":args.tab_id,"generation":args.generation,"document_id":args.document_id,"node_ref":args.node_ref,"action":action}), true).await?;
+        self.kernel_browser_bound_operation(user, Some(&admission), "host.secret", params, true)
+            .await?;
         Ok(RuntimeToolResult {
             ok: true,
             payload: json!({"inserted":true}),
