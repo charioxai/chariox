@@ -229,4 +229,3 @@ export function losslessRegion(frame,x,y,width,height) {
   for(let row=0;row<height;row++)frame.pixels.copy(pixels,row*width*4,((y+row)*frame.width+x)*4,((y+row)*frame.width+x+width)*4);
   return {x,y,width,height,format:'png',data_base64:encodePng(width,height,pixels)};
 }
-

@@ -22,7 +22,11 @@ provider execution path is introduced.
 MP-10 acceptance must use the paired mirror-first Cloud client, real hosted
 WSS with shaping, DPR1/2 and real providers/sites. Source regressions and
 historical union results below are supplementary and remain bound to their
-original heads. The five multidomain-base rows require new exact-source live
+original heads. The restack's full protocol-shape suite found an inherited union fixture
+whose label said491/101 while its hash encoded516/124. Its current-version
+snapshot is now named/hashed for the already allocated517/125 pair. Request
+and response shapes are unchanged; no new number is assigned.
+The five multidomain-base rows require new exact-source live
 results; this documentation does not close them. Google runs belong to the
 coordinator's Mac under the 2026-10-13 owner rule.
 
