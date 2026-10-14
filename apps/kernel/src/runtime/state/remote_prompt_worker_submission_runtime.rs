@@ -99,6 +99,8 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
         );
         match outcome {
             RemotePromptSubmissionOutcome::Accepted(provider_run_id) => {
+                // The worker accepted this exact lease; retries must not replay its history.
+                state.owned.clear_accepted_remote_lease_context(dispatch);
                 // Dispatch settlement clears the hold only after its durable ACK write.
                 return Ok(provider_run_id);
             }
@@ -850,9 +852,7 @@ impl KernelRuntimeState {
         unexpected_response_message: &'static str,
     ) -> RemotePromptSubmissionAttempt {
         let agent_id = dispatch.agent_id.clone();
-        #[cfg(test)]
         let prompt_id = dispatch.prompt_id.clone();
-        #[cfg(test)]
         let closure_prompt_id = prompt_id.clone();
         let expected_leased_agent_id = dispatch.leased_agent_id.clone();
         let hidden_system_context = dispatch.hidden_system_context.clone();
@@ -917,6 +917,23 @@ impl KernelRuntimeState {
                     daemon_id: Some(remote_execution.worker_kernel_id.clone()),
                     daemon_alias: None,
                 };
+                let relay_state = callback_state.connected_relay_state_for_config(&config).await;
+                let session = callback_state.owned.session_store.get_session(agent.session_id())?;
+                let fresh_workflow = callback_state.owned.prompt_state_owner
+                    .active_prompt_for_agent(&session, agent.id())
+                    .filter(|active| active.id() == closure_prompt_id)
+                    .map(|active| callback_state.owned.workflow_prompt_requires_fresh_provider_context(
+                        agent.session_id(), agent.id(), &active,
+                    ))
+                    .transpose()?.unwrap_or(false);
+                let hidden_system_context = callback_state.owned.remote_prompt_hidden_context(
+                    &agent,
+                    &remote_execution.leased_agent_id,
+                    &closure_prompt_id,
+                    &hidden_system_context,
+                    fresh_workflow,
+                    native_provider_run,
+                )?;
                 let request = RelayPeerRequest::SubmitLeasedPrompt {
                     leased_agent_id: remote_execution.leased_agent_id,
                     expected_profile:
@@ -931,7 +948,6 @@ impl KernelRuntimeState {
                     remote_extension_manifest: manifest,
                     provider_launch_credential,
                 };
-                let relay_state = callback_state.connected_relay_state_for_config(&config).await;
                 match relay_state {
                     Some(relay_state) => {
                         #[cfg(test)]

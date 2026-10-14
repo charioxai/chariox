@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 use crate::provider::RuntimeProviderRun;
 
 mod builder;
+mod remote;
 use builder::{load_agent_conversation, AgentConversation, MAX_HANDOFF_BYTES};
 
 const HIDDEN_HANDOFF_SUFFIX: &str = "The active user request is supplied separately.";

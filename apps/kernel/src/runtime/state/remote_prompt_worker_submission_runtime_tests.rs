@@ -1228,3 +1228,6 @@ async fn leased_prompt_uses_shared_handoff_dispatch_before_provider_submission()
         "Continue the investigation"
     );
 }
+
+#[path = "remote_prompt_worker_submission_runtime_handoff_tests.rs"]
+mod handoff;

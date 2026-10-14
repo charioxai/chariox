@@ -106,6 +106,127 @@ impl AgentConversation {
     }
 }
 
+// MP-08 / MP-10 / MP-11: additive bounded rendering for recreated leases.
+// Keep the main branch's local profile-switch builder contract unchanged.
+pub(super) fn build_recreated_lease_context(
+    events: &[HistoryEvent],
+    prompt_id: &str,
+    max_bytes: usize,
+) -> Option<String> {
+    let mut turns = collect_turns(events);
+    if turns
+        .last()
+        .is_some_and(|turn| turn.prompt_id.as_deref() == Some(prompt_id))
+    {
+        if turns.last().is_some_and(|turn| turn.has_provider_attempt) {
+            turns.last_mut()?.user_prompt.clear();
+        } else {
+            turns.pop();
+        }
+    }
+    let latest = turns.pop()?;
+    const OPEN: &str = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_OPEN;
+    const CLOSE: &str = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_CLOSE;
+    const LATEST: &str = "Latest turn:\n";
+    const PRIOR: &str = "Prior turns:\n";
+    let mut room = max_bytes.checked_sub(OPEN.len() + CLOSE.len() + LATEST.len())?;
+    let latest_text = format_recreated_latest_turn(&latest, room.min(6_500));
+    if latest_text.trim().is_empty() {
+        return None;
+    }
+    room -= latest_text.len();
+    let prior_text = format_recreated_prior_turns(&turns, room.saturating_sub(PRIOR.len() + 2));
+    let mut packet = OPEN.to_string();
+    if !prior_text.is_empty() {
+        packet.push_str(PRIOR);
+        packet.push_str(&prior_text);
+        packet.push_str("\n\n");
+    }
+    packet.push_str(LATEST);
+    packet.push_str(&latest_text);
+    packet.push_str(CLOSE);
+    Some(packet)
+}
+
+fn format_recreated_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
+    let Some(mut room) = budget.checked_sub(omitted_turns_line(turns.len()).len() + 1) else {
+        return String::new();
+    };
+    let users = turns
+        .iter()
+        .map(|turn| {
+            format!(
+                "- User: {}",
+                single_line(&truncate_bytes(&turn.user_prompt, 1_000))
+            )
+        })
+        .collect::<Vec<_>>();
+    let answers = turns
+        .iter()
+        .map(|turn| {
+            // MP-08 / MP-10 / MP-11: a title and its explanation remain separate
+            // lines; flattening them can change an assistant-only fact.
+            let answer = truncate_bytes(&turn.assistant_outputs.join("\n"), 600)
+                .lines()
+                .map(single_line)
+                .collect::<Vec<_>>()
+                .join("\n    ");
+            (!answer.is_empty()).then(|| format!("  Assistant: {answer}"))
+        })
+        .collect::<Vec<_>>();
+    let mut first = turns.len();
+    while first > 0 && users[first - 1].len() < room {
+        first -= 1;
+        room -= users[first].len() + 1;
+    }
+    let mut answered_from = turns.len();
+    while answered_from > first {
+        let cost = answers[answered_from - 1]
+            .as_ref()
+            .map_or(0, |answer| answer.len() + 1);
+        if cost > room {
+            break;
+        }
+        answered_from -= 1;
+        room -= cost;
+    }
+
+    let mut lines = Vec::new();
+    if first > 0 {
+        lines.push(omitted_turns_line(first));
+    }
+    for (index, (user, answer)) in users.into_iter().zip(answers).enumerate().skip(first) {
+        lines.push(user);
+        lines.extend(answer.filter(|_| index >= answered_from));
+    }
+    lines.join("\n")
+}
+
+fn format_recreated_latest_turn(turn: &HandoffTurn, max_bytes: usize) -> String {
+    let mut lines = Vec::new();
+    if turn.user_prompt.is_empty() {
+        lines.push("- Interrupted attempt of the current request:".to_string());
+    } else {
+        lines.push(format!(
+            "- User: {}",
+            truncate_bytes(turn.user_prompt.trim(), 1_500)
+        ));
+    }
+    let assistant = truncate_bytes(&turn.assistant_outputs.join("\n"), 1_500 * 2);
+    if !assistant.trim().is_empty() {
+        lines.push(format!("- Assistant output: {}", assistant.trim()));
+    }
+    let details = truncate_bytes(&turn.latest_details.join("\n"), 1_500 * 2);
+    if !details.trim().is_empty() {
+        lines.push(format!(
+            "- Latest-turn tool/status/error details:\n{}",
+            details.trim()
+        ));
+    }
+    truncate_bytes(&lines.join("\n"), max_bytes)
+}
+
+
 #[derive(Debug, Clone, Default)]
 struct HandoffTurn {
     prompt_id: Option<String>,
@@ -725,6 +846,139 @@ mod tests {
                 TerminalOutputKind::ProviderError,
                 None,
                 error,
+            ),
+            HistoryEventTurnContext::default(),
+        )
+    }
+
+    fn tool_event(
+        sequence: u64,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        output: &str,
+    ) -> HistoryEvent {
+        HistoryEvent::transcript(
+            sequence,
+            &SessionHistoryEntry::provider_output(
+                session_id,
+                provider_run_id,
+                Some(agent_id),
+                TerminalOutputKind::ProviderTool,
+                Some("tool:test".to_string()),
+                output,
+            ),
+            HistoryEventTurnContext::default(),
+        )
+    }
+    #[test]
+    fn recreated_lease_excludes_unsubmitted_current_prompt() {
+        let mut current = user_event(3, "session", "agent", "current request");
+        current.prompt_id = Some("current".into());
+        let events = vec![
+            user_event(1, "session", "agent", "accepted goal"),
+            output_event(2, "session", "agent", "old-run", "earlier answer"),
+            current,
+        ];
+        let packet = build_recreated_lease_context(&events, "current", 24_000).unwrap();
+        assert!(packet.contains("accepted goal"));
+        assert!(packet.contains("earlier answer"));
+        assert!(!packet.contains("current request"));
+    }
+
+    #[test]
+    fn recreated_lease_keeps_interrupted_attempt_details_without_duplicate_request() {
+        let mut current = user_event(1, "session", "agent", "retry request");
+        current.prompt_id = Some("current".into());
+        let events = vec![
+            current,
+            tool_event(2, "session", "agent", "old-run", "partial work"),
+        ];
+        let packet = build_recreated_lease_context(&events, "current", 24_000).unwrap();
+        assert!(packet.contains("partial work"));
+        assert!(!packet.contains("retry request"));
+    }
+
+    #[test]
+    fn recreated_lease_budget_preserves_utf8_and_frame_with_native_context() {
+        let events = vec![user_event(
+            1,
+            "session",
+            "agent",
+            &"🦀日本語".repeat(10_000),
+        )];
+        for room in [0, 100, 250, 500, 24_000] {
+            if let Some(packet) = build_recreated_lease_context(&events, "current", room) {
+                assert!(packet.len() <= room);
+                assert!(packet.ends_with("</chariox_context_handoff>"));
+            }
+        }
+        let hidden = "🦀".repeat(10_000);
+        let room = crate::provider::claude_native_hidden_context_room(&hidden);
+        let packet = build_recreated_lease_context(&events, "current", room).unwrap();
+        crate::provider::ensure_claude_native_hidden_context_fits(
+            "recreated-worker-run",
+            &format!("{hidden}\n\n{packet}"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn recreated_lease_keeps_early_facts_and_streamed_answer_spacing() {
+        let mut events = vec![user_event(
+            1,
+            "session",
+            "agent",
+            "Keep codename amber-kestrel",
+        )];
+        for (seq, text) in [(2, "assistant fact: native"), (3, " "), (4, "continuity")] {
+            events.push(output_event(seq, "session", "agent", "old-run", text));
+        }
+        for index in 0..30 {
+            events.push(user_event(
+                5 + index * 2,
+                "session",
+                "agent",
+                &format!("Ordinary follow-up {index}"),
+            ));
+            events.push(output_event(
+                6 + index * 2,
+                "session",
+                "agent",
+                "old-run",
+                "A paragraph about ordinary work.",
+            ));
+        }
+        let packet = build_recreated_lease_context(&events, "current", 24_000).unwrap();
+        assert!(packet.contains("amber-kestrel"));
+        assert!(packet.contains("assistant fact: native continuity"));
+        assert!(packet.len() <= 24_000);
+    }
+
+    fn user_event(sequence: u64, session_id: &str, agent_id: &str, prompt: &str) -> HistoryEvent {
+        HistoryEvent::transcript(
+            sequence,
+            &SessionHistoryEntry::user_prompt(session_id, "attachment", agent_id, prompt),
+            HistoryEventTurnContext::default(),
+        )
+    }
+
+    fn output_event(
+        sequence: u64,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        output: &str,
+    ) -> HistoryEvent {
+        HistoryEvent::transcript(
+            sequence,
+            &SessionHistoryEntry::provider_output(
+                session_id,
+                provider_run_id,
+                Some(agent_id),
+                TerminalOutputKind::ProviderOutput,
+                None,
+                output,
             ),
             HistoryEventTurnContext::default(),
         )
