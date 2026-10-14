@@ -436,6 +436,14 @@ export type SessionBinding = {
 }
 
 export type BootstrapDeferredState = {
+  loadComposer?: () => Promise<{
+    sessionId: string
+    providerCatalog: ProviderCatalog
+    providerCommandCatalogs: ProviderCommandCatalogs
+    terminalCommandCatalog: TerminalCommandCatalog
+    promptHistoryEntries: string[]
+  }>
+
   promptInputHistory?: Promise<{ sessionId: string; entries: string[] }>
   waitingRoomDefaults?: Promise<{ provider?: string; model?: string; effort?: string }>
   providerCatalog?: Promise<ProviderCatalog>

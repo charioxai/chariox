@@ -26,6 +26,25 @@ test("MP-08 / MP-10: delayed composer history belongs to its unchanged startup a
   }
 })
 
+test("MP-08 / MP-10 composer inventory stays lazy and rejects a superseded attachment", async () => {
+  for (const replace of [false, true]) {
+    let finish!: (value: Awaited<ReturnType<NonNullable<BootstrapDeferredState["loadComposer"]>>>) => void
+    let calls = 0
+    const h = bootstrapHarness({ attachmentSessionId: "session-1", attachmentId: "binding-1", deferred: {
+      loadComposer: () => { calls++; return new Promise(resolve => { finish = resolve }) },
+    } })
+    h.controller.apply(); assert.equal(calls, 0)
+    const pending = h.controller.hydrateComposer(); void h.controller.hydrateComposer(); assert.equal(calls, 1)
+    if (replace) h.attachmentId = "binding-2"
+    const catalog = { all: [], connected: [], default: {} } as ProviderCatalog
+    finish({ sessionId: "session-1", providerCatalog: catalog, providerCommandCatalogs: {} as ProviderCommandCatalogs,
+      terminalCommandCatalog: { revision: "one", nodes: [] }, promptHistoryEntries: ["earlier"] })
+    await pending
+    assert.equal(h.providerCatalog, replace ? null : catalog)
+    assert.deepEqual(h.promptHistoryEntries, replace ? [] : ["earlier"])
+  }
+})
+
 test("deferred bootstrap controller applies provider catalog hydration", async () => {
   const providerCatalog = {} as ProviderCatalog
   const providerCommandCatalogs = {} as ProviderCommandCatalogs

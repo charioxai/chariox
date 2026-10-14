@@ -34,6 +34,7 @@ import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-c
 type AnyFn = (...args: any[]) => any
 
 export type CliInputRoutingCompositionDeps = {
+  hydrateComposer?: () => Promise<void>
   cloudClient?: import("./cloud-client.js").CloudClient
 
   roomWorkflowsOwnsInput?: () => boolean
@@ -572,6 +573,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const handlePromptKeyDown = (
     event: Parameters<typeof promptKeyDownController.handleKeyDown>[0],
   ) => {
+    void deps.hydrateComposer?.()
     if (deps.kernelApprovalOwnsInput?.()) {
       event.preventDefault?.()
       event.stopPropagation?.()

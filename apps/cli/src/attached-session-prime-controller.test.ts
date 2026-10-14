@@ -19,7 +19,7 @@ test("attached session prime clears the transcript when no agent is visible", as
   await harness.controller.prime(session({ agents: [], focused_agent_id: null }))
 
   assert.deepEqual(harness.historyCalls, [])
-  assert.deepEqual(harness.promptHistoryCalls, [{ sessionId: "session-1", generation: 1 }])
+  assert.deepEqual(harness.promptHistoryCalls, [], "MP-08 / MP-10: prompt navigation is loaded on demand")
   assert.deepEqual(harness.replaceCalls, [{ agentId: null, entries: [] }])
   assert.equal(harness.nextHistoryCursor, null)
 })
@@ -32,7 +32,7 @@ test("attached session prime seeds the visible agent transcript and pane preview
   await harness.controller.prime(session())
 
   assert.deepEqual(harness.historyCalls, [{ sessionId: "session-1", agentIds: ["agent-1"] }])
-  assert.deepEqual(harness.promptHistoryCalls, [{ sessionId: "session-1", generation: 1 }])
+  assert.deepEqual(harness.promptHistoryCalls, [], "MP-08 / MP-10: prompt navigation is loaded on demand")
   assert.deepEqual(harness.agentPaneEntries["agent-1"]?.map((entry) => entry.text), ["hello", "world"])
   assert.equal(harness.agentPanePreviews["agent-1"], "You: hello\nAsst: world")
   assert.deepEqual(harness.replaceCalls, [{

@@ -1,3 +1,4 @@
+import { recordPaneFirstFrame } from "./pane-first-frame-timing.js"
 import { toggleFocusedTranscriptDetails } from "./transcript-details-controller.js"
 import { createProviderLoginLinkOpener, localDesktopAvailable } from "./provider-login-link.js"
 import { createProviderLoginInteractionController } from "./provider-login-interaction-controller.js"
@@ -846,8 +847,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     applyResponseLayout,
   })
 
+  onCleanup(recordPaneFirstFrame(renderer, () => primaryTranscriptRuntimeStore.transcriptRenderables.size > 0))
   const {
-    mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript, flushDeferredRebuild,
+    hydrateComposer, mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript, flushDeferredRebuild,
     replaceTranscriptEntries, primeAttachedSessionBinding, bumpHistoryLoadGeneration, transcriptHistoryAutoloadController,
   } = createCliPrimaryTranscriptComposition({
     waitingRoomLaunchOwnershipRevision,
@@ -972,7 +974,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setAgentPaneEntries, setAgentPanePreviews, setAgentActivityLabels, setStreamingAgentId,
     setSubmitting, setWorking, setFatalError, setDaemonDisconnected,
     setNextHistoryCursor, setSessionHydratingState, setHistoryLoadingState, setStatusLine,
-    setProviderCatalogState, setTerminalCommandCatalogState, availableSessions, setAvailableSessions,
+    availableSessions, setAvailableSessions,
     scheduleShortViewportHistoryCheck: () => transcriptHistoryAutoloadController.scheduleShortViewportCheck(),
     updateSessionChrome, appendNotice, flashFooter, logProviderRunDebug,
   })
@@ -1043,7 +1045,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleKernelApprovalKey: kernelApprovals.handleKey,
     openKernelApprovals: kernelApprovals.openFromCommand,
     kernelApprovalOwnsInput: kernelApprovals.ownsInput,
-    dialogOverlayOpen, closeActiveDialogOverlay, activePrompt, handleCommandCenterKey,
+    hydrateComposer, dialogOverlayOpen, closeActiveDialogOverlay, activePrompt, handleCommandCenterKey,
     handleQueuedPromptKey: handleQueuedPromptStripKey,
     commandCenterOpen, promptHistoryIndex, promptHistoryDraft, navigatePromptHistoryInput,
     visibleTranscriptEntries, transcriptScrollboxRefController, commandCenterController, waitingRoomState,

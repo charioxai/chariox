@@ -191,7 +191,7 @@ test("attachBinding reattaches and hydrates the attached session before restorin
 
   await controller.attachBinding({ id: "session-2" }, false)
 
-  assert.equal(events.filter((event) => event === "setProviderCatalogState").length, 1)
+  assert.equal(events.filter((event) => event === "setProviderCatalogState").length, 0)
   assert.deepEqual(events.filter((event) => event !== "setProviderCatalogState"), [
     "setSessionHydratingState",
     "clearPendingPromptAttachments",
@@ -224,7 +224,6 @@ test("attachBinding reattaches and hydrates the attached session before restorin
     "logAttachedProviderRun",
     "setProviderRunState",
     "syncCliProviderSelection",
-    "getProviderCatalog",
     "reconcileWaitingRoom",
     "hydrateAttachedSessionBinding",
     "setMultiAgentResponseLayout",
@@ -1028,8 +1027,6 @@ test("attachBinding keeps the CLI attached when post-attach refresh steps fail",
   assert.equal(events.includes("focusPromptInput"), true)
   assert.deepEqual(warnings, [
     "failed to synchronize kernel event subscription after attach",
-    "failed to refresh provider catalog after attach",
-    "failed to refresh terminal command catalog after attach",
     "failed to hydrate attached session after attach",
     "failed to refresh session list after attach",
   ])

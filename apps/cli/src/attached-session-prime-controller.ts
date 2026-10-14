@@ -30,7 +30,7 @@ export function createAttachedSessionPrimeController(
   deps: AttachedSessionPrimeControllerDeps,
 ) {
   const prime = async (session: RuntimeSession) => {
-    const promptHistoryGeneration = deps.promptHistoryHydrationController.begin()
+    deps.promptHistoryHydrationController.begin()
     const visibleAgentId = selectResponsePaneAgents(
       session.agents,
       session.focused_agent_id,
@@ -41,7 +41,6 @@ export function createAttachedSessionPrimeController(
     if (!visibleAgentId) {
       deps.replaceTranscriptEntries([], null)
       deps.setNextHistoryCursor(null)
-      await deps.promptHistoryHydrationController.loadAndApply(session.id, promptHistoryGeneration)
       return
     }
 
@@ -49,7 +48,6 @@ export function createAttachedSessionPrimeController(
       session.id,
       session.agents.map((agent) => agent.id),
     )
-    await deps.promptHistoryHydrationController.loadAndApply(session.id, promptHistoryGeneration)
     const entriesByAgent = new Map(outline.agents.map((agent) => {
       return [
         agent.agent_id,

@@ -137,7 +137,28 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
     })
   }
 
+  let composerFlight: Promise<void> | undefined
+  const hydrateComposer = () => {
+    const load = deps.getDeferred()?.loadComposer
+    if (!load) return Promise.resolve()
+    if (composerFlight) return composerFlight
+    const attachment = deps.currentAttachmentId()
+    const promptHistory = deps.currentPromptHistoryEntries?.()
+    composerFlight = load().then(data => {
+      if (attachment !== deps.currentAttachmentId() || data.sessionId !== deps.currentAttachmentSessionId()) return
+      deps.setProviderCatalog(data.providerCatalog)
+      deps.setProviderCommandCatalogs(data.providerCommandCatalogs)
+      deps.setTerminalCommandCatalog(data.terminalCommandCatalog)
+      if (deps.currentPromptHistoryEntries?.() === promptHistory && deps.currentPromptHistoryIndex?.() == null) {
+        deps.setPromptHistoryEntries(data.promptHistoryEntries)
+      }
+      deps.updateSessionChrome()
+    }).catch(error => { composerFlight = undefined; warn("failed to load composer inventory", error) })
+    return composerFlight
+  }
+
   return {
+    hydrateComposer,
     apply,
   }
 }

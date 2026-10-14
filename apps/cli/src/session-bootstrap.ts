@@ -33,7 +33,7 @@ export type BootstrapDeps = {
     effort?: string
   }>
   listSessions: (client: LocalIpcClient) => Promise<RuntimeSession[]>
-  getProviderCatalog: (client: LocalIpcClient, logger?: CharioxLogger | null) => Promise<ProviderCatalog>
+  getProviderCatalog: (client: LocalIpcClient, logger?: CharioxLogger | null, options?: Parameters<typeof import("./provider-api.js").getProviderCatalog>[2]) => Promise<ProviderCatalog>
   getProviderCommandCatalogs: (client: LocalIpcClient, logger?: CharioxLogger | null) => Promise<ProviderCommandCatalogs>
   getTerminalCommandCatalog: (client: LocalIpcClient, logger?: CharioxLogger | null) => Promise<TerminalCommandCatalog>
   createSession: (
@@ -243,16 +243,16 @@ export async function bootstrapSession(
   const hydratedSession = initialView && providerSettlement.action !== "launched"
     ? attachedSession : await deps.getSessionState(client, session.id)
   const visibleAgentId = deps.resolveVisibleAgentId(hydratedSession, preferences)
-  const providerCatalogPromise = deps.getProviderCatalog(client, deps.logger)
-  const providerCommandCatalogsPromise = deps.getProviderCommandCatalogs(client, deps.logger)
-  const terminalCommandCatalogPromise = deps.getTerminalCommandCatalog(client, deps.logger)
-  // MP-08 / MP-10: the composer inventory must not delay an already bundled
-  // transcript. Its later application is fenced by attachment and input ownership.
-  const promptInputHistoryPromise = initialView && deps.getPromptInputHistory
-    ? loadSessionPromptHistory(client, session.id, deps).then(entries => ({ sessionId: session.id, entries }))
-    : undefined
-  // Keep an early failure handled until the mounted controller observes it.
-  void promptInputHistoryPromise?.catch(() => {})
+  // MP-08 / MP-10: composer inventories are user requested, never attach work.
+  let composerFlight: ReturnType<NonNullable<import("./cli-types.js").BootstrapDeferredState["loadComposer"]>> | undefined
+  const loadComposer = () => composerFlight ??= Promise.all([
+    deps.getProviderCatalog(client, deps.logger, { provider: options.provider ?? null, accountProfile: options.accountProfile }),
+    deps.getProviderCommandCatalogs(client, deps.logger),
+    deps.getTerminalCommandCatalog(client, deps.logger),
+    loadSessionPromptHistory(client, session.id, deps),
+  ]).then(([providerCatalog, providerCommandCatalogs, terminalCommandCatalog, promptHistoryEntries]) => ({
+    sessionId: session.id, providerCatalog, providerCommandCatalogs, terminalCommandCatalog, promptHistoryEntries,
+  })).catch(error => { composerFlight = undefined; throw error })
   const attachedHistoryPromise = hydrateAttachedHistory(
     client,
     session.id,
@@ -260,7 +260,7 @@ export async function bootstrapSession(
     hydratedSession,
     deps,
     initialView?.history,
-    Boolean(promptInputHistoryPromise),
+    true,
   )
 
   return {
@@ -285,10 +285,7 @@ export async function bootstrapSession(
     options,
     preferences,
     deferred: {
-      ...(promptInputHistoryPromise ? { promptInputHistory: promptInputHistoryPromise } : {}),
-      providerCatalog: providerCatalogPromise,
-      providerCommandCatalogs: providerCommandCatalogsPromise,
-      terminalCommandCatalog: terminalCommandCatalogPromise,
+      loadComposer,
       attachedHistory: attachedHistoryPromise,
     },
   }

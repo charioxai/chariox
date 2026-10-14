@@ -19,18 +19,20 @@ test("MP-08 / MP-10: initial-view bootstrap uses bundled history and preserves b
   const session = { id: "s", active_provider_run_id: "run-1", agents: [{ id: "a" }], focused_agent_id: "a", workspace_id: "/workspace", worktree_id: "/workspace" }
   const outline = { agents: [outlineAgent("a", "real earlier prompt", "earlier answer")] }
   const unexpected = async () => { throw new Error("extra attach/state/history or destructive catch-up") }
+  let bulkReads = 0
   const pendingPromptHistory = new Promise<never>(() => {})
   const boot = await bootstrapSession({} as never, { clientId: "cli", sessionId: "s", model: "known", effort: "high", provider: "codex", accountProfile: "default" }, "/workspace", "/workspace", {}, {
     listSessions: async () => [session], resolveSession: async () => session,
     attachSessionView: async () => ({ attachment: { id: "binding", session_id: "s" }, session, history: outline }),
     attachToSession: unexpected, getSessionState: unexpected, catchUpAttachedSession: unexpected,
     getSessionHistoryOutline: unexpected, tryGetProviderRun: async () => null,
-    getPromptInputHistory: () => pendingPromptHistory,
-    getProviderCatalog: async () => fallbackProviderCatalog(),
-    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
-    getTerminalCommandCatalog: async () => terminalCatalog(),
+    getPromptInputHistory: () => { bulkReads++; return pendingPromptHistory },
+    getProviderCatalog: async () => { bulkReads++; return fallbackProviderCatalog() },
+    getProviderCommandCatalogs: async () => { bulkReads++; return fallbackProviderCommandCatalogs() },
+    getTerminalCommandCatalog: async () => { bulkReads++; return terminalCatalog() },
     resolveVisibleAgentId: () => "a", prepareHistoryOutlineAgent: hydrateSessionHistoryOutlineAgentEntries,
   } as never)
+  assert.equal(bulkReads, 0, "MP-08 / MP-10: attach must not request composer inventories")
   assert.equal(boot.binding?.attachment.id, "binding")
   const history = await Promise.race([boot.deferred?.attachedHistory, new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 20))])
   assert.notEqual(history, "blocked", "bundled transcript must not wait for composer input history")
@@ -288,7 +290,7 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
     },
   )
 
-  assert.deepEqual(calls, ["resolve", "attach", "session", "launch", "catchup", "session", "outline:agent-a", "prompt-history"])
+  assert.deepEqual(calls, ["resolve", "attach", "session", "launch", "catchup", "session", "outline:agent-a"])
   assert.deepEqual(launched, [{ provider: "codex", model: "codex/gpt-5.4-mini", effort: "low" }])
   assert.equal(bootstrap.binding?.attachment.id, "attachment-1")
   assert.equal(bootstrap.binding?.providerRun?.id, "run-1")
@@ -297,7 +299,8 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
   const deferredHistory = await bootstrap.deferred?.attachedHistory
   assert.deepEqual(deferredHistory?.historyEntries, [{ id: 1, role: "user", text: "hi" }])
   assert.deepEqual(deferredHistory?.agentEntries["agent-a"], [{ id: 1, role: "user", text: "hi" }])
-  assert.deepEqual(deferredHistory?.promptHistoryEntries, ["hi"])
+  assert.deepEqual(deferredHistory?.promptHistoryEntries, [])
+  assert.deepEqual((await bootstrap.deferred?.loadComposer?.())?.promptHistoryEntries, ["hi"])
   assert.deepEqual(deferredHistory?.nextHistoryCursor, {
     agentId: "agent-a",
     cursor: { before_sequence: 9 },
@@ -499,7 +502,8 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
   assert.equal(bootstrap.binding?.attachment.id, "attachment-2")
   assert.deepEqual(bootstrap.binding?.promptHistoryEntries, [])
   const deferredHistory = await bootstrap.deferred?.attachedHistory
-  assert.deepEqual(deferredHistory?.promptHistoryEntries, ["hello"])
+  assert.deepEqual(deferredHistory?.promptHistoryEntries, [])
+  assert.deepEqual((await bootstrap.deferred?.loadComposer?.())?.promptHistoryEntries, ["hello"])
   const assistantEntry = deferredHistory?.historyEntries.find((entry) => entry.role === "assistant")
   assert.equal(assistantEntry?.text, "while you were away")
 })

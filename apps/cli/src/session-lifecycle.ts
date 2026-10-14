@@ -17,13 +17,10 @@ import {
   type SessionLifecycleLaunchSelection,
 } from "@chariox/kernel-client/session-lifecycle-state"
 import { settleAttachProviderRun } from "./attach-provider-run.js"
-import { refreshAttachedCatalogs } from "./attached-catalog-refresh.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { SessionListEntry } from "./sessions.js"
 
-type ProviderCatalog = Record<string, unknown>
-type TerminalCommandCatalog = Record<string, unknown>
 type LaunchSelection = SessionLifecycleLaunchSelection
 
 type ProviderSelectionState = {
@@ -101,11 +98,7 @@ type SessionLifecycleDeps = {
   tryGetProviderRun: (
     providerRunId: string,
   ) => Promise<RuntimeProviderRun | null>
-  setProviderCatalogState: (catalog: ProviderCatalog) => void
-  setTerminalCommandCatalogState: (catalog: TerminalCommandCatalog) => void
   syncCliProviderSelection: (selection: ProviderSelectionState) => void
-  getProviderCatalog: () => Promise<ProviderCatalog>
-  getTerminalCommandCatalog: () => Promise<TerminalCommandCatalog>
   primeAttachedSessionBinding?: (session: RuntimeSession) => Promise<void>
   hydrateAttachedSessionBinding: (
     sessionId: string,
@@ -403,16 +396,6 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
           throw new Error(`unhandled attach provider launch decision ${String(exhaustive)}`)
         }
       }
-
-      void refreshAttachedCatalogs({ sessionId: session.id, attachmentId: attachment.id }, {
-        isCurrent: () => deps.sessionState().id === session.id && deps.attachmentState()?.id === attachment.id,
-        getProviderCatalog: deps.getProviderCatalog,
-        setProviderCatalog: deps.setProviderCatalogState,
-        getCommandCatalog: deps.getTerminalCommandCatalog,
-        setCommandCatalog: deps.setTerminalCommandCatalogState,
-        formatError,
-        ...(deps.logWarning ? { logWarning: deps.logWarning } : {}),
-      })
 
       deps.reconcileWaitingRoom(deps.waitingRoomState())
 
