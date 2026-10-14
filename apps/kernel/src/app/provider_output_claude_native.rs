@@ -1117,6 +1117,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 .providers
                 .apply_structured_output_metadata(provider_run_id, &metadata)?;
             if let Ok(run) = self.app.providers.get_run(provider_run_id) {
+                super::provider_output_resume::persist_resolved_resume_state(
+                    self.app, &run, &metadata,
+                )?;
                 self.app.update_provider_run_projection(run);
             }
         }
