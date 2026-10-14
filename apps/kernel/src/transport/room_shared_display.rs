@@ -3,15 +3,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum RoomDisplayCommand {
-    Attach,
+    Attach {},
     Capture {
         after_sequence: u64,
         reset: bool,
         congested: bool,
     },
-    Suspend,
-    Resume,
-    Close,
+    Suspend {},
+    Resume {},
+    Close {},
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct SealedRoomDisplayFrame {
@@ -31,7 +31,7 @@ pub(crate) enum RoomDisplayResult {
     Updated {
         binding: crate::slice::RoomDisplayBinding,
     },
-    Settled,
+    Settled {},
 }
 
 // MP-08/MP-11: kernel-resolved references only, never viewer rectangles/XIDs.

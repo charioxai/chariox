@@ -162,7 +162,7 @@ impl KernelRuntimeState {
                         &caller.caller,
                         subscription_id,
                         *generation,
-                        crate::transport::room_shared_display::RoomDisplayCommand::Close,
+                        crate::transport::room_shared_display::RoomDisplayCommand::Close {},
                     )
                     .await;
             }
@@ -431,7 +431,7 @@ impl KernelRuntimeState {
             } => Some((
                 subscription_id,
                 *generation,
-                crate::transport::room_shared_display::RoomDisplayCommand::Attach,
+                crate::transport::room_shared_display::RoomDisplayCommand::Attach {},
             )),
             KernelBrowserDisplayRequest::Suspend {
                 subscription_id,
@@ -439,7 +439,7 @@ impl KernelRuntimeState {
             } => Some((
                 subscription_id,
                 *generation,
-                crate::transport::room_shared_display::RoomDisplayCommand::Suspend,
+                crate::transport::room_shared_display::RoomDisplayCommand::Suspend {},
             )),
             KernelBrowserDisplayRequest::Resume {
                 subscription_id,
@@ -447,7 +447,7 @@ impl KernelRuntimeState {
             } => Some((
                 subscription_id,
                 *generation,
-                crate::transport::room_shared_display::RoomDisplayCommand::Resume,
+                crate::transport::room_shared_display::RoomDisplayCommand::Resume {},
             )),
             _ => None,
         };

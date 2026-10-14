@@ -305,7 +305,7 @@ impl KernelRuntimeState {
                     session_id: lease.session_id.clone(),
                     slice_id: lease.slice_id.clone(),
                     lease_id: id.into(),
-                    command: RoomDisplayCommand::Resume,
+                    command: RoomDisplayCommand::Resume {},
                 },
             )
             .await?;
@@ -349,11 +349,11 @@ impl KernelRuntimeState {
                 &lease.slice_id,
             )
             .await?;
-        if matches!(command, RoomDisplayCommand::Resume) {
+        if matches!(command, RoomDisplayCommand::Resume {}) {
             return serde_json::to_value(self.resume_room_display(&mut lease, id, &slice).await?)
                 .map_err(|_| error());
         }
-        let close = matches!(command, RoomDisplayCommand::Close);
+        let close = matches!(command, RoomDisplayCommand::Close {});
         let result = self
             .room_display_peer(
                 &slice,
@@ -365,7 +365,7 @@ impl KernelRuntimeState {
                 },
             )
             .await?;
-        if !matches!(result, RoomDisplayResult::Settled) {
+        if !matches!(result, RoomDisplayResult::Settled {}) {
             return Err(error());
         }
         lease.used = Instant::now();
@@ -517,7 +517,7 @@ mod tests {
                 "room-1",
                 "slice-1",
                 "absent",
-                RoomDisplayCommand::Attach
+                RoomDisplayCommand::Attach {}
             )
             .await
             .is_err());

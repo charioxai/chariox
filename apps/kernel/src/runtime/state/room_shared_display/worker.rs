@@ -156,11 +156,11 @@ impl KernelRuntimeState {
             .capture_guard()
             .map_err(|_| error())?;
         let op = match &command {
-            RoomDisplayCommand::Attach => "display_attach",
+            RoomDisplayCommand::Attach {} => "display_attach",
             RoomDisplayCommand::Capture { .. } => "screenshot",
-            RoomDisplayCommand::Suspend => "display_suspend",
-            RoomDisplayCommand::Resume => "display_resume",
-            RoomDisplayCommand::Close => "unsubscribe",
+            RoomDisplayCommand::Suspend {} => "display_suspend",
+            RoomDisplayCommand::Resume {} => "display_resume",
+            RoomDisplayCommand::Close {} => "unsubscribe",
         };
         let mut params = serde_json::json!({"op":op,"subscription_id":lease_id,"observed_by":lease_id,"generation":lease.binding.generation,"viewport":lease.viewport});
         if let RoomDisplayCommand::Capture {
@@ -175,7 +175,7 @@ impl KernelRuntimeState {
         let mut result = self.room_producer_request(session_id, params).await?;
         lease.used = Instant::now();
         match command {
-            RoomDisplayCommand::Resume => {
+            RoomDisplayCommand::Resume {} => {
                 let binding: RoomDisplayBinding =
                     serde_json::from_value(result).map_err(|_| error())?;
                 if binding.subscription_id == lease_id || binding.source != lease.binding.source {
@@ -220,16 +220,16 @@ impl KernelRuntimeState {
                     }),
                 })
             }
-            RoomDisplayCommand::Close => {
+            RoomDisplayCommand::Close {} => {
                 self.owned
                     .room_display_leases
                     .worker
                     .lock()
                     .map_err(|_| error())?
                     .remove(lease_id);
-                Ok(RoomDisplayResult::Settled)
+                Ok(RoomDisplayResult::Settled {})
             }
-            _ => Ok(RoomDisplayResult::Settled),
+            _ => Ok(RoomDisplayResult::Settled {}),
         }
     }
 }
