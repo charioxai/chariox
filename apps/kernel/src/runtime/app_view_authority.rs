@@ -7,13 +7,17 @@ use crate::{
         kernel_browser_host::KernelBrowserResourceGrant,
     },
 };
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
 type AgentGrantCheck = Arc<dyn Fn(&AgentService) -> bool + Send + Sync>;
 #[derive(Clone)]
 pub(crate) struct AppViewAuthority {
     agent: Option<(AgentServiceStore, AgentGrantCheck)>,
     browser: Option<KernelBrowserResourceGrant>,
+    installation: Option<(Arc<AtomicU64>, u64)>,
 }
 impl AppViewAuthority {
     pub(crate) fn new(
@@ -21,8 +25,18 @@ impl AppViewAuthority {
         agent: Option<&AgentInstance>,
         installation: &str,
         browser: Option<KernelBrowserResourceGrant>,
+        epoch: Option<Arc<AtomicU64>>,
     ) -> Self {
+        let installation_epoch = epoch.map(|epoch| {
+            let revision = epoch.load(Ordering::Acquire);
+            (epoch, revision)
+        });
         let agent = agent.map(|agent| {
+            let expected_grant = agent
+                .extension_grants()
+                .iter()
+                .find(|grant| grant.kind == ExtensionKind::App && grant.name == installation)
+                .cloned();
             let (id, session, owner, installation) = (
                 agent.id().to_owned(),
                 agent.session_id().to_owned(),
@@ -34,11 +48,18 @@ impl AppViewAuthority {
                     current.session_id() == session
                         && current.owner_user_id() == owner
                         && current.has_extension_grant(ExtensionKind::App, &installation)
+                        && current.extension_grants().iter().find(|grant| {
+                            grant.kind == ExtensionKind::App && grant.name == installation
+                        }) == expected_grant.as_ref()
                 })
             });
             (agents, check)
         });
-        Self { agent, browser }
+        Self {
+            agent,
+            browser,
+            installation: installation_epoch,
+        }
     }
     pub(crate) fn check(&self) -> Result<(), BrowserAppViewError> {
         self.commit(|| Ok(()))
@@ -49,7 +70,7 @@ impl AppViewAuthority {
         &self,
         call: impl FnOnce() -> Result<T, BrowserAppViewError>,
     ) -> Result<T, BrowserAppViewError> {
-        if self.browser.as_ref().is_some_and(|grant| grant.cancelled()) {
+        if self.is_cancelled() {
             return Err(not_granted());
         }
         self.with_agent(|| match &self.browser {
@@ -57,38 +78,42 @@ impl AppViewAuthority {
             None => call(),
         })
     }
-    /// Installation authority spans the writer wait. Browser authority commits
-    /// inside the retained operation budget at its actual enqueue boundary.
-    pub(crate) fn enqueue<T>(
+    /// SQLite admission must remain cancellable while its writer is busy. Take
+    /// installation authority only at the budget's physical enqueue boundary.
+    pub(crate) fn commit_installation<T>(
         &self,
-        call: impl FnOnce() -> Result<T, BrowserAppViewError>,
+        call: impl FnOnce() -> T,
     ) -> Result<T, BrowserAppViewError> {
-        if self.browser.as_ref().is_some_and(|grant| grant.cancelled()) {
-            return Err(not_granted());
-        }
-        self.with_agent(call)
+        self.with_agent(|| Ok(call()))
     }
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.browser.as_ref().is_some_and(|grant| grant.cancelled())
+            || self
+                .installation
+                .as_ref()
+                .is_some_and(|(epoch, revision)| epoch.load(Ordering::Acquire) != *revision)
+    }
+
     fn with_agent<T>(
         &self,
         call: impl FnOnce() -> Result<T, BrowserAppViewError>,
     ) -> Result<T, BrowserAppViewError> {
+        if self.is_cancelled() {
+            return Err(not_granted());
+        }
         let agents = self.agent.as_ref().map(|(store, _)| store.read());
         if let (Some(agents), Some((_, check))) = (&agents, &self.agent) {
-            if !check(agents) {
+            if self.is_cancelled() || !check(agents) {
                 return Err(not_granted());
             }
         }
         call()
     }
 
-    /// Browser revocation wakes cold acquisition and a pending worker reply.
-    /// Poll only the lock-free epoch: an enqueue may hold the authority locks.
+    /// Either retained grant permanently cancels a cold lease or pending reply.
+    /// Poll lock-free epochs: the writer may hold the authority locks.
     pub(crate) async fn cancelled(&self) {
-        let Some(grant) = &self.browser else {
-            std::future::pending::<()>().await;
-            return;
-        };
-        while !grant.cancelled() {
+        while !self.is_cancelled() {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
     }

@@ -261,7 +261,11 @@ impl KernelRuntimeState {
                         return Err(app_binding_error("App acquisition provider run changed"));
                     }
                 }
-                if *epochs.get(&key).unwrap_or(&0) != permit.target_revision {
+                if epochs
+                    .get(&key)
+                    .map_or(0, |epoch| epoch.load(std::sync::atomic::Ordering::Acquire))
+                    != permit.target_revision
+                {
                     return Err(app_binding_error(
                         "App binding changed while acquisition was pending",
                     ));
@@ -314,7 +318,10 @@ impl KernelRuntimeState {
             } else {
                 commit()?
             };
-            *epochs.entry(key).or_default() += 1;
+            epochs
+                .entry(key)
+                .or_default()
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             agent
         };
         self.owned.session_snapshot(agent.session_id())?;
@@ -489,7 +496,10 @@ impl KernelRuntimeState {
             let mut revoked = Vec::new();
             for id in ids {
                 revoked.push(agents.revoke_extension(&id, ExtensionKind::App, name)?);
-                *epochs.entry((id, name.to_string())).or_default() += 1;
+                epochs
+                    .entry((id, name.to_string()))
+                    .or_default()
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             }
             (revoked[0].clone(), revoked)
         };

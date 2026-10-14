@@ -9,6 +9,7 @@ pub(crate) struct AppOperationBudget {
     deadline: Instant,
     cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
     resource: Option<super::kernel_browser_host::KernelBrowserResourceGrant>,
+    installation: Option<Arc<super::app_view_authority::AppViewAuthority>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -25,6 +26,7 @@ impl AppOperationBudget {
         Self {
             deadline: request.deadline,
             resource: None,
+            installation: None,
             cancelled: Arc::new(move || cancellation.is_cancelled()),
         }
     }
@@ -36,6 +38,7 @@ impl AppOperationBudget {
         Self {
             deadline: Instant::now() + std::time::Duration::from_secs(30),
             resource: None,
+            installation: None,
             cancelled: Arc::new(cancelled),
         }
     }
@@ -47,6 +50,7 @@ impl AppOperationBudget {
         Self {
             deadline: self.deadline,
             resource: self.resource.clone(),
+            installation: self.installation.clone(),
             cancelled: Arc::new(move || parent() || cancelled()),
         }
     }
@@ -63,6 +67,18 @@ impl AppOperationBudget {
         self.resource = Some(resource);
         self
     }
+    pub(crate) fn with_installation(
+        mut self,
+        authority: super::app_view_authority::AppViewAuthority,
+    ) -> Self {
+        let parent = self.cancelled.clone();
+        let authority = Arc::new(authority);
+        let observed = authority.clone();
+        self.cancelled = Arc::new(move || parent() || observed.is_cancelled());
+        self.installation = Some(authority);
+        self
+    }
+
     pub(crate) fn commit<T, E: From<AppOperationStopped>>(
         &self,
         call: impl FnOnce() -> Result<T, E>,
@@ -72,11 +88,17 @@ impl AppOperationBudget {
             self.check()?;
             call()
         };
-        match &self.resource {
+        let enqueue = || match &self.resource {
             Some(resource) => resource
                 .commit(commit)
                 .map_err(|_| E::from(AppOperationStopped::Cancelled))?,
             None => commit(),
+        };
+        match &self.installation {
+            Some(authority) => authority
+                .commit_installation(enqueue)
+                .map_err(|_| E::from(AppOperationStopped::Cancelled))?,
+            None => enqueue(),
         }
     }
 
@@ -99,6 +121,7 @@ impl AppOperationBudget {
         Self {
             deadline: self.deadline,
             resource: self.resource.clone(),
+            installation: self.installation.clone(),
             cancelled: Arc::new(move || {
                 let result = cancelled();
                 observe();
@@ -115,6 +138,7 @@ impl AppOperationBudget {
         Self {
             deadline,
             resource: None,
+            installation: None,
             cancelled: Arc::new(cancelled),
         }
     }

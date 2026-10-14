@@ -777,6 +777,12 @@ impl KernelRuntimeState {
             },
             &binding.installation,
             tracked.browser_grant(),
+            match &caller {
+                ViewCaller::Agent(agent) => {
+                    Some(self.app_binding_epoch(agent.id(), &binding.installation))
+                }
+                ViewCaller::Owner(_) => None,
+            },
         );
         authority.check()?;
         let leased = tokio::select! {
@@ -812,7 +818,14 @@ impl KernelRuntimeState {
                 lease.catalog().clone(),
                 self.app_control().admission(),
             )
-            .request_view(tool, input, authority.clone(), tracked.operation_budget())
+            .request_view(
+                tool,
+                input,
+                authority.clone(),
+                tracked
+                    .operation_budget()
+                    .with_installation(authority.clone()),
+            )
             .await
             .map_err(|error| view_error(&error.code, &error.message));
             authority.check()?;
@@ -835,15 +848,16 @@ impl KernelRuntimeState {
         };
         let caller = view_caller(binding, caller, turn);
         let tool_name = tool;
-        let operation_budget = tracked.operation_budget();
+        let operation_budget = tracked
+            .operation_budget()
+            .with_installation(authority.clone());
         let still_granted = authority.clone();
         let response = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            still_granted.enqueue(|| {
-                store
-                    .enqueue_app_tool(slot, &tool_name, input, caller, operation_budget)
-                    .map_err(|error| coded(app_call_errors::enqueue_error(&error)))
-            })
+            still_granted.check()?;
+            store
+                .enqueue_app_tool(slot, &tool_name, input, caller, operation_budget)
+                .map_err(|error| coded(app_call_errors::enqueue_error(&error)))
         })
         .await
         .map_err(|_| unavailable())??;

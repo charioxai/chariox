@@ -16,7 +16,8 @@ pub(super) fn refused(reason: UserDomainRefusalReason) -> DaemonError {
 /// Revisions are process-local; persisted grants carry their own generation.
 #[derive(Default)]
 pub(super) struct AppGrantEpochs {
-    pub(super) revisions: std::sync::Mutex<BTreeMap<(String, String), u64>>,
+    pub(super) revisions:
+        std::sync::Mutex<BTreeMap<(String, String), Arc<std::sync::atomic::AtomicU64>>>,
     stopped: std::sync::atomic::AtomicBool,
     changed: Notify,
 }
@@ -73,7 +74,8 @@ mod tests {
         let cause = grant.app_grant.as_mut().unwrap();
         let original = cause.clone();
         assert!(original.expires_at_ms <= crate::session::unix_epoch_ms() + 8 * 3_600_000);
-        cause.expires_at_ms = crate::session::unix_epoch_ms() + 500;
+        // Setup can refresh provider manifests; start the 500 ms wake only after setup.
+        cause.expires_at_ms = crate::session::unix_epoch_ms() + 60_000;
         let short = cause.clone();
         state
             .owned
@@ -112,6 +114,17 @@ mod tests {
             Some(&short),
             "MP-11: repeated binding does not renew or replace delegated authority"
         );
+        for agent in [&unchanged, &child] {
+            let mut grant = agent.extension_grants()[0].clone();
+            grant.app_grant.as_mut().unwrap().expires_at_ms = crate::session::unix_epoch_ms() + 500;
+            let cause = grant.app_grant.clone().unwrap();
+            state
+                .owned
+                .agent_store
+                .grant_extension(agent.id(), grant)
+                .unwrap();
+            state.arm_app_grant_expiry(agent.id(), "installed", &cause);
+        }
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
                 let parent = state.owned.agent_store.get_agent(parent.id()).unwrap();
@@ -392,15 +405,24 @@ impl KernelRuntimeState {
         Ok(prompt)
     }
 
-    pub(super) fn app_binding_revision(&self, agent: &str, installation: &str) -> u64 {
-        *self
-            .owned
+    pub(super) fn app_binding_epoch(
+        &self,
+        agent: &str,
+        installation: &str,
+    ) -> Arc<std::sync::atomic::AtomicU64> {
+        self.owned
             .app_grant_epochs
             .revisions
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&(agent.into(), installation.into()))
-            .unwrap_or(&0)
+            .entry((agent.into(), installation.into()))
+            .or_default()
+            .clone()
+    }
+
+    pub(super) fn app_binding_revision(&self, agent: &str, installation: &str) -> u64 {
+        self.app_binding_epoch(agent, installation)
+            .load(Ordering::Acquire)
     }
 
     pub(super) async fn revoke_agent_app_capability_grants(
