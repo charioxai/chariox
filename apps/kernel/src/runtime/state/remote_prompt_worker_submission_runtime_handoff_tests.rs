@@ -415,7 +415,7 @@ async fn recovered_room_scrubs_cached_context_before_remote_transport() {
     assert_home_handoff_envelope_with_recovery(true, false, true, true).await;
 }
 
-// MP-08 / MP-10 / MP-11: history uses raw worker IDs on the real projection path.
+// MP-08 / MP-10 / MP-11: home history keeps the current replica namespace.
 #[tokio::test]
 async fn review976_completed_projection_skips_replay_until_lease_identity_changes() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
@@ -508,9 +508,13 @@ async fn review976_completed_projection_skips_replay_until_lease_identity_change
         .operational_history_store()
         .load_session_events(session.id(), Some(agent.id()))
         .unwrap();
+    let home_run_id = format!("leased:{CANCELLATION_GUARD_LEASED_AGENT_ID}:raw-worker-run");
     assert!(events.iter().any(|event| event.kind
         == crate::history::HistoryEventKind::ProviderOutput
-        && event.provider_run_id.as_deref() == Some("raw-worker-run")));
+        && event.provider_run_id.as_deref() == Some(home_run_id.as_str())));
+    assert!(events
+        .iter()
+        .all(|event| event.provider_run_id.as_deref() != Some("raw-worker-run")));
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     let current = runtime.owned.agent_store.get_agent(agent.id()).unwrap();

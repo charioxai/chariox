@@ -100,6 +100,8 @@ impl ProviderOutputClaudeNativeBridge<'_> {
                 attachment_context,
             ])
         };
-        Ok(hidden_context)
+        // MP-08 / MP-10 / MP-11: hook ACK rebuilds the original scheduled inputs.
+        // Fit optional lease replay again after adding current worker instructions.
+        crate::provider::fit_claude_native_hidden_context(provider_run.id(), hidden_context)
     }
 }
