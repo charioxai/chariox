@@ -1763,6 +1763,8 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
         "Claude Code ❯ ⏵⏵ mode (shift+tab to cycle)",
     )
     .expect("composer fixture should be written");
+    let output_ready = app.providers.output_ready_signal();
+    output_ready.take_ready_provider_run_ids();
     let typed = ProviderOutputClaudeNativeBridge::new(&mut app)
         .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
         .expect("approved task should be typed through dispatch");
@@ -1770,6 +1772,8 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
     assert!(claude_native_marker(&context_file)
         .as_deref()
         .is_some_and(|value| value.starts_with("submit-wait:")));
+    assert!(output_ready.next_due_at_ms().is_some(),
+        "MP-08 / MP-10: the first visible prompt must schedule its deferred Enter without PTY output");
 
     std::thread::sleep(std::time::Duration::from_millis(300));
     let submitted = ProviderOutputClaudeNativeBridge::new(&mut app)
