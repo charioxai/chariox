@@ -253,7 +253,7 @@ export function installMirror2(sanitizeMirrorCss) {
         if (lower === 'value' && html && node.localName === 'input' && (node.type === 'password' || node.type === 'hidden')) continue;
         // Presentation attributes may reference paint servers by fragment only.
         if (/url\s*\(/i.test(value) && !/^\s*url\(\s*["']?#[\w-]+["']?\s*\)\s*$/.test(value)) continue;
-        if (/^\s*javascript:/i.test(value)) continue;
+        if (/javascript:/i.test(value)) continue;
         attrs[name] = value;
       }
       const href = node.getAttribute('href') ?? node.getAttribute('xlink:href');

@@ -160,3 +160,12 @@ test('MP-10 M2: the renderer paints the prefix and retains it while ordinary chi
     assert(complete);assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.querySelectorAll('p').length),10002);
     assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('first')?.textContent),'Viewport first');
   }));
+
+// MP-08/MP-10/MP-11 M2: WHATWG's explanatory title attributes contain a
+// javascript: literal away from the start; the strict client rejects them.
+test('MP-10/MP-11 M2: descriptive scheme literals cannot poison a continuation',()=>roundtrip(
+  '<!doctype html><h1>First viewport</h1><main>'+'<p>Middle</p>'.repeat(10001)+'<dfn id="scheme" title="An example javascript: scheme">javascript: stays visible text</dfn></main>','',async({page,next,apply})=>{
+    await apply(await next());let done=false;
+    for(let n=0;n<200&&!done;n++){await apply(await next());done=await page.evaluate(()=>window.r.frame.contentDocument.getElementById('scheme')?.textContent==='javascript: stays visible text');}
+    assert(done);assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('scheme').getAttribute('title')),null);
+  }));
