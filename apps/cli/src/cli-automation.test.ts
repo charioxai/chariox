@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
-import { mkdtemp } from "node:fs/promises"
+import { mkdtemp, readlink, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { createConnection, type Socket } from "node:net"
 import test from "node:test"
 
@@ -72,7 +72,7 @@ test("startCliAutomationServer frames json-line requests", async () => {
     })
   } finally {
     socket.destroy()
-    stopCliAutomationServer(server, socketPath)
+    stopCliAutomationServer(server)
   }
 })
 
@@ -111,3 +111,54 @@ function readAutomationLine(socket: Socket): Promise<Record<string, unknown>> {
     socket.once("error", onError)
   })
 }
+
+test("an old automation server cannot unlink its replacement's socket", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chariox-cli-replacement-"))
+  const socketPath = join(dir, "automation.sock")
+  const options = { socketPath, formatError: String, handleRequest: () => "replacement" }
+  const oldServer = await startCliAutomationServer(options)
+  const newServer = await startCliAutomationServer(options)
+  try {
+    stopCliAutomationServer(oldServer)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const socket = await connect(socketPath)
+    try {
+      const response = readAutomationLine(socket)
+      socket.write('{"id":1,"action":"snapshot"}\n')
+      assert.deepEqual(await response, { id: 1, ok: true, data: "replacement" })
+    } finally {
+      socket.destroy()
+    }
+  } finally {
+    stopCliAutomationServer(newServer)
+  }
+})
+
+test("automation cleanup synchronously removes its own public socket", async () => {
+  const { lstat } = await import("node:fs/promises")
+  const dir = await mkdtemp(join(tmpdir(), "chariox-cli-stop-"))
+  const socketPath = join(dir, "automation.sock")
+  const server = await startCliAutomationServer({ socketPath, formatError: String, handleRequest: () => true })
+  stopCliAutomationServer(server)
+  await assert.rejects(lstat(socketPath), { code: "ENOENT" })
+})
+
+// MP-08/MP-11: a disk-backed TMPDIR must not lengthen a caller's short socket.
+test("automation binds beside the requested short socket", async () => {
+  const dir = await mkdtemp("/tmp/cx-")
+  const socketPath = join(dir, "a.sock")
+  let server
+  try {
+    server = await startCliAutomationServer({ socketPath, formatError: String, handleRequest: () => true })
+    const privatePath = await readlink(socketPath)
+    assert.equal(dirname(dirname(privatePath)), dir)
+    const socket = await connect(socketPath)
+    socket.destroy()
+    stopCliAutomationServer(server)
+    server = undefined
+    await assert.rejects(readlink(socketPath), { code: "ENOENT" })
+  } finally {
+    if (server) stopCliAutomationServer(server)
+    await rm(dir, { recursive: true, force: true })
+  }
+})
