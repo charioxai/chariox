@@ -288,7 +288,9 @@ export class Mirror2 {
     const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
     if (reset) this.host.timing?.(`mirror2_reset ${resetReason}`, started);
-    if (resetReason === 'document') { await this.evaluate(world, paintHoldExpression(PAINT_HOLD_MS), true).catch(() => {}); mark('paint_hold'); assertNotCancelled(signal); }
+    // The hold follows the document transition itself: a credit that also resets (a resynchronizing viewer)
+    // still keeps the previous page. A new subscription has no previous page to keep.
+    if (stream.document_id && stream.document_id !== tab.document_id) { await this.evaluate(world, paintHoldExpression(PAINT_HOLD_MS), true).catch(() => {}); mark('paint_hold'); assertNotCancelled(signal); }
     if (stream.document_id !== tab.document_id) { stream.acked = 0; stream.prunedAt = 0; stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
     // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
     if (stream.frameSlot >= 900) reset = true;
