@@ -1780,6 +1780,9 @@ mod tests {
     async fn vaulted_claude_launch_waits_for_chariox_unlock_interaction() {
         crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
+        // MP-08/MP-10: this policy fixture needs executable admission only,
+        // and must not depend on a host login or run a real provider turn.
+        std::env::set_var("CHARIOX_CLAUDE_BIN", "/bin/true");
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-vaulted-claude-launch-{}-{}",
             std::process::id(),

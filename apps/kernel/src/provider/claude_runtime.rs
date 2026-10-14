@@ -792,7 +792,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
             let contents = std::fs::read_to_string(path).unwrap_or_default();
-            if contents.lines().count() >= expected {
+            if contents.ends_with('\n') && contents.lines().count() >= expected {
                 return contents;
             }
             assert!(
