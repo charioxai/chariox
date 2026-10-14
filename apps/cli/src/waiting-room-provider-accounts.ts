@@ -1,11 +1,11 @@
 import {
-  providerAccountCapacity,
+  providerAccountAdmissionBlocked,
   providerAccountCapacityLabel,
   providerAccountCapacityResetLabel,
   type ProviderAccountProfile,
 } from "@chariox/kernel-client"
 
-export { providerAccountCapacity }
+export { providerAccountAdmissionBlocked }
 
 export function providerAccountFamily(provider: string): string {
   return provider === "claude-headless" || provider === "claude-p" ? "claude" : provider
@@ -98,10 +98,10 @@ export function selectedProviderAccountStartBlockReason(
   if (profiles === undefined) return null
   const profile = selectedProviderAccount(profiles, provider, profileId)
   if (profile?.auth_state === "authenticated") {
-    if (providerAccountCapacity(profile, Date.now(), model).state !== "exhausted") return null
+    if (!providerAccountAdmissionBlocked(profile, Date.now(), model)) return null
     const reset = providerAccountCapacityResetLabel(profile, Date.now(), model)
     const alternative = providerAccountsForProvider(profiles, provider).find(candidate => candidate.auth_state === "authenticated"
-      && providerAccountCapacity(candidate, Date.now(), model).state !== "exhausted")
+      && !providerAccountAdmissionBlocked(candidate, Date.now(), model))
     return `${profile.label} has exhausted its allowance${reset ? `; ${reset}` : ""}. Select ${alternative ? `another signed-in account ${alternative.label}` : "another account with quota, or wait for its allowance to reset"}.`
   }
   const label = profile?.label ?? profileId ?? "default"

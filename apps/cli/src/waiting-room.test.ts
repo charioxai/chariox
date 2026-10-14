@@ -61,11 +61,11 @@ test("waiting room cycles Claude modes as provider backends", () => {
 
   state = cycleWaitingRoomValue(state, [], catalog, 1)
   assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "provider")?.value, "Claude headless")
-  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "model")?.value, "Claude Sonnet 4.6")
+  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "model")?.value, "Sonnet 4.6")
 
   state = cycleWaitingRoomValue(state, [], catalog, 1)
   assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "provider")?.value, "Claude -p")
-  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "model")?.value, "Claude Sonnet 4.6")
+  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "model")?.value, "Sonnet 4.6")
 
   state = moveWaitingRoomFocus(state, [], 3)
   state = cycleWaitingRoomValue(state, [], catalog, 1)

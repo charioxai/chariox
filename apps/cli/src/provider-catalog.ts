@@ -74,7 +74,7 @@ export function fallbackProviderCatalog(options: {
         models: {
           "gpt-5.4": {
             id: "gpt-5.4",
-            name: "GPT-5.4",
+            name: "gpt-5.4",
             status: "active",
             variants: {
               low: {},
@@ -92,7 +92,7 @@ export function fallbackProviderCatalog(options: {
         models: {
           "gpt-5.4": {
             id: "gpt-5.4",
-            name: "GPT-5.4",
+            name: "gpt-5.4",
             status: "active",
             variants: {
               low: {},
@@ -109,7 +109,7 @@ export function fallbackProviderCatalog(options: {
         models: {
           "claude-sonnet-4-6": {
             id: "claude-sonnet-4-6",
-            name: "Claude Sonnet 4.6",
+            name: "Sonnet 4.6",
             status: "active",
             variants: {
               low: {},
@@ -128,7 +128,7 @@ export function fallbackProviderCatalog(options: {
         models: {
           "claude-sonnet-4-6": {
             id: "claude-sonnet-4-6",
-            name: "Claude Sonnet 4.6",
+            name: "Sonnet 4.6",
             status: "active",
             variants: {
               low: {},
@@ -212,6 +212,10 @@ export function selectConfiguredModel(
   if (unqualified) {
     return unqualified
   }
+  const aliased = configured ? claudeAliasOption(options, configured) : null
+  if (aliased) {
+    return aliased
+  }
   for (const provider of catalog.all) {
     if (!providerBelongsToBackend(provider.id, backendProviderId)) {
       continue
@@ -226,6 +230,28 @@ export function selectConfiguredModel(
     }
   }
   return options[0] ?? null
+}
+
+// Saved rolling Claude aliases (haiku, claude-p/sonnet, ...) resolve like Claude Code: newest native id of that family.
+function claudeAliasOption(options: ReturnType<typeof catalogModelOptions>, configured: string) {
+  const alias = configured.replace(/^(claude|claude-p|claude-headless)\//, "")
+  if (!/^(haiku|sonnet|opus|fable)$/.test(alias)) return null
+  const version = (id: string) => id.slice(`claude-${alias}`.length).split("-").filter(Boolean).map(Number)
+  const newer = (left: number[], right: number[]) => {
+    for (let index = 0; index < Math.max(left.length, right.length); index++) {
+      const difference = (left[index] ?? 0) - (right[index] ?? 0)
+      if (difference) return difference > 0
+    }
+    return false
+  }
+  let best: { option: (typeof options)[number]; version: number[] } | null = null
+  for (const option of options) {
+    const modelId = option.id.slice(option.providerId.length + 1)
+    if (!option.providerId.startsWith("claude") || !new RegExp(`^claude-${alias}(-|$)`).test(modelId)) continue
+    const candidate = { option, version: version(modelId) }
+    if (!best || newer(candidate.version, best.version)) best = candidate
+  }
+  return best?.option ?? null
 }
 
 export function selectConfiguredVariant(option: CatalogModelOption | null, configured?: string | null) {

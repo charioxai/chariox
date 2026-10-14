@@ -59,6 +59,6 @@ test("waiting room rows expose local provider catalog fallback", () => {
   const rows = waitingRoomRows(state, [], catalog)
 
   assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode (local list)")
-  assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4 (local list)")
+  assert.equal(rows.find((row) => row.id === "model")?.value, "gpt-5.4 (local list)")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High (local list)")
 })
