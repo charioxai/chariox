@@ -82,3 +82,21 @@ test("MP-08 / MP-10 kernel prompt receipt records metadata without prompt or pri
     rmSync(root, { recursive: true })
   }
 })
+
+test("MP-08 / MP-10 / MP-11 canonical frame handoff runs once without diagnostic files", () => {
+  const previous = process.env.CHARIOX_PANE_TIMING_FILE
+  delete process.env.CHARIOX_PANE_TIMING_FILE
+  let sample = () => {}, mounted = false, callbacks = 0, removed = 0
+  const renderer = { addPostProcessFn: (callback: () => void) => { sample = callback }, removePostProcessFn: () => { removed++ } } as unknown as CliRenderer
+  const dispose = recordPaneFirstFrame(renderer, () => mounted, () => [], false, () => { callbacks++ })
+  try {
+    sample(); assert.equal(callbacks, 0)
+    mounted = true; sample(); sample()
+    assert.equal(callbacks, 1)
+    assert.equal(removed, 1)
+  } finally {
+    dispose()
+    if (previous === undefined) delete process.env.CHARIOX_PANE_TIMING_FILE
+    else process.env.CHARIOX_PANE_TIMING_FILE = previous
+  }
+})

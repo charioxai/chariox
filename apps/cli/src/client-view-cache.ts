@@ -13,7 +13,7 @@ let epoch=0,writes:Promise<void>=Promise.resolve()
 const invalidated=new Set<()=>void>()
 export const subscribeClientViewInvalidation=(listener:()=>void)=>{invalidated.add(listener);return()=>{invalidated.delete(listener)}}
 export const clientViewEpoch=()=>epoch
-const clientScopes=new WeakMap<LocalIpcClient,Promise<CliViewScope|null>>()
+const clientScopes=new WeakMap<LocalIpcClient,{generation:number;scope:Promise<CliViewScope|null>}>()
 export function cliViewOwner(profile: RelayCloudProfile|null|undefined): string {
  return profile ? JSON.stringify([profile.apiUrl,profile.userId,profile.accountId,profile.realmId]) : `local:${process.getuid?.() ?? "user"}`
 }
@@ -24,9 +24,16 @@ export function bindCliViewScope(client:LocalIpcClient,options:CliOptions,prefer
   const [profile,status]=await Promise.all([getKernelCloudRelayProfile(client),getRelayStatus(client)])
   return status.daemon_id?{owner:cliViewOwner(profile),kernel:status.daemon_id}:null
  })().then(value=>generation===epoch?value:null).catch(()=>null)
- clientScopes.set(client,scope);return scope
+ clientScopes.set(client,{generation,scope});return scope
 }
-export const cliViewScope=(client:LocalIpcClient)=>clientScopes.get(client)??Promise.resolve(null)
+export function cliViewClient(client: LocalIpcClient): LocalIpcClient {
+ const current = (client as LocalIpcClient & { currentClient?: () => LocalIpcClient }).currentClient
+ return typeof current === "function" ? current() : client
+}
+export function cliViewScope(client: LocalIpcClient): Promise<CliViewScope | null> {
+ const record = clientScopes.get(cliViewClient(client))
+ return record?.generation === epoch ? record.scope : Promise.resolve(null)
+}
 export async function clearClientViews():Promise<void>{epoch++;for(const listener of invalidated)listener();await writes.catch(()=>{});await unlink(destination()).catch(()=>{})}
 export async function readClientView(scope:CliViewScope,sessionId:string,agentId?:string|null):Promise<CliCachedView|null>{
  const generation=epoch

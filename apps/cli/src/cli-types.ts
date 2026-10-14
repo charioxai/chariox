@@ -466,6 +466,7 @@ export type BootstrapDeferredState = {
 }
 
 export type BootstrapState = {
+  onTranscriptFrame?: () => void
   client: LocalIpcClient
   binding: SessionBinding | null
   sessions: RuntimeSession[]

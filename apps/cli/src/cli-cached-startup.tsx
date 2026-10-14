@@ -2,7 +2,7 @@
 import {createSignal,onMount,onCleanup,Show} from "solid-js"
 import {useRenderer,useKeyboard} from "@opentui/solid"
 import type {BoxRenderable,ScrollBoxRenderable} from "@opentui/core"
-import {bindCliViewScope,readClientView,subscribeClientViewInvalidation,type CliCachedView} from "./client-view-cache.js"
+import {bindCliViewScope,readClientView,subscribeClientViewInvalidation,clearClientViews,type CliCachedView} from "./client-view-cache.js"
 import type {CliRuntimeBootstrapOptions,CliRuntimeBootstrapResult} from "./cli-runtime-bootstrap.js"
 import {CharioxCliApp} from "./cli-app-root.js"
 import {buildTranscriptEntryRenderable} from "./transcript-render.js"
@@ -25,20 +25,33 @@ export function createCliCachedStartup(){
 }
 export function CliCachedStartup(props:{pending:Promise<CliRuntimeBootstrapResult>;view:ReturnType<typeof createCliCachedStartup>}){
  const [ready,setReady]=createSignal<Extract<CliRuntimeBootstrapResult,{kind:'ready'}>|null>(null)
+ const [painted,setPainted]=createSignal(false)
  const [failure,setFailure]=createSignal<string|null>(null)
  let disposed=false
  onCleanup(()=>{disposed=true})
  void props.pending.then(async result=>{
   if(result.kind!=='ready')return
-  // Keep the previous view until the ordinary canonical hydration is available.
-  const history=await result.bootstrap.deferred?.attachedHistory
-  if(history&&result.bootstrap.binding){result.bootstrap.binding.historyEntries=history.historyEntries;result.bootstrap.binding.nextHistoryCursor=history.nextHistoryCursor}
   if(disposed)return
-  setReady(result);props.view.finish()
+  const cached = props.view.cached(), session = result.bootstrap.binding?.session
+  if (cached && (!session || cached.sessionId !== session.id || !session.agents.some(agent => agent.id === cached.agentId))) props.view.finish()
+  void result.bootstrap.deferred?.attachedHistory?.then(history => {
+   const previous = props.view.cached()
+   if (!previous || previous.sessionId !== history.sessionId) return
+   const entries = history.agentEntries[previous.agentId] ?? []
+   const sequence = Math.max(0, ...entries.flatMap(entry => [entry.historyEntryIndex ?? 0, ...(entry.historySequenceRanges ?? []).map(range => range[1])]))
+   // A reset/pruned kernel history wins over a cache with a later sequence.
+   // Current entries are rendered only through the ordinary hydration controller.
+   if (previous.sequence > sequence) void clearClientViews()
+  }).catch(() => {})
+  result.bootstrap.onTranscriptFrame=()=>{if(!disposed){setPainted(true);props.view.finish()}}
+  setReady(result)
  }).catch(()=>{if(!disposed){props.view.finish();setFailure('Unable to attach to this session.')}})
- return <Show when={ready()} fallback={<Show when={props.view.cached()} fallback={<text content={failure()??'Connecting…'} />}>{view=><CachedTranscript view={view()}/>}</Show>}>
-  {runtime=><CharioxCliApp bootstrap={runtime().bootstrap}/>}
- </Show>
+ return <box width="100%" height="100%" flexDirection="column">
+  <Show when={ready()}>{runtime=><CharioxCliApp bootstrap={runtime().bootstrap}/>}</Show>
+  <Show when={!painted()}><box position="absolute" top={0} left={0} width="100%" height="100%" backgroundColor={theme.background}>
+   <Show when={props.view.cached()} fallback={<text content={failure()??'Connecting…'} />}>{view=><CachedTranscript view={view()}/>}</Show>
+  </box></Show>
+ </box>
 }
 function CachedTranscript(props:{view:CliCachedView}){
  const renderer=useRenderer(),syntax=createTranscriptSyntaxStyle()
