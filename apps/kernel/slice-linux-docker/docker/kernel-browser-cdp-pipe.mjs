@@ -40,16 +40,30 @@ export function connectCdpPipe(input, output, requestTimeoutMs = 5000) {
     },
   };
   const connection = new CdpConnection(socket, requestTimeoutMs);
-  let buffer = Buffer.alloc(0), size = 0;
+  let buffer = Buffer.alloc(0), size = 0, discarding = null;
   const fail = () => { buffer = Buffer.alloc(0); size = 0; socket.close(); };
+  // MP-08/MP-10: a reply above the frame bound (one huge page) fails only its own request:
+  // its bytes are skipped to the next delimiter, never buffered. Events and unframed data fail closed.
+  const oversizedReply = part => /^\{"id":(\d{1,15}),"(?:result|error)"/.exec(Buffer.concat([buffer.subarray(0, Math.min(size, 64)), part.subarray(0, 64)]).toString('latin1'))?.[1];
   input.on('error', fail); output.on('error', fail); output.on('end', fail); output.on('close', fail);
   output.on('data', chunk => {
     if (socket.readyState !== 1) return;
     for (let start = 0; start < chunk.length;) {
       const end = chunk.indexOf(0, start);
       const part = chunk.subarray(start, end < 0 ? chunk.length : end);
+      if (discarding !== null) {
+        if (end < 0) return;
+        const id = discarding; discarding = null; start = end + 1;
+        emit('message', { data: JSON.stringify({ id: Number(id), error: { message: 'MD-2: private CDP reply exceeds limit' } }) });
+        if (socket.readyState !== 1 || !connection.isOpen()) { fail(); return; }
+        continue;
+      }
       const nextSize = size + part.length;
-      if (nextSize > MAX_MESSAGE) { fail(); return; }
+      if (nextSize > MAX_MESSAGE) {
+        const id = oversizedReply(part);
+        if (id === undefined) { fail(); return; }
+        discarding = id; size = 0; continue;
+      }
       if (nextSize > buffer.length) {
         const grown = Buffer.allocUnsafe(Math.min(MAX_MESSAGE, Math.max(4096, nextSize, buffer.length * 2)));
         buffer.copy(grown, 0, 0, size); buffer = grown;
