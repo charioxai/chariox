@@ -1,6 +1,8 @@
 //! MP-08 / MP-10 / MP-11: HTTP MCP transport state belongs to one runtime owner.
 use super::*;
-use crate::mcp::{CharioxMcpServerConfig, CharioxMcpTransportConfig};
+use crate::mcp::CharioxMcpServerConfig;
+#[cfg(test)]
+use crate::mcp::CharioxMcpTransportConfig;
 #[path = "session_lifecycle.rs"]
 mod lifecycle;
 use lifecycle::{CallLease, PendingCall};
@@ -29,16 +31,6 @@ struct SessionState {
 }
 impl HttpSession {
     fn dispatch(&self, payload: serde_json::Value) -> Result<serde_json::Value, DaemonError> {
-        let CharioxMcpTransportConfig::StreamableHttp {
-            url,
-            bearer_token_env_var,
-            http_headers,
-            env_http_headers,
-            ..
-        } = &self.backing.transport
-        else {
-            unreachable!()
-        };
         // Protect header state only. Tool POSTs and cancellation must run concurrently.
         let initialize =
             payload.get("method").and_then(serde_json::Value::as_str) == Some("initialize");
@@ -89,10 +81,7 @@ impl HttpSession {
         };
         let mut headers = before.clone();
         let result = forward_streamable_http_mcp_request(
-            url,
-            bearer_token_env_var.as_deref(),
-            http_headers,
-            env_http_headers,
+            &self.backing.transport,
             payload,
             self.backing.tool_timeout_sec,
             &mut headers,

@@ -40,23 +40,10 @@ impl HttpSession {
         let backing = self.backing.clone();
         let excluded_roots = self.excluded_roots.clone();
         std::thread::spawn(move || {
-            let CharioxMcpTransportConfig::StreamableHttp {
-                url,
-                bearer_token_env_var,
-                http_headers,
-                env_http_headers,
-                ..
-            } = &backing.transport
-            else {
-                return;
-            };
             for call in calls {
                 let mut headers = call.headers;
                 let result = forward_streamable_http_mcp_request(
-                    url,
-                    bearer_token_env_var.as_deref(),
-                    http_headers,
-                    env_http_headers,
+                    &backing.transport,
                     serde_json::json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":call.id,"reason":"Chariox prompt cancelled"}}),
                     Some(1),
                     &mut headers,
@@ -74,25 +61,12 @@ impl HttpSession {
         });
     }
     pub(super) fn release_remote(&self, state: &HttpState) {
-        let CharioxMcpTransportConfig::StreamableHttp {
-            url,
-            bearer_token_env_var,
-            http_headers,
-            env_http_headers,
-            ..
-        } = &self.backing.transport
-        else {
-            return;
-        };
         if state.session_id.is_none() {
             return;
         }
         let outcome = http_request(
-            url,
+            &self.backing.transport,
             "DELETE",
-            bearer_token_env_var.as_deref(),
-            http_headers,
-            env_http_headers,
             Duration::from_secs(1),
             state,
             &self.excluded_roots,
