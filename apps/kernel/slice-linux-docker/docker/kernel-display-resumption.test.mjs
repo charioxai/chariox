@@ -88,3 +88,12 @@ for(const kind of ['region','browser_chrome'])test(`MP-08/MP-11 ${kind} resume r
  assert.equal(resumed.source_kind,'region');assert.equal(resumed.binding_id,'binding');assert.equal(resumed.document_id,'region-doc');assert.equal(resumed.sequence,9);assert.equal(resumed.css_width,640);assert.equal(resumed.css_height,80);
  current=false;await assert.rejects(host.displayResumeBinding(f.stream));
 });
+
+test('MP-08/MP-11 cancellation of suspend or resume preserves the browser and retained producer',async()=>{
+ for(const op of ['display_suspend','display_resume']){
+  const host=Object.create(KernelBrowserHost.prototype);let stopped=0;
+  Object.assign(host,{nativeComputer:{held:new Set()},timing:()=>{},protection:{values:[]},request:async()=>{throw Object.assign(Error('cancelled'),{code:'browser_action_cancelled'})},stop:async()=>{stopped++}});
+  const reply=await host.handle({id:'resume-cancelled',method:'host.browser',params:{op}});
+  assert.equal(reply.ok,false);assert.equal(reply.error.code,'browser_action_cancelled');assert.equal(stopped,0,'viewer cancellation does not stop the source');
+ }
+});
