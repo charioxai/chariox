@@ -3,7 +3,7 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::{ProviderPromptSignalBatch, RuntimeProviderRun};
 
-pub(super) fn persist_resolved_resume_state(
+pub(crate) fn persist_resolved_resume_state(
     app: &mut DaemonApp,
     provider_run: &RuntimeProviderRun,
     poll_result: &ProviderPromptSignalBatch,
