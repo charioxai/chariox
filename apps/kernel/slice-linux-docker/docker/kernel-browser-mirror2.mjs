@@ -29,6 +29,11 @@ const DEFLATE_MIN_BYTES = 512;
 // MP-10 wheel bytes: element images within one viewport of the view travel;
 // while the view moves (and SETTLE_MS after) a large one travels as a preview,
 // then its exact bytes.
+// MP-08/MP-10 (owner A/B 2026-10-14): like Chrome's paint holding, a new document's
+// first snapshot waits for its first contentful paint (bounded), so viewers keep the
+// previous page instead of a white, half-parsed one.
+const PAINT_HOLD_MS = 2500;
+export const paintHoldExpression = ms => `new Promise(done => { const end = Date.now() + ${ms}; const check = () => document.readyState === 'complete' || performance.getEntriesByType('paint').some(entry => entry.name === 'first-contentful-paint') || Date.now() >= end ? done(true) : setTimeout(check, 25); check(); })`;
 const NEAR_PX = 800, SETTLE_MS = 300, QUIET_MS = 1000, PREVIEW_MIN_BASE64 = 8 * 1024, PREVIEW_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/avif']);
 // Trusted admission error: never constructed from page/CDP error strings.
 export class MirrorInputEpochRefusal extends Error { constructor() { super('MP-11: stale mirror input epoch'); } }
@@ -283,6 +288,7 @@ export class Mirror2 {
     const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
     if (reset) this.host.timing?.(`mirror2_reset ${resetReason}`, started);
+    if (resetReason === 'document') { await this.evaluate(world, paintHoldExpression(PAINT_HOLD_MS), true).catch(() => {}); mark('paint_hold'); assertNotCancelled(signal); }
     if (stream.document_id !== tab.document_id) { stream.acked = 0; stream.prunedAt = 0; stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
     // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
     if (stream.frameSlot >= 900) reset = true;
