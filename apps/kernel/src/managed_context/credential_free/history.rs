@@ -74,11 +74,9 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
             Err(mpsc::RecvTimeoutError::Timeout)
         ) {
             let mut owned = watched.lock().expect("owned Git child");
-            if !watchdog_killed.load(Ordering::Relaxed) && owned.id() > 1 {
-                if owned.kill().is_ok() {
-                    watchdog_timeout.store(true, Ordering::Relaxed);
-                    watchdog_killed.store(true, Ordering::Relaxed);
-                }
+            if !watchdog_killed.load(Ordering::Relaxed) && owned.id() > 1 && owned.kill().is_ok() {
+                watchdog_timeout.store(true, Ordering::Relaxed);
+                watchdog_killed.store(true, Ordering::Relaxed);
             }
         }
     });
@@ -127,7 +125,7 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
             input.read_exact(&mut bytes).map_err(|_| refused())?;
             let mut newline = [0u8];
             input.read_exact(&mut newline).map_err(|_| refused())?;
-            if newline != [b'\n'] {
+            if newline != *b"\n" {
                 return Err(refused());
             }
             if fields[1] == "tree" {
@@ -187,13 +185,12 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
         if (result.is_err() || start.elapsed() > scan_limit)
             && !killed_for_refusal.load(Ordering::Relaxed)
             && owned.id() > 1
+            && owned.kill().is_ok()
         {
-            if owned.kill().is_ok() {
-                // The first policy kill owns the reason. A later watchdog must
-                // not replace a size/credential refusal with a timeout.
-                timed_out.store(result.is_ok(), Ordering::Relaxed);
-                killed_for_refusal.store(true, Ordering::Relaxed);
-            }
+            // The first policy kill owns the reason. A later watchdog must
+            // not replace a size/credential refusal with a timeout.
+            timed_out.store(result.is_ok(), Ordering::Relaxed);
+            killed_for_refusal.store(true, Ordering::Relaxed);
         }
         match owned.try_wait() {
             Ok(Some(status)) => break Ok(status),

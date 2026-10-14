@@ -9,8 +9,6 @@ use super::package::{
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 
-pub(crate) const TICKET_ENDPOINT: &str = super::owner_authority::TICKET_ENDPOINT;
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",

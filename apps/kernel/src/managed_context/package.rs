@@ -299,6 +299,7 @@ pub(crate) enum ManagedContextImportedGitCredentials {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(clippy::large_enum_variant)] // A short-lived serialized receipt, not a hot value.
 pub(crate) enum ManagedContextImportedKernelContext {
     Empty,
     FromKernel { receipt: KernelContextImportReceipt },

@@ -114,13 +114,13 @@ impl CommandRouter {
                 "context destination does not match the enrolled encrypted target",
             ));
         }
-        let plan = if destination.is_some() {
+        let plan = if let Some(owner_destination) = destination.as_ref() {
             crate::managed_context::owner_managed::authorize_import_ticket(
                 &self.config_projection.snapshot(),
                 &identity,
                 &source_kernel_id,
                 &plan,
-                destination.as_ref().expect("owner destination"),
+                owner_destination,
             )
             .await?;
             plan
@@ -647,20 +647,18 @@ impl CommandRouter {
                 &manifest_digest,
             )
             .await
-        } else if registration.is_none() {
-            complete_disposable_managed_context_import(
+        } else if let Some(registration) = registration.as_ref() {
+            complete_managed_context_import(
                 &completion_config,
-                &target_environment_id,
+                registration,
                 &completion_plan,
                 &manifest_digest,
             )
             .await
         } else {
-            complete_managed_context_import(
+            complete_disposable_managed_context_import(
                 &completion_config,
-                registration
-                    .as_ref()
-                    .expect("managed context completion requires a managed registration"),
+                &target_environment_id,
                 &completion_plan,
                 &manifest_digest,
             )

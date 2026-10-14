@@ -99,8 +99,7 @@ async fn owner_cloud_export_propagates_temporary_consumed_binding_failure() {
             &ManagedContextOutboundOperationStore::default(),
         )
         .await
-        .err()
-        .expect("outage must not authorize");
+        .expect_err("outage must not authorize");
         server.abort();
         assert_safe_retry(error, true);
     }

@@ -18,20 +18,19 @@ pub(super) fn export_overlay(
     Ok((entries, size))
 }
 
+type CollectedOverlay = (
+    Vec<DevelopmentOverlayEntry>,
+    u64,
+    BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
+);
+
 pub(super) fn collect_overlay(
     worktree: &Path,
     repository_id: &str,
     staging_root: &Path,
     manifest_budget: &mut ManifestMemoryBudget,
     vault_enabled: bool,
-) -> Result<
-    (
-        Vec<DevelopmentOverlayEntry>,
-        u64,
-        BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
-    ),
-    DaemonError,
-> {
+) -> Result<CollectedOverlay, DaemonError> {
     let mut paths = BTreeSet::new();
     for args in [
         &[

@@ -132,13 +132,12 @@ pub(super) fn validate(value: &Value, role: Role) -> Result<(), DaemonError> {
                 validate(value, Role::Fields)?;
             }
         }
-        Value::String(text) => {
+        Value::String(text)
             if super::text::credential_format(text)
                 || credential_text(text)
-                || url::Url::parse(text).is_ok_and(|url| credential_url(&url))
-            {
-                return Err(refused());
-            }
+                || url::Url::parse(text).is_ok_and(|url| credential_url(&url)) =>
+        {
+            return Err(refused());
         }
         _ => {}
     }

@@ -147,6 +147,8 @@ async fn run_listener(
     }
 }
 
+// MP-08/MP-11: tungstenite's upgrade callback fixes the large `ErrorResponse` error type.
+#[allow(clippy::result_large_err)]
 async fn admit(
     direct: &LocalBrowserDirect,
     endpoint: &LocalBrowserEndpoint,

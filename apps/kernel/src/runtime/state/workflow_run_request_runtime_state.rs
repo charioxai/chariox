@@ -332,7 +332,6 @@ impl KernelRuntimeState {
                     // The interrupt and queued-prompt removal already committed atomically.
                     // Cancellation is required kernel settlement of that transition.
                     None,
-                    None,
                 )
                 .await
             {

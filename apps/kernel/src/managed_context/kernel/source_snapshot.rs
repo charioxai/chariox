@@ -44,10 +44,6 @@ pub(super) struct KernelContextSourceSnapshot {
 }
 
 impl KernelContextSourceSnapshot {
-    pub(super) fn capture() -> Result<Self, DaemonError> {
-        Self::capture_mode(false)
-    }
-
     pub(super) fn capture_mode(without_credentials: bool) -> Result<Self, DaemonError> {
         let first = Self::capture_once(without_credentials)?;
         let second = Self::capture_once(without_credentials)?;

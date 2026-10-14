@@ -18,7 +18,7 @@ impl KernelRuntimeState {
             session_id,
             target_agent_id,
             attachment_id,
-            None,
+            expected_prompt_id,
             authority,
         )
         .await

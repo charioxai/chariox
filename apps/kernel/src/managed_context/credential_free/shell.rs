@@ -105,7 +105,7 @@ fn raw_credential_words(text: &str) -> bool {
                 '\'' | '"' | ',' | ';' | '|' | '&' | '(' | ')' | '{' | '}' | '[' | ']'
             )
     })
-    .any(|word| credential_word(word))
+    .any(credential_word)
 }
 
 // MP-11: shell-words handles quote concatenation, escapes and continuations.
@@ -181,16 +181,15 @@ fn command_credentials(words: &[String]) -> bool {
                     }
                 }
             }
-            Some("wget") => {
+            Some("wget")
                 if word == "--user"
                     || word.starts_with("--user=")
                     || word == "--http-user"
                     || word.starts_with("--http-user=")
                     || word == "--ftp-user"
-                    || word.starts_with("--ftp-user=")
-                {
-                    return true;
-                }
+                    || word.starts_with("--ftp-user=") =>
+            {
+                return true;
             }
             _ => {}
         }

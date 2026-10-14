@@ -6115,7 +6115,7 @@ mod tests {
     #[test]
     fn usage_admission_blocks_fresh_exhaustion_but_not_expired_or_stale_meters() {
         let now_ms = PROVIDER_USAGE_STALE_AFTER_MS * 2;
-        let mut exhausted = capacity_meter(
+        let exhausted = capacity_meter(
             "Monthly",
             ProviderAccountUsageMeterKind::RollingLimit,
             ProviderAccountUsageMeterState::Exhausted,

@@ -93,7 +93,7 @@ pub(super) fn inspect_import_repository(
         worktree,
         true,
         maximum_checkout_bytes.min(MAX_CHECKOUT_BYTES_PER_REPOSITORY),
-        maximum_materialized_entries.min(u64::MAX),
+        maximum_materialized_entries,
     )
 }
 
