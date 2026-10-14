@@ -77,6 +77,7 @@ pub use codex_client::{
     CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexThread,
     CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
 };
+pub(crate) use codex_runtime::codex_prompt_submission_transport_failed;
 pub use codex_runtime::CodexRuntimeState;
 pub use command_catalog::{
     default_provider_command_catalogs, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,

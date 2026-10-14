@@ -22,6 +22,20 @@ use super::CodexRuntimeState;
 const CODEX_MCP_THREAD_INIT_RETRY_TIMEOUT: Duration = Duration::from_secs(150);
 const CODEX_MCP_THREAD_INIT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
+// MP-08 / MP-10 / MP-11: local transport failures are not provider error frames.
+pub(crate) fn codex_prompt_submission_transport_failed(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::ProviderProtocol {
+            operation: "codex_write" | "codex_read" | "codex_read_parse",
+            ..
+        } | DaemonError::LocalTransport {
+            operation: "codex_socket_timeout",
+            ..
+        }
+    )
+}
+
 pub fn submit_codex_prompt(
     run: &RuntimeProviderRun,
     state: &mut CodexRuntimeState,
@@ -63,6 +77,9 @@ pub fn submit_codex_prompt(
         if envelope.steering {
             return Err(error.steer_not_submitted(true));
         }
+        if codex_prompt_submission_transport_failed(&error) {
+            return Err(error);
+        }
         state.buffered_notifications.push(CodexNotification::Error {
             message: error.to_string(),
         });
@@ -83,6 +100,9 @@ pub fn submit_codex_prompt(
             ) {
                 if envelope.steering {
                     return Err(error.steer_not_submitted(true));
+                }
+                if codex_prompt_submission_transport_failed(&error) {
+                    return Err(error);
                 }
                 state.buffered_notifications.push(CodexNotification::Error {
                     message: error.to_string(),
@@ -126,6 +146,9 @@ pub fn submit_codex_prompt(
         Ok(response) => response,
         Err(error) => {
             if envelope.steering {
+                return Err(error);
+            }
+            if codex_prompt_submission_transport_failed(&error) {
                 return Err(error);
             }
             state.buffered_notifications.push(CodexNotification::Error {
@@ -294,6 +317,75 @@ mod prompt_tests {
     use std::net::TcpListener;
     use std::thread;
     use tokio_tungstenite::tungstenite::{accept, connect, Message};
+
+    #[test]
+    fn submission_transport_failure_is_not_a_provider_error_frame() {
+        // MP-08 / MP-10 / MP-11: thread creation, context refresh and turn
+        // submission must report a broken transport to the dispatch settler.
+        for phase in ["thread", "context", "turn"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+            let server = thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let mut socket = accept(stream).unwrap();
+                assert!(socket.read().is_err());
+            });
+            let (mut socket, _) = connect(&endpoint).unwrap();
+            let tokio_tungstenite::tungstenite::stream::MaybeTlsStream::Plain(stream) =
+                socket.get_mut()
+            else {
+                panic!("loopback fixture must be plain TCP");
+            };
+            stream.shutdown(std::net::Shutdown::Both).unwrap();
+            let request =
+                LaunchProviderRequest::new("session", "codex", "codex", "default", "default")
+                    .with_agent_id("agent");
+            let run = RuntimeProviderRun::new(
+                "run",
+                &request,
+                ProviderLaunchResult {
+                    endpoint_mode: AgentEndpointMode::External,
+                    process_label: "fixture".into(),
+                    pty_target: None,
+                    pty_program: None,
+                    pty_args: Vec::new(),
+                    pty_env: BTreeMap::new(),
+                    pty_env_remove: Vec::new(),
+                    working_directory: None,
+                    structured_endpoint: None,
+                },
+            );
+            let mut state = if phase == "thread" {
+                super::super::state::CodexRuntimeState::pending(endpoint, None, socket, 1)
+            } else {
+                super::super::state::CodexRuntimeState::new(endpoint, "thread".into(), socket, 1)
+            };
+            let result = super::submit_codex_prompt(
+                &run,
+                &mut state,
+                &PromptEnvelope::new(
+                    "input",
+                    if phase == "context" {
+                        "hidden context"
+                    } else {
+                        ""
+                    },
+                    Vec::new(),
+                    PromptManifest::current(),
+                ),
+            );
+            server.join().unwrap();
+            assert!(
+                result.is_err(),
+                "MP-08 {phase} transport failure must reach the dispatcher"
+            );
+            assert!(
+                state.buffered_notifications.is_empty(),
+                "MP-11 transport errors are not provider frames"
+            );
+            assert!(state.active_turn_id.is_none());
+        }
+    }
 
     // MP-08/MP-10: native input and Chariox-origin input share this provider seam.
     #[test]

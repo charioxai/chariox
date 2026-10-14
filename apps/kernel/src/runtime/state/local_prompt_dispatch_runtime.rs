@@ -4030,27 +4030,30 @@ impl KernelRuntimeState {
             .flatten()
             .filter(|run| {
                 claude_headless_dispatch_failure_requires_provider_retirement(run, &error)
+                    || (run.adapter_key() == "codex"
+                        && crate::provider::codex_prompt_submission_transport_failed(&error))
             });
         let retire_failed_provider = failed_provider_run.is_some();
         let mut _delivery_settlement_claim = None;
         if retire_failed_provider {
+            let session = self.owned.session_store.get_session(&dispatch.session_id)?;
+            let Some(settlement_claim) = self
+                .owned
+                .prompt_state_owner
+                .try_claim_active_prompt_delivery_settlement(
+                    &session,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    &dispatch.provider_run_id,
+                )
+            else {
+                return Err(error);
+            };
+            _delivery_settlement_claim = Some(settlement_claim);
             if let Some(provider_run) = failed_provider_run
                 .as_ref()
                 .filter(|_| claude_headless_dispatch_failure_invalidates_resume(&error))
             {
-                let session = self.owned.session_store.get_session(&dispatch.session_id)?;
-                let Some(settlement_claim) = self
-                    .owned
-                    .prompt_state_owner
-                    .try_claim_active_prompt_delivery_settlement(
-                        &session,
-                        &dispatch.agent_id,
-                        &dispatch.prompt_id,
-                        &dispatch.provider_run_id,
-                    )
-                else {
-                    return Err(error);
-                };
                 let Some(active_prompt) = self
                     .owned
                     .prompt_state_owner
@@ -4102,7 +4105,6 @@ impl KernelRuntimeState {
                     }
                     Err(clear_error) => return Err(clear_error),
                 }
-                _delivery_settlement_claim = Some(settlement_claim);
             }
             if let Ok(outcome) = self
                 .owned
