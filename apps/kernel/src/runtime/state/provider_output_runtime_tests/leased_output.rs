@@ -89,6 +89,55 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
 
     // Let the real leased submission launch and initialize Claude after the
     // runtime starts. No preinserted run, binding or active-session pointer.
+    // MP-08 / MP-10 / MP-11: the home resolves a missing launch credential
+    // and retries the same prompt; negotiation must not create a rejection fence.
+    let negotiation = runtime
+        .submit_relay_leased_prompt(
+            &leased.id,
+            crate::transport::relay_peer::RelayAgentExecutionProfile {
+                provider: leased.provider.clone(),
+                account_profile: leased.account_profile.clone(),
+                model: leased.model.clone(),
+                effort: leased.effort.clone(),
+            },
+            "inspect the Room",
+            "",
+            Vec::new(),
+            None,
+            Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                home_session_id: "room".into(),
+                home_agent_id: "agent".into(),
+                home_prompt_id: "home-prompt".into(),
+                home_turn_id: "home-prompt".into(),
+                source_attachment_id: None,
+                workspace_live_sync_mode: None,
+                prompt_origin: Some(crate::session::PromptOrigin::Chariox),
+                external_provider: None,
+                external_provider_session_id: None,
+                external_provider_turn_id: None,
+                prompt_summary: "inspect the Room".into(),
+            }),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+            None,
+        )
+        .await;
+    assert!(matches!(
+        negotiation,
+        Err(DaemonError::LocalTransport {
+            operation: "launch remote provider without credential",
+            ..
+        })
+    ));
+    assert!(
+        runtime
+            .query_relay_leased_prompt_receipt(&leased.id, "home-prompt")
+            .await
+            .unwrap()
+            .is_none(),
+        "credential negotiation must stay before receipt reservation"
+    );
     let received = fixture_root.join("received");
     let (run_id, _accepted) = runtime
         .submit_relay_leased_prompt(

@@ -19,7 +19,9 @@ impl KernelRuntimeState {
         let leased_agent_id = leased_agent_id.to_string();
         let home_prompt_id = home_prompt_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).update_leased_prompt_receipt(
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.begin_leased_prompt_receipt(&leased_agent_id, &home_prompt_id)?;
+            runtime.update_leased_prompt_receipt(
                 &leased_agent_id,
                 &home_prompt_id,
                 phase,
@@ -74,7 +76,14 @@ impl KernelRuntimeState {
                         &begin_manifest,
                     )?;
                 }
-                runtime.begin_leased_prompt_receipt(&begin_leased_agent_id, home_prompt_id)
+                if runtime.leased_prompt_receipt_recorded(&begin_leased_agent_id, home_prompt_id) {
+                    runtime.begin_leased_prompt_receipt(&begin_leased_agent_id, home_prompt_id)
+                } else {
+                    // Catalog and credential negotiation send no provider input.
+                    // Reserve only once that negotiation is complete; otherwise
+                    // the home's same-prompt credential retry meets a false fence.
+                    Ok(None)
+                }
             })
             .await;
         let existing_receipt = match existing_receipt {
@@ -91,6 +100,7 @@ impl KernelRuntimeState {
                     remote_extension_manifest.clone(),
                 )
                 .await?;
+                record_leased_prompt_admission_failure(&error);
                 return Err(error);
             }
             result => result?,
@@ -137,6 +147,8 @@ impl KernelRuntimeState {
                         .as_deref()
                         .filter(|_| profile_receipt_is_new)
                     {
+                        runtime
+                            .begin_leased_prompt_receipt(&replay_leased_agent_id, home_prompt_id)?;
                         runtime.update_leased_prompt_receipt(
                             &replay_leased_agent_id,
                             home_prompt_id,
@@ -144,6 +156,7 @@ impl KernelRuntimeState {
                             None,
                         )?;
                     }
+                    record_leased_prompt_admission_failure(&error);
                     return Err(error);
                 }
                 let replayed = match runtime.replay_active_leased_prompt_submission(
@@ -158,6 +171,10 @@ impl KernelRuntimeState {
                             .as_deref()
                             .filter(|_| profile_receipt_is_new)
                         {
+                            runtime.begin_leased_prompt_receipt(
+                                &replay_leased_agent_id,
+                                home_prompt_id,
+                            )?;
                             runtime.update_leased_prompt_receipt(
                                 &replay_leased_agent_id,
                                 home_prompt_id,
@@ -165,6 +182,7 @@ impl KernelRuntimeState {
                                 None,
                             )?;
                         }
+                        record_leased_prompt_admission_failure(&error);
                         return Err(error);
                     }
                 };
@@ -172,6 +190,8 @@ impl KernelRuntimeState {
                     if let (Some(home_prompt_id), Some((worker_provider_run_id, _))) =
                         (profile_home_prompt_id.as_deref(), replayed.as_ref())
                     {
+                        runtime
+                            .begin_leased_prompt_receipt(&replay_leased_agent_id, home_prompt_id)?;
                         runtime.update_leased_prompt_receipt(
                             &replay_leased_agent_id,
                             home_prompt_id,
@@ -244,34 +264,38 @@ impl KernelRuntimeState {
                     )
                     .await?;
                 }
+                record_leased_prompt_admission_failure(&error);
                 return Err(error);
             }
         };
-        let provider_run_id = match &prepared.provider_run {
-            crate::app::PreparedLeasedProviderRun::Ready(provider_run_id) => {
-                provider_run_id.clone()
-            }
-            crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => {
-                if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
-                    && provider_launch_credential.is_none()
-                {
-                    if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt)
-                    {
-                        self.update_relay_leased_prompt_admission_receipt(
-                            &leased_agent_id,
-                            home_prompt_id,
-                            WorkerPromptReceiptPhase::Rejected,
-                            None,
-                        )
-                        .await?;
-                    }
-                    return Err(DaemonError::LocalTransport {
+        if let crate::app::PreparedLeasedProviderRun::LaunchRequired(request) =
+            &prepared.provider_run
+        {
+            if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
+                && provider_launch_credential.is_none()
+            {
+                return Err(DaemonError::LocalTransport {
                         operation: "launch remote provider without credential",
                         message: format!(
                             "{REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE}: the worker must relaunch the selected Claude profile",
                         ),
                     });
-                }
+            }
+        }
+        if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt) {
+            self.update_relay_leased_prompt_admission_receipt(
+                &leased_agent_id,
+                home_prompt_id,
+                WorkerPromptReceiptPhase::Dispatching,
+                None,
+            )
+            .await?;
+        }
+        let provider_run_id = match &prepared.provider_run {
+            crate::app::PreparedLeasedProviderRun::Ready(provider_run_id) => {
+                provider_run_id.clone()
+            }
+            crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => {
                 match self
                     .launch_provider_for_remote_lease_detached(
                         request.clone(),
@@ -292,6 +316,7 @@ impl KernelRuntimeState {
                             )
                             .await?;
                         }
+                        record_leased_prompt_admission_failure(&error);
                         return Err(error);
                     }
                 }
@@ -333,4 +358,19 @@ impl KernelRuntimeState {
         }
         Ok((provider_run_id, outcome))
     }
+}
+
+// MP-08 / MP-10 / MP-11: report a source operation label, never provider payloads.
+fn record_leased_prompt_admission_failure(error: &DaemonError) {
+    let operation = match error {
+        DaemonError::LocalTransport { operation, .. }
+        | DaemonError::RelayTransport { operation, .. }
+        | DaemonError::InternalInvariant { operation, .. } => *operation,
+        _ => "worker prompt preparation",
+    };
+    crate::logging::warn_with_fields(
+        "daemon.leased_prompt_admission",
+        "worker prompt admission failed",
+        serde_json::json!({"operation": operation}),
+    );
 }
