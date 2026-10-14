@@ -704,6 +704,7 @@ pub(super) async fn route_daemon_event(
     event_id: u64,
     encrypted_event: EncryptedRelayPayload,
 ) -> bool {
+    super::timing::record("relay_received", &subscription_id, event_id);
     let client_sender = routes
         .subscription(&subscription_id)
         .filter(|route: &ActiveEventRoute| route.daemon_key == *current_daemon_key)

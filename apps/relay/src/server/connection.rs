@@ -20,6 +20,7 @@ use crate::registry::{
 mod support;
 #[cfg(test)]
 mod tests;
+mod timing;
 mod writer;
 
 use support::*;
