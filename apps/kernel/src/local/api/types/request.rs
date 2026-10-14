@@ -136,6 +136,7 @@ pub enum LocalDaemonRequest {
     GetProviderRun(GetProviderRunRequest),
     UpdateProviderRunSelection(UpdateProviderRunSelectionRequest),
     GetProviderCatalog(GetProviderCatalogRequest),
+    GetClientCatalogRevisions(GetProviderCatalogRequest),
     GetProviderCommandCatalogs(GetProviderCommandCatalogsRequest),
     ListProviderAccountProfiles(ListProviderAccountProfilesRequest),
     GetProviderAccountProfile(GetProviderAccountProfileRequest),

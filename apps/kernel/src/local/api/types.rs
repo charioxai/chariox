@@ -275,6 +275,7 @@ pub use workspace::*;
 /// Version 508 stamps terminal output records with their history sequence,
 /// adds display previews to history outline blobs (one blob per tool call and
 /// per thought), batch blob loading and a bundled initial terminal view through
-/// the ordinary read/attach commands (MP-08/MP-10/MP-11). Allocation 508/116 is
-/// pending on the panes stack; these changes share that single bump.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 508;
+/// the ordinary read/attach commands (MP-08/MP-10/MP-11).
+/// Version 518 bounds the initial terminal view and adds small client catalog
+/// revision replies. It uses coordinator reservation 518/126 (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 518;

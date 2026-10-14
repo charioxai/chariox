@@ -236,6 +236,7 @@ impl CommandRouter {
                 .await
             }),
             request @ (LocalDaemonRequest::GetProviderCatalog(_)
+            | LocalDaemonRequest::GetClientCatalogRevisions(_)
             | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => Box::pin(async move {
                 execute_provider_catalog_request(
                     &self.provider_catalog_projection,

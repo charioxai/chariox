@@ -1,3 +1,5 @@
+import { requestInitialSessionView } from "./initial-session-view.js"
+import { reconcileComposerCatalogs } from "./composer-catalog-reconciliation.js"
 import { createComposerInventoryLoader } from "./composer-inventory-loader.js"
 import { getRelayStatus, getKernelCloudRelayProfile } from "./relay-api.js"
 import { bootstrapWaitingRoom } from "./waiting-room-bootstrap.js"
@@ -12,6 +14,7 @@ import { settleAttachProviderRun } from "./attach-provider-run.js"
 import { sessionHistoryCursorForVisibleAgent } from "@chariox/kernel-client/session-history-outline"
 
 import type {
+  ComposerInventory,
   CliOptions,
   BootstrapState,
   PromptInputHistoryEntry,
@@ -27,6 +30,7 @@ import type { ProviderAccountProfile } from "@chariox/kernel-client"
 import { selectedProviderAccountStartBlockReason } from "./waiting-room-provider-accounts.js"
 
 export type BootstrapDeps = {
+  getClientCatalogRevisions?: typeof import("./client-catalog-api.js").getClientCatalogRevisions
   listProviderAccountProfiles?: (client: LocalIpcClient) => Promise<ProviderAccountProfile[]>
   logger?: CharioxLogger | null
   getConfiguredProviderLaunchDefaults?: (client: LocalIpcClient) => Promise<{
@@ -35,8 +39,8 @@ export type BootstrapDeps = {
     effort?: string
   }>
   listSessions: (client: LocalIpcClient) => Promise<RuntimeSession[]>
-  getProviderCatalog: (client: LocalIpcClient, logger?: CharioxLogger | null, options?: Parameters<typeof import("./provider-api.js").getProviderCatalog>[2]) => Promise<ProviderCatalog>
-  getProviderCommandCatalogs: (client: LocalIpcClient, logger?: CharioxLogger | null) => Promise<ProviderCommandCatalogs>
+  getProviderCatalog: (client: LocalIpcClient, logger?: CharioxLogger | null, options?: Parameters<typeof import("./provider-api.js").getProviderCatalog>[2], fallbackOnError?: boolean) => Promise<ProviderCatalog>
+  getProviderCommandCatalogs: (client: LocalIpcClient, logger?: CharioxLogger | null, fallbackOnError?: boolean) => Promise<ProviderCommandCatalogs>
   getTerminalCommandCatalog: (client: LocalIpcClient, logger?: CharioxLogger | null) => Promise<TerminalCommandCatalog>
   createSession: (
     client: LocalIpcClient,
@@ -107,8 +111,10 @@ export async function bootstrapSession(
     ? deps.getConfiguredProviderLaunchDefaults?.(client) ?? Promise.resolve({})
     : Promise.resolve({})
   const sessionsPromise = explicitAttach ? Promise.resolve([]) : deps.listSessions(client)
+  const requestedView = explicitAttach ? requestInitialSessionView(client, options, preferences, deps.attachSessionView) : null
   const resolvedSessionPromise = explicitAttach
-    ? deps.resolveSession(client, options.sessionId!, workspace)
+    ? requestedView ? requestedView.then(view => view?.session ?? deps.resolveSession(client, options.sessionId!, workspace))
+      : deps.resolveSession(client, options.sessionId!, workspace)
     : Promise.resolve(null)
   const [configured, discoveredSessions, resolvedSession] = await Promise.all([
     configuredPromise, sessionsPromise, resolvedSessionPromise,
@@ -190,7 +196,7 @@ export async function bootstrapSession(
     }
   }
 
-  const initialView = await deps.attachSessionView?.(client, session.id, options.clientId, deps.resolveVisibleAgentId(session, preferences))
+  const initialView = (requestedView ? await requestedView : null) ?? await deps.attachSessionView?.(client, session.id, options.clientId, deps.resolveVisibleAgentId(session, preferences))
   const attachment = initialView?.attachment ?? await deps.attachToSession(client, session.id, options.clientId)
   let attachedSession = initialView?.session ?? await deps.getSessionState(client, session.id)
   const providerSettlement = await settleAttachProviderRun(
@@ -248,16 +254,19 @@ export async function bootstrapSession(
     ? attachedSession : await deps.getSessionState(client, session.id)
   const visibleAgentId = deps.resolveVisibleAgentId(hydratedSession, preferences)
   // MP-08 / MP-10: composer inventories are user requested, never attach work.
-  const refreshComposer = () => Promise.all([
-    deps.getProviderCatalog(client, deps.logger, { provider: options.provider ?? null, accountProfile: options.accountProfile }),
-    deps.getProviderCommandCatalogs(client, deps.logger),
-    deps.getTerminalCommandCatalog(client, deps.logger),
-  ]).then(([providerCatalog, providerCommandCatalogs, terminalCommandCatalog]) => ({
-    sessionId: session.id, providerCatalog, providerCommandCatalogs, terminalCommandCatalog, promptHistoryEntries: [],
-  }))
+  const refreshComposer = async (cached?: ComposerInventory): Promise<ComposerInventory> => {
+    const catalogOptions = { provider: options.provider ?? null, accountProfile: options.accountProfile }
+    const catalogs = await reconcileComposerCatalogs(cached, {
+      revisions: async () => deps.getClientCatalogRevisions?.(client, catalogOptions),
+      provider: () => deps.getProviderCatalog(client, deps.logger, catalogOptions, false),
+      providerCommands: () => deps.getProviderCommandCatalogs(client, deps.logger, false),
+      terminalCommands: () => deps.getTerminalCommandCatalog(client, deps.logger),
+    })
+    return { sessionId: session.id, ...catalogs, promptHistoryEntries: [] }
+  }
   const cachedComposer = createComposerInventoryLoader(async () => {
     const profile = options.targetDaemonId ? preferences.relay?.cloud : await getKernelCloudRelayProfile(client)
-    const owner = profile?.userId ?? "local"
+    const owner = profile ? JSON.stringify([profile.apiUrl, profile.userId, profile.accountId, profile.realmId]) : "local"
     const kernel = options.targetDaemonId ?? (await getRelayStatus(client)).daemon_id
     return { owner, key: JSON.stringify([owner, kernel, options.provider, options.accountProfile]) }
   }, refreshComposer, () => JSON.stringify([options.provider, options.accountProfile]))

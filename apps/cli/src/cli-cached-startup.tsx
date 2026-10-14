@@ -1,3 +1,4 @@
+import { reconcileCachedHistory } from "./cached-history-reconciliation.js"
 // MP-08 / MP-10 / MP-11: mount a read-only previous view while ordinary attach runs.
 import {createSignal,onMount,onCleanup,Show} from "solid-js"
 import {useRenderer,useKeyboard} from "@opentui/solid"
@@ -7,6 +8,7 @@ import type {CliRuntimeBootstrapOptions,CliRuntimeBootstrapResult} from "./cli-r
 import {CharioxCliApp} from "./cli-app-root.js"
 import {buildTranscriptEntryRenderable} from "./transcript-render.js"
 import {recordPaneFirstFrame} from "./pane-first-frame-timing.js"
+import {paintCachedTranscriptFrame} from "./client-view-frame.js"
 import {createTranscriptSyntaxStyle,theme} from "./theme.js"
 
 export function createCliCachedStartup(){
@@ -34,21 +36,20 @@ export function CliCachedStartup(props:{pending:Promise<CliRuntimeBootstrapResul
   if(disposed)return
   const cached = props.view.cached(), session = result.bootstrap.binding?.session
   if (cached && (!session || cached.sessionId !== session.id || !session.agents.some(agent => agent.id === cached.agentId))) props.view.finish()
-  void result.bootstrap.deferred?.attachedHistory?.then(history => {
-   const previous = props.view.cached()
-   if (!previous || previous.sessionId !== history.sessionId) return
-   const entries = history.agentEntries[previous.agentId] ?? []
-   const sequence = Math.max(0, ...entries.flatMap(entry => [entry.historyEntryIndex ?? 0, ...(entry.historySequenceRanges ?? []).map(range => range[1])]))
-   // A reset/pruned kernel history wins over a cache with a later sequence.
-   // Current entries are rendered only through the ordinary hydration controller.
-   if (previous.sequence > sequence) void clearClientViews()
-  }).catch(() => {})
+  if (result.bootstrap.deferred?.attachedHistory && session) {
+   result.bootstrap.deferred.attachedHistory = result.bootstrap.deferred.attachedHistory.then(history => {
+    const reconciled = reconcileCachedHistory(props.view.cached(), session, history)
+    if (reconciled.discard) void clearClientViews()
+    return reconciled.history
+   })
+  }
+  result.bootstrap.isTranscriptViewCovered=()=>!painted()
   result.bootstrap.onTranscriptFrame=()=>{if(!disposed){setPainted(true);props.view.finish()}}
   setReady(result)
  }).catch(()=>{if(!disposed){props.view.finish();setFailure('Unable to attach to this session.')}})
  return <box width="100%" height="100%" flexDirection="column">
   <Show when={ready()}>{runtime=><CharioxCliApp bootstrap={runtime().bootstrap}/>}</Show>
-  <Show when={!painted()}><box position="absolute" top={0} left={0} width="100%" height="100%" backgroundColor={theme.background}>
+  <Show when={!painted()}><box position="absolute" zIndex={100} top={0} left={0} width="100%" height="100%" backgroundColor={theme.background}>
    <Show when={props.view.cached()} fallback={<text content={failure()??'Connecting…'} />}>{view=><CachedTranscript view={view()}/>}</Show>
   </box></Show>
  </box>
@@ -56,9 +57,10 @@ export function CliCachedStartup(props:{pending:Promise<CliRuntimeBootstrapResul
 function CachedTranscript(props:{view:CliCachedView}){
  const renderer=useRenderer(),syntax=createTranscriptSyntaxStyle()
  let box:BoxRenderable|undefined,scrollbox:ScrollBoxRenderable|undefined,timer:ReturnType<typeof setTimeout>|undefined
- const removeTiming=recordPaneFirstFrame(renderer,()=>Boolean(box?.getChildren().length),()=>props.view.entries,true)
+ const removeTiming=recordPaneFirstFrame(renderer,()=>Boolean((props.view.frame || box?.getChildren().length) && box && box.width > 0 && box.height > 0),()=>props.view.entries,true)
  useKeyboard(key=>{if(key.ctrl&&key.name==='c')process.exit(0)})
  onMount(()=>{
+  if (props.view.frame) return
   for(const entry of props.view.entries.filter(entry=>!entry.hidden)){
    const rendered=buildTranscriptEntryRenderable(renderer,entry,syntax,()=>{},()=>{})
    box?.add(rendered.wrapper)
@@ -67,7 +69,7 @@ function CachedTranscript(props:{view:CliCachedView}){
  })
  onCleanup(()=>{removeTiming();if(timer)clearTimeout(timer);syntax.destroy()})
  return <box width="100%" height="100%" flexDirection="column" backgroundColor={theme.background}>
-  <text content={`${props.view.alias} · Reconnecting — previous view`} fg={theme.textMuted}/>
-  <scrollbox flexGrow={1} ref={value=>{scrollbox=value}}><box width="100%" flexDirection="column" ref={value=>{box=value}}/></scrollbox>
+  <text height={1} flexShrink={0} content={`${props.view.alias} · Reconnecting — previous view`} fg={theme.textMuted}/>
+  <Show when={props.view.frame} fallback={<scrollbox flexGrow={1} ref={value=>{scrollbox=value}}><box width="100%" flexDirection="column" ref={value=>{box=value}}/></scrollbox>}>{frame=><box flexGrow={1} width="100%" ref={value=>{box=value}} renderAfter={buffer=>{if(box)paintCachedTranscriptFrame(buffer,frame(),box)}}/>}</Show>
  </box>
 }

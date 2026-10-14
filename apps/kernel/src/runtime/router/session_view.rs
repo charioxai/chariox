@@ -24,38 +24,9 @@ impl CommandRouter {
                 "initial session view requires a terminal",
             ));
         }
-        let state = self
-            .session_view_component(
-                command,
-                "state",
-                LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
-                    session_id: request.session_id.clone(),
-                }),
-            )
-            .await?;
-        let LocalDaemonResponse::SessionState { session, .. } = &state else {
-            return Err(unexpected_response());
-        };
-        let visible_agents = session
-            .agents()
-            .iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<Vec<_>>();
-        let target = request
-            .preferred_agent_id
-            .as_deref()
-            .or(session.focused_agent_id());
-        let target_index = target
-            .and_then(|id| visible_agents.iter().position(|agent| agent == id))
-            .unwrap_or(0);
-        let start = target_index / INITIAL_PANE_COUNT * INITIAL_PANE_COUNT;
-        let agent_ids = visible_agents
-            .into_iter()
-            .skip(start)
-            .take(INITIAL_PANE_COUNT)
-            .collect();
-        // Register the recipient before reading history, so output produced
-        // after the read remains buffered for the initial event subscription.
+        // Register the ordinary recipient before either read. The owned,
+        // caller-redacted snapshot selects only the initial pane group; both
+        // serialized components still enter the usual dispatch/admission path.
         let attached = self
             .session_view_component(
                 command,
@@ -70,43 +41,99 @@ impl CommandRouter {
         let LocalDaemonResponse::SessionAttached { attachment } = attached else {
             return Err(unexpected_response());
         };
-        let history_result = self
-            .session_view_component(
+        let selected = match self
+            .runtime_state
+            .session_snapshot(&request.session_id)
+            .await
+        {
+            Ok(session) => {
+                session.redacted_for_user(&crate::runtime::command::command_caller_user_id(command))
+            }
+            Err(error) => {
+                return Err(self
+                    .cleanup_failed_session_view(command, attachment.id(), error)
+                    .await)
+            }
+        };
+        let agent_ids = initial_view_agent_ids(&selected, request.preferred_agent_id.as_deref());
+        let (state_result, history_result) = tokio::join!(
+            self.session_view_component(
+                command,
+                "state",
+                LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+                    session_id: request.session_id.clone(),
+                })
+            ),
+            self.session_view_component(
                 command,
                 "history",
                 LocalDaemonRequest::GetSessionHistoryOutline(GetSessionHistoryOutlineRequest {
-                    session_id: request.session_id.clone(),
+                    session_id: request.session_id,
                     agent_ids: Some(agent_ids),
-                    latest_prompt_count: Some(4),
+                    latest_prompt_count: Some(1),
                     cursor: None,
-                    include_prefetched_content: true,
-                }),
-            )
-            .await;
-        let history = match history_result {
-            Ok(history @ LocalDaemonResponse::SessionHistoryOutline { .. }) => history,
-            result => {
-                let error = result.err().unwrap_or_else(unexpected_response);
-                self.session_view_component(
-                    command,
-                    "cleanup",
-                    LocalDaemonRequest::DetachFromSession(crate::local::DetachFromSessionRequest {
-                        attachment_id: attachment.id().into(),
-                    }),
-                )
-                .await
-                .map_err(|_| DaemonError::LocalTransport {
-                    operation: "attach initial session view",
-                    message: "initial history and attachment cleanup both failed".into(),
-                })?;
-                return Err(error);
+                    include_prefetched_content: false,
+                })
+            ),
+        );
+        let (state, mut history) = match (state_result, history_result) {
+            (
+                Ok(state @ LocalDaemonResponse::SessionState { .. }),
+                Ok(history @ LocalDaemonResponse::SessionHistoryOutline { .. }),
+            ) => (state, history),
+            (state, history) => {
+                let error = state
+                    .err()
+                    .or_else(|| history.err())
+                    .unwrap_or_else(unexpected_response);
+                return Err(self
+                    .cleanup_failed_session_view(command, attachment.id(), error)
+                    .await);
             }
         };
+        // Membership/agent visibility may change while the two reads run.
+        // Never return history outside the final caller-scoped state.
+        if let (
+            LocalDaemonResponse::SessionState { session, .. },
+            LocalDaemonResponse::SessionHistoryOutline { agents },
+        ) = (&state, &mut history)
+        {
+            agents.retain(|outline| {
+                session
+                    .agents()
+                    .iter()
+                    .any(|agent| agent.id() == outline.agent_id)
+            });
+        }
         Ok(LocalDaemonResponse::SessionViewAttached {
             attachment,
             state: Box::new(state),
             history: Box::new(history),
         })
+    }
+
+    async fn cleanup_failed_session_view(
+        &self,
+        command: &KernelCommand,
+        attachment_id: &str,
+        error: DaemonError,
+    ) -> DaemonError {
+        match self
+            .session_view_component(
+                command,
+                "cleanup",
+                LocalDaemonRequest::DetachFromSession(crate::local::DetachFromSessionRequest {
+                    attachment_id: attachment_id.into(),
+                }),
+            )
+            .await
+        {
+            Ok(_) => error,
+            Err(_) => DaemonError::LocalTransport {
+                operation: "attach initial session view",
+                message: "initial view and attachment cleanup both failed".into(),
+            },
+        }
     }
 
     async fn session_view_component(
@@ -125,6 +152,23 @@ impl CommandRouter {
         );
         Box::pin(self.dispatch(component_command, request)).await
     }
+}
+
+fn initial_view_agent_ids(
+    session: &crate::session::RuntimeSession,
+    preferred: Option<&str>,
+) -> Vec<String> {
+    let agents = session.agents();
+    let target = preferred.or(session.focused_agent_id());
+    let index = target
+        .and_then(|id| agents.iter().position(|agent| agent.id() == id))
+        .unwrap_or(0);
+    agents
+        .iter()
+        .skip(index / INITIAL_PANE_COUNT * INITIAL_PANE_COUNT)
+        .take(INITIAL_PANE_COUNT)
+        .map(|agent| agent.id().to_string())
+        .collect()
 }
 
 fn unexpected_response() -> DaemonError {

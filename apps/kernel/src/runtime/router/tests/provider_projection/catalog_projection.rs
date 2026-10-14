@@ -118,3 +118,32 @@ async fn relay_configure_invalidates_provider_catalog_projection_inner() {
         .await
         .expect("catalog task should join after app lock is released");
 }
+
+#[test]
+fn mp08_mp10_mp11_catalog_revisions_use_owned_projection_without_app_lock() {
+    run_provider_projection_large_stack_test("client-catalog-revisions-owned", || async {
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let request = GetProviderCatalogRequest::default();
+        let key = crate::runtime::provider_catalog_control::provider_catalog_cache_key(
+            crate::session::DEFAULT_LOCAL_USER_ID, &request,
+        );
+        app.provider_catalog_projection_store().update_scoped(&key, OpenCodeProviderCatalog {
+            all: Vec::new(), default: Default::default(), connected: vec!["codex".into()],
+        });
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let guard = app.lock().await;
+        let request = LocalDaemonRequest::GetClientCatalogRevisions(request);
+        let command = KernelCommand::from_local_request("catalog-revisions-owned", None, None, &request);
+        let response = tokio::time::timeout(Duration::from_millis(100), router.dispatch(command, request))
+            .await.expect("catalog revisions must not wait on app mutex").unwrap();
+        drop(guard);
+        let LocalDaemonResponse::ClientCatalogRevisions { revisions } = response else { panic!("revisions") };
+        assert_eq!(revisions.provider_catalog.len(), 64);
+        assert_eq!(revisions.provider_commands.len(), 64);
+        assert_eq!(revisions.provider_accounts.len(), 64);
+        assert!(revisions.terminal_commands.starts_with("sha256:"));
+        assert_eq!(revisions.terminal_commands.len(), 71);
+        assert!(serde_json::to_vec(&revisions).unwrap().len() < 400);
+    });
+}

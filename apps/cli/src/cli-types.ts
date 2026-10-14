@@ -436,6 +436,7 @@ export type SessionBinding = {
 }
 
 export type ComposerInventory = {
+  catalogRevisions?: import("./ipc-requests.js").ClientCatalogRevisions
   sessionId: string
   providerCatalog: ProviderCatalog
   providerCommandCatalogs: ProviderCommandCatalogs
@@ -466,6 +467,7 @@ export type BootstrapDeferredState = {
 }
 
 export type BootstrapState = {
+  isTranscriptViewCovered?: () => boolean
   onTranscriptFrame?: () => void
   client: LocalIpcClient
   binding: SessionBinding | null

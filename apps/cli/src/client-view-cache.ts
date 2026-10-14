@@ -1,12 +1,13 @@
 // MP-08 / MP-10 / MP-11: bounded private presentation, separate from session authority.
 import {readFile,mkdir,writeFile,rename,unlink,stat} from "node:fs/promises"
 import {dirname,join} from "node:path"
+import {validCachedTranscriptFrame} from "./client-view-frame-types.js"
 import {preferencesPath, type CharioxPreferences, type RelayCloudProfile} from "./preferences.js"
 import type {CliOptions, TranscriptEntry} from "./cli-types.js"
 import type {LocalIpcClient} from "./ipc.js"
 import {getKernelCloudRelayProfile,getRelayStatus} from "./relay-api.js"
 export type CliViewScope = { owner: string; kernel: string }
-export type CliCachedView = { scope: CliViewScope; sessionId: string; agentId: string; alias: string; sequence: number; savedAt: number; entries: TranscriptEntry[] }
+export type CliCachedView = { scope: CliViewScope; sessionId: string; agentId: string; alias: string; sequence: number; savedAt: number; entries: TranscriptEntry[]; frame?: import("./client-view-frame-types.js").CachedTranscriptFrame }
 const destination=()=>join(dirname(preferencesPath()),"client-cache","views.json")
 const maxBytes=16*1024*1024
 let epoch=0,writes:Promise<void>=Promise.resolve()
@@ -63,5 +64,6 @@ export function writeClientView(view:CliCachedView):Promise<void>{
 function valid(row:CliCachedView):boolean{
  return Boolean(row&&row.scope&&[row.scope.owner,row.scope.kernel,row.sessionId,row.agentId].every(value=>typeof value==="string"&&value.length>0&&value.length<=4096)
   &&typeof row.alias==="string"&&Number.isSafeInteger(row.sequence)&&row.sequence>=0&&Number.isFinite(row.savedAt)&&Array.isArray(row.entries)&&row.entries.length<=2000
+  &&(row.frame === undefined || validCachedTranscriptFrame(row.frame))
   &&row.entries.every(entry=>entry&&["user","assistant","tool","reasoning","turn_toggle"].includes(entry.role)&&typeof entry.text==="string"&&Number.isFinite(entry.id)))
 }

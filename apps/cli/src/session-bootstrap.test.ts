@@ -811,3 +811,18 @@ test("MP-08 / MP-11 direct session creation checks the default account before cr
   }), /codex-1 needs sign-in/)
   assert.equal(created, false)
 })
+
+
+test("MP-08 / MP-10 / MP-11 full session IDs paint from the kernel bundle without a resolve round trip", async () => {
+  const id = "18de8597bddf72dc", calls: string[] = []
+  const session = {id,active_provider_run_id:"run",agents:[{id:"a"}],focused_agent_id:"a"}
+  const unexpected = async () => { throw new Error("unnecessary startup read") }
+  const boot = await bootstrapSession({} as never,{clientId:"cli",sessionId:id,model:"known",effort:"high",provider:"claude-p",accountProfile:"work"},"/workspace","/workspace",{}, {
+    resolveSession: async () => { calls.push("resolve"); throw new Error("unnecessary resolve round trip") },
+    attachSessionView: async (_client:unknown,sessionId:string,_clientId:string,preferred:string|null) => {calls.push("view");assert.equal(sessionId,id);assert.equal(preferred,null);return {attachment:{id:"binding",session_id:id},session,history:{agents:[outlineAgent("a","prompt","answer")]}}},
+    listSessions:unexpected,attachToSession:unexpected,getSessionState:unexpected,catchUpAttachedSession:unexpected,getSessionHistoryOutline:unexpected,
+    tryGetProviderRun:async()=>null,resolveVisibleAgentId:()=>"a",prepareHistoryOutlineAgent:hydrateSessionHistoryOutlineAgentEntries,
+  } as never)
+  assert.deepEqual(calls,["view"]);assert.equal(boot.binding?.session.id,id)
+  assert.equal((await boot.deferred?.attachedHistory)?.historyEntries.length,2)
+})

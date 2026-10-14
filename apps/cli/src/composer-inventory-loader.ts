@@ -2,7 +2,7 @@
 import { readClientInventory, writeClientInventory, clientInventoryEpoch } from "./client-inventory-cache.js"
 export function createComposerInventoryLoader<T extends object>(
   scope: () => Promise<{ key: string; owner: string }>,
-  fetch: () => Promise<T>,
+  fetch: (cached?: T) => Promise<T>,
   selection: () => string = () => "",
 ): () => Promise<T & { reconciliation?: Promise<T> }> {
   let flight: Promise<T & { reconciliation?: Promise<T> }> | undefined
@@ -23,7 +23,7 @@ export function createComposerInventoryLoader<T extends object>(
       const stored = await readClientInventory<T>(key, owner)
       if (selection() !== requestedSelection) throw new Error("composer selection superseded")
       const refresh = async () => {
-        const value = await fetch()
+        const value = await fetch(stored?.value)
         if (generation === clientInventoryEpoch() && selection() === requestedSelection) void writeClientInventory({ key, owner, savedAt: Date.now(), value })
         return value
       }

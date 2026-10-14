@@ -1,3 +1,4 @@
+import { getClientCatalogRevisions } from "./client-catalog-api.js"
 import { startPairedRelayRenewal } from "./paired-relay-renewal.js"
 import { issueCloudPairingBootstrapToken } from "./cloud-client.js"
 import type { LocalIpcClient } from "./ipc.js"
@@ -379,6 +380,7 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
       return result
     },
     listSessions,
+    getClientCatalogRevisions,
     getProviderCatalog,
     getProviderCommandCatalogs,
     getTerminalCommandCatalog,

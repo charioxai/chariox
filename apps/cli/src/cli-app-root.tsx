@@ -1144,7 +1144,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   handleKernelSessionUnavailable = runtimeHandleKernelSessionUnavailable
   setKernelTerminalOutputRecordProcessor(runtimeProcessKernelTerminalOutputRecord)
 
-  createCliViewPersistence({ client, session: sessionState, agentId: visibleTranscriptAgentId, entries: visibleTranscriptEntries, attached: isAttached })
+  createCliViewPersistence({ client, renderer, viewport: transcriptScrollboxRefController.current, covered: () => Boolean(props.bootstrap.isTranscriptViewCovered?.() || dialogOverlayOpen() || renderer.root.findDescendantById("secret-input") || responseVisibleAgents().some(agent => activeInteractionForAgent(agent.id))), session: sessionState, agentId: visibleTranscriptAgentId, entries: visibleTranscriptEntries, attached: isAttached })
 
   return (
     <CliAppWorkspaceView

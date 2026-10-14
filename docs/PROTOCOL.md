@@ -139,14 +139,17 @@ requests. The outline's `steering` flag identifies budgeted steering prompts;
 observed and recovery prompt envelopes retain their collapsed, on-demand role.
 Clients that omit the request flag retain the earlier outline and blob paths.
 
-MP-08 / MP-10 / MP-11, the same allocated 508/116 bump: `AttachSessionView`
+MP-08 / MP-10 / MP-11: `AttachSessionView` was introduced in 508/116 and
+its first-screen behavior is updated in the allocated 518/126 bump. It
 accepts the ordinary session/client/capability binding plus an optional
 `preferred_agent_id`. `SessionViewAttached` returns an attachment, the normal
 `SessionState` response under `state`, and the normal `SessionHistoryOutline`
 response under `history`. The kernel uses the existing authorized and redacted
 read commands, selects at most six visible agents in the preferred agent's pane
-group and four recent turns, and uses the existing bounded content prefetch.
-It binds through `AttachToSession` before reading history, so later output
+group and the latest turn without downloading tool/thought bodies. State and
+history reads run concurrently after the ordinary attachment; details and older
+turns remain available through normal history requests.
+It binds through `AttachToSession` before either read, so later output
 already includes the new recipient; a history failure retires that exact new
 attachment through normal detach. This removes client round trips without
 adding session or history authority.
@@ -157,6 +160,19 @@ admission is pending, deduplicate replay by persisted sequence, and enable
 prompt controls only after subscription and hydration settle. Clients below
 508 retain their existing attach, subscribe, state and history requests.
 External-agent grants cannot request this full-terminal response bundle.
+
+MP-08 / MP-10 / MP-11, allocated 518/126: `GetClientCatalogRevisions` accepts
+exactly the same owner/provider/profile/execution-location scope as
+`GetProviderCatalog`. `ClientCatalogRevisions.revisions` returns content hashes
+for `provider_accounts`, `provider_catalog`, `provider_commands`, and the existing
+`terminal_commands` revision (`sha256:` prefix). It uses the normal scoped catalog
+loader and refreshes stale metadata before returning a revision. It adds no
+credential or provider execution path. Clients show their bounded private stored
+inventories immediately, then compare revisions in the background after four
+hours or explicit invalidation; unchanged inventories need no full download.
+Older kernels retain ordinary full catalog requests. Projection subscriptions
+send activity/metadata before terminal output batches on the same wake; the relay
+still routes opaque packets and owns no session state.
 
 MP-08 / MP-10: complete owned output/thought groups in initial history pages
 also compact repeated delta metadata. `sequence_end`, `sequence_byte_lengths`

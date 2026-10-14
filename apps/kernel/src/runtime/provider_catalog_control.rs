@@ -24,6 +24,16 @@ pub(crate) async fn execute_provider_catalog_request(
             )
             .await
         }
+        LocalDaemonRequest::GetClientCatalogRevisions(request) => {
+            super::client_catalog_revisions::catalog_revisions(
+                provider_catalog_projection,
+                config_projection,
+                account_profiles,
+                owner_user_id,
+                request,
+            )
+            .await
+        }
         LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
             execute_get_provider_command_catalogs_request()
         }
@@ -41,6 +51,29 @@ pub(crate) async fn execute_get_provider_catalog_request(
     owner_user_id: &str,
     request: crate::local::GetProviderCatalogRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let catalog = load_catalog(
+        provider_catalog_projection,
+        config_projection,
+        account_profiles,
+        owner_user_id,
+        request,
+        true,
+    )
+    .await?;
+    Ok(LocalDaemonResponse::ProviderCatalog { catalog })
+}
+
+// Both ordinary full reads and rare revision checks use the same scoped loader.
+// A revision check reconciles stale provider metadata before comparing hashes;
+// the client keeps its stored catalog visible while that work runs.
+pub(super) async fn load_catalog(
+    provider_catalog_projection: &ProviderCatalogProjectionStore,
+    config_projection: &DaemonConfigProjectionStore,
+    account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    request: crate::local::GetProviderCatalogRequest,
+    allow_stale: bool,
+) -> Result<crate::provider::OpenCodeProviderCatalog, DaemonError> {
     let owner_user_id = crate::account_profile::provider_account_authority_owner_user_id(
         &config_projection.snapshot(),
         owner_user_id,
@@ -57,9 +90,12 @@ pub(crate) async fn execute_get_provider_catalog_request(
                 "connected_provider_count": catalog.connected.len(),
             }),
         );
-        return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
+        return Ok(catalog);
     }
-    if let Some(catalog) = provider_catalog_projection.cached_scoped(&cache_key) {
+    if let Some(catalog) = provider_catalog_projection
+        .cached_scoped(&cache_key)
+        .filter(|_| allow_stale)
+    {
         refresh_provider_catalog_in_background(
             provider_catalog_projection.clone(),
             config_projection.snapshot(),
@@ -76,7 +112,7 @@ pub(crate) async fn execute_get_provider_catalog_request(
                 "connected_provider_count": catalog.connected.len(),
             }),
         );
-        return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
+        return Ok(catalog);
     }
 
     let config = config_projection.snapshot();
@@ -100,7 +136,7 @@ pub(crate) async fn execute_get_provider_catalog_request(
         }),
     );
     provider_catalog_projection.update_scoped(&cache_key, catalog.clone());
-    Ok(LocalDaemonResponse::ProviderCatalog { catalog })
+    Ok(catalog)
 }
 
 fn refresh_provider_catalog_in_background(
