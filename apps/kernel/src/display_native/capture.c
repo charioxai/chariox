@@ -25,7 +25,7 @@ struct Capture {
     Damage damage;
     XImage *image;
     XShmSegmentInfo shm;
-    int attached, event, width, height, window_height, offset, redirected, redirect_mode;
+    int attached, event, width, height, window_width, window_height, left, offset, retired, redirected, redirect_mode;
     unsigned long owner;
     uint8_t *previous;
     /* The slot holding the latest readback. Only this worker writes slots,
@@ -56,8 +56,8 @@ static int dimensions(Display *d, Window w, unsigned *width, unsigned *height) {
 void cx_capture_close(struct Capture *c) {
     if (!c) return;
     if (c->display && c->pixmap) XFreePixmap(c->display,c->pixmap);
-    if (c->display && c->redirected) XCompositeUnredirectWindow(c->display,c->window,c->redirect_mode);
-    if (c->display && c->damage) XDamageDestroy(c->display,c->damage);
+    if (c->display && c->redirected && !c->retired) XCompositeUnredirectWindow(c->display,c->window,c->redirect_mode);
+    if (c->display && c->damage && !c->retired) XDamageDestroy(c->display,c->damage);
     if (c->display && c->attached) { XShmDetach(c->display,&c->shm); XSync(c->display,False); }
     if (c->image) { c->image->data = NULL; XDestroyImage(c->image); }
     if (c->shm.shmaddr && c->shm.shmaddr != (void *)-1) shmdt(c->shm.shmaddr);
@@ -86,7 +86,11 @@ static int redirect_window(struct Capture *c,int mode) {
 /* MP-08/MP-10: fixed-label refusal stage plus owned-window geometry on the
  * worker's private stderr channel. Sizes only; no titles, pixels or IDs. */
 static void open_refused(const char *stage) {fprintf(stderr,"MD-DISPLAY: native stage %s\n",stage);}
-struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
+static struct Capture *capture_open(unsigned long owner, int width, int height,
+    int window_width, int window_height, int left, int top) {
+    if(owner<=1||width<1||width>2560||height<1||height>1600)return NULL;
+    if(window_height&&(window_width<1||window_width>2560||window_height<1||window_height>2400||
+        left<0||top<0||left>window_width-width||top>window_height-height))return NULL;
     struct Capture *c = calloc(1,sizeof(*c));
     if (!c) return NULL;
     c->shm.shmid = -1; c->owner=owner; c->width=width; c->height=height;
@@ -100,8 +104,9 @@ struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
         unsigned w,h;
         if (window_pid(c->display,children[i])!=owner || !dimensions(c->display,children[i],&w,&h)) continue;
         if (owned++<8) {size_t n=strlen(seen);snprintf(seen+n,sizeof(seen)-n,"%s%ux%u",n?",":"",w,h);}
-        if (w==(unsigned)width && h>=(unsigned)height && h-height<=400) {
-            c->window=children[i]; c->window_height=h; found++;
+        if (window_height ? w==(unsigned)window_width&&h==(unsigned)window_height :
+            w==(unsigned)width&&h>=(unsigned)height&&h-height<=400) {
+            c->window=children[i]; c->window_width=w; c->window_height=h; found++;
         }
     }
     if (children) XFree(children);
@@ -109,7 +114,8 @@ struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
         fprintf(stderr,"MD-DISPLAY: native geometry requested %dx%d owned %s\n",width,height,owned?seen:"none");
         open_refused(found?"window_ambiguous":"window_not_found");goto fail;
     }
-    c->offset=c->window_height-height;
+    c->left=window_height?left:0;
+    c->offset=window_height?top:c->window_height-height;
     /* The kernel owns a private X server; its root is never presented. Manual
      * keeps the named owned-window pixmap without compositing an unused root. */
     if(!redirect_window(c,CompositeRedirectManual)&&!redirect_window(c,CompositeRedirectAutomatic)){open_refused("composite_redirect");goto fail;}
@@ -130,9 +136,21 @@ struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
     c->hash_cur=malloc(height*sizeof(uint64_t));c->hash_last=malloc(height*sizeof(uint64_t));
     if (!c->previous||!c->hash_cur||!c->hash_last) goto fail;
     c->damage=XDamageCreate(c->display,c->window,XDamageReportRawRectangles);
+    XSelectInput(c->display,c->window,StructureNotifyMask);
     return c;
 fail:
     cx_capture_close(c); return NULL;
+}
+struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
+    return capture_open(owner,width,height,0,0,0,0);
+}
+/* MP-08/MP-10/MP-11: kernel-resolved owned-window crop. The exact window
+ * dimensions, crop and PID remain private worker state, never client authority.
+ * Page P3 rectangles and the native Chrome band use this same source adapter. */
+struct Capture *cx_capture_open_region(unsigned long owner, int window_width,
+    int window_height, int left, int top, int width, int height) {
+    if(!window_height)return NULL;
+    return capture_open(owner,width,height,window_width,window_height,left,top);
 }
 void cx_capture_cpu(struct Capture *c,double *out) {memcpy(out,c->cpu,sizeof(c->cpu));}
 int cx_capture_fd(struct Capture *c) { return ConnectionNumber(c->display); }
@@ -140,9 +158,11 @@ int cx_capture_damage(struct Capture *c) {
     int dirty=0;
     while (XPending(c->display)) {
         XEvent event; XNextEvent(c->display,&event);
+        if(event.type==DestroyNotify&&event.xdestroywindow.window==c->window){c->retired=1;dirty=1;}
+        if(event.type==ConfigureNotify&&event.xconfigure.window==c->window)dirty=1;
         if (event.type==c->event) {
             XRectangle r=((XDamageNotifyEvent *)&event)->area;
-            if (r.x<c->width && r.x+r.width>0 && r.y<c->offset+c->height && r.y+r.height>c->offset) dirty=1;
+            if (r.x<c->left+c->width && r.x+r.width>c->left && r.y<c->offset+c->height && r.y+r.height>c->offset) dirty=1;
         }
     }
     return dirty;
@@ -185,7 +205,12 @@ int cx_capture_difference(const uint8_t *raw,const uint8_t *previous,int width,i
 static void row_hashes(const uint8_t *raw,int width,int height,uint64_t *out){
     size_t stride=(size_t)width*4;
     for(int y=0;y<height;y++){uint64_t h=0x9E3779B97F4A7C15ull;
-        for(int k=0;k<6;k++){const uint8_t *p=raw+y*stride+(size_t)(width*(2*k+1)/12-16)*4;for(int i=0;i<128;i+=8){uint64_t v;memcpy(&v,p+i,8);h=(h^v)*0xff51afd7ed558ccdull;h^=h>>29;}}
+        int n=width<32?width:32;
+        for(int k=0;k<6;k++){
+            int x=width*(2*k+1)/12-n/2;if(x<0)x=0;if(x>width-n)x=width-n;
+            const uint8_t *p=raw+y*stride+(size_t)x*4;
+            for(int i=0;i<n*4;i+=8){uint64_t v=0;int bytes=n*4-i<8?n*4-i:8;memcpy(&v,p+i,bytes);h=(h^v)*0xff51afd7ed558ccdull;h^=h>>29;}
+        }
         out[y]=h;}
 }
 /* Group equal-state cells into band runs merged across adjacent bands.
@@ -292,7 +317,7 @@ int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
     c->tile_count=c->adjacent_count=-1;c->shift.valid=0;
     memset(c->cpu,0,sizeof(c->cpu));double at=capture_cpu();
     unsigned w,h;
-    if (window_pid(c->display,c->window)!=c->owner || !dimensions(c->display,c->window,&w,&h) || w!=(unsigned)c->width || h!=(unsigned)c->window_height || !XShmGetImage(c->display,c->pixmap,c->image,0,c->offset,AllPlanes)) return -1;
+    if (c->retired || window_pid(c->display,c->window)!=c->owner || !dimensions(c->display,c->window,&w,&h) || w!=(unsigned)c->window_width || h!=(unsigned)c->window_height || !XShmGetImage(c->display,c->pixmap,c->image,c->left,c->offset,AllPlanes)) return -1;
     c->cpu[0]=capture_cpu()-at;at=capture_cpu();
     size_t stride=(size_t)c->width*4, size=stride*c->height;
     uint8_t *raw=(uint8_t *)c->image->data;
@@ -370,10 +395,10 @@ int cx_shift_plan(const uint8_t *raw,const uint8_t *base,int width,int height,in
  * 1: another top-level window covers it, -1: not owned/unknown). */
 static int pointer_target(struct Capture *c,int x,int y,int *px,int *py){
     if(x<0||y<0||x>=c->width||y>=c->height)return -1;
-    if(window_pid(c->display,c->window)!=c->owner)return -1;
+    if(c->retired||window_pid(c->display,c->window)!=c->owner)return -1;
     Window root=DefaultRootWindow(c->display),child;int rx,ry,ox,oy;
     if(!XTranslateCoordinates(c->display,c->window,root,0,0,&rx,&ry,&child))return -1;
-    *px=rx+x;*py=ry+c->offset+y;
+    *px=rx+c->left+x;*py=ry+c->offset+y;
     if(!XTranslateCoordinates(c->display,root,root,*px,*py,&ox,&oy,&child))return -1;
     return child==c->window?0:1;
 }
@@ -403,13 +428,13 @@ int cx_capture_click(struct Capture *c,int x,int y){
 /* MP-08/MP-10: one key press/release into the owned window, focused first
  * (no renderer acknowledgement round trip); the caller fenced document,
  * actor and text target. A keysym outside the private keymap is refused. */
-int cx_capture_key(struct Capture *c,unsigned long keysym,int shift){
-    if(window_pid(c->display,c->window)!=c->owner)return -1;
+int cx_capture_key_modifiers(struct Capture *c,unsigned long keysym,int modifiers){
+    if(c->retired||modifiers<0||modifiers>15||window_pid(c->display,c->window)!=c->owner)return -1;
     KeyCode code=XKeysymToKeycode(c->display,(KeySym)keysym),shifter=XKeysymToKeycode(c->display,XK_Shift_L);
     if(!code||!shifter)return -1;
     if(XkbKeycodeToKeysym(c->display,code,0,0)!=(KeySym)keysym){
         if(XkbKeycodeToKeysym(c->display,code,0,1)!=(KeySym)keysym)return -1;
-        shift=1;
+        modifiers|=8;
     }
     Window focus;int revert;XGetInputFocus(c->display,&focus,&revert);
     if(focus!=c->window){
@@ -419,10 +444,15 @@ int cx_capture_key(struct Capture *c,unsigned long keysym,int shift){
         XSetErrorHandler(redirect_previous);redirect_display=NULL;
         if(redirect_error)return -1;
     }
-    if(shift)XTestFakeKeyEvent(c->display,shifter,True,CurrentTime);
+    KeySym names[4]={XK_Alt_L,XK_Control_L,XK_Super_L,XK_Shift_L};KeyCode mods[4]={0};
+    for(int i=0;i<4;i++)if(modifiers&(1<<i)){mods[i]=XKeysymToKeycode(c->display,names[i]);if(!mods[i])return -1;}
+    for(int i=0;i<4;i++)if(mods[i])XTestFakeKeyEvent(c->display,mods[i],True,CurrentTime);
     XTestFakeKeyEvent(c->display,code,True,CurrentTime);XTestFakeKeyEvent(c->display,code,False,CurrentTime);
-    if(shift)XTestFakeKeyEvent(c->display,shifter,False,CurrentTime);
+    for(int i=3;i>=0;i--)if(mods[i])XTestFakeKeyEvent(c->display,mods[i],False,CurrentTime);
     XFlush(c->display);return 0;
+}
+int cx_capture_key(struct Capture *c,unsigned long keysym,int shift){
+    return cx_capture_key_modifiers(c,keysym,shift?8:0);
 }
 
 /* MP-08/MP-10: plans cost a full compare; skip them while no viewer can use one. */

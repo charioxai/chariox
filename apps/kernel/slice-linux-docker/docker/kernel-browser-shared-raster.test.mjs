@@ -1,6 +1,14 @@
 // MP-08/MP-10/MP-11: immutable pooled leases and stale release rejection.
 import test from 'node:test';import assert from 'node:assert/strict';
 import {SharedRasterPool} from './kernel-browser-shared-raster.mjs';
+test('MP-08/MP-10/MP-11 a native region lease accepts only its kernel-configured raster size',()=>{
+ const p=new SharedRasterPool('/private',()=>{},{width:1280,height:174});
+ const raw=p.apply({slot:0,serial:1,width:1280,height:174});
+ raw.release();
+ assert.throws(()=>p.apply({slot:0,serial:2,width:1280,height:800}),/bound/);
+ assert.throws(()=>new SharedRasterPool('/private',()=>{},{width:1280,height:175}),/geometry/);
+ assert.throws(()=>new SharedRasterPool('/private',()=>{}).apply({slot:0,serial:1,width:1280,height:174}),/bound/);
+});
 test('MP-08/MP-10 pooled small damage uses bounded exact region reads without a full raster copy',async()=>{
  const {mkdtemp,writeFile,rm,chmod}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const path=await import('node:path');
  const {nativeDamageTiles}=await import('./kernel-browser-tiles.mjs');const {decodePng}=await import('./kernel-browser-pixels.mjs');

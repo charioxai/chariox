@@ -20,6 +20,80 @@ struct Config {
     width: i32,
     height: i32,
     pool: PathBuf,
+    /// MP-08/MP-10/MP-11: private kernel-resolved owned-window crop.
+    #[serde(default)]
+    window_region: Option<WindowRegion>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WindowRegion {
+    width: i32,
+    height: i32,
+    left: i32,
+    top: i32,
+}
+impl Config {
+    fn valid(&self) -> bool {
+        if self.pid <= 1 || !self.pool.is_absolute() {
+            return false;
+        }
+        match &self.window_region {
+            None => [(1280, 800), (2560, 1600), (1920, 1080)].contains(&(self.width, self.height)),
+            Some(window) => {
+                (2..=2560).contains(&self.width)
+                    && (2..=1600).contains(&self.height)
+                    && self.width % 2 == 0
+                    && self.height % 2 == 0
+                    && (1..=2560).contains(&window.width)
+                    && (1..=2400).contains(&window.height)
+                    && window.left >= 0
+                    && window.top >= 0
+                    && window.left <= window.width - self.width
+                    && window.top <= window.height - self.height
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod region_tests {
+    use super::*;
+    #[test]
+    fn mp11_region_config_cannot_escape_owned_window_or_widen_legacy_geometry() {
+        let base = json!({"pid":42,"width":1280,"height":174,"pool":"/owned/pool",
+            "window_region":{"width":1280,"height":974,"left":0,"top":0}});
+        assert!(serde_json::from_value::<Config>(base.clone())
+            .unwrap()
+            .valid());
+        for (key, value) in [
+            ("left", -1),
+            ("top", 801),
+            ("width", 1279),
+            ("height", 2410),
+        ] {
+            let mut bad = base.clone();
+            bad["window_region"][key] = value.into();
+            assert!(
+                !serde_json::from_value::<Config>(bad).unwrap().valid(),
+                "{key}"
+            );
+        }
+        let mut legacy = base.clone();
+        legacy.as_object_mut().unwrap().remove("window_region");
+        assert!(!serde_json::from_value::<Config>(legacy).unwrap().valid());
+        for (key, value) in [
+            ("pid", json!(1)),
+            ("height", json!(175)),
+            ("pool", json!("relative")),
+        ] {
+            let mut bad = base.clone();
+            bad[key] = value;
+            assert!(
+                !serde_json::from_value::<Config>(bad).unwrap().valid(),
+                "{key}"
+            );
+        }
+    }
 }
 #[derive(Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
@@ -68,6 +142,9 @@ enum Command {
     Key {
         key: [u32; 2],
     },
+    KeyChord {
+        key_chord: [u32; 2],
+    },
     Plans {
         plans: bool,
     },
@@ -82,9 +159,17 @@ enum Rejection {
     ShiftHold,
 }
 impl Rejection {
-    fn index(self) -> usize { self as usize }
+    fn index(self) -> usize {
+        self as usize
+    }
     fn label(self) -> &'static str {
-        ["stale_document", "epoch", "region_revision", "serial_skipped", "shift_hold"][self.index()]
+        [
+            "stale_document",
+            "epoch",
+            "region_revision",
+            "serial_skipped",
+            "shift_hold",
+        ][self.index()]
     }
 }
 /// MP-08/MP-10/MP-11: pointer input is a request: the reply says whether the
@@ -110,7 +195,10 @@ pub(super) fn readback_due(dirty: bool, wake: bool, elapsed: Duration) -> bool {
 }
 pub(super) fn readback_wait(dirty: bool, free_slot: bool, elapsed: Duration) -> i32 {
     if dirty && free_slot {
-        READBACK_MIN.saturating_sub(elapsed).as_micros().div_ceil(1000) as i32
+        READBACK_MIN
+            .saturating_sub(elapsed)
+            .as_micros()
+            .div_ceil(1000) as i32
     } else if free_slot {
         // Upper bound only; XDamage/control readiness wakes poll sooner.
         16
@@ -191,10 +279,7 @@ fn read_config() -> Result<Config, String> {
 pub(super) fn run() -> Result<(), String> {
     let config = read_config()?;
     let (w, h) = (config.width, config.height);
-    if config.pid <= 1
-        || ![(1280, 800), (2560, 1600), (1920, 1080)].contains(&(w, h))
-        || !config.pool.is_absolute()
-    {
+    if !config.valid() {
         return Err("MP-11: native admission".into());
     }
     let info =
@@ -219,7 +304,20 @@ pub(super) fn run() -> Result<(), String> {
         if attempt > 0 {
             std::thread::sleep(Duration::from_millis(50));
         }
-        capture = Capture(unsafe { ffi::cx_capture_open(config.pid as libc::c_ulong, w, h) });
+        capture = Capture(unsafe {
+            match &config.window_region {
+                Some(window) => ffi::cx_capture_open_region(
+                    config.pid as libc::c_ulong,
+                    window.width,
+                    window.height,
+                    window.left,
+                    window.top,
+                    w,
+                    h,
+                ),
+                None => ffi::cx_capture_open(config.pid as libc::c_ulong, w, h),
+            }
+        });
         if !capture.0.is_null() {
             break;
         }
@@ -236,8 +334,13 @@ pub(super) fn run() -> Result<(), String> {
     let mut control = Vec::new();
     let mut serial = 0u64;
     let mut rejected = [0u64; 5];
-    for reason in [Rejection::StaleDocument, Rejection::Epoch, Rejection::RegionRevision,
-        Rejection::SerialSkipped, Rejection::ShiftHold] {
+    for reason in [
+        Rejection::StaleDocument,
+        Rejection::Epoch,
+        Rejection::RegionRevision,
+        Rejection::SerialSkipped,
+        Rejection::ShiftHold,
+    ] {
         eprintln!("MD-DISPLAY: native rejected {} 0", reason.label());
     }
     let mut admitted = 0u64;
@@ -462,6 +565,23 @@ pub(super) fn run() -> Result<(), String> {
                 } => {
                     if unsafe { ffi::cx_capture_key(capture.0, keysym.into(), shift as i32) } != 0 {
                         return Err("MP-11: native key refused".into());
+                    }
+                    wake = Some(epoch());
+                }
+                Command::KeyChord {
+                    key_chord: [keysym, modifiers],
+                } => {
+                    if modifiers > 15
+                        || !((0x20..=0x7e).contains(&keysym) || (0xff08..=0xffff).contains(&keysym))
+                        || unsafe {
+                            ffi::cx_capture_key_modifiers(
+                                capture.0,
+                                keysym.into(),
+                                modifiers as i32,
+                            )
+                        } != 0
+                    {
+                        return Err("MP-11: native key chord refused".into());
                     }
                     wake = Some(epoch());
                 }

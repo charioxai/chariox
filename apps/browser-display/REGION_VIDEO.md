@@ -1,0 +1,47 @@
+# MP-08 / MP-10 / MP-11 — native region producer
+
+`NativeWindowRegionCapture` in the kernel's
+`kernel-browser-window-region.mjs` implements the native source interface used
+by `MotionEncoder`, `PortableEncoder`, `NativeRefiner` and `DisplayStream`.
+It uses the same `startNativeReadback` adapter, kernel executable, private raster
+leases, packet files and decoder recovery as the whole-page source.
+
+The kernel resolves the owned Chromium window and supplies its physical size,
+crop, content height, canonical scale, protection policy and a current lease
+predicate. The rectangle uses physical window pixels. Its source interface
+reports CSS width/height and maps native pointer input through the crop origin.
+The private worker refuses an ambiguous window, wrong PID, changed window size
+or out-of-window crop. Destroy and configure events wake the ownership fence.
+Small raster fingerprints remain inside their rows, including two-pixel crops.
+
+For `page`, the region must stay inside the content area. Vault field rectangles
+are translated into crop coordinates before every native encode and exact
+repair. Admission compares the crop against the already protected page capture
+and retains the document fence. For `browser_chrome`, the band must stay above
+the content area; page navigation does not retire the window source. Its `tab`
+binding must represent the kernel-issued window lifetime, and `isCurrent`
+must invalidate it on lease, policy or owned-window retirement. A Chrome-only
+chord adapter uses the private native key control with the existing CDP modifier
+bits. Chords cannot bypass page text-target admission.
+
+Region sources require the compiled native worker; they do not start a Python
+or PNG polling fallback. Cropped motion should negotiate whole-video encoding
+with dependencies; the existing exact repair and ACK pump remain responsible
+for recovery. The private crop raster must have even pixel dimensions within
+2560×1600. At the canonical scale 2, integral CSS crops satisfy that condition.
+
+This producer does not issue public region subscriptions or authorize input.
+The kernel's shared terminal admission, actor/input ownership, Vault barrier,
+mirror epoch and relay subscription lifecycle must wrap it. Mirror P3 requires
+a current kernel-resolved region ID and rectangle from mirror v2; browser chrome
+requires the browser UI lane's owned-window binding and enterprise policy
+admission. These consumer bindings and their client-facing protocol are not
+implemented by this source module. Protocol 519/127 is reserved by the
+coordinator for that work and is not consumed here.
+
+MP-10 acceptance requires the real built clients/kernel/hosted relay, public
+sites, normal cookies/popups/tabs/typing/scroll, watched DPR1/2 recordings and
+strict paired latency/FPS/CPU measurements. Physical source fixtures and a
+real-Chromium source drill qualify this producer only; neither closes P3 or
+native Chrome UI acceptance. In particular, owned auxiliary windows used by
+omnibox suggestions and menus need their explicit consumer binding and proof.
