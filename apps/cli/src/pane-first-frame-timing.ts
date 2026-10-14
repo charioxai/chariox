@@ -27,6 +27,7 @@ export function recordPaneFirstFrame(
   renderer: CliRenderer,
   hasMountedTranscript: () => boolean,
   mountedEntries: () => Iterable<TranscriptEntry> = () => [],
+  cached = false,
 ): () => void {
   const destination = process.env.CHARIOX_PANE_TIMING_FILE
   if (!destination) return () => {}
@@ -40,7 +41,7 @@ export function recordPaneFirstFrame(
   const sample = () => {
     if (!recorded && hasMountedTranscript()) {
       recorded = true
-      write({ event: "pane_first_frame" })
+      write({ event: "pane_first_frame", ...(cached ? { cached: true } : {}) })
       if (!prefix) renderer.removePostProcessFn(sample)
     }
     if (!tagPattern) return

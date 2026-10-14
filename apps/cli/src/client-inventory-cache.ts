@@ -1,3 +1,4 @@
+import { clearClientViews } from "./client-view-cache.js"
 // MP-08 / MP-10: private, bounded UI catalogs; never stores provider credentials.
 import { readFile, mkdir, writeFile, rename, unlink } from "node:fs/promises"
 import { dirname, join } from "node:path"
@@ -17,6 +18,7 @@ let writes: Promise<void> = Promise.resolve()
 let epoch = 0
 export const clientInventoryEpoch = () => epoch
 export async function invalidateClientInventories(): Promise<void> {
+  void clearClientViews()
   epoch++
   await writes.catch(() => {})
   await unlink(file()).catch(() => {})

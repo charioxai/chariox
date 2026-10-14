@@ -1,3 +1,4 @@
+import { createCliViewPersistence } from "./cli-view-persistence.js"
 import { recordPaneFirstFrame } from "./pane-first-frame-timing.js"
 import { toggleFocusedTranscriptDetails } from "./transcript-details-controller.js"
 import { createProviderLoginLinkOpener, localDesktopAvailable } from "./provider-login-link.js"
@@ -1142,6 +1143,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   recordDaemonActivity = runtimeRecordDaemonActivity
   handleKernelSessionUnavailable = runtimeHandleKernelSessionUnavailable
   setKernelTerminalOutputRecordProcessor(runtimeProcessKernelTerminalOutputRecord)
+
+  createCliViewPersistence({ client, session: sessionState, agentId: visibleTranscriptAgentId, entries: visibleTranscriptEntries, attached: isAttached })
 
   return (
     <CliAppWorkspaceView

@@ -131,6 +131,7 @@ export type CliRuntimeBootstrapOptions = {
   argv: string[]
   cwd: string
   logger?: CharioxLogger | null
+  onClientReady?: (client: LocalIpcClient, options: CliOptions, preferences: CharioxPreferences) => void
 }
 
 export type CliRuntimeBootstrapResult =
@@ -235,6 +236,7 @@ export async function bootstrapCliRuntime(
       throw error
     }
   }
+  options.onClientReady?.(client, cliOptions, preferences)
   const inferredTargets = await deps.inferWorkspaceTargetsFromLaunchDirectory(options.cwd)
   const workspace = cliOptions.workspace ?? inferredTargets.workspace
   const worktree = cliOptions.worktree ?? inferredTargets.worktree
