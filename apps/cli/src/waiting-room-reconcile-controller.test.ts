@@ -1,14 +1,16 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import type { ProviderAccountProfile } from "@chariox/kernel-client"
 
 import type { BackendProviderId, ProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
-import type { ThemeRegistry } from "./theme-registry.js"
+import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
 import {
   createWaitingRoomReconcileController,
   type WaitingRoomProviderDefaults,
 } from "./waiting-room-reconcile-controller.js"
 import type { WaitingRoomStateUpdate } from "./waiting-room-controller.js"
+import { selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 import type {
   WaitingRoomRemoteState,
   WaitingRoomState,
@@ -134,15 +136,69 @@ test("waiting room reconcile controller persists provider defaults when policy r
   }])
 })
 
+for (const explicit of [false, true]) {
+  test(`MP-08/MP-10/MP-11 catalog follows default promotion with ${explicit ? "an explicit account" : "follow-default intent"}`, () => {
+    const catalog = (model: string, effort: string): ProviderCatalog => ({
+      all: [{ id: "codex", name: "Codex", models: {
+        [model]: { id: model, name: model, status: "active", variants: { [effort]: {} } },
+      } }],
+      default: { codex: model },
+      connected: ["codex"],
+    })
+    const account = (id: string, isDefault: boolean): ProviderAccountProfile => ({
+      owner_user_id: "local", provider: "codex", profile_id: id, label: id,
+      origin: "linked", is_default: isDefault, auth_state: "authenticated",
+      usage: { profile_id: id, provider: "codex", availability: "unavailable", source: "test" },
+    })
+    const requests: string[] = []
+    const harness = createHarness({
+      currentState: waitingRoomState({
+        providerId: "codex", accountProfileId: explicit ? "A" : "default",
+        modelId: "codex/model-a", effort: "low", sliceSelectionId: "none",
+        selectedMachineRef: "local", selectedKernelRef: "local",
+      }),
+      catalog: catalog("model-a", "low"),
+      remote: { providerAccounts: [account("A", true)] },
+      attached: false,
+      onCatalogRefresh: (next) => {
+        requests.push(selectedProviderAccount(harness.state.remote.providerAccounts,
+          next.providerId, next.accountProfileId)!.profile_id)
+      },
+    })
+    harness.controller.reconcileProjection(harness.state.currentState)
+    assert.deepEqual(requests, [])
+
+    harness.state.remote = { providerAccounts: [account("A", false), account("B", true)] }
+    harness.controller.reconcileProjection(harness.state.currentState)
+    assert.equal(harness.state.currentState.accountProfileId, explicit ? "A" : "default")
+    assert.deepEqual(requests, explicit ? [] : ["B"])
+    if (!explicit) {
+      // The production catalog callback delivers B asynchronously, then reconciles again.
+      harness.state.catalog = catalog("model-b", "high")
+      harness.controller.reconcileProjection(harness.state.currentState)
+    }
+    assert.equal(harness.state.currentState.modelId, explicit ? "codex/model-a" : "codex/model-b")
+    assert.equal(harness.state.currentState.effort, explicit ? "low" : "high")
+    assert.equal(harness.state.currentState.accountProfileId, explicit ? "A" : "default")
+    harness.controller.reconcile(harness.state.currentState)
+    assert.deepEqual(requests, explicit ? [] : ["B"], "catalog delivery and UI updates must not loop")
+  })
+}
+
 function createHarness(options: {
   currentState: WaitingRoomState
-  update: WaitingRoomStateUpdate
+  update?: WaitingRoomStateUpdate
   attached: boolean
   appliedThemeId?: string
+  catalog?: ProviderCatalog
+  remote?: WaitingRoomRemoteState
+  onCatalogRefresh?: (state: WaitingRoomState) => void
 }) {
   const calls: string[] = []
   const state = {
     currentState: options.currentState,
+    catalog: options.catalog ?? ({} as ProviderCatalog),
+    remote: options.remote ?? ({} as WaitingRoomRemoteState),
     defaults: null as WaitingRoomProviderDefaults | null,
     savedUiThemes: [] as string[],
     mergedUiThemes: [] as string[],
@@ -162,9 +218,9 @@ function createHarness(options: {
       state.currentState = nextState
     },
     getSessions: () => [] as SessionListEntry[],
-    getProviderCatalog: () => ({} as ProviderCatalog),
-    getRemoteState: () => ({} as WaitingRoomRemoteState),
-    getThemeRegistry: () => ({} as ThemeRegistry),
+    getProviderCatalog: () => state.catalog,
+    getRemoteState: () => state.remote,
+    getThemeRegistry: () => DEFAULT_THEME_REGISTRY,
     getCurrentProvider: () => "opencode",
     getCurrentModel: () => "gpt-5.4",
     setProviderDefaults: (defaults) => {
@@ -173,7 +229,7 @@ function createHarness(options: {
     },
     applyTheme: () => {
       calls.push("applyTheme")
-      return options.appliedThemeId ?? options.update.normalizedState.themeId
+      return options.appliedThemeId ?? state.currentState.themeId
     },
     resetTranscriptSyntax: () => {
       calls.push("resetTranscriptSyntax")
@@ -209,7 +265,8 @@ function createHarness(options: {
     syncCommandCenter: () => {
       calls.push("syncCommandCenter")
     },
-    deriveStateUpdate: () => options.update,
+    ...(options.onCatalogRefresh ? { refreshProviderCatalogForSelection: options.onCatalogRefresh } : {}),
+    ...(options.update ? { deriveStateUpdate: () => options.update! } : {}),
   })
   return { calls, state, controller }
 }
