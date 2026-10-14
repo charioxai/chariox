@@ -29,7 +29,7 @@ export class BrowserInputCapture {
       lease.closed=this.runTransient(connection,sessionId,async()=>{
         ready.resolve();await release.promise;
         if(lease.active)await new Promise(resolve=>lease.waiters.push(resolve));
-      }).then(settle,error=>{settle();ready.reject(error);throw error});
+      }, true).then(settle,error=>{settle();ready.reject(error);throw error});
       lease.closed.catch(()=>{});
     }
     lease.refs++;await lease.ready;let released=false;
@@ -45,9 +45,11 @@ export class BrowserInputCapture {
     try{return await operation()}
     finally{if(!--lease.active)for(const wake of lease.waiters.splice(0))wake()}
   }
-  async runTransient(connection, sessionId, operation) {
+  async runTransient(connection, sessionId, operation, keepAlive = false) {
     const visible = await this.visibility(connection, sessionId);
-    if (visible) return operation();
+    // A display can outlive physical foreground visibility. Acquire its
+    // renderer wake-up at hold time, before any later background transition.
+    if (visible && !keepAlive) return operation();
     const capture = { visible };
     this.visibilityBySession.set(sessionId, capture);
     let dialogOpened = false;
