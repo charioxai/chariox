@@ -2,6 +2,7 @@
 """Headless regression checks for the real TextEdit receipt/selection verdict."""
 import importlib.util
 from pathlib import Path
+import time
 import unittest
 
 spec = importlib.util.spec_from_file_location('textedit_drill', Path(__file__).with_name('textedit-click-drill.py'))
@@ -19,6 +20,12 @@ class TextEditVerdictTests(unittest.TestCase):
         self.assertTrue(drill.caret_matches(receipt, 126, {'x': 316, 'y': 192}))
         self.assertFalse(drill.caret_matches(receipt, 125, {'x': 316, 'y': 192}))
         self.assertFalse(drill.caret_matches(receipt, 126, {'x': 315, 'y': 192}))
+
+    def test_only_a_process_started_by_this_launch_is_owned(self):
+        launched = time.mktime((2026, 10, 14, 11, 24, 7, 0, 0, -1))
+        self.assertTrue(drill.started_since('Wed Oct 14 11:24:07 2026 ' + drill.TEXTEDIT, launched))
+        self.assertFalse(drill.started_since('Wed Oct 14 11:24:06 2026 ' + drill.TEXTEDIT, launched))
+        self.assertFalse(drill.started_since('Wed Oct  7 20:38:10 2026 ' + drill.TEXTEDIT, launched))
 
     def test_refusal_and_unproven_completion_fail(self):
         for receipt in ['refused: permission (accessibility-denied)', 'dispatched; path=AXSelectedTextRange; application completion unproven']:

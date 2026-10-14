@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -99,7 +100,7 @@ class TextEditLifecycleCase(unittest.TestCase):
              patch.object(textedit.drill, 'launch_helper', side_effect=self.helper), \
              patch.object(subprocess, 'run', side_effect=self.native), \
              patch.object(textedit, 'run_reference', return_value={'probes': self.probes}), \
-             patch.object(textedit, 'process_identity', return_value='Wed Oct 14 11:00:00 2026 ' + textedit.TEXTEDIT), \
+             patch.object(textedit, 'process_identity', return_value=time.strftime('%a %b %d %H:%M:%S %Y ', time.localtime(time.time() + 60)) + textedit.TEXTEDIT), \
              patch.object(textedit.os, 'kill', side_effect=self.kill), patch.object(textedit.time, 'sleep'), \
              patch.object(Path, 'home', return_value=self.root), \
              patch.object(textedit.time, 'strftime', return_value=f'run-{self.run_id}'):

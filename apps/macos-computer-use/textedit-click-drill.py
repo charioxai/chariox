@@ -65,6 +65,14 @@ def process_identity(pid):
     return subprocess.run(['ps', '-p', str(pid), '-o', 'lstart=,comm='], capture_output=True, text=True).stdout.strip()
 
 
+def started_since(identity, launched):
+    # `ps` lstart is local time in whole seconds, e.g. 'Wed Oct 14 11:24:07 2026'.
+    _, month, day, clock, year = identity.split()[:5]
+    hour, minute, second = map(int, clock.split(':'))
+    months = 'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split()
+    return time.mktime((int(year), months.index(month) + 1, int(day), hour, minute, second, 0, 0, -1)) >= int(launched)
+
+
 def terminate_owned(pid, identity, window):
     # Only the runner's own unedited TextEdit instance, identified by start time and path.
     if process_identity(pid) != identity:
@@ -127,6 +135,7 @@ def run():
         owners = {w['pid'] for w in before['windows']}
         document.write_text(PUBLIC_TEXT)
         drill.require_gui()
+        launched = time.time()
         # A new, runner-owned instance: an existing TextEdit and its documents stay untouched.
         subprocess.run(['open', '-n', '-a', '/System/Applications/TextEdit.app', str(document),
                         '--args', '-ApplePersistenceIgnoreState', 'YES'], check=True, timeout=5)
@@ -140,7 +149,7 @@ def run():
             if len(windows) == 1:
                 pid = windows[0]['pid']
                 identity = process_identity(pid)
-                if not identity.endswith(' ' + TEXTEDIT):
+                if not identity.endswith(' ' + TEXTEDIT) or not started_since(identity, launched):
                     raise RuntimeError('new window is not a runner-owned TextEdit; no mutation attempted')
                 scope = ['--enable-owner-window', '--owner-pid', str(pid), '--window-id', str(windows[0]['windowID']), '--target', 'focused']
                 break

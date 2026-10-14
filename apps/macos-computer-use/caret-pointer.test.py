@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -104,7 +105,7 @@ class CaretPointerTests(unittest.TestCase):
                                        {'name': 'second', 'point': {'x': 40, 'y': 50}, 'expectedLocation': 125}]}
                 def kill(pid, sig): self.state['windows'] = []
                 with patch.object(Path, 'home', return_value=self.root), patch.object(textedit, 'reference', side_effect=reference), \
-                     patch.object(textedit, 'process_identity', return_value='start ' + textedit.TEXTEDIT), \
+                     patch.object(textedit, 'process_identity', return_value=time.strftime('%a %b %d %H:%M:%S %Y ', time.localtime(time.time() + 60)) + textedit.TEXTEDIT), \
                      patch.object(textedit.os, 'kill', side_effect=kill), patch.object(textedit.time, 'sleep'), \
                      patch.object(textedit.time, 'strftime', return_value=f'takeover-{self.run_id}'):
                     textedit.run()
