@@ -74,10 +74,10 @@ pub(crate) async fn migrate_legacy_kernel_profile(
     if profile.kernel_credential.is_some() {
         return Ok(());
     }
-    // Managed bootstrap remains its explicit dedicated capability path.
-    if crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()?
-        .is_some_and(|r| r.kernel_id == config.daemon_id && r.machine_id == config.host_machine_id)
-    {
+    // MP-08/MP-09/MP-11: bootstrap enrolls a new kernel before confirmation.
+    // Legacy migration would retire the credential needed by its lifecycle
+    // reporter when the supervisor restarts the confirmed child.
+    if crate::managed_bootstrap::uses_bootstrap_cloud_enrollment(&config)? {
         return Ok(());
     }
     let credential = profile.machine_credential.as_deref().ok_or_else(|| DaemonError::LocalTransport {

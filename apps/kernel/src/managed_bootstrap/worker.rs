@@ -3067,6 +3067,9 @@ mod tests {
 
     #[test]
     fn worker_receipt_keeps_the_selected_home_and_not_the_bootstrap_token() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        let previous_receipt = env::var_os(ACTIVITY_RECEIPT_ENV);
         let root = std::env::temp_dir().join(format!(
             "chariox-disposable-worker-receipt-{}",
             rand::random::<u64>()
@@ -3100,6 +3103,9 @@ mod tests {
         runtime.remote_lease_capacity = Some(1);
         runtime.lease_worker_home_caller = Some(receipt.home_caller.lease_binding());
         let profile = persisted_profile(response().cloud_relay);
+        runtime.cloud_relay = Some(profile.clone());
+        env::set_var(ACTIVITY_RECEIPT_ENV, &path);
+        assert!(super::super::uses_bootstrap_cloud_enrollment(&runtime).unwrap());
         assert_eq!(
             activity_allocation(&path, &runtime, &profile).unwrap(),
             "worker-1"
@@ -3109,6 +3115,7 @@ mod tests {
         confirmed.status = WorkerReceiptStatus::Confirmed;
         confirmed.confirmed_at = Some("2026-09-13T11:00:00Z".to_string());
         confirmed.persist(&path).unwrap();
+        assert!(super::super::uses_bootstrap_cloud_enrollment(&runtime).unwrap());
         assert_eq!(
             confirmed_activity_allocation(&path, &runtime, &profile).unwrap(),
             "worker-1"
@@ -3140,12 +3147,15 @@ mod tests {
         );
         runtime.remote_lease_capacity = None;
         assert!(activity_allocation(&path, &runtime, &profile).is_err());
+        assert!(super::super::uses_bootstrap_cloud_enrollment(&runtime).is_err());
         runtime.remote_lease_capacity = Some(1);
         runtime.lease_worker_home_caller = None;
         assert!(activity_allocation(&path, &runtime, &profile).is_err());
+        assert!(super::super::uses_bootstrap_cloud_enrollment(&runtime).is_err());
         runtime.lease_worker_home_caller = Some(receipt.home_caller.lease_binding());
         runtime.daemon_id = "other-kernel".to_string();
         assert!(activity_allocation(&path, &runtime, &profile).is_err());
+        assert!(super::super::uses_bootstrap_cloud_enrollment(&runtime).is_err());
         let mut changed = identity();
         changed.kernel_id = "other-kernel".to_string();
         assert!(restored.validate_identity(&changed).is_err());
@@ -3153,5 +3163,9 @@ mod tests {
             .expect("read receipt bytes")
             .contains(&envelope().token));
         std::fs::remove_dir_all(&root).expect("remove disposable test state");
+        match previous_receipt {
+            Some(value) => env::set_var(ACTIVITY_RECEIPT_ENV, value),
+            None => env::remove_var(ACTIVITY_RECEIPT_ENV),
+        }
     }
 }
