@@ -362,6 +362,8 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    // MP-08/MP-11: OpenCode usage never gates admission (#1002: OpenCode owns its Go/Zen
+    // fallback), so the shared refresh-before-gate path is exercised with a Codex meter.
     #[test]
     fn launch_refreshes_unobserved_usage_before_applying_the_capacity_gate() {
         let root = std::env::temp_dir().join(format!(
@@ -376,12 +378,12 @@ mod tests {
             .expect("default profiles should migrate");
         let profile = profiles
             .into_iter()
-            .find(|profile| profile.provider == "opencode")
-            .expect("OpenCode default should exist");
+            .find(|profile| profile.provider == "codex")
+            .expect("Codex default should exist");
         registry
             .update_observation(
                 "owner-a",
-                "opencode",
+                "codex",
                 &profile.profile_id,
                 ProviderAccountAuthState::Authenticated,
                 None,
@@ -396,23 +398,23 @@ mod tests {
         refresh_provider_usage_before_launch(
             &registry,
             "owner-a",
-            "opencode",
+            "codex",
             &profile.profile_id,
             now_ms,
             || {
                 refresh_count += 1;
                 registry.update_usage(
                     "owner-a",
-                    "opencode",
+                    "codex",
                     &profile.profile_id,
                     ProviderAccountUsageSnapshot {
                         profile_id: profile.profile_id.clone(),
-                        provider: "opencode".to_string(),
+                        provider: "codex".to_string(),
                         availability: ProviderAccountUsageAvailability::Available,
                         meters: vec![ProviderAccountUsageMeter {
-                            meter_id: "go/monthly".to_string(),
-                            label: "OpenCode Go monthly".to_string(),
-                            service_id: Some("opencode-go".to_string()),
+                            meter_id: "weekly".to_string(),
+                            label: "Codex weekly".to_string(),
+                            service_id: None,
                             kind: ProviderAccountUsageMeterKind::RollingLimit,
                             scope: ProviderAccountUsageMeterScope::Plan,
                             used_percent: Some(100.0),
@@ -423,11 +425,11 @@ mod tests {
                             window_duration_minutes: None,
                             resets_at_ms: Some(now_ms + 60_000),
                             state: ProviderAccountUsageMeterState::Exhausted,
-                            source: "test.go_usage".to_string(),
+                            source: "test.usage".to_string(),
                             observed_at_ms: now_ms,
                         }],
                         observed_at_ms: Some(now_ms),
-                        source: "test.go_usage".to_string(),
+                        source: "test.usage".to_string(),
                         management_url: None,
                     },
                 )
@@ -439,12 +441,12 @@ mod tests {
         let blocked = registry
             .require_authenticated(
                 "owner-a",
-                "opencode",
+                "codex",
                 &profile.profile_id,
-                Some("opencode-go/deepseek-v4"),
+                Some("gpt-6-luna"),
                 "test.launch",
             )
-            .expect_err("fresh exhausted Go usage should block the launch");
+            .expect_err("fresh exhausted usage should block the launch");
         assert!(blocked.to_string().contains("usage is exhausted"));
         let _ = std::fs::remove_dir_all(root);
     }
@@ -465,12 +467,12 @@ mod tests {
             .migrate_effective_defaults("owner-a", &root.join("home"))
             .expect("default profiles should migrate")
             .into_iter()
-            .find(|profile| profile.provider == "opencode")
-            .expect("OpenCode default should exist");
+            .find(|profile| profile.provider == "codex")
+            .expect("Codex default should exist");
         registry
             .update_observation(
                 "owner-a",
-                "opencode",
+                "codex",
                 &profile.profile_id,
                 ProviderAccountAuthState::Authenticated,
                 None,
@@ -490,7 +492,7 @@ mod tests {
             refresh_provider_usage_before_launch(
                 &first_registry,
                 "owner-a",
-                "opencode",
+                "codex",
                 &first_profile_id,
                 now_ms,
                 || {
@@ -502,16 +504,16 @@ mod tests {
                         .expect("test should release the in-flight refresh");
                     first_registry.update_usage(
                         "owner-a",
-                        "opencode",
+                        "codex",
                         &first_profile_id,
                         ProviderAccountUsageSnapshot {
                             profile_id: first_profile_id.clone(),
-                            provider: "opencode".to_string(),
+                            provider: "codex".to_string(),
                             availability: ProviderAccountUsageAvailability::Available,
                             meters: vec![ProviderAccountUsageMeter {
-                                meter_id: "go/monthly".to_string(),
-                                label: "OpenCode Go monthly".to_string(),
-                                service_id: Some("opencode-go".to_string()),
+                                meter_id: "weekly".to_string(),
+                                label: "Codex weekly".to_string(),
+                                service_id: None,
                                 kind: ProviderAccountUsageMeterKind::RollingLimit,
                                 scope: ProviderAccountUsageMeterScope::Plan,
                                 used_percent: Some(100.0),
@@ -522,11 +524,11 @@ mod tests {
                                 window_duration_minutes: None,
                                 resets_at_ms: Some(now_ms + 60_000),
                                 state: ProviderAccountUsageMeterState::Exhausted,
-                                source: "test.go_usage".to_string(),
+                                source: "test.usage".to_string(),
                                 observed_at_ms: now_ms,
                             }],
                             observed_at_ms: Some(now_ms),
-                            source: "test.go_usage".to_string(),
+                            source: "test.usage".to_string(),
                             management_url: None,
                         },
                     )
@@ -549,7 +551,7 @@ mod tests {
             refresh_provider_usage_before_launch(
                 &second_registry,
                 "owner-a",
-                "opencode",
+                "codex",
                 &second_profile_id,
                 now_ms + 1,
                 || panic!("the concurrent launch must share the in-flight refresh"),
@@ -558,9 +560,9 @@ mod tests {
             let blocked = second_registry
                 .require_authenticated(
                     "owner-a",
-                    "opencode",
+                    "codex",
                     &second_profile_id,
-                    Some("opencode-go/deepseek-v4"),
+                    Some("gpt-6-luna"),
                     "test.concurrent_launch",
                 )
                 .is_err();

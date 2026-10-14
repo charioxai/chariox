@@ -635,6 +635,8 @@ mod tests {
                 "kernel-runtime",
                 "kernel-status",
                 "machine",
+                "machine-add-ssh",
+                "machine-remove-ssh",
                 "machine-list",
                 "machine-kernels",
                 "machine-approve",

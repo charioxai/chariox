@@ -540,6 +540,8 @@ fn local_request_api_rejects_prompt_for_unavailable_provider_account() {
     );
 }
 
+// MP-08/MP-11: OpenCode usage never gates admission (#1002), so a fresh exhausted
+// Codex account exercises the kernel's pre-launch usage rejection.
 #[test]
 fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
     let worktree = crate::test_support::TestWorktree::new("prompt-routing-exhausted-account");
@@ -558,15 +560,15 @@ fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
             .provider_account_profile_registry()
             .create_managed(
                 crate::session::DEFAULT_LOCAL_USER_ID,
-                "opencode",
-                "Exhausted Go account",
+                "codex",
+                "Exhausted Codex account",
             )
             .expect("exhausted account profile should register");
         let now_ms = crate::session::unix_epoch_ms();
         app.provider_account_profile_registry()
             .update_observation(
                 crate::session::DEFAULT_LOCAL_USER_ID,
-                "opencode",
+                "codex",
                 &profile.profile_id,
                 crate::account_profile::ProviderAccountAuthState::Authenticated,
                 None,
@@ -574,13 +576,13 @@ fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
                 None,
                 Some(crate::account_profile::ProviderAccountUsageSnapshot {
                     profile_id: profile.profile_id.clone(),
-                    provider: "opencode".to_string(),
+                    provider: "codex".to_string(),
                     availability:
                         crate::account_profile::ProviderAccountUsageAvailability::Available,
                     meters: vec![crate::account_profile::ProviderAccountUsageMeter {
-                        meter_id: "go/monthly".to_string(),
+                        meter_id: "weekly".to_string(),
                         label: "Monthly".to_string(),
-                        service_id: Some("opencode-go".to_string()),
+                        service_id: None,
                         kind: crate::account_profile::ProviderAccountUsageMeterKind::RollingLimit,
                         scope: crate::account_profile::ProviderAccountUsageMeterScope::Plan,
                         used_percent: Some(100.0),
@@ -607,10 +609,10 @@ fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
             UpdateAgentProfileRequest {
                 session_id: session.id().to_string(),
                 agent_id: agent.id().to_string(),
-                provider: Some("opencode".to_string()),
+                provider: Some("codex".to_string()),
                 account_profile: Some(exhausted_account.profile_id.clone()),
-                model: Some("opencode-go/deepseek-v4-pro".to_string()),
-                effort: Some("high".to_string()),
+                model: Some("gpt-6-luna".to_string()),
+                effort: Some("low".to_string()),
                 clear_effort: false,
             },
         ))
@@ -639,7 +641,7 @@ fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
         }))
         .expect_err("a fresh exhausted account must block a new prompt");
     let message = error.to_string();
-    assert!(message.contains("Exhausted Go account"), "{message}");
+    assert!(message.contains("Exhausted Codex account"), "{message}");
     assert!(message.contains("usage is exhausted"), "{message}");
     assert!(message.contains("refresh"), "{message}");
     assert!(
