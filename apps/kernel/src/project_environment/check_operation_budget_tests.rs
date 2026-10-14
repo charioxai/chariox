@@ -143,10 +143,12 @@ fn files_measurement_settles_at_operation_deadline_and_allows_next_check() {
     else {
         panic!("new Check expected")
     };
+    // MP-08 / MP-10 / MP-11: create durable fixtures before measuring the runner budget.
+    let ctx = context(root.path());
     let began = Instant::now();
     store
         .run_check_until(
-            context(root.path()),
+            ctx,
             environment,
             operation,
             || Ok(project.clone()),
