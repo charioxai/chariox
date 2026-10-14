@@ -158,6 +158,25 @@ fn managed_prompt_matching_accepts_the_official_paste_wrapper_only() {
     let wrapped =
         format!("<pasted_content id=\"5dad\">\n{expected}\n</pasted_content id=\"5dad\">");
     assert!(claude_headless_prompt_matches(expected, &wrapped));
+    let inline = format!("<pasted_content id=\"5dad\"> {expected} </pasted_content id=\"5dad\">");
+    assert!(claude_headless_prompt_matches(expected, &inline));
+    assert!(claude_headless_prompt_matches(
+        expected,
+        &inline.replace('\n', "\r\n")
+    ));
+    for invalid in [
+        inline.replace(
+            "</pasted_content id=\"5dad\">",
+            "</pasted_content id=\"other\">",
+        ),
+        format!("{inline} extra instructions"),
+        format!("extra instructions {inline}"),
+        format!("<pasted_content id=\"5dad\">changed {expected}</pasted_content id=\"5dad\">"),
+        format!("<pasted_content id=\"\">{expected}</pasted_content id=\"\">"),
+        format!("<pasted_content id=\"bad/id\">{expected}</pasted_content id=\"bad/id\">"),
+    ] {
+        assert!(!claude_headless_prompt_matches(expected, &invalid));
+    }
     assert!(claude_headless_prompt_matches(
         expected,
         &wrapped.replace('\n', "\r\n")

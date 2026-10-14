@@ -249,12 +249,12 @@ fn claude_headless_prompt_matches(expected: &str, observed: &str) -> bool {
     if expected.trim() == observed {
         return true;
     }
-    // Official UserPromptSubmit expands a collapsed paste using these tag
-    // lines. Match only one complete wrapper around the exact injected text.
+    // Official UserPromptSubmit expands a collapsed paste using an inline or
+    // multiline tag pair. Match one complete wrapper around the injected text.
     let Some(tag) = observed.strip_prefix("<pasted_content id=\"") else {
         return false;
     };
-    let Some((id, body)) = tag.split_once("\">\n") else {
+    let Some((id, body)) = tag.split_once("\">") else {
         return false;
     };
     if id.is_empty()
@@ -265,7 +265,7 @@ fn claude_headless_prompt_matches(expected: &str, observed: &str) -> bool {
     {
         return false;
     }
-    let closing = format!("\n</pasted_content id=\"{id}\">");
+    let closing = format!("</pasted_content id=\"{id}\">");
     body.strip_suffix(&closing)
         .is_some_and(|body| body.trim() == expected.trim())
 }
