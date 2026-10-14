@@ -55,7 +55,7 @@ test('MP-11 chrome pre-ledger target comes from owner arbiter; missing seam refu
  const f=fixture('browser_chrome'),r=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
  const command={op:'input',tab_id:'t',generation:2,document_id:r.document_id,binding_id:r.binding_id,sequence:r.sequence,input:{kind:'key',key:'l',modifiers:2}};
  await assert.rejects(regionInputTarget(f.host,command,'terminal:a'));
- f.host.arbiter={resolveDisplayInput:async()=>({tab_id:'t',document_id:'current'})};
+ f.host.arbiter={resolveDisplayInput:async(command)=>{assert.equal(command.window_generation,7);return {tab_id:'t',document_id:'current'};}};
  const target=await regionInputTarget(f.host,command,'terminal:a');assert.equal(target.document_id,'current');assert.equal(target.region_document_id,r.document_id);
  await [...f.host.displays.values()][0].close();
 });

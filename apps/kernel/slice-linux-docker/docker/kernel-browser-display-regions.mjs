@@ -97,7 +97,9 @@ export async function regionInputTarget(host,command,scope,signal) {
  if(!await stream.regionCurrent())refuse();
  if(stream.regionTarget.kind==='region')return {tab_id:stream.tab_id,document_id:stream.regionLease.document_id};
  if(typeof host.arbiter?.resolveDisplayInput!=='function')refuse();
- const target=await host.arbiter.resolveDisplayInput(command,scope,{signal,stream});
+ // This window epoch is kernel-issued private adapter data, not an extra
+ // public DisplayInput field or a client window claim.
+ const target=await host.arbiter.resolveDisplayInput({...command,window_generation:stream.regionWindow.window_generation},scope,{signal,stream});
  if(!target||!host.tabs.has(target.tab_id)||!target.document_id)refuse();
  return {tab_id:target.tab_id,document_id:target.document_id,region_document_id:stream.regionLease.document_id};
 }
