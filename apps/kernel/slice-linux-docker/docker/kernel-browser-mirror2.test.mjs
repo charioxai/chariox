@@ -344,23 +344,29 @@ test('MP-08/MP-10: an empty drain re-arms the long poll without a separate loade
 // MP-08/MP-10 (owner A/B 2026-10-14, finding 4/6): a navigated document's first snapshot waits for its first
 // contentful paint (bounded); a packet on the same document never waits.
 test('MP-08/MP-10: a new document is held until its first contentful paint before the reset snapshot', async () => {
-  const run = async document => {
+  const run = async (document, after = 1, issued = 1, previous = 'D1') => {
     const policy = { targets: [] }, calls = [], tab = { tab_id: 't', target_id: 'T', document_id: document };
     const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: document } } }) };
     const world = { connection, sessionId: 'S', frame: { loaderId: document }, ref: 'm' };
-    const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy, fallback: null, header: {}, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '' };
+    const stream = { tab_id: 't', world, issued, document_id: previous, policy, fallback: null, header: {}, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '' };
     const host = { protection: policy, generation: 1, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
       browser: { connection, documentIdsByTarget: new Map([['T', document]]), sessionsByTarget: new Map([['T', 'S']]) } };
     const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
     mirror.world = async () => world;
     mirror.evaluate = async (_world, expression) => { calls.push(expression); if (expression.endsWith('customHosts()')) return false; return { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0, nodes: [], root: 'n1' }; };
     mirror.frames = { attach: async () => ({ records: [], ops: [], opaque: [] }), drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
-    await mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 1 }, 'scope').catch(() => {});
+    await mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: after }, 'scope').catch(() => {});
     return calls;
   };
+  const held = calls => calls.some(call => call.includes('first-contentful-paint'));
   const navigated = await run('D2'), hold = navigated.findIndex(call => call.includes('first-contentful-paint')), snapshot = navigated.indexOf('m.snapshot()');
   assert.ok(hold >= 0 && snapshot > hold, 'the hold precedes the new document snapshot');
-  assert.equal((await run('D1')).some(call => call.includes('first-contentful-paint')), false, 'same document: no hold');
+  assert.equal(held(await run('D1')), false, 'same document: no hold');
+  // Review #1009 P2: a viewer resynchronizing while the navigation commits still gets the held first paint.
+  assert.ok(held(await run('D2', 0)), 'client reset (after_sequence 0) on a new document: held');
+  assert.ok(held(await run('D2', 2, 20)), 'credit far behind on a new document: held');
+  assert.ok(held(await run('D2', 5)), 'credit ahead on a new document: held');
+  assert.equal(held(await run('D2', 0, 0, null)), false, 'a new subscription has no previous page to keep');
 });
 
 // MP-08/MP-10: a long poll on a document the Tab has navigated away from ends at once (no 2 s wait on the old page).
