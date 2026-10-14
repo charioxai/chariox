@@ -121,6 +121,20 @@ class KeyboardTextTests(unittest.TestCase):
         self.assertEqual(connection.text,'漢字🧪')
         self.assertFalse(connection.grabbed)
 
+    def test_protection_change_during_mapping_wait_refuses_before_any_press(self):
+        connection=Display();connection.protected=False
+        connection.grab_server=lambda:None;connection.ungrab_server=lambda:None
+        module=helper(connection);original=UpstreamKeyboard._overlay_keycode
+        def bind(keyboard, keysym):
+            if keysym not in keyboard.overlay:connection.protected=True
+            return original(keyboard, keysym)
+        def admit():
+            if connection.protected:raise ValueError('protected focus changed during keymap read')
+        with patch.object(UpstreamKeyboard,'_overlay_keycode',bind),patch.object(module,'focused_target',return_value={'focus_window':10}),patch.object(module,'assert_secret_target'),patch.object(module.time,'sleep'),patch.object(module.signal,'signal'):
+            with self.assertRaisesRegex(ValueError,'protected focus changed'):
+                module.type_text('漢字🧪',before_press=admit)
+        self.assertEqual(connection.text,'')
+
     def test_mp11_finding1_focus_change_stops_a_multi_character_native_event(self):
         connection=Display()
         connection.grab_server=lambda:None
@@ -132,7 +146,7 @@ class KeyboardTextTests(unittest.TestCase):
             if len(checks)==3:raise ValueError('protected focus changed')
         with patch.object(module,'focused_target',return_value={'focus_window':10}),patch.object(module,'assert_secret_target'),patch.object(module.time,'sleep'),patch.object(module.signal,'signal'):
             with self.assertRaises(ValueError):module.type_text('ab',before_press=admit)
-        self.assertEqual(connection.text,'a')
+        self.assertEqual(connection.text,'')
 
     def test_mp11_room_text_cli_refuses_before_a_protected_field_receives_input(self):
         import ast
