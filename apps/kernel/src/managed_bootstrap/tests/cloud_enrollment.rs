@@ -47,6 +47,8 @@ fn managed_bootstrap_exchange_keeps_its_activity_credential_through_relay_connec
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let mut profile = path1_test_profile();
+        profile.account_id = "account-1".into();
+        profile.realm_id = "realm-1".into();
         profile.api_url = format!("http://{}", listener.local_addr().unwrap());
         config.cloud_relay = Some(profile.clone());
         let harness = LocalRouterTestHarness::with_config(config.clone());
