@@ -1,6 +1,6 @@
 // MP-08/MP-10/MP-11 M0: supplementary oracle regressions; no live acceptance claim.
 import{test}from'node:test';import assert from'node:assert/strict';
-import{unionArea,mirrorCoverageMetrics,oracleRecords,mirrorMetricFailures}from'./browser-mirror-oracle.mjs';
+import{unionArea,mirrorCoverageMetrics,oracleRecords,mirrorMetricFailures,captureOracleSnapshot,expectedPanelRaster}from'./browser-mirror-oracle.mjs';
 const record=(key,box=[0,0,10,10],text='hello')=>({key,type:3,name:'#text',text,box,fragments:[box],color:'rgb(0, 0, 0)'});
 const set=records=>({records,uncapped:true,totalNodes:records.length,width:1280,height:800,documents:1});
 test('MP-10: overlapping rectangles are counted once and clipped',()=>{assert.equal(unionArea([[0,0,10,10],[5,0,10,10]]),150);assert.equal(unionArea([[-5,-5,10,10]]),25)})
@@ -17,4 +17,14 @@ test('MP-10: capped observations cannot qualify',()=>{assert.throws(()=>mirrorCo
 test('MP-10: CDP layout maps node indexes, scroll and hidden text independently',()=>{
  const snapshot={strings:['#document','HTML','#text','visible','hidden','block','visible','1','rgb(0, 0, 0)','rgba(0, 0, 0, 0)','0px'],documents:[{scrollOffsetY:100,nodes:{nodeName:[0,1,2,2],nodeType:[9,1,3,3],nodeValue:[0,0,3,4],attributes:[[],[],[],[]]},layout:{nodeIndex:[1,2,3],bounds:[[0,0,1280,1000],[0,110,10,10],[0,0,10,10]],styles:Array.from({length:3},()=>[5,6,7,8,9,10,10,10,10])},textBoxes:{layoutIndex:[1,2],bounds:[[0,110,10,10],[0,0,10,10]]}}]};
  const result=oracleRecords(snapshot);assert.equal(result.totalNodes,4);assert.equal(result.records.length,1);assert.equal(result.records[0].text,'visible');assert.deepEqual(result.records[0].box,[0,10,10,10])
+})
+
+test('MP-10: uncapped snapshot normalization uses observed CDP layout/CSS ratio',async()=>{
+ const calls=[];const snapshot=await captureOracleSnapshot(async(method,params)=>{calls.push([method,params]);return method==='Page.getLayoutMetrics'?{layoutViewport:{clientWidth:2530},cssLayoutViewport:{clientWidth:1265}}:{documents:[],strings:[]}});assert.equal(snapshot.coordinateScale,2);assert.equal(calls[1][0],'DOMSnapshot.captureSnapshot');assert.equal(calls[1][1].includeDOMRects,true);assert(!Object.hasOwn(calls[1][1],'maxNodes'))
+})
+
+test('MP-10: native projection uses source pixels and the fractional panel origin',()=>{
+ const pixels=new Uint8Array([0,0,0,255,100,100,100,255,200,200,200,255,255,255,255,255]),native={width:2,height:2,pixels}
+ const r=expectedPanelRaster(native,{x:.25,y:.25,width:2,height:2},{x:.25,y:.25,width:2,height:2},2,2);assert.deepEqual(r.data,pixels)
+ const shifted=expectedPanelRaster(native,{x:.5,y:.25,width:2,height:2},{x:.25,y:.25,width:2,height:2},2,2);assert.equal(shifted.data[0],25)
 })

@@ -34,9 +34,11 @@ fallback screenshot remains measurable independently.
 Native snapshots use a drill-only read-only CDP attachment to the disposable,
 kernel-owned public browser. CDP never dismisses banners, dispatches input,
 injects DOM or navigates. Native screenshots use the protected product capture
-route. That route has a fixed DPR2 output; DPR1 comparison uses a declared 2x2
-box average of those protected pixels. Viewer screenshots normalize the actual
-panel's scale to canonical browser dimensions. Record physical viewer DPR,
+route. That route has a fixed DPR2 output. The oracle projects those protected native
+pixels bilinearly into the actual, pixel-aligned viewer panel, preserving its
+fractional origin. The edge band is derived only from that projected source.
+Logical geometry stays in CSS pixels, normalized by the observed CDP layout/CSS
+viewport ratio; the viewer DOM and viewport are never changed for comparison. Record physical viewer DPR,
 normalization and exact source identity separately.
 
 Six hosted cells are Wikipedia article/portal, GitHub, BBC, MDN and DuckDuckGo,
