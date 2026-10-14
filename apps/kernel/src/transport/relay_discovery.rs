@@ -11,7 +11,7 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::time::timeout;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 
 use chariox_relay::protocol::{
     RelayEnvelope, RelayKernelPresence, RelayMachinePresence, RelayMetadataQuery,
@@ -19,6 +19,8 @@ use chariox_relay::protocol::{
 
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
+
+pub(crate) mod authorization;
 
 static RELAY_METADATA_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RELAY_METADATA_ATTEMPTS: usize = 3;
@@ -535,13 +537,7 @@ async fn query_relay_once_inner(
             operation: "relay_metadata_query",
             message: "relay_url is not configured".to_string(),
         })?;
-    let relay_token = config
-        .relay_token
-        .clone()
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "relay_metadata_query",
-            message: "relay_token is not configured".to_string(),
-        })?;
+    let relay_token = authorization::metadata_token(config).await?;
     let request_timeout = Duration::from_millis(config.relay_request_timeout_ms);
     #[cfg(test)]
     if let Some(trace) = trace.as_deref_mut() {
@@ -551,29 +547,33 @@ async fn query_relay_once_inner(
     let mut socket_trace = trace
         .as_deref()
         .map(|trace| TemporaryPeerTestTrace::socket(trace.identity));
-    let (mut socket, _) = timeout(request_timeout, connect_async(&relay_url))
-        .await
-        .map_err(|_| {
-            #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
-                trace.record("discovery_connect_timed_out", None);
-                trace.record("discovery_connect_future_cancelled", None);
-            }
-            DaemonError::LocalTransport {
-                operation: "connect relay metadata socket",
-                message: format!("timed out after {}ms", config.relay_request_timeout_ms),
-            }
-        })?
-        .map_err(|error| {
-            #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
-                trace.record("discovery_connect_failed", None);
-            }
-            DaemonError::LocalTransport {
-                operation: "connect relay metadata socket",
-                message: error.to_string(),
-            }
-        })?;
+    let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
+    let (mut socket, _) = timeout(
+        request_timeout,
+        chariox_relay::socket::connect_relay_socket(&relay_url),
+    )
+    .await
+    .map_err(|_| {
+        #[cfg(test)]
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.record("discovery_connect_timed_out", None);
+            trace.record("discovery_connect_future_cancelled", None);
+        }
+        DaemonError::LocalTransport {
+            operation: "connect relay metadata socket",
+            message: format!("timed out after {}ms", config.relay_request_timeout_ms),
+        }
+    })?
+    .map_err(|error| {
+        #[cfg(test)]
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.record("discovery_connect_failed", None);
+        }
+        DaemonError::LocalTransport {
+            operation: "connect relay metadata socket",
+            message: error.to_string(),
+        }
+    })?;
     #[cfg(test)]
     {
         let local_addr = relay_discovery_test_local_addr(&socket);
@@ -647,11 +647,14 @@ async fn query_relay_once_inner(
                 socket_trace.as_ref().and_then(|trace| trace.local_addr),
             );
         }
-        match timeout(request_timeout, socket.next()).await.map_err(|_| {
-            DaemonError::LocalTransport {
-                operation: "read relay metadata response",
-                message: format!("timed out after {}ms", config.relay_request_timeout_ms),
-            }
+        match timeout(
+            request_timeout,
+            chariox_relay::frame_transport::read_message(&mut socket, &mut relay_frames),
+        )
+        .await
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "read relay metadata response",
+            message: format!("timed out after {}ms", config.relay_request_timeout_ms),
         })? {
             Some(Ok(Message::Text(text))) => serde_json::from_str::<RelayEnvelope>(&text)
                 .map_err(|error| DaemonError::LocalTransport {
@@ -856,3 +859,6 @@ mod tests {
             .expect("metadata websocket server should finish");
     }
 }
+
+#[cfg(test)]
+mod authorization_tests;

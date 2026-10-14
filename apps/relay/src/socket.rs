@@ -10,13 +10,12 @@ pub async fn connect_relay_socket(
     url: &str,
 ) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, Response), Error> {
     // Interactive request/response tails must not wait for a delayed TCP ACK.
-    connect_async_with_config(url, None, true).await
+    connect_async_with_config(&crate::frame_transport::transport_url(url), None, true).await
 }
 
 // MP-08 / MP-10 / MP-11: one transport policy for every relay role.
-pub async fn accept_relay_socket(stream: TcpStream) -> Result<WebSocketStream<TcpStream>, Error> {
-    stream.set_nodelay(true)?;
-    tokio_tungstenite::accept_async(stream).await
+pub fn configure_relay_stream(stream: &TcpStream) -> std::io::Result<()> {
+    stream.set_nodelay(true)
 }
 
 #[cfg(test)]
@@ -29,7 +28,8 @@ mod tests {
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            accept_relay_socket(stream).await.unwrap()
+            configure_relay_stream(&stream).unwrap();
+            tokio_tungstenite::accept_async(stream).await.unwrap()
         });
         let (socket, _) = connect_relay_socket(&url).await.unwrap();
         let MaybeTlsStream::Plain(tcp) = socket.get_ref() else {

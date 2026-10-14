@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { bindProviderMcpFixture, PROVIDER_MCP_FIXTURE_MODEL } from './lib/provider-mcp-fixture.mjs'
+import { spawnOwned, signalOwnedProcessGroup } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
 // MP-07/MP-08/MP-10/MP-11: owned local repetition evidence; no fresh-machine closure.
 import assert from 'node:assert/strict'
-import {spawn,execFile} from 'node:child_process'
+import {execFile} from 'node:child_process'
 import {randomUUID,createHash} from 'node:crypto'
 import {createWriteStream,constants as fsConstants} from 'node:fs'
 import {readFile,writeFile,appendFile,mkdir,mkdtemp,readdir,rm,stat,chmod,open} from 'node:fs/promises'
@@ -64,7 +65,7 @@ const send=req=>local.send(req)
 const freePort=()=>new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p))})})
 const wait=async(fn,label,ms=60000)=>{const end=Date.now()+ms;let last;while(Date.now()<end){if(interrupted)throw Error('MP-10 interrupted/resource guard');try{const value=await fn();if(value)return value}catch(e){if(e.fatal)throw e;last=e}await sleep(200)}throw Error(`${label}: ${last?.message??'timeout'}`)}
 const guard=async()=>{const m=await readFile('/proc/meminfo','utf8');const memAvailable=Number(m.match(/MemAvailable:\s+(\d+)/)[1])*1024;const diskAvailable=Number((await exec('df',['-B1','--output=avail','/'])).stdout.trim().split(/\s+/).at(-1));const row={at:new Date().toISOString(),stage,memAvailable,diskAvailable};await appendFile(`${evidence}/resources.jsonl`,JSON.stringify({mpItems,...row})+'\n');if(memAvailable<4*1024**3||diskAvailable<10*1024**3){interrupted=true;throw Error('MP-10 resource reserve breached')}return row}
-const launch=(binary,env,name)=>{const child=spawn(binary,[],{env,cwd:root,detached:true,stdio:['ignore','pipe','pipe']});const log=createWriteStream(`${root}/${name}.log`);child.stdout.pipe(log);child.stderr.pipe(log);owned.push(child);return child}
+const launch=(binary,env,name)=>{const child=spawnOwned(binary,[],{env,cwd:root,detached:true,stdio:['ignore','pipe','pipe']});const log=createWriteStream(`${root}/${name}.log`);child.stdout.pipe(log);child.stderr.pipe(log);owned.push(child);return child}
 const cname=s=>`chariox-slice-${s.name}`
 const screen=(...args)=>docker(['exec','-u','slice',cname(slice),'/opt/chariox-slice/slice-screen.sh',...args])
 const proc=async pid=>{try{const text=await readFile(`/proc/${pid}/stat`,'utf8');const f=text.slice(text.lastIndexOf(')')+2).split(' ');return {pid,name:(await readFile(`/proc/${pid}/comm`,'utf8')).trim(),role:(await readFile(`/proc/${pid}/cmdline`,'utf8')).includes('browser-controller')?'browser-controller':null,state:f[0],rss:Number(f[21])*4096,fds:(await readdir(`/proc/${pid}/fd`)).length,startTicks:Number(f[19])}}catch{return null}}
@@ -156,7 +157,7 @@ async function startTui(kind,env,url,daemonId){
  const home=`${root}/${kind}-home`;await mkdir(home,{recursive:true})
  const args=['bun',`${clientRoot}/apps/cli/dist/index.js`,...(kind==='local'?['--kernel-url',url]:['--relay-url',env.CHARIOX_RELAY_URL,'--relay-token-env','LOOPS_RELAY_TOKEN','--target-daemon-id',daemonId]),'--automation-socket',`${root}/${kind}.sock`,'--session',session.id,'--workspace',`${root}/workspace`,'--worktree',`${root}/workspace`,'--provider','dev-stub','--model','default','--client-id',`${runId}-${kind}`]
  const invocation=roomTuiPtyInvocation(args)
- const child=spawn(invocation.command,invocation.args,{cwd:clientRoot,env:{...tuiEnvironment(home,kind==='remote'?env.LOOPS_RELAY_TOKEN:null,'LOOPS_RELAY_TOKEN',{}),PATH:process.env.PATH},detached:true,stdio:'ignore'})
+ const child=spawnOwned(invocation.command,invocation.args,{cwd:clientRoot,env:{...tuiEnvironment(home,kind==='remote'?env.LOOPS_RELAY_TOKEN:null,'LOOPS_RELAY_TOKEN',{}),PATH:process.env.PATH},detached:true,stdio:'ignore'})
  const state={child,automationSocket:`${root}/${kind}.sock`,attachmentId:null};activeTuis.set(kind,state)
  await waitForAutomationRoom(state,session.id)
  return state
@@ -331,9 +332,9 @@ finally{
   await write('ocr-tools-list-ended',{providerRunId:ended.id,state:ended.state,inputRefused:true,scope:'provider fixture input refusal; ended MCP HTTP catalog is covered by kernel tests'})
  }catch(error){failures.push({stage:'ocr-ended-discovery',error:error.message})}}
  await local?.close().catch(()=>{})
- for(const child of owned){try{process.kill(-child.pid,'SIGTERM')}catch{}}
+ for(const child of owned){try{signalOwnedProcessGroup(child,'SIGTERM')}catch{}}
  await sleep(1500)
- for(const child of owned)if(child.exitCode===null&&child.signalCode===null){try{process.kill(-child.pid,'SIGKILL')}catch{}}
+ for(const child of owned)if(child.exitCode===null&&child.signalCode===null){try{signalOwnedProcessGroup(child,'SIGKILL')}catch{}}
  const after=await inventory('final-inventory').catch(e=>({error:e.message}))
  const cleanupErrors=['containers','volumes','images','ownedPids','listeners'].filter(k=>after[k]?.length)
  await write('result',{runId,status:failures.length||cleanupErrors.length?'RED':'GREEN',gates,failures,cleanupErrors,scope:process.env.LOOPS_RUN_SCOPE??'provider-free ordinary signed B; no MP item closes',root,finishedAt:new Date().toISOString()})

@@ -88,14 +88,14 @@ pub(super) fn inventory_args(name: &str) -> Option<&'static [&'static str]> {
         _ => None,
     }
 }
-pub(super) fn executable(name: &str) -> Option<PathBuf> {
+pub(crate) fn executable(name: &str) -> Option<PathBuf> {
     if name.contains(['/', '\\']) || name.is_empty() {
         return None;
     }
     std::env::split_paths(&std::env::var_os("PATH")?)
         .filter(|p| p.is_absolute())
         .find_map(|p| {
-            let p = p.join(name).canonicalize().ok()?;
+            let p = p.join(name);
             let m = p.metadata().ok()?;
             #[cfg(unix)]
             {
@@ -106,6 +106,9 @@ pub(super) fn executable(name: &str) -> Option<PathBuf> {
             }
             m.is_file().then_some(p)
         })
+        // MP-08 / MP-10 / MP-11: Linux distributions commonly expose only
+        // python3. Preserve an explicit python choice, then probe that alias.
+        .or_else(|| (name == "python").then(|| executable("python3")).flatten())
 }
 pub(super) fn remaining(deadline: Instant, cap: Duration) -> Result<Duration, &'static str> {
     let left = deadline.saturating_duration_since(Instant::now()).min(cap);
@@ -123,15 +126,14 @@ pub(super) fn version_until(
     roots: &[PathBuf],
     deadline: Instant,
 ) -> Result<Option<String>, &'static str> {
+    // The manifest runtime identity stays portable; the host compiler has a fixed probe.
+    let name = if name == "rust" { "rustc" } else { name };
     let Some(args) = inventory_args(name) else {
         return Err("unsupported_inventory");
     };
     let Some(path) = executable(name) else {
         return Ok(None);
     };
-    if roots.iter().any(|r| path.starts_with(r)) {
-        return Err("untrusted_executable");
-    }
     let mut command = super::check_executable::command(&path, roots)?;
     command.args(args);
     if matches!(name, "cargo" | "rustc") {
@@ -191,9 +193,17 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
         }
         return Some(accepted);
     }
+    // Python conjunctions use commas and exact equality uses two equals.
+    // Empty clauses and unsupported operators remain unproven.
+    if constraint.split(',').any(|clause| clause.trim().is_empty()) {
+        return None;
+    }
     let mut accepted = true;
-    for token in constraint.split_whitespace() {
-        let op = [">=", "<=", ">", "<", "^", "~", "="]
+    for token in constraint
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|token| !token.is_empty())
+    {
+        let op = [">=", "<=", "==", ">", "<", "^", "~", "="]
             .into_iter()
             .find(|p| token.starts_with(p))
             .unwrap_or("");
@@ -220,7 +230,7 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
                 ">=" => actual >= lower,
                 ">" => actual >= upper,
                 "<=" => actual < upper,
-                "" | "=" | "~" | "^" => actual >= lower && actual < upper,
+                "" | "=" | "==" | "~" | "^" => actual >= lower && actual < upper,
                 _ => return None,
             };
             continue;
@@ -242,11 +252,63 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
                 let i = e.iter().position(|n| *n != 0).unwrap_or(e.len() - 1);
                 !cmp.is_lt() && v.get(..=i) == e.get(..=i)
             }
+            "==" => cmp.is_eq(),
             "" | "=" => v.starts_with(&e),
             _ => return None,
         };
     }
     (!constraint.is_empty()).then_some(accepted)
+}
+
+/// The admitted numeric grammar consists of unions of intervals/prefixes.
+/// A nonempty intersection contains zero, a declared boundary, or its successor.
+/// Unknown syntax stays unproven for Check rather than becoming a Save conflict.
+pub(super) fn constraints_overlap(a: Option<&str>, b: Option<&str>) -> Option<bool> {
+    let (Some(a), Some(b)) = (a, b) else {
+        return Some(true);
+    };
+    satisfies("0.0.0.0", a)?;
+    satisfies("0.0.0.0", b)?;
+    let mut candidates = std::collections::BTreeSet::from([[0u32; 4]]);
+    for token in [a, b]
+        .into_iter()
+        .flat_map(|c| c.split("||"))
+        .flat_map(|clause| clause.split(|c: char| c.is_whitespace() || c == ','))
+        .filter(|token| !token.is_empty())
+    {
+        if token == "*" {
+            continue;
+        }
+        let token = token.trim_start_matches(['>', '<', '=', '^', '~']);
+        let token = token
+            .strip_suffix(".*")
+            .or_else(|| token.strip_suffix(".x"))
+            .unwrap_or(token);
+        let n = numbers(token)?;
+        if n.len() > 4 || candidates.len() > 512 {
+            return None;
+        }
+        let mut bound = [0; 4];
+        bound[..n.len()].copy_from_slice(&n);
+        candidates.insert(bound);
+        for i in (0..4).rev() {
+            if let Some(next) = bound[i].checked_add(1) {
+                // Wildcard, caret and tilde operators may start at an upper
+                // prefix boundary (e.g. >22.x starts at 23), not the numeric successor.
+                let mut successor = bound;
+                successor[i] = next;
+                successor[i + 1..].fill(0);
+                candidates.insert(successor);
+            }
+        }
+    }
+    for candidate in candidates {
+        let version = candidate.map(|n| n.to_string()).join(".");
+        if satisfies(&version, a)? && satisfies(&version, b)? {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 pub(super) use super::check_health::{health, health_until};
 
@@ -314,15 +376,8 @@ pub(super) fn software_version_until(
             let Some(path) = executable("fc-list") else {
                 return Err("font_inventory_unavailable");
             };
-            if roots.iter().any(|r| path.starts_with(r)) {
-                return Err("untrusted_executable");
-            }
-            let mut c = std::process::Command::new(path);
-            c.args(["--format", "%{family}\n"])
-                .current_dir("/")
-                .env_clear()
-                .env("LANG", "C")
-                .env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            let mut c = super::check_executable::command(&path, roots)?;
+            c.args(["--format", "%{family}\n"]);
             let output = crate::local::provider_requests::capture_inventory_probe(
                 c,
                 remaining(deadline, Duration::from_secs(3))?,
@@ -351,15 +406,8 @@ pub(super) fn software_version_until(
             let Some(path) = executable("dpkg-query") else {
                 return Err("package_inventory_unavailable");
             };
-            if roots.iter().any(|r| path.starts_with(r)) {
-                return Err("untrusted_executable");
-            }
-            let mut c = std::process::Command::new(path);
-            c.args(["--show", "--showformat=${Status}\t${Version}", "--", name])
-                .current_dir("/")
-                .env_clear()
-                .env("LANG", "C")
-                .env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            let mut c = super::check_executable::command(&path, roots)?;
+            c.args(["--show", "--showformat=${Status}\t${Version}", "--", name]);
             let output = crate::local::provider_requests::capture_inventory_probe(
                 c,
                 remaining(deadline, Duration::from_secs(3))?,

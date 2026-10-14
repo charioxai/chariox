@@ -1069,15 +1069,19 @@ fn same_agent_profile_update_keeps_active_provider_run() {
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            worktree.session_request(),
+            worktree.session_request().with_agent_defaults(
+                crate::session::SessionAgentDefaults::new("codex").with_model("gpt-6.1-sol"),
+            ),
         ))
         .expect("session create should succeed")
     {
         LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         _ => panic!("unexpected local response"),
     };
+    assert_eq!(agent.provider(), "codex");
+    let model = agent.model().expect("created agent model").to_string();
     let active_run_id = harness.with_app_mut(|app| {
-        crate::test_support::authenticate_provider_account(
+        let profile = crate::test_support::authenticate_provider_account(
             &app.provider_account_profile_registry(),
             crate::session::DEFAULT_LOCAL_USER_ID,
             "codex",
@@ -1085,8 +1089,14 @@ fn same_agent_profile_update_keeps_active_provider_run() {
         )
         .expect("synthetic provider account should be authenticated");
         app.launch_provider(
-            LaunchProviderRequest::new(session.id(), "dev-stub", "codex", "default", "gpt-5.4")
-                .with_agent_id(agent.id()),
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "codex",
+                &profile.profile_id,
+                &model,
+            )
+            .with_agent_id(agent.id()),
         )
         .expect("provider launch should succeed")
         .id()
@@ -1100,7 +1110,7 @@ fn same_agent_profile_update_keeps_active_provider_run() {
                 agent_id: agent.id().to_string(),
                 provider: Some("codex".to_string()),
                 account_profile: None,
-                model: Some("gpt-5.4".to_string()),
+                model: Some(model),
                 effort: None,
                 clear_effort: false,
             },
@@ -1271,6 +1281,7 @@ fn envp01_project_read_without_agents_denies_foreign_owner() {
     let request =
         LocalDaemonRequest::GetProjectEnvironment(crate::local::GetProjectEnvironmentRequest {
             project_id: "envp01-no-agent".into(),
+                view: None,
         });
     let response = harness.dispatch_as_user("local", request.clone()).unwrap();
     match response {
@@ -1369,6 +1380,7 @@ fn envp02a_hidden_utility_cleanup_preserves_standalone_project_environment() {
     let get =
         LocalDaemonRequest::GetProjectEnvironment(crate::local::GetProjectEnvironmentRequest {
             project_id: "utility-project".into(),
+                view: None,
         });
     let before = harness.dispatch(get.clone()).unwrap();
     let created = harness
@@ -1474,6 +1486,7 @@ fn envp02b_read(
         .dispatch(LocalDaemonRequest::GetProjectEnvironment(
             crate::local::GetProjectEnvironmentRequest {
                 project_id: "edit-project".into(),
+                view: None,
             },
         ))
         .unwrap();
@@ -1732,6 +1745,11 @@ fn envp02b_accept_exclude_choices_survive_changed_detect_and_immutable_history()
         .expect("immutable history");
     let history: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&history_path).unwrap()).unwrap();
+    let archives: Vec<_> = (0..=saved.revision).map(|revision| {
+        let name = history_path.file_name().unwrap().to_str().unwrap().strip_suffix(".revisions.json").unwrap();
+        let path = history_path.with_file_name(format!("{name}.revision-{revision}.json"));
+        let bytes = std::fs::read(&path).unwrap(); (path, bytes)
+    }).collect();
     cache.evidence_digest = "b".repeat(64);
     cache.proposals[0].requirement.title = "Changed evidence".into();
     store.save_detection(&cache).unwrap();
@@ -1745,8 +1763,12 @@ fn envp02b_accept_exclude_choices_survive_changed_detect_and_immutable_history()
     harness.dispatch(request).unwrap();
     let after: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&history_path).unwrap()).unwrap();
-    assert_eq!(after["revisions"][0], history["revisions"][0]);
-    assert_eq!(after["revisions"][1], history["revisions"][1]);
+    assert_eq!(after["revisions"].as_array().unwrap().len(), 1);
+    assert_eq!(after["revisions"][0]["revision"], saved.revision + 1);
+    assert_ne!(after["revisions"][0]["content_digest"], history["revisions"][0]["content_digest"]);
+    for (path, bytes) in archives { assert_eq!(std::fs::read(path).unwrap(), bytes); }
+    let name = history_path.file_name().unwrap().to_str().unwrap().strip_suffix(".revisions.json").unwrap();
+    assert!(history_path.with_file_name(format!("{name}.revision-{}.json", saved.revision + 1)).is_file());
 }
 fn environment_draft_for_test(
     e: &crate::project_environment::ProjectEnvironment,
@@ -1887,11 +1909,11 @@ fn envp02b_saved_revision_survives_workspace_add_remove_and_reorder() {
         };
         harness.dispatch(serde_json::from_value(serde_json::json!({"UpdateProjectWorkspaces":{"project_id":"edit-project","workspace_ids":workspaces}})).unwrap()).unwrap();
         let current = envp02b_read(&harness);
-        assert_eq!(
-            environment_draft_for_test(&current),
-            environment_draft_for_test(&saved),
-            "workspace mutation must not alter saved specification"
-        );
+        let mut saved_projection = current.clone();
+        saved_projection.folders.truncate(saved.folders.len());
+        assert_eq!(environment_draft_for_test(&saved_projection), environment_draft_for_test(&saved), "live additions must not rewrite acknowledged requirements");
+        let additions: Vec<_> = current.folders.iter().skip(saved.folders.len()).collect();
+        assert!(additions.iter().all(|f| f.requirements.is_empty() && workspaces.contains(&f.local_workspace_binding.as_str())));
         assert_eq!(current.revision, saved.revision);
         assert_eq!(current.content_digest, saved.content_digest);
         for (folder, original) in current.folders.iter().zip(&saved.folders) {
@@ -1905,7 +1927,7 @@ fn envp02b_saved_revision_survives_workspace_add_remove_and_reorder() {
             );
         }
         let LocalDaemonResponse::ProjectEnvironmentDiff { diff } = harness.dispatch(serde_json::from_value(serde_json::json!({"PreviewEnvironmentDiff":{"projectId":"edit-project","expectedRevision":current.revision,"draft":environment_draft_for_test(&current)}})).unwrap()).unwrap() else { panic!("Preview expected") };
-        assert_eq!(diff.target_digest, current.content_digest);
+        assert_eq!(diff.target_digest == current.content_digest, additions.is_empty());
     }
 }
 

@@ -22,7 +22,7 @@ fn info(pid: u32) -> Option<libc::proc_bsdinfo> {
     (result == size).then(|| unsafe { info.assume_init() })
 }
 impl Descendant {
-    fn alive(&self) -> bool {
+    pub(super) fn alive(&self) -> bool {
         info(self.pid).is_some_and(|i| (i.pbi_start_tvsec, i.pbi_start_tvusec) == self.birth)
     }
     pub(super) fn signal(&self, signal: i32) -> io::Result<()> {

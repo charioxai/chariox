@@ -22,9 +22,11 @@ mod remote_machines;
 use blocking::block_on_relay_query;
 pub(crate) use catalog::{
     claude_auth_status, load_provider_catalog, logout_provider_response,
-    observe_provider_auth_status, observe_provider_auth_status_until, provider_auth_status_response,
-    provider_command_catalogs_response, refresh_provider_account_profile_response,
-    start_provider_login_response, PROVIDER_CATALOG_CACHE_TTL,
+    observe_provider_auth_status, observe_provider_auth_status_until,
+    provider_auth_status_response, provider_command_catalogs_response,
+    refresh_provider_account_auth_with_config, refresh_provider_account_profile_explicitly,
+    refresh_provider_account_profile_with_config, start_provider_login_response,
+    PROVIDER_CATALOG_CACHE_TTL,
 };
 pub(crate) use remote_machines::{
     forgotten_machine_record, record_for_machine_id, remote_machine_records,
@@ -239,9 +241,7 @@ fn remote_native_provider_run_response(
     };
     let required_mcps = app.required_remote_mcps_for_native_provider_launch(&agent)?;
     let required_skills = app.required_remote_skills_for_native_provider_launch(&agent)?;
-    let remote_extension_manifest = app
-        .remote_extension_manifest_for_agent(&agent)?
-        .without_mcp_tools();
+    let remote_extension_manifest = app.remote_extension_manifest_for_agent(&agent)?;
     let relay_config = app.relay_config_for_remote_execution(&remote_execution);
     let response = app.block_on_relay_future(send_peer_request_via_temporary_connection(
         &relay_config,

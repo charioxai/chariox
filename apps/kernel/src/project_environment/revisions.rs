@@ -9,6 +9,8 @@ use std::io::Read;
 #[serde(deny_unknown_fields)]
 pub(crate) struct EnvironmentRevisionHistory {
     revisions: Vec<ProjectEnvironment>,
+    #[serde(default)]
+    archived_revisions: bool,
     decisions: BTreeMap<String, EnvironmentOptInDecision>,
     legacy_digests: Vec<String>,
 }
@@ -133,7 +135,7 @@ fn validate_draft(
                 || !ids.insert(&r.requirement_id)
                 || r.depends_on.len() > 128
                 || r.platform_variants.len() > 32
-                || r.origins.len() > 128
+                || r.origins.len() > super::detect_importers::MAX_ORIGINS
             {
                 return Err(environment_error(
                     "invalid requirement identity, scope or bounds",
@@ -285,6 +287,11 @@ fn validate_draft(
             return Err(environment_error("invalid requirement dependency"));
         }
     }
+    if !super::dependency_graph::blocked(requirements(draft)).is_empty() {
+        return Err(environment_error(
+            "Environment requirement dependencies contain a cycle",
+        ));
+    }
     super::scope_conflicts::validate_scopes(draft)?;
     Ok(())
 }
@@ -338,6 +345,25 @@ pub fn environment_revision_diff(
 }
 
 impl ProjectEnvironmentStore {
+    // MP-08 / MP-10 / MP-11: index publication commits the revision. Before
+    // publication an orphan of that unacknowledged revision may be replaced;
+    // acknowledged snapshots are never rewritten on subsequent Saves.
+    fn archive_revision(&self, snapshot: &ProjectEnvironment) -> Result<(), DaemonError> {
+        let mut snapshot = snapshot.clone();
+        snapshot.proposals.clear();
+        snapshot.operations.clear();
+        snapshot.observations.clear();
+        let bytes = serde_json::to_vec(&snapshot)
+            .map_err(|_| environment_error("revision encoding failed"))?;
+        if bytes.len() > 64 * 1024 * 1024 {
+            return Err(environment_error("revision snapshot exceeds bounds"));
+        }
+        let file = self
+            .path(&snapshot.local_project_id)
+            .with_extension(format!("revision-{}.json", snapshot.revision));
+        crate::config::write_private_file(&file, &bytes)
+            .map_err(|_| environment_error("revision archive commit failed"))
+    }
     pub(crate) fn load_revisions(
         &self,
         project: &str,
@@ -370,13 +396,17 @@ impl ProjectEnvironmentStore {
         }
         let history: EnvironmentRevisionHistory = serde_json::from_slice(&bytes)
             .map_err(|_| environment_error("invalid revision history"))?;
-        if history.revisions.len() < 2
-            || history
-                .revisions
-                .iter()
-                .enumerate()
-                .any(|(i, r)| r.local_project_id != project || r.revision != i as u64)
-        {
+        let valid = if history.archived_revisions {
+            history.revisions.len() == 1 && history.revisions[0].local_project_id == project
+        } else {
+            history.revisions.len() >= 2
+                && history
+                    .revisions
+                    .iter()
+                    .enumerate()
+                    .all(|(i, r)| r.local_project_id == project && r.revision == i as u64)
+        };
+        if !valid {
             return Err(environment_error("revision history binding mismatch"));
         }
         Ok(Some(history))
@@ -408,7 +438,23 @@ impl ProjectEnvironmentStore {
                     )
                 })
                 .collect();
+            let mut additions: Vec<_> = snapshot
+                .folders
+                .iter()
+                .filter(|folder| {
+                    !saved
+                        .folders
+                        .iter()
+                        .any(|saved| saved.folder_id == folder.folder_id)
+                })
+                .cloned()
+                .collect();
+            // Live additions are editable, but enter the immutable specification only on Save.
+            for folder in &mut additions {
+                folder.requirements.clear();
+            }
             snapshot.folders = saved.folders.clone();
+            snapshot.folders.extend(additions);
             for folder in &mut snapshot.folders {
                 folder.local_workspace_binding =
                     bindings.get(&folder.folder_id).cloned().unwrap_or_default();
@@ -442,6 +488,7 @@ impl ProjectEnvironmentStore {
             .load_revisions(&current.local_project_id)?
             .unwrap_or_else(|| EnvironmentRevisionHistory {
                 revisions: vec![current.clone()],
+                archived_revisions: false,
                 decisions: BTreeMap::new(),
                 legacy_digests: [
                     current.legacy_manifest.as_ref().map(metadata_digest),
@@ -586,7 +633,14 @@ impl ProjectEnvironmentStore {
         persisted.proposals.clear();
         persisted.operations.clear();
         persisted.observations.clear();
-        history.revisions.push(persisted);
+        if !history.archived_revisions {
+            for revision in &history.revisions {
+                self.archive_revision(revision)?;
+            }
+        }
+        self.archive_revision(&persisted)?;
+        history.archived_revisions = true;
+        history.revisions = vec![persisted];
         let bytes = serde_json::to_vec(&history)
             .map_err(|_| environment_error("revision encoding failed"))?;
         if bytes.len() > 64 * 1024 * 1024 {

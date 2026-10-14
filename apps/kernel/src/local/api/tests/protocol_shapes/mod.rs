@@ -36,6 +36,7 @@ mod provider_auth_recovery;
 mod provider_usage_activity;
 mod publication;
 mod recall_terminal_metaagent;
+mod relay_receipt_transport;
 mod released_provider_run;
 mod resource_telemetry;
 mod room_controller;
@@ -45,6 +46,7 @@ mod slice_disk_quota;
 mod slice_display;
 mod slice_logs;
 mod workflow_code;
+mod workflow_notifications;
 mod workspace_history_external;
 
 fn history_page_entry(
@@ -83,3 +85,5 @@ fn history_page_entry(
         },
     }
 }
+
+mod room_workflows;

@@ -43,17 +43,20 @@ mod workspace_live_sync_policy;
 mod workspace_write_fence;
 
 pub(crate) use account_credential::{
-    launch_uses_vault_credential, provider_account_credential_id,
-    provider_account_credential_registered, provider_account_credential_uses_vault,
-    resolve_provider_account_credentials, resolve_provider_account_credentials_for_launch,
-    store_provider_account_credential, validate_provider_account_credential_input,
-    CLAUDE_OAUTH_TOKEN_ENV,
+    provider_account_credential_id, provider_account_credential_registered,
+    provider_account_credential_uses_vault, resolve_provider_account_credentials,
+    resolve_provider_account_credentials_for_launch, store_provider_account_credential,
+    validate_provider_account_credential_input, CLAUDE_OAUTH_TOKEN_ENV,
 };
-pub(crate) use claude::probe_claude_account_usage;
+pub(crate) use claude::prepare_vaulted_claude_native_onboarding;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
     ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
     CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+};
+pub(crate) use claude::{
+    probe_claude_account_usage, verify_claude_account_credential, verify_claude_setup_token,
+    ClaudeCredentialCheckError,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
@@ -100,15 +103,17 @@ pub(crate) use managed_isolation::{
     managed_isolated_utility_command, managed_isolated_utility_launch,
     managed_provider_control_env_remove, managed_provider_isolation_env_remove,
     managed_provider_isolation_required, managed_provider_parent_credential_env_remove,
-    provider_reported_transcript_on_kernel, MANAGED_SLICE_PUBLICATION_ROOT_ENV,
-    MANAGED_SLICE_SERVICE_ROOT_ENV,
+    provider_account_environment_on_kernel, provider_reported_transcript_on_kernel,
+    MANAGED_SLICE_PUBLICATION_ROOT_ENV, MANAGED_SLICE_SERVICE_ROOT_ENV,
 };
 #[cfg(test)]
 pub(crate) use managed_isolation::{
     MANAGED_PROVIDER_ISOLATION_ENV, MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
 };
 pub(crate) use mcp_proxy::{
-    dispatch_provider_mcp_proxy_request, shutdown_provider_mcp_proxy_session,
+    cancel_provider_mcp_proxy_run,
+    dispatch_provider_mcp_proxy_request, dispatch_provider_mcp_proxy_request_with_excluded_roots,
+    shutdown_provider_mcp_proxy_session,
 };
 pub(crate) use opencode::{
     apply_opencode_discovery_environment, ensure_opencode_account_endpoint,

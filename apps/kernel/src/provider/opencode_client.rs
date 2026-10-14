@@ -2,6 +2,7 @@ use crate::error::DaemonError;
 
 mod catalog;
 mod defaults;
+mod error_diagnostics;
 mod event_subscription;
 mod events;
 mod health;

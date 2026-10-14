@@ -105,10 +105,11 @@ impl DaemonApp {
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
             let account_owner_user_id =
-                crate::account_profile::provider_account_authority_owner_user_id(
+                crate::account_profile::provider_account_authority_for_launch(
                     &self.config,
-                    &request.owner_user_id,
-                );
+                    &self.provider_account_profiles,
+                    &request,
+                )?;
             let profile = if request.client_interface.is_chariox() {
                 refresh_provider_usage_before_launch(
                     &self.provider_account_profiles,
@@ -117,11 +118,12 @@ impl DaemonApp {
                     &request.account_profile,
                     crate::session::unix_epoch_ms(),
                     || {
-                        crate::local::provider_requests::refresh_provider_account_profile_response(
+                        crate::local::provider_requests::refresh_provider_account_profile_with_config(
                             &self.provider_account_profiles,
                             &account_owner_user_id,
                             &request.provider,
                             &request.account_profile,
+                            &self.config,
                         )
                     },
                 )?;
@@ -159,7 +161,17 @@ impl DaemonApp {
             for (name, value) in provider_credential_env.iter() {
                 launch_environment.insert(name, zeroize::Zeroizing::new(value.to_string()));
             }
+            let selection = request
+                .resolved_provider_account
+                .as_ref()
+                .map(|account| account.selection().to_string())
+                .unwrap_or_else(|| request.account_profile.clone());
             request.account_profile = profile.profile_id;
+            crate::account_profile::bind_provider_account_authority(
+                &mut request,
+                account_owner_user_id,
+                selection,
+            );
             request = request
                 .with_provider_account_env(provider_account_env)
                 .with_provider_credential_env(launch_environment);
@@ -299,6 +311,55 @@ mod tests {
             .iter()
             .any(|(name, value)| name == "SHELL_ONLY_SECRET" && value == "synthetic-only"));
         assert!(!format!("{prepared:?}").contains("synthetic-only"));
+    }
+
+    #[test]
+    fn token_launch_automatic_refresh_preserves_observation() {
+        crate::test_support::isolated_env_test!();
+        let root =
+            std::env::temp_dir().join(format!("claudesetup-usage-{:016x}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var("CHARIOX_HOME", root.join("home"));
+        let registry = ProviderAccountProfileRegistry::open(root.join("profiles.json")).unwrap();
+        let profile = registry
+            .create_managed("local", "claude", "MP-08-token")
+            .unwrap();
+        let credential_id =
+            crate::provider::provider_account_credential_id("local", "claude", &profile.profile_id);
+        crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .upsert(crate::config::UserCredentialConfig {
+                id: credential_id.clone(),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Vault { key: credential_id },
+                allowed_hosts: vec![],
+                allowed_uses: vec![crate::config::UserCredentialUse::Provider],
+                injection: crate::config::UserCredentialInjectionConfig::Provider,
+                metadata: None,
+            })
+            .unwrap();
+        for alias in ["claude", "claude-p", "claude-headless"] {
+            refresh_provider_usage_before_launch(
+                &registry,
+                "local",
+                alias,
+                &profile.profile_id,
+                crate::session::unix_epoch_ms(),
+                || {
+                    crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                        &registry,
+                        "local",
+                        alias,
+                        &profile.profile_id,
+                        &crate::config::DaemonConfig::for_tests(),
+                    )
+                },
+            )
+            .unwrap();
+            assert_eq!(registry.get("local", alias, &profile.profile_id).unwrap(), profile,
+                "MP-08/MP-11: the shared automatic refresh must preserve token state without a Vault read");
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

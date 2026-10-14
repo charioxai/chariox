@@ -33,6 +33,7 @@ impl CommandRouter {
         request: &LocalDaemonRequest,
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        super::retired_cloud_controls::require_kernel_authority(request)?;
         if let Some(response) = self
             .runtime_state
             .app_control()
@@ -157,6 +158,15 @@ impl CommandRouter {
             .map(Some);
         }
         match request {
+            LocalDaemonRequest::PreflightProviderAccountPortability(request) => {
+                return crate::runtime::provider_account_portability::execute_preflight(
+                    &self.config_projection.snapshot(),
+                    &self.provider_account_profiles,
+                    command,
+                    request,
+                )
+                .map(Some);
+            }
             request @ (LocalDaemonRequest::CreateDisposableWorker(_)
             | LocalDaemonRequest::GetDisposableWorker(_)
             | LocalDaemonRequest::ReleaseDisposableWorker(_)

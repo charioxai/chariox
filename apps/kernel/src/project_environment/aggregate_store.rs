@@ -39,6 +39,24 @@ impl ProjectEnvironmentStore {
         project: &crate::session::RuntimeProject,
     ) -> Result<ProjectEnvironment, DaemonError> {
         let identity_lock = self.identity_lock(project.id())?;
+        self.snapshot_bindings_with_identity(project, identity_lock)
+    }
+    // MP-08 / MP-10 / MP-11: Check shares its deadline with the identity lock.
+    pub(super) fn snapshot_until(
+        &self,
+        project: &crate::session::RuntimeProject,
+        deadline: std::time::Instant,
+    ) -> Result<ProjectEnvironment, DaemonError> {
+        let lock = self.lock_extension_until(project.id(), "identity.lock", deadline)?;
+        let mut snapshot = self.snapshot_bindings_with_identity(project, lock)?;
+        self.attach_revision(&mut snapshot)?;
+        Ok(snapshot)
+    }
+    fn snapshot_bindings_with_identity(
+        &self,
+        project: &crate::session::RuntimeProject,
+        identity_lock: ProjectEnvironmentLock,
+    ) -> Result<ProjectEnvironment, DaemonError> {
         let path = self.path(project.id()).with_extension("identity.json");
         let mut options = OpenOptions::new();
         options.read(true);

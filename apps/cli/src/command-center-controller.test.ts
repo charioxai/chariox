@@ -13,7 +13,7 @@ import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 
 const commandTree = loadCommandCenterTestCatalog()
 
-function createHarness(initialPrompt = "", tree: readonly CommandNode[] = commandTree) {
+function createHarness(initialPrompt = "", tree: readonly CommandNode[] = commandTree, execute?: () => Promise<void>) {
   let promptText = initialPrompt
   const executed: string[] = []
   const errors: unknown[] = []
@@ -34,6 +34,7 @@ function createHarness(initialPrompt = "", tree: readonly CommandNode[] = comman
     },
     executeCommand: async (value) => {
       executed.push(value)
+      await execute?.()
     },
     onCommandError: (error) => {
       errors.push(error)
@@ -270,3 +271,25 @@ test("command center controller submits /app dev stop as typed", () => {
   assert.deepEqual(harness.executed, [])
   assert.equal(harness.promptText, "/app dev stop")
 })
+
+for (const rejects of [false, true]) {
+  test(`MP-08 command center preserves a new draft after delayed model choice ${rejects ? "failure" : "success"}`, async () => {
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => { finish = resolve })
+    const harness = createHarness("/model ", commandTree, async () => {
+      await pending
+      if (rejects) throw new Error("model unavailable")
+    })
+    harness.controller.sync()
+    assert.equal(harness.controller.selectedItem()?.kind, "model")
+    assert.equal(harness.controller.handleKey(handledKey("return").event), true)
+    assert.equal(harness.executed.length, 1)
+    harness.promptText = "Read the public README"
+    harness.controller.sync()
+    finish()
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(harness.promptText, "Read the public README")
+    assert.equal(harness.controller.query(), "Read the public README")
+    assert.equal(harness.errors.length, rejects ? 1 : 0)
+  })
+}

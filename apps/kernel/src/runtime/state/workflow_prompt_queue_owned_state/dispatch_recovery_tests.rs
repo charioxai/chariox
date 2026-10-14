@@ -211,17 +211,22 @@ fn actual_legacy_queue_and_retry_fallback_defer_owned_entries_without_failure() 
 }
 
 #[test]
-fn legacy_dequeue_cannot_claim_app_event_before_owned_ready_intent_exists() {
+fn legacy_dequeue_cannot_claim_notifications_before_owned_ready_intent_exists() {
+    for transport in ["app_event", "workflow_notification"] {
+        legacy_notification_queue_defers(transport);
+    }
+}
+fn legacy_notification_queue_defers(transport: &str) {
     let (runtime, session, workflow, endpoint, _root) = runtime_with_idle_workflow();
     let mut app = runtime.app.blocking_lock();
     let invocation = crate::session::WorkflowPublicationInvocationEnvelope {
         publication_id: "fixture-publication".into(),
         hook_id: None,
         invocation_id: "fixture-receipt".into(),
-        transport: "app_event".into(),
+        transport: transport.into(),
         endpoint_id: endpoint.clone(),
         queue_ref: None,
-        input: serde_json::json!({"prompt":"defer App event"}),
+        input: serde_json::json!({"prompt":"defer App event","deadline_ms":crate::session::unix_epoch_ms()+60000}),
         artifacts: vec![],
         mode: None,
         caller: serde_json::json!({"type":"app"}),
@@ -396,4 +401,90 @@ fn failure_after_prompt_admission_fences_writes_and_retains_existing_prompt_reco
         .unwrap(),
         before
     );
+}
+
+#[test]
+fn expired_notification_ready_entry_never_submits_after_workspace_release() {
+    for restart in [false, true] {
+        expire_ready_entry(restart);
+    }
+}
+fn expire_ready_entry(restart: bool) {
+    let (runtime, session, workflow, endpoint, _root) = runtime_with_idle_workflow();
+    let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+    let blocker = runtime
+        .owned
+        .workspace_coordinator
+        .acquire_worktree_write_claim(
+            snapshot.workspace_id(),
+            snapshot.worktree_id(),
+            &session,
+            None,
+            "expiry_fixture",
+        )
+        .unwrap();
+    runtime
+        .owned
+        .session_store
+        .write()
+        .enqueue_workflow_prompt_with_publication_invocation(
+            &session,
+            &workflow,
+            &endpoint,
+            Some("must expire".into()),
+            None,
+            crate::session::WorkflowQueuedPromptSource::Event,
+            None,
+            Some(crate::session::WorkflowPublicationInvocationEnvelope {
+                publication_id: "fixture".into(),
+                hook_id: None,
+                invocation_id: "expiry-fixture".into(),
+                transport: "workflow_notification".into(),
+                endpoint_id: endpoint.clone(),
+                queue_ref: None,
+                input: serde_json::json!({"deadline_ms":crate::session::unix_epoch_ms()+500}),
+                artifacts: vec![],
+                mode: None,
+                caller: serde_json::json!({"owner_id":"local","installation_id":"fixture"}),
+            }),
+        )
+        .unwrap();
+    runtime
+        .owned
+        .workflow_start_next_queued_prompt_for_response(&session)
+        .unwrap();
+    let intent = runtime
+        .owned
+        .workflow_pending_entry(&session)
+        .unwrap()
+        .unwrap();
+    assert!(!intent.submitted);
+    std::thread::sleep(std::time::Duration::from_millis(550));
+    drop(blocker);
+    let runtime = if restart {
+        let config = runtime.owned.config_projection.snapshot();
+        drop(runtime);
+        runtime_state_from_app(DaemonApp::bootstrap(config).unwrap())
+    } else {
+        runtime
+    };
+    // Restart recovery and workspace release both check the original deadline.
+    runtime
+        .owned
+        .workflow_start_next_queued_prompt_for_response(&session)
+        .unwrap();
+    runtime.owned.workflow_retry_blocked_claims();
+    assert_eq!(
+        prompt_count(&runtime, &session),
+        0,
+        "MP-08 / MP-10: expired Ready entry cannot reach prompt admission"
+    );
+    assert!(runtime
+        .owned
+        .session_store
+        .read()
+        .resolve_workflow_run_ref(&session, &intent.run_id)
+        .unwrap()
+        .status()
+        .is_terminal());
 }

@@ -1,4 +1,5 @@
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 472
+// MP-08 / MP-10 / MP-11: allocated Environment compact reads and ordered relay receipt credit.
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 505
 
 export type * from "./kernel-types-apps.js"
 
@@ -15,4 +16,5 @@ export type * from "./kernel-types-event-publication.js"
 export type * from "./kernel-types-environment.js"
 export type * from "./kernel-types-project-environment.js"
 
+export type * from "./kernel-types-workflow-notifications.js"
 export type * from "./kernel-types-project-environment-aggregate.js"

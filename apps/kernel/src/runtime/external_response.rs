@@ -137,6 +137,12 @@ response_policies! {
         ProjectEnvironmentPlan,
     ],
     Public => [
+        WorkflowNotificationSourceRegistered,
+        WorkflowNotificationAttached,
+        WorkflowNotificationDetached,
+        WorkflowNotifications,
+        RoomWorkflowRunsControlled,
+        ActivePromptSteered,
         CloudRelayLoggedOut,
         KernelSudoRequested,
         KernelAccessGranted,
@@ -194,6 +200,7 @@ response_policies! {
         ProjectEnvironmentManifest,
         // Value-free Environment aggregates: names, versions and Vault references only.
         ProjectEnvironment,
+        ProjectEnvironmentView,
         ProjectEnvironmentDiff,
         ProjectEnvironmentSaved,
         EnvironmentOperation,
@@ -334,6 +341,7 @@ response_policies! {
         ProviderAccountProfileRemoved,
         ProviderAccountProfileDataDeleted,
         ProviderAccountCredentialStored,
+        ProviderAccountPortabilityPreflightPassed,
         ProviderProcessesListed,
         ProviderProcessesTornDown,
         SessionHistoryOutline,

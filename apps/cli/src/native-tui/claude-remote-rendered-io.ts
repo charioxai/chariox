@@ -1,3 +1,4 @@
+import { sendClaudeRemoteRenderedInput as sendRemoteRenderedInput } from "./claude-remote-rendered-control.js"
 import process from "node:process"
 import { StringDecoder } from "node:string_decoder"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -6,7 +7,6 @@ import type { LocalIpcClient } from "../ipc.js"
 import {
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
-  sendTerminalInputRequest,
   submitPromptRequest,
 } from "../ipc-requests.js"
 import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer.js"
@@ -47,6 +47,7 @@ export function forwardClaudeRemoteRenderedStdin(options: {
             options.attachmentId,
             options.providerRunId,
             data,
+            options.agentId,
           )
         }
       })
@@ -274,6 +275,7 @@ async function forwardRemoteRenderedInputChunk(options: {
       options.attachmentId,
       options.providerRunId,
       action.data,
+      options.agentId,
     )
   }
 }
@@ -317,18 +319,6 @@ async function submitOrForwardRemoteRenderedEnter(options: {
       visiblePrompt || "Please use the attached file.",
       attachments,
     ),
-  )
-}
-
-async function sendRemoteRenderedInput(
-  client: LocalIpcClient,
-  sessionId: string,
-  attachmentId: string,
-  providerRunId: string,
-  data: Buffer | string,
-) {
-  await client.send<Record<string, unknown>>(
-    sendTerminalInputRequest(sessionId, attachmentId, data, providerRunId),
   )
 }
 

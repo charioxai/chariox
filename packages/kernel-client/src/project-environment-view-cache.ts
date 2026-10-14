@@ -14,6 +14,11 @@ export function createEnvironmentViewCache() {
     },
     remember(scope: unknown, snapshot: ProjectEnvironment) {
       bind(scope)
+      // Full mutation/detail replies stay in their active view, outside the cold-open cache.
+      if (!snapshot.read_view && (snapshot.proposals?.length > 20 || snapshot.operations?.some(o=>(o.per_item_results?.length ?? 0)>32))) {
+        snapshots.delete(snapshot.local_project_id)
+        return snapshot
+      }
       snapshots.delete(snapshot.local_project_id)
       snapshots.set(snapshot.local_project_id, snapshot)
       if (snapshots.size > 8) snapshots.delete(snapshots.keys().next().value!)

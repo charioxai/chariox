@@ -39,8 +39,11 @@ pub(crate) async fn execute_get_provider_catalog_request(
     config_projection: &DaemonConfigProjectionStore,
     account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
-    request: crate::local::GetProviderCatalogRequest,
+    mut request: crate::local::GetProviderCatalogRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let summary_only = request.summary_only;
+    request.summary_only = false;
+    let focus_provider = request.provider.clone();
     let owner_user_id = crate::account_profile::provider_account_authority_owner_user_id(
         &config_projection.snapshot(),
         owner_user_id,
@@ -57,7 +60,13 @@ pub(crate) async fn execute_get_provider_catalog_request(
                 "connected_provider_count": catalog.connected.len(),
             }),
         );
-        return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
+        return Ok(LocalDaemonResponse::ProviderCatalog {
+            catalog: super::provider_catalog_read_view::catalog_read_view(
+                catalog,
+                summary_only,
+                focus_provider.as_deref(),
+            ),
+        });
     }
     if let Some(catalog) = provider_catalog_projection.cached_scoped(&cache_key) {
         refresh_provider_catalog_in_background(
@@ -76,7 +85,13 @@ pub(crate) async fn execute_get_provider_catalog_request(
                 "connected_provider_count": catalog.connected.len(),
             }),
         );
-        return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
+        return Ok(LocalDaemonResponse::ProviderCatalog {
+            catalog: super::provider_catalog_read_view::catalog_read_view(
+                catalog,
+                summary_only,
+                focus_provider.as_deref(),
+            ),
+        });
     }
 
     let config = config_projection.snapshot();
@@ -100,7 +115,13 @@ pub(crate) async fn execute_get_provider_catalog_request(
         }),
     );
     provider_catalog_projection.update_scoped(&cache_key, catalog.clone());
-    Ok(LocalDaemonResponse::ProviderCatalog { catalog })
+    Ok(LocalDaemonResponse::ProviderCatalog {
+        catalog: super::provider_catalog_read_view::catalog_read_view(
+            catalog,
+            summary_only,
+            focus_provider.as_deref(),
+        ),
+    })
 }
 
 fn refresh_provider_catalog_in_background(

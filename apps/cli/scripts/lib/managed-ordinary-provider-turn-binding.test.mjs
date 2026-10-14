@@ -366,7 +366,7 @@ test("MP-10 rejects remote unauthenticated or credential-bearing endpoint locato
 })
 
 // MP-11 F7: process provenance uses observed procfs, not private launch fields.
-test("MP-11 binds a protocol-435 public run without launch arguments", async () => {
+test("MP-11 binds a protocol-487 public run without launch arguments", async () => {
   const h = harness()
   for (const field of ["process_label", "pty_program", "pty_args", "pty_env", "runtime_mcp_auth_token"]) delete h.state.run[field]
   const proof = await (await h.start()).finish()

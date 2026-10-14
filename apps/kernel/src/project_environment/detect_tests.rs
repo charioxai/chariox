@@ -414,26 +414,26 @@ fn envp02a_gui_names_do_not_match_canvas_or_longer_words() {
     }
 }
 
-#[path = "detect_review_2_tests.rs"]
-mod review_2;
+#[path = "detect_reference_privacy_tests.rs"]
+mod detect_reference_privacy;
 
-#[path = "detect_review_3_tests.rs"]
-mod review_3;
+#[path = "detect_medium_repository_tests.rs"]
+mod detect_medium_repository;
 
-#[path = "detect_review_4_tests.rs"]
-mod review_4;
+#[path = "detect_cache_recovery_tests.rs"]
+mod detect_cache_recovery;
 
-#[path = "detect_review_5_tests.rs"]
-mod review_5;
+#[path = "detect_evidence_digest_tests.rs"]
+mod detect_evidence_digest;
 
-#[path = "detect_review_1_tests.rs"]
-mod review_1;
+#[path = "detect_classification_tests.rs"]
+mod detect_classification;
 
-#[path = "detect_review_6_tests.rs"]
-mod review_6;
+#[path = "detect_model_coverage_tests.rs"]
+mod detect_model_coverage;
 
-#[path = "detect_review_7_tests.rs"]
-mod review_7;
+#[path = "detect_runtime_version_tests.rs"]
+mod detect_runtime_version;
 
-#[path = "detect_review_8_tests.rs"]
-mod review_8;
+#[path = "detect_proposal_bounds_tests.rs"]
+mod detect_proposal_bounds;

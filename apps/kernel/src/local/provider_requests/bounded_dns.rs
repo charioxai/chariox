@@ -1,25 +1,16 @@
 //! MP-08 / MP-10 / MP-11: owned OS DNS resolution, shared by health and MCP adapters.
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+use std::time::Instant;
 use zeroize::Zeroizing;
-fn executable(name: &str) -> Option<PathBuf> {
-    if name.contains(['/', '\\']) || name.is_empty() {
-        return None;
-    }
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .filter(|p| p.is_absolute())
-        .find_map(|p| {
-            let p = p.join(name).canonicalize().ok()?;
-            let m = p.metadata().ok()?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if m.permissions().mode() & 0o111 == 0 {
-                    return None;
-                }
-            }
-            m.is_file().then_some(p)
-        })
+
+// MP-08 / MP-10 / MP-11: public address results have a short bounded cache.
+// Validate the selected resolver before reuse, including workspace roots.
+type DnsCache = std::collections::BTreeMap<(String, PathBuf), (Instant, Vec<std::net::IpAddr>)>;
+fn dns_cache() -> &'static Mutex<DnsCache> {
+    static CACHE: OnceLock<Mutex<DnsCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(DnsCache::new()))
 }
 
 pub(crate) fn resolve_bounded_host(
@@ -41,32 +32,46 @@ pub(crate) fn resolve_bounded_host(
         || host.starts_with('-')
         || !host
             .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || b".-".contains(&c))
+            .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
     {
         return Err("invalid_probe_host");
     }
     // The OS resolver is an owned bounded utility; blocking getaddrinfo must
     // not leave unbounded detached resolver threads after a Check timeout.
-    #[cfg(target_os = "linux")]
-    let name = "getent";
+    // Resolver selection is an OS operation, including MCP calls without a
+    // Project trust context. Never select a workspace helper through PATH.
     #[cfg(target_os = "macos")]
-    let name = "dscacheutil";
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    return Err("resolver_unavailable");
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let path = PathBuf::from("/usr/bin/dscacheutil");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let path = PathBuf::from("/usr/bin/getent");
+    #[cfg(windows)]
+    let path = PathBuf::from(std::env::var_os("SystemRoot").ok_or("resolver_unavailable")?)
+        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+
     {
-        let path = executable(name).ok_or("resolver_unavailable")?;
-        if roots.iter().any(|root| path.starts_with(root)) {
-            return Err("resolver_unavailable");
+        // Vets the complete interpreter chain while preserving symlink argv[0].
+        let mut command = crate::project_environment::check_executable::command(&path, roots)
+            .map_err(|_| "resolver_unavailable")?;
+        let canonical = path.canonicalize().map_err(|_| "resolver_unavailable")?;
+        let key = (host.to_ascii_lowercase(), canonical);
+        if let Some(addresses) = dns_cache().lock().ok().and_then(|cache| {
+            cache
+                .get(&key)
+                .filter(|(at, _)| at.elapsed() < Duration::from_secs(30))
+                .map(|(_, addresses)| addresses.clone())
+        }) {
+            return Ok(addresses);
         }
-        let mut command = std::process::Command::new(path);
-        command
-            .current_dir("/")
-            .env_clear()
-            .env("LANG", "C")
-            .env("PATH", "/usr/bin:/bin");
-        #[cfg(target_os = "linux")]
+        #[cfg(not(any(target_os = "macos", windows)))]
         command.args(["ahosts", host]);
+        #[cfg(windows)]
+        {
+            if let Some(root) = std::env::var_os("SystemRoot") {
+                command.env("SystemRoot", root);
+            }
+            // Host input is separately bound and restricted above; no profile or startup script.
+            command.args(["-NoProfile", "-NonInteractive", "-Command", "& { param([string]$n) [System.Net.Dns]::GetHostAddresses($n) | ForEach-Object { $_.IPAddressToString } }", host]);
+        }
         #[cfg(target_os = "macos")]
         command.args(["-q", "host", "-a", "name", host]);
         let Ok(output) =
@@ -81,7 +86,7 @@ pub(crate) fn resolve_bounded_host(
         let text = Zeroizing::new(String::from_utf8_lossy(&bytes).into_owned());
         let mut addresses = vec![];
         for line in text.lines().take(64) {
-            #[cfg(target_os = "linux")]
+            #[cfg(not(target_os = "macos"))]
             let value = line.split_whitespace().next().unwrap_or("");
             #[cfg(target_os = "macos")]
             let value = line
@@ -93,6 +98,15 @@ pub(crate) fn resolve_bounded_host(
                 if !addresses.contains(&ip) {
                     addresses.push(ip);
                 }
+            }
+        }
+        if !addresses.is_empty() {
+            if let Ok(mut cache) = dns_cache().lock() {
+                cache.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(30));
+                if cache.len() >= 64 {
+                    cache.clear();
+                }
+                cache.insert(key, (Instant::now(), addresses.clone()));
             }
         }
         Ok(addresses)

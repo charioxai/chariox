@@ -41,6 +41,11 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             return Ok(());
         }
         kernel_arguments::Command::Run => {}
+        kernel_arguments::Command::MeasureEnvironmentFiles(request, result, budget) => {
+            return chariox_kernel::project_environment::run_files_measurement_worker(
+                &request, &result, budget,
+            );
+        }
     }
     chariox_kernel::slice::initialize_managed_docker_broker();
     chariox_kernel::runtime_transport::initialize_kernel_local_auth_from_env()?;

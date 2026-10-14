@@ -18,6 +18,9 @@ impl KernelRuntimeOwnedState {
             // live prompt has completed and disappeared from the prompt queue.
             return Ok(WorkflowPromptDispatches::default());
         }
+        if self.workflow_expire_pending_entry(session_id, workflow_run.id())? {
+            return Ok(WorkflowPromptDispatches::default());
+        }
         let endpoint_prompt = workflow_run
             .invocation_prompt()
             .map(str::trim)
@@ -138,6 +141,9 @@ impl KernelRuntimeOwnedState {
             Some(intent) => prompt.with_durable_operation(intent.operation_id, intent.fingerprint),
             None => prompt,
         };
+        if self.workflow_expire_pending_entry(session_id, workflow_run.id())? {
+            return Ok(WorkflowPromptDispatches::default());
+        }
         let mut dispatches = self.workflow_submit_prepared_prompt(
             crate::app::KernelPreparedPromptSubmission {
                 session_id: session_id.to_string(),

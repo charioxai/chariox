@@ -11,7 +11,7 @@ export type AppHostTerminal = {
 }
 
 export function createAppHostTerminal(renderer: { copyToClipboardOSC52(text: string): boolean }): AppHostTerminal {
-  return { copy: text => copyTextToClipboard(text, renderer), openLink: openExternalUrl }
+  return { copy: async text => { if (await copyTextToClipboard(text, renderer) === "unavailable") throw new Error("Clipboard unavailable") }, openLink: openExternalUrl }
 }
 
 export function appHostOperationIds(session: RuntimeSession): string[] {

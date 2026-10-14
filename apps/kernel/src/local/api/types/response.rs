@@ -3,6 +3,10 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
+    WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
+    WorkflowNotificationDetached { subscription_id: String },
+    WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     EnvironmentUnsupportedFeature { feature: crate::project_environment::EnvironmentCapability, supported_schema: u32 },
     ProjectEnvironmentDiff { diff: crate::project_environment::EnvironmentRevisionDiff },
     ProjectEnvironmentSaved { environment: crate::project_environment::ProjectEnvironment, diff: crate::project_environment::EnvironmentRevisionDiff },
@@ -12,6 +16,7 @@ pub enum LocalDaemonResponse {
     EnvironmentImportPreview { preview: crate::project_environment::EnvironmentImportPreview },
     EnvironmentImportCommitted { project: RuntimeProject, environment: crate::project_environment::ProjectEnvironment, operation: crate::project_environment::EnvironmentOperation },
     EnvironmentProviderAuthorizationLink { link: crate::project_environment::EnvironmentProviderAuthorizationLink },
+    ProjectEnvironmentView { view: crate::project_environment::EnvironmentReadView },
     ProjectEnvironment { environment: crate::project_environment::ProjectEnvironment },
     KernelSudoRequested { agent_id: String },
     KernelAccessGranted { grant: KernelAccessGrant, },
@@ -86,7 +91,12 @@ pub enum LocalDaemonResponse {
     ProjectEnvironmentSetupRetried { status: ProjectEnvironmentSetupStatus, },
     SessionsListed { sessions: Vec<RuntimeSession>, },
     SessionResolved { session: RuntimeSession, },
+    RoomWorkflowRunsControlled {
+        results: Vec<RoomWorkflowRunControlResult>,
+        inventory: crate::runtime::projection::RoomWorkflowInventory,
+    },
     SessionState {
+        room_workflows: crate::runtime::projection::RoomWorkflowInventory,
         session: RuntimeSession,
         agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
         #[serde(default)]
@@ -179,7 +189,7 @@ pub enum LocalDaemonResponse {
     CloudRelayLoggedOut,
     CloudRelayClientPaired { profile: CloudRelayProfile, },
     CloudRelayMachinePaired { profile: CloudRelayProfile, },
-    CloudRelayConnected { status: RelayStatus, profile: CloudRelayProfile, token: CloudRelayRuntimeToken, },
+    CloudRelayConnected { status: RelayStatus, profile: CloudRelayProfile, },
     CloudRelayClientTokenIssued { profile: CloudRelayProfile, token: CloudRelayRuntimeToken, },
     KernelClientConnectionResolved { connection: KernelClientConnection, },
     CloudSessionInviteCreated { invite: CloudSessionInvite, },
@@ -201,6 +211,7 @@ pub enum LocalDaemonResponse {
     CredentialVaultStatus { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultManaged { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
+    ProviderAccountPortabilityPreflightPassed {},
     ManagedEnvironmentCatalog { catalog: ManagedEnvironmentCatalog, },
     DisposableWorker { allocation: DisposableWorkerAllocation, },
     DisposableWorkerContextTransferPrepared { ticket: crate::managed_context::outbound_service::ManagedContextTransferTicket, },
@@ -294,6 +305,8 @@ pub enum LocalDaemonResponse {
         pairing: PairingJoinRecord,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_token: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        kernel_pairing: bool,
     },
     TerminalsListed { terminals: Vec<TerminalRecord>, },
     PairedClientsListed { clients: Vec<PairedClientRecord>, },
@@ -364,6 +377,7 @@ pub enum LocalDaemonResponse {
     },
     PromptCompleted { completion: PromptCompletion, },
     PromptCancelled { cancellation: PromptCancellation, },
+    ActivePromptSteered { prompt: PromptQueueItem, },
     QueuedPromptSteered {
         prompt: PromptQueueItem,
         session: RuntimeSession,

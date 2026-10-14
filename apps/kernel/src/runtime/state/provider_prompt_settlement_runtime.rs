@@ -336,12 +336,16 @@ impl KernelRuntimeState {
                     started_next_prompt: false,
                 });
             }
+            // MP-08/MP-10/MP-11: Resume waits for the cancelling prompt to
+            // disappear. Finish its workflow transition before publishing that
+            // disappearance, so settlement cannot stop the resumed invocation.
+            owned.workflow_cancel_prompt(session_id, &active_prompt)?;
             let cancellation = owned.finalize_local_prompt_cancellation_with_queued_advance(
                 session_id,
                 &agent_id,
+                active_prompt.id(),
                 Some(provider_run_id),
             )?;
-            owned.workflow_cancel_prompt(session_id, &cancellation.cancellation.prompt)?;
             if cancellation.released_claim {
                 self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
