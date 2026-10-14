@@ -65,7 +65,7 @@ MP-08/MP-10/MP-11: the private `nativeWindowInventory` helper returns only
 owned Chrome XIDs, physical dimensions/positions, visibility, focus, redirect
 and transient-parent metadata on `OwnedDisplay`. It rechecks its admitted
 window-generation predicate after the native query. A region may carry the
-kernel-resolved `window.id` to select one exact owned X window when another
+kernel-resolved XID `window.id` (not the CDP window ID) to select one exact owned X window when another
 window has the same PID/size (for example a separate keepalive). The worker
 still verifies the process and exact geometry; a root, foreign or retired ID
 cannot widen capture. The old no-ID path still refuses ambiguity.
