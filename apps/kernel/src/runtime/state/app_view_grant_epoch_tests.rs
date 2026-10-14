@@ -328,3 +328,6 @@ async fn mp11_app_view_budget_keeps_document_and_grant_cancellation() {
         );
     }
 }
+
+#[path = "app_host_concurrency_tests.rs"]
+mod host_concurrency_tests;

@@ -155,6 +155,12 @@ impl AppLifecycleService {
         )
     }
 
+    /// Release the native fixture scratch before a deadlocked-writer subprocess exits.
+    pub(crate) fn fixture_clear_workers(&self) {
+        assert!(self.0.stopped.load(Ordering::Acquire));
+        self.0.fixture.lock().unwrap().take();
+    }
+
     pub(crate) fn fixture_inbox_workers_with_mode(
         &self,
         mode: chariox_app_runtime::worker_process::test_fixture::Mode,
