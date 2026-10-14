@@ -61,10 +61,13 @@ impl Pending {
             _ => return false,
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if self.descendants.iter().any(|child| child.alive()) {
-            return false;
+        {
+            !self.descendants.iter().any(|child| child.alive())
         }
-        true
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            true
+        }
     }
 }
 struct Work {
