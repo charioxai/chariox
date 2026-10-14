@@ -1906,7 +1906,18 @@ async fn mp08_workflow_resume_running_run_keeps_current_prompt() {
 // the parent's workflow receipt was already acknowledged before it blocked.
 #[tokio::test]
 async fn a01_failed_workflow_settles_unstarted_delegate_on_blocked_parent() {
-    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    failed_workflow_delegate_settlement(false).await;
+}
+
+// MP-08 / MP-10 / MP-11: successful task receipts survive a later startup
+// failure in the same invocation, including repeated lifecycle sweeps.
+#[tokio::test]
+async fn a01_failed_workflow_preserves_fully_settled_successful_task() {
+    failed_workflow_delegate_settlement(true).await;
+}
+
+async fn failed_workflow_delegate_settlement(settled_upstream: bool) {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
     let fixture = interrupt_fixture_with_creator(
@@ -1921,6 +1932,78 @@ async fn a01_failed_workflow_settles_unstarted_delegate_on_blocked_parent() {
         .unwrap();
     let store = &owned.durable_state_store;
     let now = crate::session::unix_epoch_ms();
+    let successful = if settled_upstream {
+        // Restore a distinct completed upstream node. C remains the original
+        // failed node, with no admitted task, as in the real B->C drill.
+        let mut restored = serde_json::to_value(&session).unwrap();
+        let run = &mut restored["workflow_runs"][0];
+        let mut node = run["node_runs"][0].clone();
+        node["id"] = serde_json::json!("successful-upstream-node");
+        node["node_id"] = serde_json::json!("successful-upstream-definition");
+        node["agent_id"] = serde_json::json!(fixture.second_target_agent_id);
+        node["status"] = serde_json::json!("Completed");
+        node["turn_envelope"] = serde_json::Value::Null;
+        run["node_runs"].as_array_mut().unwrap().push(node);
+        run["runtime_agent_ids_by_node"]["successful-upstream-definition"] =
+            serde_json::json!(fixture.second_target_agent_id);
+        owned
+            .session_store
+            .write()
+            .restore_session(serde_json::from_value(restored).unwrap());
+        owned
+            .persist_workflow_runtime_session(session.id(), "successful_upstream_fixture")
+            .unwrap();
+        let prompt = crate::session::PromptQueueItem::new(
+            "settled-upstream",
+            "upstream-client",
+            &fixture.second_target_agent_id,
+            "completed upstream work",
+            crate::session::PromptStatus::Queued,
+        )
+        .with_workflow_context(&fixture.workflow_run_id, "successful-upstream-node");
+        owned
+            .admit_agent_task(&crate::app::KernelPreparedPromptSubmission {
+                session_id: fixture.session_id.clone(),
+                prompt: prompt.clone(),
+                force_queue: false,
+                refresh_projection: false,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: session.owner_user_id().into(),
+                room: session.id().into(),
+                agent: fixture.second_target_agent_id.clone(),
+                prompt: prompt.id().into(),
+                run: Some("upstream-provider-run".into()),
+                now,
+            })
+            .unwrap();
+        let Outcome::Settled { task, correction } = store
+            .agent_lifecycle(Operation::Settle {
+                room: session.id().into(),
+                agent: fixture.second_target_agent_id.clone(),
+                prompt: prompt.id().into(),
+                run: "upstream-provider-run".into(),
+                has_answer: true,
+                cancelled: false,
+                now,
+            })
+            .unwrap()
+        else {
+            panic!("successful settlement")
+        };
+        assert_eq!(task.state, ExecutionState::Done);
+        assert!(!owned.agent_task_resources_unsettled(&task).unwrap());
+        fixture
+            .runtime
+            .finish_agent_task_settlement(Some((task.clone(), correction)), &prompt)
+            .await
+            .unwrap();
+        Some(task)
+    } else {
+        None
+    };
     for (parent, agent) in [
         ("failed-parent", &fixture.unrelated_agent_id),
         ("independent-parent", &fixture.second_target_agent_id),
@@ -2012,7 +2095,30 @@ async fn a01_failed_workflow_settles_unstarted_delegate_on_blocked_parent() {
         "a different durable host cannot settle this invocation"
     );
     fixture.runtime.sweep_agent_lifecycle().await.unwrap();
+    fixture.runtime.sweep_agent_lifecycle().await.unwrap();
     let tasks = store.agent_tasks(Some(&fixture.session_id), None).unwrap();
+    if let Some(successful) = successful {
+        assert_eq!(
+            tasks
+                .iter()
+                .find(|t| t.task_id == successful.task_id)
+                .unwrap(),
+            &successful,
+            "successful task and its receipts must remain unchanged"
+        );
+        // The successful occurrence is still idempotent; failure must never
+        // replace it or stop supervision of subsequent tasks.
+        store
+            .agent_lifecycle(Operation::SourceOutcome {
+                room: successful.room_id,
+                source: successful.task_id.clone(),
+                occurrence: format!("task-terminal-{}", successful.task_id),
+                success: true,
+                now,
+                public_answer: None,
+            })
+            .unwrap();
+    }
     let parent = tasks.iter().find(|t| t.task_id == "failed-parent").unwrap();
     assert_eq!(parent.state, ExecutionState::Blocked);
     assert_eq!(parent.obligations[0].status, "cancelled", "MP-08 / MP-10 / MP-11: failed workflow must settle the unstarted delegate without owner Cancel");

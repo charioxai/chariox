@@ -193,11 +193,15 @@ impl KernelRuntimeState {
             .durable_state_store
             .agent_tasks(Some(room), None)?
         {
-            if self
-                .owned
-                .durable_state_store
-                .agent_task_workflow(&task.task_id)?
-                .is_some_and(|(id, _)| id == run)
+            // MP-08 / MP-10 / MP-11: successful settlement has already
+            // published its terminal receipt. Cancelling it would replay that
+            // same occurrence as failure and abort the lifecycle sweep.
+            if task.state != ExecutionState::Done
+                && self
+                    .owned
+                    .durable_state_store
+                    .agent_task_workflow(&task.task_id)?
+                    .is_some_and(|(id, _)| id == run)
             {
                 let Outcome::Task(cancelled) =
                     self.owned
