@@ -36,16 +36,11 @@ pub(super) fn persist_resolved_resume_state(
                 gate();
             }
         });
-        app.agents.set_agent_runtime_profile_durably(
+        app.agents.set_agent_provider_resume_state_durably(
             &durable_state_store,
             agent_id,
-            provider_run.provider(),
-            Some(provider_run.model().to_string()),
-            provider_run.variant().map(str::to_string),
-            None,
             resume_state.clone(),
-            Some(provider_run.id()),
-            None,
+            provider_run.id(),
         )?;
     }
     // Snapshot rebuilding reads the provider store again, outside the guard.
@@ -257,6 +252,76 @@ mod tests {
         assert_eq!(
             destination.provider_resume_state().claude_session_id(),
             None
+        );
+    }
+    // MP-08 / MP-10 / MP-11: native identity metadata describes execution,
+    // while provider/model/effort/account remain the kernel's selected profile.
+    #[test]
+    fn native_identity_preserves_the_selected_profile() {
+        let root = crate::test_support::TestWorktree::new("native-identity-selected-profile");
+        let mut app = crate::test_support::bootstrap_authenticated_app(
+            crate::config::DaemonConfig::for_tests(),
+        )
+        .unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(root.session_request())
+            .unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude-headless",
+            "source-account",
+            "claude-haiku-4-5-20251001",
+        )
+        .with_agent_id(agent.id());
+        let mut run = RuntimeProviderRun::new(
+            "resolved-native-identity-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "metadata-only-selected-profile-test".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.agents_mut()
+            .set_agent_runtime_profile_with_account_profile(
+                agent.id(),
+                "claude-headless",
+                Some("haiku".into()),
+                Some("high".into()),
+                Some("source-account".into()),
+                Default::default(),
+            )
+            .unwrap();
+        persist_resolved_resume_state(
+            &mut app,
+            &run,
+            &ProviderPromptSignalBatch {
+                resolved_resume_state: Some(
+                    crate::provider::ProviderResumeState::from_claude_session_id(
+                        "confirmed-native-session",
+                    ),
+                ),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let selected = app.agents().get_agent(agent.id()).unwrap();
+        assert_eq!(selected.provider(), "claude-headless");
+        assert_eq!(selected.model(), Some("haiku"));
+        assert_eq!(selected.effort(), Some("high"));
+        assert_eq!(selected.provider_account_profile(), "source-account");
+        assert_eq!(
+            selected.provider_resume_state().claude_session_id(),
+            Some("confirmed-native-session")
         );
     }
 }
