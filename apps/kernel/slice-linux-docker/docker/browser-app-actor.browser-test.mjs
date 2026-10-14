@@ -40,7 +40,7 @@ try {
 // The production flow: the controller serves the App over real Fetch interception.
 const text = (path, contentType, body) => ({ path, content_type: contentType, body_base64: Buffer.from(body).toString('base64') });
 const appAssets = [
-  text('index.html', 'text/html', '<script src="app.js" defer></script><a id="link" href="/?landed=link">link</a><button id="reload">reload</button><button id="delayed">delayed</button><button id="form">form</button><button id="forged">forged</button>'),
+  text('index.html', 'text/html', '<script src="app.js" defer></script><a id="link" href="/?landed=link">link</a><button id="reload">reload</button><button id="delayed">delayed</button><button id="form">form</button><button id="forged">forged</button><button id="awaited">awaited</button><button id="other">other</button>'),
   text('app.js', 'text/javascript', `
     if (location.search) chariox.call('delete_todo', { via: location.search });
     if (sessionStorage.getItem('reload')) { sessionStorage.removeItem('reload'); chariox.call('delete_todo', { via: '?landed=reload' }); }
@@ -49,6 +49,9 @@ const appAssets = [
       location.href = '/?landed=forged';
       navigation.dispatchEvent(Object.assign(new Event('navigate'), { userInitiated: true }));
     }, 400));
+    document.getElementById('awaited').addEventListener('click', async () => {
+      await new Promise(resolve => setTimeout(resolve, 900)); location.href = '/?landed=awaited';
+    });
     document.getElementById('delayed').addEventListener('click', () => setTimeout(() => { location.href = '/?landed=delayed'; }, 400));`),
 ];
 async function mountApp() {
@@ -92,6 +95,16 @@ test('MP-08/MP-10/MP-11: a synthetic userInitiated navigate event cannot promote
     const done = await tabs.beginInput('t1', 'agent-7');
     await page.click('#forged'); await done();
     assert.deepEqual((await landed(tabs, '?landed=forged')).actor, agent7);
+  } finally { await browser.close(); }
+});
+test('MP-08/MP-10/MP-11: an async/await navigation keeps its own agent while another agent drives input', async () => {
+  const { browser, page, tabs } = await mountApp();
+  try {
+    const first = await tabs.beginInput('t1', 'agent-7');
+    await page.click('#awaited'); await first();
+    const second = await tabs.beginInput('t1', 'agent-8');   // different agent, before the await resumes
+    await page.click('#other'); await second();
+    assert.deepEqual((await landed(tabs, '?landed=awaited')).actor, agent7);
   } finally { await browser.close(); }
 });
 test('MP-08/MP-10/MP-11: owner navigation stays owner after an agent drove the previous document', async () => {

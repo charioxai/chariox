@@ -33,11 +33,17 @@ export function installAppActorTasks(controlKey, initialTask, ownerTask, notify)
     return scoped(name, createTask(name), () => apply(callback, receiver, [event]));
   };
   const add = EventTarget.prototype.addEventListener, remove = EventTarget.prototype.removeEventListener;
-  // Tell the host which task started a page load: a gesture names the dispatched
-  // input or the owner, a script navigation the task that ran it. Page-dispatched
-  // events are never evidence.
-  if (globalThis.navigation) apply(add, globalThis.navigation, ['navigate',
-    event => { if (event.isTrusted) notify(event.userInitiated ? (dispatching ? input : ownerTask) : origin()); }]);
+  // Tell the host what started a page load. A gesture names the dispatched input
+  // or the owner; a script navigation is traced so the host resolves Chromium's
+  // async ancestry, as for bridge calls. Page-dispatched events are never evidence.
+  let navigations = 0;
+  if (globalThis.navigation) apply(add, globalThis.navigation, ['navigate', event => {
+    if (!event.isTrusted || event.destination.sameDocument) return;
+    if (event.userInitiated) return notify(dispatching ? input : ownerTask);
+    // Before any agent input in this document, unresolved work is the document's own.
+    const id = (agentSeen ? 'nav:' : 'nav0:') + ++navigations;
+    trace(id); notify(id);
+  }]);
   EventTarget.prototype.addEventListener = function(type, callback, options) {
     if (!callback) return apply(add, this, [type, callback, options]);
     let callbacks = get(listeners, this);

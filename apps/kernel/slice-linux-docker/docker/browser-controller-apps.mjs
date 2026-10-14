@@ -157,8 +157,8 @@ export class AppTabs {
     const actor = agent ? { kind: "agent", id: agent } : undefined;
     const task = !agent ? app.ownerTask : [...app.actors].find(([, retained]) => retained?.id === agent)?.[0] ?? randomUUID();
     app.actors.set(task, actor);
-    if (agent) { app.agentObserved = true; app.lastAgent = actor; }
-    if (navigation) app.hostNavigation = actor;
+    if (agent) app.agentObserved = true;
+    if (navigation) { app.hostNavigation = actor; app.navigation = undefined; }
     const set = (name, active) => this.connection.send("Runtime.evaluate", {
       expression: `globalThis.__charioxAppInput?.(${JSON.stringify(app.controlKey)}, ${JSON.stringify(name)}, ${active}, ${Boolean(agent)})`,
     }, sessionId);
@@ -314,19 +314,35 @@ export class AppTabs {
       app.document = message.params?.frame?.loaderId ?? null;
       app.bridgeScript = null;
       app.pending.clear();
-      app.traces.clear();
-      // A page load runs as whoever started it. The old document reported that
-      // task from its navigate listener; an unknown one never upgrades an agent.
-      const started = app.navigation;
+      // A page load runs as whoever started it: a gesture names its task, a
+      // script navigation is resolved from its traced async ancestry. Unresolved
+      // origin leaves the document without an initial actor, never another agent.
+      const started = app.navigation, traced = app.traces.get(started), previous = app.actors.has(app.initialTask)
+        ? { found: true, actor: app.actors.get(app.initialTask) } : { found: false };
       app.navigation = undefined;
-      app.initialActor = started === undefined ? app.hostNavigation : app.actors.has(started) ? app.actors.get(started) : app.lastAgent;
-      app.actors.set(app.initialTask, app.initialActor);
+      app.actors.delete(app.initialTask);
+      app.initialActor = undefined;
+      const loader = app.document;
+      app.initial = (async () => {
+        let origin = started === undefined ? { found: true, actor: app.hostNavigation }
+          : app.actors.has(started) ? { found: true, actor: app.actors.get(started) }
+          : await (traced ?? Promise.resolve({ found: false })).catch(() => ({ found: false }));
+        if (!origin.found && started?.startsWith("nav0:")) origin = previous;
+        if (!origin.found || app.document !== loader) return;
+        app.actors.set(app.initialTask, origin.actor);
+        app.initialActor = origin.actor;
+      })();
+      app.traces.clear();
     } else if (message.method === "Fetch.requestPaused") {
       await this.fulfill(connection, message.sessionId, app, message.params);
     } else if (message.method === "Runtime.consoleAPICalled" && message.params?.type === "trace") {
       const id = message.params.args?.[0]?.value;
       if (typeof id === "string" && id.length <= 128) {
-        app.traces.set(id, appCallActor(connection, message.sessionId, app, message.params.stackTrace));
+        // Navigation evidence resolves against the actors known now, before the
+        // document it starts replaces the initial one.
+        const resolving = id.startsWith("nav") ? { ...app, actors: new Map(app.actors) } : app;
+        app.traces.set(id, Promise.resolve(id.startsWith("nav") ? undefined : app.initial)
+          .then(() => appCallActor(connection, message.sessionId, resolving, message.params.stackTrace)));
         if (app.traces.size > MAX_ANSWERABLE_CALLS) app.traces.delete(app.traces.keys().next().value);
       }
     } else if (message.method === "Runtime.bindingCalled" && message.params?.name === NAVIGATION_BINDING) {
@@ -367,6 +383,7 @@ export class AppTabs {
     let call;
     try { call = JSON.parse(payload); } catch { return; }
     if (typeof call?.id !== "string" || typeof call.method !== "string" || call.method.length > 128) return;
+    await app.initial;
     const admittedDocument = app.document;
     const trace = app.traces.get(call.id);
     app.traces.delete(call.id);
