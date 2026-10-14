@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Seek, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 use wait_timeout::ChildExt;
@@ -248,12 +248,15 @@ fn run_claude_capture(
     let stderr_metadata = stderr
         .try_clone()
         .map_err(|_| print_error("failed to pin Claude stderr".into()))?;
-    let mut command = Command::new(executable);
-    command.args(args);
+    // Same managed boundary and ambient-credential scrub as the auth-status probe.
+    let mut command = crate::provider::managed_isolated_utility_command(
+        executable.display().to_string(),
+        args.iter().map(|arg| (*arg).to_string()).collect(),
+        environment.clone(),
+        None,
+        label,
+    )?;
     command.current_dir(root.path());
-    for (name, value) in environment {
-        command.env(name, value);
-    }
     for name in [
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
@@ -491,6 +494,7 @@ fn probe_error(message: String) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[cfg(unix)]
     #[test]
@@ -517,6 +521,87 @@ mod tests {
         assert_eq!(input["request"]["subtype"], "initialize");
         assert!(input.get("message").is_none());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn catalog_probe_fixture(root: &Path, marker: &Path) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = root.join("claude");
+        let response = serde_json::json!({
+            "type":"control_response", "response":{"subtype":"success", "request_id":"chariox-catalog",
+                "response":{"models":[{"value":"haiku", "resolvedModel":"claude-haiku-5-5", "displayName":"Haiku"}]}}
+        });
+        fs::write(&executable, format!("#!/bin/sh\nprintf '%s' \"${{CLAUDE_CODE_OAUTH_TOKEN:-unset}}\" > '{}'\ncat >/dev/null\nprintf '%s\\n' '{}'\n", marker.display(), response)).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        executable
+    }
+
+    // MP-11 reviewer P1: the catalog probe uses the selected credential, never an inherited one.
+    #[cfg(unix)]
+    #[test]
+    fn model_probe_drops_ambient_claude_credentials_unless_selected() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let previous = std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN");
+        let isolation = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
+        std::env::remove_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
+        std::env::set_var("CLAUDE_CODE_OAUTH_TOKEN", "ambient");
+        let root = tempfile_fixture_root();
+        let marker = root.join("token");
+        let executable = catalog_probe_fixture(&root, &marker);
+        let mut environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+        let ambient =
+            probe_claude_models(&executable, &environment).map(|_| fs::read_to_string(&marker));
+        environment.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), "selected".into());
+        let selected =
+            probe_claude_models(&executable, &environment).map(|_| fs::read_to_string(&marker));
+        match previous {
+            Some(value) => std::env::set_var("CLAUDE_CODE_OAUTH_TOKEN", value),
+            None => std::env::remove_var("CLAUDE_CODE_OAUTH_TOKEN"),
+        }
+        if let Some(value) = isolation {
+            std::env::set_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV, value);
+        }
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(ambient.unwrap().unwrap(), "unset");
+        assert_eq!(selected.unwrap().unwrap(), "selected");
+    }
+
+    // MP-11 reviewer P1: a managed kernel never starts the catalog probe outside its provider boundary.
+    #[cfg(unix)]
+    #[test]
+    fn model_probe_does_not_bypass_managed_isolation() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let isolation = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
+        std::env::set_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV, "1");
+        let root = tempfile_fixture_root();
+        let marker = root.join("token");
+        let executable = catalog_probe_fixture(&root, &marker);
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+        let result = probe_claude_models(&executable, &environment);
+        let ran_unconfined = marker.exists();
+        match isolation {
+            Some(value) => {
+                std::env::set_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV, value)
+            }
+            None => std::env::remove_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV),
+        }
+        fs::remove_dir_all(root).unwrap();
+        assert!(
+            !ran_unconfined,
+            "catalog probe ran the provider outside managed isolation"
+        );
+        assert!(
+            result.is_err(),
+            "unconfigured managed isolation must fail closed"
+        );
     }
 
     #[test]
