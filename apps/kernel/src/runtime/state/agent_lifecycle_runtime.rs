@@ -534,6 +534,7 @@ impl KernelRuntimeState {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
             };
+            self.reconcile_failed_workflow_tasks(&task).await?;
             if let Some(check) = ledger::completion::evaluation(&task).filter(|e| {
                 task.state == ExecutionState::Working
                     && e.result.is_none()

@@ -98,6 +98,64 @@ impl KernelRuntimeOwnedState {
 }
 
 impl KernelRuntimeState {
+    // MP-08 / MP-10 / MP-11: terminal runs are archived out of the hot cache.
+    // Reconcile durable failures even after the parent handled its run receipt.
+    pub(super) async fn reconcile_failed_workflow_tasks(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<(), DaemonError> {
+        if !task
+            .obligations
+            .iter()
+            .any(|o| o.kind == "delegate" && o.status == "open")
+        {
+            return Ok(());
+        }
+        let session = self.owned.session_store.get_session(&task.room_id)?;
+        for receipt in task
+            .obligations
+            .iter()
+            .filter(|o| o.tracks_workflow_run() && o.dispatch_state == "accepted")
+        {
+            let Some(id) = receipt.resource_id.as_deref() else {
+                continue;
+            };
+            let Some(run) = self.owned.durable_state_store.resolve_workflow_run(
+                session.host_daemon_id(),
+                &task.room_id,
+                id,
+            )?
+            else {
+                continue;
+            };
+            if !matches!(
+                run.status(),
+                crate::session::WorkflowRunStatus::Failed
+                    | crate::session::WorkflowRunStatus::Stopped
+            ) {
+                continue;
+            }
+            self.cancel_workflow_agent_tasks(&task.room_id, id).await?;
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::ReconcileFailedWorkflow {
+                    owner_id: session.host_daemon_id().into(),
+                    room: task.room_id.clone(),
+                    run: id.into(),
+                })?;
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::SourceOutcome {
+                    room: task.room_id.clone(),
+                    source: id.into(),
+                    occurrence: format!("workflow-failure-{id}"),
+                    success: false,
+                    now: crate::session::unix_epoch_ms(),
+                    public_answer: None,
+                })?;
+        }
+        Ok(())
+    }
     pub(super) async fn cancel_workflow_agent_tasks(
         &self,
         room: &str,

@@ -1901,3 +1901,138 @@ async fn mp08_workflow_resume_running_run_keeps_current_prompt() {
         active
     );
 }
+
+// MP-08 / MP-10 / MP-11: downstream startup never admitted a child task;
+// the parent's workflow receipt was already acknowledged before it blocked.
+#[tokio::test]
+async fn a01_failed_workflow_settles_unstarted_delegate_on_blocked_parent() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("a01-failed-delegate"),
+        config,
+        true,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let store = &owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    for (parent, agent) in [
+        ("failed-parent", &fixture.unrelated_agent_id),
+        ("independent-parent", &fixture.second_target_agent_id),
+    ] {
+        for (id, kind, resource) in [
+            (
+                format!("{parent}-delegate"),
+                "delegate",
+                fixture.target_agent_id.clone(),
+            ),
+            (
+                format!("{parent}-workflow"),
+                "workflow_run",
+                if parent == "failed-parent" {
+                    fixture.workflow_run_id.clone()
+                } else {
+                    "another-workflow".into()
+                },
+            ),
+        ] {
+            store
+                .agent_lifecycle(Operation::RegisterObligation {
+                    owner: session.owner_user_id().into(),
+                    room: fixture.session_id.clone(),
+                    agent: agent.clone(),
+                    prompt: parent.into(),
+                    run: None,
+                    id: id.clone(),
+                    kind: kind.into(),
+                    resource: Some(resource.clone()),
+                    now,
+                })
+                .unwrap();
+            store
+                .agent_lifecycle(Operation::DispatchReceipt {
+                    id,
+                    accepted: true,
+                    resource: Some(resource),
+                })
+                .unwrap();
+        }
+    }
+    store
+        .agent_lifecycle(Operation::Block {
+            task: "failed-parent".into(),
+            prompt: "failed-parent".into(),
+            reason: "downstream startup rejected; correct the profile ID and retry".into(),
+        })
+        .unwrap();
+    let prompt = owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    owned
+        .workflow_fail_provider_prompt(
+            &fixture.session_id,
+            &prompt,
+            None,
+            "account profile label is not a registered stable ID",
+        )
+        .unwrap();
+    // Simulate the original workflow error receipt being handled already.
+    store
+        .agent_lifecycle(Operation::SourceOutcome {
+            room: fixture.session_id.clone(),
+            source: fixture.workflow_run_id.clone(),
+            occurrence: "original-failure".into(),
+            success: false,
+            now,
+            public_answer: None,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::ReconcileFailedWorkflow {
+            owner_id: "different-host".into(),
+            room: fixture.session_id.clone(),
+            run: fixture.workflow_run_id.clone(),
+        })
+        .unwrap();
+    let retained = store.agent_tasks(Some(&fixture.session_id), None).unwrap();
+    assert_eq!(
+        retained
+            .iter()
+            .find(|t| t.task_id == "failed-parent")
+            .unwrap()
+            .obligations[0]
+            .status,
+        "open",
+        "a different durable host cannot settle this invocation"
+    );
+    fixture.runtime.sweep_agent_lifecycle().await.unwrap();
+    let tasks = store.agent_tasks(Some(&fixture.session_id), None).unwrap();
+    let parent = tasks.iter().find(|t| t.task_id == "failed-parent").unwrap();
+    assert_eq!(parent.state, ExecutionState::Blocked);
+    assert_eq!(parent.obligations[0].status, "cancelled", "MP-08 / MP-10 / MP-11: failed workflow must settle the unstarted delegate without owner Cancel");
+    let independent = tasks
+        .iter()
+        .find(|t| t.task_id == "independent-parent")
+        .unwrap();
+    assert_eq!(
+        independent.obligations[0].status, "open",
+        "another invocation must retain its delegation"
+    );
+    let events = store
+        .agent_inbox(&fixture.session_id, &fixture.unrelated_agent_id, 0)
+        .unwrap();
+    assert!(
+        events.iter().any(
+            |e| e.payload.get("workflow_run_id").and_then(|v| v.as_str())
+                == Some(fixture.workflow_run_id.as_str())
+                && e.payload.get("recovery").is_some()
+        ),
+        "failure settlement needs a reason and recovery receipt"
+    );
+}

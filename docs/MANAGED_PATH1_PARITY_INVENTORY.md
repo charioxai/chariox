@@ -1,5 +1,23 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 failed workflow delegate settlement (2026-10-14)
+
+A durable Failed/Stopped workflow settles an unstarted delegate only when the
+parent has an accepted receipt for that invocation, is its immutable creator,
+and the delegate names a node with no admitted task. The shared lifecycle writer
+cancels that obligation and subscription, with a redacted failure/recovery
+event. Acknowledging the workflow error or blocking the parent does not strand
+the delegate; periodic reconciliation also reads archived failures. Already
+admitted workflow tasks use normal exact-task cancellation and resource
+settlement. Other invocations and completed delegates retain their outcomes.
+
+Isolated validation workers mount the selected source plus its referenced Git
+common directory read-only through `scripts/e2e-stack/read-only-worktree-mounts.mjs`;
+no enclosing checkout/state directory is mounted to repair Git. Both corrections
+retain local513/peer121 and apply below client-specific behavior. Focused
+regressions and physical mount checks supplement the real-provider/client cells;
+this inventory alone closes no MP acceptance item.
+
 ## MP-08 / MP-10 / MP-11 queued schedule and display errors (2026-10-13)
 
 Busy Queue schedules emit an enqueue-only runtime plan rather than mutating the
