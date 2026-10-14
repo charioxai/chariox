@@ -100,6 +100,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
   const homeDirectTargetKernelId = deps.initialTargetKernelId?.trim() || null
   let directTargetKernelId = homeDirectTargetKernelId
   let connectedMachineId: string | null = null
+  let connectionGeneration = 0
   const connect = async (
     kernelRef: string | null | undefined,
     machineRef: string | null | undefined,
@@ -107,6 +108,10 @@ export function createWaitingRoomKernelConnectionController(deps: {
     connected?: (inventory: WaitingRoomInventory) => void,
     retainPrevious?: (pivot: MutableLocalIpcClientPivot) => void,
   ): Promise<boolean> => {
+    if (!isActive()) return false
+    const generation = ++connectionGeneration
+    const isCurrent = () => generation === connectionGeneration && isActive()
+    if (!isCurrent()) return false
     const targetKernelRef = kernelRef?.trim() === "local" ? deps.homeKernelId() : kernelRef?.trim()
     const currentKernelId = directTargetKernelId || deps.homeKernelId() || deps.currentKernelId()
     const sourceTargetKernelId = directTargetKernelId
@@ -114,17 +119,17 @@ export function createWaitingRoomKernelConnectionController(deps: {
     if (!targetKernelRef || targetKernelRef === "local" || targetKernelRef === currentKernelId) {
       if (connected && targetKernelRef && targetKernelRef !== "local") {
         const inventory = await (deps.getInventory ?? getWaitingRoomInventory)(deps.client)
-        if (!isActive()) return false
+        if (!isCurrent()) return false
         connected(inventory)
       }
-      if (isActive() && targetKernelRef === deps.homeKernelId()) directTargetKernelId = homeDirectTargetKernelId
-      return isActive()
+      if (isCurrent() && targetKernelRef === deps.homeKernelId()) directTargetKernelId = homeDirectTargetKernelId
+      return isCurrent()
     }
     const connection = await openWaitingRoomKernelClient(deps.client, {
       kernelRef: targetKernelRef,
       machineRef: machineRef === "local" ? deps.homeMachineId() : machineRef ?? null,
       clientId: deps.clientId,
-      isActive,
+      isActive: isCurrent,
     }, { client: deps.cloudClient, kernelConnected: deps.kernelConnected })
     if (!connection) return false
     const nextClient = connection.client
@@ -137,9 +142,10 @@ export function createWaitingRoomKernelConnectionController(deps: {
       targetInventory = await (deps.getInventory ?? getWaitingRoomInventory)(nextClient)
     } catch (error) {
       await nextClient.close()
+      if (!isCurrent()) return false
       throw error
     }
-    if (!isActive()) {
+    if (!isCurrent()) {
       await nextClient.close()
       return false
     }
@@ -182,6 +188,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
       }
     } else {
       await deps.client.replaceClient(nextClient)
+      if (!isCurrent()) return false
       deps.clearProjectSetup()
       connectedMachineId = targetInventory.machineId
       directTargetKernelId = targetInventory.kernelId === deps.homeKernelId() ? homeDirectTargetKernelId : targetInventory.kernelId
@@ -189,7 +196,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
     }
     deps.invalidateInventory()
     deps.connected(connection.label)
-    return isActive()
+    return isCurrent()
   }
 
   return {

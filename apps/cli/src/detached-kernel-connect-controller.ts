@@ -18,20 +18,22 @@ type DetachedKernelConnectControllerOptions = {
 export function createDetachedKernelConnectController(
   options: DetachedKernelConnectControllerOptions,
 ) {
-  const connect = async () => {
+  const connect = async (isActive: () => boolean = () => true) => {
+    if (!isActive()) return
     options.logInfo?.("connecting detached cli to configured kernel endpoint")
     options.flashFooter("connecting to kernel...", "info")
     const [catalog, commandCatalogs] = await Promise.all([
       options.getProviderCatalog(),
       options.getProviderCommandCatalogs(),
     ])
+    if (!isActive()) return
     options.invalidateWaitingRoomInventory()
     options.setProviderCatalog(catalog)
     options.setProviderCommandCatalogs(commandCatalogs)
     options.setKernelConnected(true)
     options.setDaemonDisconnected(false)
     await options.refreshWaitingRoomData()
-    options.flashFooter("connected to kernel", "info")
+    if (isActive()) options.flashFooter("connected to kernel", "info")
   }
 
   return { connect }
