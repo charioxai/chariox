@@ -4,11 +4,12 @@ import type { WaitingRoomRow } from "./waiting-room-types.js"
 export function formatWaitingRoomMenuRow(row: WaitingRoomRow, maxWidth = Number.POSITIVE_INFINITY) {
   const prefix = row.focused ? ">" : " "
   const indent = "  ".repeat(row.indent)
-  const titleWidth = Math.max(24, row.titleWidth ?? 24)
+  const titleWidth = Math.min(Math.max(24, row.titleWidth ?? 24),
+    Number.isFinite(maxWidth) ? Math.max(8, Math.floor(maxWidth / 2)) : Number.POSITIVE_INFINITY)
   const value = row.columns ? ` ${row.columns.join("  ")}` : row.value ? ` ${row.value}` : ""
   const scrollbar = row.scrollbar ? `  ${row.scrollbar}` : ""
   const titleWidthSpace = Math.max(0, titleWidth - row.indent)
-  const content = `${prefix} ${indent}${row.title.padEnd(titleWidthSpace, " ")}${value}${scrollbar}${" ".repeat(waitingRoomMenuTrailingPadding())}`
+  const content = `${prefix} ${indent}${truncateLine(row.title, titleWidthSpace).padEnd(titleWidthSpace, " ")}${value}${scrollbar}${" ".repeat(waitingRoomMenuTrailingPadding())}`
   return truncateLine(content, maxWidth)
 }
 
