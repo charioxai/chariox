@@ -21,10 +21,11 @@ function fixture(kind='region') {
  return {host,tab,lease,binding,calls,command,Capture,retire:()=>{alive=false;}};
 }
 test('MP-08/MP-11 §2a lease supplies crop; viewer density never selects geometry',async()=>{
- const f=fixture(),result=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ const f=fixture();f.command.codecs.push('chariox-stripes-v1');const result=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
  assert.deepEqual(f.calls[0],[{mirror_subscription_id:'mirror',generation:2,document_id:'doc',sequence:3,region_id:'n1'},'terminal:a']);
  assert.equal(result.source_kind,'region');assert.equal(result.binding_id,'opaque');assert.equal(result.css_width,100);assert.equal(result.css_height,50);assert.equal(result.device_scale_factor,2);
  const source=[...f.host.displays.values()][0].regionSource;
+ assert.equal([...f.host.displays.values()][0].stripes,false,'even tiny crops retain whole-video encoding');
  assert.deepEqual(source.options.rect,{left:20,top:214,width:200,height:100});
  assert.equal(typeof source.options.validateCurrent,'function');
  await [...f.host.displays.values()][0].close();
