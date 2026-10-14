@@ -121,6 +121,35 @@ pub(super) fn prepare_claude_native_tui_files(
             message: error.to_string(),
         }
     })?;
+    // MP-08 / MP-10 / MP-11: Claude's documented turn.complete mod observes
+    // early interruption even when no transcript response was persisted.
+    let observer_root = root.path().join("turn-observer");
+    for (relative, text) in [
+        (
+            ".claude-plugin/plugin.json",
+            serde_json::json!({"name":"chariox-native-turn-receipt", "version":"1.0.0"})
+                .to_string(),
+        ),
+        (
+            "hooks/hooks.json",
+            serde_json::json!({"modules":["./register.mjs"]}).to_string(),
+        ),
+        (
+            "hooks/register.mjs",
+            include_str!("native_tui/turn-observer.mjs").replace(
+                "\"__CHARIOX_CONTEXT__\"",
+                &serde_json::to_string(&context_file.display().to_string()).unwrap(),
+            ),
+        ),
+    ] {
+        let path = observer_root.join(relative);
+        fs::create_dir_all(path.parent().unwrap())
+            .and_then(|_| fs::write(path, text))
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "prepare claude native turn observer",
+                message: error.to_string(),
+            })?;
+    }
     let hook_command = claude_native_hook_command(
         &hook_handler_file,
         &events_file,
@@ -220,6 +249,13 @@ pub(super) fn claude_native_tui_args(
     let mut args = vec![
         "--settings".to_string(),
         settings_file.display().to_string(),
+        "--plugin-dir".to_string(),
+        settings_file
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("turn-observer")
+            .display()
+            .to_string(),
         "--permission-mode".to_string(),
         match (
             request.execution_mode.unwrap_or_default(),

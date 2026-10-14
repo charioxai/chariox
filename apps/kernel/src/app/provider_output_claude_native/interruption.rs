@@ -116,6 +116,59 @@ pub(super) fn mark_native_interruption_for_cancellation(
 }
 
 const CANCELLATION_RETRY_MS: u64 = 2_000;
+
+// MP-08 / MP-10 / MP-11: a provider-native turn receipt is scoped to the
+// exact hook and canonical prompt. It cannot acknowledge another turn.
+pub(super) fn observe_turn_abort_receipt(
+    app: &mut DaemonApp,
+    session_id: &str,
+    provider_run_id: &str,
+    context_file: &str,
+) -> Result<(), DaemonError> {
+    let path = format!("{context_file}.native-abort.json");
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    // A provider write can be observed mid-flush. Leave incomplete JSON for
+    // the next normal bridge pass, then consume only a complete receipt.
+    let Ok(event) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Ok(());
+    };
+    let _ = fs::remove_file(&path);
+    let Some(turn) = app.active_turns.get(provider_run_id) else {
+        return Ok(());
+    };
+    if event.get("reason").and_then(serde_json::Value::as_str) != Some("aborted")
+        || event.get("prompt_id").and_then(serde_json::Value::as_str)
+            != Some(turn.prompt_id.as_str())
+        || event
+            .get("hook_context_request_id")
+            .and_then(serde_json::Value::as_str)
+            != turn.native_prompt_hook_request_id.as_deref()
+        || turn.native_prompt_hook_request_id.is_none()
+        || event
+            .get("turn_id")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|id| id.is_empty() || id.len() > 128)
+    {
+        return Ok(());
+    }
+    if let Some(at) = event
+        .get("at_ms")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|at| *at <= unix_epoch_ms())
+    {
+        mark_native_interruption_for_cancellation(
+            app,
+            session_id,
+            provider_run_id,
+            context_file,
+            at,
+        )?;
+    }
+    Ok(())
+}
+
 const CANCELLATION_DEADLINE_MS: u64 = 10_000;
 const CANCELLATION_FAILURE: &str =
     "Claude stopped responding to cancel; the run was ended. Send another prompt to restart it.";
@@ -263,11 +316,15 @@ pub(super) fn resolve_pending_cancellation(
         }
     }
     if std::env::var("CHARIOX_PERF_DIAGNOSTICS").is_ok_and(|v| v == "1") {
-        crate::logging::info_with_fields("daemon.native_interrupt_timing", "native interrupt delivery", serde_json::json!({
-            "provider_run_id":provider_run_id, "prompt_id":prompt.id(), "requested_at_ms":requested_at_ms,
-            "delivered_at_ms":now, "hook_resolved":turn.native_prompt_hook_resolved,
-            "response_started":turn.native_response_started,
-        }));
+        crate::logging::info_with_fields(
+            "daemon.native_interrupt_timing",
+            "native interrupt delivery",
+            serde_json::json!({
+                "provider_run_id":provider_run_id, "prompt_id":prompt.id(), "requested_at_ms":requested_at_ms,
+                "delivered_at_ms":now, "hook_resolved":turn.native_prompt_hook_resolved,
+                "response_started":turn.native_response_started,
+            }),
+        );
     }
     app.active_turns
         .note_native_interruption_delivery(provider_run_id, prompt.id(), now);

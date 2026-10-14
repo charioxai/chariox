@@ -118,6 +118,48 @@ struct CancellationFixture {
     prompt: crate::session::PromptQueueItem,
     root: FixtureRoot,
 }
+
+#[test]
+fn official_native_turn_abort_receipt_settles_without_a_transcript_flush() {
+    let mut f = CancellationFixture::new(0);
+    f.app
+        .active_turns
+        .bind_native_prompt_hook_request(f.run.id(), f.prompt.id(), "bound-hook");
+    fs::write(f.root.0.join("context.native-abort.json"), serde_json::json!({
+        "turn_id":"official-turn", "prompt_id":f.prompt.id(), "hook_context_request_id":"bound-hook",
+        "reason":"aborted", "at_ms":unix_epoch_ms()
+    }).to_string()).unwrap();
+    f.process();
+    ProviderOutputClaudeNativeBridge::new(&mut f.app)
+        .finish_deferred_stop(&f.session_id, f.run.id(), &f.run)
+        .unwrap();
+    assert!(f.active().is_none());
+    assert_eq!(
+        f.settled().settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Cancelled
+    );
+    assert!(!f.root.0.join("context.native-abort.json").exists());
+}
+
+#[test]
+fn official_native_turn_abort_receipt_rejects_foreign_prompt_hook_and_future_time() {
+    for mismatch in ["prompt", "hook", "future"] {
+        let mut f = CancellationFixture::new(0);
+        f.app
+            .active_turns
+            .bind_native_prompt_hook_request(f.run.id(), f.prompt.id(), "bound-hook");
+        fs::write(f.root.0.join("context.native-abort.json"), serde_json::json!({
+            "turn_id":"official-turn", "prompt_id":if mismatch=="prompt" {"foreign"} else {f.prompt.id()},
+            "hook_context_request_id":if mismatch=="hook" {"foreign"} else {"bound-hook"},
+            "reason":"aborted", "at_ms":unix_epoch_ms()+if mismatch=="future" {60_000} else {0}
+        }).to_string()).unwrap();
+        f.process();
+        assert!(
+            f.active().is_some(),
+            "MP-11 foreign/future receipt must not settle the current turn"
+        );
+    }
+}
 impl CancellationFixture {
     fn new(age_ms: u64) -> Self {
         let worktree = crate::test_support::TestWorktree::new("native-cancellation-deadline");

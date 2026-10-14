@@ -341,6 +341,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             provider_run_id,
             context_file,
         )?;
+        interruption::observe_turn_abort_receipt(
+            self.app,
+            session_id,
+            provider_run_id,
+            context_file,
+        )?;
         if let Some(settled) = self.process_pending_claude_stop(
             session_id,
             provider_run_id,
@@ -852,13 +858,23 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let provider_run = self.app.providers.get_run(provider_run_id)?;
         let newly_reported = remember_claude_transcript_path(context_file, transcript_path);
         let diagnostic_cancel = std::env::var("CHARIOX_PERF_DIAGNOSTICS").is_ok_and(|v| v == "1")
-            && self.app.active_turns.get(provider_run_id).is_some_and(|turn| turn.interruption_requested_at_ms.is_some());
-        let transcript_path = match crate::provider::provider_reported_transcript_result_on_kernel(&provider_run, transcript_path) {
+            && self
+                .app
+                .active_turns
+                .get(provider_run_id)
+                .is_some_and(|turn| turn.interruption_requested_at_ms.is_some());
+        let transcript_path = match crate::provider::provider_reported_transcript_result_on_kernel(
+            &provider_run,
+            transcript_path,
+        ) {
             Ok(path) => path,
             Err(class) => {
                 if newly_reported || diagnostic_cancel {
-                    crate::logging::warn_with_fields("daemon.claude_headless", "provider transcript unavailable or outside managed bindings",
-                        serde_json::json!({"session_id":session_id, "provider_run_id":provider_run_id, "failure_class":class}));
+                    crate::logging::warn_with_fields(
+                        "daemon.claude_headless",
+                        "provider transcript unavailable or outside managed bindings",
+                        serde_json::json!({"session_id":session_id, "provider_run_id":provider_run_id, "failure_class":class}),
+                    );
                 }
                 return Ok(None);
             }
@@ -892,11 +908,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             drain_claude_transcript_raw_since(&path, &raw, &mut cursor, minimum_timestamp_ms);
         save_claude_transcript_cursor(context_file, &cursor);
         if diagnostic_cancel {
-            crate::logging::info_with_fields("daemon.native_transcript_timing", "native cancellation transcript observed", serde_json::json!({
-                "provider_run_id":provider_run_id, "line_count":raw.lines().count(),
-                "minimum_timestamp_ms":minimum_timestamp_ms, "interrupted_at_ms":drain.interrupted_at_ms,
-                "response_started_at_ms":drain.response_started_at_ms, "chunk_count":drain.chunks.len(),
-            }));
+            crate::logging::info_with_fields(
+                "daemon.native_transcript_timing",
+                "native cancellation transcript observed",
+                serde_json::json!({
+                    "provider_run_id":provider_run_id, "line_count":raw.lines().count(),
+                    "minimum_timestamp_ms":minimum_timestamp_ms, "interrupted_at_ms":drain.interrupted_at_ms,
+                    "response_started_at_ms":drain.response_started_at_ms, "chunk_count":drain.chunks.len(),
+                }),
+            );
         }
         let terminal_failure = drain.terminal_failure.clone();
         if let Some(observed_at_ms) = drain.interrupted_at_ms {
