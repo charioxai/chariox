@@ -2,6 +2,34 @@
 use super::RemoteLeaseRuntime;
 
 impl RemoteLeaseRuntime<'_> {
+    /// Native input is admitted on the worker and its exact prompt ID is
+    /// projected to home. It has no home-origin submission receipt.
+    pub(super) fn leased_native_prompt_is_current(
+        &self,
+        leased: &crate::execution_lease::LeasedAgent,
+        prompt_id: &str,
+        provider_run_id: &str,
+    ) -> bool {
+        leased.active_home_prompt_id.is_none()
+            && leased.projected_prompt_ids.iter().any(|id| id == prompt_id)
+            && self
+                .app
+                .providers
+                .get_run_for_agent(&leased.backing_session_id, &leased.backing_agent_id)
+                .is_some_and(|run| {
+                    !run.client_interface().is_chariox() && run.id() == provider_run_id
+                })
+            && self
+                .app
+                .prompt_owner_active_prompt_for_agent_snapshot(
+                    &leased.backing_session_id,
+                    &leased.backing_agent_id,
+                )
+                .ok()
+                .flatten()
+                .is_some_and(|prompt| prompt.id() == prompt_id)
+    }
+
     pub(crate) fn activate_leased_home_prompt_for_dispatch(
         &mut self,
         session_id: &str,

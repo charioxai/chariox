@@ -916,15 +916,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        if leased_agent.active_home_prompt_id.as_deref() != Some(target_home_prompt_id) {
-            return Err(DaemonError::LocalTransport {
-                operation: "steer leased prompt",
-                message: format!(
-                    "leased agent `{leased_agent_id}` is running home prompt {:?}, not `{target_home_prompt_id}`",
-                    leased_agent.active_home_prompt_id
-                ),
-            });
-        }
         let provider_run = self
             .app
             .providers
@@ -935,6 +926,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::NoActiveProviderRun {
                 session_id: leased_agent.backing_session_id.clone(),
             })?;
+        if leased_agent.active_home_prompt_id.as_deref() != Some(target_home_prompt_id)
+            && !self.leased_native_prompt_is_current(
+                &leased_agent,
+                target_home_prompt_id,
+                provider_run.id(),
+            )
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer leased prompt",
+                message: format!(
+                    "leased agent `{leased_agent_id}` is running home prompt {:?}, not `{target_home_prompt_id}`",
+                    leased_agent.active_home_prompt_id
+                ),
+            });
+        }
         if provider_run.state() != crate::provider::ProviderRunState::Running {
             return Err(DaemonError::InvalidProviderRunState {
                 provider_run_id: provider_run.id().to_string(),
@@ -1055,7 +1061,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        if leased_agent.active_home_prompt_id.as_deref() != Some(target_home_prompt_id) {
+        if leased_agent.active_home_prompt_id.as_deref() != Some(target_home_prompt_id)
+            && !self.leased_native_prompt_is_current(
+                &leased_agent,
+                target_home_prompt_id,
+                worker_provider_run_id,
+            )
+        {
             return Err(DaemonError::LocalTransport {
                 operation: "steer leased prompt",
                 message: format!(
@@ -1378,21 +1390,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: leased_agent.backing_session_id.clone(),
             })?;
-        let current_run = self.app.providers.get_run_for_agent(
-            &leased_agent.backing_session_id,
-            &leased_agent.backing_agent_id,
-        );
         // MP-08 / MP-10 / MP-11: a native-origin turn has the exact worker
         // prompt ID projected to home, rather than a managed submit receipt.
-        let native_origin = leased_agent.active_home_prompt_id.is_none()
-            && active_prompt.id() == expected_home_prompt_id
-            && leased_agent
-                .projected_prompt_ids
-                .iter()
-                .any(|id| id == active_prompt.id())
-            && current_run.as_ref().is_some_and(|run| {
-                !run.client_interface().is_chariox() && run.id() == expected_worker_provider_run_id
-            });
+        let native_origin = self.leased_native_prompt_is_current(
+            &leased_agent,
+            expected_home_prompt_id,
+            expected_worker_provider_run_id,
+        );
         if !native_origin
             && leased_agent.active_home_prompt_id.as_deref() != Some(expected_home_prompt_id)
         {
@@ -1588,6 +1592,104 @@ mod receipt_tests {
             home_prompt_id,
             provider_run_id,
         )
+    }
+
+    #[test]
+    fn native_queued_steer_uses_the_exact_projected_worker_prompt_identity() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (leased, session, agent, _, run_id) =
+            submit_cancellable_prompt(&mut app, "native-steer");
+        let active = app
+            .prompt_owner_active_prompt_for_agent(&session, &agent)
+            .unwrap()
+            .unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            &session,
+            "managed-dev-stub",
+            "managed-dev-stub",
+            "default",
+            "default",
+        )
+        .with_agent_id(&agent)
+        .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            &run_id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "native-steer-fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run);
+        app.leased_agents
+            .get_mut(&leased)
+            .unwrap()
+            .active_home_prompt_id = None;
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .prepare_leased_prompt_steer(
+                &leased,
+                "unprojected",
+                active.id(),
+                "steer",
+                "",
+                vec![],
+                None
+            )
+            .is_err());
+        app.leased_agents
+            .get_mut(&leased)
+            .unwrap()
+            .projected_prompt_ids
+            .push(active.id().to_string());
+        let (_, dispatch) = RemoteLeaseRuntime::new(&mut app)
+            .prepare_leased_prompt_steer(
+                &leased,
+                "native-steer",
+                active.id(),
+                "steer",
+                "",
+                vec![],
+                None,
+            )
+            .expect("a native turn already projected to home must accept its exact steer");
+        assert_eq!(
+            dispatch.unwrap().target_active_prompt_id.as_deref(),
+            Some(active.id())
+        );
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .reserve_leased_prompt_steer(&leased, "native-steer", active.id(), &run_id)
+            .unwrap());
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .prepare_leased_prompt_steer(
+                &leased,
+                "stale",
+                "foreign-prompt",
+                "steer",
+                "",
+                vec![],
+                None
+            )
+            .is_err());
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .reserve_leased_prompt_steer(&leased, "foreign-run", active.id(), "foreign-run")
+            .is_err());
+        assert_eq!(
+            app.prompt_owner_active_prompt_for_agent(&session, &agent)
+                .unwrap()
+                .unwrap()
+                .id(),
+            active.id()
+        );
     }
 
     #[test]
