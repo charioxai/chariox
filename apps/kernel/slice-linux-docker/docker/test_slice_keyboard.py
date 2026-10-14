@@ -80,6 +80,18 @@ def helper(connection):
 
 
 class KeyboardTextTests(unittest.TestCase):
+    def test_delivery_acknowledgement_runs_after_the_protected_server_grab(self):
+        connection=Display();connection.grabbed=False;module=helper(connection)
+        connection.grab_server=lambda:setattr(connection,'grabbed',True)
+        connection.ungrab_server=lambda:setattr(connection,'grabbed',False)
+        target={'window':'owned'};acknowledged=[]
+        def settle(keyboard):
+            self.assertFalse(connection.grabbed,'the client cannot acknowledge under the server grab')
+            acknowledged.append(connection.text)
+        with patch.object(module,'focused_target',return_value=target),patch.object(module,'assert_secret_target'),patch.object(module.ComputerTextKeyboard,'settle_text',settle,create=True),patch.object(module.signal,'signal'):
+            module.type_text('漢字🧪',before_press=lambda:None,pace_seconds=0,connection=connection)
+        self.assertEqual(acknowledged,['漢','漢字','漢字🧪'])
+
     def test_mp08_warm_human_text_borrows_without_reopening_or_closing_x11(self):
         connection=Display()
         module=helper(connection)

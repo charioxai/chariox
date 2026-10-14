@@ -5,7 +5,6 @@ import struct
 from types import SimpleNamespace
 import threading
 import unittest
-from unittest.mock import Mock, patch
 
 spec=importlib.util.spec_from_file_location('fence',Path(__file__).with_name('x11-keymap-fence.py'))
 fence=importlib.util.module_from_spec(spec);spec.loader.exec_module(fence)
@@ -24,27 +23,27 @@ def xkb(rows, order='<'):
 
 
 class Replies(unittest.TestCase):
-    def test_only_the_focused_window_connection_can_acknowledge(self):
-        # Chromium's UI and companion X connections share a PID but do not
-        # install keyboard maps together. Only the owner of the focused XID
-        # may release input; a companion's reply can arrive first.
-        owner = SimpleNamespace(spec=SimpleNamespace(client=100), value=[1234])
-        companion = SimpleNamespace(spec=SimpleNamespace(client=200), value=[1234])
-        control, data, connection = Mock(), Mock(), Mock()
-        connection.get_input_focus.return_value.focus.id = 1050
-        control.res_query_client_ids.side_effect = lambda requested: SimpleNamespace(
-            ids=[owner, companion] if requested[0]['client'] == 0 else [owner])
-        control.query_extension.return_value.major_opcode = 135
-        data.record_enable_context.side_effect = lambda context, callback: callback(
-            SimpleNamespace(category=fence.record.StartOfData))
-        thread = lambda **options: SimpleNamespace(start=options['target'], join=lambda timeout: None)
-        with patch.object(fence.x11, 'open_display', side_effect=[control, data]), patch.object(fence.threading, 'Thread', side_effect=thread):
-            instance = fence.KeymapFence(connection)
-            try:
-                self.assertEqual(instance.matched, [100])
-                self.assertEqual(data.record_create_context.call_args.args[1], [100])
-            finally:
-                instance.close()
+    def test_delivery_requires_the_focused_client_to_echo_the_current_ping(self):
+        instance=fence.KeymapFence.__new__(fence.KeymapFence)
+        instance.lock=threading.Lock();instance.ready=threading.Event();instance.received=threading.Event()
+        instance.ping_received=threading.Event();instance.ping_nonce=77
+        instance.protocol_atom=55;instance.ping_atom=66;instance.window=SimpleNamespace(id=1000)
+        instance.focus_client=100;instance.matched=[100,200];instance.requests={};instance.wanted=None
+        for order in ['<','>']:
+            for synthetic in [0,128]:
+                data=bytearray(44);data[0]=25;data[12]=fence.X.ClientMessage|synthetic;data[13]=32
+                struct.pack_into(order+'I',data,20,55);struct.pack_into(order+'III',data,24,66,77,1000)
+                def submit(raw,client=100):
+                    instance.ping_received.clear()
+                    instance.reply(SimpleNamespace(category=fence.record.FromClient,id_base=client,data=raw,
+                        client_swapped=order!='<'))
+                    return instance.ping_received.is_set()
+                self.assertFalse(submit(data,200),'a companion connection is not the UI acknowledgement')
+                for offset in [20,24,28,32]:
+                    changed=bytearray(data);changed[offset]^=1
+                    self.assertFalse(submit(changed))
+                for size in range(44):self.assertFalse(submit(data[:size]))
+                self.assertTrue(submit(data))
 
     def test_only_the_recycled_row_can_acknowledge_unicode(self):
         wanted=0x01004e16

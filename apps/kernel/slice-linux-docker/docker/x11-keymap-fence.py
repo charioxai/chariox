@@ -8,8 +8,10 @@ from pathlib import Path
 import struct
 import sys
 import threading
+import secrets
 import Xlib.threaded
-from Xlib import display
+from Xlib import X, display
+from Xlib.protocol import event
 from Xlib.ext import record, res
 
 spec = importlib.util.spec_from_file_location('native_x11', Path(__file__).with_name('native-x11.py'))
@@ -60,6 +62,8 @@ class KeymapFence:
         self.lock = threading.Lock()
         self.ready = threading.Event()
         self.received = threading.Event()
+        self.ping_received = threading.Event()
+        self.ping_nonce = None
         self.wanted = None
         self.failed = False
         self.requests = {}
@@ -69,19 +73,36 @@ class KeymapFence:
             focus = connection.get_input_focus().focus
             if not hasattr(focus, 'id') or focus.id <= 1:
                 raise ValueError('native text focus unavailable')
-            # A native application can have multiple X connections in one
-            # process. Its compositor may refresh before its focused UI
-            # connection; that reply does not attest the UI's keyboard map.
-            ids = self.control.res_query_client_ids([{'client': focus.id, 'mask': res.LocalClientPIDMask}]).ids
-            if len(ids) != 1 or not ids[0].value or ids[0].value[0] <= 1:
+            owner = self.control.res_query_client_ids([{'client': focus.id, 'mask': res.LocalClientPIDMask}]).ids
+            if len(owner) != 1 or not owner[0].value or owner[0].value[0] <= 1:
                 raise ValueError('native text client unavailable')
-            self.matched = [ids[0].spec.client]
+            self.pid = owner[0].value[0]
+            self.focus_client = owner[0].spec.client
+            self.protocol_atom = self.control.intern_atom('WM_PROTOCOLS')
+            self.ping_atom = self.control.intern_atom('_NET_WM_PING')
+            self.window = self.control.create_resource_object('window', focus.id)
+            for _ in range(32):
+                protocols = self.window.get_full_property(self.protocol_atom, X.AnyPropertyType)
+                if protocols is not None and self.ping_atom in protocols.value:
+                    break
+                parent = self.window.query_tree().parent
+                if parent.id <= 1 or parent.id == self.window.id:
+                    raise ValueError('native text delivery acknowledgement unavailable')
+                self.window = parent
+            else:
+                raise ValueError('native text delivery acknowledgement unavailable')
+            ids = self.control.res_query_client_ids([{'client': 0, 'mask': res.LocalClientPIDMask}]).ids
+            self.matched = [item.spec.client for item in ids if item.value and item.value[0] == self.pid]
             major = self.control.query_extension('XKEYBOARD').major_opcode
             ranges = {'core_requests': (101, 101), 'core_replies': (101, 101),
                       'ext_requests': (major, major, 8, 8), 'ext_replies': (major, major, 8, 8),
                       'delivered_events': (0, 0), 'device_events': (0, 0),
                       'errors': (0, 0), 'client_started': False, 'client_died': False}
-            self.context = self.data.record_create_context(0, self.matched, [ranges])
+            # Observe only map replies and the application's protocol replies;
+            # no delivered key events or application content are recorded.
+            ping_range = dict(ranges, core_requests=(25, 25), core_replies=(0, 0),
+                              ext_requests=(0, 0, 0, 0), ext_replies=(0, 0, 0, 0))
+            self.context = self.data.record_create_context(0, self.matched, [ranges, ping_range])
             self.data.sync()
             self.thread = threading.Thread(target=self.run, daemon=True)
             self.thread.start()
@@ -100,6 +121,14 @@ class KeymapFence:
                 return
             order = '>' if value.client_swapped == (sys.byteorder == 'little') else '<'
             data = value.data
+            if value.category == record.FromClient and data and data[0] == 25:
+                if (len(data) == 44 and value.id_base == self.focus_client
+                        and data[12] & 0x7f == X.ClientMessage and data[13] == 32
+                        and struct.unpack_from(order + 'I', data, 20)[0] == self.protocol_atom
+                        and struct.unpack_from(order + 'III', data, 24) ==
+                        (self.ping_atom, self.ping_nonce, self.window.id)):
+                    self.ping_received.set()
+                return
             if value.category == record.FromClient and len(data) >= 8:
                 key = (value.id_base, value.recorded_sequence_number & 0xffff)
                 self.requests[key] = (data[0] == 101, data[4], data[5])
@@ -131,6 +160,20 @@ class KeymapFence:
     def wait(self):
         if not self.received.wait(2) or self.failed:
             raise ValueError('native client keymap did not settle')
+
+    def delivered(self):
+        # WM_PROTOCOLS events follow the physical key events on the focused
+        # client's queue. Its echoed nonce attests consumption before recycling
+        # a mapping; a server sync or a mapping reply alone cannot do that.
+        with self.lock:
+            self.ping_nonce = secrets.randbits(32)
+            self.ping_received.clear()
+            message = event.ClientMessage(window=self.window.id, client_type=self.protocol_atom,
+                data=(32, [self.ping_atom, self.ping_nonce, self.window.id, 0, 0]))
+        self.window.send_event(message, event_mask=X.NoEventMask)
+        self.control.flush()
+        if not self.ping_received.wait(2) or self.failed:
+            raise ValueError('native text delivery was not acknowledged')
 
     def close(self):
         with self.lock:

@@ -65,4 +65,19 @@ class TextTests(unittest.TestCase):
         with patch.object(module.xtest,'fake_input') as inject:
             with self.assertRaises(ValueError):self.keyboard.press(0x01004e16)
             inject.assert_not_called()
+
+    def test_application_consumes_each_stroke_before_its_mapping_is_recycled(self):
+        pending, delivered = [], []
+        self.fence.delivered.side_effect = lambda: delivered.extend(
+            self.mapping[code][0] for code in pending)
+        symbols = [module.universal_text_keysym(c) for c in '漢字🧪' * 3]
+        def event(_connection, kind, code):
+            if kind == module.X.KeyPress: pending.append(code)
+        with patch.object(self.keyboard, '_settle'), patch.object(module.xtest, 'fake_input', side_effect=event):
+            for symbol in symbols:
+                self.keyboard.press(symbol)
+                self.keyboard.release(symbol)
+                self.keyboard.settle_text()
+                pending.clear()
+        self.assertEqual(delivered, symbols)
 if __name__=='__main__':unittest.main()

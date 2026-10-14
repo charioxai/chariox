@@ -231,6 +231,11 @@ def type_text(text, expected_target=None, before_press=None, *, pace_seconds=0.0
             # Pace on this process, not in the X server's request queue. Killing
             # the kernel-owned process group must stop future physical events.
             connection.sync()
+            # The application must consume this stroke before its Unicode
+            # keycode is reused. Run outside the server grab so it can reply.
+            settle_text = getattr(keyboard, 'settle_text', None)
+            if settle_text is not None:
+                settle_text()
             if pace_seconds:
                 time.sleep(pace_seconds)
     finally:

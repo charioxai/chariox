@@ -94,6 +94,11 @@ class _XTestKeyboard:
         for modifier in reversed(self.modifiers): xtest.fake_input(self.connection, X.KeyRelease, modifier)
         self.modifiers = []
 
+    def settle_text(self):
+        if self.fence is not None:
+            self.connection.sync()
+            self.fence.delivered()
+
     def release_group_lock(self):
         if self.fence is not None:
             self.fence.close(); self.fence = None
