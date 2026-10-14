@@ -16,6 +16,7 @@ pub(super) struct HttpState {
 }
 struct HttpSession {
     backing: CharioxMcpServerConfig,
+    excluded_roots: Vec<std::path::PathBuf>,
     state: Mutex<SessionState>,
 }
 #[derive(Default)]
@@ -95,6 +96,7 @@ impl HttpSession {
             payload,
             self.backing.tool_timeout_sec,
             &mut headers,
+            &self.excluded_roots,
             call.as_ref().map(|call| call.cancelled.as_ref()),
         );
         if initialize || headers != before {
@@ -136,19 +138,25 @@ impl Drop for HttpSession {
         self.release_remote(&state);
     }
 }
-type OwnerKey = (String, String, String);
+type OwnerKey = (String, String, String, Vec<std::path::PathBuf>);
 type Sessions = BTreeMap<OwnerKey, Arc<HttpSession>>;
 fn sessions() -> &'static Mutex<Sessions> {
     static SESSIONS: OnceLock<Mutex<Sessions>> = OnceLock::new();
     SESSIONS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
-pub(crate) fn dispatch(
+pub(crate) fn dispatch_with_excluded_roots(
     run: &str,
     owner: &str,
     backing: &CharioxMcpServerConfig,
     payload: serde_json::Value,
+    excluded_roots: &[std::path::PathBuf],
 ) -> Result<serde_json::Value, DaemonError> {
-    let key = (run.to_owned(), owner.to_owned(), backing.definition_hash()?);
+    let key = (
+        run.to_owned(),
+        owner.to_owned(),
+        backing.definition_hash()?,
+        excluded_roots.to_vec(),
+    );
     let session = sessions()
         .lock()
         .expect("HTTP MCP sessions mutex poisoned")
@@ -156,6 +164,7 @@ pub(crate) fn dispatch(
         .or_insert_with(|| {
             Arc::new(HttpSession {
                 backing: backing.clone(),
+                excluded_roots: excluded_roots.to_vec(),
                 state: Mutex::new(SessionState::default()),
             })
         })
@@ -216,6 +225,16 @@ fn cancelled_error(message: &str) -> DaemonError {
         operation: "mcp.proxy.http.cancelled",
         message: message.into(),
     }
+}
+
+#[cfg(test)]
+fn dispatch(
+    run: &str,
+    owner: &str,
+    backing: &CharioxMcpServerConfig,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, DaemonError> {
+    dispatch_with_excluded_roots(run, owner, backing, payload, &[])
 }
 
 #[cfg(test)]

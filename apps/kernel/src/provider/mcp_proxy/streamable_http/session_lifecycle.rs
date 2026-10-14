@@ -38,6 +38,7 @@ impl HttpSession {
             return;
         }
         let backing = self.backing.clone();
+        let excluded_roots = self.excluded_roots.clone();
         std::thread::spawn(move || {
             let CharioxMcpTransportConfig::StreamableHttp {
                 url,
@@ -59,6 +60,7 @@ impl HttpSession {
                     serde_json::json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":call.id,"reason":"Chariox prompt cancelled"}}),
                     Some(1),
                     &mut headers,
+                    &excluded_roots,
                     None,
                 );
                 if result.is_err() {
@@ -93,6 +95,7 @@ impl HttpSession {
             env_http_headers,
             Duration::from_secs(1),
             state,
+            &self.excluded_roots,
         )
         .map_err(|_| None)
         .and_then(|request| {

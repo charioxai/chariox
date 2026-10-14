@@ -167,6 +167,7 @@ fn live_mcp_unreachable_release_reports_failure_without_capabilities() {
     drop(listener);
     let capture = crate::logging::capture::start();
     let session = HttpSession {
+        excluded_roots: Vec::new(),
         backing: CharioxMcpServerConfig::streamable_http(
             "live-mcp-release-log",
             format!("http://{address}/private?canary=release-secret-canary"),
