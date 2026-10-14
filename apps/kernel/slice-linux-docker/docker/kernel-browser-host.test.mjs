@@ -14,6 +14,7 @@ import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mj
 import { launchArguments, HostChromium } from "./kernel-browser-process.mjs";
 
 function fixture(root) {
+  fixture.popups = [];
   const pages = new Map();
   let next = 0;
   const handlers = new Set();
@@ -38,6 +39,7 @@ function fixture(root) {
       const target = session?.replace("session-", "");
       if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame", url: "about:blank", loaderId: pages.get(target)?.document_id ?? `doc-${target}` } } };
       if (method === "Page.createIsolatedWorld") return { executionContextId: 42 };
+      if (method === "Runtime.evaluate" && params.expression.includes("'popup")) { const id = `target-${++next}`; pages.set(id, { url: "about:blank" }); fixture.popups.push(id); return { result: { value: true } }; }
       if (method === "Runtime.evaluate" && params.expression.includes("visibilityState")) return { result: { value: ["visible", chromium.scale ?? 1, 1280, 800] } };
       if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { scale: 1, zoom: 1, pageX: 0, pageY: 0 } };
       if (method === "DOM.performSearch") return { searchId: "search", resultCount: fixture.protectedField && params.query.includes("password") ? 1 : 0 };
@@ -1084,4 +1086,16 @@ test('MP-08/MP-10 a tab-scoped state preflight reads only its own Tab', () => us
   assert.ok(state.tabs.some(tab => tab.tab_id === opened.tab_id));
   await assert.rejects(host.request({ op: 'state', tab_id: 'host-tab-unknown', generation: opened.generation }), error => error.code === 'user_domain_not_granted');
   await host.request({ op: 'state' }); assert.equal(reconciles, 1, 'a client state read keeps its reconcile');
+}));
+
+// MP-08/MP-10 (BROWSER-UX-14, native tab strip): the internal keepalive lives in a strip-less popup window, so
+// Chrome's own tab strip shows only the person's Tabs; the launch tab is closed and new Tabs open in a tabbed window.
+test('MP-08/MP-10 the keepalive is a popup window outside the native tab strip', () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  assert.equal(fixture.popups.length, 1, 'one keepalive popup');
+  assert.equal(host.keepaliveTarget, fixture.popups[0]);
+  assert.equal(sent.find(call => call.method === 'Runtime.evaluate' && call.params.expression.includes("'popup")).params.userGesture, true);
+  const { targetInfos } = await connection.send('Target.getTargets');
+  assert.deepEqual(targetInfos.map(t => t.targetId).sort(), [fixture.popups[0], host.tabs.get(opened.tab_id).target_id].sort(), 'the launch tab is closed');
+  assert.ok(!opened.tabs.some(tab => tab.target_id === fixture.popups[0]));
 }));

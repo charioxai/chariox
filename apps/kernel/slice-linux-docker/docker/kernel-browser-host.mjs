@@ -149,9 +149,8 @@ export class KernelBrowserHost {
       // Headed Chromium exits when its last page closes. Keep one internal blank
       // target so startup and closing the last user tab never stop the browser.
       const pages = targetInfos.filter(target => target.type === "page");
-      this.keepaliveTarget = pages.find(target => target.url === "about:blank")?.targetId
-        ?? (await connection.send("Target.createTarget", { url: "about:blank" })).targetId;
-      for (const target of pages) {
+      this.keepaliveTarget = await this.openKeepalive(connection, pages);
+      for (const target of (await connection.send("Target.getTargets")).targetInfos.filter(target => target.type === "page")) {
         if (target.targetId !== this.keepaliveTarget) {
           await connection.send("Target.closeTarget", { targetId: target.targetId });
         }
@@ -164,6 +163,21 @@ export class KernelBrowserHost {
       await this.save();
     } catch (error) { await this.stop(); throw error; }
     finally { this.restoring = false; }
+  }
+  // MP-08/MP-10 (BROWSER-UX-14): the keepalive is a popup window (no tab strip; Chrome never adds Tabs
+  // to it), so the native tab strip shows only the person's Tabs, in their own tabbed window.
+  async openKeepalive(connection, pages) {
+    const opener = pages.find(target => target.url === "about:blank")?.targetId
+      ?? (await connection.send("Target.createTarget", { url: "about:blank" })).targetId;
+    const known = new Set([...pages.map(target => target.targetId), opener]);
+    const { sessionId } = await connection.send("Target.attachToTarget", { targetId: opener, flatten: true });
+    await connection.send("Runtime.evaluate", { expression: "!!window.open('about:blank', 'chariox-keepalive', 'popup,width=64,height=64,left=0,top=0')", userGesture: true }, sessionId);
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const popup = (await connection.send("Target.getTargets")).targetInfos.find(target => target.type === "page" && !known.has(target.targetId));
+      if (popup) return popup.targetId;
+      await delay(25);
+    }
+    throw new Error("MD-2: browser keepalive window unavailable");
   }
   async closeCompositors(tabId) {
     for(const [id,entry] of this.compositors) if(tabId===undefined||id===tabId){
