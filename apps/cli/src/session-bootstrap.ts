@@ -304,7 +304,7 @@ async function hydrateAttachedHistory(
   deferPromptHistory = false,
 ) {
   const agentIds = session.agents.map((agent) => agent.id)
-  const outlinePromise = initialOutline && agentIds.every(id => initialOutline.agents.some(agent => agent.agent_id === id))
+  const outlinePromise = initialOutline
     ? Promise.resolve(initialOutline)
     : agentIds.length > 0
     ? deps.getSessionHistoryOutline(client, sessionId, agentIds)

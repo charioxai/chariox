@@ -65,6 +65,25 @@ test("MP-08 / MP-10: explicit attach resolves its target while unrelated startup
   assert.equal((await result.deferred?.attachedHistory)?.historyEntries.length, 2)
 })
 
+test("MP-08 / MP-10: the bundled later desk hydrates before any off-desk outline request", async () => {
+  const session = { id: "s", active_provider_run_id: "run", agents: Array.from({ length: 8 }, (_, i) => ({ id: `a${i}` })), focused_agent_id: "a7" }
+  const outline = { agents: [outlineAgent("a6", "six", "six answer"), outlineAgent("a7", "seven", "seven answer")] }
+  let extraRequests = 0
+  const unexpected = async () => { throw new Error("extra attach/state/catch-up") }
+  const boot = await bootstrapSession({} as never, { clientId: "cli", sessionId: "s", model: "known", effort: "high", provider: "codex", accountProfile: "default" }, "/workspace", "/workspace", {}, {
+    listSessions: async () => [session], resolveSession: async () => session,
+    attachSessionView: async () => ({ attachment: { id: "binding", session_id: "s" }, session, history: outline }),
+    attachToSession: unexpected, getSessionState: unexpected, catchUpAttachedSession: unexpected,
+    getSessionHistoryOutline: () => { extraRequests++; return new Promise<never>(() => {}) }, tryGetProviderRun: async () => null,
+    getProviderCatalog: async () => fallbackProviderCatalog(), getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(), getTerminalCommandCatalog: async () => terminalCatalog(),
+    resolveVisibleAgentId: () => "a7", prepareHistoryOutlineAgent: hydrateSessionHistoryOutlineAgentEntries,
+  } as never)
+  const history = await Promise.race([boot.deferred?.attachedHistory, new Promise<"blocked">(resolve => setTimeout(() => resolve("blocked"), 20))])
+  assert.notEqual(history, "blocked")
+  assert.equal(extraRequests, 0)
+  if (history !== "blocked") assert.deepEqual(Object.keys(history?.agentEntries ?? {}), ["a6", "a7"])
+})
+
 test("waiting-room bootstrap mounts while kernel reports are pending", async () => {
   const pending = new Promise<never>(() => {})
   const boot = bootstrapSession({} as never, { clientId: "cli", model: "known", effort: "high", provider: "codex", accountProfile: "default" }, "/workspace", "/workspace", {}, {

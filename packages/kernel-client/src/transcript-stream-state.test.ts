@@ -34,6 +34,25 @@ import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
 } from "./external-provider-observation.js"
 
+test("MP-08 / MP-10: persisted text replay is deduplicated across later tool boundaries", () => {
+  for (const role of ["assistant", "reasoning"]) for (const keys of [["a", "b"], ["reused", "reused"], [undefined, undefined]]) {
+    const rows = [
+      { ...entry(1, role, "before", { turnId: 4, providerRunId: "run", mergeKey: keys[0] }), historySequenceRanges: [[10, 10] as const] },
+      entry(2, "tool", "read file", { turnId: 4, providerRunId: "run" }),
+      { ...entry(3, role, "after", { turnId: 4, providerRunId: "run", mergeKey: keys[1] }), historySequenceRanges: [[12, 12] as const] },
+    ]
+    const replay = applyTranscriptProviderChunk(rows, { role, chunk: "before", mergeKey: keys[0], currentTurnId: 4, providerRunId: "run", metadata: { historySequence: 10 } })
+    assert.equal(replay.kind, "noop")
+    assert.deepEqual(replay.entries, rows)
+    const unseen = applyTranscriptProviderChunk(rows, { role, chunk: "new", mergeKey: keys[0], currentTurnId: 4, providerRunId: "run", metadata: { historySequence: 13 } })
+    assert.notEqual(unseen.kind, "noop")
+    assert.equal(unseen.entries[0]?.text, "before")
+    for (const identity of [{ currentTurnId: 5, providerRunId: "run" }, { currentTurnId: 4, providerRunId: "other" }]) {
+      assert.equal(applyTranscriptProviderChunk(rows, { role, chunk: "different identity", ...identity, metadata: { historySequence: 10 } }).kind, "appended")
+    }
+  }
+})
+
 test("transcript stream state appends provider chunks to the current turn", () => {
   const result = applyTranscriptProviderChunk([
     entry(1, "user", "prompt", { turnId: 4 }),

@@ -160,6 +160,16 @@ export function applyTranscriptProviderChunk<TEntry extends TranscriptStreamEntr
   const currentTurnId = options.currentTurnId !== undefined
     ? options.currentTurnId
     : computeCurrentTranscriptTurnId(nextEntries)
+  // A persisted row may already be hydrated before a later tool or text row.
+  // Deduplicate within the stream identity before searching for a merge target;
+  // tool boundaries continue to separate unseen text in output order.
+  if ((options.role === "assistant" || options.role === "reasoning")
+    && metadata.historySequence !== undefined
+    && nextEntries.some(entry => entry.role === options.role
+      && sameStreamingMergeIdentity(entry, { currentTurnId, providerRunId: options.providerRunId, metadata })
+      && entry.historySequenceRanges?.some(([start, end]) => metadata.historySequence! >= start && metadata.historySequence! <= end))) {
+    return { kind: "noop", entries: nextEntries as TEntry[] }
+  }
   const mergeResult = mergeProviderChunk(nextEntries, {
     role: options.role,
     normalized,
