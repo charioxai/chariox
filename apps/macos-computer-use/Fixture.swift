@@ -8,6 +8,8 @@ final class Fixture: NSObject, NSApplicationDelegate {
     var ticks = 0
     var drillText: NSTextView?
     var lastSelection: NSRange?
+    var coverPanel: NSPanel?
+    var coverSignal: DispatchSourceSignal?
     func applicationDidFinishLaunching(_ notification: Notification) {
         window.title = "Chariox public fixture"
         // Bound runner-owned instances; manual owner sessions stay open.
@@ -22,6 +24,7 @@ final class Fixture: NSObject, NSApplicationDelegate {
                 return event
             }
         }
+        if CommandLine.arguments.contains("--cover-panel") { armCoverPanel() }
         if CommandLine.arguments.contains("--text-drill") { startTextDrill(); return }
         let ordinary = NSTextField(frame: NSRect(x: 20, y: 295, width: 310, height: 28))
         ordinary.placeholderString = "Public Unicode test text"; ordinary.setAccessibilityIdentifier("ordinary")
@@ -99,6 +102,22 @@ final class Fixture: NSObject, NSApplicationDelegate {
                 print("fixture selection location=\(selected.location) length=\(selected.length)"); fflush(stdout)
             }
         }
+    }
+    // Same-process cover drill: SIGUSR1 toggles a non-key floating panel over the
+    // still-focused main window, so only the WindowServer stack fence can refuse it.
+    func armCoverPanel() {
+        signal(SIGUSR1, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+        source.setEventHandler { [self] in
+            if let panel = coverPanel { panel.close(); coverPanel = nil; print("coverPanel closed"); fflush(stdout); return }
+            let frame = NSRect(x: window.frame.minX + 170, y: window.frame.minY + 60, width: 200, height: 140)
+            let panel = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.level = .floating; panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
+            panel.backgroundColor = .systemPurple; panel.isOpaque = true; panel.hasShadow = false
+            panel.orderFrontRegardless(); coverPanel = panel
+            print("coverPanelPID=\(getpid()) windowID=\(panel.windowNumber) mainWindowID=\(window.windowNumber) frame=\(panel.frame)"); fflush(stdout)
+        }
+        source.resume(); coverSignal = source
     }
     @objc func click(_ sender: NSButton) {
         let count = Int(sender.title.split(separator: " ").last!) ?? 0
