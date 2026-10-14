@@ -5,7 +5,7 @@
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
-import {keysyms, notches} from './kernel-browser-input.mjs';
+import {keysyms, notches, sensitiveFocusExpression} from './kernel-browser-input.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 
 // The owned display's numeric window inventory comes from the native producer
@@ -115,9 +115,10 @@ export class InputArbiter {
     return {tab_id: tab.tab_id, document_id: tab.document_id, generation: this.host.generation};
   }
   /** After ledger admission: band input reaches Chrome's own UI through the band
-   * source, for the Tab the ledger admitted (rechecked right before dispatch). Keys
-   * and text without a Ctrl/Alt/Meta chord type only while Chrome's own UI holds the
-   * focus: with page focus they would reach the page past its text fences. */
+   * source, for the Tab the ledger admitted (rechecked right before dispatch). Only
+   * the browser shortcuts go to Chrome's UI whatever the focus; every other key, text
+   * or chord may land in the page (X focus decides), so it passes the page's own
+   * text-target fence first (Vault-only fields, cross-origin frames fail closed). */
   async input({stream, command, signal}) {
     if (InputArbiter.agent(command)) throw new UserDomainRefusal('not_granted');
     const source = stream?.regionSource, input = command.input ?? {};
@@ -127,11 +128,14 @@ export class InputArbiter {
       if (!tab || tab.tab_id !== command.tab_id || tab.document_id !== command.document_id || command.generation !== this.host.generation) throw new UserDomainRefusal('stale_reference');
       const {connection, sessionId} = await this.host.browser.resolvePageTarget(tab.target_id);
       await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-      return {connection, sessionId};
+      return {connection, sessionId, tab};
     };
-    const uiFocus = async () => {
-      const {connection, sessionId} = await current();
-      const {result} = await connection.send('Runtime.evaluate', {expression: 'document.hasFocus()', returnByValue: true}, sessionId);
+    // Isolated world: the page cannot redefine what it reports; focus emulation does not change it.
+    const textTarget = async () => {
+      const {connection, sessionId, tab} = await current();
+      const {frameTree} = await connection.send('Page.getFrameTree', {}, sessionId);
+      const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
+      const {result} = await connection.send('Runtime.evaluate', {contextId: world.contextId, expression: sensitiveFocusExpression(false), returnByValue: true}, sessionId);
       if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');
     };
     // At most once: a native action without a reply may have run; never replayed.
@@ -143,7 +147,7 @@ export class InputArbiter {
     };
     const chord = async (keysym, modifiers) => {
       if (!Number.isSafeInteger(keysym) || !Number.isSafeInteger(modifiers) || refusedChord(keysym, modifiers)) throw new UserDomainRefusal('not_granted');
-      if (modifiers & 7) await current(); else await uiFocus();
+      if (bandChord(keysym, modifiers)) await current(); else await textTarget();
       return dispatched(() => source.chord(keysym, modifiers));
     };
     if (input.kind === 'click') { await current(); return dispatched(() => source.click(input.x, input.y)); }

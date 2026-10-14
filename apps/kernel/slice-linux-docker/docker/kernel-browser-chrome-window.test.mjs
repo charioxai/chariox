@@ -78,19 +78,27 @@ test("MP-11 band input acts on the kernel-observed active Tab; agents and stale 
 
 test("MP-11 band input: active Tab rechecked before dispatch, page focus fences keys/text, refused or retired input settles", async () => {
   let focus = false, document = "db";
-  const connection = { send: async (method) => method === "Page.getFrameTree" ? { frameTree: { frame: { loaderId: document } } } : method === "Runtime.evaluate" ? { result: { value: focus } } : {} };
+  const evaluated = [];
+  const connection = { send: async (method, params) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: document } } }
+    : method === "Runtime.evaluate" ? (evaluated.push(params), { result: { value: focus } }) : {} };
   const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
-    browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }) } };
+    browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
   const arbiter = new InputArbiter(host, {});
   const calls = [];
   const source = { surface: "browser_chrome", isCurrent: () => true, click: async (x, y) => (calls.push(["click", x, y]), true), wheel: async (...a) => (calls.push(["wheel", ...a]), true), chord: async (k, m) => (calls.push(["chord", k, m]), true) };
   const send = (input, extra = {}) => arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input, ...extra } });
   assert.deepEqual(await send({ kind: "click", x: 300, y: 40 }), { dispatched: true });
+  focus = true;
   assert.deepEqual(await send({ kind: "key", key: "l", modifiers: 2 }), { dispatched: true }, "Ctrl+L whatever the focus");
+  focus = false;
   await assert.rejects(send({ kind: "key", key: "I", modifiers: 10 }), { code: "user_domain_not_granted" }, "Ctrl+Shift+I");
   focus = true;
-  await assert.rejects(send({ kind: "text", text: "secret" }), { code: "user_domain_sensitive_requires_focus" }, "page focus: no band text");
+  await assert.rejects(send({ kind: "text", text: "secret" }), { code: "user_domain_sensitive_requires_focus" }, "a sensitive field focused: no band text");
   await assert.rejects(send({ kind: "key", key: "Enter" }), { code: "user_domain_sensitive_requires_focus" });
+  await assert.rejects(send({ kind: "key", key: "v", modifiers: 2 }), { code: "user_domain_sensitive_requires_focus" }, "Ctrl+V is not a browser shortcut: it follows the text-target fence");
+  focus = "frame";
+  await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "a cross-origin frame fails closed");
+  assert(evaluated.every(params => params.contextId === 77), "the fence runs in the isolated world");
   focus = false;
   assert.deepEqual(await send({ kind: "text", text: "wiki" }), { dispatched: true });
   assert.deepEqual(await send({ kind: "key", key: "Enter" }), { dispatched: true });
