@@ -317,12 +317,8 @@ pub(super) fn software_version_until(
             if roots.iter().any(|r| path.starts_with(r)) {
                 return Err("untrusted_executable");
             }
-            let mut c = std::process::Command::new(path);
-            c.args(["--format", "%{family}\n"])
-                .current_dir("/")
-                .env_clear()
-                .env("LANG", "C")
-                .env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            let mut c = super::check_executable::command(&path, roots)?;
+            c.args(["--format", "%{family}\n"]);
             let output = crate::local::provider_requests::capture_inventory_probe(
                 c,
                 remaining(deadline, Duration::from_secs(3))?,
@@ -354,12 +350,8 @@ pub(super) fn software_version_until(
             if roots.iter().any(|r| path.starts_with(r)) {
                 return Err("untrusted_executable");
             }
-            let mut c = std::process::Command::new(path);
-            c.args(["--show", "--showformat=${Status}\t${Version}", "--", name])
-                .current_dir("/")
-                .env_clear()
-                .env("LANG", "C")
-                .env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            let mut c = super::check_executable::command(&path, roots)?;
+            c.args(["--show", "--showformat=${Status}\t${Version}", "--", name]);
             let output = crate::local::provider_requests::capture_inventory_probe(
                 c,
                 remaining(deadline, Duration::from_secs(3))?,

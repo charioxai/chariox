@@ -1,5 +1,69 @@
 //! MP-08 / MP-10 / MP-11: sanitized probes keep a vetted script interpreter.
 use super::*;
+
+// MP-08 / MP-10 / MP-11: every named inventory caller must reject workspace aliases.
+#[cfg(unix)]
+#[test]
+fn font_and_apt_inventory_reject_workspace_executable_and_directory_links() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let tools = crate::test_support::TestWorktree::new("inventory-alias-tools");
+    let workspace = crate::test_support::TestWorktree::new("inventory-alias-workspace");
+    let marker = workspace.path().join("executed");
+    let bin = workspace.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let mut results = Vec::new();
+    for (name, source, output) in [
+        ("fc-list", "font", "Example Font"),
+        ("dpkg-query", "apt package", "install ok installed\\t1.2.3"),
+    ] {
+        let script = bin.join(name);
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf x > '{}'\nprintf '{output}\\n'\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let alias = tools.path().join(name);
+        symlink(&script, &alias).unwrap();
+        std::env::set_var("PATH", tools.path());
+        let identity = if source == "font" {
+            "Example Font"
+        } else {
+            "example"
+        };
+        results.push(super::check_inventory::software_version(
+            identity,
+            Some(source),
+            None,
+            &[workspace.path().to_path_buf()],
+        ));
+        std::fs::remove_file(alias).unwrap();
+    }
+    let alias = tools.path().join("bin");
+    symlink(&bin, &alias).unwrap();
+    std::env::set_var("PATH", &alias);
+    for (name, source) in [("Example Font", "font"), ("example", "apt package")] {
+        results.push(super::check_inventory::software_version(
+            name,
+            Some(source),
+            None,
+            &[workspace.path().to_path_buf()],
+        ));
+    }
+    assert!(
+        !marker.exists(),
+        "workspace executable must never run on the host"
+    );
+    assert!(
+        results.iter().all(|r| r == &Err("untrusted_executable")),
+        "{results:?}"
+    );
+}
 #[cfg(unix)]
 #[test]
 fn review1301_inventory_and_health_use_selected_script_runtime() {
