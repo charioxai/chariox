@@ -308,64 +308,24 @@ impl KernelRuntimeState {
             .await
     }
 
-    pub(crate) async fn pump_terminal_output_with_snapshot(
+    // MP-08 / MP-10 / MP-11: all clients read one committed stream. A read
+    // never executes providers or publishes a second session projection.
+    pub(crate) fn drain_committed_terminal_output(
         &self,
         session_id: &str,
         attachment_id: &str,
-    ) -> Result<
-        (
-            Vec<crate::terminal::TerminalOutputRecord>,
-            Option<crate::session::RuntimeSession>,
-        ),
-        DaemonError,
-    > {
-        let owned = &self.owned;
-        let projected_session = owned.session_projection.get(session_id);
-        self.reap_structured_prompt_jobs_and_dispatch();
-        owned.ensure_attachment_in_session(session_id, attachment_id)?;
-        self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
-        let session = owned.session_store.get_session(session_id)?;
-        let provider_run_ids = provider_run_ids_for_owned_output_pump(owned, &session);
-        let recipient_attachment_ids = owned
-            .attachment_store
-            .list_session_attachment_ids(session_id);
-        for provider_run_id in &provider_run_ids {
-            let result = self
-                .pump_owned_provider_output(
-                    session_id,
-                    provider_run_id,
-                    recipient_attachment_ids.clone(),
-                    false,
-                )
-                .await;
-            if let Err(error) = result {
-                if matches!(error, DaemonError::ProviderRunNotFound { .. })
-                    && owned
-                        .provider_run_projection
-                        .get(provider_run_id)
-                        .is_some_and(|run| run.session_id() == session_id)
-                {
-                    continue;
-                }
-                return Err(error);
-            }
-            self.observe_git_after_provider_activity_if_pending(provider_run_id)
-                .await;
-        }
-        self.drain_active_remote_prompt_projections_for_session(&session)
-            .await?;
-        let records = owned
+    ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
+        self.owned
+            .ensure_attachment_in_session(session_id, attachment_id)?;
+        self.owned.attachment_store.record_heartbeat(
+            session_id,
+            attachment_id,
+            crate::session::unix_epoch_ms(),
+        )?;
+        Ok(self
+            .owned
             .terminal_stream
-            .drain_output_records(session_id, attachment_id);
-        let session = owned
-            .session_snapshot_without_projection_update(session_id)
-            .ok()
-            .filter(|session| projected_session.as_ref() != Some(session));
-        for provider_run_id in &provider_run_ids {
-            self.observe_git_after_provider_activity_if_pending(provider_run_id)
-                .await;
-        }
-        Ok((records, session))
+            .drain_output_records(session_id, attachment_id))
     }
 }
 
