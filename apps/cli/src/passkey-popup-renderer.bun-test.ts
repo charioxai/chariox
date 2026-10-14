@@ -252,3 +252,27 @@ for (const [kind, title, message] of [
     } finally { h.renderer.destroy() }
   })
 }
+
+// EXT-UX-04: the TUI's status row is always present, so "Waiting for the kernel…" moves nothing.
+test("EXT-UX-04 the pending status takes the hint row's place and no row moves", async () => {
+  const h = await createTestRenderer({ width: 100, height: 40, useThread: false })
+  const box = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+  h.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+  surface.assign(box)
+  const rowOf = (frame: string, text: RegExp) => frame.split("\n").findIndex((line) => text.test(line))
+  try {
+    const access = { ...prompt, kind: "access_grant" as const, session_id: "kernel-access", session_alias: null,
+      title: "External agent access", message: "An external agent wants access to Chariox. Allow?", lifetime_minutes: 30, max_lifetime_minutes: 1440 }
+    const idle = { ...view, passkey: { length: 0, rememberMinutes: 0, accessLifetimeMinutes: 30 }, prompt: access }
+    surface.render(idle, { width: 100, height: 40 })
+    await h.renderOnce()
+    const before = h.captureCharFrame()
+    surface.render({ ...idle, pending: true }, { width: 100, height: 40 })
+    await h.renderOnce()
+    const after = h.captureCharFrame()
+    assert.match(after, /Waiting for the kernel…/)
+    for (const marker of [/External agent access/, /Passkey:/, /\[ Approve \]/]) assert.equal(rowOf(after, marker), rowOf(before, marker))
+    assert.equal(rowOf(after, /Waiting for the kernel…/), rowOf(before, /Enter approves/))
+  } finally { h.renderer.destroy() }
+})

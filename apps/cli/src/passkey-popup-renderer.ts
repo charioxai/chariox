@@ -105,13 +105,14 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       const fixedRows = 14 + (view.error ? 2 : 0)
       const access = prompt.kind === "access_grant" || prompt.kind === "access_extension"
       const kernelAccess = access && prompt.session_id === "kernel-access"
-      const wanted = 2 + rows(prompt.title || "Critical approval", width - 5) + rows(prompt.message, width - 5)
+      const showKind = !access || view.count > 1
+      const wanted = (showKind ? 2 : 1) + rows(prompt.title || "Critical approval", width - 5) + rows(prompt.message, width - 5)
       body = new ScrollBoxRenderable(renderer, {
         height: Math.max(2, Math.min(wanted, dimensions.height - top - 1 - fixedRows)),
         flexShrink: 0, scrollY: true, scrollX: false,
       })
       // The kernel's access copy is already one short question; the facts stay in its audit.
-      if (!access || view.count > 1) body.add(text(`${prompt.kind === "critical_approval" ? "Critical approval" : prompt.kind === "sudo" ? "One sudo turn" : "External agent access"}${view.count > 1 ? ` · ${view.index + 1} of ${view.count}` : ""}`, { muted: true }))
+      if (showKind) body.add(text(`${prompt.kind === "critical_approval" ? "Critical approval" : prompt.kind === "sudo" ? "One sudo turn" : "External agent access"}${view.count > 1 ? ` · ${view.index + 1} of ${view.count}` : ""}`, { muted: true }))
       body.add(text(prompt.title || "Critical approval", { accent: true, bold: true }))
       body.add(text(prompt.message))
       panel.add(body)

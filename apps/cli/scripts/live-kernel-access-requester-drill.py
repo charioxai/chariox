@@ -14,6 +14,7 @@ from pathlib import Path
 import pty
 import select
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -181,7 +182,7 @@ process.exitCode = result.status ?? 1;
         import shlex
         command = " ".join(shlex.quote(x) for x in [bun, str(helper), args.cli, str(state / "kernel.sock"), str(state / "requester.json")])
         prompt = "MP-08 / MP-10 / MP-11 real outside Codex requester drill. Run exactly " + command + ". Poll until it completes. The human will REFUSE the grant in the real TUI; this expected refusal is successful validation. Use only that command. Do not read credentials/config/token/vault files, approve anything, signal processes, or change logins. Exit after the refusal."
-        command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "--json", "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="low"', "-C", str(work), prompt]
+        command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "--json", "-m", "gpt-6-luna", "-c", 'model_reasoning_effort="low"', "-C", str(work), prompt]
         # Read only non-secret MCP server names; disable them for this invocation.
         config = Path(outside["CODEX_HOME"]) / "config.toml"
         servers = tomllib.loads(config.read_text()).get("mcp_servers", {}) if config.exists() else {}
@@ -259,18 +260,38 @@ finally:
         os.close(master)
     # Stop only descendants tagged with this exact lane-owned state; inspect only
     # public HOME/state paths, never credentials or arbitrary process environment.
-    remaining = []
-    for proc in Path("/proc").iterdir():
-        if not proc.name.isdigit() or int(proc.name) <= 1:
-            continue
-        try:
-            for item in (proc / "environ").read_bytes().split(b"\0"):
-                key, _, value = item.partition(b"=")
-                if key in (b"HOME", b"CHARIOX_HOME", b"TMPDIR") and value.decode("utf8", "replace").startswith(str(state) + "/"):
-                    remaining.append(int(proc.name))
-                    break
-        except (FileNotFoundError, PermissionError, ProcessLookupError):
-            pass
+    def owned_remaining():
+        found = []
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdigit() or int(proc.name) <= 1:
+                continue
+            try:
+                for item in (proc / "environ").read_bytes().split(b"\0"):
+                    key, _, value = item.partition(b"=")
+                    if key in (b"HOME", b"CHARIOX_HOME", b"TMPDIR") and value.decode("utf8", "replace").startswith(str(state) + "/"):
+                        found.append(int(proc.name))
+                        break
+            except (FileNotFoundError, PermissionError, ProcessLookupError):
+                pass
+        return found
+
+    # The launcher's own children (TUI, provider app-server) can outlive it. Stop only processes
+    # tagged with this exact lane-owned state: TERM first, then KILL if they linger.
+    remaining = owned_remaining()
+    for sig, rounds in ((signal.SIGTERM, 25), (signal.SIGKILL, 25)):
+        if not remaining:
+            break
+        for pid in remaining:
+            if pid > 1:
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    pass
+        for _ in range(rounds):
+            time.sleep(0.2)
+            remaining = owned_remaining()
+            if not remaining:
+                break
     if remaining:
         result["cleanup"] = {"ownedRemainingPids": remaining, "statePreserved": str(state)}
         result["status"] = "FAIL"
