@@ -509,3 +509,92 @@ fn workflow_code_apply_rejects_metaagent_binding_unowned_existing_agent() {
         .expect("session should exist");
     assert!(session.workflows().is_empty());
 }
+
+// MP-08 / MP-10 / MP-11 A01: the real B->C seam starts with a generated
+// Codex node selecting an existing public label instead of the stable ID.
+#[test]
+fn amfix_r11_generated_workflow_binds_account_label_before_dispatch() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .unwrap();
+    let profile = app
+        .provider_account_profile_registry()
+        .create_managed(owner, "codex", "amfix-review")
+        .unwrap();
+    let mut definition = generated_workflow_code_definition();
+    for node in &mut definition.nodes {
+        let WorkflowCodeAgentBinding::Create(agent) = &mut node.agent else {
+            panic!("generated agent")
+        };
+        agent.provider = "codex".into();
+        agent.model = Some("gpt-6-luna".into());
+        agent.effort = Some("low".into());
+        agent.account_profile = Some(profile.label.clone());
+    }
+    let report = app
+        .apply_workflow_code_definition(
+            session.id(),
+            &definition,
+            &WorkflowCodeLimitsConfig::default(),
+            owner.into(),
+            None,
+        )
+        .unwrap();
+    for id in report.agent_ids.values() {
+        let agent = app.agents().get_agent(id).unwrap();
+        assert_eq!(agent.provider_account_profile(), profile.profile_id,
+            "MP-08 / MP-10 / MP-11: C must be pinned to its stable profile at spawn, before B hands off");
+    }
+}
+
+#[test]
+fn amfix_r11_missing_downstream_account_rejects_before_any_workflow_agents() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .unwrap();
+    let profile = app
+        .provider_account_profile_registry()
+        .create_managed(owner, "codex", "valid-review")
+        .unwrap();
+    let foreign = app
+        .provider_account_profile_registry()
+        .create_managed("another-owner", "codex", "private-other-label")
+        .unwrap();
+    let mut definition = generated_workflow_code_definition();
+    let WorkflowCodeAgentBinding::Create(c) = &mut definition.nodes[1].agent else {
+        panic!("generated node")
+    };
+    c.provider = "codex".into();
+    c.account_profile = Some(foreign.profile_id);
+    let before = app.agents().get_session_agents(session.id()).len();
+    let error = app
+        .apply_workflow_code_definition(
+            session.id(),
+            &definition,
+            &WorkflowCodeLimitsConfig::default(),
+            owner.into(),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&profile.profile_id) && error.contains(&profile.label));
+    assert!(
+        !error
+            .split("available profiles: ")
+            .nth(1)
+            .unwrap_or("")
+            .contains(&foreign.label),
+        "another owner's labels must not appear"
+    );
+    assert_eq!(app.agents().get_session_agents(session.id()).len(), before);
+    assert!(app
+        .sessions()
+        .get_session(session.id())
+        .unwrap()
+        .workflows()
+        .is_empty());
+}
