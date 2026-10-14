@@ -258,6 +258,11 @@ pub use workspace::*;
 /// Version 435 combines Apps, Browser artifacts, bounded Computer holds, and
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
 /// Version 451 grants the whole local kernel and routes access popups without sessions.
+/// Version 456 (an unreleased branch number) added the same-machine browser
+/// carrier: relay-minted `local_browser_connect` grants and the loopback
+/// `/v1/browser` handshake.
+/// Version 464 adds relay-renewed `local_browser_renew` leases and the
+/// 30-second relay identity ceiling for local browser grants and renewals.
 /// Version 470 adds structured OS requester identity to access decisions.
 /// Version 472 advertises identity-preserving terminal relay renewal with
 /// explicit capability negotiation and recoverable target-offline handshakes.
@@ -272,4 +277,6 @@ pub use workspace::*;
 /// cursor. It also restores workflow notifications, Room workflow inventory and
 /// controls, opt-in Cloud device denial and exact home-prompt cancellation
 /// admission (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 491;
+/// Version 473 adds short bound-client terminal direct leases with paired Origin.
+/// Version 502 combines exact prompt cancellation with same-machine direct admission.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 502;

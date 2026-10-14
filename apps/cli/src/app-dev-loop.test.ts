@@ -132,7 +132,10 @@ test("missing-key guidance uses protected paths and private directory modes with
   assert.match(instructions, /directory 0700, private file 0600/)
   assert.match(instructions, /same public fingerprint, and preserved backup history/)
   assert.match(instructions, /separately protected backup.*signing and verifying a synthetic challenge/)
-  assert.doesNotMatch(instructions, /\.chariox\/dev\//)
+  // MP-11: the first line names the requested HOME, which a disk-backed test
+  // TMPDIR may place under dev. The storage advice must never recommend dev.
+  const storageAdvice = instructions.slice(instructions.indexOf("\n") + 1)
+  assert.doesNotMatch(storageAdvice, /\.chariox\/dev\//)
   assert.equal(h.packs.length, 0)
   assert.equal(h.workspaces.length, 0)
   await assert.rejects(stat(join(home, ".chariox")), /ENOENT/)

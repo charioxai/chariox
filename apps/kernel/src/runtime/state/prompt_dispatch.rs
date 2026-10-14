@@ -815,6 +815,7 @@ impl KernelRuntimeState {
         session_id: &str,
         target_agent_id: &str,
         attachment_id: &str,
+        expected_prompt_id: Option<&str>,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
         self.cancel_agent_prompt_if_matches_with_external_authority(

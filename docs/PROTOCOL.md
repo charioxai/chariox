@@ -272,7 +272,9 @@ MP-08 / MP-10 / MP-11: local protocol 491 fences `CancelActivePrompt` with
 optional `expected_prompt_id`. Native Codex resolves both requested display
 thread and turn to the existing home-prompt binding. The kernel compares that
 identity atomically when admitting cancellation, including leased agents;
-stale and foreign controls leave the current prompt running. Legacy cancellation
+stale and foreign controls return `NoActivePrompt` and leave the current prompt running.
+The active identity or its pending submission alias is compared under the same
+lock that marks cancellation. Legacy cancellation
 without this field keeps its existing behavior. The CLI requires protocol 491
 for the fenced request. Unix and relay attachments without a local advertisement
 must confirm `exact_prompt_cancellation_v499` in the attached kernel's existing
@@ -543,6 +545,138 @@ Current implementation notes:
 - reconnect/resubscribe is now part of the intended local CLI behavior
 - current replay is bounded by the daemon's retained recent-event window; if a resume cursor falls outside that window, the M4.5 contract requires an explicit replay-gap response plus a fresh projection snapshot
 - event ids should not be treated as daemon-restart durable until a persisted event log or equivalent projection checkpoint/tail-event store lands
+
+### Same-machine browser carrier (local protocol 502, MP-08/MP-11)
+
+MP-08 / MP-11: at protocol 502, relay-addressed detached/native TUI launches
+and waiting-room kernel switches automatically use the shared authenticated
+terminal direct lease described below when fresh same-machine discovery exists.
+Older and alias-only targets retain their authenticated relay transport. Terminal clients
+keep their bound relay identity fresh only through the hosted terminal renewal
+above. Renewal re-authenticates relay sockets only; a direct carrier is never
+sent `client_connect` and stays authorized by its lease, which is renewed over
+the relay with the current identity. The local lease remains capped at
+30 seconds; direct sockets cannot renew themselves.
+Local presence and a matching `RelayStatus.daemon_id` do not authenticate a
+loopback TCP listener or authorize disclosure of a local bearer credential.
+
+The kernel's CLI listener keeps refusing every request that carries an
+`Origin` header. A paired web terminal whose kernel runs on the same machine
+can instead use a dedicated loopback carrier that has no authority of its own:
+
+1. Over its existing encrypted relay lane, the browser sends the client request
+   plaintext `{"local_browser_connect":{}}`, encrypted with the browser key whose
+   SHA-256 thumbprint the relay-verified client identity carries. The kernel
+   requires a live `client` identity with a user, the kernel's own Cloud realm and
+   that sender key. Only the relay carrier mints grants. The response is
+   `{"LocalBrowserConnectIssued":{"endpoint","grant","kernel_id",
+   "endpoint_epoch","expires_at_ms"}}`; the grant is a random single-use value
+   that expires after 30 seconds or with the identity, whichever is first.
+2. The kernel lazily binds literal `127.0.0.1` only (an ephemeral port by
+   default so several kernels can share a machine; `CHARIOX_KERNEL_BROWSER_PORT`
+   pins one; `off` disables). The grant carries the bound endpoint. The upgrade to
+   `ws://127.0.0.1:<port>/v1/browser` must come from a loopback peer, carry exactly
+   that `Host`, no query and no proxy headers, and exactly one `Origin` equal to
+   the origin of the paired Cloud `api_url` (HTTPS, or HTTP on loopback for local
+   development). Anything else receives HTTP 403. At most eight connections
+   may be unauthenticated at once; a new one evicts the oldest, so idle local
+   connections cannot hold the endpoint.
+3. The kernel sends `{"kind":"local_challenge","kernel_id","endpoint_epoch",
+   "challenge"}`. Within five seconds and a 16 KiB frame the browser answers
+   `{"kind":"local_connect","proof":<encrypted payload>}`: `{"grant","challenge",
+   "origin","kernel_id","endpoint_epoch"}` encrypted from the identity-bound
+   browser key to the pinned kernel key. The kernel redeems the grant (removed
+   before checking), and requires the same key thumbprint, challenge, origin, kernel
+   and epoch. It replies `{"kind":"local_connected","daemon_public_key","proof"}`
+   where `proof` is `{"grant","challenge"}` encrypted from the kernel key to the
+   browser key. The browser accepts the socket only if that proof decrypts under
+   the pinned kernel key; an impostor listener cannot read the grant. Failures send
+   `{"kind":"close","reason"}`.
+4. After admission the socket carries the relay client frames unchanged:
+   `client_request`, `client_subscribe` and `client_unsubscribe` in;
+   `client_response`, `client_event` and `close` out. Requests and subscriptions run
+   through the relay dispatch, command-result cache and relay event log with the
+   admitting relay identity, so command ids, replay cursors and authorization are
+   identical on both carriers.
+5. MP-08/MP-11: admission starts a lease ending at the grant's expiry, at
+   most 30 seconds. Every 10 seconds per kernel the web client obtains one
+   30-second relay token from Cloud's lightweight
+   `POST /browser/relay-kernel/local-lease` (it also mints grants with it) and,
+   over one encrypted relay connection, requests `local_browser_renew` for each
+   grant of that kernel redeemed with the same browser key, with a strictly
+   increasing one-use `sequence` starting at 1. The kernel renews a grant only
+   for the browser key, user and realm that redeemed it, so a batch never mixes
+   grants of different keys; the Cloud web client uses one browser key per tab,
+   so one token and connection serve all of that tab's lanes and clients.
+   Every attempt, including each relay failover, spends its sequence; the
+   kernel accepts any sequence at or above the next expected one and returns
+   `LocalBrowserLeaseRenewed` with `expires_at_ms` and `next_sequence` (the
+   accepted sequence plus one), so a retry after a lost response recovers
+   while every used sequence stays refused.
+   Only a live relay-verified client with the original browser key, user and
+   realm can renew. The kernel refuses long-lived renewal identities, expired
+   leases, unredeemed/retired grants, replays and direct-carrier renewals.
+   Successful renewals remain quiet; refusals emit a warning at most once per
+   10 seconds per kernel process, with the reason and no grant or caller keys.
+   On an otherwise valid active lease, a live identity whose expiry is more
+   than 40 seconds ahead of the kernel clock returns
+   `local_browser_lease_clock_skew` with a system-clock synchronization hint,
+   without consuming the sequence. A kernel clock ahead of Cloud can instead
+   cause ordinary identity-expiry or lease-expiry refusals; this diagnostic
+   covers the future-expiry ceiling only.
+   Cloud stamps identity expiry on its clock and the kernel reads it on the
+   user's clock with a 10-second skew allowance: an identity counts as short
+   when it expires at most 40 seconds ahead of the kernel clock, so a machine
+   clock up to 10 seconds behind Cloud keeps direct mode. The lease ends at the
+   earlier of 30 seconds on the kernel clock and the identity's expiry, so it
+   never exceeds the identity's expiry; a kernel clock ahead of Cloud shortens
+   each lease by the same amount, and direct mode tolerates up to about 15
+   seconds of it (about 10 seconds when one renewal is also lost). The session
+   uses that freshly verified identity for subsequent dispatch, allowing
+   continuous renewal across identity expiry.
+   Thus even a cached authorization issued before Cloud revocation cannot
+   extend the session beyond its expiry. The browser
+   retries one failed renewal after one second, well inside the lease; a
+   second consecutive failure or a kernel-key or sequence mismatch retires the
+   local transport epoch before reconnecting through the relay. Socket
+   backpressure does not delay the kernel lease deadline.
+6. The session closes with `relay token expired` at the latest identity's
+   expiry, `local browser lease expired` at the lease deadline, and
+   `local browser authority revoked` within 250 ms when the kernel's Cloud
+   pairing, realm, account, user, Cloud origin or relay key changes (for example
+   `LogoutCloudRelay`). The kernel owns expiry even if the browser stops timers.
+
+MP-08 / MP-11: the paired Cloud browser tries the authenticated loopback
+carrier automatically from protocol 502 for its own kernels. Shared-session
+viewers retain the relay. There is no application consent step; Chromium may
+present its own Local Network Access prompt. A pending browser permission
+request is not a connection failure. Once connected, the kernel-key challenge
+and bound-client grant are required before any runtime request is sent.
+Reload restores the automatic preference. After an ordinary carrier loss,
+clients keep working over the relay and retry local admission after a bounded
+cooldown. A kernel-key mismatch blocks local attempts until an explicit retry.
+V1 uses literal `ws://127.0.0.1`; a publicly trusted TLS endpoint is a separate
+future contract.
+
+The web Local/Relay indicator is projected only for a target that has completed
+a local kernel-key proof, including a remembered proof on reload. Cloud
+ownership, an issued loopback URL, and an immediate browser error do not prove
+same-machine placement. When a previously proven local kernel is online but
+its socket is immediately refused before reaching the listener, the indicator
+can carry one profile-wide notice suggesting Chrome or Firefox. Browser family
+controls wording only. First-visit Safari locality requires a trusted
+browser-machine association; this protocol does not currently provide one.
+
+MP-08 / MP-11: from protocol 502, relay-addressed detached and native provider
+TUIs automatically attempt direct admission for fresh, id-addressed local
+targets through the short, key-bound terminal grant and renewal contract above.
+Older kernels, alias-only targets, and targets without fresh same-machine
+discovery retain the authenticated relay carrier. A long-lived terminal relay
+token cannot mint or renew a browser lease. Local presence and a matching
+`RelayStatus.daemon_id` over TCP must never substitute for kernel identity proof.
+The TUI Local/Relay projection uses fresh same-machine discovery metadata for
+display only; it does not authorize a transport change. There is no indicator
+or offer for a target absent from that machine's kernel discovery.
 
 Current pushed event contract:
 

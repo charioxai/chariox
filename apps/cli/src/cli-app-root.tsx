@@ -1,3 +1,4 @@
+import { localKernelConnectionLabel } from "./local-connection-indicator.js"
 import { createProviderLoginLinkOpener, localDesktopAvailable } from "./provider-login-link.js"
 import { createProviderLoginInteractionController } from "./provider-login-interaction-controller.js"
 import { getRelayStatus } from "./relay-api.js"
@@ -784,6 +785,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     sessionChromeUpdateController: responseShellSessionChromeUpdateController,
     assignStatusIndicatorBox, assignFooterSummaryBox,
   } = createCliResponseShellComposition({
+    connectionLabel: () => localKernelConnectionLabel(client, sessionState().host_daemon_id ?? relayStatusState()?.daemon_id),
     renderer,
     scheduleTimer: startTimeout,
     clearTimer: clearTimeout,

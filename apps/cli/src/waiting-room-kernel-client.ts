@@ -1,7 +1,6 @@
 import type { CloudClient } from "./cloud-client.js"
 import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { LocalIpcClient } from "./ipc.js"
-import { loadLocalKernelPresences, localKernelEndpoint } from "./local-kernel-presence.js"
 import { resolveKernelClientConnection } from "./relay-api.js"
 import { beginMutableLocalIpcClientPivot, type MutableLocalIpcClient, type MutableLocalIpcClientPivot } from "./mutable-local-ipc-client.js"
 import { getWaitingRoomInventory, type WaitingRoomInventory } from "./waiting-room-inventory-api.js"
@@ -16,32 +15,33 @@ type KernelClientTarget = {
 async function openWaitingRoomKernelClient(controlClient: LocalIpcClient, target: KernelClientTarget, cloud?: { client?: CloudClient | undefined; kernelConnected?: (() => boolean) | undefined }) {
   const issuingClient = "currentClient" in controlClient && typeof controlClient.currentClient === "function"
     ? controlClient.currentClient() as LocalIpcClient : controlClient
-  const localPresence = loadLocalKernelPresences().find(presence => presence.kernelId === target.kernelRef)
-  const useCloudClient = !localPresence && cloud?.client && !cloud.kernelConnected?.() && await cloud.client.profile()
+  // MP-08 / MP-11: discovery is eligibility only; authenticate the selected
+  // listener through the current kernel or the terminal's Cloud authority.
+  const useCloudClient = cloud?.client && !cloud.kernelConnected?.() && await cloud.client.profile()
   const cloudTargetClient = useCloudClient ? await cloud!.client!.connect(target.kernelRef) : null
-  const connection = localPresence || cloudTargetClient ? null : await resolveKernelClientConnection(issuingClient, target)
+  const relayIdentity = createCliRelayIdentityStore().getOrCreate()
+  const connection = cloudTargetClient ? null : await resolveKernelClientConnection(issuingClient, {
+    ...target, publicKeyThumbprint: relayIdentity.publicKeyThumbprint,
+  })
   if (!target.isActive()) { await cloudTargetClient?.close(); return null }
-  const client = cloudTargetClient ?? (localPresence
-    ? new LocalIpcClient(localKernelEndpoint(localPresence))
-    : new LocalIpcClient(connection!.relayUrl, {
-        relayAuthToken: connection!.relayToken,
-        relayIdentity: createCliRelayIdentityStore().getOrCreate(),
-        targetDaemonId: connection!.targetDaemonId ?? undefined,
-        targetDaemonAlias: connection!.targetDaemonAlias ?? undefined,
-      }))
+  const client = cloudTargetClient ?? new LocalIpcClient(connection!.relayUrl, {
+    relayAuthToken: connection!.relayToken, relayIdentity,
+    targetDaemonId: connection!.targetDaemonId ?? undefined,
+    targetDaemonAlias: connection!.targetDaemonAlias ?? undefined,
+  })
   if (connection?.tokenExpiresAtMs) {
     const release = issuingClient.retainForRelayRenewal()
     client.startRelayAuthRenewal(connection.tokenExpiresAtMs, async () => {
       const fresh = await resolveKernelClientConnection(issuingClient, {
         kernelRef: connection.kernelId ?? connection.targetDaemonId ?? target.kernelRef,
-        machineRef: connection.machineId ?? target.machineRef,
-        clientId: target.clientId,
+        machineRef: connection.machineId ?? target.machineRef, clientId: target.clientId,
+        publicKeyThumbprint: relayIdentity.publicKeyThumbprint,
       })
       return { token: fresh.relayToken, expiresAtMs: fresh.tokenExpiresAtMs! }
     }, release)
   }
-  return { client, label: localPresence?.kernelAlias ?? connection?.targetDaemonAlias ?? connection?.kernelId ?? target.kernelRef,
-    machineId: localPresence?.machineId ?? connection?.machineId, kernelId: localPresence?.kernelId ?? connection?.kernelId }
+  return { client, label: connection?.targetDaemonAlias ?? connection?.kernelId ?? target.kernelRef,
+    machineId: connection?.machineId, kernelId: connection?.kernelId }
 }
 
 export async function withWaitingRoomWorkspaceClient<T>(

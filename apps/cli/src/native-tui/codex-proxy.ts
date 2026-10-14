@@ -1,3 +1,4 @@
+import { loadCodexPromptSettlements } from "./codex-prompt-settlement.js"
 import http from "node:http"
 import { setTimeout as sleep } from "node:timers/promises"
 
@@ -55,7 +56,7 @@ type CodexProxyOptions = {
 
 export type CodexProxyServer = WebSocketServer & {
   projectKernelOutputToTui: (records: TerminalOutputRecord[]) => void
-  projectKernelActivityToTui: (activity: AgentRuntimeActivity | undefined) => void
+  projectKernelActivityToTui: (activity: AgentRuntimeActivity | undefined) => Promise<void>
   projectKernelInteractionsToTui: (interactions: RuntimeInteraction[]) => void
 }
 
@@ -245,6 +246,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     agentId: options.agentId,
     broadcast: broadcastToNativeTuis,
     debug: options.debug,
+    resolveSettledPrompts: ids => loadCodexPromptSettlements(options.client, options.sessionId, options.agentId, ids),
     onTurnMapped: (threadId, turnId, promptId) => bindCodexDisplayTurn(options.bindState, threadId, turnId, promptId),
   })
   const kernelPermissionProjection = createCodexKernelPermissionProjection({ ...options, broadcast: broadcastToNativeTuis, beforeProjectPrompt: kernelOutputProjection.finishPromptItemsForInteraction })
