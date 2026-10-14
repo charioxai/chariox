@@ -347,6 +347,9 @@ struct SlicePrivateRelayConnector {
     task: std::thread::JoinHandle<()>,
 }
 
+mod agent_account_selection;
+#[cfg(test)]
+mod agent_account_selection_tests;
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
