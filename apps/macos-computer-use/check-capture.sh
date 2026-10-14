@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 build=/Users/miguel/.chariox/dev/cumac/build/r8-tests
 mkdir -p "$build/modules"
-common=(Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift Native.swift NativeSurface.swift TextClick.swift TextDrillReference.swift Pairing.swift)
+common=(Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift Native.swift NativeSurface.swift TextClick.swift Pairing.swift)
 flags=(-j2 -parse-as-library -module-cache-path "$build/modules")
 check_pressure() {
   if [[ $(sysctl -n kern.memorystatus_vm_pressure_level) -ge 4 ]]; then

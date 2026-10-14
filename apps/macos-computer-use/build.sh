@@ -17,7 +17,13 @@ mkdir -p "$build/modules"
 arch=$(uname -m)
 flags=(-j2 -parse-as-library -target "$arch-apple-macosx14.0" -module-cache-path "$build/modules")
 swiftc "${flags[@]}" Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift PointerInputTests.swift Pairing.swift Tests.swift -o "$build/policy-tests"
+# Unprivileged TextEdit drill reference: AppKit on its own main thread, never in the helper.
+swiftc -target "$arch-apple-macosx14.0" -module-cache-path "$build/modules" TextEditReference.swift -o "$build/textedit-reference"
+"$build/textedit-reference" --self-test
 "$build/policy-tests"
+# Unprivileged TextEdit drill reference: AppKit on its own main thread, never in the helper.
+swiftc -target "$arch-apple-macosx14.0" -module-cache-path "$build/modules" TextEditReference.swift -o "$build/textedit-reference"
+"$build/textedit-reference" --self-test
 # Apple Silicon must execute signed policy tests even for an unsigned release.
 bundle_flags=("${flags[@]}")
 if [[ ${CUMAC_UNSIGNED:-0} == 1 ]]; then bundle_flags+=(-Xlinker -no_adhoc_codesign); fi
@@ -44,7 +50,7 @@ EOF
     /usr/libexec/PlistBuddy -c "Add :CharioxDrillKernelCDHash string $CHARIOX_DRILL_KERNEL_CDHASH" "$bundle/Contents/Info.plist"
   fi
   if [[ $kind == Helper ]]; then
-    swiftc "${bundle_flags[@]}" Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift Native.swift NativeSurface.swift TextClick.swift TextDrillReference.swift Pairing.swift PhysicalHuman.swift NativeInput.swift PairedNativeInput.swift PairedSession.swift CaptureDamage.swift CaptureAttachment.swift MacVideoEncoder.swift ProtectedPixels.swift NativeCaptureStream.swift CaptureProtection.swift NativePrivacyPolicy.swift Targets.swift NativeTargets.swift VisionOCR.swift PairedCapture.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
+    swiftc "${bundle_flags[@]}" Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift Native.swift NativeSurface.swift TextClick.swift Pairing.swift PhysicalHuman.swift NativeInput.swift PairedNativeInput.swift PairedSession.swift CaptureDamage.swift CaptureAttachment.swift MacVideoEncoder.swift ProtectedPixels.swift NativeCaptureStream.swift CaptureProtection.swift NativePrivacyPolicy.swift Targets.swift NativeTargets.swift VisionOCR.swift PairedCapture.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
   elif [[ $kind == Fixture ]]; then
     swiftc "${bundle_flags[@]}" Policy.swift Coordinates.swift Fixture.swift -o "$bundle/Contents/MacOS/fixture"
   else

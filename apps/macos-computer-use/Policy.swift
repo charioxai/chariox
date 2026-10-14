@@ -28,10 +28,6 @@ struct Request {
     var clickPoint: CGPoint?
     var clickAtPointer = false
     var operations: [Operation] = []
-    var publicTextDrillDocument: String?
-    var closePublicTextDrill = false
-    var publicDrillLegacyPointer: CGPoint?
-    var publicDrillAppKitPointer: CGPoint?
     static func parse(_ arguments: [String]) throws -> Request {
         var request = Request(), index = 0
         var ownerPID = false, fixturePID = false
@@ -63,10 +59,6 @@ struct Request {
                 request.clickPoint = CGPoint(x: x, y: y)
             case "--scroll": request.operations.append(.scroll)
             case "--text": request.operations.append(.text(try value()))
-            case "--public-text-drill-document":
-                guard request.publicTextDrillDocument == nil else { throw tagged(.arguments, "duplicate-public-document") }
-                request.publicTextDrillDocument = try value()
-            case "--close-public-text-drill": request.closePublicTextDrill = true
             default: throw tagged(.arguments, "unknown-argument")
             }
             index += 1
@@ -74,12 +66,6 @@ struct Request {
         guard !(ownerPID && fixturePID), !ownerPID || request.ownerWindow,
               !fixturePID || !request.ownerWindow else { throw tagged(.arguments, "mixed-scope") }
         guard (request.clickPoint == nil && !request.clickAtPointer) || request.operations == [.click] else { throw tagged(.arguments, "point-needs-single-click") }
-        if request.publicTextDrillDocument != nil || request.closePublicTextDrill {
-            guard request.publicTextDrillDocument != nil, request.ownerWindow,
-                  request.target == "focused", request.operations == [.read] else {
-                throw tagged(.arguments, "public-drill-needs-owner-read")
-            }
-        }
         return request
     }
 }

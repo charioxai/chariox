@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 build=/Users/miguel/.chariox/dev/cumac/build/r9
 mkdir -p "$build/modules"
-common=(Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift Native.swift NativeSurface.swift TextClick.swift TextDrillReference.swift Pairing.swift PhysicalHuman.swift NativeInput.swift)
+common=(Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift Native.swift NativeSurface.swift TextClick.swift Pairing.swift PhysicalHuman.swift NativeInput.swift)
 check() {
   if [[ $(sysctl -n kern.memorystatus_vm_pressure_level) -ge 4 ]]; then
     printf 'Critical memory pressure; stopping input checks\n' >&2; exit 1

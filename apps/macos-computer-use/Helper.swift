@@ -31,11 +31,6 @@ func launchIdentity() throws -> [String: Any] {
                 return
             }
             var request = try Request.parse(arguments)
-            if request.publicTextDrillDocument != nil {
-                // Compare the historical sampling order before target discovery.
-                request.publicDrillLegacyPointer = CGEvent(source: nil)?.location
-                request.publicDrillAppKitPointer = try currentPointerPoint()
-            }
             if request.clickAtPointer {
                 // Read the existing pointer once. This does not post a mouse event.
                 request.clickPoint = try currentPointerPoint()

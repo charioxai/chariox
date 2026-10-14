@@ -99,12 +99,13 @@ class CaretPointerTests(unittest.TestCase):
                     except RuntimeError: pass
             else:
                 self.state['windows'] = []
-                def reference(evidence, label, scope, document, close=False, lease=None):
-                    if close: self.state['windows'] = []; return None
+                def reference(evidence, label, scope, lease):
                     return {'probes': [{'name': 'probe', 'point': {'x': 20, 'y': 30}, 'expectedLocation': 125},
-                                       {'name': 'second', 'point': {'x': 40, 'y': 50}, 'expectedLocation': 125}],
-                            'selectedRange': {'location': 125, 'length': 0}}
+                                       {'name': 'second', 'point': {'x': 40, 'y': 50}, 'expectedLocation': 125}]}
+                def kill(pid, sig): self.state['windows'] = []
                 with patch.object(Path, 'home', return_value=self.root), patch.object(textedit, 'reference', side_effect=reference), \
+                     patch.object(textedit, 'process_identity', return_value='start ' + textedit.TEXTEDIT), \
+                     patch.object(textedit.os, 'kill', side_effect=kill), patch.object(textedit.time, 'sleep'), \
                      patch.object(textedit.time, 'strftime', return_value=f'takeover-{self.run_id}'):
                     textedit.run()
 

@@ -39,19 +39,13 @@ final class FakeSource: NativeSource {
 @main struct Tests {
     static func main() async throws {
         try testPointerInput()
-        let publicRead = ["--enable-owner-window", "--owner-pid", "42", "--window-id", "1", "--ax-read"]
-        let diagnostic = ["--public-text-drill-document", "/public/caret-probe-r4.txt"]
-        let reference = try Request.parse(publicRead + diagnostic)
-        precondition(reference.publicTextDrillDocument == diagnostic[1] && !reference.closePublicTextDrill)
-        let closing = try Request.parse(publicRead + diagnostic + ["--close-public-text-drill"])
-        precondition(closing.closePublicTextDrill)
-        for invalid in [publicRead + ["--close-public-text-drill"], publicRead + diagnostic + diagnostic,
-                        publicRead + diagnostic + ["--click"],
-                        ["--enable-fixture", "--fixture-pid", "42", "--window-id", "1", "--ax-read"] + diagnostic] {
-            do { _ = try Request.parse(invalid); preconditionFailure("unsafe public diagnostic admitted") }
-            catch { precondition(refusalKind(error) == .arguments) }
+        // The TextEdit diagnostic runs outside the granted helper; its flags are unknown here.
+        let ownerRead = ["--enable-owner-window", "--owner-pid", "42", "--window-id", "1", "--ax-read"]
+        for flag in [["--public-text-drill-document", "/public/caret-probe-r4.txt"], ["--close-public-text-drill"]] {
+            do { _ = try Request.parse(ownerRead + flag); preconditionFailure("helper diagnostic admitted") }
+            catch { precondition(refusalMessage(error) == "refused: arguments (unknown-argument)") }
         }
-        print("PASS public TextEdit reference is owner-only and requires one read operation")
+        print("PASS helper refuses the retired in-process TextEdit diagnostic")
         precondition(refusalMessage(tagged(.target, "not-frontmost")) ==
             "refused: target (not-frontmost)")
         precondition(refusalMessage(tagged(.permission, "accessibility-denied")) ==

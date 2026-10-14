@@ -7,7 +7,7 @@ evidence=${CUMAC_EVIDENCE_DIR:-/Users/miguel/.codex/evidence/browser-computer-us
 mkdir -p "$build/modules" "$evidence"
 artifact="$evidence/public-protected.h264"
 flags=(-j2 -parse-as-library -module-cache-path "$build/modules")
-common=(Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift Native.swift NativeSurface.swift TextClick.swift TextDrillReference.swift Pairing.swift)
+common=(Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift Native.swift NativeSurface.swift TextClick.swift Pairing.swift)
 swiftc "${flags[@]}" "${common[@]}" CaptureDamage.swift CaptureAttachment.swift MacVideoEncoder.swift CodecTests.swift -o "$build/codec-tests"
 "$build/codec-tests" "$artifact"
 swiftc "${flags[@]}" CodecDecodeTests.swift -o "$build/codec-decode-tests"

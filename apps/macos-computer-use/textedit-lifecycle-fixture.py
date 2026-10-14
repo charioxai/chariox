@@ -38,6 +38,7 @@ class TextEditLifecycleCase(unittest.TestCase):
         self.restore_failure = None
         self.reference_failure = None
         self.reference_error = False
+        self.kills = []
         self.run_id = 0
 
     def tearDown(self):
@@ -77,11 +78,8 @@ class TextEditLifecycleCase(unittest.TestCase):
             # The helper saw takeover, but desktop facts are already restored.
             if self.reference_error: raise RuntimeError('helper-launch-identity-mismatch')
             return 'refused: target (not-frontmost)'
-        if '--ax-read' in arguments:
-            if '--close-public-text-drill' in arguments:
-                self.state['windows'] = []
-                return 'closed public TextEdit drill window=7'
-            return 'publicTextDrillReference ' + json.dumps({'probes': self.probes, 'selectedRange': self.selected})
+        if '--capture' in arguments:
+            return 'frame 2000x2000 window=7'
         if '--click-at-pointer' in arguments: point = self.state['pointer']
         else:
             index = arguments.index('--click-at')
@@ -90,12 +88,19 @@ class TextEditLifecycleCase(unittest.TestCase):
         return (f'dispatched; path=AXSelectedTextRange; observed AXSelectedTextRange location={self.selected["location"]} '
                 f'length=0; point={point["x"]},{point["y"]}')
 
+    def kill(self, pid, sig):
+        self.kills.append(pid)
+        self.state['windows'] = []
+
     def invoke(self):
         self.run_id += 1
         with patch.object(textedit.drill, 'desktop', side_effect=self.desktop), \
              patch.object(textedit.drill, 'require_gui'), patch.object(textedit.drill, 'wait_for_gui'), \
              patch.object(textedit.drill, 'launch_helper', side_effect=self.helper), \
              patch.object(subprocess, 'run', side_effect=self.native), \
+             patch.object(textedit, 'run_reference', return_value={'probes': self.probes}), \
+             patch.object(textedit, 'process_identity', return_value='Wed Oct 14 11:00:00 2026 ' + textedit.TEXTEDIT), \
+             patch.object(textedit.os, 'kill', side_effect=self.kill), patch.object(textedit.time, 'sleep'), \
              patch.object(Path, 'home', return_value=self.root), \
              patch.object(textedit.time, 'strftime', return_value=f'run-{self.run_id}'):
             code = textedit.run()
