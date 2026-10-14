@@ -1,4 +1,7 @@
 import assert from "node:assert/strict"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import test from "node:test"
 import type { CloudClient } from "./cloud-client.js"
 import { createCloudWaitingRoomController } from "./cloud-waiting-room-controller.js"
@@ -54,31 +57,39 @@ test("MP-08/MP-10 cold detached discovery waits for kernel information before re
 
 // MP-08/MP-10: exercise actual connection admission, not just directory guards.
 test("delayed automatic kernel A cannot replace a later fast user pivot B", async () => {
-  const { createWaitingRoomKernelConnectionController } = await import("./waiting-room-kernel-client.js")
-  const { createMutableLocalIpcClient } = await import("./mutable-local-ipc-client.js")
-  let release!: () => void
-  const delayed = new Promise<void>(resolve => { release = resolve })
-  const closed: string[] = [], admitted: string[] = []
-  const makeClient = (id: string) => ({ close: async () => { closed.push(id) } }) as unknown as import("./ipc.js").LocalIpcClient
-  const original = makeClient("original"), a = makeClient("a"), b = makeClient("b")
-  const client = createMutableLocalIpcClient(original)
-  let connected = false, inventoryStarted = false
-  const connection = createWaitingRoomKernelConnectionController({ client, clientId: "test",
-    cloudClient: { profile: async () => ({}), connect: async (id: string) => id === "auto-a" ? a : b } as unknown as CloudClient,
-    kernelConnected: () => connected, homeKernelId: () => null, homeMachineId: () => null, currentKernelId: () => null,
-    getInventory: async target => {
-      if (target === a) { inventoryStarted = true; await delayed }
-      return { kernelId: target === a ? "auto-a" : "user-b", machineId: "machine" } as import("./waiting-room-inventory-api.js").WaitingRoomInventory
-    }, invalidateInventory: () => {}, clearProjectSetup: () => {}, connected: id => { connected = true; admitted.push(id) },
-  })
-  const resultA = connection.connect("auto-a", "machine")
-  while (!inventoryStarted) await new Promise(resolve => setImmediate(resolve))
-  assert.equal(await connection.connect("user-b", "machine"), true)
-  release()
-  assert.equal(await resultA, false)
-  assert.equal(client.currentClient(), b)
-  assert.deepEqual(admitted, ["user-b"])
-  assert.ok(closed.includes("a"))
+  // Admission creates the CLI relay identity; keep it out of the real CHARIOX_HOME.
+  const root = await mkdtemp(join(tmpdir(), "waiting-room-connection-")), previous = process.env.CHARIOX_HOME
+  process.env.CHARIOX_HOME = root
+  try {
+    const { createWaitingRoomKernelConnectionController } = await import("./waiting-room-kernel-client.js")
+    const { createMutableLocalIpcClient } = await import("./mutable-local-ipc-client.js")
+    let release!: () => void
+    const delayed = new Promise<void>(resolve => { release = resolve })
+    const closed: string[] = [], admitted: string[] = []
+    const makeClient = (id: string) => ({ close: async () => { closed.push(id) } }) as unknown as import("./ipc.js").LocalIpcClient
+    const original = makeClient("original"), a = makeClient("a"), b = makeClient("b")
+    const client = createMutableLocalIpcClient(original)
+    let connected = false, inventoryStarted = false
+    const connection = createWaitingRoomKernelConnectionController({ client, clientId: "test",
+      cloudClient: { profile: async () => ({}), connect: async (id: string) => id === "auto-a" ? a : b } as unknown as CloudClient,
+      kernelConnected: () => connected, homeKernelId: () => null, homeMachineId: () => null, currentKernelId: () => null,
+      getInventory: async target => {
+        if (target === a) { inventoryStarted = true; await delayed }
+        return { kernelId: target === a ? "auto-a" : "user-b", machineId: "machine" } as import("./waiting-room-inventory-api.js").WaitingRoomInventory
+      }, invalidateInventory: () => {}, clearProjectSetup: () => {}, connected: id => { connected = true; admitted.push(id) },
+    })
+    const resultA = connection.connect("auto-a", "machine")
+    while (!inventoryStarted) await new Promise(resolve => setImmediate(resolve))
+    assert.equal(await connection.connect("user-b", "machine"), true)
+    release()
+    assert.equal(await resultA, false)
+    assert.equal(client.currentClient(), b)
+    assert.deepEqual(admitted, ["user-b"])
+    assert.ok(closed.includes("a"))
+  } finally {
+    if (previous === undefined) delete process.env.CHARIOX_HOME; else process.env.CHARIOX_HOME = previous
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 // MP-08/MP-10: automatic hydration passes its selection lifetime to admission.
