@@ -5,6 +5,27 @@ use crate::durable_state::agent_lifecycle::{
 };
 
 impl KernelRuntimeOwnedState {
+    // MP-08 / MP-10 / MP-11 A12-S06: a terminal source is archived, not lost.
+    pub(super) fn agent_workflow_source(
+        &self,
+        session: &crate::session::RuntimeSession,
+        run: &str,
+    ) -> Result<Option<crate::session::WorkflowRun>, DaemonError> {
+        let active = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session.id(), run)
+            .ok();
+        match active {
+            Some(run) => Ok(Some(run)),
+            None => self.durable_state_store.resolve_workflow_run(
+                session.host_daemon_id(),
+                session.id(),
+                run,
+            ),
+        }
+    }
+
     pub(super) fn bind_agent_workflow_task(
         &self,
         task: &AgentTaskExecution,
