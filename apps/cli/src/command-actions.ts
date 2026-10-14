@@ -170,6 +170,7 @@ type CommandActionDeps =
   ) => Promise<void>
   deleteKernel?: () => Promise<{ kernelId: string; deletedSessions: RuntimeSession[] }>
   getDaemonHealth?: KernelCommandHandlerDeps["getDaemonHealth"]
+  getContextTransferStatus?: KernelCommandHandlerDeps["getContextTransferStatus"]
   listKernelAccessGrants?: KernelCommandHandlerDeps["listKernelAccessGrants"]
   revokeKernelAccessGrant?: KernelCommandHandlerDeps["revokeKernelAccessGrant"]
   exportDebugBundle?: KernelCommandHandlerDeps["exportDebugBundle"]

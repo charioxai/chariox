@@ -1,3 +1,4 @@
+import { getManagedContextTransferStatus } from "./managed-environment-api.js"
 import { getCloudClientControlProfile } from "./cloud-client-control.js"
 import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
 import { getAppInstallationRequest } from "@chariox/kernel-client/ipc-requests"
@@ -103,6 +104,7 @@ import {
   saveUiPreferences,
 } from "./preferences.js"
 import type { CloudClient } from "./cloud-client.js"
+import { hasLocalKernel, startLocalKernelSetup } from "./local-kernel-setup.js"
 import { createCloudClientCommands } from "./cloud-client-command.js"
 import {
   getProviderAuthStatus,
@@ -131,6 +133,8 @@ import {
   updateSessionConfig,
 } from "./provider-api.js"
 import {
+  addSshMachine,
+  removeSshMachine,
   approveRemoteMachine,
   forgetRemoteMachine,
   listRemoteMachineKernels,
@@ -524,6 +528,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     deleteSessionByRef: (reference, workspace) => deleteSessionByRef(client, reference, workspace),
     deleteKernel: () => deleteKernel(client),
     getDaemonHealth: () => getDaemonHealth(client),
+    getContextTransferStatus: contextId => getManagedContextTransferStatus(client, contextId),
     listKernelAccessGrants: () => listKernelAccessGrants(client),
     revokeKernelAccessGrant: (id) => revokeKernelAccessGrant(client, id),
     exportDebugBundle: (sessionId, label) => exportDebugBundle(client, sessionId, label),
@@ -586,6 +591,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     sendDeploymentSetupKernelRequest: (request) => client.send(request),
     configureRelay: (relayUrl, relayToken) => configureRelay(client, relayUrl, relayToken),
     ...(deps.cloudClient ? { handleClientCloudCommand: createCloudClientCommands({
+      offerSetup: async () => { if (!await hasLocalKernel()) appendCloudNotice("Set up a Chariox kernel on this machine? Run /cloud setup to continue.") },
+      setup: profile => startLocalKernelSetup(profile, appendCloudNotice),
       client: deps.cloudClient,
       isKernelConnected: () => deps.kernelConnected?.() ?? true,
       apiUrl: () => resolveConfiguredCloudRelayApiUrl(preferencesState()) ?? "https://staging.chariox.com",
@@ -631,6 +638,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getRemoteMachines: remoteMachinesState,
     setRemoteMachines: setRemoteMachinesState,
     reconcileWaitingRoom: () => reconcileWaitingRoom(),
+    addSshMachine: (host, options) => addSshMachine(client, host, options),
+    removeSshMachine: (installId) => removeSshMachine(client, installId),
     listRemoteMachines: () => listRemoteMachines(client),
     listRemoteMachineKernels: (machineRef) => listRemoteMachineKernels(client, machineRef),
     approveRemoteMachine: (machineRef) => approveRemoteMachine(client, machineRef),

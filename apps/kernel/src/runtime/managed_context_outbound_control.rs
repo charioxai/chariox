@@ -22,18 +22,45 @@ pub(crate) fn execute_managed_context_outbound_request(
     authorize_source_user(&config, caller_user_id)?;
     match request {
         LocalDaemonRequest::StartManagedContextTransfer(request) => {
+            let ticket = match (request.ticket, request.owner_managed) {
+                (Some(ticket), None)
+                    if ticket.context_plan.package_binding().destination.is_none() =>
+                {
+                    ticket
+                }
+                (None, Some(selection)) if request.interactive => {
+                    let relay = relay_state.try_read().map_err(|_| {
+                        crate::managed_context::owner_managed::admission_error(
+                            "source kernel relay is temporarily unavailable",
+                        )
+                    })?;
+                    if !relay.connected() {
+                        return Err(crate::managed_context::owner_managed::admission_error(
+                            "Source kernel is offline or stale",
+                        ));
+                    }
+                    drop(relay);
+                    store.prepare_owner_ticket(&config, &runtime, selection)?
+                }
+                _ => {
+                    return Err(crate::managed_context::owner_managed::admission_error(
+                        "select exactly one of ticket or interactive ownerManaged",
+                    ))
+                }
+            };
             let status = start_managed_context_outbound_operation(
                 config,
                 relay_state,
                 store,
                 provider_account_profiles,
-                request.ticket,
+                ticket,
                 Some(runtime),
                 request.interactive,
             )?;
             Ok(LocalDaemonResponse::ManagedContextTransferStarted { status })
         }
         LocalDaemonRequest::GetManagedContextTransferStatus(request) => {
+            store.authorize_status_owner(&config, &request.context_id)?;
             let status =
                 store
                     .get(&request.context_id)

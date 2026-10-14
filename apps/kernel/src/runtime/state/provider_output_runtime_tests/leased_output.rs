@@ -62,6 +62,7 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
         "owner",
         "claude",
         &account.profile_id,
+        app.config(),
     )
     .expect("observe isolated fixture account");
     let app = Arc::new(Mutex::new(app));

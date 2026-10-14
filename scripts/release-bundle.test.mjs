@@ -333,3 +333,15 @@ test('assembly and signing reject an incomplete context even when its manifest c
   await writeFile(join(options.output, 'manifest.sig'), sign(null, await readFile(manifestPath), key).toString('hex'));
   await assert.rejects(verifyBundle(options.output, releasePublic), /missing Dockerfile input/);
 });
+
+test('MP-07 generic Setup is included in the signed distribution inventory when built', async context => {
+  const { options, releaseKeyPath, releasePublic } = await fixture(context);
+  await put(join(options.executables, 'bin/chariox-setup'), '#!/bin/sh\necho generic-setup\n', 0o755);
+  await assemble(options);
+  await signBundle(options.output, releaseKeyPath);
+  await verifyBundle(options.output, releasePublic);
+  const manifest = JSON.parse(await readFile(join(options.output, 'manifest.json')));
+  assert.ok(manifest.files.some(entry => entry.path === 'bin/chariox-setup'));
+  await put(join(options.output, 'bin/chariox-setup'), '#!/bin/sh\necho modified\n', 0o755);
+  await assert.rejects(verifyBundle(options.output, releasePublic), /does not match/);
+});

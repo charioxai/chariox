@@ -9,7 +9,7 @@ pub(super) fn export_directory(
     repository_ids: &mut BTreeSet<String>,
     target_directories: &mut BTreeSet<String>,
     budget: &mut ManifestMemoryBudget,
-    managed_publication_export: bool,
+    vault: Option<&vault_artifacts::ExportVault<'_>>,
 ) -> Result<
     (
         DevelopmentRepositoryManifest,
@@ -21,24 +21,30 @@ pub(super) fn export_directory(
     let source_basename = export::source_repository_basename(worktree)?;
     let repository_id =
         export::unique_repository_id(None, "directory", &logical_name, repository_ids);
-    let target_directory = export::target_directory_for_export(
-        &source_basename,
-        &repository_id,
-        target_directories,
-        managed_publication_export,
-    )?;
+    let target_directory =
+        export::target_directory_for_export(&source_basename, target_directories)?;
     budget.consume(logical_name.len() + target_directory.len() + 2048)?;
     let root = open_root(worktree)?;
     let (entries, directories, size) =
-        snapshot(worktree, &root, &repository_id, staging_root, budget)?;
+        snapshot(worktree, &root, &repository_id, staging_root, budget, vault)?;
     let verification = staging_root.join("directory-verification");
     create_private_directory(&verification)?;
+    let verification_vault = vault.map(|v| {
+        vault_artifacts::ExportVault::new(
+            v.config,
+            v.context_id,
+            v.target_kernel_id,
+            v.target_public_key,
+            v.project_id,
+        )
+    });
     let verified = snapshot(
         worktree,
         &root,
         &repository_id,
         &verification,
         &mut ManifestMemoryBudget::new(),
+        verification_vault.as_ref(),
     )?;
     fs::remove_dir_all(&verification)
         .map_err(|error| context_io_error("remove directory verification", error))?;
@@ -56,7 +62,7 @@ pub(super) fn export_directory(
         },
         &entries,
         MAX_CHECKOUT_BYTES_PER_REPOSITORY,
-        MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY,
+        u64::MAX,
     )?;
     Ok((
         DevelopmentRepositoryManifest {
@@ -94,6 +100,7 @@ fn snapshot(
     repository_id: &str,
     staging: &Path,
     budget: &mut ManifestMemoryBudget,
+    vault: Option<&vault_artifacts::ExportVault<'_>>,
 ) -> Result<(Vec<DevelopmentOverlayEntry>, Vec<String>, u64), DaemonError> {
     let patterns = match open_relative(root, Path::new(".charioxignore")) {
         Ok(file) => {
@@ -105,17 +112,16 @@ fn snapshot(
     let mut pending = vec![PathBuf::new()];
     let mut directories = BTreeSet::new();
     let mut files = BTreeSet::new();
-    let mut scanned = 0;
+    let started = std::time::Instant::now();
     while let Some(relative) = pending.pop() {
         for entry in fs::read_dir(worktree.join(&relative))
             .map_err(|error| context_io_error("enumerate workspace directory", error))?
         {
             let entry =
                 entry.map_err(|error| context_io_error("read workspace directory entry", error))?;
-            scanned += 1;
-            if scanned > MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY {
+            if started.elapsed() > std::time::Duration::from_secs(120) {
                 return Err(context_error(
-                    "directory workspace exceeds its entry budget",
+                    "directory scan exceeded the 120 second time limit",
                 ));
             }
             let path = relative.join(entry.file_name());
@@ -125,6 +131,10 @@ fn snapshot(
                 .to_string();
             validate_relative_path(&path_text)?;
             if overlay::context_force_excluded_path(&path_text)
+                || (vault.is_none()
+                    && crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(
+                        &path_text,
+                    ))
                 || overlay::user_ignore_pattern_matches_any(&patterns, &path_text)
             {
                 continue;
@@ -137,9 +147,6 @@ fn snapshot(
                 .metadata()
                 .map_err(|error| context_io_error("inspect directory workspace entry", error))?;
             budget.consume(path_text.len() + 256)?;
-            if directories.len() + files.len() >= MAX_OVERLAY_FILES_PER_REPOSITORY {
-                return Err(context_error("directory workspace has too many paths"));
-            }
             if metadata.is_dir() {
                 directories.insert(path_text);
                 pending.push(path);
@@ -151,6 +158,7 @@ fn snapshot(
         }
     }
     let mut stored = BTreeSet::new();
+    let mut pending_objects = BTreeMap::new();
     let mut size = 0;
     let mut entries = Vec::new();
     for path in files {
@@ -165,6 +173,7 @@ fn snapshot(
             staging,
             &mut stored,
             &mut size,
+            &mut pending_objects,
         )?;
         budget.consume(overlay::file_state_manifest_bytes(&state))?;
         entries.push(DevelopmentOverlayEntry {
@@ -173,6 +182,7 @@ fn snapshot(
             worktree: state,
         });
     }
+    overlay::stage_objects(staging, &entries, pending_objects, vault)?;
     Ok((entries, directories.into_iter().collect(), size))
 }
 

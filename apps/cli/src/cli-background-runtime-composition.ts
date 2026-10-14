@@ -771,8 +771,8 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   })
 
   onMount(() => {
+    void deps.handleWaitingRoomRefresh()
     if (deps.kernelConnected()) {
-      void deps.handleWaitingRoomRefresh()
       void deps.hydrateCurrentAttachedSession("mount")
     }
   })

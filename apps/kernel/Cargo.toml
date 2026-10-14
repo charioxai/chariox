@@ -10,6 +10,7 @@ rusqlite = { version = "0.39.0", features = ["bundled"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["raw_value", "unbounded_depth", "float_roundtrip"] }
 serde_yaml = "0.9.34"
+shell-words = "1.1.1"
 toml = "0.8.19"
 thiserror = "2.0.12"
 tokio = { version = "1.44.2", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }

@@ -11,18 +11,64 @@ pub(crate) fn execute_managed_context_target_request(
     caller_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    authorize_managed_kernel_owner(&config, caller_user_id)?;
-    let registration = registration.ok_or_else(|| {
-        target_error(
-            "managed context launch target is available only on a confirmed managed kernel",
-        )
-    })?;
-    let LocalDaemonRequest::GetManagedContextLaunchTarget(request) = request else {
-        return Err(DaemonError::LocalTransport {
-            operation: "managed context target control",
-            message: "unsupported request".to_string(),
-        });
+    // MP-05/MP-08/MP-11: the authenticated local owner also uses the shared
+    // owner launch path; Path-1 retains its exact Cloud-owner admission.
+    let local_owner =
+        registration.is_none() && caller_user_id == crate::session::DEFAULT_LOCAL_USER_ID;
+    let authorized_user = if local_owner {
+        config
+            .cloud_relay
+            .as_ref()
+            .map(|profile| profile.user_id.as_str())
+            .ok_or_else(|| target_error("owner target has no Cloud identity"))?
+    } else {
+        caller_user_id
     };
+    authorize_managed_kernel_owner(&config, authorized_user)?;
+    let LocalDaemonRequest::GetManagedContextLaunchTarget(request) = request else {
+        return Err(target_error("unsupported launch target request"));
+    };
+    if registration.is_none() {
+        let target = store.launch_target(&request.context_id, &request.plan_digest)?;
+        let profile = config
+            .cloud_relay
+            .as_ref()
+            .ok_or_else(|| target_error("owner target has no Cloud identity"))?;
+        store.authorize_owner_launch_target(
+            &request.context_id,
+            authorized_user,
+            &profile.realm_id,
+            &crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
+        )?;
+        let destination = target
+            .destination
+            .as_ref()
+            .ok_or_else(|| target_error("owner target requires a durable owner-managed receipt"))?;
+        if !target.environment_id.is_empty()
+            || destination.machine_id() != config.host_machine_id
+            || destination.kernel_id() != config.daemon_id
+            || profile.machine_id.as_deref() != Some(destination.machine_id())
+            || profile.kernel_id.as_deref() != Some(destination.kernel_id())
+            || profile
+                .kernel_credential
+                .as_deref()
+                .is_none_or(str::is_empty)
+            || profile.kernel_public_key_thumbprint.as_deref()
+                != Some(
+                    crate::runtime::terminal_pairings::public_key_thumbprint(
+                        &config.relay_public_key,
+                    )
+                    .as_str(),
+                )
+            || target.kernel_id != config.daemon_id
+        {
+            return Err(target_error(
+                "owner context launch target does not match this enrolled kernel",
+            ));
+        }
+        return Ok(LocalDaemonResponse::ManagedContextLaunchTarget { target });
+    }
+    let registration = registration.expect("managed registration");
     let plan = registration
         .context_plan
         .ok_or_else(|| target_error("managed kernel has no confirmed context plan"))?;
@@ -42,6 +88,7 @@ pub(crate) fn execute_managed_context_target_request(
         )?;
         return Ok(LocalDaemonResponse::ManagedContextLaunchTarget {
             target: crate::local::ManagedContextLaunchTarget {
+                destination: None,
                 environment_id: registration.environment_id,
                 kernel_id: registration.kernel_id,
                 context_id: binding.context_id,

@@ -720,6 +720,73 @@ client surface includes:
   launch-target request
 - multi-Workspace Project updates and exact slice repository selections
 
+MP-05 / MP-08 / MP-11 owner-managed admission (local 480, relay peer 88)
+adds `ownerManaged` to the same `StartManagedContextTransfer` request. Exactly one
+of `ticket` and `ownerManaged` is allowed; owner-managed requests require
+`interactive: true`. The client supplies only destination identity pins and
+inventory selections. The source kernel derives source identity, context ID and
+canonical plan digest, validates Project/Workspace/worktree ownership and obtains
+a Cloud ticket. A disconnected source refuses the request. The selected destination
+must be an enrolled ordinary kernel owned by the same account/user in the same realm.
+
+MP-08 / MP-11 owner destination bindings are
+`{kind:"owner_managed_machine", machineId, kernelId}`. Plans, import arms,
+persisted operations, authoritative receipts and launch targets retain this binding.
+`environmentId` / `target_environment_id` is absent only for this branch; mixed
+or missing bindings are rejected. The source issues owner tickets with
+`POST /v1/owner-managed-context-tickets` (peer directory at
+`GET /v1/owner-managed-context-tickets/peers`). Consumption, export and import checks
+share `POST /v1/managed-kernels/context/ticket`, discriminated by the
+`ownerManaged`, `ownerManagedExport` or `ownerManagedImport` body; they never use the
+managed-environment authority.
+The target independently validates a Cloud ticket against the encrypted source
+identity and its own enrollment; every arm/begin/chunk/finalize/status operation
+retains the existing capability, identity/key, realm/user, digest, TTL and size checks.
+Chunks remain encrypted kernel-to-kernel relay packets.
+
+MP-08 / MP-11 `source_kernel_without_credentials` is part of the canonical plan
+and package binding. Provider accounts and Git credentials are kernel-forced `none`.
+Its source exporter does not read the credential registry or Vault values. Native source
+confirmation gates packaging and transfer for every owner copy. A selected Project
+uses its native Project review; kernel-only copies use an idle source-owner session
+with an owner-bound, human-only kernel-operation RuntimeInteraction naming the destination
+Machine. Meta delegation, ordinary agents, Host clients and sudo agent turns cannot
+answer this review; the owner terminal can continue or cancel. Without such a session
+the copy is refused with retry guidance. Cancellation or expiry stops export. Environment
+values are omitted and Vault value access is denied for Project review. Kernel payload
+checks reject credential dependencies, Vault snapshots and credential-bearing extension
+files; Project checks reject sealed Project environment values.
+Project files and Git history with recognized secrets, or that the guard cannot
+classify, travel only as Vault-routed artifacts. A file copies as ordinary data only
+when it is strict UTF-8 text (optional BOM, no NUL or binary control) passing the text
+policy for its path, or an allow-listed asset whose extension and signature agree
+(common images, fonts, PDF, zip/gzip, wasm, audio/video) and whose printable runs carry
+no recognized secret. Declared UTF-16/32 text, malformed text, `.json`/`.jsonc` files
+that do not parse (comments and trailing commas are allowed) and other binary files are
+Vault-routed. The review lists their paths and kinds, never contents. The source records
+each artifact in the owner's encrypted Chariox Vault, verifies the read-back and seals it
+to the target, bound to context, source, target, Project and object path. The target
+authenticates that binding, records the artifact in its own encrypted Vault, verifies the
+read-back and only then materializes it in the isolated workspace. Such a copy requires an
+unlocked encrypted Chariox Vault on both kernels. Admission keeps the 16 MiB per-file,
+1 GiB scan and 120 second limits. A write that would exceed the Vault size limit fails
+before the owner's Vault is replaced. Every plaintext artifact is still checked for
+credentials. Only context transfers run this Vault/history review; ordinary Project
+environment adjustments do not. Target import uses an
+isolated target-owned workspace and the existing additive extension publication
+journal/collision checks. It does not replace runtime configuration or credentials.
+
+MP-08 / MP-11 progress and completion use the existing start/status responses.
+Completed owner-managed launch resolution uses the durable context ID/digest receipt
+and owner/realm/key binding; its response has `destination` and omits `environmentId`.
+Each owner copy publishes a fresh workspace and registers it as target Project
+`copy-<contextId>`, so copying an updated Project again adds a Project beside the earlier copy.
+It never reports completion to the managed-environment endpoint. Clients must check
+`owner_managed_context_transfer_v1` on both kernels and local >=480 / relay peer >=88.
+Cloud presence publishes `owner_managed_context_transfer_protocol_version: 1` plus
+the peer protocol version; the older managed-context source marker alone is insufficient.
+Web activation still requires end-to-end acceptance, including target first-login readiness.
+
 Every kernel that implements the direct source side of this contract advertises
 `managed_context_source_protocol_version: 1` in its Cloud relay-presence
 metadata. Cloud lists a kernel under `Kernel context from` only while that
@@ -1070,8 +1137,13 @@ value, so their minimum supported protocol version does not change.
 Local daemon protocol v308 adds `SetProviderAccountCredential`. An attached
 client sends a provider, stable account profile, hidden credential value, and
 an explicit overwrite flag. The kernel verifies account ownership, requests a
-Chariox Vault unlock through the existing runtime interaction when needed, and
-atomically writes the secret plus provider-only credential policy. Command
+Chariox Vault unlock through the existing runtime interaction when needed, verifies
+the supplied Claude token with one bounded official model turn and no tools, and atomically
+writes the secret plus provider-only credential policy. The successful verification records
+the account authentication observation, so both `claude` and `claude-p` can
+launch through the same stored credential. Subscription usage windows and native token-presence status are not authentication evidence. A failed check leaves the prior secret
+and account observation unchanged. Account status and refresh verify the current stored token through the live
+runtime Vault configuration; native-file login state cannot substitute for it. Command
 history and debug output redact the value. No client currently requires this
 operation during normal session attachment, so minimum supported protocol
 versions do not change.
@@ -3423,6 +3495,46 @@ WebSocket frames through the ordinary router and provider-native export paths
 with disposable synthetic Codex, Claude and OpenCode profiles. It establishes
 local protocol/portability behavior, not live provider login, provisioning or
 fresh-machine MP-10 acceptance.
+### MP-07 / MP-08 / MP-11 owner-managed SSH machines (local 479)
+
+`AddSshMachine { host, install_id?, port?, release? }` and
+`RemoveSshMachine { install_id }` use the owning kernel's normal admitted
+request transport. Only that kernel's owner may execute them; session guests,
+peers and external agents do not receive enrollment/install authority. The
+kernel selects an approved signed release from its local operator catalogue
+and invokes the user's SSH config/agent. Client requests contain no release
+paths, trust pins, SSH credentials, enrollment tickets or provider credentials.
+
+The source requests a user-bound single-use `owner_managed_machine` ticket
+from Cloud using its per-kernel credential. The separate owner-managed target
+bootstrap receives it solely on SSH stdin and shares device enrollment's
+kernel/machine/public-key admission and private credential storage. Managed VM
+bootstrap admission remains unchanged. The target installs a marked per-user
+root, starts only its own `systemd --user` unit, and must report authenticated
+local status with a relay connection before returning ready. The selected
+kernel port and its companion MCP port (`port+1`) must both be available.
+
+`SshMachine { machine: { install_id, status, kernel_id, machine_id,
+release_digest, state_retained } }` exposes only a deployment receipt. A repeat
+with the same ID/release/port reuses the enrolled identity; another release
+requires an explicit later upgrade. Remove stops/uninstalls the owned service
+and release tree while retaining private kernel state and directory identity.
+No VM provisioning/deletion or runtime proxy is involved. Relay peer protocol
+inherits 73 from the ownership base; native/web minimums are unchanged for existing behavior. The SSH
+commands themselves require a local-479-capable kernel/client pair.
+
+MP-07 / MP-08 / MP-11 self-setup reuses the owner-managed install core and
+existing device enrollment; local 479/relay 73 are retained. Generic Setup
+creates a separate user service/root/ports and invokes a pre-daemon stdin
+bootstrap. Kernel device flow uses the existing `KERNEL` start/poll exchange,
+public verification URL/code and #888 key/machine/owner profile admission.
+Browser codes use the same ticket poll variant on a fresh independent identity;
+no ticket travels in CLI argv/environment/files or terminal requests. The
+ambiguous browser-code case on an existing enrolled root fails closed. Human
+terminal login and kernel enrollment retain separate credentials. Cloud remains
+approval/ticket/directory control plane; authenticated local readiness and the
+ordinary encrypted relay/runtime paths remain kernel-owned. See
+[Setup implementation](../apps/setup/README.md) for lifecycle and evidence limits.
 
 ### Encrypted subscription rebinding (local protocol 491; MP-08 / MP-11)
 
@@ -3490,3 +3602,39 @@ that login is required before creating any local invite. `/relay cloud pair` and
 `pair-machine` are retired; use `/client invite` for a terminal and independent
 `/cloud link` enrollment on the receiving kernel. Neither caller credentials nor
 human session tokens are sent to or persisted by the kernel.
+
+### BYOM C5 — local 509 / relay peer 117 (MP-05 / MP-08 / MP-10 / MP-11)
+
+Coordinator allocation for the main-merged owner-managed contract. Local 509
+binds SSH machine add/remove, interactive owner-managed context admission, and
+credential-free destination receipts together with main's local 491 contract.
+Peer 117 binds owner-managed context arming and the merged embedded local
+request/response unions. C4's experimental local 480 / peer 88 and the interim
+main-merged local 491 / peer 101 are historical candidates, not C5 identities.
+
+The owner-context request helpers require local >=509 / peer >=117 and the
+`owner_managed_context_transfer_v1` capability. The Copy flow rejects older or
+unknown versions before sending the request, with an upgrade diagnostic; general
+Web/native minimums remain unchanged. Local snapshots, relay snapshots and
+version assertions pin this allocated generation; payload-only hashes retain
+their values except snapshots that explicitly serialize a peer protocol number.
+The focused real Web/TUI Copy/restart drill must use the exact C5 kernel and
+client, through hosted WSS, and record receiving protocol and owner binding.
+Signing input checks do not establish installed-target or multi-hour acceptance.
+
+### MP-08 / MP-11 BY-05 owner-copy refusal projection
+
+Owner-context ticket consumption returns distinct Cloud error codes
+`owner_context_ticket_revoked`, `authorization_expired`, and
+`owner_context_ticket_already_used` after admitting the exact owner/source.
+The source kernel maps these to `owner_context_authorization_revoked`,
+`owner_context_authorization_expired`, and
+`owner_context_authorization_already_used` in the existing string-valued
+`failureCode`, with a bounded actionable `failureMessage` and no retry.
+Revoked or consumed status takes precedence over the original ticket TTL.
+Reauthorization of the consumed operation for transfer recovery remains distinct
+from replay of the one-use capability. Clients cannot supply that capability.
+Web Copy and TUI `/kernel copy-status <context-id>` project the same authoritative
+outcome. Refusals occur before packaging or publication; no bytes are copied.
+The existing C5 allocation remains local 509 / peer 117: this correction changes
+error strings and client rendering, with no new serialized fields or variants.

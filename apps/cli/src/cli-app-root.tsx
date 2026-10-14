@@ -103,7 +103,7 @@ import {
   normalizeBackendProviderId,
 } from "./provider-catalog.js"
 import {
-  getProviderAuthStatus,
+  getProviderAccountProfile,
   getProviderCatalog,
   getProviderLoginStatus,
   getProviderRun,
@@ -259,7 +259,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   const providerLoginInteractions = createProviderLoginInteractionController({
     getKernelId: async () => relayStatusState()?.daemon_id ?? (await getRelayStatus(client)).daemon_id,
     getLoginStatus: (loginId) => getProviderLoginStatus(client, loginId),
-    getAuthStatus: (provider, accountProfile) => getProviderAuthStatus(client, provider, accountProfile),
+    getAccountProfile: (provider, accountProfile) => getProviderAccountProfile(client, provider, accountProfile),
     accountLabel: (provider, accountProfile) => {
       const profile = selectedProviderAccount(providerAccountsState(), provider, accountProfile)
       return profile ? providerAccountDisplayLabel(profile) : accountProfile
@@ -866,7 +866,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setSelectedWorkflowNodeId, selectedWorkflowComponent, setSelectedWorkflowComponent, setWorkflowInspectorMode,
     workflowScreenActive: () => workflowActions.workflowScreenActive(),
     workflowInspector, workspaceShellEntries, workspaceShellContext, waitingRoomState,
-    availableSessions, waitingRoomProjects, providerCatalogState, waitingRoomCloudNotice, waitingRoomInventoryStatus,
+    availableSessions, waitingRoomProjects, providerCatalogState, waitingRoomCloudNotice, waitingRoomInventoryStatus, preferencesState,
     relayStatusState, remoteMachinesState, remoteKernelsState, providerAccountsState, terminalsState,
     externalProviderSessionsState, externalProviderSessionsPageState, slicesState, waitingRoomTargets,
     themeRegistryState, transcriptScrollboxRefController, primaryTranscriptRuntimeStore, transcriptEntryProjectionController,

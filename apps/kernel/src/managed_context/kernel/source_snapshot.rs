@@ -45,15 +45,19 @@ pub(super) struct KernelContextSourceSnapshot {
 
 impl KernelContextSourceSnapshot {
     pub(super) fn capture() -> Result<Self, DaemonError> {
-        let first = Self::capture_once()?;
-        let second = Self::capture_once()?;
+        Self::capture_mode(false)
+    }
+
+    pub(super) fn capture_mode(without_credentials: bool) -> Result<Self, DaemonError> {
+        let first = Self::capture_once(without_credentials)?;
+        let second = Self::capture_once(without_credentials)?;
         if first.content_digest()? != second.content_digest()? {
             return Err(source_changed_error());
         }
         Ok(second)
     }
 
-    fn capture_once() -> Result<Self, DaemonError> {
+    fn capture_once(without_credentials: bool) -> Result<Self, DaemonError> {
         let root = PrivateSnapshotRoot::new()?;
         let mut budget = SourceBudget::default();
         let mcp_root = root.path.join("user/mcps");
@@ -119,11 +123,15 @@ impl KernelContextSourceSnapshot {
             &connector_adapter_root,
             &mut budget,
         )?;
-        capture_optional_root(
-            crate::credential::CharioxCredentialRegistry::user_root().as_deref(),
-            &credential_root,
-            &mut budget,
-        )?;
+        if !without_credentials {
+            capture_optional_root(
+                crate::credential::CharioxCredentialRegistry::user_root().as_deref(),
+                &credential_root,
+                &mut budget,
+            )?;
+        } else {
+            create_private_directory(&credential_root)?;
+        }
 
         let mut bundled_adapter_roots = Vec::new();
         for (index, source) in crate::connector::CharioxConnectorAdapterRegistry::bundled_roots()
@@ -1533,7 +1541,7 @@ mod tests {
         fs::write(mcp_root.join("a.json"), b"first").expect("source should write");
 
         let snapshot =
-            KernelContextSourceSnapshot::capture_once().expect("snapshot should capture");
+            KernelContextSourceSnapshot::capture_once(false).expect("snapshot should capture");
         fs::write(mcp_root.join("a.json"), b"second").expect("source should change");
         fs::write(mcp_root.join("a.json"), b"first").expect("source should restore");
         assert_eq!(
@@ -1546,14 +1554,14 @@ mod tests {
             use std::os::unix::fs::symlink;
             fs::remove_file(mcp_root.join("a.json")).expect("source should remove");
             symlink(root.join("outside"), mcp_root.join("a.json")).expect("link should create");
-            assert!(KernelContextSourceSnapshot::capture_once().is_err());
+            assert!(KernelContextSourceSnapshot::capture_once(false).is_err());
             fs::remove_file(mcp_root.join("a.json")).expect("link should remove");
 
             fs::remove_dir_all(&mcp_root).expect("source root should remove");
             let outside_root = root.join("outside-root");
             fs::create_dir_all(&outside_root).expect("outside root should create");
             symlink(&outside_root, &mcp_root).expect("root link should create");
-            assert!(KernelContextSourceSnapshot::capture_once().is_err());
+            assert!(KernelContextSourceSnapshot::capture_once(false).is_err());
             fs::remove_file(&mcp_root).expect("root link should remove");
             fs::create_dir_all(&mcp_root).expect("source root should recreate");
         }
@@ -1562,7 +1570,7 @@ mod tests {
         File::create(&oversized)
             .and_then(|file| file.set_len(MAX_SOURCE_FILE_BYTES + 1))
             .expect("oversized sparse source should create");
-        assert!(KernelContextSourceSnapshot::capture_once().is_err());
+        assert!(KernelContextSourceSnapshot::capture_once(false).is_err());
 
         std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
         std::env::remove_var("CHARIOX_HOME");

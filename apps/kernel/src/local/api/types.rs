@@ -40,6 +40,7 @@ mod response;
 mod room_environment;
 mod session_control;
 mod slice;
+mod ssh_machine;
 mod terminal_command_catalog;
 mod terminal_interaction;
 mod waiting_room;
@@ -77,6 +78,7 @@ pub use response::*;
 pub use room_environment::*;
 pub use session_control::*;
 pub use slice::*;
+pub use ssh_machine::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use waiting_room::*;
@@ -279,4 +281,7 @@ pub use workspace::*;
 /// admission (MP-08/MP-10/MP-11).
 /// Version 473 adds short bound-client terminal direct leases with paired Origin.
 /// Version 502 combines exact prompt cancellation with same-machine direct admission.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 502;
+/// Version 509 adds owner-managed SSH machine add/remove, credential-free
+/// owner-managed context admission and destination receipts on top of 491,
+/// paired with coordinator-allocated relay peer 117 (MP-08/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 509;

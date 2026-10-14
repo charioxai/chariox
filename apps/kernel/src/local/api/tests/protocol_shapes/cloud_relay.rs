@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn relay_status_control_capabilities_are_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 502);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 509);
     let legacy = serde_json::json!({
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",
@@ -28,7 +28,8 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "disposable_worker_control_v1",
             "managed_environment_keep_running_v1",
             "terminal_relay_authorization_renewal_v1",
-            "exact_prompt_cancellation_v499"
+            "exact_prompt_cancellation_v499",
+            "owner_managed_context_transfer_v1"
         ])
     );
     assert_eq!(
@@ -36,13 +37,13 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "4df417e7ef783a4e615cb33bd246da04c38601335e5fec574e1329990faa2bb2"
+        "e5609c511db03c628f68312290ff1af79a2dd23ab6f379a2d421308961158ae8"
     );
 }
 
 #[test]
 fn key_bound_cli_relay_requests_and_join_response_have_exact_protocol_shapes() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 502);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 509);
 
     let token_request =
         LocalDaemonRequest::IssueCloudRelayClientToken(IssueCloudRelayClientTokenRequest {
@@ -166,7 +167,7 @@ fn legacy_terminal_join_requests_and_responses_remain_unbound() {
 
 #[test]
 fn relay_status_native_process_identity_is_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 502);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 509);
     let legacy = serde_json::json!({
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",
@@ -195,7 +196,7 @@ fn relay_status_native_process_identity_is_versioned_and_hashed() {
 
 #[test]
 fn kernel_cloud_ownership_status_and_connect_never_serialize_credentials() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 502);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 509);
     let private = crate::config::PersistedCloudRelayProfile {
         kernel_id: Some("kernel-a".into()),
         kernel_credential: Some("synthetic-kernel-secret".into()),
@@ -247,7 +248,7 @@ fn kernel_cloud_ownership_status_and_connect_never_serialize_credentials() {
 
 #[test]
 fn self_host_terminal_admission_response_is_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 502);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 509);
     let response = LocalDaemonResponse::TerminalPairingLinkJoined {
         terminal: TerminalRecord {
             terminal_id: "terminal".into(),
@@ -288,7 +289,7 @@ fn self_host_terminal_admission_response_is_versioned_and_hashed() {
 // MP-08 / MP-10 / MP-11: the receiver public key travels through the numbered pivot.
 #[test]
 fn ownership_pivot_receiver_key_has_exact_protocol_491_shape() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 502);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 509);
     let expected = serde_json::json!({"ResolveKernelClientConnection": {
         "kernel_ref": "home", "machine_ref": null, "client_id": "receiver",
         "session_id": null, "public_key_thumbprint": "public-key-pin"
@@ -312,7 +313,7 @@ fn cloud_device_denial_poll_is_versioned_and_hashed() {
         .expect("denial must deserialize as a terminal poll outcome");
     let actual = serde_json::to_value(response).unwrap();
     assert_eq!(actual, expected);
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 502);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 509);
     assert_eq!(
         format!(
             "{:x}",
@@ -324,7 +325,7 @@ fn cloud_device_denial_poll_is_versioned_and_hashed() {
 
 #[test]
 fn cloud_device_denial_capability_preserves_legacy_requests_and_is_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 502);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 509);
     let legacy = serde_json::json!({"PollCloudRelayLogin": {
         "api_url": "https://cloud.example.test", "device_code": "synthetic-device-code"
     }});

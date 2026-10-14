@@ -219,3 +219,24 @@ test("MP-08 a sync requested as the single-flight loop exits still re-evaluates"
   await late
   assert.equal(evaluations, 2)
 })
+
+test("MP-08 / MP-10 detached Cloud discovery never opens a kernel subscription before selection", async () => {
+  let connected = false
+  const calls: string[] = []
+  const controller = createKernelEventSubscriptionController({
+    kernelConnected: () => connected,
+    supportsKernelEventStream: () => true,
+    getAttachment: () => null,
+    getSessionId: () => "unused",
+    subscribeToWaitingRoomInventory: async () => { calls.push("inventory") },
+    subscribeToKernelEvents: async () => { calls.push("session") },
+    onEvaluate: () => {}, onWaitingRoomSubscribed: () => {}, onSessionSubscribed: () => {},
+    onWaitingRoomSubscriptionFailed: () => {}, onSessionSubscriptionFailed: () => {},
+  })
+  await controller.sync()
+  assert.deepEqual(calls, [], "disconnected discovery must not touch localhost")
+  connected = true
+  await controller.sync()
+  await controller.sync()
+  assert.deepEqual(calls, ["inventory"], "selected kernel receives the ordinary inventory subscription")
+})

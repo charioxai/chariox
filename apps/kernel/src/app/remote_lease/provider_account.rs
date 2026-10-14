@@ -120,6 +120,7 @@ impl RemoteLeaseRuntime<'_> {
                 &lease.owner_user_id,
                 &profile.provider,
                 &profile.profile_id,
+                self.app.config(),
             )?;
             let observed =
                 registry.get(&lease.owner_user_id, &profile.provider, &profile.profile_id)?;
@@ -226,6 +227,7 @@ impl RemoteLeaseRuntime<'_> {
             &profile.owner_user_id,
             &profile.provider,
             &profile.profile_id,
+            self.app.config(),
         )?;
         registry.require_authenticated(
             &profile.owner_user_id,

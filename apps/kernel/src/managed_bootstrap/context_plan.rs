@@ -24,6 +24,8 @@ const MAX_GIT_CREDENTIALS: usize = 16;
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedKernelContextPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
     schema_version: u32,
     context_id: String,
     plan_digest: String,
@@ -49,6 +51,7 @@ struct ManagedKernelContextSource {
 enum ManagedKernelContextSelection {
     Empty,
     SourceKernel,
+    SourceKernelWithoutCredentials,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +118,42 @@ enum ManagedKernelGitCredentials {
 }
 
 impl ManagedKernelContextPlan {
+    pub(crate) fn for_owner_managed(
+        config: &crate::config::DaemonConfig,
+        selection: &crate::managed_context::owner_managed::OwnerManagedTransfer,
+    ) -> Result<Self, &'static str> {
+        let profile = config
+            .cloud_relay
+            .as_ref()
+            .ok_or("source kernel has no Cloud profile")?;
+        let mut value = serde_json::json!({
+            "schemaVersion": 1,
+            "contextId": format!("owner-context-{:032x}", rand::random::<u128>()),
+            "planDigest": format!("sha256:{}", "0".repeat(64)),
+            "source": {
+                "sourceTargetId": config.daemon_id,
+                "relayRealmId": profile.realm_id,
+                "machineId": profile.machine_id.as_deref().ok_or("source kernel has no machine")?,
+                "kernelId": config.daemon_id,
+                "keyThumbprint": crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
+            },
+            "kernelContext": selection.context_selection.kernel_context,
+            "developmentSetup": selection.context_selection.development_setup,
+            "providerAccounts": {"kind":"none"},
+            "gitCredentials": {"kind":"none"},
+            "destination": {"kind":"owner_managed_machine", "machineId": selection.target.machine_id, "kernelId": selection.target.kernel_id}
+        });
+        let mut plan: Self =
+            serde_json::from_value(value.take()).map_err(|_| "invalid owner context selection")?;
+        plan.plan_digest = plan.compute_digest()?;
+        plan.validate()?;
+        crate::managed_context::owner_managed::validate_credential_free_plan(
+            &plan.package_binding(),
+        )
+        .map_err(|_| "owner-managed context cannot include credentials")?;
+        Ok(plan)
+    }
+
     pub(crate) fn context_id(&self) -> &str {
         &self.context_id
     }
@@ -139,10 +178,18 @@ impl ManagedKernelContextPlan {
                 return Err("managed context plan source is invalid");
             }
         }
+        if self.destination.is_some() {
+            crate::managed_context::package::validate_plan_binding(&self.package_binding())
+                .map_err(|_| "owner-managed context binding is invalid")?;
+        } else if self.kernel_context
+            == ManagedKernelContextSelection::SourceKernelWithoutCredentials
+        {
+            return Err("credential-free context requires an owner-managed destination");
+        }
         self.validate_development()?;
         self.validate_provider_accounts()?;
         self.validate_git_credentials()?;
-        let source_required = self.kernel_context == ManagedKernelContextSelection::SourceKernel
+        let source_required = self.kernel_context != ManagedKernelContextSelection::Empty
             || matches!(
                 self.development_setup,
                 ManagedKernelDevelopmentSetup::SourceProject { .. }
@@ -155,7 +202,7 @@ impl ManagedKernelContextPlan {
                 self.git_credentials,
                 ManagedKernelGitCredentials::Selected { .. }
             );
-        if source_required != self.source.is_some() {
+        if (source_required || self.destination.is_some()) != self.source.is_some() {
             return Err("managed context plan source selection is inconsistent");
         }
         if self.compute_digest()? != self.plan_digest {
@@ -185,10 +232,14 @@ impl ManagedKernelContextPlan {
 
     pub(crate) fn package_binding(&self) -> ManagedContextPlanBinding {
         ManagedContextPlanBinding {
+            destination: self.destination.clone(),
             context_id: self.context_id.clone(),
             plan_digest: self.plan_digest.clone(),
             kernel_context: match self.kernel_context {
                 ManagedKernelContextSelection::Empty => ManagedContextKernelSelection::Empty,
+                ManagedKernelContextSelection::SourceKernelWithoutCredentials => {
+                    ManagedContextKernelSelection::SourceKernelWithoutCredentials
+                }
                 ManagedKernelContextSelection::SourceKernel => {
                     ManagedContextKernelSelection::SourceKernel
                 }
@@ -341,7 +392,7 @@ impl ManagedKernelContextPlan {
     }
 
     fn compute_digest(&self) -> Result<String, &'static str> {
-        let value = serde_json::json!({
+        let mut value = serde_json::json!({
             "schemaVersion": self.schema_version,
             "source": self.source,
             "kernelContext": self.kernel_context,
@@ -349,6 +400,10 @@ impl ManagedKernelContextPlan {
             "providerAccounts": self.provider_accounts,
             "gitCredentials": self.git_credentials,
         });
+        if let Some(destination) = &self.destination {
+            value["destination"] =
+                serde_json::to_value(destination).map_err(|_| "invalid destination")?;
+        }
         let encoded = serde_json::to_vec(&canonical_json_value(&value))
             .map_err(|_| "managed context plan is not serializable")?;
         Ok(format!("sha256:{:x}", Sha256::digest(encoded)))
@@ -363,6 +418,7 @@ impl ManagedKernelContextPlan {
         project_id: &str,
     ) -> Self {
         let mut plan = Self {
+            destination: None,
             schema_version: 1,
             context_id: context_id.to_string(),
             plan_digest: format!("sha256:{}", "0".repeat(64)),
@@ -400,6 +456,7 @@ impl ManagedKernelContextPlan {
         repositories: Vec<(DevelopmentRepositoryRole, String, Option<String>)>,
     ) -> Self {
         let mut plan = Self {
+            destination: None,
             schema_version: 1,
             context_id: context_id.to_string(),
             plan_digest: format!("sha256:{}", "0".repeat(64)),
@@ -441,6 +498,7 @@ impl ManagedKernelContextPlan {
     #[cfg(test)]
     pub(crate) fn empty_for_tests(context_id: &str) -> Self {
         let mut plan = Self {
+            destination: None,
             schema_version: 1,
             context_id: context_id.to_string(),
             plan_digest: format!("sha256:{}", "0".repeat(64)),
@@ -462,6 +520,7 @@ impl ManagedKernelContextPlan {
         source_key_thumbprint: &str,
     ) -> Self {
         let mut plan = Self {
+            destination: None,
             schema_version: 1,
             context_id: context_id.to_string(),
             plan_digest: format!("sha256:{}", "0".repeat(64)),

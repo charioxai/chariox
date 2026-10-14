@@ -1924,6 +1924,7 @@ pub(super) async fn handle_daemon_peer_request(
         RelayPeerRequest::ArmManagedContextImport {
             plan,
             target_environment_id,
+            destination,
             target_kernel_id,
             target_key_thumbprint,
             capability,
@@ -1940,6 +1941,7 @@ pub(super) async fn handle_daemon_peer_request(
                         source_kernel_id,
                         plan,
                         target_environment_id,
+                        destination,
                         target_kernel_id,
                         target_key_thumbprint,
                         capability: capability.into_inner(),
@@ -3395,6 +3397,7 @@ mod tests {
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let request = RelayPeerRequest::ArmManagedContextImport {
+            destination: None,
             plan: ManagedKernelContextPlan::empty_for_tests("context-1").package_binding(),
             target_environment_id: "environment-1".to_string(),
             target_kernel_id: "target-kernel-1".to_string(),
@@ -3835,6 +3838,7 @@ mod tests {
             outgoing_tx: &outgoing_tx,
         };
         let request = RelayPeerRequest::ArmManagedContextImport {
+            destination: None,
             plan: plan.clone(),
             target_environment_id: "environment-machine-source".to_string(),
             target_kernel_id,
@@ -4077,6 +4081,7 @@ mod tests {
         );
         let arm_request = |plan: ManagedContextPlanBinding, target_environment_id: &str| {
             RelayPeerRequest::ArmManagedContextImport {
+                destination: None,
                 plan,
                 target_environment_id: target_environment_id.to_string(),
                 target_kernel_id: target_kernel_id.to_string(),
@@ -4331,6 +4336,7 @@ mod tests {
         let response = router
             .relay_arm_managed_context_import(
                 crate::runtime::router::RelayManagedContextArmRequest {
+                    destination: None,
                     identity: scoped_kernel_identity(Some(source_key_thumbprint.clone()), u64::MAX),
                     source_kernel_id: source_kernel_id.to_string(),
                     plan: enrollment_binding.clone(),
@@ -4544,7 +4550,7 @@ mod tests {
             },
             extensions: Vec::new(),
             dependencies: Vec::new(),
-            vault: transferred_vault,
+            vault: Some(transferred_vault),
         };
         let snapshot_sha256 = format!(
             "{:x}",
@@ -4576,6 +4582,7 @@ mod tests {
         let wrong_context_error = router
             .relay_arm_managed_context_import(
                 crate::runtime::router::RelayManagedContextArmRequest {
+                    destination: None,
                     identity: identity.clone(),
                     source_kernel_id: source_kernel_id.to_string(),
                     plan: {
@@ -4605,6 +4612,7 @@ mod tests {
         let wrong_source_error = router
             .relay_arm_managed_context_import(
                 crate::runtime::router::RelayManagedContextArmRequest {
+                    destination: None,
                     identity: wrong_source_identity,
                     source_kernel_id: source_kernel_id.to_string(),
                     plan: package.plan.clone(),
@@ -4633,6 +4641,7 @@ mod tests {
             &source_private_key,
             &target_public_key,
             RelayPeerRequest::ArmManagedContextImport {
+                destination: None,
                 plan: package.plan.clone(),
                 target_environment_id: "environment-managed-1".to_string(),
                 target_kernel_id: target_kernel_id.clone(),
@@ -4855,7 +4864,7 @@ mod tests {
             },
             extensions: Vec::new(),
             dependencies: Vec::new(),
-            vault: terminal_vault,
+            vault: Some(terminal_vault),
         };
         let terminal_snapshot_sha256 = format!(
             "{:x}",
@@ -4907,6 +4916,7 @@ mod tests {
             &source_private_key,
             &target_public_key,
             RelayPeerRequest::ArmManagedContextImport {
+                destination: None,
                 plan: terminal_package.plan.clone(),
                 target_environment_id: "environment-managed-1".to_string(),
                 target_kernel_id: target_kernel_id.clone(),
@@ -5055,6 +5065,7 @@ mod tests {
                 &terminal_transfer_id,
                 &terminal_capability,
                 &crate::managed_context::transfer::ManagedContextTransferCaller {
+                    target_destination: None,
                     kernel_id: source_kernel_id.to_string(),
                     key_thumbprint: source_key_thumbprint.clone(),
                     owner_user_id: identity.user_id.clone().expect("source owner"),
@@ -5146,7 +5157,7 @@ mod tests {
             },
             extensions: Vec::new(),
             dependencies: Vec::new(),
-            vault: recovery_vault,
+            vault: Some(recovery_vault),
         };
         let recovery_snapshot_sha256 = format!(
             "{:x}",
@@ -5198,6 +5209,7 @@ mod tests {
             &source_private_key,
             &target_public_key,
             RelayPeerRequest::ArmManagedContextImport {
+                destination: None,
                 plan: recovery_package.plan.clone(),
                 target_environment_id: "environment-managed-1".to_string(),
                 target_kernel_id: target_kernel_id.clone(),
@@ -5254,6 +5266,7 @@ mod tests {
             recovery_offset += chunk.len() as u64;
         }
         let recovery_caller = crate::managed_context::transfer::ManagedContextTransferCaller {
+            target_destination: None,
             kernel_id: source_kernel_id.to_string(),
             key_thumbprint: source_key_thumbprint.clone(),
             owner_user_id: identity.user_id.clone().expect("source owner"),
@@ -5386,13 +5399,13 @@ mod tests {
         fs::remove_dir_all(root).expect("remove managed peer fixture");
     }
 
-    struct ScopedEnv {
+    pub(super) struct ScopedEnv {
         name: &'static str,
         previous: Option<std::ffi::OsString>,
     }
 
     impl ScopedEnv {
-        fn set(name: &'static str, value: &std::ffi::OsStr) -> Self {
+        pub(super) fn set(name: &'static str, value: &std::ffi::OsStr) -> Self {
             let previous = std::env::var_os(name);
             std::env::set_var(name, value);
             Self { name, previous }
@@ -5408,13 +5421,13 @@ mod tests {
         }
     }
 
-    struct ManagedPeerRequestHarness<'a> {
-        router: &'a Arc<CommandRouter>,
-        state: &'a Arc<RwLock<RelayClientState>>,
-        outgoing_tx: &'a RelayOutgoingSender,
+    pub(super) struct ManagedPeerRequestHarness<'a> {
+        pub(super) router: &'a Arc<CommandRouter>,
+        pub(super) state: &'a Arc<RwLock<RelayClientState>>,
+        pub(super) outgoing_tx: &'a RelayOutgoingSender,
     }
 
-    async fn send_managed_peer_request(
+    pub(super) async fn send_managed_peer_request(
         harness: &ManagedPeerRequestHarness<'_>,
         source_kernel_id: &str,
         identity: &RelayCallerIdentity,
@@ -5581,3 +5594,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "owner_context_drill.rs"]
+mod owner_context_drill;
