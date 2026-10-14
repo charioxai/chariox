@@ -27,6 +27,8 @@ const connection = {
       return { targetId };
     }
     if (method === 'Target.closeTarget') { pages.delete(params.targetId); return {}; }
+    // MP-11: the host's lockdown layer denies downloads at start.
+    if (method === 'Browser.setDownloadBehavior') return {};
     if (method === 'Target.getTargetInfo') return { targetInfo: { targetId: params.targetId, type: 'page', ...pages.get(params.targetId) } };
     // MP-08/MP-10: the host's keepalive is a popup window opened from a blank page.
     if (method === 'Target.attachToTarget') return { sessionId: params.targetId };
