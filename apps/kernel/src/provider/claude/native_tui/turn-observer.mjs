@@ -3,6 +3,7 @@ export function register(on, options = {}) {
   const context = options.context ?? "__CHARIOX_CONTEXT__"
   let bound
   on('turn.start', async ($, e, next) => {
+    if (e.agentId) return next(e)
     bound = undefined
     try {
       const prompt = (await $.fs.read(context + '.approval-origin')).trim()
