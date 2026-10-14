@@ -15,12 +15,27 @@ All paths are absolute. Record three back-to-back repeats of each path per cell.
 
 The r5 user-driven probes live in `hosted-hops/`: `probe-visible.mjs` and
 `probe-selkies.mjs` take an owned runtime ROOT and evidence directory. Their
-supported roots are `/root/.chariox/dev/vidlat/r6/drills/` and
-`/root/.codex/evidence/browser-resume-20260930/vidlat/r6/`. Supply `VIDHOPS_IPC`
+supported roots are `/root/.chariox/dev/vidlat/r<N>/drills/<name>` or
+`/root/.chariox/dev/vidlat/owner-ab-r<N>-<name>`, with evidence under
+`/root/.codex/evidence/browser-resume-20260930/vidlat/r<N>/`. Validation
+precedes the state read. Owner A/B kernels use `V/runtime`; CPU accounting
+separates V and S sources and tracks their actual kernel/Selkies PID. The
+owner kit state supplies `sessionId`, `kernelPid`, `selkiesPid`,
+`selkiesOrigin` and source CDP port. Source CDP is read-only; Selkies
+navigation uses its native omnibox through real keys. Supply `VIDHOPS_IPC`
 (the exact SDK dist/ipc.js), `VIDHOPS_WS` (ws/index.js), `VIDHOPS_PLAYWRIGHT`
 (default /w/valenv/tools/node_modules/playwright-core/index.mjs), `OSS_SOURCE`,
 `CLOUD_SOURCE`, `DPRS=1` or `2`, `TRIALS=20`, `TYPING_TRIALS=20`,
-`VIDLAT_NO_TIMING_OVERRIDE=1`, disk TMPDIR and capped NODE_OPTIONS. Use Node22,
+disk TMPDIR and capped NODE_OPTIONS. Presenter instrumentation is off by
+default; `VIDHOPS_INSTRUMENT=1` explicitly enables a diagnostic source override.
+`VIDHOPS_RECORD=1` records a separate usability run. Screen recording throttled
+the DPR2 input cadence in the quiet-host drill: do not use recorded runs as
+throughput acceptance. Retain actual wheel input counts and every physical
+endpoint refusal. The typing probe uses the visible public glyph `m`, records
+its source echo separately, and excludes missing physical endpoints from
+percentiles while retaining attempt counts. Its small-region detector uses
+three changed columns to exclude the caret. Fewer than20 detected samples
+cannot satisfy the campaign gate. Use Node22,
 headed Google Chrome, Xvfb, Python numpy/Pillow/Xlib. Source and viewer geometry,
 GPU flags, browser cache and shaper topology must match between paths. State is
 created by normal product enrollment, never hand-made identities. Protect runtime
@@ -52,7 +67,7 @@ click/type P95 <= S, presented fps >= S for 120px@20/60Hz and16px@60Hz,
 pipeline cores <=1 and <=S, no PNG fallback, MP-11 masking zero violations.
 A run above40% host CPU P95 is VOID. No CPU samples is also VOID. Keep each stage's
 percentiles separate and retain ambiguous join counts. The r5 probes cover
-Wikipedia controls; broad site drivers, core accounting and masking acceptance
+Wikipedia controls; broad site drivers and masking acceptance
 must accompany them and cannot be inferred from this kit's endpoint report.
 
 Stop every owned browser/Xvfb/probe and source runtime, remove runtime-generated
