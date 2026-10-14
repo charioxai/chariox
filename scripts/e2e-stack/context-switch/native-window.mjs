@@ -1,5 +1,5 @@
 // MP-08 / MP-10 / MP-11: official /context through the actual native Chariox client.
-import {writeFile} from 'node:fs/promises';
+import {writeFile,readFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import {spawnOwned,signalOwnedProcessGroup} from './owned.mjs';
 import {lane,harness} from './paths.mjs';
@@ -20,7 +20,7 @@ export async function nativeWindow(run,model){
   while(Date.now()<deadline){const text=plain(output.slice(start));for(const m of text.matchAll(/(?:[\d.,]+\s*[kKmM]?\s*\/\s*)([\d.,]+)\s*([kKmM]?)\s*tokens/g)){tokens=Number(m[1].replaceAll(',',''))*({k:1000,m:1000000}[m[2].toLowerCase()]??1);}if(tokens)break;await sleep(250);}
   // The run recorder rejects private values before any evidence is written.
   await run.record(alias,{model,windowTokens:tokens??null,officialCommand:'/context',client:'built chariox claude',ansi:output});
-  const file=run.out+'/'+alias+'.ansi';await writeFile(file,output,{mode:0o600});execFileSync('python3',[harness+'/render-pty.py',file],{stdio:'ignore'});
+  const file=run.out+'/'+alias+'.ansi';await writeFile(file,JSON.parse(await readFile(run.out+'/'+alias+'.json','utf8')).ansi,{mode:0o600});execFileSync('python3',[harness+'/render-pty.py',file],{stdio:'ignore'});
   if(!tokens)throw Error('Official /context did not expose a parseable window; inspect native screenshot');
   return {model,windowTokens:tokens,evidence:alias};
  }finally{

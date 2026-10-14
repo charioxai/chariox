@@ -4,7 +4,7 @@ from pathlib import Path
 root = Path(sys.argv[1])
 assert (root/'context-switch-owned.json').is_file()
 rows = []
-fields = ['session_id','agent_id','target_provider_run_id','source_provider','source_model','target_provider','target_model','utility_calls','brief_bytes','context_bytes','max_bytes','elapsed_ms','brief_model']
+fields = ['session_id','agent_id','target_provider_run_id','source_provider','source_model','target_provider','target_model','utility_calls','brief_bytes','context_bytes','max_bytes','elapsed_ms','brief_model','context_tokens','source_window','target_window','source_context_window','target_context_window']
 for path in (root/'home/logs').glob('*-daemon-*.ndjson'):
     for line in path.open():
         try: e = json.loads(line)
