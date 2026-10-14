@@ -611,10 +611,11 @@ impl Kernel {
                                     prompt["session_id"],
                                     crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE
                                 );
-                                assert!(prompt["message"]
-                                    .as_str()
-                                    .unwrap()
-                                    .contains("whole LOCAL kernel"));
+                                let message = prompt["message"].as_str().unwrap();
+                                assert!(
+                                    message.ends_with("Allow?") || message.ends_with("Extend?"),
+                                    "{message}"
+                                );
                                 return prompt.clone();
                             }
                         }
@@ -683,27 +684,14 @@ async fn grant_for_holder(kernel: &mut Kernel, holder: &mut Client, holder_pid: 
     holder.send(serde_json::json!({"RequestKernelAccess":{"holder_pid":holder_pid}}));
     let prompt = kernel.access_popup("-grant").await;
     let id = prompt["interaction_id"].as_str().unwrap().to_owned();
-    let message = prompt["message"].as_str().unwrap();
-    assert!(
-        message.contains(&format!(
-            "pid {}",
-            if holder_pid == 0 {
-                holder.child.id()
-            } else {
-                holder_pid
-            }
-        )),
-        "{message}"
+    // Owner copy is short: no pid, path, scope or lifetime; those stay in the
+    // structured requester and the audit record.
+    assert_eq!(
+        prompt["message"],
+        "An external agent wants access to Chariox. Allow?"
     );
-    assert!(message.contains("whole LOCAL kernel") && message.contains("480 minutes"));
-    assert!(message.contains(
-        std::env::current_exe()
-            .unwrap()
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-    ));
+    assert_eq!(prompt["title"], "External agent access");
+    assert!(prompt["requester"]["pid"].is_u64());
     kernel.control("guest").await;
     let missing = kernel.answer(&id, None, None).await;
     assert!(missing["error"]["message"]
@@ -866,6 +854,12 @@ async fn kernel_access_grants_authorize_all_local_sessions_and_refuse_siblings_a
             .as_str()
             .unwrap()
             .contains("PASSKEY_REQUIRED")
+    );
+    let extend_copy = extension_prompt["message"].as_str().unwrap();
+    assert!(
+        extend_copy.starts_with("The external agent's access ends in ")
+            && extend_copy.ends_with(" minutes. Extend?"),
+        "{extend_copy}"
     );
     // MP-08 / MP-10 / MP-11: identity is OS-established structured metadata.
     let expected = crate::runtime::kernel_access::process::inspect(holder.child.id())

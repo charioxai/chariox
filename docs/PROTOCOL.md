@@ -2770,7 +2770,7 @@ Workflow trigger and deployment direction:
   An unapproved Unix peer can only send `RequestKernelAccess` with
   `holder_pid` and optional `lifetime_minutes` (protocol 451 removes `session_id`; old session-bearing requests are rejected). The holder
   must be the peer or an OS-verified ancestor. The kernel raises an owner-only
-  passkey popup naming its verified executable, pid, local-kernel authority, and lifetime. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
+  passkey popup. Its copy is one short kernel-written question (grant: "<name> (an external agent) wants access to Chariox. Allow?"; extension: "<name>'s access ends in N minutes. Extend?"); `<name>` is only a harness recognised by exact configured path, otherwise "An external agent". The popup shows no pid, path, process start, version or scope; those stay in `requester` and the audit stream. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
   `RespondToInteraction` on this routing id returns `KernelAccessDecisionResponded { interaction_id }`, with no session projection.
   Grant and extension prompts have kind `access_grant` or `access_extension`,
   `lifetime_minutes`, and `max_lifetime_minutes`. Protocol 470 adds an optional
@@ -2783,8 +2783,8 @@ Workflow trigger and deployment direction:
   executable (including Codex's official npm native package); unknown paths
   omit it. This field is attribution, not vendor/signature attestation or new
   authority. Text remains display-only, with quoted/escaped executable paths;
-  clients must never parse requester identity from it. TUI labels use the
-  structured object and show identity unavailable for old kernels. New access
+  clients must never parse requester identity from it. Clients do not render it
+  in the popup. New access
   requests and kernel-wide approval replies require protocol 470; refusals
   remain supported on protocol 451 and legacy session-scoped replies retain
   their existing route. Other client/relay/native minimums are unchanged.

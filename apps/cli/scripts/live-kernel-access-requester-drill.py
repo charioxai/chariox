@@ -192,7 +192,7 @@ process.exitCode = result.status ?? 1;
             command[1:1] = ["-c", "mcp_servers." + name + ".enabled=false"]
         requester = start(command, outside, "outside")
     end = time.monotonic() + 120
-    while "passkey request" not in frame() and "Grant external agent access" not in frame():
+    while "passkey request" not in frame() and "External agent access" not in frame():
         pump(.2)
         sample()
         if requester.poll() is not None:
@@ -205,23 +205,22 @@ process.exitCode = result.status ?? 1;
         if time.monotonic() > end:
             raise RuntimeError("MP-10 outside requester did not request grant")
     os.write(master, b"\x1b[19~")
-    await_text("Grant external agent access")
+    await_text("External agent access")
     capture("02-structured-requester-popup")
     labels = frame()
     if not args.local_cli:
         result["requester"] = json.loads((state / "requester.json").read_text())
-    if "Requester:" not in labels or "Executable:" not in labels or "Process start:" not in labels:
-        raise RuntimeError("MP-11 structured requester label absent")
-    if not args.local_cli:
-        identity = result["requester"]
-        if "Requester: Codex" not in labels or "PID " + str(identity["pid"]) not in labels or identity["process_start_id"] not in labels:
-            raise RuntimeError("MP-11 TUI requester differs from real Codex OS identity")
-        result["requester"] = identity
+    # EXT-UX-01: the owner sees one short question, never pid, path or process start.
+    if "Codex (an external agent) wants access to Chariox. Allow?" not in labels:
+        raise RuntimeError("EXT-UX-01 short grant question absent")
+    for hidden in ("Requester:", "Executable:", "Process start", "PID ", "Local kernel", "expires"):
+        if hidden in labels:
+            raise RuntimeError("EXT-UX-01 popup shows " + hidden)
     # Ctrl+R is the real refusal hotkey. No passkey is typed, and no login changes.
     os.write(master, b"\x12")
     pump(1)
     capture("03-refused-popup")
-    if "Grant external agent access" in frame():
+    if "External agent access" in frame():
         raise RuntimeError("MP-11 refused popup stayed open")
     requester.wait(timeout=45)
     diagnostics = (state / "outside.stderr").read_text() if args.local_cli else ""

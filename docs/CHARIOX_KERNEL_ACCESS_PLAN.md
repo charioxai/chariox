@@ -180,11 +180,11 @@ The popup shows what the kernel itself established, not what the requester claim
 ### 5.3 Granting access to an external agent (D8, D9)
 
 1. The external agent connects to the kernel’s local Unix socket and requests access to that local kernel. The request contains no session or access level.
-2. The kernel identifies the requesting process through the OS (section 6.1) and raises the passkey popup, naming that process (executable and pid), the local-kernel boundary and proposed lifetime.
+2. The kernel identifies the requesting process through the OS (section 6.1) and raises the passkey popup with one short question naming the requester only by a harness the kernel recognises (otherwise "An external agent"). The executable, pid and process start stay in the audit record, not the popup (owner decision 2026-10-14).
 3. When the user enters the passkey, the kernel authorizes that process and its OS descendants for every ordinary local-kernel operation (section 6.2). No session selection is required, including when the kernel has no sessions yet.
 4. The agent learns only the outcome. No token is issued, so there is nothing it could pass to another process or kernel.
 
-Five minutes before a grant expires, the kernel shows the popup "access for <agent> expires in 5 minutes, extend?" (D5). Extending needs the passkey and starts a new term. If nobody extends it, the grant expires.
+Five minutes before a grant expires, the kernel shows the popup "<agent>'s access ends in 5 minutes. Extend?" (D5). Extending needs the passkey and starts a new term. If nobody extends it, the grant expires.
 
 Only the local Unix socket carries grants. Over TCP loopback an access request is answered with a pointer to the Unix socket (section 6.3). Requests through the relay, from kernel peers, or from Apps are refused. A requester can have one pending request at a time.
 

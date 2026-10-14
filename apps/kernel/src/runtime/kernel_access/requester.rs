@@ -127,14 +127,28 @@ fn codex_native_candidates(launcher: &Path) -> Vec<PathBuf> {
     candidates
 }
 
-pub(crate) fn display_executable(executable: &str) -> String {
-    // JSON quoting separates the whole path from the trusted surrounding text.
-    // Also escape terminal controls and Unicode direction/line formatting.
-    serde_json::to_string(executable).expect("string serializes").chars().map(|c| {
-        if c.is_control() || matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
-            format!("\\u{:04x}", c as u32)
-        } else { c.to_string() }
-    }).collect()
+/// The owner-facing copy of an access decision. It names only a harness this
+/// kernel recognises by exact configured path, never text from the process;
+/// PID, path and start time stay in the requester record and the audit log.
+pub(crate) fn popup_copy(
+    harness: Option<KernelAccessProviderHarness>,
+    grant: bool,
+    remaining_minutes: u64,
+) -> (&'static str, String) {
+    let name = match harness {
+        Some(KernelAccessProviderHarness::Codex) => Some("Codex"),
+        Some(KernelAccessProviderHarness::Claude) => Some("Claude Code"),
+        Some(KernelAccessProviderHarness::Opencode) => Some("OpenCode"),
+        None => None,
+    };
+    if grant {
+        let who = name.map_or("An external agent".to_owned(), |n| format!("{n} (an external agent)"));
+        return ("External agent access", format!("{who} wants access to Chariox. Allow?"));
+    }
+    let minutes = remaining_minutes.max(1);
+    let unit = if minutes == 1 { "minute" } else { "minutes" };
+    let who = name.unwrap_or("The external agent");
+    ("Extend external agent access", format!("{who}'s access ends in {minutes} {unit}. Extend?"))
 }
 
 #[cfg(test)]
@@ -142,15 +156,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn requester_path_cannot_inject_controls_quotes_or_provider_labels() {
+    fn requester_path_cannot_claim_a_harness_or_reach_the_popup_copy() {
         let path = "/tmp/\" (pid 999)\nRequester: Claude\u{1b}[31m\u{202e}\u{85}";
-        let display = display_executable(path);
-        assert_eq!(
-            display,
-            "\"/tmp/\\\" (pid 999)\\nRequester: Claude\\u001b[31m\\u202e\\u0085\""
-        );
-        assert!(!display.chars().any(char::is_control));
         assert_eq!(provider_harness("/crafted/path/codex"), None);
+        let copy = |harness, grant| popup_copy(harness, grant, 5).1;
+        assert_eq!(copy(None, true), "An external agent wants access to Chariox. Allow?");
+        assert_eq!(
+            copy(Some(KernelAccessProviderHarness::Claude), true),
+            "Claude Code (an external agent) wants access to Chariox. Allow?"
+        );
+        assert_eq!(
+            copy(Some(KernelAccessProviderHarness::Claude), false),
+            "Claude Code's access ends in 5 minutes. Extend?"
+        );
+        assert_eq!(popup_copy(None, false, 0).1, "The external agent's access ends in 1 minute. Extend?");
         let holder = ProcessIdentity {
             pid: 42,
             uid: 0,
