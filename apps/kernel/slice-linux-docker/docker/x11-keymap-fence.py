@@ -69,11 +69,13 @@ class KeymapFence:
             focus = connection.get_input_focus().focus
             if not hasattr(focus, 'id') or focus.id <= 1:
                 raise ValueError('native text focus unavailable')
-            self.pid = self.client_pid(focus.id)
-            if self.pid is None or self.pid <= 1:
+            # A native application can have multiple X connections in one
+            # process. Its compositor may refresh before its focused UI
+            # connection; that reply does not attest the UI's keyboard map.
+            ids = self.control.res_query_client_ids([{'client': focus.id, 'mask': res.LocalClientPIDMask}]).ids
+            if len(ids) != 1 or not ids[0].value or ids[0].value[0] <= 1:
                 raise ValueError('native text client unavailable')
-            ids = self.control.res_query_client_ids([{'client': 0, 'mask': res.LocalClientPIDMask}]).ids
-            self.matched = [item.spec.client for item in ids if item.value and item.value[0] == self.pid]
+            self.matched = [ids[0].spec.client]
             major = self.control.query_extension('XKEYBOARD').major_opcode
             ranges = {'core_requests': (101, 101), 'core_replies': (101, 101),
                       'ext_requests': (major, major, 8, 8), 'ext_replies': (major, major, 8, 8),
@@ -88,10 +90,6 @@ class KeymapFence:
         except Exception:
             self.close()
             raise
-
-    def client_pid(self, client):
-        ids = self.control.res_query_client_ids([{'client': client, 'mask': res.LocalClientPIDMask}]).ids
-        return next((item.value[0] for item in ids if item.value), None)
 
     def reply(self, value):
         if value.category == record.StartOfData:

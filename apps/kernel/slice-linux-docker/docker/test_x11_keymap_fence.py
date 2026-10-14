@@ -5,6 +5,7 @@ import struct
 from types import SimpleNamespace
 import threading
 import unittest
+from unittest.mock import Mock, patch
 
 spec=importlib.util.spec_from_file_location('fence',Path(__file__).with_name('x11-keymap-fence.py'))
 fence=importlib.util.module_from_spec(spec);spec.loader.exec_module(fence)
@@ -23,6 +24,28 @@ def xkb(rows, order='<'):
 
 
 class Replies(unittest.TestCase):
+    def test_only_the_focused_window_connection_can_acknowledge(self):
+        # Chromium's UI and companion X connections share a PID but do not
+        # install keyboard maps together. Only the owner of the focused XID
+        # may release input; a companion's reply can arrive first.
+        owner = SimpleNamespace(spec=SimpleNamespace(client=100), value=[1234])
+        companion = SimpleNamespace(spec=SimpleNamespace(client=200), value=[1234])
+        control, data, connection = Mock(), Mock(), Mock()
+        connection.get_input_focus.return_value.focus.id = 1050
+        control.res_query_client_ids.side_effect = lambda requested: SimpleNamespace(
+            ids=[owner, companion] if requested[0]['client'] == 0 else [owner])
+        control.query_extension.return_value.major_opcode = 135
+        data.record_enable_context.side_effect = lambda context, callback: callback(
+            SimpleNamespace(category=fence.record.StartOfData))
+        thread = lambda **options: SimpleNamespace(start=options['target'], join=lambda timeout: None)
+        with patch.object(fence.x11, 'open_display', side_effect=[control, data]), patch.object(fence.threading, 'Thread', side_effect=thread):
+            instance = fence.KeymapFence(connection)
+            try:
+                self.assertEqual(instance.matched, [100])
+                self.assertEqual(data.record_create_context.call_args.args[1], [100])
+            finally:
+                instance.close()
+
     def test_only_the_recycled_row_can_acknowledge_unicode(self):
         wanted=0x01004e16
         for order in ['<','>']:
