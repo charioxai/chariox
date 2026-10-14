@@ -63,3 +63,41 @@ independent MP-11 relay-admission semantic review.
 Stop the owned stack, kernel, provider, browser, TUI and proxy at the end. Remove
 lane-generated identity state, scratch and copied binaries after retaining public
 evidence. Never remove the original linked provider scope or another lane's state.
+
+## MP-08 / MP-10 / MP-11: Apps r4 activation and reboot replay
+
+Apps r4 (`b1110e79b7616c34ce36558f8fbbe831541c5f1e`, Cloud
+`00658b85aa81575b7c144adc11f3904eeecf0170`) already retains the live socket
+when a peer response observes a renewed credential. Frozen #996
+(`669d315a4427746c1d6ae8b9460c5eb95673b692`) additionally binds the registration
+credential to its continuity snapshot. Neither dispatches newly staged slice
+activation confirmation on a socket that stays connected.
+
+Focused regressions run the dynamic connector against a real local relay with
+key-bound scoped admissions. They stage pending confirmation after connection,
+then exercise heartbeat registration, token-refresh registration, and the race
+where registration authenticates the runtime token before confirmation is staged.
+These are supplementary source checks, not user-flow or signed-slice acceptance.
+The follow-up sender services pending confirmation after successful registration
+queueing on both timer paths, including ticks that need no token change. One
+sender owns the existing bounded retry loop per connection and aborts on teardown.
+Owner/key/nonce binding, credential expiry, peer-version gating and the serialized
+protocol remain unchanged.
+
+Live acceptance must replay the normal r4 TUI `/slice create ... --headed`,
+`/room bind`, and `/slice start` flow on its signed inputs, r4+#996, then the
+follow-up. Use the real built Web/TUI clients, hosted WSS, an approximately
+8 Mbit/s client uplink, measured RTT >=60 ms, DPR1/2, and screenshots/logs for
+each step. Normal warm startup must confirm within the existing 15-second bound
+without a worker socket fault. A source test does not close this cell. Cold-build
+bootstrap expiry and later hosted authorization denial are separate findings.
+
+The r4 terminal soak recorded six closures inside a 776 ms window during a
+second machine's deliberate reboot. Its observer retained no socket/target
+identity; all 480 checkpoints retained a prompt and reported no unavailability
+or page error. Retain that FAIL. Repeat the exact two-machine workflow with
+credential-safe socket IDs, allowlisted outgoing target metadata and closure
+reasons where available. Every closure remains counted; attribution is evidence,
+not a waiver. Do not credit #996 with fixing this unisolated failure. A two-hour
+soak is required if a remaining fix changes its path. Never reboot a shared
+builder or substitute a synthetic reboot for the real machine fault.
