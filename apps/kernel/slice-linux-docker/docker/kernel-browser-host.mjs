@@ -433,6 +433,13 @@ export class KernelBrowserHost {
     assertNotCancelled(signal);
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
+    // MP-08/MP-10: the kernel's navigate/subscribe preflight reads only its own Tab
+    // live; an all-tab reconcile waits for every busy (loading) page.
+    if (command.op === "state" && typeof command.tab_id === "string") {
+      const tab = await this.displayTarget(command);
+      this.observed = ++this.observations; // newest observation, as at a navigation commit
+      return this.observe(this.tabState(), tab, scope);
+    }
     if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
     if (command.op === "open") return this.observe(await this.open(command.url, undefined, { signal }), null, scope);
     for (const [id, stream] of this.displays) if (Date.now() > stream.expires) { await stream.close(); this.displays.delete(id); }

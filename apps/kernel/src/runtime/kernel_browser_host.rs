@@ -537,8 +537,7 @@ impl KernelBrowserHost {
         {
             // MP-08: attach may be the first post-recovery request. Seed the same
             // tab ledger before takeover, without registering another actor.
-            let state = backend
-                .host_request_classified("host.browser", serde_json::json!({"op":"state"}))?;
+            let state = backend.host_request_classified("host.browser", target_state(&params))?;
             model
                 .lock()
                 .map_err(|_| "MD-3: actor lock poisoned")?
@@ -562,10 +561,14 @@ impl KernelBrowserHost {
                     .input_is_current(&params);
             if !observed_input {
                 let state = backend.host_request_cancellable(
-                "host.browser",
-                serde_json::json!({"op":if params["op"] == "open" { "start" } else { "state" }}),
-                admission.map(|a| a.cancellation.clone()),
-            )?;
+                    "host.browser",
+                    match params["op"].as_str() {
+                        Some("open") => serde_json::json!({"op":"start"}),
+                        Some("navigate") => target_state(&params),
+                        _ => serde_json::json!({"op":"state"}),
+                    },
+                    admission.map(|a| a.cancellation.clone()),
+                )?;
                 model
                     .lock()
                     .map_err(|_| "MD-3: actor lock poisoned")?
@@ -897,6 +900,11 @@ impl KernelBrowserHost {
         }
         first.map_or(Ok(()), Err)
     }
+}
+/// MP-08/MP-10: kernel-only preflight that reads the request's own Tab live (the typed
+/// client `State` has no `tab_id`); an all-tab reconcile waits for every busy page.
+fn target_state(params: &Value) -> Value {
+    serde_json::json!({"op":"state","tab_id":params["tab_id"],"generation":params["generation"]})
 }
 fn browser_actor(admission: Option<&KernelBrowserAdmission>, params: &Value) -> EnvironmentActor {
     if let Some(agent) = admission.and_then(|admission| admission.agent.as_deref()) {

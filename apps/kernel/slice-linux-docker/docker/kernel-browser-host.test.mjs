@@ -1080,3 +1080,18 @@ test('MP-08/MP-10 navigate answers at commit without all-tab reconciles', () => 
   const tab = result.tabs.find(entry => entry.tab_id === opened.tab_id);
   assert.equal(tab.document_id, 'doc-next'); assert.equal(tab.url, 'https://example.com/next');
 }));
+
+// MP-08/MP-10 (review #1009 P2): the kernel's navigate/subscribe preflight names its Tab and reads only that
+// Tab live; an all-tab reconcile waits for every busy page and held the controller lock meanwhile.
+test('MP-08/MP-10 a tab-scoped state preflight reads only its own Tab', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const browser = host.browser, reconcile = browser.reconcile;
+  let reconciles = 0;
+  browser.reconcile = async (...args) => { reconciles++; return reconcile(...args); };
+  const state = await host.request({ op: 'state', tab_id: opened.tab_id, generation: opened.generation });
+  assert.equal(reconciles, 0, 'no all-tab reconcile');
+  assert.ok(state._observation > opened._observation, 'a newer observation for the kernel ledger');
+  assert.ok(state.tabs.some(tab => tab.tab_id === opened.tab_id));
+  await assert.rejects(host.request({ op: 'state', tab_id: 'host-tab-unknown', generation: opened.generation }), error => error.code === 'user_domain_not_granted');
+  await host.request({ op: 'state' }); assert.equal(reconciles, 1, 'a client state read keeps its reconcile');
+}));
