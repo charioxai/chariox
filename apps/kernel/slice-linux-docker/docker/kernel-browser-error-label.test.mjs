@@ -56,3 +56,11 @@ test('launch failures retain specific safe namespace, sandbox and executable cau
   const reply=hostFailureMessage({code,message:stderr});assert(reply.includes(reason));assert(!reply.includes('private-canary'));assert(!reply.includes('/proc/'));
  }
 });
+
+test('MP-08/MP-10/MP-11 navigation and detached CDP failures preserve safe causes without page descriptions',()=>{
+ assert.match(hostFailureMessage({code:'browser_navigation_failed',message:'browser navigation failed: net::ERR_NAME_NOT_RESOLVED'}),/browser_navigation_failed net::ERR_NAME_NOT_RESOLVED/);
+ assert.match(hostFailureMessage({code:'browser_cdp_command_failed',message:'Runtime.callFunctionOn: Cannot find context with specified id'}),/browser_cdp_command_failed Runtime.callFunctionOn execution_context_retired/);
+ const privateFailure=hostFailureMessage({code:'browser_navigation_failed',message:'browser navigation failed: private-canary https://private.invalid'});
+ assert(privateFailure.includes('browser_navigation_failed'));assert(!privateFailure.includes('private-canary'));assert(!privateFailure.includes('private.invalid'));
+ assert(!hostFailureMessage({code:'browser_cdp_command_failed',message:'Runtime.callFunctionOn: private-canary'}).includes('private-canary'));
+});
