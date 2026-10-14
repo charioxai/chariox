@@ -478,6 +478,9 @@ export class Mirror2 {
     }
     return out;
   }
+  async resourceBody(world, url, maxBytes = RESOURCE_BYTES) {
+    return this.host.browser?.responseBodies?.read(world, url, maxBytes) ?? null;
+  }
   async materializeWorld(world, due, slot, budget, stream) {
     // Top-document element images: near the view first; the rest wait.
     let near = null, moving = false, stamp = null;
@@ -506,13 +509,16 @@ export class Mirror2 {
       if (entry.state !== 'ok') {
         let body = null;
         if (entry.url.startsWith('data:')) body = dataUrlBytes(entry.url);
-        // Resources a no-cors cross-origin stylesheet loaded (its imports, images, fonts) are
-        // absent from the page's Resource Timing; the inspector's resource tree lists them.
-        else if (!loaded.has(entry.key) && !(await frames()).has(entry.url)) { entry.state = 'waiting'; continue; }
         else {
-          const frameId = (await frames()).get(entry.url);
-          if (frameId) try { const reply = await world.connection.send('Page.getResourceContent', { frameId, url: entry.url }, world.sessionId); body = reply.base64Encoded ? Buffer.from(reply.content, 'base64') : Buffer.from(reply.content, 'utf8'); } catch { body = null; }
-          body ??= await this.cached(world, entry.url).catch(() => null);
+          body = await this.resourceBody(world, entry.url);
+          // The response index itself proves this exact frame/document fetched
+          // the URL. A cache miss retains the existing Resource Timing/tree gate.
+          if (!body) {
+            if (!loaded.has(entry.key) && !(await frames()).has(entry.url)) { entry.state = 'waiting'; continue; }
+            const frameId = (await frames()).get(entry.url);
+            if (frameId) try { const reply = await world.connection.send('Page.getResourceContent', { frameId, url: entry.url }, world.sessionId); body = reply.base64Encoded ? Buffer.from(reply.content, 'base64') : Buffer.from(reply.content, 'utf8'); } catch { body = null; }
+            body ??= await this.cached(world, entry.url).catch(() => null);
+          }
         }
         let mime_type = body && body.length <= RESOURCE_BYTES ? mirrorResourceType(body, entry.kind === 'sprite' ? 'image' : entry.kind) : null;
         // Protocol 501: a sprite travels as its sanitized symbols (the viewer validates them again).
@@ -568,13 +574,24 @@ export class Mirror2 {
   // the same way (depth-first, bounded), each under its conditions and sanitized
   // against its own URL, after the importing sheet's leading layer statements.
   async crossOriginSheet(world, url) {
-    const { frameTree } = await world.connection.send('Page.getResourceTree', {}, world.sessionId);
-    const frameOf = new Map(); const collect = node => { for (const r of node.resources ?? []) frameOf.set(r.url, node.frame.id); for (const child of node.childFrames ?? []) collect(child); }; collect(frameTree);
+    let frameOf;
+    const frames = async () => {
+      if (!frameOf) {
+        const { frameTree } = await world.connection.send('Page.getResourceTree', {}, world.sessionId);
+        frameOf = new Map(); const collect = node => { for (const r of node.resources ?? []) frameOf.set(r.url, node.frame.id); for (const child of node.childFrames ?? []) collect(child); }; collect(frameTree);
+      }
+      return frameOf;
+    };
     const sheets = []; let bytes = 0;
     const read = async (href, open, close, depth) => {
-      const frameId = frameOf.get(href); if (!frameId || sheets.length >= 64) return false;
-      const reply = await world.connection.send('Page.getResourceContent', { frameId, url: href }, world.sessionId);
-      const text = reply.base64Encoded ? Buffer.from(reply.content, 'base64').toString('utf8') : reply.content;
+      if (sheets.length >= 64) return false;
+      const body = await this.resourceBody(world, href, 16 * 1024 * 1024);
+      let text = body?.toString('utf8');
+      if (text === undefined) {
+        const frameId = (await frames()).get(href); if (!frameId) return false;
+        const reply = await world.connection.send('Page.getResourceContent', { frameId, url: href }, world.sessionId);
+        text = reply.base64Encoded ? Buffer.from(reply.content, 'base64').toString('utf8') : reply.content;
+      }
       if (typeof text !== 'string' || (bytes += text.length) > 16 * 1024 * 1024) return false;
       const { layers, imports } = cssImports(text);
       // In source order: the sheet's leading layer statements, its imports, then its own rules.

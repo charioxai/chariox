@@ -48,6 +48,13 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   own 30 s bound leaves ordinary CDP request deadlines unchanged. Stylesheet
   owners are reconciled when activation completes so edits during startup are
   retained; attached frames share the same watcher and discovery rules.
+  Completed response metadata is indexed by session, frame, loader and observed
+  URL (at most 4096 pending and completed entries each). CSS and font reads use
+  `Network.getResponseBody` for those exact completed responses before the
+  existing resource-tree/content fallback. This avoids waiting for unrelated
+  resource bodies before painting the viewport, preserves authenticated bytes,
+  and makes no new request or credential copy. Reconnection and detached sessions
+  retire the index; document and protection fences still gate publication.
   Deltas carry only changes: a child list that ends as it was sends nothing, a
   form op travels only when the field's state changed, and a subtree the page
   rebuilds with the same shape (a typeahead list replaced by innerHTML) keeps

@@ -91,6 +91,7 @@ export class MirrorFrames {
   // opaque regions. Returns rebased child snapshot records (document under owner).
   // Child snapshot with the frame's Vault fill targets protected by identity.
   async snapshot(child, loaderId, policy, tab, slot) {
+    child.documentId = loaderId;
     await this.mirror.protectTargets(child, tab, policy, `frame:${child.frame.id}:${loaderId}:`);
     const snap = await this.mirror.evaluate(child, `${child.ref}.snapshot()`);
     await this.mirror.markClosedHosts(child, snap);

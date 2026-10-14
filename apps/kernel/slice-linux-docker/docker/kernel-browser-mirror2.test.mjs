@@ -391,3 +391,19 @@ test('MP-08/MP-10: a navigation ends a waiting long poll before its deadline', a
   await mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 1 }, 'scope', undefined, Date.now() + 2000).catch(() => {}); // the moved document then refuses this credit (existing fence); the next one resets
   assert.ok(Date.now() - started < 1000, `the wait ended after the navigation (${Date.now() - started} ms)`);
 });
+
+test('MP-10 M2: completed stylesheet bodies do not wait for Page resource-content loading',async()=>{
+ const body=Buffer.from('body{color:green}'),calls=[];
+ const world={connection:{async send(method){calls.push(method);throw Error('unrelated document resources are still loading')}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(actual,address,limit){assert.equal(actual,world);assert.equal(address,'https://public.example/style.css');assert.equal(limit,16*1024*1024);return body}}}}});
+ mirror.evaluate=async(_world,expression)=>{assert(expression.includes(body.toString()));return body.toString()};
+ assert.equal(await mirror.crossOriginSheet(world,'https://public.example/style.css'),body.toString());assert.deepEqual(calls,[]);
+});
+
+test('MP-10 M2: first-packet font bytes use the completed response before the Page content gate',async()=>{
+ const body=Buffer.alloc(48);body.write('wOF2');const calls=[];
+ const world={connection:{async send(method){calls.push(method);throw Error('unrelated document resources are still loading')}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(actual,address){assert.equal(actual,world);assert.equal(address,'https://public.example/font.woff2');return body}}}}});
+ mirror.evaluate=async(_world,expression)=>expression.includes('nearImages')?{near:[],all:[]}:['r1'];const entry={key:'r1',url:'https://public.example/font.woff2',kind:'font',state:'new'};
+ const out=await mirror.materializeWorld(world,[entry],0,262144,{issued:0,movedAt:0,loadedCount:1,resources:new Map([['r1',entry]])});assert.equal(out[0].mime_type,'font/woff2');assert.deepEqual(calls,[]);
+});
